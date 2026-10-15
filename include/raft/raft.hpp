@@ -4519,9 +4519,8 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     _metrics.emit();
 
     // Return the future from configuration synchronizer
-    return config_future.thenTry([this, old_node, removing_self, old_config = _configuration,
-                                  new_config, stop_flag = _stop_flag,
-                                  scope = _async_scope](auto try_result) {
+    return config_future.thenTry([this, old_node, old_config = _configuration, new_config,
+                                  stop_flag = _stop_flag, scope = _async_scope](auto try_result) {
         // The ticket is what makes this guard load-bearing rather than
         // advisory: while it is held, stop()'s drain cannot return, so
         // `this` cannot be destroyed underneath the body below.
@@ -4549,13 +4548,13 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
         // Notify membership manager of configuration change
         _membership.handle_cluster_membership_change(old_config, new_config);
 
-        // If we removed ourselves, step down from leadership
-        if (removing_self) {
-            _logger.info("Removed self from cluster, stepping down",
-                         {{"node_id", node_id_to_string(_node_id)}});
-
-            become_follower(_current_term);
-        }
+        // A leader that removed itself has already stepped down: applying
+        // C_new does that, under _mutex, before this future can resolve
+        // ("Leader removed from C_new, stepping down"). This continuation
+        // must not do it again. It can run on another thread without the
+        // lock, so a second become_follower() here raced the apply-time one:
+        // both could see the leader state, cancelling pending operations
+        // and emitting leadership_lost twice, and writing _state unlocked.
 
         _metrics.set_metric_name("raft_remove_server_success");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
