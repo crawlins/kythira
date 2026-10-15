@@ -389,18 +389,19 @@ unverified completion claim.
     `coap-transport-libnyoci` tasks.md ~337). Also from
     `coap-transport-libnyoci`, with no PR: a two-process cross-backend
     interop test, and Block1 for InstallSnapshot.
-  - **Tests that assert nothing.** Five property suites still end most cases
+  - **Tests that assert nothing.** Four property suites still end most cases
     in a `BOOST_CHECK(true)` "Placeholder" and count toward the passing
     total: `raft_replicate_to_followers_property_test.cpp` (30),
-    `raft_remove_server_implementation_property_test.cpp` (12),
     `raft_election_vote_collection_implementation_property_test.cpp` (10),
     `raft_replication_acknowledgment_collection_property_test.cpp` (10) and
     `raft_heartbeat_based_read_state_property_test.cpp` (8).
-    `raft_add_server_implementation_property_test.cpp` was the sixth; its
-    cases now drive real nodes over the simulator, and its `cluster`
-    harness (including `hold_in_joint_phase()`, which keeps a change in
-    C_old,new by isolating the new server and one old voter) is the
-    template for the rest. The negative `network_client` `static_assert` in
+    `raft_add_server_implementation_property_test.cpp` and
+    `raft_remove_server_implementation_property_test.cpp` were the other
+    two; their cases now drive real nodes over the simulator, on the
+    `cluster` harness in `tests/raft_membership_test_cluster.hpp`
+    (including `hold_in_joint_phase()`, which keeps a change in C_old,new
+    by isolating the new server and one old voter), which is the template
+    for the rest. The negative `network_client` `static_assert` in
     `network_concept_compliance_property_test.cpp` is enabled again.
   - ~~**No mTLS chaos scenario.**~~ Done: `docker-mtls-chaos-tests`
     (`docker/mtls-chaos-compose.yml`, `tests/docker_chaos/mtls_chaos_test.cpp`)
