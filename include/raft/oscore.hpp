@@ -10,14 +10,14 @@
 ///
 /// WHY THIS EXISTS
 /// ---------------
-/// kythira's `coap_security_provider` (coap_security.hpp) offers OSCORE only by
-/// asking libcoap to do it: `oscore_provider` is a wrapper over
-/// `coap_context_oscore_server()` / `coap_new_client_session_oscore()`, and its
-/// `protect`/`unprotect` hooks are identity passthroughs because libcoap
-/// applies the transform below its own PDU API. That leaves any *other* CoAP
-/// backend — the libnyoci one in `coap_transport_libnyoci_impl.hpp`, or a
-/// future one — with no way to speak OSCORE at all, since libcoap's
-/// implementation is inseparable from libcoap's session and PDU types.
+/// kythira's `coap_security_provider` (coap_security.hpp) used to offer OSCORE
+/// only by asking libcoap to do it, below libcoap's own PDU API. That left any
+/// *other* CoAP backend — the libnyoci one in `coap_transport_libnyoci_impl.hpp`,
+/// or a future one — with no way to speak OSCORE at all, since libcoap's
+/// implementation is inseparable from libcoap's session and PDU types. It also
+/// could not derive a context per Raft group on demand, so the libcoap backend
+/// now uses this implementation too, against a libcoap built without its own
+/// OSCORE (vcpkg-overlays/libcoap/README.md).
 ///
 /// So this is the "acquire an OSCORE implementation" half of the follow-up
 /// recorded in doc/TODO.md. It is deliberately transport-neutral: it takes a

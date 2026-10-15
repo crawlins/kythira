@@ -38,12 +38,39 @@ alert. `coap_certificate_revocation_test` is the case that caught it. The
 unconditionally and requires it to write exactly `length` bytes, falling into
 the existing `X509_V_ERR_UNSPECIFIED` rejection branch otherwise.
 
+## OSCORE is compiled out
+
+The port also passes **`-DENABLE_OSCORE=OFF`**.
+
+Kythira does OSCORE (RFC 8613) itself, in `include/raft/oscore.hpp`, on every
+CoAP backend. That is what lets each Raft group have its own Security Context
+(`.kiro/specs/coap-transport-multi-raft/` tasks 9–11): a context per group,
+derived on demand from the `kid context` of a peer's first request, under
+bounds.
+
+A libcoap built with its own OSCORE cannot carry that. In `coap_dispatch()`
+(`src/coap_net.c`) it decrypts every incoming request that has an OSCORE
+option, before any resource handler runs. When no libcoap OSCORE context
+matches, it drops the request ("OSCORE: Not enabled", or "PDU could not be
+decrypted"). Its server holds a fixed set of contexts, and libcoap 4.3.5b
+offers no hook to derive one when an unknown `kid context` arrives. That hook
+(`coap_oscore_register_external_handlers()`) exists only on libcoap's
+`develop` branch, in no release.
+
+Built with OSCORE off, libcoap treats option 9 as an ordinary option once the
+context registers it (`coap_register_option()`), and requests reach Kythira's
+handler intact. The libcoap backend refuses to start in OSCORE mode against a
+libcoap that has its own OSCORE compiled in, naming this overlay, rather than
+silently losing every request.
+
 ## Keeping it in sync
 
 `portfile.cmake` and `vcpkg.json` should differ from the registry port only by
-the extra `PATCHES` entry and the comment header. An overlay overrides every
-version of a package, so when the registry baseline in
-`vcpkg-configuration.json` moves libcoap, re-copy the port from it. If the new
-upstream release no longer wraps `i2d_X509()` in `assert()`, delete this
-overlay and drop it from `vcpkg-configuration.json` rather than carrying a
-patch that will fail to apply.
+the extra `PATCHES` entry, `-DENABLE_OSCORE=OFF`, `port-version` and the
+comment header. An overlay overrides every version of a package, so when the
+registry baseline in `vcpkg-configuration.json` moves libcoap, re-copy the port
+from it and re-apply both changes. If the new upstream release no longer wraps
+`i2d_X509()` in `assert()`, drop the patch rather than carrying one that will
+fail to apply. Delete the overlay only once neither change is needed: the
+assert is fixed upstream and a libcoap release offers an external OSCORE
+context lookup the backend has moved onto.

@@ -7,8 +7,12 @@
 // exchange a request over a loopback DTLS session that also carries OSCORE.
 // Each layer is shown to be enforced on its own: the wrong DTLS key fails with
 // the right OSCORE context, and the wrong OSCORE context fails over a good
-// DTLS session. Both PSK and certificate DTLS are covered, since libcoap has a
-// separate combined constructor for each.
+// DTLS session. Both PSK and certificate DTLS are covered, since the provider
+// builds each kind of client session differently.
+//
+// OSCORE itself is Kythira's (raft/oscore.hpp), applied per message as the
+// transport does: libcoap only carries option 9, inside DTLS. The linked
+// libcoap must be built without its own OSCORE (vcpkg-overlays/libcoap).
 //
 // The configuration checks at the bottom need no libcoap and run in every
 // build.
@@ -56,6 +60,8 @@ auto make_psk(std::byte fill) -> psk_credentials {
 
 #ifdef LIBCOAP_AVAILABLE
 
+#include "coap_oscore_libcoap_wire.hpp"
+
 #include <coap3/coap.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -100,16 +106,16 @@ auto bound_port(coap_endpoint_t* ep) -> std::uint16_t {
 }
 
 // The same block mode the transport sets on both sides
-// (configure_libcoap_block_mode). Besides block-wise transfer it lets
-// libcoap's client answer an OSCORE Echo challenge (RFC 8613 Appendix B.1.2)
-// by itself.
+// (configure_libcoap_block_mode).
 auto set_block_mode(coap_context_t* ctx) -> void {
     coap_context_set_block_mode(ctx, COAP_BLOCK_USE_LIBCOAP | COAP_BLOCK_SINGLE_BODY);
 }
 
-// A server whose only resource echoes a POST's payload back in a 2.04, and
-// counts how often it ran. The provider configures both layers on the context;
-// the endpoint is DTLS only, so nothing reaches the handler without DTLS.
+// A server whose only resource, the root as on the libcoap backend under
+// OSCORE, verifies a protected POST and echoes its inner payload back
+// protected, counting the requests it verified. The provider configures the
+// DTLS layer on the context; the endpoint is DTLS only, so nothing reaches the
+// handler without DTLS, and nothing is counted without valid OSCORE.
 struct combined_server {
     std::atomic<int> handled{0};
     oscore_provider provider;
@@ -129,22 +135,31 @@ struct combined_server {
         set_block_mode(ctx);
         provider.configure_session(ctx);
 
-        coap_str_const_t* uri = coap_new_str_const(reinterpret_cast<const uint8_t*>(kResourcePath),
-                                                   std::strlen(kResourcePath));
-        coap_resource_t* resource = coap_resource_init(uri, 0);
+        coap_resource_t* resource = coap_resource_init(nullptr, 0);
         coap_register_request_handler(
             resource, COAP_REQUEST_POST,
             [](coap_resource_t*, coap_session_t* session, const coap_pdu_t* request,
                const coap_string_t*, coap_pdu_t* response) {
                 auto* self = static_cast<combined_server*>(
                     coap_get_app_data(coap_session_get_context(session)));
-                self->handled.fetch_add(1);
-                const uint8_t* data = nullptr;
-                std::size_t len = 0;
-                coap_get_data(request, &len, &data);
-                coap_pdu_set_code(response, COAP_RESPONSE_CODE_CHANGED);
-                if (len > 0) {
-                    coap_add_data(response, len, data);
+                try {
+                    const auto outer = testing::oscore_outer_of(request);
+                    auto [context, group] = self->provider.verifying_context(outer);
+                    oscore::request_binding binding;
+                    const auto inner = context->unprotect_request(outer, binding);
+                    self->handled.fetch_add(1);
+
+                    oscore::coap_message reply;
+                    reply.type = static_cast<std::uint8_t>(COAP_MESSAGE_ACK);
+                    reply.code = static_cast<std::uint8_t>(COAP_RESPONSE_CODE_CHANGED);
+                    reply.token = inner.token;
+                    reply.payload = inner.payload;
+                    reply.has_payload = inner.has_payload;
+                    const auto protected_reply = context->protect_response(reply, binding);
+                    coap_pdu_set_code(response, static_cast<coap_pdu_code_t>(protected_reply.code));
+                    testing::oscore_write_into(response, protected_reply);
+                } catch (const oscore::verification_error&) {
+                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_UNAUTHORIZED);
                 }
             });
         coap_add_resource(ctx, resource);
@@ -180,13 +195,15 @@ struct exchange_result {
 };
 
 struct exchange_state {
+    std::shared_ptr<oscore::security_context> context;
+    oscore::request_binding binding;
     std::optional<std::string> echoed;
 };
 
-// One confirmable POST through a session the client provider makes. The
-// provider is asked for UDP, as the transport's plain-endpoint path does: a
-// layered provider must still come back with a DTLS session.
-auto exchange(coap_security_provider& provider, std::uint16_t port, const std::string& payload,
+// One confirmable, OSCORE-protected POST through a session the client provider
+// makes. The provider is asked for UDP, as the transport's plain-endpoint path
+// does: a layered provider must still come back with a DTLS session.
+auto exchange(oscore_provider& provider, std::uint16_t port, const std::string& payload,
               std::chrono::milliseconds timeout) -> exchange_result {
     coap_context_t* ctx = coap_new_context(nullptr);
     BOOST_REQUIRE(ctx != nullptr);
@@ -199,11 +216,16 @@ auto exchange(coap_security_provider& provider, std::uint16_t port, const std::s
         [](coap_session_t* session, const coap_pdu_t*, const coap_pdu_t* received,
            coap_mid_t) -> coap_response_t {
             auto* st = static_cast<exchange_state*>(coap_session_get_app_data(session));
-            if (coap_pdu_get_code(received) == COAP_RESPONSE_CODE_CHANGED) {
-                const uint8_t* data = nullptr;
-                std::size_t len = 0;
-                coap_get_data(received, &len, &data);
-                st->echoed = std::string(reinterpret_cast<const char*>(data), len);
+            coap_opt_iterator_t iter;
+            if (coap_check_option(received, oscore::coap_option_oscore, &iter) == nullptr) {
+                // An unprotected answer: the server could not verify us.
+                return COAP_RESPONSE_OK;
+            }
+            const auto inner =
+                st->context->unprotect_response(testing::oscore_outer_of(received), st->binding);
+            if (inner.code == COAP_RESPONSE_CODE_CHANGED) {
+                st->echoed = std::string(reinterpret_cast<const char*>(inner.payload.data()),
+                                         inner.payload.size());
             }
             return COAP_RESPONSE_OK;
         });
@@ -216,13 +238,25 @@ auto exchange(coap_security_provider& provider, std::uint16_t port, const std::s
     exchange_result result;
     result.session_proto = coap_session_get_proto(session);
 
+    const std::vector<std::byte> token{std::byte{0x2A}, std::byte{0x17}};
+    oscore::coap_message inner;
+    inner.code = static_cast<std::uint8_t>(COAP_REQUEST_CODE_POST);
+    inner.token = token;
+    const auto* path = reinterpret_cast<const std::byte*>(kResourcePath);
+    inner.options.push_back(
+        oscore::coap_option{COAP_OPTION_URI_PATH, {path, path + std::strlen(kResourcePath)}});
+    const auto* body = reinterpret_cast<const std::byte*>(payload.data());
+    inner.payload.assign(body, body + payload.size());
+    inner.has_payload = true;
+    state.context = provider.request_context(std::nullopt);
+    const auto outer = state.context->protect_request(inner, state.binding);
+
     coap_pdu_t* pdu =
-        coap_pdu_init(COAP_MESSAGE_CON, COAP_REQUEST_CODE_POST, coap_new_message_id(session),
-                      coap_session_max_pdu_size(session));
+        coap_pdu_init(COAP_MESSAGE_CON, static_cast<coap_pdu_code_t>(outer.code),
+                      coap_new_message_id(session), coap_session_max_pdu_size(session));
     BOOST_REQUIRE(pdu != nullptr);
-    coap_add_option(pdu, COAP_OPTION_URI_PATH, std::strlen(kResourcePath),
-                    reinterpret_cast<const uint8_t*>(kResourcePath));
-    coap_add_data(pdu, payload.size(), reinterpret_cast<const uint8_t*>(payload.data()));
+    coap_add_token(pdu, token.size(), reinterpret_cast<const uint8_t*>(token.data()));
+    testing::oscore_write_into(pdu, outer);
     coap_send(session, pdu);
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -360,12 +394,12 @@ constexpr auto kExchangeTimeout = std::chrono::milliseconds(5000);
 // waits.
 constexpr auto kRejectTimeout = std::chrono::milliseconds(2000);
 
-// The round trips need a libcoap with both OSCORE and DTLS, which every
-// build of the transport links. One built without a TLS library has neither
-// (OSCORE needs its crypto); there only the capability checks below apply.
+// The round trips need a libcoap with DTLS and without its own OSCORE, which
+// is what vcpkg-overlays/libcoap builds. Against any other, only the
+// capability checks below apply.
 auto oscore_and_dtls_linked(boost::unit_test::test_unit_id) -> boost::test_tools::assertion_result {
     coap_startup();
-    return coap_oscore_is_supported() != 0 && coap_dtls_is_supported() != 0 &&
+    return coap_oscore_is_supported() == 0 && coap_dtls_is_supported() != 0 &&
            coap_dtls_psk_is_supported() != 0 && coap_dtls_pki_is_supported() != 0;
 }
 
@@ -449,7 +483,7 @@ BOOST_AUTO_TEST_CASE(layered_session_over_tcp_is_refused,
 }
 
 // Requirement 7.2 against whatever libcoap this binary linked: a build with
-// OSCORE and DTLS configures the layered provider; a build missing either
+// DTLS and without its own OSCORE configures the layered provider; any other
 // refuses it, naming OSCORE as the mode, before the context is touched.
 BOOST_AUTO_TEST_CASE(layered_provider_checks_linked_libcoap,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
@@ -458,7 +492,7 @@ BOOST_AUTO_TEST_CASE(layered_provider_checks_linked_libcoap,
                            make_psk(std::byte{0x42}));
     coap_context_t* ctx = coap_new_context(nullptr);
     BOOST_REQUIRE(ctx != nullptr);
-    if (coap_oscore_is_supported() != 0 && coap_dtls_is_supported() != 0 &&
+    if (coap_oscore_is_supported() == 0 && coap_dtls_is_supported() != 0 &&
         coap_dtls_psk_is_supported() != 0) {
         BOOST_CHECK_NO_THROW(server.configure_session(ctx));
     } else {
