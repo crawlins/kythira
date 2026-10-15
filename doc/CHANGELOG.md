@@ -3,6 +3,32 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 15, 2026)
+
+- **The libcoap backend does OSCORE itself, with a Security Context per
+  Raft group.** libcoap's own OSCORE holds a fixed set of contexts and
+  drops any request whose `kid context` matches none of them before a
+  handler runs, so a server could never derive a context for a group on
+  first sight of it. `vcpkg-overlays/libcoap` now builds libcoap with
+  `-DENABLE_OSCORE=OFF`, and the backend protects and verifies every
+  message with `raft/oscore.hpp`, as the libnyoci and cantcoap backends
+  already did. `oscore_provider` refuses to start against a libcoap that
+  has its own OSCORE compiled in, since that libcoap would swallow every
+  protected request. With `coap_client_config::oscore_groups` /
+  `coap_server_config::oscore_groups` enabled, each group's requests use
+  a context derived from the group id and the sender's boot nonce; a
+  server derives one only for a group its `hosts_group` callback says it
+  hosts, bounded per peer and expired when idle, and rejects an RPC
+  whose `group_id` differs from the group of the context that verified
+  it. `multi_raft_config::on_group_destroyed` reports a group whose local
+  replica was merged away, so the host can wipe its keys with
+  `forget_oscore_group()`. OSCORE over DTLS (`security.oscore_dtls`)
+  keeps working: the provider now makes a plain DTLS session and the
+  transport applies OSCORE inside it. The RFC 8613 Appendix B.1.1 and
+  B.1.2 guarantees that #413 configured on libcoap's OSCORE now come
+  from `security_context` and its sequence store. Specification:
+  `.kiro/specs/coap-transport-multi-raft/` tasks 9-11 and 13.
+
 ### What Changed (October 14, 2026)
 
 - **cpp-httplib no longer abandons a DNS lookup to glibc's resolver
