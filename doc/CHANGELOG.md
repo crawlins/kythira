@@ -5,6 +5,15 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **Two network simulator examples no longer fail one run in a
+  hundred.** `basic_connectionless` and `connection_oriented` asserted
+  that every message, connect, read and write got through, over edges
+  configured with 0.99 reliability, so each operation had a 1% chance of
+  being dropped and the example of failing ("Send operation failed").
+  Both now use lossless edges; `basic_connectionless`'s reliability
+  scenario still demonstrates loss on its own 0.1 edge. 300 local runs of
+  each: 4 and 7 failures before, none after.
+
 - **The libcoap client enforces its per-RPC timeout.** `send_rpc()`
   stored the timeout it was given and nothing ever read it, so a request
   ended only on a reply or a libcoap NACK. libcoap NACKs a silent peer

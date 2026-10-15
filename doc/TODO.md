@@ -1593,6 +1593,12 @@ unverified completion claim.
       ICMP error, so the second and third sends to the test's closed port
       could wait out libcoap's retransmissions (over a minute) and fail the
       20 s wait.
+    - `basic_connectionless_example_test` and
+      `connection_oriented_example_test` (10 rescues on October 7): **fixed
+      October 15.** Their scenarios assert that every send, connect, read
+      and write succeeds, over simulator edges with 0.99 reliability, so
+      each operation was a 1% drop. The old binaries failed 4 and 7 of 300
+      local runs; with lossless edges, 0 of 300 each.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`
