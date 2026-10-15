@@ -5,6 +5,27 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **A leader that removes itself steps down once, under its lock.**
+  `remove_server()` of the leader stepped down twice: once when C_new
+  was applied (under the node's mutex, which was correct) and again in
+  the removal future's own continuation, which can run on another thread
+  without the mutex. When the two overlapped, both saw the leader state,
+  so pending client operations were cancelled and `leadership_lost` was
+  emitted twice, and `_state` was written unlocked. The continuation no
+  longer steps down; the apply-time step-down, which happens before the
+  future can resolve, is the only one. Found by the new
+  `raft_remove_server_implementation_property_test`, whose twelve cases
+  were all `BOOST_CHECK(true)` placeholders and now drive a real
+  three-node cluster over the simulator: leadership and existence
+  checks, one change at a time, the joint phase and its commit rule
+  (a majority of C_old alone does not commit it), C_new commit, leader
+  self-removal and re-election, timeout handling, logs and metrics. The
+  cluster harness from `raft_add_server_implementation_property_test`
+  moved to `tests/raft_membership_test_cluster.hpp` so both suites share
+  it. Requirement 29.5 asks for rollback on failure; the implementation
+  rolls forward instead (a timed-out joint entry stays in the log and the
+  change completes once it commits), and the test records that.
+
 - **The libcoap backend does OSCORE itself, with a Security Context per
   Raft group.** libcoap's own OSCORE holds a fixed set of contexts and
   drops any request whose `kid context` matches none of them before a
