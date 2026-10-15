@@ -416,12 +416,16 @@ public:
 
     /// Stops every message to `to`; its replies still arrive. Every inbound
     /// edge goes, not just the leader's: the simulator routes over multiple
-    /// hops, so 1 -> 2 -> 3 would still reach node 3.
+    /// hops, so 1 -> 2 -> 3 would still reach node 3, and so would
+    /// 1 -> 9 -> 3 once raw_client() has added node 9.
     auto isolate(std::uint64_t to) -> void {
         for (const auto& [id, n] : _nodes) {
             if (id != to) {
                 _sim.remove_edge(std::to_string(id), std::to_string(to));
             }
+        }
+        if (_has_raw_client) {
+            _sim.remove_edge("9", std::to_string(to));
         }
     }
     auto reconnect(std::uint64_t to) -> void {
@@ -430,6 +434,9 @@ public:
                 _sim.add_edge(std::to_string(id), std::to_string(to),
                               network_simulator::NetworkEdge{});
             }
+        }
+        if (_has_raw_client) {
+            _sim.add_edge("9", std::to_string(to), network_simulator::NetworkEdge{});
         }
     }
 
@@ -444,6 +451,7 @@ public:
     /// A raw client on a simulator node of its own, for hand-made RPCs.
     auto raw_client() -> test_types::network_client_type {
         auto net = _sim.create_node("9");
+        _has_raw_client = true;
         for (std::uint64_t id : {1u, 2u, 3u}) {
             _sim.add_edge("9", std::to_string(id), network_simulator::NetworkEdge{});
             _sim.add_edge(std::to_string(id), "9", network_simulator::NetworkEdge{});
@@ -537,6 +545,7 @@ private:
 
     kythira::raft_configuration _cfg;
     sim_t _sim;
+    bool _has_raw_client = false;
     std::map<std::uint64_t, std::unique_ptr<test_node>> _nodes;
     std::map<std::uint64_t, std::shared_ptr<log_sink>> _logs;
     std::map<std::uint64_t, std::shared_ptr<metric_sink>> _metrics;

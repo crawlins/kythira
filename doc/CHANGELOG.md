@@ -5,6 +5,31 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **A new leader's read includes every write acknowledged before it.**
+  `read_state()` confirmed leadership with a round of heartbeats and then
+  returned whatever the state machine held. A leader only knows the whole
+  committed prefix once it has committed an entry of its own term (Raft
+  thesis §6.4), so a leader elected after its predecessor acknowledged a
+  write, but before the followers learned that write's commit, served
+  state without it. A read now serves the state machine only once it has
+  applied the read index: the commit index, or, while the leader has not
+  committed an entry of its term, its election no-op. Until then the
+  read waits on the commit waiter within its own timeout, and it fails at
+  once (`raft_read_request_failed`, reason `apply_stalled`) if the state
+  machine has stopped applying committed entries, where it used to serve
+  state that left them out. Errors the confirmation step raises (leadership
+  lost, a higher term) are no longer also counted as
+  `heartbeat_collection_failed`; they keep their own
+  `raft_read_request_aborted` metric.
+
+- **Heartbeat-based read cases assert something.** The eight placeholders
+  in `raft_heartbeat_based_read_state_property_test` now drive the shared
+  three-node simulator cluster, plus a ninth case for the stale read
+  above. `cluster::isolate()` also cuts the raw client's node, which
+  otherwise relayed messages to an isolated node. Two cases in
+  `raft_linearizable_operations_property_test` submitted commands the
+  test state machine rejects; they now submit real PUTs.
+
 - **Replication acknowledgment cases assert something.** The ten
   `BOOST_CHECK(true)` placeholders in
   `raft_replication_acknowledgment_collection_property_test` now drive the
