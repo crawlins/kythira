@@ -1,8 +1,9 @@
 # Implementation Plan
 
 **Status (as of 2026-07-13)**: All 52 tasks across all 6 phases (Tasks 0–35,
-including every lettered sub-task) are complete and verified on the
-`feat/stdexec-future-backend` branch — not yet merged into `main`. The full
+including every lettered sub-task) are complete and verified, and are on
+`main` (re-checked October 15, 2026; the `feat/stdexec-future-backend`
+branch they were built on has merged). The full
 `stdexec`-backed `Future`/`Promise`/`Try`/`FutureFactory`/`FutureCollector`/
 `scheduler_executor_shim` surface is implemented in
 `include/raft/future_stdexec.hpp`, backend selection is wired up via

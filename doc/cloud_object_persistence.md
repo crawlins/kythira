@@ -188,11 +188,10 @@ and a true tail over thousands of requests would very likely be worse.
    memory-mirror hit, not a round trip. Reading it as a storage-read latency
    would be badly wrong.
 
-**These are p50 from a developer machine, not from a node.** Size your own
-deployment against a measurement taken from where your nodes actually run. The
-suite reports p99 alongside p50 in the line above; the p99 figures were not
-transcribed into the spec's findings, so the sizing rule below is worked from
-p50 and its results are therefore **lower bounds on the floor**, not the floor.
+**The developer-machine table is p50 only, and from no node's position.**
+Size your own deployment against a measurement taken from where your nodes
+actually run. The CI-runner table carries the suite's p99s (worst-of-run, as
+above), and the sizing rule below is worked from those rather than from p50.
 
 ### Election-timeout sizing
 
