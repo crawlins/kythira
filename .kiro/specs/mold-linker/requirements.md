@@ -90,6 +90,12 @@ these builds and not on mold's marketing benchmarks.
    spec SHALL be closed with the numbers as its record. The threshold is
    deliberately modest: the point is to rule out a change that costs
    reviewer attention for noise-level gains.
+
+   *Revision, October 15, 2026.* Task 1 measured a 27.1% reduction on the
+   clang++-18 x64 leg, and only after Requirement 9's change; before it,
+   mold could not link that leg at all. The maintainer waived the threshold
+   and chose adoption over lld (49.5% on the same leg) and over closing the
+   spec. The numbers and the decision are recorded against task 1.
 5. WHEN mold's peak link memory exceeds ld.bfd's by more than 25% on any leg
    THEN task 1 SHALL also measure that leg with Ninja's link pool limited to
    one concurrent link (Requirement 6) before the go/no-go decision.
@@ -144,12 +150,15 @@ invalidate the OCI-hosted vcpkg cache or change what the build detects.
    `LDFLAGS`, the vcpkg triplet or `VCPKG_CHAINLOAD_TOOLCHAIN_FILE`.
    `CMAKE_*_LINKER_FLAGS` propagate into `try_compile()`; `add_link_options()`
    does not.
-2. No workflow SHALL export `LDFLAGS` or otherwise pass a linker choice to the
+2. No workflow SHALL pass a linker choice (`-fuse-ld=...`) to the
    `vcpkg install` step. vcpkg packages continue to be linked with the
-   default linker.
+   default linker. The one `LDFLAGS` a workflow exports there is
+   Requirement 9.3's `-latomic` for clang-built ports, which adds a library
+   and leaves the linker alone.
 3. Verification SHALL show the vcpkg cache keys and the restored
    `vcpkg_installed/` tree are unchanged between a mold and a default-linker
-   configure of the same commit (no vcpkg rebuild is triggered).
+   configure of the same commit (no vcpkg rebuild is triggered). The key
+   depends on the job's compiler (Requirement 9), never on its linker.
 4. Verification SHALL show `CMakeCache.txt` differs between the two
    configures only in `KYTHIRA_LINKER` and the probe result entries this spec
    adds.
@@ -280,3 +289,49 @@ those jobs were tuned for.
 5. No Kconfig symbol SHALL be added. The linker, like the compiler launcher,
    is a toolchain choice and not a feature of the built system, so it stays
    out of the defconfigs and the `config-variants` job.
+
+---
+
+### Requirement 9: Clang jobs build their vcpkg ports with clang
+
+*Added October 15, 2026, after task 1.*
+
+**User Story:** As a clang++-18 CI job linking with mold, I need my vcpkg
+static libraries built by the same compiler as my own objects, because mold
+rejects the mixture that ld.bfd tolerates.
+
+GCC places the VTT of a class with virtual bases (glog's
+`LogMessage::LogStream`, among others) inside the vtable's COMDAT group;
+clang emits no VTT for it. When a clang-built object's vtable group wins,
+the GCC-built archive's only VTT definition is discarded while its debug
+information (`.debug_loclists`, or `.debug_addr` under split DWARF) still
+refers to it. ld.bfd and lld write a tombstone value and carry on; mold
+stops with "refers to a discarded COMDAT section probably due to an ODR
+violation". mold has no option to downgrade this one error
+(`--ignore-odr-violations` does not exist in 2.30, 2.42.1 or 3.0.0), and
+`--gdb-index` and `-gsplit-dwarf` do not help. `--strip-debug` hides it at
+the cost of debug info and was rejected for that reason.
+
+#### Acceptance Criteria
+
+1. Every job that configures with `-DCMAKE_CXX_COMPILER=clang++-18` and
+   links with mold SHALL build its vcpkg ports with `CC=clang-18` and
+   `CXX=clang++-18`.
+2. Each such job's whole-tree `actions/cache` key SHALL include the
+   compiler (`-clang++-18-`), so a clang-built tree is never restored on a
+   GCC job or the other way round. Jobs with the same feature set and
+   architecture SHALL share one key, as the GCC jobs already do.
+3. Such jobs SHALL export `LDFLAGS="-Wl,--push-state,--no-as-needed -latomic
+   -Wl,--pop-state"` for the `vcpkg install` step only. clang lowers
+   `std::atomic<T>::is_lock_free()` to a libatomic call that GCC inlines, and
+   proxygen's sample servers fail to link without it.
+4. GCC jobs SHALL keep the runner's default compiler for vcpkg (or the
+   compiler they already set, as the g++-14 legs do) and SHALL keep their
+   existing cache keys, so their trees stay valid.
+5. The per-package OCI binary cache already keys on vcpkg's ABI hash, which
+   includes the compiler, so it holds clang and GCC packages side by side
+   with no change. That roughly doubles what it stores for the shared ports.
+   The GitHub Actions cache gains one whole tree per clang feature set and
+   architecture; if that pushes the repository past its Actions cache quota,
+   the quota is raised in the repository settings, not worked around here.
+
