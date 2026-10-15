@@ -433,6 +433,14 @@ public:
         }
     }
 
+    /// Delays every message from `from` to `to` by `latency`. The simulator
+    /// sleeps on the sending thread, so slowing a follower's replies to the
+    /// leader leaves the leader's own threads free.
+    auto slow(std::uint64_t from, std::uint64_t to, std::chrono::milliseconds latency) -> void {
+        _sim.add_edge(std::to_string(from), std::to_string(to),
+                      network_simulator::NetworkEdge{latency, 1.0});
+    }
+
     /// A raw client on a simulator node of its own, for hand-made RPCs.
     auto raw_client() -> test_types::network_client_type {
         auto net = _sim.create_node("9");
