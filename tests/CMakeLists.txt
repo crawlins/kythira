@@ -5046,6 +5046,23 @@ set_tests_properties(tls_tcp_rpc_integration_test PROPERTIES
     LABELS "integration;certificate_authority;ca;ca_cluster_node;rpc_tls"
 )
 
+# Textual and composite node ids over the same transport
+# (.kiro/specs/cloud-composite-node-ids/ tasks 6.2, 6.3, 6.5).
+add_executable(tls_tcp_rpc_textual_node_id_test tls_tcp_rpc_textual_node_id_test.cpp)
+target_link_libraries(tls_tcp_rpc_textual_node_id_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(tls_tcp_rpc_textual_node_id_test PRIVATE cxx_std_23)
+add_test(NAME tls_tcp_rpc_textual_node_id_test COMMAND tls_tcp_rpc_textual_node_id_test)
+set_tests_properties(tls_tcp_rpc_textual_node_id_test PROPERTIES
+    TIMEOUT 90
+    LABELS "integration;certificate_authority;ca;rpc_tls;composite_node_id"
+)
+
 add_executable(ca_issuance_hardening_unit_test ca_issuance_hardening_unit_test.cpp)
 target_link_libraries(ca_issuance_hardening_unit_test PRIVATE
     certificate_authority

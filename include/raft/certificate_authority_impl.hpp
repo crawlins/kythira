@@ -292,23 +292,66 @@ inline void validate_dns_san(const std::string& name) {
                                 "\": not a literal IPv4/IPv6 address");
 }
 
+// Accepts an absolute URI as RFC 3986 spells it: a scheme (a letter, then
+// letters, digits, '+', '-' or '.'), ':', and a non-empty remainder of
+// printable ASCII other than space and the characters RFC 3986 never allows
+// unescaped ('"', '<', '>', backslash, '^', '`', '{', '|', '}'). Not a full
+// grammar check: enough that a value is one URI and cannot smuggle a second
+// SAN or a control character, the property validate_dns_san protects too.
+inline void validate_uri_san(const std::string& uri) {
+    auto fail = [&](const char* why) {
+        throw std::invalid_argument("certificate_authority: invalid URI SAN \"" + uri +
+                                    "\": " + why);
+    };
+    if (uri.empty() || uri.size() > 2048) {
+        fail("length must be 1..2048");
+    }
+    const auto colon = uri.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 == uri.size()) {
+        fail("must be an absolute URI, scheme:rest");
+    }
+    auto alpha = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+    auto digit = [](char c) { return c >= '0' && c <= '9'; };
+    if (!alpha(uri[0])) {
+        fail("the scheme must start with a letter");
+    }
+    for (std::size_t i = 1; i < colon; ++i) {
+        const char c = uri[i];
+        if (!alpha(c) && !digit(c) && c != '+' && c != '-' && c != '.') {
+            fail("the scheme may hold only letters, digits, '+', '-' and '.'");
+        }
+    }
+    for (std::size_t i = colon + 1; i < uri.size(); ++i) {
+        const auto c = static_cast<unsigned char>(uri[i]);
+        if (c <= 0x20 || c >= 0x7f ||
+            std::string_view("\"<>\\^`{|}").find(static_cast<char>(c)) != std::string_view::npos) {
+            fail("characters outside RFC 3986 must be percent-encoded");
+        }
+    }
+}
+
 inline void validate_san_entries(const std::vector<std::string>& dns_names,
-                                 const std::vector<std::string>& ip_addresses) {
+                                 const std::vector<std::string>& ip_addresses,
+                                 const std::vector<std::string>& uri_names = {}) {
     for (const auto& d : dns_names) {
         validate_dns_san(d);
     }
     for (const auto& ip : ip_addresses) {
         (void)parse_ip_san(ip);
     }
+    for (const auto& u : uri_names) {
+        validate_uri_san(u);
+    }
 }
 
-// Builds a subjectAltName extension holding exactly the given DNS and IP
+// Builds a subjectAltName extension holding exactly the given DNS, IP and URI
 // entries, as typed GENERAL_NAMEs — never via an OpenSSL config string, so no
 // value can introduce a SAN of any other type. Validates every entry first.
 [[nodiscard]] inline auto build_san_extension(const std::vector<std::string>& dns_names,
-                                              const std::vector<std::string>& ip_addresses)
+                                              const std::vector<std::string>& ip_addresses,
+                                              const std::vector<std::string>& uri_names = {})
     -> x509_extension_ptr {
-    validate_san_entries(dns_names, ip_addresses);
+    validate_san_entries(dns_names, ip_addresses, uri_names);
 
     GENERAL_NAMES* names = sk_GENERAL_NAME_new_null();
     if (names == nullptr) {
@@ -317,7 +360,7 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
     auto free_names = [&] { GENERAL_NAMES_free(names); };
     auto push = [&](int type, const unsigned char* data, std::size_t len) {
         GENERAL_NAME* gn = GENERAL_NAME_new();
-        ASN1_STRING* str = type == GEN_DNS ? ASN1_IA5STRING_new() : ASN1_OCTET_STRING_new();
+        ASN1_STRING* str = type == GEN_IPADD ? ASN1_OCTET_STRING_new() : ASN1_IA5STRING_new();
         if (gn == nullptr || str == nullptr ||
             ASN1_STRING_set(str, data, static_cast<int>(len)) != 1) {
             GENERAL_NAME_free(gn);
@@ -338,6 +381,9 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
     for (const auto& ip : ip_addresses) {
         auto bytes = parse_ip_san(ip);
         push(GEN_IPADD, bytes.data(), bytes.size());
+    }
+    for (const auto& u : uri_names) {
+        push(GEN_URI, reinterpret_cast<const unsigned char*>(u.data()), u.size());
     }
 
     X509_EXTENSION* raw = X509V3_EXT_i2d(NID_subject_alt_name, 0, names);
@@ -362,11 +408,13 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
 [[nodiscard]] inline auto build_unsigned_leaf_cert(
     X509* issuer_cert, X509_NAME* subject_name, EVP_PKEY* pubkey,
     const std::vector<std::string>& dns_names, const std::vector<std::string>& ip_addresses,
-    bool server_auth, bool client_auth, std::chrono::system_clock::time_point not_before,
+    const std::vector<std::string>& uri_names, bool server_auth, bool client_auth,
+    std::chrono::system_clock::time_point not_before,
     std::chrono::system_clock::time_point not_after, std::uint64_t serial) -> x509_ptr {
-    if (dns_names.empty() && ip_addresses.empty()) {
+    if (dns_names.empty() && ip_addresses.empty() && uri_names.empty()) {
         throw std::invalid_argument(
-            "certificate_authority: leaf certificate requires at least one DNS or IP SAN entry");
+            "certificate_authority: leaf certificate requires at least "
+            "one DNS, IP or URI SAN entry");
     }
 
     x509_ptr cert{X509_new()};
@@ -425,7 +473,7 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
     }
 
     add_extension(cert.get(), &ctx, NID_subject_key_identifier, "hash");
-    auto san = build_san_extension(dns_names, ip_addresses);
+    auto san = build_san_extension(dns_names, ip_addresses, uri_names);
     if (X509_add_ext(cert.get(), san.get(), -1) != 1) {
         throw_openssl_error("X509_add_ext(subjectAltName) failed");
     }
@@ -436,10 +484,12 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
 [[nodiscard]] inline auto build_leaf_cert(
     X509* issuer_cert, EVP_PKEY* issuer_key, X509_NAME* subject_name, EVP_PKEY* pubkey,
     const std::vector<std::string>& dns_names, const std::vector<std::string>& ip_addresses,
-    bool server_auth, bool client_auth, std::chrono::system_clock::time_point not_before,
+    const std::vector<std::string>& uri_names, bool server_auth, bool client_auth,
+    std::chrono::system_clock::time_point not_before,
     std::chrono::system_clock::time_point not_after, std::uint64_t serial) -> x509_ptr {
     auto cert = build_unsigned_leaf_cert(issuer_cert, subject_name, pubkey, dns_names, ip_addresses,
-                                         server_auth, client_auth, not_before, not_after, serial);
+                                         uri_names, server_auth, client_auth, not_before, not_after,
+                                         serial);
     if (X509_sign(cert.get(), issuer_key, EVP_sha256()) == 0) {
         throw_openssl_error("X509_sign(leaf) failed");
     }
@@ -576,10 +626,10 @@ struct certificate_authority::impl {
         auto leaf_key = detail::generate_key(options.algorithm);
         auto serial = next_serial();
         auto subject_name = detail::build_name(options.subject);
-        auto cert =
-            detail::build_leaf_cert(ca_cert.get(), ca_key.get(), subject_name.get(), leaf_key.get(),
-                                    options.dns_names, options.ip_addresses, options.server_auth,
-                                    options.client_auth, not_before, not_after, serial);
+        auto cert = detail::build_leaf_cert(ca_cert.get(), ca_key.get(), subject_name.get(),
+                                            leaf_key.get(), options.dns_names, options.ip_addresses,
+                                            options.uri_names, options.server_auth,
+                                            options.client_auth, not_before, not_after, serial);
 
         pem_material out;
         out.certificate_pem = detail::serialize_cert(cert.get());
@@ -642,8 +692,8 @@ struct certificate_authority::impl {
         auto now = std::chrono::system_clock::now();
         auto cert = detail::build_leaf_cert(
             ca_cert.get(), ca_key.get(), X509_REQ_get_subject_name(req.get()), pubkey.get(),
-            options.dns_names, options.ip_addresses, options.server_auth, options.client_auth, now,
-            now + options.validity, serial);
+            options.dns_names, options.ip_addresses, options.uri_names, options.server_auth,
+            options.client_auth, now, now + options.validity, serial);
 
         pem_material out;
         out.certificate_pem = detail::serialize_cert(cert.get());

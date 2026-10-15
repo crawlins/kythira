@@ -11,6 +11,7 @@
 ///        client-facing HTTP API as ca_service --serve").
 
 #include <raft/certificate_authority.hpp>
+#include <raft/composite_node_id.hpp>
 
 #include <boost/json.hpp>
 
@@ -37,6 +38,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace raft::testing {
@@ -109,6 +111,11 @@ inline auto parse_csr_signing_options(const boost::json::object& obj) -> csr_sig
             opts.ip_addresses.push_back(std::string(e.as_string()));
         }
     }
+    if (const auto* v = obj.if_contains("uri_names"); (v != nullptr) && v->is_array()) {
+        for (const auto& e : v->as_array()) {
+            opts.uri_names.push_back(std::string(e.as_string()));
+        }
+    }
     if (const auto* v = obj.if_contains("server_auth"); (v != nullptr) && v->is_bool()) {
         opts.server_auth = v->as_bool();
     }
@@ -143,9 +150,57 @@ inline auto parse_csr_signing_options(const boost::json::object& obj) -> csr_sig
 /// peer enrollment may obtain a certificate carrying a name with this prefix.
 inline constexpr std::string_view k_reserved_peer_dns_prefix = "ca-cluster-node-";
 
+/// URI SAN prefix reserved for the peer identities of textual node ids
+/// (`.kiro/specs/cloud-composite-node-ids/` Requirement 12.2). Reserved the
+/// same way as `k_reserved_peer_dns_prefix`.
+inline constexpr std::string_view k_reserved_peer_uri_prefix = "urn:kythira:node:";
+
 /// The single DNS SAN (and CN) a node's Raft RPC identity carries.
 [[nodiscard]] inline auto peer_identity_dns_name(std::uint64_t node_id) -> std::string {
     return std::string(k_reserved_peer_dns_prefix) + std::to_string(node_id);
+}
+
+/// The URI SAN a textual node id's Raft RPC identity carries:
+/// `urn:kythira:node:` and the id's canonical text, percent-encoded per
+/// RFC 3986. Canonical text is not a valid DNS name (it holds ':' and '%'),
+/// hence a URI rather than a DNS SAN. Unreserved characters, ':' and '@'
+/// stay as they are; every other byte, '%' included, becomes an upper-case
+/// %XX escape, so the mapping is injective and the URI decodes back to
+/// exactly the canonical text.
+[[nodiscard]] inline auto peer_identity_uri(std::string_view canonical_text) -> std::string {
+    static constexpr char k_hex[] = "0123456789ABCDEF";
+    std::string out(k_reserved_peer_uri_prefix);
+    out.reserve(out.size() + canonical_text.size());
+    for (const char ch : canonical_text) {
+        const auto c = static_cast<unsigned char>(ch);
+        const bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~' ||
+                          c == ':' || c == '@';
+        if (keep) {
+            out.push_back(ch);
+        } else {
+            out.push_back('%');
+            out.push_back(k_hex[c >> 4]);
+            out.push_back(k_hex[c & 0x0f]);
+        }
+    }
+    return out;
+}
+
+/// Whether a node id type's peer identity is a URI SAN (textual ids) rather
+/// than a DNS SAN (numeric ids). A cluster uses exactly one of the two.
+template<typename NodeId>
+inline constexpr bool peer_identity_is_uri = kythira::node_id_traits<NodeId>::is_textual;
+
+/// The reserved SAN naming `node_id` as a Raft peer: `peer_identity_dns_name`
+/// for a numeric id, `peer_identity_uri` of its canonical text otherwise.
+template<typename NodeId>
+[[nodiscard]] auto peer_identity_name(const NodeId& node_id) -> std::string {
+    if constexpr (peer_identity_is_uri<NodeId>) {
+        return peer_identity_uri(kythira::node_id_traits<NodeId>::to_text(node_id));
+    } else {
+        return peer_identity_dns_name(static_cast<std::uint64_t>(node_id));
+    }
 }
 
 /// True iff `name` falls in the reserved peer-identity namespace. Compared
@@ -162,6 +217,47 @@ inline constexpr std::string_view k_reserved_peer_dns_prefix = "ca-cluster-node-
             c = static_cast<char>(c - 'A' + 'a');
         }
         if (c != k_reserved_peer_dns_prefix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// True iff `uri` falls in the reserved `urn:kythira:node:` namespace. URI
+/// schemes and URN namespace ids are case-insensitive, and RFC 3986 makes a
+/// percent-escaped unreserved character equivalent to the character itself,
+/// so the prefix is compared after decoding escapes and folding case: a
+/// "URN:Kythira:%6Eode:" spelling is reserved too.
+[[nodiscard]] inline auto is_reserved_peer_uri(std::string_view uri) -> bool {
+    auto hex_value = [](char c) -> int {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        return -1;
+    };
+    std::size_t pos = 0;
+    for (const char expected : k_reserved_peer_uri_prefix) {
+        if (pos >= uri.size()) {
+            return false;
+        }
+        char c = uri[pos];
+        if (c == '%' && pos + 2 < uri.size() && hex_value(uri[pos + 1]) >= 0 &&
+            hex_value(uri[pos + 2]) >= 0) {
+            c = static_cast<char>(hex_value(uri[pos + 1]) * 16 + hex_value(uri[pos + 2]));
+            pos += 3;
+        } else {
+            ++pos;
+        }
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+        if (c != expected) {
             return false;
         }
     }
@@ -231,9 +327,20 @@ inline constexpr const char* k_peer_enrollment_header = "X-Kythira-Peer-Enrollme
 /// MAC binding a peer-enrollment request to the node id it enrolls and the
 /// exact CSR being signed: replaying a captured request only ever yields a
 /// certificate for the victim node's own key, which the replayer lacks.
+/// Computed over the id's `node_id_traits` text: decimal for a numeric id,
+/// exactly as before textual ids existed, so existing enrollments stay
+/// valid; canonical text for a textual one (Requirement 12.3).
 [[nodiscard]] inline auto peer_enrollment_mac(const std::string& key, std::uint64_t node_id,
                                               const std::string& csr_pem) -> std::string {
     return hmac_sha256_hex(key, "enroll\n" + std::to_string(node_id) + "\n" + csr_pem);
+}
+
+template<typename NodeId>
+requires kythira::node_id_traits<NodeId>::is_textual
+[[nodiscard]] auto peer_enrollment_mac(const std::string& key, const NodeId& node_id,
+                                       const std::string& csr_pem) -> std::string {
+    return hmac_sha256_hex(
+        key, "enroll\n" + kythira::node_id_traits<NodeId>::to_text(node_id) + "\n" + csr_pem);
 }
 
 // ── Peer RPC trust state (GET /v1/peer/rpc-trust) ───────────────────────────
@@ -342,27 +449,38 @@ struct peer_rpc_trust_state {
 }
 
 /// Result of classifying a POST /v1/certificates request.
-struct peer_enrollment_decision {
+template<typename NodeId = std::uint64_t> struct basic_peer_enrollment_decision {
     bool allowed{true};
-    std::string error;                     ///< Set when !allowed.
-    std::optional<std::uint64_t> node_id;  ///< Set for an authenticated peer enrollment.
+    std::string error;              ///< Set when !allowed.
+    std::optional<NodeId> node_id;  ///< Set for an authenticated peer enrollment.
 };
+using peer_enrollment_decision = basic_peer_enrollment_decision<>;
 
 /// Decides whether a /v1/certificates request may proceed, given its parsed
 /// options, the optional `rpc_tls_ready_node_id` body field, the enrollment
 /// MAC header (empty if absent), the cluster's node ids and the enrollment
 /// key. Ordinary client requests (no reserved name, no node id) pass
 /// unchanged. Any request touching peer identity — a reserved
-/// "ca-cluster-node-*" SAN, or an `rpc_tls_ready_node_id` (which commits
-/// replicated cutover state) — must be a well-formed enrollment for exactly
-/// one configured node and carry a valid MAC.
-[[nodiscard]] inline auto classify_peer_enrollment(
-    const csr_signing_options& options, std::optional<std::uint64_t> ready_node_id,
-    const std::string& mac_header, const std::set<std::uint64_t>& cluster_node_ids,
-    const std::string& enrollment_key, const std::string& csr_pem) -> peer_enrollment_decision {
+/// "ca-cluster-node-*" DNS SAN or "urn:kythira:node:*" URI SAN, or an
+/// `rpc_tls_ready_node_id` (which commits replicated cutover state) — must
+/// be a well-formed enrollment for exactly one configured node and carry a
+/// valid MAC. A well-formed enrollment requests exactly the node's
+/// `peer_identity_name` and nothing else: the DNS form for a numeric
+/// `NodeId`, the URI form for a textual one, never both.
+template<typename NodeId>
+[[nodiscard]] auto classify_peer_enrollment(
+    const csr_signing_options& options, std::optional<std::type_identity_t<NodeId>> ready_node_id,
+    const std::string& mac_header, const std::set<NodeId>& cluster_node_ids,
+    const std::string& enrollment_key, const std::string& csr_pem)
+    -> basic_peer_enrollment_decision<NodeId> {
     bool wants_reserved_name = false;
     for (const auto& d : options.dns_names) {
         if (is_reserved_peer_dns_name(d)) {
+            wants_reserved_name = true;
+        }
+    }
+    for (const auto& u : options.uri_names) {
+        if (is_reserved_peer_uri(u)) {
             wants_reserved_name = true;
         }
     }
@@ -370,16 +488,19 @@ struct peer_enrollment_decision {
         return {};
     }
     auto deny = [](std::string why) {
-        return peer_enrollment_decision{false, std::move(why), std::nullopt};
+        return basic_peer_enrollment_decision<NodeId>{false, std::move(why), std::nullopt};
     };
     if (!ready_node_id.has_value()) {
-        return deny("names with the \"ca-cluster-node-\" prefix are reserved for Raft peers");
+        return deny(
+            "names with the \"ca-cluster-node-\" or \"urn:kythira:node:\" prefix are "
+            "reserved for Raft peers");
     }
     if (!cluster_node_ids.contains(*ready_node_id)) {
         return deny("rpc_tls_ready_node_id is not a member of this cluster");
     }
-    if (options.dns_names.size() != 1 ||
-        options.dns_names.front() != peer_identity_dns_name(*ready_node_id) ||
+    const auto& own = peer_identity_is_uri<NodeId> ? options.uri_names : options.dns_names;
+    const auto& other = peer_identity_is_uri<NodeId> ? options.dns_names : options.uri_names;
+    if (own.size() != 1 || own.front() != peer_identity_name(*ready_node_id) || !other.empty() ||
         !options.ip_addresses.empty()) {
         return deny("a peer enrollment must request exactly the node's own peer name");
     }
@@ -388,7 +509,7 @@ struct peer_enrollment_decision {
                               peer_enrollment_mac(enrollment_key, *ready_node_id, csr_pem))) {
         return deny("peer enrollment is not authenticated");
     }
-    return peer_enrollment_decision{true, {}, ready_node_id};
+    return basic_peer_enrollment_decision<NodeId>{true, {}, ready_node_id};
 }
 
 // Computes the colon-separated, uppercase-hex SHA-256 fingerprint of `cert`
@@ -449,7 +570,7 @@ struct peer_enrollment_decision {
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
 
-// Extracts dns_names/ip_addresses/server_auth/client_auth from a presented
+// Extracts dns_names/ip_addresses/uri_names/server_auth/client_auth from a presented
 // certificate's subjectAltName/extendedKeyUsage extensions, for
 // POST /v1/certificates/renew (Requirement 15.3): "the returned certificate
 // SHALL carry the same subject and SAN entries as the presented certificate."
@@ -464,6 +585,10 @@ inline auto options_from_presented_cert(X509* cert) -> csr_signing_options {
             if (name->type == GEN_DNS) {
                 auto* s = name->d.dNSName;
                 opts.dns_names.emplace_back(reinterpret_cast<const char*>(ASN1_STRING_get0_data(s)),
+                                            static_cast<std::size_t>(ASN1_STRING_length(s)));
+            } else if (name->type == GEN_URI) {
+                auto* s = name->d.uniformResourceIdentifier;
+                opts.uri_names.emplace_back(reinterpret_cast<const char*>(ASN1_STRING_get0_data(s)),
                                             static_cast<std::size_t>(ASN1_STRING_length(s)));
             } else if (name->type == GEN_IPADD) {
                 auto* s = name->d.iPAddress;
@@ -562,9 +687,10 @@ inline auto cert_chains_to_root(X509* cert, const std::string& root_pem) -> bool
     return found == 1;
 }
 
-// True iff `cert` carries at least one DNS SAN contained in `names`.
-[[nodiscard]] inline auto cert_has_dns_san_in(X509* cert, const std::set<std::string>& names)
-    -> bool {
+// True iff `cert` carries at least one SAN of GENERAL_NAME type `type`
+// (GEN_DNS or GEN_URI, both IA5Strings) whose value is in `names`.
+[[nodiscard]] inline auto cert_has_ia5_san_in(X509* cert, int type,
+                                              const std::set<std::string>& names) -> bool {
     auto* sans =
         static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(cert, NID_subject_alt_name, nullptr, nullptr));
     if (sans == nullptr) {
@@ -573,15 +699,38 @@ inline auto cert_chains_to_root(X509* cert, const std::string& root_pem) -> bool
     bool hit = false;
     for (int i = 0; i < sk_GENERAL_NAME_num(sans) && !hit; ++i) {
         GENERAL_NAME* gn = sk_GENERAL_NAME_value(sans, i);
-        if (gn->type != GEN_DNS) {
+        if (gn->type != type) {
             continue;
         }
-        std::string value(reinterpret_cast<const char*>(ASN1_STRING_get0_data(gn->d.dNSName)),
-                          static_cast<std::size_t>(ASN1_STRING_length(gn->d.dNSName)));
+        const ASN1_STRING* str = type == GEN_DNS ? gn->d.dNSName : gn->d.uniformResourceIdentifier;
+        std::string value(reinterpret_cast<const char*>(ASN1_STRING_get0_data(str)),
+                          static_cast<std::size_t>(ASN1_STRING_length(str)));
         hit = names.contains(value);
     }
     GENERAL_NAMES_free(sans);
     return hit;
+}
+
+// True iff `cert` carries at least one DNS SAN contained in `names`.
+[[nodiscard]] inline auto cert_has_dns_san_in(X509* cert, const std::set<std::string>& names)
+    -> bool {
+    return cert_has_ia5_san_in(cert, GEN_DNS, names);
+}
+
+// True iff `cert` carries at least one URI SAN contained in `names`.
+[[nodiscard]] inline auto cert_has_uri_san_in(X509* cert, const std::set<std::string>& names)
+    -> bool {
+    return cert_has_ia5_san_in(cert, GEN_URI, names);
+}
+
+// True iff `cert` carries one of `names` as the kind of SAN a `NodeId`
+// peer identity uses (`peer_identity_is_uri`): a URI SAN for textual ids, a
+// DNS SAN for numeric ones. Only that kind counts, so a peer is accepted
+// through exactly one of the two forms (Requirement 12.2).
+template<typename NodeId>
+[[nodiscard]] auto cert_has_peer_name_in(X509* cert, const std::set<std::string>& names) -> bool {
+    return peer_identity_is_uri<NodeId> ? cert_has_uri_san_in(cert, names)
+                                        : cert_has_dns_san_in(cert, names);
 }
 
 // The TLS layer only *requests* a client certificate (Requirement 15.3's

@@ -109,14 +109,25 @@ the audit and `design.md` for the types and per-component changes.
     with the old names as numeric aliases. The cluster test also needed the
     configuration log entry codec (`config_entry.hpp`) to encode ids
     through `node_id_traits` and read numeric ids across the full `uint64`
-    range. Still open: TLS-TCP (its trust policy binds certificate names to
-    `uint64_t` ids, so it moves with task 7.1), httplib, Proxygen, Beast,
-    gRPC (6.4) and CoAP.
+    range. Second part done: TLS-TCP for 6.2, 6.3 and 6.5. As built:
+    `basic_tls_tcp_rpc_client<NodeId>`/`basic_tls_tcp_rpc_server<NodeId>`
+    and `basic_tls_rpc_trust_policy<NodeId>`, numeric aliases keeping the
+    old names; the policy matches a textual id's URI SAN and a numeric
+    id's DNS SAN, never the other (`cert_has_peer_name_in<NodeId>`);
+    `tls_tcp_rpc_textual_node_id_test` covers `std::string` and
+    `aws_ec2_node_id` peers. Still open: httplib, Proxygen, Beast, gRPC
+    (6.4) and CoAP.
   - _Requirements: 9.1-9.6, 14.4, 14.5_
 
 - [ ] 7. CA identity and serials
   - [ ] 7.1 Generalise peer identity, enrollment MAC and `rpc_tls_ready`
-    to `NodeId`; URI SAN for textual ids; version byte
+    to `NodeId`; URI SAN for textual ids; version byte (library half done:
+    `peer_identity_name`, `is_reserved_peer_uri`, `peer_enrollment_mac`
+    and `classify_peer_enrollment` over `NodeId`, the CA issuing
+    `uri_names`, and `record_rpc_tls_ready` version 2, a `"version": 2`
+    field with the id as a JSON string. `ca_cluster_node`'s config, routes
+    and `rpc_tls_ready_node_id` body field stay numeric until task 8.2
+    gives the binaries a textual id)
   - [ ] 7.2 Add `certificate_serial`; use it in the CA, the three cloud
     CA providers and both revoke endpoints
   - [ ] 7.3 Tests: numeric enrollment unchanged, textual enrollment and

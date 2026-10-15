@@ -446,6 +446,14 @@ inline auto acme_certificate_provider::root_certificate_pem()
 inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing_options options)
     -> kythira::future_default<pem_material> {
     try {
+        // ACME orders name only "dns" and "ip" identifiers (RFC 8555
+        // §9.7.7, RFC 8738); there is no identifier a URI SAN could be
+        // validated as, so asking for one is refused rather than silently
+        // dropped from the issued certificate.
+        if (!options.uri_names.empty()) {
+            throw std::invalid_argument(
+                "acme_certificate_provider: ACME cannot issue URI subjectAltNames");
+        }
         std::lock_guard lock(_mutex);
 
         // ── Directory discovery ─────────────────────────────────────────────

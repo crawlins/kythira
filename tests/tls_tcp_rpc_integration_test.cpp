@@ -690,7 +690,8 @@ BOOST_AUTO_TEST_CASE(client_caps_rpcs_in_flight_per_endpoint, *boost::unit_test:
     client.add_peer(9, "127.0.0.1", ntohs(addr.sin_port));
     kythira::request_vote_request<> req{7, 1, 0, 0};
     constexpr auto slow = std::chrono::milliseconds{1500};
-    constexpr auto cap = kythira::tls_detail::client_impl::k_max_inflight_per_endpoint;
+    constexpr auto cap =
+        kythira::tls_detail::client_impl<std::uint64_t>::k_max_inflight_per_endpoint;
 
     std::vector<kythira::future_default<kythira::request_vote_response<>>> held;
     for (std::size_t i = 0; i < cap; ++i) {
