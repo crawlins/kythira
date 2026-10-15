@@ -5,6 +5,27 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 15, 2026)
 
+- **A pre-vote that wins starts the candidacy under the node's lock.**
+  When a pre-vote round reached a quorum, its continuation checked the
+  state under `_mutex`, released it, and only then called
+  `become_candidate()`, which bumps the term, records the self-vote,
+  persists both and sets the state. That continuation runs on whichever
+  thread settled the last pre-vote, so those writes raced the RPC
+  handlers that read and write the same fields under the lock, and a
+  leader elected between the check and the call could be turned back
+  into a candidate. The single-node path in `start_pre_vote()` had the
+  same unlocked call. Both now call `become_candidate()` under `_mutex`,
+  as `check_election_timeout()` always did, and only `start_election()`
+  runs unlocked. Found while replacing the ten `BOOST_CHECK(true)`
+  placeholders in `raft_election_vote_collection_implementation_property_test`,
+  which now drive real nodes over the simulator: RequestVote to every
+  peer, the outcome decided by the responses collected and the self-vote,
+  a split vote retried in the next term, a higher term in a response
+  ending the campaign despite a majority, the single-node shortcut, an
+  unanswered round that times out and leaves a candidate, the election
+  metrics, and the term and vote stored before any RequestVote is sent
+  or granted.
+
 - **A leader that removes itself steps down once, under its lock.**
   `remove_server()` of the leader stepped down twice: once when C_new
   was applied (under the node's mutex, which was correct) and again in
