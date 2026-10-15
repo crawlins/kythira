@@ -232,13 +232,28 @@ give it, so that the cache never fills a host's disk.
    used order, so eviction is not blind to traffic that never reached the
    leader.
 3. WHEN free space on the data directory's filesystem falls below
-   `KYTHIRA_CACHE_MIN_FREE_BYTES`, THEN the node SHALL refuse new writes with
-   a retryable error and keep serving reads.
+   `KYTHIRA_CACHE_MIN_FREE_BYTES`, or free inodes (`statvfs` `f_favail`)
+   fall below `KYTHIRA_CACHE_MIN_FREE_INODES`, THEN the node SHALL refuse new
+   writes with a retryable error and keep serving reads.
 4. Expiry (`SETEX`, TTL) SHALL keep working, with the leader-proposed `sweep`
    it uses today.
 5. `INFO` and a metrics endpoint SHALL report chunk-store bytes, chunk count,
-   key count, evictions, orphan deletions and the bytes of chunks still being
-   fetched.
+   key count, evictions, orphan deletions, the bytes of chunks still being
+   fetched, files in the chunk store, and the filesystem's free bytes and
+   free inodes.
+6. Each node SHALL report its free bytes and free inodes to the shard leaders
+   it follows, and a leader SHALL refuse new writes while any voter of the
+   shard is below either floor. A follower's floor is otherwise invisible to
+   the leader that proposes writes, and a follower that runs out of space or
+   inodes while applying stops under Requirement 2.4.
+7. THE number of files the chunk store creates SHALL be bounded by the disk
+   budget, not by the number of keys. Chunks smaller than
+   `KYTHIRA_CACHE_PACK_THRESHOLD_BYTES` (default 64 KiB) SHALL be stored in
+   shared append-only pack files instead of one file each, so that a workload
+   of small values cannot exhaust inodes before bytes.
+8. Pack files SHALL be compacted when their live bytes fall below half their
+   size, rewriting the live records into a new pack. Compaction is local to a
+   node and SHALL NOT change any replicated state.
 
 ### Requirement 7: HTTP front end
 
@@ -360,6 +375,10 @@ only unit tests.
 5. A chaos scenario SHALL replace one node with an empty data directory and
    show it serving reads once its fetch completes, with no client error
    during the fetch.
+6. A chaos scenario SHALL run a node's data directory on a filesystem with a
+   small inode count, fill it with small RESP values, and show writes refused
+   with a retryable error before inodes run out, reads still served, and no
+   node stopped.
 
 ### Requirement 13: Documentation
 
