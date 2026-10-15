@@ -229,6 +229,37 @@ Rollback for any one job is deleting its `-DKYTHIRA_LINKER=mold` line, which
 falls back to `auto`; with mold still installed that is still mold, so a true
 rollback is `-DKYTHIRA_LINKER=default`.
 
+## Component 4: clang-built vcpkg trees (Requirement 9)
+
+Every clang++-18 job exports, inside its existing `Bootstrap vcpkg and
+install dependencies` step and nowhere else:
+
+```bash
+export CC=clang-18 CXX=clang++-18
+export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
+```
+
+and appends `-clang++-18` to its `vcpkg_installed` cache key after the
+feature-set part (`...-edhoc-clang++-18-<hash>`, `...-gcp-clang++-18-<hash>`,
+`...-azure-edhoc-clang++-18-<hash>`). In `build-and-test` this goes through
+the existing `vcpkg_cc`/`vcpkg_cxx` matrix keys that the g++-14 leg already
+uses, so the key expression is unchanged and only the clang legs' values
+are new; the step adds the `LDFLAGS` when `vcpkg_cxx` is a clang. The other
+clang jobs (`gcp-sdk-build`, `config-variants`, `no-folly`, `coverage`, the
+clang jobs of `real-cloud-tests.yml`, and `coap-flake-measure.yml` when
+dispatched with clang) set the same values inline.
+
+`--no-as-needed` brackets `-latomic` because `LDFLAGS` lands before the
+objects on the link line; under `--as-needed` the library would be dropped
+before anything referenced it.
+
+The first run of each new key is a cold vcpkg build (78 minutes for the
+edhoc set on a 4-core x64 runner), so those jobs' timeouts rise to 300
+minutes. On `main` the OCI binary cache is writable, so after the first `main`
+run every later cold tree restores per-package from OCI instead of compiling.
+Other branches read OCI only and rely on the Actions cache, which is scoped
+per branch, after their own first run.
+
 ## Correctness Properties
 
 1. **No change without mold.** With `KYTHIRA_LINKER=auto` on a machine
@@ -271,6 +302,13 @@ rollback is `-DKYTHIRA_LINKER=default`.
   not track upstream. That is acceptable for a linker whose job is to
   reproduce ld.bfd's output faster; a downloaded release would need its own
   pin-and-checksum machinery for little gain.
+- **Two compilers' worth of vcpkg packages.** Requirement 9 doubles the
+  stored size of every port the GCC and clang jobs share, in both the OCI
+  bucket and the Actions cache, and the first run of each new tree is cold.
+  A cold build has already lost a runner once (task 1: "The hosted runner
+  lost communication with the server" during the x64 clang install, while
+  the coverage leg built the same tree fine); a rerun restored the saved
+  tree.
 - **Debuggers and tools.** gdb, `llvm-cov`, `addr2line` and the sanitizer
   symbolizers read standard DWARF and symbol tables, which mold emits. The
   coverage comparison and sanitizer runs in Requirement 4 are the check.

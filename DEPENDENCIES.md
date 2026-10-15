@@ -441,6 +441,30 @@ This document lists the dependencies required to build and use the network simul
   choice and is what `auto` picks. The two can coexist — the launcher is a
   configure-time choice per build tree, not a machine-wide one.
 
+### mold — faster linking
+- **Status**: Optional, build-time only. `-DKYTHIRA_LINKER=auto` (the default)
+  uses mold when the compiler accepts `-fuse-ld=mold` and otherwise changes
+  nothing. `-DKYTHIRA_LINKER=mold` or `=lld` asks for one by name and is a
+  configure error when it is missing; `-DKYTHIRA_LINKER=default` opts out.
+- **Purpose**: A parallel linker for this project's own executables. Link
+  steps are about half of all build edges and no compiler cache can skip them.
+  CI requests it by name in every linking job and checks each build's
+  `.comment` section afterwards (`scripts/check-linker.sh`).
+- **Installation**: `apt install mold`. CI uses Ubuntu 24.04's package, mold
+  2.30.0, on x64 and arm64. Older distributions may ship a 1.x release, which
+  nothing here has measured.
+- **Notes**: Measured on CI (`.kiro/specs/mold-linker/` task 1, October 2026):
+  summed link time fell **27.1%** on the clang++-18 x64 Release leg and
+  **33.1%** on the clang coverage leg, with peak memory per link down from
+  about 550 MiB to 65 MiB. **With clang, link against vcpkg ports built by
+  clang too.** GCC-built static libraries keep a VTT inside the vtable's
+  COMDAT group that clang does not emit, and mold rejects the result ("refers
+  to a discarded COMDAT section probably due to an ODR violation") where
+  ld.bfd silently tolerates it. CI's clang jobs build their ports with
+  `CC=clang-18 CXX=clang++-18` and `-latomic`; see the
+  `build-and-test` vcpkg step in `.github/workflows/ci.yml`. With GCC, the
+  default vcpkg tree links fine.
+
 ### kconfiglib — build configuration tooling (Kconfig)
 - **Status**: Optional Python *tooling*, not a C++ library — distinct from every
   dependency above. Only needed to run `menuconfig`/`guiconfig`/`savedefconfig`

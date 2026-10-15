@@ -169,6 +169,25 @@ current list of outstanding work, see [TODO.md](TODO.md).
   catches up and counts toward the majority again. The shared harness
   gains `cluster::slow()` for per-link latency.
 
+- **CI links with mold, and the clang jobs build their dependencies with
+  clang.** A new `KYTHIRA_LINKER` option (`auto`, `mold`, `lld`,
+  `default`) picks the linker through `add_link_options`, so `try_compile`
+  probes and the vcpkg ports never see it; `auto` uses mold when it is
+  installed and otherwise changes nothing. A `KYTHIRA_LINK_JOBS` option
+  bounds concurrent links with a Ninja pool and is unset everywhere for
+  now. Every linking CI job installs Ubuntu's `mold`, asks for it by name,
+  and fails if a built executable's `.comment` does not name it
+  (`scripts/check-linker.sh`), so a missing package cannot quietly fall
+  back to ld.bfd. Measuring first (`.kiro/specs/mold-linker/` task 1)
+  turned up that mold cannot link the clang++-18 legs against GCC-built
+  vcpkg libraries: GCC keeps a VTT inside the vtable's COMDAT group,
+  clang emits none, and mold rejects the dangling debug-info reference
+  that ld.bfd tolerates. Every clang job now builds its vcpkg ports with
+  clang (plus `-latomic`, which proxygen's sample servers need under
+  clang) and keys its cached tree on the compiler. Summed link time fell
+  27.1% on the clang x64 leg and 33.1% on coverage, short of the spec's
+  30% gate; the gate was waived in favour of adopting mold over lld.
+
 - **A pre-vote that wins starts the candidacy under the node's lock.**
   When a pre-vote round reached a quorum, its continuation checked the
   state under `_mutex`, released it, and only then called
