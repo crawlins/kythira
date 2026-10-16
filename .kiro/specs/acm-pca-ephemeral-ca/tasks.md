@@ -1,19 +1,29 @@
 # Implementation Plan — ACM Private CA Ephemeral Test CA
 
-## Status: In progress (5/7 tasks; what is left of 4 and 7 needs Clark)
+## Status: In progress (6/7 tasks; only task 7's deliberate-leak check is left)
 
-**Last Updated**: October 15, 2026
+**Last Updated**: October 16, 2026
 
-- Task 4: the bundle has been on the live CI role since October 8, and the
-  first Actions run used it successfully. Only the `simulate-custom-policy`
-  check is left, and it needs admin credentials the workflow lacks.
-- Task 7: the Actions half is done. Real Cloud Tests run 38065882804
-  (October 10) passed on both architectures at $0.232 per leg (about
-  $0.46 per dispatch), with clean leak audits; the figures are in
-  `doc/aws_acm_pca_test_cost_estimate.md`. That run showed AWS accepts
-  `RevokeCertificate` on a CA with no CRL or OCSP, and #537 changed the
-  test to expect that. Left: the local run, and the billing-console check
-  that self-issued roots are billed as certificates, both Clark's.
+- Task 4: done. The bundle has been on the live CI role since October 8,
+  and on October 16 `aws iam simulate-custom-policy` confirmed it: a CA
+  tagged `kythira:suite=acm-pca-real-test` is allowed Describe, Get,
+  Delete, Revoke and IssueCertificate with the EndEntityCertificate/V1
+  template; an untagged CA, or a template outside the two allowed, is
+  implicitly denied; CreateCertificateAuthority is denied without the
+  request tag or with the wrong value, and allowed with it.
+- Task 7: the Actions run (38065882804, October 10, $0.232 per leg), a
+  local run (October 16, us-west-2, 5/5 cases, $0.232, audit clean) and
+  the billing-console check are done; the figures are in
+  `doc/aws_acm_pca_test_cost_estimate.md`. Billing confirms self-issued
+  roots are charged as certificates and deleted CAs stop accruing. The
+  Actions run showed AWS accepts `RevokeCertificate` on a CA with no CRL
+  or OCSP, and #537 changed the test to expect that. Left: task 5's
+  deliberate-leak check (a SIGKILL'd run, `audit` naming the CA, `sweep`
+  removing it), which deletes a real CA and needs Clark's go-ahead.
+- The local run first crashed at startup: Boost.Test ran
+  `CaLifetimeFixture` before `AwsSdkFixture`, because it orders global
+  fixtures by address, not declaration. Fixed with
+  `tests/ordered_global_fixtures.hpp` in the same change.
 
 ## Overview
 
@@ -99,7 +109,7 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
   - Done 2026-10-07. It keeps general-purpose mode and a 30-day root, as
     before, and passes no tags.
 
-- [ ] 4. Add the `acm-pca` IAM bundle (written; simulation and apply open)
+- [x] 4. Add the `acm-pca` IAM bundle
   - `scripts/ci-cloud-credentials/aws/policies/acm-pca.json` per the
     design, after checking each action's supported condition keys in the
     ACM Private CA service authorization reference. Document any action
@@ -122,6 +132,10 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
     now fails on that. All nine bundles merge to 10,224 of 10,240
     characters. Open: the `simulate-custom-policy` check (needs AWS
     credentials) and applying the bundle.
+  - 2026-10-16: done. The bundle was applied October 8, and the
+    simulation (with Clark's credentials, no account changes) gave the
+    expected allow/deny for every case listed above, plus an implicit
+    deny for a template outside the two allowed.
 
 - [x] 5. Add `scripts/aws-acm-pca-leaks.sh audit|sweep`
   - Model it on `aws-asg-leaks.sh`. List CAs, read tags with `list-tags`,
@@ -166,4 +180,8 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
     RevokeCertificate on a CA with no CRL/OCSP. The case now asserts
     that (renamed `revoke_on_bare_ca_is_accepted_by_aws`). Measured
     $0.232 per leg, recorded in the cost doc; both leak audits clean.
-    Still open: a local run and the billing-console check.
+  - 2026-10-16: local run on Clark's machine (us-west-2): 5/5 cases,
+    $0.232, audit clean before and after. Cost Explorer over
+    2026-10-03..15 shows every self-issued root billed as a $0.058
+    certificate and no CA charge on any day without a run. Still open:
+    the deliberate-leak check moved here from task 5.

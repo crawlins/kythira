@@ -106,12 +106,11 @@ a 7-day window, the quota allows about 14 runs a day sustained. The weekly
 schedule, plus occasional manual runs, uses well under 1% of it. The leak
 script's `audit` ignores `DELETED` CAs so they never read as leaks.
 
-Billing: a CA in `DELETED` status is understood not to accrue the hourly
-charge during the restore window. This is inferred from AWS's pricing page,
-not measured. Task 7 verifies it in the billing console after the first run
-and records the result in the cost doc. It also confirms whether the root's
-self-issued `IssueCertificate` is billed as a certificate. That is the one
-unknown in the 2026-10-03 manual run's roughly $0.18.
+Billing: a CA in `DELETED` status does not accrue the hourly charge during
+the restore window, and the root's self-issued `IssueCertificate` is billed
+as a certificate. Both were inferred from AWS's pricing page when this was
+written and confirmed in Cost Explorer on 2026-10-16 (task 7; figures in
+the cost doc).
 
 ## IAM bundle (`acm-pca.json`)
 
