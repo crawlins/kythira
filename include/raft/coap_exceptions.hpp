@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <raft/composite_node_id.hpp>
 #include <raft/exceptions.hpp>
 
 #include <cstdint>
@@ -117,11 +118,21 @@ namespace coap_detail {
 /// through unchanged: a peer missing RequestVote is misconfigured, not older.
 ///
 /// Codes are compared in the on-wire class/detail byte every backend's
-/// `coap_client_error` and `coap_server_error` carry.
-[[nodiscard]] inline auto map_extension_not_implemented(std::exception_ptr error,
-                                                        std::string_view resource_path,
-                                                        std::uint64_t target)
-    -> std::exception_ptr {
+/// `coap_client_error` and `coap_server_error` carry. `target` is the peer's
+/// node id, of whatever type the client routes by.
+template<typename NodeId>
+[[nodiscard]] auto map_extension_not_implemented(std::exception_ptr error,
+                                                 std::string_view resource_path,
+                                                 const NodeId& target) -> std::exception_ptr {
+    const auto not_implemented_by = [&](std::string_view name) {
+        if constexpr (kythira::node_id_traits<NodeId>::is_textual) {
+            return std::make_exception_ptr(kythira::rpc_not_implemented_exception(
+                std::string{name}, kythira::node_id_traits<NodeId>::to_text(target)));
+        } else {
+            return std::make_exception_ptr(kythira::rpc_not_implemented_exception(
+                std::string{name}, static_cast<std::uint64_t>(target)));
+        }
+    };
     constexpr std::uint8_t not_found = (4U << 5U) | 4U;        // 4.04
     constexpr std::uint8_t not_implemented = (5U << 5U) | 1U;  // 5.01
     const auto rpc = extension_rpc_name(resource_path);
@@ -132,13 +143,11 @@ namespace coap_detail {
         std::rethrow_exception(error);
     } catch (const coap_client_error& e) {
         if (e.response_code() == not_found) {
-            return std::make_exception_ptr(
-                kythira::rpc_not_implemented_exception(std::string{rpc}, target));
+            return not_implemented_by(rpc);
         }
     } catch (const coap_server_error& e) {
         if (e.response_code() == not_implemented) {
-            return std::make_exception_ptr(
-                kythira::rpc_not_implemented_exception(std::string{rpc}, target));
+            return not_implemented_by(rpc);
         }
     } catch (...) {  // NOLINT(bugprone-empty-catch)
         // Not a CoAP status: passed through below.

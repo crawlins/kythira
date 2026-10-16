@@ -1304,4 +1304,24 @@ struct default_raft_types {
     using install_snapshot_response_type = install_snapshot_response<term_id_type, group_id_type>;
 };
 
+/// @brief The node id type a Raft RPC message type is instantiated with: its
+/// first template argument when that is a node id, else `std::uint64_t`.
+///
+/// The serializers' generic `deserialize<T>()` uses it to decode a
+/// `request_vote_request<std::string>` (or any other `NodeId`) as readily as
+/// the numeric default, which the CoAP transport, decoding through
+/// `deserialize<Request>()`, needs for textual node ids
+/// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2). For a message
+/// that carries no node id, such as `request_vote_response<>`, the result is
+/// never used.
+template<typename T> struct rpc_message_node_id {
+    using type = std::uint64_t;
+};
+template<template<typename...> class Message, typename First, typename... Rest>
+requires node_id<First>
+struct rpc_message_node_id<Message<First, Rest...>> {
+    using type = First;
+};
+template<typename T> using rpc_message_node_id_t = typename rpc_message_node_id<T>::type;
+
 }  // namespace kythira

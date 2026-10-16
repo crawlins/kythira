@@ -391,8 +391,14 @@ public:
     // validated result by default" behavior), public so it can be exercised
     // directly by tests without a full handshake — see validate_cn's
     // class-level comment above for why this trusts `validated` by default.
+    //
+    // libcoap calls this once per certificate in the peer's chain, the CA
+    // certificates included (`depth` > 0). Revocation is checked at every
+    // depth; cn_validator only sees the peer's own certificate (depth 0), as
+    // on the cantcoap and libnyoci backends, so a validator that matches the
+    // peer's name (coap_peer_identity.hpp) does not refuse the CA above it.
     static auto validate_cn(const char*, const uint8_t* asn1_public_cert, std::size_t asn1_length,
-                            coap_session_t*, unsigned, int validated, void* arg) -> int {
+                            coap_session_t*, unsigned depth, int validated, void* arg) -> int {
         auto* self = static_cast<dtls_pki_provider*>(arg);
         if (!self->_creds.cn_validator && !self->_creds.revocation.enabled) {
             return validated;
@@ -408,7 +414,7 @@ public:
             X509_free(cert);
             return 0;
         }
-        if (!self->_creds.cn_validator) {
+        if (!self->_creds.cn_validator || depth > 0) {
             X509_free(cert);
             return validated;
         }
