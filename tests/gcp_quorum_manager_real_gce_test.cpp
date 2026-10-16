@@ -23,6 +23,7 @@
 #include <raft/gcp_mig_quorum_manager.hpp>
 
 #include "gcp_real_gce_test_support.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <google/cloud/compute/instance_group_managers/v1/instance_group_managers_client.h>
 #include <google/cloud/compute/instances/v1/instances_client.h>
@@ -73,7 +74,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 /// Line-buffers stdout and emits an unbuffered progress trace.
@@ -92,7 +94,6 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 struct UnbufferedOutputFixture {
     UnbufferedOutputFixture() { std::setvbuf(stdout, nullptr, _IOLBF, 0); }
 };
-BOOST_GLOBAL_FIXTURE(UnbufferedOutputFixture);
 
 /// Unbuffered progress marker — survives a SIGKILL, unlike BOOST_TEST_MESSAGE.
 void trace(std::string_view what) {
@@ -139,9 +140,16 @@ struct PreflightSkipFixture {
     }
 };
 
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-BOOST_TEST_GLOBAL_FIXTURE(CostSummaryFixture);
-BOOST_TEST_GLOBAL_FIXTURE(GcpSignalHandlerFixture);
+// This suite uses both registration kinds, so it has one ordered composite
+// of each (see ordered_global_fixtures.hpp). Boost runs every
+// BOOST_GLOBAL_FIXTURE before any BOOST_TEST_GLOBAL_FIXTURE, so the preflight
+// skip still precedes everything in SuiteTestGlobalFixtures, registered
+// below GceLeakSweepFixture. Within each kind, separate registrations would
+// run in link-address order; the composites run in the order listed.
+using SuiteConfigurationFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, UnbufferedOutputFixture,
+                                              PreflightSkipFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteConfigurationFixtures);
 
 // Unique run id used to label every resource these tests create (Requirement
 // 23 AC 16). steady_clock isn't a wall clock, but combined with the PID it is
@@ -600,7 +608,15 @@ private:
 
 }  // namespace
 
-BOOST_TEST_GLOBAL_FIXTURE(GceLeakSweepFixture);
+// BOOST_TEST_GLOBAL_FIXTURE, as each of these was registered before: Boost
+// calls the composite's teardown(), which calls GceLeakSweepFixture::
+// teardown() exactly as Boost did when it was registered on its own. The
+// leak sweep is torn down first and CostSummaryFixture last, so the cost
+// summary prints after the sweep.
+using SuiteTestGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<CostSummaryFixture, GcpSignalHandlerFixture,
+                                              GceLeakSweepFixture>;
+BOOST_TEST_GLOBAL_FIXTURE(SuiteTestGlobalFixtures);
 
 // ── gcp_compute_quorum_manager real-GCE cases (Requirement 23 AC 18) ────────
 

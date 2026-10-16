@@ -30,6 +30,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "multi_raft_test_fabric.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <raft/console_logger.hpp>
 #include <raft/fault_injection.hpp>
@@ -69,7 +70,8 @@ struct folly_init_fixture {
     std::unique_ptr<folly::Init> _init;
 };
 }  // namespace
-BOOST_GLOBAL_FIXTURE(folly_init_fixture);
+#else
+using folly_init_fixture = kythira::testing::no_global_fixture;
 #endif
 
 namespace {
@@ -444,7 +446,13 @@ auto crash_and_recover_split(crash_host& h, const char* fault) -> bool {
 
 }  // namespace
 
-BOOST_GLOBAL_FIXTURE(fiu_fixture);
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+// folly::Init first, then fiu_init, as declared above.
+using suite_global_fixtures =
+    kythira::testing::ordered_global_fixtures<folly_init_fixture, fiu_fixture>;
+BOOST_GLOBAL_FIXTURE(suite_global_fixtures);
 
 BOOST_AUTO_TEST_SUITE(multi_raft_crash_consistency)
 

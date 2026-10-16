@@ -108,6 +108,7 @@
 #include "multi_raft_bench_row_runners.hpp"
 #include "multi_raft_benchmark_rows.hpp"
 #include "multi_raft_row_report.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
@@ -138,7 +139,8 @@ struct folly_init_fixture {
     std::unique_ptr<folly::Init> _init;
 };
 }  // namespace
-BOOST_GLOBAL_FIXTURE(folly_init_fixture);
+#else
+using folly_init_fixture = kythira::testing::no_global_fixture;
 #endif
 
 namespace {
@@ -265,7 +267,13 @@ struct machine_description_fixture {
 
 }  // namespace
 
-BOOST_GLOBAL_FIXTURE(machine_description_fixture);
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+// folly::Init runs before the machine description is reported.
+using suite_global_fixtures =
+    kythira::testing::ordered_global_fixtures<folly_init_fixture, machine_description_fixture>;
+BOOST_GLOBAL_FIXTURE(suite_global_fixtures);
 
 BOOST_AUTO_TEST_SUITE(multi_raft_http_benchmark)
 

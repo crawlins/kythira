@@ -167,6 +167,7 @@ BOOST_AUTO_TEST_SUITE_END()
 #ifdef KYTHIRA_HAS_GCP_SDK
 
 #include "gcp_fake_compute_clients.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <raft/elastic_capacity_controller.hpp>
 #include <raft/gcp_compute_quorum_manager.hpp>
@@ -193,15 +194,25 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 #ifdef FIU_ENABLE
 struct FiuInitFixture {
     FiuInitFixture() { fiu_init(0); }
 };
-BOOST_GLOBAL_FIXTURE(FiuInitFixture);
+#else
+using FiuInitFixture = kythira::testing::no_global_fixture;
 #endif
+
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+// folly::Init first, then fiu_init.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, FiuInitFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 auto valid_compute_config() -> kythira::gcp_compute_quorum_manager_config<std::string> {
     kythira::gcp_compute_quorum_manager_config<std::string> cfg;

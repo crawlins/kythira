@@ -40,6 +40,8 @@
 #include <thread>
 #include <vector>
 
+#include "ordered_global_fixtures.hpp"
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #include <memory>
@@ -58,7 +60,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 struct AwsSdkFixture {
@@ -70,7 +73,13 @@ struct AwsSdkFixture {
     ~AwsSdkFixture() { Aws::ShutdownAPI(opts); }
     Aws::SDKOptions opts;
 };
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
+
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, AwsSdkFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 struct static_credentials_chain : Aws::Auth::AWSCredentialsProviderChain {
     static_credentials_chain() {

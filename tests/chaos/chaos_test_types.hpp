@@ -111,7 +111,11 @@ inline void clear_all_faults() {
 
 // Global Folly + FIU initialisation fixture — use with BOOST_GLOBAL_FIXTURE.
 // BOOST_GLOBAL_FIXTURE cannot handle namespaced types directly; test files must
-// declare a file-scope alias before invoking the macro.
+// declare a file-scope alias before invoking the macro. A suite that needs any
+// other global fixture as well must not add a second BOOST_GLOBAL_FIXTURE line:
+// Boost runs those in link-address order, not declaration order. List them all
+// in one kythira::testing::ordered_global_fixtures<...> from
+// tests/ordered_global_fixtures.hpp and register that alias once instead.
 // The folly::Init member is only needed under the Folly backend, where
 // future_default<T> is folly::Future<T> and transitively touches Folly's
 // Timekeeper singleton (e.g. via error_handler.hpp's retry-delay timers);

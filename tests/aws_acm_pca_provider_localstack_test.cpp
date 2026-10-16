@@ -25,6 +25,7 @@
 #include <raft/aws_acm_pca_provider_impl.hpp>
 
 #include "aws_acm_pca_test_support.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <aws/acm-pca/ACMPCAClient.h>
 #include <aws/acm-pca/model/ListCertificateAuthoritiesRequest.h>
@@ -118,6 +119,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 auto client_config() -> Aws::Client::ClientConfiguration {
@@ -219,11 +222,14 @@ struct CaSetupFixture {
     CaSetupFixture() { cas(); }
 };
 
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(CaSetupFixture);
+// One registration, run in this order: separate BOOST_GLOBAL_FIXTURE lines
+// run in link-address order, not declaration order (see
+// ordered_global_fixtures.hpp). The LocalStack probe must exit 77 before
+// CaSetupFixture initializes the SDK and provisions CAs.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture,
+                                              CaSetupFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 auto make_config(const std::string& arn) -> aws_acm_pca_provider_config {
     aws_acm_pca_provider_config cfg;

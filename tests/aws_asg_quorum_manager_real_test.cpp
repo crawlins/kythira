@@ -85,6 +85,7 @@
 
 #include "aws_real_ec2_test_support.hpp"
 #include "aws_refreshing_credentials_provider.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -151,7 +152,7 @@ auto refreshing_credentials_provider(const std::string& region)
         Aws::String(region.data(), region.size()));
 }
 
-// Registered first so ctest reports "Not Run" (SKIP_RETURN_CODE 77) rather
+// Listed first in SuiteGlobalFixtures so ctest reports "Not Run" (SKIP_RETURN_CODE 77) rather
 // than "Failed" when no AWS environment is configured. See the identical
 // fixture in aws_quorum_manager_real_ec2_test.cpp for why this must be a
 // BOOST_GLOBAL_FIXTURE and not init_unit_test_suite.
@@ -173,6 +174,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 struct AwsSdkFixture {
@@ -186,13 +189,14 @@ struct AwsSdkFixture {
     }
 };
 
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
-BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
-BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
+// One registration, constructed in this order and destroyed in reverse.
+// Separate BOOST_GLOBAL_FIXTURE lines would run in link-address order
+// instead (see ordered_global_fixtures.hpp), which can put SDK work
+// ahead of PreflightSkipFixture or ahead of Aws::InitAPI.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture, AwsSdkFixture,
+                                              CostSummaryFixture, AwsSignalHandlerFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 // Polls `done` every `interval` until it returns true or `budget` elapses.
 // Returns whether the condition was met; on expiry it logs which condition

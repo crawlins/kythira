@@ -59,7 +59,11 @@ namespace kythira::test {
 /// `using kythira::test::folly_init_fixture;` and
 /// `BOOST_GLOBAL_FIXTURE(folly_init_fixture);` (the macro pastes its argument
 /// into an identifier, so it must be unqualified). The Folly backend needs
-/// its singletons.
+/// its singletons. If the suite has other global fixtures too, list them all
+/// in one `kythira::testing::ordered_global_fixtures<...>` alias
+/// (tests/ordered_global_fixtures.hpp) and register only that: separate
+/// `BOOST_GLOBAL_FIXTURE` lines run in link-address order, not in the order
+/// written.
 struct folly_init_fixture {
     folly_init_fixture() {
         int argc = 1;

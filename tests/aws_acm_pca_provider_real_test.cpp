@@ -34,6 +34,7 @@
 
 #include "aws_acm_pca_test_support.hpp"
 #include "aws_real_test_support.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <aws/core/Aws.h>
 
@@ -113,8 +114,8 @@ auto run_id() -> const std::string& {
     return id;
 }
 
-// Registered first so a run that is not enabled exits before the SDK
-// initializes (Requirement 6.1).
+// First in SuiteGlobalFixtures below, so a run that is not enabled exits
+// before the SDK initializes (Requirement 6.1).
 struct PreflightSkipFixture {
     PreflightSkipFixture() {
         if (env("KYTHIRA_ACM_PCA_REAL_TESTS") != "1" && supplied_arn().empty()) {
@@ -129,7 +130,6 @@ struct PreflightSkipFixture {
         }
     }
 };
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
@@ -140,12 +140,9 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
-
-// Global fixtures are torn down in reverse, so the cost summary prints after
-// the SDK shuts down, which is after the CAs are deleted and costed below.
-BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
 
 struct AwsSdkFixture {
     Aws::SDKOptions opts;
@@ -154,7 +151,6 @@ struct AwsSdkFixture {
     AwsSdkFixture(const AwsSdkFixture&) = delete;
     auto operator=(const AwsSdkFixture&) -> AwsSdkFixture& = delete;
 };
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
 auto make_config(const std::string& arn) -> aws_acm_pca_provider_config {
     aws_acm_pca_provider_config cfg;
@@ -305,7 +301,20 @@ struct CaLifetimeFixture {
     CaLifetimeFixture(const CaLifetimeFixture&) = delete;
     auto operator=(const CaLifetimeFixture&) -> CaLifetimeFixture& = delete;
 };
-BOOST_GLOBAL_FIXTURE(CaLifetimeFixture);
+
+// One registration, so the order below is the order they run in. Separate
+// BOOST_GLOBAL_FIXTURE lines run in link-address order instead, and on a GCC
+// build that put CaLifetimeFixture first: it segfaulted in
+// Aws::Client::ClientConfiguration() before Aws::InitAPI, and it would have
+// created billable CAs before PreflightSkipFixture could skip the run (see
+// ordered_global_fixtures.hpp).
+//
+// Teardown is the reverse, so the CAs are deleted and costed while the SDK is
+// still up, and the cost summary prints after the SDK shuts down.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture,
+                                              CostSummaryFixture, AwsSdkFixture, CaLifetimeFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 /// One leaf per CA per run, shared by every case that needs it: the bare CA
 /// needs its own certificate to fail to revoke (design, "Test cases").

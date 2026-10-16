@@ -39,6 +39,8 @@
 #include <raft/simulator_network.hpp>
 #include <raft/test_state_machine.hpp>
 
+#include "ordered_global_fixtures.hpp"
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #endif
@@ -79,7 +81,8 @@ struct folly_init_fixture {
     std::unique_ptr<folly::Init> _init;
 };
 }  // namespace
-BOOST_GLOBAL_FIXTURE(folly_init_fixture);
+#else
+using folly_init_fixture = kythira::testing::no_global_fixture;
 #endif
 
 #ifdef FIU_ENABLE
@@ -92,8 +95,16 @@ struct fiu_init_fixture {
     fiu_init_fixture() { ::fiu_init(0); }
 };
 }  // namespace
-BOOST_GLOBAL_FIXTURE(fiu_init_fixture);
+#else
+using fiu_init_fixture = kythira::testing::no_global_fixture;
 #endif
+
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+using suite_global_fixtures =
+    kythira::testing::ordered_global_fixtures<folly_init_fixture, fiu_init_fixture>;
+BOOST_GLOBAL_FIXTURE(suite_global_fixtures);
 
 namespace {
 

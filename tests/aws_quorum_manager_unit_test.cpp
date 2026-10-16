@@ -14,6 +14,8 @@
 
 #include <aws/core/Aws.h>
 
+#include "ordered_global_fixtures.hpp"
+
 #include <map>
 #include <string>
 #include <vector>
@@ -49,6 +51,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 struct AwsSdkFixture {
@@ -66,10 +70,12 @@ struct AwsSdkFixture {
 };
 
 // Global fixtures — SDK must outlive all test suites.
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, AwsSdkFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 // ── EC2 manager construction ───────────────────────────────────────────────────
 

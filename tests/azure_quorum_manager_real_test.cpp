@@ -37,6 +37,7 @@
 
 #include "azure_real_test_support.hpp"
 #include "azure_sdk_log_fixture.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <raft/azure_vm_quorum_manager.hpp>
 #include <raft/azure_vmss_quorum_manager.hpp>
@@ -1096,9 +1097,13 @@ void external_vmss_deallocate(const kythira::azure_client_config& azure,
 
 }  // namespace
 
-BOOST_GLOBAL_FIXTURE(AzureSdkLogFixture);
-BOOST_GLOBAL_FIXTURE(AzureSignalHandlerFixture);
-BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<AzureSdkLogFixture, AzureSignalHandlerFixture,
+                                              CostSummaryFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 BOOST_AUTO_TEST_SUITE(azure_vm_quorum_manager_real)
 

@@ -72,6 +72,7 @@
 #endif
 #include "aws_real_ec2_test_support.hpp"
 #include "aws_refreshing_credentials_provider.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -151,9 +152,11 @@ auto refreshing_credentials_provider(const std::string& region)
 // distinct, unrelated function with internal linkage that Boost's
 // precompiled main() never calls (no redefinition error, just silently
 // dead code; confirmed by disassembling the built binary, which only ever
-// contained the auto-generated `return 0;` stub). Global fixtures run in
-// registration order, so registering this one first still guarantees it
-// runs before FollyInitFixture/AwsSdkFixture below.
+// contained the auto-generated `return 0;` stub). Boost.Test runs separately
+// registered global fixtures in link-address order, not registration order,
+// so this one is listed first in the single ordered_global_fixtures
+// registration below, which is what guarantees it runs before
+// FollyInitFixture/AwsSdkFixture.
 struct PreflightSkipFixture {
     PreflightSkipFixture() {
         if (env("AWS_DEFAULT_REGION").empty() && env("AWS_REGION").empty()) {
@@ -172,6 +175,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 struct AwsSdkFixture {
@@ -184,12 +189,6 @@ struct AwsSdkFixture {
         Aws::ShutdownAPI(opts);
     }
 };
-
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
 auto make_tag(const std::string& k, const std::string& v) -> Aws::EC2::Model::Tag {
     Aws::EC2::Model::Tag t;
@@ -221,8 +220,6 @@ using kythira::testing::aws_real_ec2::g_cost_accumulator;
 using kythira::testing::aws_real_ec2::kEipHourly;
 using kythira::testing::aws_real_ec2::kNatGwHourly;
 using kythira::testing::aws_real_ec2::TestCostReport;
-
-BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
 
 // ── Spot instance type selection ──────────────────────────────────────────────
 
@@ -425,6 +422,19 @@ using kythira::testing::aws_real_ec2::AwsSignalHandlerFixture;
 using kythira::testing::aws_real_ec2::g_active_aws_fixture;
 using kythira::testing::aws_real_ec2::signal_cleanup_target;
 namespace support = kythira::testing::aws_real_ec2;
+
+// One registration, constructed in this order and destroyed in reverse.
+// Separate BOOST_GLOBAL_FIXTURE lines would run in link-address order
+// instead (see ordered_global_fixtures.hpp), which can put SDK work
+// ahead of PreflightSkipFixture or ahead of Aws::InitAPI.
+//
+// Placed here, after the last of these types is in scope; only this
+// registration is per-binary, the fixtures themselves live above and in
+// aws_real_ec2_test_support.hpp.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture, AwsSdkFixture,
+                                              CostSummaryFixture, AwsSignalHandlerFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 // ── RealEc2Fixture ────────────────────────────────────────────────────────────
 //
@@ -1577,9 +1587,8 @@ struct RealEc2Fixture : signal_cleanup_target {
 };
 
 // Signal handler installation (aws_signal_cleanup_handler,
-// install_aws_signal_handlers) now lives in aws_real_ec2_test_support.hpp —
-// only the global-fixture registration below is per-binary.
-BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
+// install_aws_signal_handlers) now lives in aws_real_ec2_test_support.hpp;
+// AwsSignalHandlerFixture is registered in SuiteGlobalFixtures above.
 
 // ── Test cases ────────────────────────────────────────────────────────────────
 //
