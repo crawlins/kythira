@@ -18,6 +18,7 @@
 /// outside of `apply()`, with only the resulting ciphertext ever crossing
 /// into a command.
 
+#include <raft/certificate_serial.hpp>
 #include <raft/composite_node_id.hpp>
 #include <raft/types.hpp>
 
@@ -59,7 +60,7 @@ enum class ca_command_type : std::uint8_t {
 };
 
 struct ca_ledger_entry {
-    std::uint64_t serial{0};
+    certificate_serial serial;
     std::string subject;
     std::vector<std::string> dns_names;
     std::vector<std::string> ip_addresses;
@@ -339,9 +340,48 @@ namespace ca_state_machine_detail {
     return v;
 }
 
+/// Encoding version of a ledger entry or `record_revocation` command whose
+/// serial does not fit 64 bits (`.kiro/specs/cloud-composite-node-ids/`
+/// Requirement 12.5): `"version": 2` with the serial as a lower-case hex
+/// string. Version 1 is the original form, a JSON number and no "version"
+/// field, and is still written for every serial that fits — which is every
+/// serial the in-house CA issues — so a numeric cluster's log and snapshots
+/// are byte-for-byte unchanged. A replica that predates version 2 reads
+/// "serial" as a number, and boost::json refuses to convert a string, so it
+/// rejects the entry rather than misreading it as some other serial; the same
+/// scheme `record_rpc_tls_ready` uses (`k_rpc_tls_ready_textual_version`).
+inline constexpr int k_wide_serial_version = 2;
+
+inline void put_serial(boost::json::object& obj, const certificate_serial& serial) {
+    if (auto narrow = serial.to_u64(); narrow.has_value()) {
+        obj["serial"] = *narrow;
+        return;
+    }
+    obj["version"] = k_wide_serial_version;
+    obj["serial"] = serial.to_hex();
+}
+
+/// Throws std::invalid_argument on an unknown version or a malformed hex
+/// serial.
+[[nodiscard]] inline auto get_serial(const boost::json::object& obj) -> certificate_serial {
+    const auto* version = obj.if_contains("version");
+    if (version == nullptr) {
+        return certificate_serial::from_u64(obj.at("serial").to_number<std::uint64_t>());
+    }
+    if (version->to_number<int>() != k_wide_serial_version) {
+        throw std::invalid_argument("ca_state_machine: unknown serial encoding version");
+    }
+    const auto& text = obj.at("serial").as_string();
+    auto serial = certificate_serial::from_hex(std::string_view(text.data(), text.size()));
+    if (!serial.has_value()) {
+        throw std::invalid_argument("ca_state_machine: malformed hex serial");
+    }
+    return *serial;
+}
+
 [[nodiscard]] inline auto ledger_entry_to_json(const ca_ledger_entry& e) -> boost::json::object {
     boost::json::object obj;
-    obj["serial"] = e.serial;
+    put_serial(obj, e.serial);
     obj["subject"] = e.subject;
     obj["dns_names"] = string_array(e.dns_names);
     obj["ip_addresses"] = string_array(e.ip_addresses);
@@ -361,7 +401,7 @@ namespace ca_state_machine_detail {
 
 [[nodiscard]] inline auto json_to_ledger_entry(const boost::json::object& obj) -> ca_ledger_entry {
     ca_ledger_entry e;
-    e.serial = obj.at("serial").to_number<std::uint64_t>();
+    e.serial = get_serial(obj);
     e.subject = std::string(obj.at("subject").as_string());
     e.dns_names = to_string_vector(obj.at("dns_names").as_array());
     e.ip_addresses = to_string_vector(obj.at("ip_addresses").as_array());
@@ -420,13 +460,14 @@ namespace ca_state_machine_detail {
     return ca_state_machine_detail::bytes_from_json(obj);
 }
 
-/// Encodes a `record_revocation` command.
+/// Encodes a `record_revocation` command. A serial wider than 64 bits is
+/// written as `ca_state_machine_detail::k_wide_serial_version`.
 [[nodiscard]] inline auto encode_record_revocation_command(
-    std::uint64_t serial, std::chrono::system_clock::time_point revoked_at)
+    const certificate_serial& serial, std::chrono::system_clock::time_point revoked_at)
     -> std::vector<std::byte> {
     boost::json::object obj;
     obj["type"] = static_cast<int>(ca_command_type::record_revocation);
-    obj["serial"] = serial;
+    ca_state_machine_detail::put_serial(obj, serial);
     obj["revoked_at"] = ca_state_machine_detail::epoch_seconds(revoked_at);
     return ca_state_machine_detail::bytes_from_json(obj);
 }
@@ -521,10 +562,10 @@ public:
                 return {};
             }
             case ca_command_type::record_revocation: {
-                auto serial = obj.at("serial").to_number<std::uint64_t>();
-                auto it =
-                    std::find_if(_ledger.begin(), _ledger.end(),
-                                 [serial](const ca_ledger_entry& e) { return e.serial == serial; });
+                auto serial = ca_state_machine_detail::get_serial(obj);
+                auto it = std::find_if(
+                    _ledger.begin(), _ledger.end(),
+                    [&serial](const ca_ledger_entry& e) { return e.serial == serial; });
                 if (it == _ledger.end()) {
                     return error_result("serial_not_found");
                 }
@@ -655,14 +696,13 @@ public:
                     return e.serial == current.serial;
                 });
                 if (it == ledger.end()) {
-                    reject("it drops issued serial " + std::to_string(current.serial));
+                    reject("it drops issued serial " + current.serial.to_hex());
                 }
                 if (it->certificate_pem != current.certificate_pem) {
-                    reject("it alters the certificate for serial " +
-                           std::to_string(current.serial));
+                    reject("it alters the certificate for serial " + current.serial.to_hex());
                 }
                 if (current.revoked_at.has_value() && !it->revoked_at.has_value()) {
-                    reject("it un-revokes serial " + std::to_string(current.serial));
+                    reject("it un-revokes serial " + current.serial.to_hex());
                 }
             }
             for (auto id : _rpc_tls_ready) {

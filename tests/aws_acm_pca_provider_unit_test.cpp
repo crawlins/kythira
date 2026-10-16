@@ -108,8 +108,9 @@ BOOST_AUTO_TEST_CASE(revoke_with_unknown_reason_rejects_with_invalid_argument) {
         "arn:aws:acm-pca:us-east-1:123456789012:certificate-authority/test";
     cfg.aws.region = "us-east-1";
     aws_acm_pca_provider provider{cfg};
-    BOOST_CHECK_THROW(std::move(provider.revoke("01", "NOT_A_REASON")).get(),
-                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        std::move(provider.revoke(certificate_serial::from_u64(1), "NOT_A_REASON")).get(),
+        std::invalid_argument);
 }
 
 // ACM Private CA returns PEMs without a trailing newline (measured against a
@@ -186,7 +187,7 @@ BOOST_AUTO_TEST_CASE(revoke_certificate_fault_returns_exceptional_future) {
     aws_acm_pca_provider provider{make_provider()};
 
     fiu_enable("raft/aws/acm_pca/revoke_certificate", 1, nullptr, 0);
-    auto fut = provider.revoke("01");
+    auto fut = provider.revoke(certificate_serial::from_u64(1));
     fiu_disable("raft/aws/acm_pca/revoke_certificate");
 
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);

@@ -6,6 +6,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/certificate_authority.hpp>
+#include <raft/certificate_provider.hpp>
+#include <raft/certificate_serial_x509.hpp>
+
+#include "wide_serial_test_support.hpp"
 
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
@@ -15,6 +19,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +29,10 @@
 #include <vector>
 
 using namespace raft::testing;
+
+// Optionals compared in BOOST_TEST have no operator<<.
+BOOST_TEST_DONT_PRINT_LOG_VALUE(std::optional<raft::testing::certificate_serial>)
+BOOST_TEST_DONT_PRINT_LOG_VALUE(std::optional<std::uint64_t>)
 
 namespace {
 
@@ -128,7 +137,7 @@ BOOST_AUTO_TEST_CASE(issue_throws_when_no_san_entries, *boost::unit_test::timeou
 BOOST_AUTO_TEST_CASE(revoke_unknown_serial_throws, *boost::unit_test::timeout(30)) {
     certificate_authority ca;
     pem_material fake;
-    fake.serial = 0xDEADBEEF;
+    fake.serial = certificate_serial::from_u64(0xDEADBEEF);
     BOOST_CHECK_THROW(ca.revoke(fake), std::invalid_argument);
 }
 
@@ -149,11 +158,15 @@ BOOST_AUTO_TEST_CASE(serials_are_random_and_match_certificate, *boost::unit_test
     bool any_consecutive = false;
     for (std::size_t i = 0; i < count; ++i) {
         auto material = ca.issue(opts);
-        BOOST_TEST(material.serial != 0U);
-        serials.insert(material.serial);
-        upper_halves.insert(material.serial >> 32U);
-        any_consecutive = any_consecutive || (i > 0 && material.serial == previous + 1);
-        previous = material.serial;
+        // In-house serials still fit 64 bits (cloud-composite-node-ids
+        // Requirement 12.5), however wide certificate_serial can be.
+        auto value = material.serial.to_u64();
+        BOOST_REQUIRE(value.has_value());
+        BOOST_TEST(*value != 0U);
+        serials.insert(*value);
+        upper_halves.insert(*value >> 32U);
+        any_consecutive = any_consecutive || (i > 0 && *value == previous + 1);
+        previous = *value;
 
         // The serial reported to callers (and used by revoke()) is the one in
         // the certificate, including values above INT64_MAX.
@@ -162,13 +175,51 @@ BOOST_AUTO_TEST_CASE(serials_are_random_and_match_certificate, *boost::unit_test
         std::uint64_t in_cert = 0;
         BOOST_REQUIRE_EQUAL(ASN1_INTEGER_get_uint64(&in_cert, X509_get0_serialNumber(cert.get())),
                             1);
-        BOOST_TEST(in_cert == material.serial);
+        BOOST_TEST(in_cert == *value);
+        BOOST_TEST(serial_from_certificate_pem(material.certificate_pem) == material.serial);
     }
     BOOST_TEST(serials.size() == count);
     // 32 random 32-bit halves collide with probability ~1e-7; one shared upper
     // half is what the counter scheme always produced.
     BOOST_TEST(upper_halves.size() > 1U);
     BOOST_TEST(!any_consecutive);
+}
+
+// cloud-composite-node-ids Requirement 12.5: a revocation replayed from a
+// replicated ledger can name a cloud CA's 20-octet serial. The CRL must list
+// it at full width — the old std::uint64_t path could not represent it at all
+// — so a relying party checking the certificate finds it revoked.
+BOOST_AUTO_TEST_CASE(crl_lists_a_twenty_octet_serial, *boost::unit_test::timeout(30)) {
+    certificate_authority ca;
+    leaf_certificate_options leaf;
+    leaf.subject.common_name = "wide";
+    leaf.dns_names = {"wide.example.com"};
+    auto csr = generate_key_and_csr(leaf);
+    csr_signing_options signing;
+    signing.dns_names = leaf.dns_names;
+    const auto wide = kythira::testing::twenty_octet_serial();
+    auto material = kythira::testing::sign_csr_with_serial(ca, csr.csr_pem, signing, wide);
+    BOOST_TEST(serial_from_certificate_pem(material.certificate_pem) == wide);
+
+    // Not issued by this instance, so revoke() refuses it; the external path
+    // records it, once.
+    BOOST_CHECK_THROW(ca.revoke(material), std::invalid_argument);
+    ca.mark_revoked_externally(wide, std::chrono::system_clock::now());
+    ca.mark_revoked_externally(wide, std::chrono::system_clock::now());
+
+    auto crl_pem = ca.crl_pem();
+    BIO* bio = BIO_new_mem_buf(crl_pem.data(), static_cast<int>(crl_pem.size()));
+    std::unique_ptr<X509_CRL, decltype(&X509_CRL_free)> crl(
+        PEM_read_bio_X509_CRL(bio, nullptr, nullptr, nullptr), &X509_CRL_free);
+    BIO_free(bio);
+    BOOST_REQUIRE(crl);
+    BOOST_TEST(sk_X509_REVOKED_num(X509_CRL_get_REVOKED(crl.get())) == 1);
+    auto cert = load_cert(material.certificate_pem);
+    BOOST_REQUIRE(cert);
+    X509_REVOKED* entry = nullptr;
+    BOOST_TEST(X509_CRL_get0_by_serial(crl.get(), &entry, X509_get0_serialNumber(cert.get())) == 1);
+    BOOST_REQUIRE(entry != nullptr);
+    BOOST_TEST(serial_from_asn1(X509_REVOKED_get0_serialNumber(entry)) == wide);
 }
 
 BOOST_AUTO_TEST_CASE(temp_cert_files_key_mode_and_cleanup, *boost::unit_test::timeout(30)) {

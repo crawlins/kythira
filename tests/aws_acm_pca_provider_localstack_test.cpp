@@ -274,14 +274,19 @@ BOOST_AUTO_TEST_CASE(revoke_issued_certificate_with_reason) {
     auto request = acm_pca::make_leaf_request("kythira-localstack-revoked");
     auto material = std::move(provider.sign_csr(request.csr.csr_pem, request.options)).get();
 
-    auto serial = acm_pca::hex_serial(material.certificate_pem);
-    BOOST_CHECK_NO_THROW(std::move(provider.revoke(serial, "KEY_COMPROMISE")).get());
+    // sign_csr reads the serial out of the issued certificate, which is
+    // the only place ACM Private CA gives it.
+    auto serial = certificate_serial::parse(acm_pca::hex_serial(material.certificate_pem));
+    BOOST_REQUIRE(serial.has_value());
+    BOOST_TEST(material.serial == *serial);
+    BOOST_CHECK_NO_THROW(std::move(provider.revoke(material.serial, "KEY_COMPROMISE")).get());
 }
 
 BOOST_AUTO_TEST_CASE(revoke_with_unknown_reason_is_rejected_before_aws) {
     aws_acm_pca_provider provider{make_config(cas().ocsp_ca_arn)};
-    BOOST_CHECK_THROW(std::move(provider.revoke("01", "NOT_A_REASON")).get(),
-                      std::invalid_argument);
+    BOOST_CHECK_THROW(
+        std::move(provider.revoke(certificate_serial::from_u64(1), "NOT_A_REASON")).get(),
+        std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

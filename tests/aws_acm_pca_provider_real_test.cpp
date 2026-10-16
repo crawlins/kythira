@@ -374,8 +374,11 @@ BOOST_AUTO_TEST_CASE(revocation_configured_distinguishes_cas) {
 // OCSP (or a CRL) configured...
 BOOST_AUTO_TEST_CASE(revoke_on_revocable_ca_succeeds) {
     aws_acm_pca_provider provider{make_config(cas().revocable_arn)};
-    auto serial = acm_pca::hex_serial(revocable_leaf().certificate_pem);
-    BOOST_CHECK_NO_THROW(std::move(provider.revoke(serial, "KEY_COMPROMISE")).get());
+    auto serial = certificate_serial::parse(acm_pca::hex_serial(revocable_leaf().certificate_pem));
+    BOOST_REQUIRE(serial.has_value());
+    // sign_csr filled the serial from the certificate ACM returned.
+    BOOST_TEST(revocable_leaf().serial == *serial);
+    BOOST_CHECK_NO_THROW(std::move(provider.revoke(*serial, "KEY_COMPROMISE")).get());
 }
 
 // ...and AWS accepts it even when the CA has neither. The first real run
@@ -387,8 +390,9 @@ BOOST_AUTO_TEST_CASE(revoke_on_revocable_ca_succeeds) {
 // that gate exists for.
 BOOST_AUTO_TEST_CASE(revoke_on_bare_ca_is_accepted_by_aws) {
     aws_acm_pca_provider provider{make_config(cas().bare_arn)};
-    auto serial = acm_pca::hex_serial(bare_leaf().certificate_pem);
-    BOOST_CHECK_NO_THROW(std::move(provider.revoke(serial, "KEY_COMPROMISE")).get());
+    auto serial = certificate_serial::parse(acm_pca::hex_serial(bare_leaf().certificate_pem));
+    BOOST_REQUIRE(serial.has_value());
+    BOOST_CHECK_NO_THROW(std::move(provider.revoke(*serial, "KEY_COMPROMISE")).get());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

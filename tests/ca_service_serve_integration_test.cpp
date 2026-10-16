@@ -7,6 +7,7 @@
 
 #include <raft/certificate_authority.hpp>
 #include <raft/certificate_provider.hpp>
+#include <raft/certificate_serial_x509.hpp>
 
 #include <httplib.h>
 #include <boost/json.hpp>
@@ -319,6 +320,56 @@ BOOST_AUTO_TEST_CASE(revoke_and_crl_round_trip, *boost::unit_test::timeout(30)) 
     BOOST_REQUIRE(crl_before);
     BOOST_TEST(crl_before->status == 200);
     BOOST_TEST(crl_before->body.find("BEGIN X509 CRL") != std::string::npos);
+
+    // .kiro/specs/cloud-composite-node-ids/ Requirement 12.5: the response
+    // names the serial as "serial_hex", the revoke field of that encoding.
+    auto serial = serial_from_certificate_pem(cert_pem);
+    BOOST_REQUIRE(serial.has_value());
+    BOOST_TEST(!parsed.contains("serial"));
+    BOOST_REQUIRE(parsed.contains("serial_hex"));
+    BOOST_TEST(parsed["serial_hex"].as_string() == serial->to_hex());
+    const auto decimal = std::to_string(serial->to_u64().value());
+
+    auto revoke = [&](boost::json::object revoke_body) {
+        auto res = svc.client().Post("/v1/certificates/revoke", svc.auth_headers(),
+                                     boost::json::serialize(revoke_body), "application/json");
+        BOOST_REQUIRE(res);
+        return res->status;
+    };
+    // "serial" as a decimal string, exactly as before.
+    BOOST_TEST(revoke({{"serial", decimal}}) == 200);
+
+    auto crl_after = svc.client().Get("/v1/crl", svc.auth_headers());
+    BOOST_REQUIRE(crl_after);
+    BOOST_REQUIRE(crl_after->status == 200);
+    BIO* crl_bio =
+        BIO_new_mem_buf(crl_after->body.data(), static_cast<int>(crl_after->body.size()));
+    std::unique_ptr<X509_CRL, decltype(&X509_CRL_free)> crl(
+        PEM_read_bio_X509_CRL(crl_bio, nullptr, nullptr, nullptr), &X509_CRL_free);
+    BIO_free(crl_bio);
+    BOOST_REQUIRE(crl);
+    auto revoked_serial = serial_to_asn1(*serial);
+    X509_REVOKED* entry = nullptr;
+    BOOST_TEST(X509_CRL_get0_by_serial(crl.get(), &entry, revoked_serial.get()) == 1);
+
+    // Re-revoking is idempotent, by a JSON number as before, or by
+    // serial_hex in any of its forms.
+    BOOST_TEST(revoke({{"serial", serial->to_u64().value()}}) == 200);
+    BOOST_TEST(revoke({{"serial_hex", serial->to_hex()}}) == 200);
+    BOOST_TEST(revoke({{"serial_hex", serial->to_hex(':')}}) == 200);
+
+    // Hex in "serial" is refused, never read as some other serial.
+    BOOST_TEST(revoke({{"serial", "0a1b"}}) == 400);
+    BOOST_TEST(revoke({{"serial", serial->to_hex()}}) == 400);
+    BOOST_TEST(revoke({{"serial", -1}}) == 400);
+    // Both fields, or neither, is a 400.
+    BOOST_TEST(revoke({{"serial", decimal}, {"serial_hex", serial->to_hex()}}) == 400);
+    BOOST_TEST(revoke({}) == 400);
+    // Malformed or over-long serial_hex is a 400, as is a serial this CA
+    // never issued.
+    BOOST_TEST(revoke({{"serial_hex", "zz"}}) == 400);
+    BOOST_TEST(revoke({{"serial_hex", std::string(42, 'a')}}) == 400);
+    BOOST_TEST(revoke({{"serial_hex", std::string(40, 'a')}}) == 400);
 }
 
 // Requirement 15.3/15.4: POST /v1/certificates/renew, authenticated by the
@@ -350,7 +401,7 @@ BOOST_AUTO_TEST_CASE(renew_via_mtls_preserves_identity, *boost::unit_test::timeo
     auto issued = boost::json::parse(issue_res->body).as_object();
     std::string original_cert_pem = std::string(issued["certificate_pem"].as_string());
 
-    temp_cert_files original_files(pem_material{original_cert_pem, csr.private_key_pem, "", 0});
+    temp_cert_files original_files(pem_material{original_cert_pem, csr.private_key_pem, "", {}});
 
     // Renew: present the just-issued cert over mTLS, submit a fresh CSR.
     auto renew_csr = generate_key_and_csr(opts);

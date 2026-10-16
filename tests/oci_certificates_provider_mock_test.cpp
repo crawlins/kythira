@@ -30,6 +30,7 @@
 #include "ordered_global_fixtures.hpp"
 #include "recording_metrics.hpp"
 #include "test_timeout_scale.hpp"
+#include "wide_serial_test_support.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -50,9 +51,11 @@
 
 namespace {
 
+using raft::testing::certificate_serial;
 using raft::testing::csr_signing_options;
 using raft::testing::oci_certificates_provider;
 using raft::testing::oci_certificates_provider_config;
+using raft::testing::serial_from_certificate_pem;
 using chain_mode = kythira::testing::oci_mock_server::chain_mode;
 
 constexpr std::uint16_t test_port = 18323;
@@ -242,11 +245,16 @@ BOOST_AUTO_TEST_CASE(sign_csr_forwards_the_callers_csr_and_returns_no_private_ke
     // The case that failed before .kiro/specs/oci-ca-chain-leaf/: OCI returns
     // the issuer chain alone, and chain_pem must still start with the leaf.
     check_leaf_first(material, fixture.server.root_pem(), 2U);
-    BOOST_CHECK_EQUAL(material.serial, 100001U);
+    // Read from the issued leaf, and equal to what OCI reports for it.
+    BOOST_CHECK(!material.serial.is_zero());
+    BOOST_CHECK(serial_from_certificate_pem(material.certificate_pem) == material.serial);
 
     const auto certificates = fixture.server.certificates();
     BOOST_REQUIRE_EQUAL(certificates.size(), 1U);
     BOOST_CHECK_EQUAL(certificates.front().csr_pem, fake_csr_pem);
+    BOOST_REQUIRE_EQUAL(certificates.front().versions.size(), 1U);
+    BOOST_CHECK(certificate_serial::parse(certificates.front().versions.front().serial_number) ==
+                material.serial);
     BOOST_CHECK_EQUAL(certificates.front().issuer_certificate_authority_id,
                       fixture.server.certificate_authority_id());
     // The resource name is derived from the requested identity so an operator
@@ -336,7 +344,7 @@ BOOST_AUTO_TEST_CASE(oci_certificates_revoke_idempotent,
     oci_certificates_provider provider{fixture.config()};
 
     const auto material = std::move(provider.sign_csr(fake_csr_pem, csr_signing_options{})).get();
-    const auto serial = std::to_string(material.serial);
+    const auto serial = material.serial;
 
     BOOST_CHECK_NO_THROW(std::move(provider.revoke(serial)).get());
     BOOST_CHECK_EQUAL(
@@ -358,9 +366,50 @@ BOOST_AUTO_TEST_CASE(oci_certificates_revoke_idempotent,
         fixture.server.hits("POST /20210224/certificates/{id}/versions/{n}/actions/revoke"), 1U);
 
     // A serial the CA never issued resolves successfully and touches nothing.
-    BOOST_CHECK_NO_THROW(std::move(reopened.revoke("999999")).get());
+    BOOST_CHECK_NO_THROW(std::move(reopened.revoke(certificate_serial::from_u64(999999))).get());
     BOOST_CHECK_EQUAL(
         fixture.server.hits("POST /20210224/certificates/{id}/versions/{n}/actions/revoke"), 1U);
+}
+
+/// .kiro/specs/cloud-composite-node-ids/ Requirement 12.5: OCI issues serials
+/// of up to 20 octets. Before `certificate_serial` such a serial came back as
+/// 0 from `sign_csr` and could only be revoked by its string spelling. Now the
+/// full value comes back, and revoking by it — including from a fresh
+/// provider holding only the hex — finds the version by value although OCI
+/// spells it as upper-case space-separated octets.
+BOOST_AUTO_TEST_CASE(sign_csr_and_revoke_carry_a_twenty_octet_serial,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    const auto wide = kythira::testing::twenty_octet_serial();
+    fixture.server.set_certificate_signer(
+        [&fixture, wide](const std::string& csr_pem) {
+            csr_signing_options signing;
+            signing.dns_names = {"mock-csr.example"};
+            auto material =
+                kythira::testing::sign_csr_with_serial(fixture.ca, csr_pem, signing, wide);
+            return std::pair{material.certificate_pem, fixture.ca.root_certificate_pem()};
+        },
+        fixture.ca.root_certificate_pem());
+    oci_certificates_provider provider{fixture.config()};
+
+    const auto material = std::move(provider.sign_csr(fake_csr_pem, csr_signing_options{})).get();
+    BOOST_TEST(material.serial == wide);
+    BOOST_TEST(material.serial.size() == 20U);
+    BOOST_TEST(!material.serial.to_u64().has_value());
+    {
+        const auto certificates = fixture.server.certificates();
+        BOOST_REQUIRE_EQUAL(certificates.size(), 1U);
+        BOOST_TEST(certificates.front().versions.front().serial_number ==
+                   "80 81 82 83 84 85 86 87 88 89 8A 8B 8C 8D 8E 8F 90 91 92 14");
+    }
+
+    oci_certificates_provider reopened{fixture.config()};
+    const auto from_hex = certificate_serial::from_hex(material.serial.to_hex());
+    BOOST_REQUIRE(from_hex.has_value());
+    BOOST_CHECK_NO_THROW(std::move(reopened.revoke(*from_hex)).get());
+    BOOST_CHECK_EQUAL(
+        fixture.server.hits("POST /20210224/certificates/{id}/versions/{n}/actions/revoke"), 1U);
+    BOOST_CHECK(fixture.server.certificates().front().versions.front().revoked);
 }
 
 /// .kiro/specs/oci-ca-chain-leaf/ Requirement 1.2: an issuer chain that
@@ -488,7 +537,7 @@ BOOST_AUTO_TEST_CASE(the_revoke_fault_rejects_the_future,
     oci_certificates_provider provider{fixture.config()};
 
     fiu_enable("raft/oci/certificates/revoke", 1, nullptr, 0);
-    auto fut = provider.revoke("100001");
+    auto fut = provider.revoke(certificate_serial::from_u64(100001));
     fiu_disable("raft/oci/certificates/revoke");
 
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);

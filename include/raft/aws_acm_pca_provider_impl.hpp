@@ -13,6 +13,7 @@
 
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
 
+#include <raft/certificate_serial_x509.hpp>
 #include <raft/csr_policy.hpp>
 
 #include <aws/acm-pca/model/DescribeCertificateAuthorityRequest.h>
@@ -197,8 +198,12 @@ inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_opti
                 out.chain_pem =
                     out.certificate_pem +
                     detail::pem_with_newline(get_outcome.GetResult().GetCertificateChain());
-                // serial is left 0 — ACM Private CA identifies certificates by ARN,
-                // not the local monotonic-counter scheme certificate_authority uses.
+                // GetCertificate returns no serial, so read it from the
+                // certificate (up to 20 octets). Left zero only if the PEM
+                // is unreadable, which the caller will notice anyway.
+                if (auto serial = serial_from_certificate_pem(out.certificate_pem)) {
+                    out.serial = *serial;
+                }
                 return kythira::future_factory_default::makeReadyFuture(std::move(out));
             }
 
@@ -250,7 +255,7 @@ inline auto aws_acm_pca_provider::revocation_configured() -> kythira::future_def
     }
 }
 
-inline auto aws_acm_pca_provider::revoke(const std::string& certificate_serial,
+inline auto aws_acm_pca_provider::revoke(const certificate_serial& serial,
                                          const std::string& reason)
     -> kythira::future_default<void> {
     try {
@@ -264,7 +269,7 @@ inline auto aws_acm_pca_provider::revoke(const std::string& certificate_serial,
 
         Aws::ACMPCA::Model::RevokeCertificateRequest req;
         req.SetCertificateAuthorityArn(_config.certificate_authority_arn);
-        req.SetCertificateSerial(certificate_serial);
+        req.SetCertificateSerial(serial.to_hex(':'));
         req.SetRevocationReason(revocation_reason);
 
         auto outcome = _client.RevokeCertificate(req);

@@ -10,6 +10,7 @@
 ///        included directly by consumers, not compiled into a separate .cpp).
 
 #include <raft/acme_certificate_provider.hpp>
+#include <raft/certificate_serial_x509.hpp>
 #include <raft/future_default.hpp>
 #include <raft/http_origin_policy.hpp>
 #include <raft/httplib_listeners.hpp>
@@ -714,6 +715,10 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
         pem_material result;
         result.certificate_pem = blocks.front();
         result.chain_pem = cert_res->body;
+        // The ACME server returns no serial of its own; read the leaf's.
+        if (auto serial = serial_from_certificate_pem(result.certificate_pem)) {
+            result.serial = *serial;
+        }
 
         return kythira::future_factory_default::makeReadyFuture(std::move(result));
     } catch (const std::exception&) {

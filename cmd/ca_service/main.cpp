@@ -42,8 +42,13 @@
 //   GET  /v1/root-ca                  -> 200, body = root/CA certificate PEM
 //   POST /v1/certificates             -> JSON {csr_pem, dns_names, ip_addresses,
 //                                              server_auth, client_auth, validity_days}
-//                                        -> 200 JSON {certificate_pem, chain_pem}
-//   POST /v1/certificates/revoke      -> JSON {serial} (local provider only; 501 otherwise)
+//                                        -> 200 JSON {certificate_pem, chain_pem, serial_hex}
+//   POST /v1/certificates/revoke      -> JSON {serial} or {serial_hex}, exactly one (local
+//                                        provider, or aws-acm-pca when its CA publishes
+//                                        revocations; 501 otherwise). serial: as before, a
+//                                        decimal number or digit string (local) or a hex
+//                                        string (aws-acm-pca). serial_hex: hex of up to 20
+//                                        octets, plain or ':'/' '-separated
 //   GET  /v1/crl                      -> local provider only; 501 otherwise
 
 #include <raft/ca_http_helpers.hpp>
@@ -835,14 +840,11 @@ int run_serve(const serve_options& opts) {
                 // an OCSP configuration; otherwise revoke through ACM Private CA.
                 try {
                     auto body = boost::json::parse(req.body).as_object();
-                    auto* serial_val = body.if_contains("serial");
-                    if (serial_val == nullptr || !serial_val->is_string() ||
-                        serial_val->as_string().empty()) {
-                        res.status = 400;
-                        res.set_content(R"({"error":"serial is required as a hex string"})",
-                                        "application/json");
-                        return;
-                    }
+                    // "serial" is hex here, as it always was on this path;
+                    // "serial_hex" is accepted too. Validated before AWS is
+                    // called, so a malformed serial is a 400 (invalid_argument).
+                    auto serial = raft::testing::parse_revoke_serial(
+                        body, raft::testing::legacy_revoke_serial::hex);
                     std::string reason;
                     if (auto* reason_val = body.if_contains("reason")) {
                         if (!reason_val->is_string()) {
@@ -860,8 +862,7 @@ int run_serve(const serve_options& opts) {
                             "application/json");
                         return;
                     }
-                    std::move(acm_provider->revoke(std::string(serial_val->as_string()), reason))
-                        .get();
+                    std::move(acm_provider->revoke(serial, reason)).get();
                     res.status = 200;
                     res.set_content(R"({"revoked":true})", "application/json");
                 } catch (const std::invalid_argument& ex) {
@@ -885,20 +886,10 @@ int run_serve(const serve_options& opts) {
             }
             try {
                 auto body = boost::json::parse(req.body).as_object();
-                auto* serial_val = body.if_contains("serial");
-                if (serial_val == nullptr) {
-                    res.status = 400;
-                    res.set_content(R"({"error":"serial is required"})", "application/json");
-                    return;
-                }
-                std::uint64_t serial = 0;
-                if (serial_val->is_string()) {
-                    serial = std::stoull(std::string(serial_val->as_string()));
-                } else {
-                    serial = serial_val->to_number<std::uint64_t>();
-                }
+                // "serial" (decimal, as before) or "serial_hex"; a missing,
+                // duplicated or malformed serial is invalid_argument, a 400.
                 raft::testing::pem_material fake;
-                fake.serial = serial;
+                fake.serial = raft::testing::parse_revoke_serial(body);
                 local_ca->revoke(fake);
                 res.status = 200;
                 res.set_content(R"({"revoked":true})", "application/json");

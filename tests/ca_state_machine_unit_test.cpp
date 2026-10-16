@@ -18,7 +18,12 @@ using namespace raft::testing;
 
 namespace {
 
-auto make_ledger_entry(std::uint64_t serial, const std::string& subject) -> ca_ledger_entry {
+auto sn(std::uint64_t value) -> certificate_serial {
+    return certificate_serial::from_u64(value);
+}
+
+auto make_ledger_entry(const certificate_serial& serial, const std::string& subject)
+    -> ca_ledger_entry {
     ca_ledger_entry e;
     e.serial = serial;
     e.subject = subject;
@@ -97,13 +102,13 @@ BOOST_AUTO_TEST_CASE(duplicate_bootstrap_ca_rejected_deterministically) {
 
 BOOST_AUTO_TEST_CASE(record_issuance_appends_to_ledger) {
     ca_state_machine sm;
-    auto entry = make_ledger_entry(42, "client-a");
+    auto entry = make_ledger_entry(sn(42), "client-a");
     auto cmd = encode_record_issuance_command(entry);
     auto result = sm.apply(cmd, 1);
 
     BOOST_TEST(result.empty());
     BOOST_REQUIRE(sm.ledger().size() == 1);
-    BOOST_TEST(sm.ledger()[0].serial == 42);
+    BOOST_TEST(sm.ledger()[0].serial == sn(42));
     BOOST_TEST(sm.ledger()[0].subject == "client-a");
     BOOST_TEST(sm.ledger()[0].certificate_pem == entry.certificate_pem);
     BOOST_TEST(!sm.ledger()[0].revoked_at.has_value());
@@ -122,16 +127,17 @@ BOOST_AUTO_TEST_CASE(record_issuance_appends_to_ledger) {
 BOOST_AUTO_TEST_CASE(record_issuance_survives_serial_exceeding_int64_max) {
     ca_state_machine sm;
     std::uint64_t large_serial = std::numeric_limits<std::uint64_t>::max();
-    auto entry = make_ledger_entry(large_serial, "client-large-serial");
+    auto entry = make_ledger_entry(sn(large_serial), "client-large-serial");
     auto result = sm.apply(encode_record_issuance_command(entry), 1);
 
     BOOST_TEST(result.empty());
     BOOST_REQUIRE(sm.ledger().size() == 1);
-    BOOST_TEST(sm.ledger()[0].serial == large_serial);
+    BOOST_TEST(sm.ledger()[0].serial == sn(large_serial));
 
     // Also exercise revocation of that same over-int64_t-range serial.
     auto revoked_at = std::chrono::system_clock::now();
-    auto revoke_result = sm.apply(encode_record_revocation_command(large_serial, revoked_at), 2);
+    auto revoke_result =
+        sm.apply(encode_record_revocation_command(sn(large_serial), revoked_at), 2);
     BOOST_TEST(revoke_result.empty());
     BOOST_REQUIRE(sm.ledger()[0].revoked_at.has_value());
 
@@ -141,15 +147,15 @@ BOOST_AUTO_TEST_CASE(record_issuance_survives_serial_exceeding_int64_max) {
     ca_state_machine restored;
     restored.restore_from_snapshot(snapshot, 2);
     BOOST_REQUIRE(restored.ledger().size() == 1);
-    BOOST_TEST(restored.ledger()[0].serial == large_serial);
+    BOOST_TEST(restored.ledger()[0].serial == sn(large_serial));
 }
 
 BOOST_AUTO_TEST_CASE(record_revocation_marks_matching_serial) {
     ca_state_machine sm;
-    sm.apply(encode_record_issuance_command(make_ledger_entry(7, "client-b")), 1);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(sn(7), "client-b")), 1);
 
     auto revoked_at = std::chrono::system_clock::now();
-    auto result = sm.apply(encode_record_revocation_command(7, revoked_at), 2);
+    auto result = sm.apply(encode_record_revocation_command(sn(7), revoked_at), 2);
 
     BOOST_TEST(result.empty());
     BOOST_REQUIRE(sm.ledger().size() == 1);
@@ -163,10 +169,10 @@ BOOST_AUTO_TEST_CASE(record_revocation_marks_matching_serial) {
 
 BOOST_AUTO_TEST_CASE(record_revocation_unknown_serial_rejected_deterministically) {
     ca_state_machine sm;
-    sm.apply(encode_record_issuance_command(make_ledger_entry(1, "client-c")), 1);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(sn(1), "client-c")), 1);
 
     auto result =
-        sm.apply(encode_record_revocation_command(999, std::chrono::system_clock::now()), 2);
+        sm.apply(encode_record_revocation_command(sn(999), std::chrono::system_clock::now()), 2);
 
     BOOST_TEST(!result.empty());
     std::string result_str(reinterpret_cast<const char*>(result.data()), result.size());
@@ -193,7 +199,7 @@ BOOST_AUTO_TEST_CASE(record_rpc_tls_ready_tracks_node_ids) {
 BOOST_AUTO_TEST_CASE(noop_command_leaves_state_unchanged) {
     ca_state_machine sm;
     sm.apply(encode_bootstrap_ca_command("root", encrypt_ca_private_key("key", "pass")), 1);
-    sm.apply(encode_record_issuance_command(make_ledger_entry(1, "alice")), 2);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(sn(1), "alice")), 2);
     auto state_before = sm.get_state();
 
     auto result = sm.apply(encode_noop_command(), 3);
@@ -212,13 +218,13 @@ BOOST_AUTO_TEST_CASE(property_apply_is_deterministic_across_replicas) {
     auto encrypted_key = encrypt_ca_private_key("shared-key-pem", "shared-passphrase");
     std::vector<std::vector<std::byte>> commands = {
         encode_bootstrap_ca_command("shared-root-pem", encrypted_key),
-        encode_record_issuance_command(make_ledger_entry(1, "alice")),
-        encode_record_issuance_command(make_ledger_entry(2, "bob")),
-        encode_record_revocation_command(1, std::chrono::system_clock::now()),
+        encode_record_issuance_command(make_ledger_entry(sn(1), "alice")),
+        encode_record_issuance_command(make_ledger_entry(sn(2), "bob")),
+        encode_record_revocation_command(sn(1), std::chrono::system_clock::now()),
         // A duplicate bootstrap and an unknown-serial revocation exercise the
         // deterministic-rejection paths identically on both replicas too.
         encode_bootstrap_ca_command("attempted-second-root", encrypt_ca_private_key("x", "y")),
-        encode_record_revocation_command(999, std::chrono::system_clock::now()),
+        encode_record_revocation_command(sn(999), std::chrono::system_clock::now()),
     };
 
     std::uint64_t index = 1;
@@ -238,9 +244,9 @@ BOOST_AUTO_TEST_CASE(snapshot_round_trip_preserves_state) {
     ca_state_machine original;
     auto encrypted_key = encrypt_ca_private_key("round-trip-key", "passphrase");
     original.apply(encode_bootstrap_ca_command("round-trip-root", encrypted_key), 1);
-    original.apply(encode_record_issuance_command(make_ledger_entry(1, "alice")), 2);
-    original.apply(encode_record_issuance_command(make_ledger_entry(2, "bob")), 3);
-    original.apply(encode_record_revocation_command(2, std::chrono::system_clock::now()), 4);
+    original.apply(encode_record_issuance_command(make_ledger_entry(sn(1), "alice")), 2);
+    original.apply(encode_record_issuance_command(make_ledger_entry(sn(2), "bob")), 3);
+    original.apply(encode_record_revocation_command(sn(2), std::chrono::system_clock::now()), 4);
 
     auto snapshot = original.get_state();
 
@@ -251,9 +257,9 @@ BOOST_AUTO_TEST_CASE(snapshot_round_trip_preserves_state) {
     BOOST_TEST(restored.root_certificate_pem() == "round-trip-root");
     BOOST_TEST(restored.encrypted_bootstrap_material() == encrypted_key);
     BOOST_REQUIRE(restored.ledger().size() == 2);
-    BOOST_TEST(restored.ledger()[0].serial == 1);
+    BOOST_TEST(restored.ledger()[0].serial == sn(1));
     BOOST_TEST(!restored.ledger()[0].revoked_at.has_value());
-    BOOST_TEST(restored.ledger()[1].serial == 2);
+    BOOST_TEST(restored.ledger()[1].serial == sn(2));
     BOOST_TEST(restored.ledger()[1].revoked_at.has_value());
     BOOST_TEST(restored.last_applied_index() == 4);
 
@@ -270,7 +276,7 @@ BOOST_AUTO_TEST_CASE(snapshot_round_trip_preserves_state) {
 
 BOOST_AUTO_TEST_CASE(empty_snapshot_resets_unbootstrapped_state) {
     ca_state_machine sm;
-    sm.apply(encode_record_issuance_command(make_ledger_entry(3, "pre-bootstrap")), 1);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(sn(3), "pre-bootstrap")), 1);
     BOOST_REQUIRE(!sm.has_root_material());
 
     sm.restore_from_snapshot({}, 0);
@@ -291,8 +297,8 @@ namespace {
 auto bootstrapped_with_revoked_serial() -> ca_state_machine {
     ca_state_machine sm;
     sm.apply(encode_bootstrap_ca_command("root-A", encrypt_ca_private_key("key-A", "pass")), 1);
-    sm.apply(encode_record_issuance_command(make_ledger_entry(10, "client-a")), 2);
-    sm.apply(encode_record_revocation_command(10, std::chrono::system_clock::now()), 3);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(sn(10), "client-a")), 2);
+    sm.apply(encode_record_revocation_command(sn(10), std::chrono::system_clock::now()), 3);
     sm.apply(encode_record_rpc_tls_ready_command(1), 4);
     return sm;
 }
@@ -364,7 +370,7 @@ BOOST_AUTO_TEST_CASE(bootstrapped_rejects_dropped_rpc_tls_ready) {
 BOOST_AUTO_TEST_CASE(bootstrapped_accepts_legitimate_successor) {
     auto sm = bootstrapped_with_revoked_serial();
     auto leader = sm;  // same root/key: the leader is ahead by two entries
-    leader.apply(encode_record_issuance_command(make_ledger_entry(11, "client-b")), 5);
+    leader.apply(encode_record_issuance_command(make_ledger_entry(sn(11), "client-b")), 5);
     leader.apply(encode_record_rpc_tls_ready_command(2), 6);
 
     sm.restore_from_snapshot(leader.get_state(), 6);
@@ -375,7 +381,7 @@ BOOST_AUTO_TEST_CASE(bootstrapped_accepts_legitimate_successor) {
 
 BOOST_AUTO_TEST_CASE(malformed_snapshot_leaves_state_untouched) {
     ca_state_machine sm;
-    sm.apply(encode_record_issuance_command(make_ledger_entry(5, "kept")), 1);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(sn(5), "kept")), 1);
     std::string bad = R"({"bootstrapped":true,"encrypted_ca_key_pem":"k","root_cert_pem":"r"})";
     std::vector<std::byte> bytes(bad.size());
     std::memcpy(bytes.data(), bad.data(), bad.size());
@@ -456,7 +462,7 @@ BOOST_AUTO_TEST_CASE(numeric_state_encodes_as_before) {
 
 BOOST_AUTO_TEST_CASE(textual_state_survives_a_snapshot) {
     auto sm = bootstrapped_with_revoked_serial();
-    auto entry = make_ledger_entry(11, "peer-a");
+    auto entry = make_ledger_entry(sn(11), "peer-a");
     entry.dns_names.clear();
     entry.uri_names = {"urn:kythira:node:docker:c1:a"};
     sm.apply(encode_record_issuance_command(entry), 5);
@@ -472,4 +478,156 @@ BOOST_AUTO_TEST_CASE(textual_state_survives_a_snapshot) {
     auto snap = forged_snapshot(sm, [](auto& o) { o.erase("rpc_tls_ready_textual"); });
     BOOST_CHECK_THROW(sm.restore_from_snapshot(snap, 9), std::invalid_argument);
     BOOST_TEST(sm.is_rpc_tls_ready(std::string("docker:c1:a")));
+}
+
+// ── Wide certificate serials (.kiro/specs/cloud-composite-node-ids/ Requirement 12.5) ──
+
+namespace {
+
+// 20 octets, top bit set: the widest serial RFC 5280 allows.
+auto wide_serial() -> certificate_serial {
+    return certificate_serial::from_hex("8081828384858687888990919293949596979814").value();
+}
+
+auto bytes_of_text(std::string_view text) -> std::vector<std::byte> {
+    std::vector<std::byte> out(text.size());
+    std::memcpy(out.data(), text.data(), text.size());
+    return out;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(numeric_serial_commands_encode_as_before) {
+    // Every serial that fits 64 bits — every serial the in-house CA issues —
+    // is still a bare JSON number with no "version", so a numeric cluster's
+    // log is unchanged and older replicas keep reading it.
+    for (std::uint64_t value : {std::uint64_t{42}, std::numeric_limits<std::uint64_t>::max()}) {
+        auto issuance = json_of(encode_record_issuance_command(make_ledger_entry(sn(value), "a")));
+        BOOST_TEST(!issuance.contains("version"));
+        BOOST_TEST(issuance.at("serial").to_number<std::uint64_t>() == value);
+        auto revocation =
+            json_of(encode_record_revocation_command(sn(value), std::chrono::system_clock::now()));
+        BOOST_TEST(!revocation.contains("version"));
+        BOOST_TEST(revocation.at("serial").to_number<std::uint64_t>() == value);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(legacy_numeric_serial_entries_still_decode) {
+    // Bytes exactly as the encoder wrote them before certificate_serial
+    // existed: commands and a snapshot with numeric serials, one above
+    // INT64_MAX.
+    ca_state_machine sm;
+    BOOST_TEST(sm.apply(bytes_of_text(R"({"serial":18446744073709551615,"subject":"old",)"
+                                      R"("dns_names":["old.example.com"],"ip_addresses":[],)"
+                                      R"("certificate_pem":"PEM-OLD","not_before":1700000000,)"
+                                      R"("not_after":1800000000,"type":1})"),
+                        1)
+                   .empty());
+    BOOST_TEST(sm.apply(bytes_of_text(
+                            R"({"type":2,"serial":18446744073709551615,"revoked_at":1750000000})"),
+                        2)
+                   .empty());
+    BOOST_REQUIRE(sm.ledger().size() == 1);
+    BOOST_TEST(sm.ledger()[0].serial == sn(std::numeric_limits<std::uint64_t>::max()));
+    BOOST_TEST(sm.ledger()[0].revoked_at.has_value());
+
+    ca_state_machine restored;
+    restored.restore_from_snapshot(
+        bytes_of_text(R"({"bootstrapped":true,"encrypted_ca_key_pem":"k","root_cert_pem":"r",)"
+                      R"("ledger":[{"serial":7,"subject":"s","dns_names":[],"ip_addresses":[],)"
+                      R"("certificate_pem":"P","not_before":1,"not_after":2,"revoked_at":1}],)"
+                      R"("rpc_tls_ready":[1]})"),
+        3);
+    BOOST_REQUIRE(restored.ledger().size() == 1);
+    BOOST_TEST(restored.ledger()[0].serial == sn(7));
+    BOOST_TEST(restored.ledger()[0].revoked_at.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(twenty_octet_serial_round_trips_through_ledger_and_snapshot) {
+    const auto wide = wide_serial();
+    auto entry = make_ledger_entry(wide, "cloud-issued");
+
+    // Versioned, with the serial as hex: a replica that predates the version
+    // reads "serial" as a number, which boost::json refuses for a string, so
+    // it rejects the entry rather than recording some other serial.
+    auto issuance = encode_record_issuance_command(entry);
+    auto obj = json_of(issuance);
+    BOOST_TEST(obj.at("version").to_number<int>() ==
+               ca_state_machine_detail::k_wide_serial_version);
+    BOOST_TEST(obj.at("serial").as_string() == "8081828384858687888990919293949596979814");
+    BOOST_CHECK_THROW((void)obj.at("serial").to_number<std::uint64_t>(), std::exception);
+
+    ca_state_machine sm;
+    sm.apply(encode_bootstrap_ca_command("root", encrypt_ca_private_key("key", "pass")), 1);
+    sm.apply(encode_record_issuance_command(make_ledger_entry(sn(1), "in-house")), 2);
+    BOOST_TEST(sm.apply(issuance, 3).empty());
+    BOOST_REQUIRE(sm.ledger().size() == 2);
+    BOOST_TEST(sm.ledger()[1].serial == wide);
+
+    // Revoked by the full value; a serial differing only in its last octet,
+    // or one sharing its low 64 bits, does not match.
+    const auto now = std::chrono::system_clock::now();
+    auto near_miss = certificate_serial::from_hex("8081828384858687888990919293949596979815");
+    BOOST_TEST(!sm.apply(encode_record_revocation_command(near_miss.value(), now), 4).empty());
+    auto low_bits = certificate_serial::from_hex("9293949596979814");
+    BOOST_TEST(!sm.apply(encode_record_revocation_command(low_bits.value(), now), 5).empty());
+    BOOST_TEST(!sm.ledger()[1].revoked_at.has_value());
+    auto revocation = encode_record_revocation_command(wide, now);
+    BOOST_TEST(json_of(revocation).at("version").to_number<int>() ==
+               ca_state_machine_detail::k_wide_serial_version);
+    BOOST_TEST(sm.apply(revocation, 6).empty());
+    BOOST_TEST(sm.ledger()[1].revoked_at.has_value());
+    BOOST_TEST(!sm.ledger()[0].revoked_at.has_value());
+
+    // Snapshot: only the wide entry is versioned; the in-house one is as before.
+    auto snapshot = sm.get_state();
+    auto ledger = json_of(snapshot).at("ledger").as_array();
+    BOOST_TEST(!ledger[0].as_object().contains("version"));
+    BOOST_TEST(ledger[1].as_object().at("version").to_number<int>() ==
+               ca_state_machine_detail::k_wide_serial_version);
+
+    ca_state_machine restored;
+    restored.restore_from_snapshot(snapshot, 6);
+    BOOST_REQUIRE(restored.ledger().size() == 2);
+    BOOST_TEST(restored.ledger()[1].serial == wide);
+    BOOST_TEST(restored.ledger()[1].revoked_at.has_value());
+    BOOST_TEST(restored.get_state() == snapshot);
+
+    // A bootstrapped replica accepts the same snapshot as a successor, and
+    // still refuses one that un-revokes the wide serial.
+    restored.restore_from_snapshot(snapshot, 7);
+    auto unrevoked = forged_snapshot(
+        sm, [](auto& o) { o["ledger"].as_array()[1].as_object().erase("revoked_at"); });
+    BOOST_CHECK_THROW(restored.restore_from_snapshot(unrevoked, 8), std::invalid_argument);
+    BOOST_TEST(restored.ledger()[1].revoked_at.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(serial_just_over_64_bits_is_versioned) {
+    // Nine octets: the narrowest serial that needs the new form.
+    auto nine = certificate_serial::from_hex("010000000000000000").value();
+    auto obj = json_of(encode_record_revocation_command(nine, std::chrono::system_clock::now()));
+    BOOST_TEST(obj.contains("version"));
+    BOOST_TEST(obj.at("serial").as_string() == "010000000000000000");
+}
+
+BOOST_AUTO_TEST_CASE(wide_serial_rejects_unknown_versions_and_bad_hex) {
+    ca_state_machine sm;
+    auto base = json_of(encode_record_issuance_command(make_ledger_entry(wide_serial(), "w")));
+
+    auto unknown = base;
+    unknown["version"] = 3;
+    BOOST_CHECK_THROW(sm.apply(bytes_of(unknown), 1), std::invalid_argument);
+
+    for (const char* bad :
+         {"zz", "abc", "", "0x01", "8081828384858687888990919293949596979814ff"}) {
+        auto malformed = base;
+        malformed["serial"] = bad;
+        BOOST_CHECK_THROW(sm.apply(bytes_of(malformed), 2), std::invalid_argument);
+    }
+    BOOST_TEST(sm.ledger().empty());
+
+    auto revoke =
+        json_of(encode_record_revocation_command(wide_serial(), std::chrono::system_clock::now()));
+    revoke["serial"] = "not-hex";
+    BOOST_CHECK_THROW(sm.apply(bytes_of(revoke), 3), std::invalid_argument);
 }

@@ -14,6 +14,7 @@
 /// target is only built `if(TARGET OpenSSL::SSL)`).
 
 #include <raft/certificate_authority.hpp>
+#include <raft/certificate_serial_x509.hpp>
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -410,7 +411,7 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
     const std::vector<std::string>& dns_names, const std::vector<std::string>& ip_addresses,
     const std::vector<std::string>& uri_names, bool server_auth, bool client_auth,
     std::chrono::system_clock::time_point not_before,
-    std::chrono::system_clock::time_point not_after, std::uint64_t serial) -> x509_ptr {
+    std::chrono::system_clock::time_point not_after, const certificate_serial& serial) -> x509_ptr {
     if (dns_names.empty() && ip_addresses.empty() && uri_names.empty()) {
         throw std::invalid_argument(
             "certificate_authority: leaf certificate requires at least "
@@ -425,10 +426,7 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
         throw_openssl_error("X509_set_version failed");  // v3
     }
 
-    ASN1_INTEGER* serial_asn1 = X509_get_serialNumber(cert.get());
-    if (ASN1_INTEGER_set_uint64(serial_asn1, serial) != 1) {
-        throw_openssl_error("ASN1_INTEGER_set_uint64 failed");
-    }
+    set_certificate_serial(cert.get(), serial);
 
     set_validity_window(cert.get(), not_before, not_after);
 
@@ -486,7 +484,7 @@ inline void validate_san_entries(const std::vector<std::string>& dns_names,
     const std::vector<std::string>& dns_names, const std::vector<std::string>& ip_addresses,
     const std::vector<std::string>& uri_names, bool server_auth, bool client_auth,
     std::chrono::system_clock::time_point not_before,
-    std::chrono::system_clock::time_point not_after, std::uint64_t serial) -> x509_ptr {
+    std::chrono::system_clock::time_point not_after, const certificate_serial& serial) -> x509_ptr {
     auto cert = build_unsigned_leaf_cert(issuer_cert, subject_name, pubkey, dns_names, ip_addresses,
                                          uri_names, server_auth, client_auth, not_before, not_after,
                                          serial);
@@ -531,8 +529,10 @@ struct certificate_authority::impl {
 
     mutable std::mutex mutex;
 
-    std::set<std::uint64_t> issued_serials;
-    std::vector<std::pair<std::uint64_t, std::time_t>> revoked;
+    std::set<certificate_serial> issued_serials;
+    // Any width: a serial replayed through mark_revoked_externally() need not
+    // be one this CA issued.
+    std::vector<std::pair<certificate_serial, std::time_t>> revoked;
 
     explicit impl(const ca_options& options) {
         ca_key = detail::generate_key(options.algorithm);
@@ -545,10 +545,7 @@ struct certificate_authority::impl {
             detail::throw_openssl_error("X509_set_version(root) failed");
         }
 
-        ASN1_INTEGER* serial_asn1 = X509_get_serialNumber(ca_cert.get());
-        if (ASN1_INTEGER_set_uint64(serial_asn1, next_serial()) != 1) {
-            detail::throw_openssl_error("ASN1_INTEGER_set_uint64(root) failed");
-        }
+        set_certificate_serial(ca_cert.get(), next_serial());
 
         auto now = std::chrono::system_clock::now();
         detail::set_validity_window(ca_cert.get(), now, now + options.validity);
@@ -609,10 +606,11 @@ struct certificate_authority::impl {
     // instance is astronomically unlikely but would break `revoke()`'s lookup,
     // so it is drawn again. The root's serial is not recorded; it is never
     // revoked through this API. Callers other than the constructor hold `mutex`.
-    [[nodiscard]] auto next_serial() -> std::uint64_t {
-        auto serial = detail::random_serial();
+    // Always fits 64 bits (cloud-composite-node-ids Requirement 12.5).
+    [[nodiscard]] auto next_serial() -> certificate_serial {
+        auto serial = certificate_serial::from_u64(detail::random_serial());
         while (issued_serials.contains(serial)) {
-            serial = detail::random_serial();
+            serial = certificate_serial::from_u64(detail::random_serial());
         }
         return serial;
     }
@@ -645,8 +643,7 @@ struct certificate_authority::impl {
         std::lock_guard<std::mutex> lock(mutex);
         if (issued_serials.find(cert.serial) == issued_serials.end()) {
             throw std::invalid_argument("certificate_authority::revoke: serial " +
-                                        std::to_string(cert.serial) +
-                                        " was not issued by this instance");
+                                        cert.serial.to_hex() + " was not issued by this instance");
         }
         revoked.emplace_back(cert.serial, std::time(nullptr));
     }
@@ -657,7 +654,7 @@ struct certificate_authority::impl {
     // from_existing(), which has no `issued_serials` record of certificates
     // issued by a different (e.g. prior-term-leader) instance. Idempotent: a
     // serial already present in `revoked` is not duplicated.
-    auto mark_revoked_externally(std::uint64_t serial,
+    auto mark_revoked_externally(const certificate_serial& serial,
                                  std::chrono::system_clock::time_point revoked_at) -> void {
         std::lock_guard<std::mutex> lock(mutex);
         for (const auto& [existing_serial, _] : revoked) {
@@ -723,10 +720,9 @@ struct certificate_authority::impl {
             if (rev == nullptr) {
                 detail::throw_openssl_error("X509_REVOKED_new failed");
             }
-            ASN1_INTEGER* serial_asn1 = ASN1_INTEGER_new();
-            ASN1_INTEGER_set_uint64(serial_asn1, serial);
-            X509_REVOKED_set_serialNumber(rev, serial_asn1);
-            ASN1_INTEGER_free(serial_asn1);
+            // X509_REVOKED_set_serialNumber copies the integer.
+            auto serial_asn1 = serial_to_asn1(serial);
+            X509_REVOKED_set_serialNumber(rev, serial_asn1.get());
             ASN1_TIME* rev_date = ASN1_TIME_set(nullptr, revoked_at);
             X509_REVOKED_set_revocationDate(rev, rev_date);
             ASN1_TIME_free(rev_date);
