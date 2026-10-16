@@ -10,13 +10,23 @@
 // domain.  Communicates with the Docker daemon through the Unix domain socket
 // at /var/run/docker.sock (or a configurable TCP endpoint) via cpp-httplib.
 //
-// Containers are named kythira-{cluster_name}-{node_id} and labelled with
-// kythira.cluster and kythira.node_id so the manager can enumerate them with
-// a single filtered GET /containers/json call independently of any in-process
-// state.
+// Containers are labelled with kythira.cluster and kythira.node_id so the
+// manager can enumerate them with a single filtered GET /containers/json call
+// independently of any in-process state. How a container is named depends on
+// the NodeId type (spec cloud-composite-node-ids, Requirement 5):
+//
+// - docker_container_node_id, or std::string holding its canonical text: the
+//   node id IS the container, {cluster_name, container name}. The manager
+//   generates the name, kythira-{cluster_name}-{8 random base32 characters},
+//   before the create, so the id is known up front and goes into
+//   KYTHIRA_NODE_ID, the kythira.node_id label and any {NODE_ID} in
+//   extra_env / extra_args as canonical text. Nothing is allocated.
+// - an unsigned integer (numeric mode): the manager allocates max + 1 over the
+//   kythira.node_id labels and names the container kythira-{cluster_name}-{id}.
 
 #include <raft/composite_node_id.hpp>
 #include <raft/future_default.hpp>
+#include <raft/generated_node_name.hpp>
 #include <raft/quorum_management.hpp>
 
 #include <httplib.h>
@@ -71,10 +81,25 @@ struct docker_quorum_manager_config {
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires node_id<NodeId>
 class docker_quorum_manager {
+    static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||
+                      std::same_as<NodeId, docker_container_node_id>,
+                  "docker_quorum_manager: NodeId must be an unsigned integer, std::string or "
+                  "docker_container_node_id");
+
 public:
     using node_id_type = NodeId;
     using address_type = Address;
     using placement_group_id_type = std::string;
+
+    /// True when the node id is the container itself (composite or string
+    /// mode): its name, scoped by `cluster_name`.
+    static constexpr bool name_is_node_id = node_id_traits<NodeId>::is_textual;
+
+    /// Longest container name the manager generates in composite and string
+    /// mode. The name is also the container's hostname and the DNS name its
+    /// peers dial, so it is held to one DNS label (63 characters), which also
+    /// keeps it within Linux's 64-character hostname limit.
+    static constexpr std::size_t max_container_name_length = 63;
 
     explicit docker_quorum_manager(docker_quorum_manager_config cfg) : _cfg(std::move(cfg)) {
         // Req 18 AC 2 — validate required fields
@@ -93,6 +118,15 @@ public:
         if (_cfg.node_port == 0) {
             throw std::invalid_argument("docker_quorum_manager: node_port must be non-zero");
         }
+        if constexpr (name_is_node_id) {
+            // The cluster is the id's scope, so it must be a valid one: 1-63
+            // of [a-z0-9_-].
+            if (!docker_container_rules::valid(_cfg.cluster_name, "kythira")) {
+                throw std::invalid_argument(
+                    "docker_quorum_manager: cluster_name '" + _cfg.cluster_name +
+                    "' must be 1-63 of [a-z0-9_-] when the node id is the container");
+            }
+        }
     }
 
     // ── assess_quorum (Req 18 AC 7-10) ───────────────────────────────────────
@@ -107,8 +141,15 @@ public:
 
             for (const auto& np : cluster) {
                 note_node_id(np.node_id);
-                auto name = container_name(np.node_id);
-                auto path = "/containers/" + name + "/json";
+                // An id that is not one of this cluster's containers (another
+                // cluster's scope, or text that is not a docker id at all) is
+                // unreachable; it does not fail the assessment.
+                auto name = container_name_of(np.node_id);
+                if (!name) {
+                    unreachable.push_back(np.node_id);
+                    continue;
+                }
+                auto path = "/containers/" + *name + "/json";
                 auto res = cli->Get(path);
 
                 // Req 18 AC 10 — a daemon we cannot connect to says nothing
@@ -211,6 +252,14 @@ public:
             const auto parsed = boost::json::parse(res->body);
             for (const auto& ct : parsed.as_array()) {
                 const auto& obj = ct.as_object();
+                if constexpr (name_is_node_id) {
+                    // The id is the container's own name, not its label.
+                    if (auto id = listed_container_node_id(obj)) {
+                        return future_factory_default::makeFuture(
+                            result{peer_info<NodeId, Address>{*id, container_address(*id)}});
+                    }
+                    continue;
+                }
                 if (!obj.contains("Labels") || !obj.at("Labels").is_object()) {
                     continue;
                 }
@@ -228,9 +277,8 @@ public:
                                  "a container with an unparseable kythira.node_id label\n";
                     continue;
                 }
-                return future_factory_default::makeFuture(result{peer_info<NodeId, Address>{
-                    *id, static_cast<Address>(container_name(*id) + ":" +
-                                              std::to_string(_cfg.node_port))}});
+                return future_factory_default::makeFuture(
+                    result{peer_info<NodeId, Address>{*id, container_address(*id)}});
             }
             return future_factory_default::makeFuture(result{});
         } catch (const std::exception& ex) {
@@ -249,26 +297,51 @@ private:
             // Log hint only; single-group implementation ignores it otherwise
             (void)replacing;
 
-            // The daemon is the arbiter of which process gets an id: the
-            // container name embeds it and Docker refuses a second container
-            // under a name in use (409).  next_node_id() is only a guess --
-            // another leader's manager, with its own in-memory floor, may have
-            // listed the same containers a moment earlier and be creating the
-            // same id right now -- so a 409 means "taken, try the next one",
-            // never "clean up": the container under that name is someone
-            // else's, quite possibly a live member.
-            for (std::size_t attempt = 1;; ++attempt) {
-                NodeId new_id = next_node_id(*cli);
-                // Spent from here on, whatever the create does.
-                note_node_id(new_id);
-                if (auto peer = create_and_start(*cli, new_id, key)) {
-                    return future_factory_default::makeFuture(std::move(*peer));
+            if constexpr (name_is_node_id) {
+                // The name is generated here, so the id is known before the
+                // create. Docker refuses a second container under a name in
+                // use (409), which a random suffix makes all but impossible;
+                // a refusal is retried with a fresh suffix, never cleaned up.
+                for (std::size_t attempt = 1;; ++attempt) {
+                    const auto name = generated_node_name(_cfg.cluster_name, random_name_suffix(),
+                                                          max_container_name_length);
+                    const auto new_id = node_id_for_container(_cfg.cluster_name, name);
+                    if (!new_id) {
+                        throw std::runtime_error("generated container name " + name +
+                                                 " is not a valid docker node id");
+                    }
+                    if (auto peer = create_and_start(*cli, *new_id, name, key)) {
+                        return future_factory_default::makeFuture(std::move(*peer));
+                    }
+                    if (attempt >= max_id_claim_attempts) {
+                        throw std::runtime_error("generated container name " + name +
+                                                 " is already in use and " +
+                                                 std::to_string(max_id_claim_attempts) +
+                                                 " attempts to claim a free name all collided");
+                    }
                 }
-                if (attempt >= max_id_claim_attempts) {
-                    throw std::runtime_error("node id " + node_id_label(new_id) +
-                                             " is already in use and " +
-                                             std::to_string(max_id_claim_attempts) +
-                                             " attempts to claim a free id all collided");
+            } else {
+                // The daemon is the arbiter of which process gets an id: the
+                // container name embeds it and Docker refuses a second container
+                // under a name in use (409).  next_node_id() is only a guess --
+                // another leader's manager, with its own in-memory floor, may have
+                // listed the same containers a moment earlier and be creating the
+                // same id right now -- so a 409 means "taken, try the next one",
+                // never "clean up": the container under that name is someone
+                // else's, quite possibly a live member.
+                for (std::size_t attempt = 1;; ++attempt) {
+                    NodeId new_id = next_node_id(*cli);
+                    // Spent from here on, whatever the create does.
+                    note_node_id(new_id);
+                    if (auto peer = create_and_start(*cli, new_id, container_name(new_id), key)) {
+                        return future_factory_default::makeFuture(std::move(*peer));
+                    }
+                    if (attempt >= max_id_claim_attempts) {
+                        throw std::runtime_error("node id " + node_id_label(new_id) +
+                                                 " is already in use and " +
+                                                 std::to_string(max_id_claim_attempts) +
+                                                 " attempts to claim a free id all collided");
+                    }
                 }
             }
         } catch (const std::exception& ex) {
@@ -278,13 +351,12 @@ private:
         }
     }
 
-    // Creates and starts the container for `new_id`.  Returns nullopt, having
-    // touched nothing, when Docker reports the name is already in use; throws
-    // when the create or start fails for any other reason.
-    auto create_and_start(httplib::Client& cli, const NodeId& new_id,
+    // Creates and starts the container `name` for `new_id`.  Returns nullopt,
+    // having touched nothing, when Docker reports the name is already in use;
+    // throws when the create or start fails for any other reason.
+    auto create_and_start(httplib::Client& cli, const NodeId& new_id, const std::string& name,
                           const std::optional<std::string>& key)
         -> std::optional<peer_info<NodeId, Address>> {
-        auto name = container_name(new_id);
         // Marks the container as this call's own, so a cleanup after an
         // ambiguous create (no response) removes it only if it is ours.
         const auto claim = make_claim_token();
@@ -313,7 +385,7 @@ private:
         env.emplace_back("KYTHIRA_NODE_PORT=" + std::to_string(_cfg.node_port));
         env.emplace_back("KYTHIRA_CLUSTER=" + _cfg.cluster_name);
         for (const auto& e : _cfg.extra_env) {
-            env.emplace_back(e);
+            env.emplace_back(substitute_node_id(e, new_id));
         }
         body["Env"] = env;
 
@@ -321,7 +393,7 @@ private:
         if (!_cfg.extra_args.empty()) {
             boost::json::array cmd;
             for (const auto& a : _cfg.extra_args) {
-                cmd.emplace_back(a);
+                cmd.emplace_back(substitute_node_id(a, new_id));
             }
             body["Cmd"] = cmd;
         }
@@ -390,9 +462,13 @@ public:
 
     auto decommission_node(const NodeId& node) -> kythira::future_default<void> {
         try {
+            auto name = container_name_of(node);
+            if (!name) {
+                throw std::invalid_argument("node " + node_id_label(node) +
+                                            " is not a container in cluster " + _cfg.cluster_name);
+            }
             auto cli = make_client();
-            auto name = container_name(node);
-            auto path = "/containers/" + name + "?force=true";
+            auto path = "/containers/" + *name + "?force=true";
             auto res = cli->Delete(path);
 
             if (res && res->status == 404) {
@@ -419,6 +495,56 @@ public:
         return desired_topology<std::string>{
             .groups = {{.group_id = _cfg.group_id, .target_count = _cfg.target_count}},
         };
+    }
+
+    // ── node id <-> container name ────────────────────────────────────────────
+
+    /// The container a node runs in, or nullopt when there is none. Numeric
+    /// mode: `kythira-{cluster_name}-{id}`. Composite and string mode: the id's
+    /// own name, a field read; nullopt when the id is not canonical docker text
+    /// or is scoped to another cluster.
+    [[nodiscard]] auto container_name_of(const NodeId& nid) const -> std::optional<std::string> {
+        if constexpr (name_is_node_id) {
+            return container_name_for_node(_cfg.cluster_name, nid);
+        } else {
+            return container_name(nid);
+        }
+    }
+
+    /// Composite and string mode: `{cluster, name}` as a NodeId, or nullopt when
+    /// `name` is not a valid container name or `cluster` not a valid scope.
+    static auto node_id_for_container(std::string_view cluster, std::string_view name)
+        -> std::optional<NodeId>
+    requires name_is_node_id
+    {
+        try {
+            docker_container_node_id id{std::string(cluster), std::string(name)};
+            if constexpr (std::same_as<NodeId, std::string>) {
+                return id.to_string();
+            } else {
+                return id;
+            }
+        } catch (const std::invalid_argument&) {
+            return std::nullopt;
+        }
+    }
+
+    /// Composite and string mode: the container name, or nullopt when `nid` is
+    /// not canonical docker text or is scoped to a cluster other than `cluster`.
+    static auto container_name_for_node(std::string_view cluster, const NodeId& nid)
+        -> std::optional<std::string>
+    requires name_is_node_id
+    {
+        std::optional<docker_container_node_id> id;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            id = docker_container_node_id::parse(nid);
+        } else {
+            id = nid;
+        }
+        if (!id || id->scope() != cluster) {
+            return std::nullopt;
+        }
+        return std::string(id->native());
     }
 
     // ── maintain_quorum (Req 19.1) ────────────────────────────────────────────
@@ -490,9 +616,60 @@ private:
     // Shared so the manager stays copyable (node_config takes it by value).
     numeric_node_id_floor _max_seen_node_id;
 
-    // Build a container name for a given node ID (Req 18 AC 5)
-    [[nodiscard]] auto container_name(const NodeId& id) const -> std::string {
+    // Build a container name for a given node ID (Req 18 AC 5). Numeric mode
+    // only: in composite and string mode the name is the id's own.
+    [[nodiscard]] auto container_name(const NodeId& id) const -> std::string
+    requires(!name_is_node_id)
+    {
         return "kythira-" + _cfg.cluster_name + "-" + node_id_label(id);
+    }
+
+    // The address peers dial: the container name, resolved by the network's
+    // embedded DNS, and the node port. Only called with an id that names a
+    // container of this cluster.
+    [[nodiscard]] auto container_address(const NodeId& id) const -> Address {
+        return static_cast<Address>(container_name_of(id).value_or(std::string{}) + ":" +
+                                    std::to_string(_cfg.node_port));
+    }
+
+    // Composite and string mode: the node id of one /containers/json entry,
+    // from its own name (Docker lists it as "/name"), or nullopt.
+    [[nodiscard]] auto listed_container_node_id(const boost::json::object& obj) const
+        -> std::optional<NodeId>
+    requires name_is_node_id
+    {
+        const auto* names = obj.if_contains("Names");
+        if (names == nullptr || !names->is_array()) {
+            return std::nullopt;
+        }
+        for (const auto& n : names->as_array()) {
+            if (!n.is_string()) {
+                continue;
+            }
+            std::string_view name = n.get_string();
+            if (name.starts_with('/')) {
+                name.remove_prefix(1);
+            }
+            if (auto id = node_id_for_container(_cfg.cluster_name, name)) {
+                return id;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Composite and string mode: {NODE_ID} in an extra_env entry or extra
+    // argument becomes the id's canonical text, which is known before the
+    // create. Numeric mode passes both through unchanged, as it always has.
+    static auto substitute_node_id(std::string text, const NodeId& id) -> std::string {
+        if constexpr (name_is_node_id) {
+            static constexpr std::string_view placeholder = "{NODE_ID}";
+            const auto value = node_id_label(id);
+            for (auto pos = text.find(placeholder); pos != std::string::npos;
+                 pos = text.find(placeholder, pos + value.size())) {
+                text.replace(pos, placeholder.size(), value);
+            }
+        }
+        return text;
     }
 
     // Serialize a NodeId to string for label / name purposes
@@ -546,16 +723,16 @@ private:
     // Determine the next node ID by finding the highest existing kythira.node_id
     // label and incrementing (Req 18 AC 11).  A candidate only: provision()
     // claims it by creating the container, which Docker refuses if the name
-    // is already taken.
-    auto next_node_id(httplib::Client& cli) const -> NodeId {
+    // is already taken. Numeric mode only.
+    auto next_node_id(httplib::Client& cli) const -> NodeId
+    requires(!name_is_node_id)
+    {
         const auto encoded =
             url_encode(R"({"label":["kythira.cluster=)" + _cfg.cluster_name + R"("]})");
         // all=true: an exited container still owns its name and ID.
         auto path = "/containers/json?all=true&filters=" + encoded;
         auto res = cli.Get(path);
 
-        // Compare numerically: for std::string IDs a lexicographic max would
-        // rank "9" above "10" and hand out a duplicate.
         // Without the listing, the floor alone could name an existing (even
         // exited) container; the create would then only 409, but guessing is
         // pointless when the daemon cannot answer, so fail the provision.
@@ -676,9 +853,12 @@ private:
     }
 
     // Records the highest node ID seen in an assess_quorum cluster vector.
-    // Non-numeric std::string ids cannot collide with generated ones and are
-    // ignored.
-    auto note_node_id(const NodeId& id) -> void { _max_seen_node_id.raise(id); }
+    // Numeric mode only: composite and string mode allocate nothing.
+    auto note_node_id(const NodeId& id) -> void {
+        if constexpr (!name_is_node_id) {
+            _max_seen_node_id.raise(id);
+        }
+    }
 
     // Create an httplib::Client from the configured daemon_url.
     // Supports "unix:///path" and "http://host:port" forms.
@@ -731,5 +911,11 @@ private:
 static_assert(quorum_manager<docker_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "docker_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<docker_quorum_manager<docker_container_node_id, std::string>,
+                             docker_container_node_id, std::string, std::string>,
+              "docker_quorum_manager<docker_container_node_id> must satisfy quorum_manager");
+static_assert(quorum_manager<docker_quorum_manager<std::string, std::string>, std::string,
+                             std::string, std::string>,
+              "docker_quorum_manager<std::string> must satisfy quorum_manager");
 
 }  // namespace kythira
