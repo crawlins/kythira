@@ -260,6 +260,21 @@ template<typename GroupId = std::string> struct gcp_mig_quorum_manager_config {
 /// @brief `quorum_manager` implementation backed by zonal Managed Instance
 ///        Groups (one per placement group / zone).
 ///
+/// **Composite and string mode** (`NodeId = gcp_instance_node_id`, or
+/// `std::string` holding its canonical text; cloud-composite-node-ids
+/// Requirement 5): the node id is the adopted managed instance itself, its
+/// name in `<project>/<zone>`. Nothing is minted: there is no random draw, no
+/// collision check and no label filter. A node id is mapped back to its
+/// instance by reading the project, zone and name out of it and reading that
+/// instance directly. The `kythira-node-id` label is still written, for
+/// discovery and the leak audit, but it holds the instance **name**, not the
+/// canonical text: a label value may only hold lower-case letters, digits,
+/// `_` and `-` (at most 63), and canonical text always contains `:` and `/`.
+/// The full id is the label value in the project and zone the instance is
+/// listed in. The name is not known until the MIG creates the instance, so a
+/// node learns its own id with `--node-id=metadata:gcp` (Requirement 6.4).
+/// Numeric mode (an unsigned `NodeId`) is unchanged.
+///
 /// @tparam NodeId  Node identifier type; defaults to `std::uint64_t`.
 /// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
@@ -269,6 +284,10 @@ public:
     using node_id_type = NodeId;
     using address_type = Address;
     using placement_group_id_type = std::string;
+
+    /// True when the node id is the managed instance itself (composite or
+    /// string mode).
+    static constexpr bool instance_is_node_id = node_id_traits<NodeId>::is_textual;
 
     /// @brief Constructs the manager and validates the configuration.
     ///
@@ -327,6 +346,18 @@ public:
                     "gcp_mig_quorum_manager: no MIG configured for group: " + gt.group_id);
             }
         }
+        if constexpr (instance_is_node_id) {
+            // `<project>/<zone>` is the scope of every node id, so a project
+            // or zone that cannot form one would leave members unaddressable.
+            for (const auto& [zone, mig_name] : _config.mig_by_group) {
+                if (!gcp_instance_rules::valid(_config.gcp.project_id + "/" + zone, "probe")) {
+                    throw std::invalid_argument(
+                        "gcp_mig_quorum_manager: project '" + _config.gcp.project_id +
+                        "' and zone '" + zone +
+                        "' do not form a gcp node id scope; the node id is the instance");
+                }
+            }
+        }
         // Reject any MIG with an autohealing policy (Requirement 18 AC 1).
         for (const auto& [zone, mig_name] : _config.mig_by_group) {
             auto mig = _migs.GetInstanceGroupManager(_config.gcp.project_id, zone, mig_name);
@@ -356,6 +387,31 @@ public:
         try {
             if (cluster.empty()) {
                 return build_health(cluster, {});
+            }
+
+            if constexpr (instance_is_node_id) {
+                // One instances.get per node, by the project, zone and name
+                // its id carries. An id that does not parse, names another
+                // project or an unconfigured zone, or names an instance that
+                // is gone or another cluster's is left out of the map and so
+                // reported unreachable; it never fails the assessment. Any
+                // other API error does, as a failed list does in numeric mode.
+                std::map<std::string, bool> live_map;
+                for (const auto& np : cluster) {
+                    fiu_do_on("raft/gcp/mig/list_instances",
+                              throw std::runtime_error("fault: raft/gcp/mig/list_instances"););
+                    const auto ref = instance_of(np.node_id);
+                    if (!ref) {
+                        std::cerr << "[gcp_mig_quorum_manager::assess_quorum] node "
+                                  << node_id_str(np.node_id) << " is not an instance in project "
+                                  << _config.gcp.project_id
+                                  << " and a configured zone; reporting it unreachable\n";
+                        continue;
+                    }
+                    const auto inst = our_instance(*ref);
+                    live_map[node_id_str(np.node_id)] = inst && inst->status() == "RUNNING";
+                }
+                return build_health(cluster, live_map);
             }
 
             std::vector<std::string> zones;
@@ -580,14 +636,41 @@ public:
                     target_group + "; " + group_rollback::describe(rollback, original_size + 1));
             }
 
-            // Mint a NodeId and label the instance, retrying on collisions and
-            // on fingerprint-mismatch (another writer raced the labels).
+            // The node id: in numeric mode minted below; in composite and
+            // string mode the instance's own name in this project and zone.
+            std::optional<NodeId> own_id;
+            if constexpr (instance_is_node_id) {
+                own_id = node_id_of_instance(zone, new_instance_name);
+                if (!own_id) {
+                    // A MIG names instances as its base name plus a random
+                    // suffix, normally an RFC 1035 label; anything else cannot
+                    // be this cluster's node. It is ours and
+                    // unlabelled: remove it rather than leave it running and
+                    // billed with no node behind it.
+                    const auto inst =
+                        _instances.GetInstance(_config.gcp.project_id, zone, new_instance_name);
+                    const auto removal =
+                        try_delete(zone, mig_name, inst ? inst->self_link() : new_instance_name);
+                    throw std::runtime_error(
+                        "gcp mig provision: MIG " + mig_name + " created instance '" +
+                        new_instance_name + "', whose name is not a valid gcp node id; " +
+                        (removal.empty() ? "it was deleted" : "deleting it failed: " + removal));
+                }
+            }
+
+            // Label the instance, retrying on fingerprint-mismatch (another
+            // writer raced the labels) and, in numeric mode, minting a NodeId
+            // and retrying on collisions.
             NodeId new_id{};
             std::string internal_ip;
-            constexpr int kIdAttempts = 5;
+            constexpr int kIdAttempts = instance_is_node_id ? 1 : 5;
             bool labelled = false;
             for (int id_attempt = 0; id_attempt < kIdAttempts && !labelled; ++id_attempt) {
-                new_id = generate_node_id();
+                if constexpr (instance_is_node_id) {
+                    new_id = *own_id;
+                } else {
+                    new_id = generate_node_id();
+                }
 
                 constexpr int kFingerprintAttempts = 3;
                 for (int fp_attempt = 0; fp_attempt < kFingerprintAttempts; ++fp_attempt) {
@@ -597,9 +680,11 @@ public:
                         throw std::runtime_error("gcp instances.get (pre-setLabels): " +
                                                  inst.status().message());
                     }
-                    // Collision guard: another instance already using this id.
-                    if (label_id_in_use(zone, node_id_str(new_id), new_instance_name)) {
-                        break;  // Regenerate NodeId.
+                    if constexpr (!instance_is_node_id) {
+                        // Collision guard: another instance already using this id.
+                        if (label_id_in_use(zone, node_id_str(new_id), new_instance_name)) {
+                            break;  // Regenerate NodeId.
+                        }
                     }
 
                     google::cloud::cpp::compute::v1::InstancesSetLabelsRequest set_req;
@@ -609,7 +694,7 @@ public:
                         labels[k] = v;
                     }
                     labels["kythira-cluster"] = _config.cluster_name;
-                    labels["kythira-node-id"] = node_id_str(new_id);
+                    labels["kythira-node-id"] = node_id_label(new_id);
                     labels["kythira-group"] = zone;
                     labels["kythira-managed-by"] = "kythira-mig-quorum-manager";
 
@@ -659,22 +744,34 @@ public:
 
     /// @brief Removes a node from its MIG and deletes it, decrementing the MIG's
     ///        target size atomically. `NOT_FOUND` is idempotent success.
+    ///
+    /// In composite and string mode the instance is the one the id names, read
+    /// directly; an id outside this project or the configured zones is refused
+    /// with `std::invalid_argument`, and one naming an instance that is gone
+    /// or another cluster's is a no-op.
     auto decommission_node(const NodeId& node_id) -> kythira::future_default<void> {
         try {
             fiu_do_on("raft/gcp/mig/delete_instances",
                       throw std::runtime_error("fault: raft/gcp/mig/delete_instances"););
 
-            for (const auto& [zone, mig_name] : _config.mig_by_group) {
-                auto found = std::move(find_instance_by_node_id(zone, node_id)).get();
-                if (!found.has_value()) {
-                    continue;
+            if constexpr (instance_is_node_id) {
+                // The id names the zone, the MIG and the instance; read it
+                // directly rather than searching every zone by label.
+                const auto ref = instance_of(node_id);
+                if (!ref) {
+                    throw std::invalid_argument("node " + node_id_str(node_id) +
+                                                " is not an instance in project " +
+                                                _config.gcp.project_id + " and a configured zone");
                 }
-                const std::string instance_self_link = *found;
-
+                const auto inst = our_instance(*ref);
+                if (!inst) {
+                    // Gone, or another cluster's: nothing of ours to delete.
+                    return future_factory_default::makeFuture();
+                }
                 google::cloud::cpp::compute::v1::InstanceGroupManagersDeleteInstancesRequest req;
-                req.add_instances(instance_self_link);
-
-                auto del = _migs.DeleteInstances(_config.gcp.project_id, zone, mig_name, req).get();
+                req.add_instances(inst->self_link());
+                auto del =
+                    _migs.DeleteInstances(_config.gcp.project_id, ref->zone, ref->mig, req).get();
                 if (!del) {
                     if (del.status().code() == google::cloud::StatusCode::kNotFound) {
                         return future_factory_default::makeFuture();  // Already gone.
@@ -682,9 +779,34 @@ public:
                     throw std::runtime_error("gcp instanceGroupManagers.deleteInstances: " +
                                              del.status().message());
                 }
-                return wait_for_zone_operation(_zone_ops, _config.gcp.project_id, zone, del->name(),
-                                               _config.gcp.api_timeout,
+                return wait_for_zone_operation(_zone_ops, _config.gcp.project_id, ref->zone,
+                                               del->name(), _config.gcp.api_timeout,
                                                _config.gcp.operation_poll_interval);
+            } else {
+                for (const auto& [zone, mig_name] : _config.mig_by_group) {
+                    auto found = std::move(find_instance_by_node_id(zone, node_id)).get();
+                    if (!found.has_value()) {
+                        continue;
+                    }
+                    const std::string instance_self_link = *found;
+
+                    google::cloud::cpp::compute::v1::InstanceGroupManagersDeleteInstancesRequest
+                        req;
+                    req.add_instances(instance_self_link);
+
+                    auto del =
+                        _migs.DeleteInstances(_config.gcp.project_id, zone, mig_name, req).get();
+                    if (!del) {
+                        if (del.status().code() == google::cloud::StatusCode::kNotFound) {
+                            return future_factory_default::makeFuture();  // Already gone.
+                        }
+                        throw std::runtime_error("gcp instanceGroupManagers.deleteInstances: " +
+                                                 del.status().message());
+                    }
+                    return wait_for_zone_operation(_zone_ops, _config.gcp.project_id, zone,
+                                                   del->name(), _config.gcp.api_timeout,
+                                                   _config.gcp.operation_poll_interval);
+                }
             }
             // No matching instance in any zone — idempotent success.
             return future_factory_default::makeFuture();
@@ -807,7 +929,9 @@ private:
     /// `instances.list` lookup. Unlike `gcp_compute_quorum_manager`, this is a
     /// real API call, not a pure function.
     [[nodiscard]] auto find_instance_by_node_id(const std::string& zone, NodeId node_id)
-        -> kythira::future_default<std::optional<std::string>> {
+        -> kythira::future_default<std::optional<std::string>>
+    requires(!instance_is_node_id)
+    {
         try {
             google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
             req.set_project(_config.gcp.project_id);
@@ -853,7 +977,9 @@ private:
     /// only costs a redraw, and keeps an id unique across every cluster
     /// sharing the zone.
     auto label_id_in_use(const std::string& zone, const std::string& id_str,
-                         const std::string& except_name) -> bool {
+                         const std::string& except_name) -> bool
+    requires(!instance_is_node_id)
+    {
         google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
         req.set_project(_config.gcp.project_id);
         req.set_zone(zone);
@@ -870,10 +996,109 @@ private:
         return node_id_traits<NodeId>::to_text(id);
     }
 
+    /// The `kythira-node-id` label value for @p id: its decimal text in
+    /// numeric mode, the instance name in composite and string mode, because
+    /// canonical text (`gcp:<project>/<zone>:<name>`) is not a valid label
+    /// value. See the class comment.
+    [[nodiscard]] static auto node_id_label(const NodeId& id) -> std::string {
+        if constexpr (instance_is_node_id) {
+            std::optional<gcp_instance_node_id> parsed;
+            if constexpr (std::same_as<NodeId, std::string>) {
+                parsed = gcp_instance_node_id::parse(id);
+            } else {
+                parsed = id;
+            }
+            return parsed ? std::string(parsed->native()) : std::string{};
+        } else {
+            return node_id_str(id);
+        }
+    }
+
+    // ── composite and string mode: the managed instance is the node id ───────
+
+    /// Where a node id says its instance is.
+    struct instance_ref {
+        std::string zone;
+        std::string mig;
+        std::string name;
+    };
+
+    /// `{<project>/<zone>, name}` as a NodeId, or nullopt when @p name is not a
+    /// valid gcp instance name. Never draws or parses a number.
+    [[nodiscard]] auto node_id_of_instance(const std::string& zone, const std::string& name) const
+        -> std::optional<NodeId>
+    requires instance_is_node_id
+    {
+        try {
+            gcp_instance_node_id id{_config.gcp.project_id + "/" + zone, name};
+            if constexpr (std::same_as<NodeId, std::string>) {
+                return id.to_string();
+            } else {
+                return id;
+            }
+        } catch (const std::invalid_argument&) {
+            return std::nullopt;
+        }
+    }
+
+    /// The zone, MIG and instance name a node id names, or nullopt when the id
+    /// is not canonical gcp text, or its project is not this one, or its zone
+    /// has no configured MIG (the out-of-scope rule of Requirement 4.4).
+    [[nodiscard]] auto instance_of(const NodeId& nid) const -> std::optional<instance_ref>
+    requires instance_is_node_id
+    {
+        std::optional<gcp_instance_node_id> id;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            id = gcp_instance_node_id::parse(nid);
+        } else {
+            id = nid;
+        }
+        if (!id) {
+            return std::nullopt;
+        }
+        // The scope is `<project>/<zone>`; a project id holds no `/`.
+        const auto scope = id->scope();
+        const auto slash = scope.rfind('/');
+        if (slash == std::string_view::npos || scope.substr(0, slash) != _config.gcp.project_id) {
+            return std::nullopt;
+        }
+        const std::string zone(scope.substr(slash + 1));
+        const auto mig = _config.mig_by_group.find(zone);
+        if (mig == _config.mig_by_group.end()) {
+            return std::nullopt;
+        }
+        return instance_ref{.zone = zone, .mig = mig->second, .name = std::string(id->native())};
+    }
+
+    /// The instance @p ref names, read directly with `instances.get`, or
+    /// nullopt when it does not exist or its `kythira-cluster` label names
+    /// another cluster: the name is unique in its zone, but only an instance
+    /// this cluster adopted is ours to assess or delete. Any other API error
+    /// throws.
+    [[nodiscard]] auto our_instance(const instance_ref& ref)
+        -> std::optional<google::cloud::cpp::compute::v1::Instance>
+    requires instance_is_node_id
+    {
+        auto inst = _instances.GetInstance(_config.gcp.project_id, ref.zone, ref.name);
+        if (!inst) {
+            if (inst.status().code() == google::cloud::StatusCode::kNotFound) {
+                return std::nullopt;
+            }
+            throw std::runtime_error("gcp instances.get (" + ref.zone + "/" + ref.name +
+                                     "): " + inst.status().message());
+        }
+        if (!has_label(*inst, "kythira-cluster", _config.cluster_name)) {
+            return std::nullopt;
+        }
+        return *std::move(inst);
+    }
+
     /// A cryptographically-strong random id in [1, 2^63 - 1], or within a
     /// narrower `NodeId`'s range rather than truncated into it
     /// (cloud-composite-node-ids Requirement 7.6).
-    static auto generate_node_id() -> NodeId {
+    static auto generate_node_id() -> NodeId
+    requires(!instance_is_node_id)
+    {
         std::random_device rd;
         return random_numeric_node_id<NodeId>(rd);
     }
@@ -947,6 +1172,12 @@ private:
 static_assert(quorum_manager<gcp_mig_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "gcp_mig_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<gcp_mig_quorum_manager<gcp_instance_node_id, std::string>,
+                             gcp_instance_node_id, std::string, std::string>,
+              "gcp_mig_quorum_manager<gcp_instance_node_id> must satisfy quorum_manager");
+static_assert(quorum_manager<gcp_mig_quorum_manager<std::string, std::string>, std::string,
+                             std::string, std::string>,
+              "gcp_mig_quorum_manager<std::string> must satisfy quorum_manager");
 
 }  // namespace kythira
 

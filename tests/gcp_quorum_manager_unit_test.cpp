@@ -180,6 +180,10 @@ BOOST_AUTO_TEST_SUITE_END()
 #include <string_view>
 #include <vector>
 
+#include <algorithm>
+#include <tuple>
+#include <type_traits>
+
 #ifdef FIU_ENABLE
 #include <fiu-control.h>
 #endif
@@ -1464,6 +1468,192 @@ BOOST_AUTO_TEST_CASE(stub_resize_override_sends_size) {
     (void)stub.Resize(context, google::cloud::Options{}, resize_request(3));
     BOOST_REQUIRE(client->last.has_value());
     BOOST_CHECK(query_value(*client->last, "size") == std::optional<std::string>{"3"});
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Composite and string node ids (cloud-composite-node-ids task 4.2) ───────
+
+namespace {
+
+/// The node id of instance @p name: a `gcp_instance_node_id`, or its
+/// canonical text in string mode.
+template<typename NodeId>
+auto instance_id(const std::string& name, const std::string& zone = "us-central1-a",
+                 const std::string& project = "test-project") -> NodeId {
+    kythira::gcp_instance_node_id id{project + "/" + zone, name};
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return id.to_string();
+    } else {
+        return id;
+    }
+}
+
+template<typename NodeId>
+auto make_mig_as(const fakes::fake_compute& f,
+                 kythira::gcp_mig_quorum_manager_config<std::string> cfg = valid_mig_config())
+    -> kythira::gcp_mig_quorum_manager<NodeId> {
+    for (const auto& [zone, name] : cfg.mig_by_group) {
+        if (f.migs->migs.find(name) == f.migs->migs.end()) {
+            f.migs->add(name, 3);
+        }
+    }
+    return kythira::gcp_mig_quorum_manager<NodeId>{
+        fast(std::move(cfg)), f.migs_client(), f.instances_client(), f.zone_operations_client()};
+}
+
+/// `mig_cloud`, with the voters labelled as a composite- or string-mode
+/// manager labels them: by instance name, since canonical text is not a valid
+/// label value.
+struct named_mig_cloud : mig_cloud {
+    named_mig_cloud() {
+        launch_action = "NONE";
+        for (const auto& v : voters) {
+            (*f.instances->find(zone, v)->mutable_labels())["kythira-node-id"] = v;
+        }
+    }
+};
+
+template<typename NodeId> auto placed(const std::vector<NodeId>& ids) {
+    std::vector<kythira::node_placement<NodeId, std::string>> out;
+    for (const auto& id : ids) {
+        out.push_back({.node_id = id, .group_id = "us-central1-a"});
+    }
+    return out;
+}
+
+using instance_id_modes = std::tuple<kythira::gcp_instance_node_id, std::string>;
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(gcp_mig_instance_node_ids)
+
+// Provision adopts the new instance and its name in the project and zone is
+// the node id: nothing drawn, no collision lookup, and the label holds the
+// name.
+BOOST_AUTO_TEST_CASE_TEMPLATE(provision_takes_the_id_from_the_instance_name, NodeId,
+                              instance_id_modes) {
+    named_mig_cloud cloud;
+    auto mgr = make_mig_as<NodeId>(cloud.f);
+    const auto peer = mgr.provision_node("us-central1-a", std::nullopt).get();
+    BOOST_CHECK(peer.node_id == instance_id<NodeId>(cloud.last_launch));
+    const auto* inst = cloud.f.instances->find(cloud.zone, cloud.last_launch);
+    BOOST_REQUIRE(inst != nullptr);
+    BOOST_CHECK_EQUAL(peer.address, inst->network_interfaces(0).network_ip() + ":7000");
+    BOOST_CHECK_EQUAL(inst->labels().at("kythira-node-id"), cloud.last_launch);
+    BOOST_CHECK_EQUAL(inst->labels().at("kythira-cluster"), "test-cluster");
+    BOOST_CHECK_EQUAL(cloud.f.instances->list_calls, 0);  // No label_id_in_use.
+    BOOST_CHECK_EQUAL(cloud.target_size(), 4);
+}
+
+// A node whose id names another project, a zone with no configured MIG, an
+// instance that does not exist, or another cluster's instance is unreachable;
+// none fails the assessment.
+BOOST_AUTO_TEST_CASE_TEMPLATE(assess_reports_foreign_and_missing_ids_unreachable, NodeId,
+                              instance_id_modes) {
+    named_mig_cloud cloud;
+    cloud.f.instances->add(
+        cloud.zone, "other-mig-a-abcd", "RUNNING",
+        {{"kythira-cluster", "other-cluster"}, {"kythira-node-id", "other-mig-a-abcd"}});
+    cloud.f.instances->add(
+        cloud.zone, "kythira-mig-a-stopping", "STOPPING",
+        {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "kythira-mig-a-stopping"}});
+    auto mgr = make_mig_as<NodeId>(cloud.f);
+
+    std::vector<NodeId> ids;
+    for (const auto& v : cloud.voters) {
+        ids.push_back(instance_id<NodeId>(v));
+    }
+    const std::vector<NodeId> down{
+        instance_id<NodeId>("kythira-mig-a-v1", "us-central1-a", "other-project"),
+        instance_id<NodeId>("kythira-mig-a-v1", "us-central1-b"),
+        instance_id<NodeId>("kythira-mig-a-gone"),
+        instance_id<NodeId>("other-mig-a-abcd"),
+        instance_id<NodeId>("kythira-mig-a-stopping"),
+    };
+    ids.insert(ids.end(), down.begin(), down.end());
+    if constexpr (std::same_as<NodeId, std::string>) {
+        ids.push_back("7");  // A numeric-mode id: not gcp text at all.
+    }
+
+    const auto health = mgr.assess_quorum(placed(ids)).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 3u);
+    BOOST_CHECK_EQUAL(health.total_node_count, ids.size());
+    BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), ids.size() - 3);
+    for (const auto& id : down) {
+        BOOST_CHECK(std::ranges::find(health.unreachable_nodes, id) !=
+                    health.unreachable_nodes.end());
+    }
+    BOOST_CHECK_EQUAL(cloud.f.instances->list_calls, 0);  // Direct reads only.
+}
+
+// Decommission deletes the instance the id names through its MIG, and is a
+// no-op once it is gone.
+BOOST_AUTO_TEST_CASE_TEMPLATE(decommission_deletes_the_named_instance, NodeId, instance_id_modes) {
+    named_mig_cloud cloud;
+    auto mgr = make_mig_as<NodeId>(cloud.f);
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(instance_id<NodeId>("kythira-mig-a-v2")).get());
+    BOOST_CHECK(cloud.f.migs->deleted ==
+                std::vector<std::string>{mig_cloud::url("kythira-mig-a-v2")});
+    BOOST_CHECK(
+        (cloud.members() == std::vector<std::string>{"kythira-mig-a-v1", "kythira-mig-a-v3"}));
+    BOOST_CHECK_EQUAL(cloud.target_size(), 2);
+    BOOST_CHECK_EQUAL(cloud.f.instances->list_calls, 0);
+
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(instance_id<NodeId>("kythira-mig-a-gone")).get());
+    BOOST_CHECK_EQUAL(cloud.f.migs->delete_instances_calls, 1);
+}
+
+// The id is the instance, not a label value: an instance whose label says
+// something else (here a numeric-mode id) is still found by its name.
+BOOST_AUTO_TEST_CASE_TEMPLATE(decommission_finds_the_instance_by_name_not_by_label, NodeId,
+                              instance_id_modes) {
+    named_mig_cloud cloud;
+    cloud.seed("kythira-mig-a-v4", "NONE",
+               {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "2"}});
+    auto mgr = make_mig_as<NodeId>(cloud.f);
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(instance_id<NodeId>("kythira-mig-a-v4")).get());
+    BOOST_CHECK(cloud.f.migs->deleted ==
+                std::vector<std::string>{mig_cloud::url("kythira-mig-a-v4")});
+}
+
+// Another cluster's instance is not ours to delete, even by its exact id; an
+// id outside this project or the configured zones is refused outright.
+BOOST_AUTO_TEST_CASE_TEMPLATE(decommission_leaves_foreign_instances_alone, NodeId,
+                              instance_id_modes) {
+    named_mig_cloud cloud;
+    cloud.f.instances->add(cloud.zone, "other-mig-a-abcd", "RUNNING",
+                           {{"kythira-cluster", "other-cluster"}});
+    auto mgr = make_mig_as<NodeId>(cloud.f);
+
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(instance_id<NodeId>("other-mig-a-abcd")).get());
+    BOOST_CHECK_THROW(mgr.decommission_node(instance_id<NodeId>("kythira-mig-a-v1", "us-central1-a",
+                                                                "other-project"))
+                          .get(),
+                      std::exception);
+    BOOST_CHECK_THROW(
+        mgr.decommission_node(instance_id<NodeId>("kythira-mig-a-v1", "us-central1-b")).get(),
+        std::exception);
+    BOOST_CHECK_EQUAL(cloud.f.migs->delete_instances_calls, 0);
+    BOOST_CHECK(cloud.members() == cloud.voters);
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_refuses_text_that_is_not_a_gcp_id) {
+    named_mig_cloud cloud;
+    auto mgr = make_mig_as<std::string>(cloud.f);
+    for (const std::string bad :
+         {"1", "gcp:test-project/us-central1-a:Kythira-mig-a-v1", "azure-vm:rg:kythira-mig-a-v1"}) {
+        BOOST_CHECK_THROW(mgr.decommission_node(bad).get(), std::exception);
+    }
+    BOOST_CHECK_EQUAL(cloud.f.migs->delete_instances_calls, 0);
+}
+
+// `<project>/<zone>` is the scope of every id, so it must be a valid one.
+BOOST_AUTO_TEST_CASE(construction_requires_a_valid_project_and_zone_scope) {
+    fakes::fake_compute f;
+    auto cfg = valid_mig_config();
+    cfg.gcp.project_id = "Test_Project";
+    BOOST_CHECK_THROW(make_mig_as<kythira::gcp_instance_node_id>(f, cfg), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
