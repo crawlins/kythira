@@ -15,6 +15,8 @@
 /// row that cannot be re-taken by anyone who does not also rebuild — which
 /// makes every comparison between two rows a comparison of two binaries.
 
+#include <raft/host_node_id.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -82,7 +84,10 @@ inline constexpr std::size_t k_min_capacity_token_size = 16;
 
 struct node_options {
     /// This host's node id. Also its identity in every peer's URL map.
-    std::uint64_t _node_id{1};
+    /// `kythira::host_node_id`: a number, or canonical text in a build with
+    /// `KYTHIRA_NODE_ID_KIND=text` (`.kiro/specs/cloud-composite-node-ids/`
+    /// Requirement 10), where `--node-id` also takes `metadata:<provider>`.
+    kythira::host_node_id _node_id{kythira::host_node_id_from_number(1)};
 
     /// Where this host serves Raft RPCs to its peers.
     std::string _bind_address{"0.0.0.0"};
@@ -99,7 +104,7 @@ struct node_options {
     /// reproducible baseline and all Tier C needs (Requirement 5.1);
     /// `--peers-from` reads the same mapping out of a file for Tier E, where
     /// no operator wants to edit a command line on every machine.
-    std::map<std::uint64_t, std::string> _peers;
+    std::map<kythira::host_node_id, std::string> _peers;
 
     /// Every peer's **control** address, as `host:port`. Only the network
     /// probe uses it, and only Tier E needs it.
@@ -110,12 +115,12 @@ struct node_options {
     /// be listening there — which is exactly the class of measurement error
     /// this project keeps finding. A peer with no entry here is reported with
     /// null figures rather than guessed at.
-    std::map<std::uint64_t, std::string> _peer_control;
+    std::map<kythira::host_node_id, std::string> _peer_control;
 
     /// The voters of every group. All hosts hold a replica of every shard,
     /// which is what the in-process rows do, so a Tier C row differs from a
     /// Tier B row in the tier and not in the placement.
-    std::vector<std::uint64_t> _voters;
+    std::vector<kythira::host_node_id> _voters;
 
     /// **Pre-split into N ranges** (Requirement 4.4), answering Appendix B's
     /// question 4 the reproducible way and matching what `kv_cluster` does, so

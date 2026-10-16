@@ -1076,6 +1076,17 @@ if(TARGET httplib::httplib AND TARGET boost_json)
     target_compile_features(self_node_id_test PRIVATE cxx_std_23)
     add_test(NAME self_node_id_test COMMAND self_node_id_test)
     set_tests_properties(self_node_id_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
+
+    # The host binaries' id parsers (host_node_id.hpp). Linked to
+    # kythira_host_node_id so it is compiled in the configured
+    # KYTHIRA_NODE_ID_KIND; it tests both kinds' templates either way.
+    add_executable(host_node_id_test host_node_id_test.cpp)
+    target_link_libraries(host_node_id_test PRIVATE
+        Boost::unit_test_framework kythira_host_node_id httplib::httplib boost_json)
+    target_include_directories(host_node_id_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(host_node_id_test PRIVATE cxx_std_23)
+    add_test(NAME host_node_id_test COMMAND host_node_id_test)
+    set_tests_properties(host_node_id_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
 endif()
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)

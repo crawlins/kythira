@@ -22,11 +22,15 @@
 #include <raft/types.hpp>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace kythira {
 
-struct tcp_raft_types {
+/// The bundle over any `NodeId` the TCP transport carries: `std::uint64_t`
+/// (`tcp_raft_types`), or a textual id for a host binary built with
+/// `KYTHIRA_NODE_ID_KIND=text` (`include/raft/host_node_id.hpp`).
+template<typename NodeId = std::uint64_t> struct basic_tcp_raft_types {
     // ── Future types ─────────────────────────────────────────────────────────
     // future_default (not the hardcoded Folly kythira::Future) so this stays
     // consistent with tcp_rpc_client (raft/tcp_rpc.hpp), which now also uses
@@ -36,7 +40,7 @@ struct tcp_raft_types {
     using try_type = kythira::try_default<std::vector<std::byte>>;
 
     // ── Primitive types ──────────────────────────────────────────────────────
-    using node_id_type = std::uint64_t;
+    using node_id_type = NodeId;
     using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
 
@@ -45,8 +49,8 @@ struct tcp_raft_types {
     using serializer_type = json_rpc_serializer<serialized_data_type>;
 
     // ── Network ──────────────────────────────────────────────────────────────
-    using network_client_type = tcp_rpc_client;
-    using network_server_type = tcp_rpc_server;
+    using network_client_type = basic_tcp_rpc_client<NodeId>;
+    using network_server_type = basic_tcp_rpc_server<NodeId>;
 
     // ── Storage ──────────────────────────────────────────────────────────────
     using persistence_engine_type =
@@ -79,6 +83,11 @@ struct tcp_raft_types {
     using install_snapshot_response_type = install_snapshot_response<term_id_type>;
 };
 
+/// The numeric bundle, as before `NodeId` was a parameter.
+using tcp_raft_types = basic_tcp_raft_types<>;
+
 static_assert(raft_types<tcp_raft_types>, "tcp_raft_types must satisfy raft_types");
+static_assert(raft_types<basic_tcp_raft_types<std::string>>,
+              "basic_tcp_raft_types<std::string> must satisfy raft_types");
 
 }  // namespace kythira

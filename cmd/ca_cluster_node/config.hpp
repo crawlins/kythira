@@ -6,6 +6,7 @@
 #ifdef KYTHIRA_HAS_OPENSSL
 #include <raft/tls_tcp_rpc.hpp>
 #endif
+#include <raft/host_node_id.hpp>
 #include <raft/tcp_rpc.hpp>
 
 #include <chrono>
@@ -20,13 +21,19 @@
 
 namespace ca_cluster_node {
 
+// kythira::host_node_id: std::uint64_t, or canonical text in a build with
+// KYTHIRA_NODE_ID_KIND=text (.kiro/specs/cloud-composite-node-ids/
+// Requirement 10). A textual id's RPC peer identity is a URI SAN rather than
+// a DNS SAN (Requirement 12).
+using node_id_type = kythira::host_node_id;
+
 // Extends chaos_node's plain peer_info with the peer's client-facing HTTP
 // address — the two are not derivable from each other, and a node
 // redirecting a non-leader request (Requirement 17.7) needs the *client*
 // address of whichever node_id is currently leading, not its Raft RPC
 // address.
 struct ca_cluster_peer_info {
-    std::uint64_t node_id;
+    node_id_type node_id;
     std::string rpc_host;
     std::uint16_t rpc_port;
     std::string http_address;  // e.g. "https://ca-node-2.internal:8443"
@@ -41,7 +48,7 @@ struct peer_url {
 };
 
 struct ca_cluster_node_config {
-    std::uint64_t node_id{0};
+    node_id_type node_id{};
     std::string rpc_address{"0.0.0.0"};
     std::uint16_t rpc_port{7000};
     std::uint16_t http_port{8443};
@@ -91,7 +98,7 @@ struct ca_cluster_node_config {
     // tls_tcp_rpc_client/server with — populated from rpc_tls_cert_path/
     // rpc_tls_key_path (or a persisted peer certificate, Requirement 7.1)
     // before run_ca_cluster_node() is instantiated.
-    kythira::tls_tcp_rpc_config rpc_tls_config;
+    kythira::basic_tls_tcp_rpc_config<node_id_type> rpc_tls_config;
 #endif
 
     // Resolved (not CLI-facing): HMAC key derived from the unseal passphrase
@@ -113,8 +120,8 @@ struct ca_cluster_node_config {
     std::chrono::milliseconds rpc_timeout{100};
 
     // All node IDs in the cluster (self + peers) — for set_cluster_configuration().
-    [[nodiscard]] auto all_node_ids() const -> std::vector<std::uint64_t> {
-        std::vector<std::uint64_t> ids;
+    [[nodiscard]] auto all_node_ids() const -> std::vector<node_id_type> {
+        std::vector<node_id_type> ids;
         ids.push_back(node_id);
         for (const auto& p : peers) ids.push_back(p.node_id);
         return ids;
@@ -123,7 +130,8 @@ struct ca_cluster_node_config {
     // Client-facing HTTP address of `id`, for building a Requirement 17.7
     // redirect Location header. std::nullopt if `id` names neither this node
     // nor a configured peer.
-    [[nodiscard]] auto http_address_for(std::uint64_t id) const -> std::optional<std::string> {
+    [[nodiscard]] auto http_address_for(const node_id_type& id) const
+        -> std::optional<std::string> {
         for (const auto& p : peers) {
             if (p.node_id == id) return p.http_address;
         }
@@ -136,6 +144,8 @@ namespace detail {
 // Parses one "<node_id>:<rpc_host>:<rpc_port>@<http_address>" token. The '@'
 // separator (rather than a 4th ':'-delimited field) is required because
 // http_address is itself "scheme://host:port" and already contains colons.
+// <node_id> is a decimal integer or, in a text build, canonical composite
+// text, whose own two ':' are part of it (kythira::split_leading_node_id).
 [[nodiscard]] inline auto parse_peer_token(const std::string& tok) -> ca_cluster_peer_info {
     auto at = tok.find('@');
     if (at == std::string::npos) {
@@ -149,17 +159,22 @@ namespace detail {
             "ca_cluster_node: malformed --peers token (empty http_address): " + tok);
     }
 
-    auto c1 = rpc_part.find(':');
-    auto c2 = c1 == std::string::npos ? std::string::npos : rpc_part.find(':', c1 + 1);
-    if (c1 == std::string::npos || c2 == std::string::npos) {
+    auto split = kythira::split_leading_node_id(rpc_part);
+    auto host_port = split ? std::string(split->second) : std::string{};
+    auto colon = host_port.find(':');
+    if (!split || colon == std::string::npos) {
         throw std::invalid_argument(
             "ca_cluster_node: malformed --peers token (expected id:host:port@http): " + tok);
     }
+    auto id = kythira::parse_host_peer_node_id(split->first);
+    if (!id) {
+        throw std::invalid_argument("ca_cluster_node: --peers token " + tok + ": " + id.error());
+    }
 
     ca_cluster_peer_info p;
-    p.node_id = std::stoull(rpc_part.substr(0, c1));
-    p.rpc_host = rpc_part.substr(c1 + 1, c2 - c1 - 1);
-    p.rpc_port = static_cast<std::uint16_t>(std::stoul(rpc_part.substr(c2 + 1)));
+    p.node_id = std::move(id).value();
+    p.rpc_host = host_port.substr(0, colon);
+    p.rpc_port = static_cast<std::uint16_t>(std::stoul(host_port.substr(colon + 1)));
     p.http_address = http_address;
     return p;
 }
@@ -260,13 +275,14 @@ namespace detail {
             return e.what();
         }
         if (url.scheme == "https" && peer_tls_ca_file(cfg).empty()) {
-            return "peer " + std::to_string(p.node_id) + " is https:// (" + p.http_address +
+            return "peer " + kythira::host_node_id_text(p.node_id) + " is https:// (" +
+                   p.http_address +
                    ") but there is no CA bundle to verify it with: pass --tls-cert/--tls-key "
                    "or --peer-tls-ca";
         }
         if (url.scheme == "http" && !cfg.allow_plaintext_http &&
             !kythira::tcp_detail::is_loopback_bind_address(url.host)) {
-            return "peer " + std::to_string(p.node_id) + " is plaintext http:// (" +
+            return "peer " + kythira::host_node_id_text(p.node_id) + " is plaintext http:// (" +
                    p.http_address +
                    ") off loopback: use https://, or pass --allow-plaintext-http (or set "
                    "CA_CLUSTER_ALLOW_PLAINTEXT_HTTP=1) on a trusted network";
@@ -278,7 +294,7 @@ namespace detail {
 [[noreturn]] inline void usage_error(const std::string& message) {
     std::cerr
         << "ca_cluster_node: " << message << "\n\n"
-        << "Usage: ca_cluster_node --node-id <n> --rpc-port <n> --http-port <n>\n"
+        << "Usage: ca_cluster_node --node-id <id> --rpc-port <n> --http-port <n>\n"
         << "                       --data-dir <path> --unseal-key-file <path>\n"
         << "                       --peers <id>:<rpc_host>:<rpc_port>@<http_address>[,...]\n"
         << "                       [--rpc-address <addr>] [--http-address <addr>]\n"
@@ -288,7 +304,13 @@ namespace detail {
         << "                       [--allow-plaintext-rpc] [--allow-plaintext-http]\n"
         << "                       [--rpc-renewal-window-secs <n>]\n"
         << "                       [--auth-token <token>]  (prefer $CA_SERVICE_AUTH_TOKEN)\n"
-        << "                       [--print-root-fingerprint]\n";
+        << "                       [--print-root-fingerprint]\n"
+        << "\n"
+        << "Node ids (KYTHIRA_NODE_ID_KIND=" << kythira::host_node_id_kind << "): "
+        << (kythira::host_node_id_is_text
+                ? "canonical composite text (<provider>:<scope>:<native>) or a decimal\n"
+                  "integer; --node-id also takes metadata:<aws|alibaba|azure|gcp|oci>.\n"
+                : "decimal integers.\n");
     std::exit(1);
 }
 
@@ -297,6 +319,7 @@ namespace detail {
     bool saw_node_id = false;
     bool saw_data_dir = false;
     bool saw_unseal_key_file = false;
+    std::string node_id_text;
 
     auto env_or = [](const char* key, const char* fallback) -> std::string {
         const char* v = std::getenv(key);
@@ -310,7 +333,7 @@ namespace detail {
             return argv[++i];
         };
         if (arg == "--node-id") {
-            cfg.node_id = std::stoull(next());
+            node_id_text = next();
             saw_node_id = true;
         } else if (arg == "--rpc-address") {
             cfg.rpc_address = next();
@@ -388,6 +411,12 @@ namespace detail {
     }
 
     if (!saw_node_id) usage_error("--node-id is required");
+    // Resolved after every flag is read, so a metadata:<provider> lookup
+    // (the only form that touches the network) runs only for a command line
+    // that is otherwise valid.
+    auto node_id = kythira::parse_host_node_id(node_id_text);
+    if (!node_id) usage_error("--node-id: " + node_id.error());
+    cfg.node_id = std::move(node_id).value();
     try {
         (void)kythira::tcp_detail::resolve_bind_addresses(cfg.rpc_address, "--rpc-address");
         (void)kythira::tcp_detail::resolve_bind_addresses(cfg.http_bind_address, "--http-address");

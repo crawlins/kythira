@@ -28,6 +28,11 @@ MACRO_MAP = {
     "AWS_SDK": "KYTHIRA_HAS_AWS_SDK",
     "AWS_ACM_PCA": "KYTHIRA_HAS_AWS_ACM_PCA",
     "CHAOS_TESTS": "FIU_ENABLE",
+    # The KYTHIRA_NODE_ID_KIND choice. Read by include/raft/host_node_id.hpp
+    # through the kythira_host_node_id CMake target's compile definition,
+    # like every macro here; recorded in the header so it says which kind
+    # the build was configured with.
+    "KYTHIRA_NODE_ID_TEXT": "KYTHIRA_NODE_ID_TEXT",
 }
 
 

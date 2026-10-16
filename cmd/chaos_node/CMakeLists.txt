@@ -17,6 +17,7 @@ target_link_libraries(chaos_node PRIVATE
     network_simulator   # brings in Folly::folly + boost_context + Boost::system/thread
     boost_json
     httplib::httplib
+    kythira_host_node_id   # KYTHIRA_NODE_ID_KIND
 )
 
 # RPC_TLS_* (mutual TLS on Raft RPC) needs tls_tcp_rpc.hpp's OpenSSL side,

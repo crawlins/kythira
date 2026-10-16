@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <raft/host_node_id.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -14,14 +16,19 @@
 
 namespace chaos_node {
 
+// kythira::host_node_id: std::uint64_t, or canonical text in a build with
+// KYTHIRA_NODE_ID_KIND=text (.kiro/specs/cloud-composite-node-ids/
+// Requirement 10).
+using node_id_type = kythira::host_node_id;
+
 struct peer_info {
-    std::uint64_t node_id;
+    node_id_type node_id;
     std::string host;
     std::uint16_t port;
 };
 
 struct node_config {
-    std::uint64_t node_id{0};
+    node_id_type node_id{};
     std::string rpc_address{"0.0.0.0"};
     std::uint16_t rpc_port{7000};
     std::uint16_t http_port{8080};
@@ -92,6 +99,9 @@ struct node_config {
 
     // Parse from environment variables.
     // Throws std::invalid_argument if NODE_ID or PEERS are missing / malformed.
+    // NODE_ID (or KYTHIRA_NODE_ID) takes kythira::parse_host_node_id's forms,
+    // metadata:<provider> included in a text build; a PEERS id never reads
+    // metadata.
     static auto from_env() -> node_config {
         node_config cfg;
 
@@ -113,7 +123,11 @@ struct node_config {
         std::string id_str = get_opt("NODE_ID", "");
         if (id_str.empty()) id_str = get_opt("KYTHIRA_NODE_ID", "");
         if (id_str.empty()) id_str = get("NODE_ID");  // throws: neither is set
-        cfg.node_id = std::stoull(id_str);
+        auto self_id = kythira::parse_host_node_id(id_str);
+        if (!self_id) {
+            throw std::invalid_argument("chaos_node: NODE_ID: " + self_id.error());
+        }
+        cfg.node_id = std::move(self_id).value();
         // RPC_ADDRESS limits the plaintext Raft RPC listener to one address
         // (IPv4/IPv6 literal or a name resolving to this host). The default
         // stays 0.0.0.0 because peers reach a container on its bridge address.
@@ -130,21 +144,15 @@ struct node_config {
         cfg.heartbeat_interval =
             std::chrono::milliseconds(std::stoll(get_opt("HEARTBEAT_INTERVAL_MS", "50")));
 
-        // PEERS = "id:host:port,id:host:port,..."
+        // PEERS = "id:host:port,id:host:port,..." where id is a decimal
+        // integer or, in a text build, canonical composite text (whose own
+        // ':'s are the first two of the token; see split_leading_node_id).
         std::string peers_str = get("PEERS");
         std::string tok;
         for (char c : peers_str + ',') {
             if (c == ',') {
                 if (!tok.empty()) {
-                    auto c1 = tok.find(':');
-                    auto c2 = tok.find(':', c1 + 1);
-                    if (c1 == std::string::npos || c2 == std::string::npos)
-                        throw std::invalid_argument("chaos_node: malformed PEERS token: " + tok);
-                    peer_info p;
-                    p.node_id = std::stoull(tok.substr(0, c1));
-                    p.host = tok.substr(c1 + 1, c2 - c1 - 1);
-                    p.port = static_cast<std::uint16_t>(std::stoul(tok.substr(c2 + 1)));
-                    cfg.peers.push_back(p);
+                    cfg.peers.push_back(parse_peer_token(tok));
                     tok.clear();
                 }
             } else {
@@ -152,8 +160,10 @@ struct node_config {
             }
         }
 
-        if (cfg.node_id == 0)
-            throw std::invalid_argument("chaos_node: NODE_ID must be a positive integer");
+        // 0 is refused in either kind: numeric ids have always started at 1,
+        // and a text build normalises "0" to the same number.
+        if (cfg.node_id == kythira::host_node_id_from_number(0))
+            throw std::invalid_argument("chaos_node: NODE_ID must not be 0");
 
         if (std::string qci = get_opt("QUORUM_CHECK_INTERVAL_MS", ""); !qci.empty()) {
             cfg.quorum_check_interval = std::chrono::milliseconds(std::stoll(qci));
@@ -172,14 +182,18 @@ struct node_config {
 
         // Containers in a quorum cluster are named kythira-<cluster>-<id>
         // (docker_quorum_manager and docker-compose.quorum.yml), and that
-        // name resolves on their shared network under Docker and Podman.
+        // name resolves on their shared network under Docker and Podman. In
+        // a text build the node id is docker canonical text whose native
+        // part IS the container name, so the default is "{native}".
         std::string cluster = get_opt("QUORUM_CLUSTER", "");
         if (cluster.empty()) cluster = get_opt("KYTHIRA_CLUSTER", "");
         std::string port = std::to_string(cfg.rpc_port);
         if (std::string tmpl = get_opt("PEER_ADDRESS_TEMPLATE", ""); !tmpl.empty()) {
             cfg.peer_address_template = std::move(tmpl);
         } else if (!cluster.empty()) {
-            cfg.peer_address_template = "kythira-" + cluster + "-{id}:" + port;
+            cfg.peer_address_template = kythira::host_node_id_is_text
+                                            ? "{native}:" + port
+                                            : "kythira-" + cluster + "-{id}:" + port;
         }
         cfg.self_address = get_opt("SELF_ADDRESS", "");
         if (cfg.self_address.empty() && cfg.peer_address_template) {
@@ -320,20 +334,47 @@ struct node_config {
         return cfg;
     }
 
+    // One PEERS token, "id:host:port".
+    [[nodiscard]] static auto parse_peer_token(const std::string& tok) -> peer_info {
+        auto split = kythira::split_leading_node_id(tok);
+        auto rest = split ? std::string(split->second) : std::string{};
+        auto colon = rest.find(':');
+        if (!split || colon == std::string::npos || colon == 0 || colon + 1 == rest.size()) {
+            throw std::invalid_argument("chaos_node: malformed PEERS token: " + tok);
+        }
+        auto id = kythira::parse_host_peer_node_id(split->first);
+        if (!id) {
+            throw std::invalid_argument("chaos_node: PEERS token " + tok + ": " + id.error());
+        }
+        peer_info p;
+        p.node_id = std::move(id).value();
+        p.host = rest.substr(0, colon);
+        p.port = static_cast<std::uint16_t>(std::stoul(rest.substr(colon + 1)));
+        return p;
+    }
+
     // host:port for a node ID from peer_address_template ("" without one).
-    [[nodiscard]] auto address_of(std::uint64_t id) const -> std::string {
+    // "{id}" is the id's text; "{native}" is a composite id's native part
+    // (the container name for a docker id), or the whole text otherwise.
+    [[nodiscard]] auto address_of(const node_id_type& id) const -> std::string {
         if (!peer_address_template) return {};
         std::string addr = *peer_address_template;
-        static constexpr std::string_view placeholder{"{id}"};
-        for (auto pos = addr.find(placeholder); pos != std::string::npos;
-             pos = addr.find(placeholder, pos)) {
-            addr.replace(pos, placeholder.size(), std::to_string(id));
-        }
+        const std::string text = kythira::host_node_id_text(id);
+        const auto composite = kythira::parse_any_composite_node_id(text);
+        const std::string native = composite ? composite->second : text;
+        auto substitute = [&](std::string_view placeholder, const std::string& value) {
+            for (auto pos = addr.find(placeholder); pos != std::string::npos;
+                 pos = addr.find(placeholder, pos + value.size())) {
+                addr.replace(pos, placeholder.size(), value);
+            }
+        };
+        substitute("{id}", text);
+        substitute("{native}", native);
         return addr;
     }
 
     // Resolves a node ID with no PEERS entry through peer_address_template.
-    [[nodiscard]] auto resolve(std::uint64_t id) const
+    [[nodiscard]] auto resolve(const node_id_type& id) const
         -> std::optional<std::pair<std::string, std::uint16_t>> {
         return split_host_port(address_of(id));
     }
@@ -357,9 +398,9 @@ struct node_config {
     // self_address is known; what a node this one provisions is given.
     [[nodiscard]] auto peers_env() const -> std::string {
         std::string out;
-        auto append = [&](std::uint64_t id, const std::string& host, std::uint16_t port) {
+        auto append = [&](const node_id_type& id, const std::string& host, std::uint16_t port) {
             if (!out.empty()) out += ',';
-            out += std::to_string(id) + ':' + host + ':' + std::to_string(port);
+            out += kythira::host_node_id_text(id) + ':' + host + ':' + std::to_string(port);
         };
         if (auto self = split_host_port(self_address)) append(node_id, self->first, self->second);
         for (const auto& p : peers) append(p.node_id, p.host, p.port);
@@ -367,8 +408,8 @@ struct node_config {
     }
 
     // All node IDs in the cluster (self + peers).
-    auto all_node_ids() const -> std::vector<std::uint64_t> {
-        std::vector<std::uint64_t> ids;
+    auto all_node_ids() const -> std::vector<node_id_type> {
+        std::vector<node_id_type> ids;
         ids.push_back(node_id);
         for (const auto& p : peers) ids.push_back(p.node_id);
         return ids;

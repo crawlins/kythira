@@ -146,7 +146,9 @@ void resolve_peers_by_discovery(node_options& opt) {
     cfg.role_tag_prefix = opt._discovery_role_prefix;
     cfg.instance_id = opt._discovery_instance_id;
 
-    kythira::aws_ec2_peer_discovery<std::uint64_t, std::string> finder{cfg};
+    // Follows KYTHIRA_NODE_ID_KIND (Requirement 10.5): the node-id tag holds
+    // decimal text in a numeric build and canonical text in a text one.
+    kythira::aws_ec2_peer_discovery<kythira::host_node_id, std::string> finder{cfg};
 
     std::cerr << "multi_raft_node: registering node " << opt._node_id << " at "
               << opt._advertise_address << " under tag " << opt._discovery_run_tag << "\n";
@@ -188,7 +190,7 @@ void resolve_peers_by_discovery(node_options& opt) {
         // cannot route to itself.
         throw std::runtime_error(
             "multi_raft_node: discovery returned " + std::to_string(opt._peers.size()) +
-            " peer(s) but not this host (id " + std::to_string(opt._node_id) +
+            " peer(s) but not this host (id " + kythira::host_node_id_text(opt._node_id) +
             "). The transport's URL map is used for every target including self");
     }
 

@@ -1873,6 +1873,28 @@ set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_tu=1)
 # Enable testing
 enable_testing()
 
+# The node id kind the host binaries are built with (KYTHIRA_NODE_ID_KIND,
+# include/raft/host_node_id.hpp). A compile definition on an INTERFACE target
+# rather than an `#include` of generated/kythira/autoconf.hpp: that header
+# carries every Kconfig symbol, and defining all of them in a translation unit
+# would switch on feature macros (CPPHTTPLIB_OPENSSL_SUPPORT among them) for
+# code that is not linked against what they need. Every other Kconfig symbol
+# reaches C++ the same way, through target_compile_definitions.
+add_library(kythira_host_node_id INTERFACE)
+# host_node_id.hpp reaches self_node_id.hpp (`metadata:<provider>`), which
+# speaks HTTP with cpp-httplib and parses Azure's answer with Boost.JSON.
+foreach(_kythira_host_node_id_dep httplib::httplib boost_json)
+    if(TARGET ${_kythira_host_node_id_dep})
+        target_link_libraries(kythira_host_node_id INTERFACE ${_kythira_host_node_id_dep})
+    endif()
+endforeach()
+if(KCONFIG_KYTHIRA_NODE_ID_TEXT)
+    target_compile_definitions(kythira_host_node_id INTERFACE KYTHIRA_NODE_ID_TEXT=1)
+    message(STATUS "Host binaries: node ids are canonical composite text (KYTHIRA_NODE_ID_KIND=text)")
+else()
+    message(STATUS "Host binaries: node ids are numeric (KYTHIRA_NODE_ID_KIND=numeric)")
+endif()
+
 # Add subdirectories
 # cmd/ca_service and cmd/ca_cluster_node are added before tests/
 # (tests/CMakeLists.txt gates its dependent targets on `if(TARGET ca_service)`
@@ -1957,6 +1979,19 @@ if(NOT ENABLE_COVERAGE)
         add_subdirectory(cmd/raft_object_backup)
     endif()
 endif()
+# Every cmd/ binary this configuration defines, as one target: CI's text node
+# id build (configs/ci_text_node_id_defconfig) builds exactly this, so the
+# binaries are compiled in both id kinds without also building the test suite
+# a second time. Each is added only when its own gate above admitted it.
+add_custom_target(host_binaries)
+foreach(_kythira_host_binary
+        ca_service ca_cluster_node chaos_node poco_discovery_node multi_raft_node
+        multi_raft_bench redis_gateway_node dns_discovery_node dns_sd_discovery_node
+        oci_heartbeat_writer_node raft_object_backup)
+    if(TARGET ${_kythira_host_binary})
+        add_dependencies(host_binaries ${_kythira_host_binary})
+    endif()
+endforeach()
 # folly_FOUND, not KYTHIRA_FUTURE_BACKEND_AVAILABLE: unlike tests/ and
 # certificate_authority, every example program calls folly::init()/
 # constructs folly::Init directly in its own main() to demonstrate real

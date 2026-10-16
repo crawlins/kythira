@@ -13,6 +13,7 @@
 #include <map>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace kythira::redis_node {
 
@@ -61,10 +62,20 @@ auto to_ms(const char* name, const std::string& v) -> std::chrono::milliseconds 
     return std::chrono::milliseconds{static_cast<std::int64_t>(to_u64(name, v))};
 }
 
+/// A peer's node id. Canonical composite text holds no `=` or `,`, so the
+/// `id=value` split below is unambiguous in either id kind.
+auto to_peer_id(const char* name, const std::string& v) -> kythira::host_node_id {
+    auto id = kythira::parse_host_peer_node_id(v);
+    if (!id) {
+        throw std::invalid_argument(std::string("redis_gateway_node: ") + name + ": " + id.error());
+    }
+    return std::move(id).value();
+}
+
 /// `id=value,id=value,...`
 auto parse_id_map(const char* name, const std::string& text)
-    -> std::map<std::uint64_t, std::string> {
-    std::map<std::uint64_t, std::string> out;
+    -> std::map<kythira::host_node_id, std::string> {
+    std::map<kythira::host_node_id, std::string> out;
     std::string tok;
     for (char c : text + ',') {
         if (c != ',') {
@@ -79,7 +90,7 @@ auto parse_id_map(const char* name, const std::string& text)
             throw std::invalid_argument(std::string("redis_gateway_node: ") + name +
                                         " expects id=value[,id=value...], got token '" + tok + "'");
         }
-        out[to_u64(name, tok.substr(0, eq))] = tok.substr(eq + 1);
+        out[to_peer_id(name, tok.substr(0, eq))] = tok.substr(eq + 1);
         tok.clear();
     }
     if (out.empty()) {
@@ -122,7 +133,14 @@ auto is_loopback_address(const std::string& address) -> bool {
 
 auto from_env() -> node_options {
     node_options o;
-    o._node_id = to_u64("KYTHIRA_NODE_ID", get_required("KYTHIRA_NODE_ID"));
+    // Numeric or canonical composite text by `KYTHIRA_NODE_ID_KIND`; a text
+    // build also takes `metadata:<provider>` and asks the instance metadata
+    // service.
+    if (auto id = kythira::parse_host_node_id(get_required("KYTHIRA_NODE_ID")); id) {
+        o._node_id = std::move(id).value();
+    } else {
+        throw std::invalid_argument("redis_gateway_node: KYTHIRA_NODE_ID: " + id.error());
+    }
     o._bind_address = get_opt("KYTHIRA_RAFT_BIND", "0.0.0.0");
     o._raft_port = static_cast<std::uint16_t>(
         to_u64("KYTHIRA_RAFT_PORT", get_opt("KYTHIRA_RAFT_PORT", "7000")));
@@ -142,7 +160,7 @@ auto from_env() -> node_options {
     if (!o._peers.contains(o._node_id)) {
         throw std::invalid_argument(
             "redis_gateway_node: KYTHIRA_PEERS must include this node's own id " +
-            std::to_string(o._node_id));
+            kythira::host_node_id_text(o._node_id));
     }
     o._tick_interval = to_ms("KYTHIRA_TICK_INTERVAL_MS", get_opt("KYTHIRA_TICK_INTERVAL_MS", "2"));
     o._election_timeout_min =
@@ -307,8 +325,12 @@ auto usage() -> std::string {
            "       redis_gateway_node --help\n"
            "\n"
            "Raft side (environment):\n"
-           "  KYTHIRA_NODE_ID                  this node's id (required)\n"
-           "  KYTHIRA_PEERS                    id=http://host:port,... for every voter, self "
+           "  KYTHIRA_NODE_ID                  this node's id (required): "
+        << (kythira::host_node_id_is_text
+                ? "decimal, canonical composite text, or metadata:<provider>"
+                : "decimal")
+        << "\n"
+           "  KYTHIRA_PEERS                   id=http://host:port,... for every voter, self "
            "included (required)\n"
            "  KYTHIRA_RAFT_BIND                bind address for Raft RPCs             [0.0.0.0]\n"
            "  KYTHIRA_RAFT_PORT                Raft RPC port                          [7000]\n"

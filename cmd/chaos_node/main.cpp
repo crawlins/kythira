@@ -65,22 +65,27 @@ static void sigterm_handler(int) {
 
 namespace {
 
+// The node id every bundle below uses: kythira::host_node_id, which is
+// std::uint64_t or canonical text depending on KYTHIRA_NODE_ID_KIND.
+using chaos_node::node_id_type;
+using host_tcp_raft_types = kythira::basic_tcp_raft_types<node_id_type>;
+
 // Inherits all type aliases from tcp_raft_types; adds seed-list peer discovery
 // so that a node started with JOIN=1 can send a ClusterJoin to PEERS instead of
 // installing them as its configuration (quorum-management Req 19). A node
 // without JOIN gets an empty seed list, which run_bootstrap() treats exactly
 // like the no_op discovery it replaces.
-struct tcp_raft_types_joinable : kythira::tcp_raft_types {
+struct tcp_raft_types_joinable : host_tcp_raft_types {
     using address_type = std::string;
     using peer_discovery_type = kythira::seed_peer_discovery<node_id_type, address_type>;
 };
 
-using seed_list = std::vector<kythira::peer_info<std::uint64_t, std::string>>;
+using seed_list = std::vector<kythira::peer_info<node_id_type, std::string>>;
 
 template<typename RaftTypes>
 constexpr bool is_joinable =
     std::is_same_v<typename kythira::node_config<RaftTypes>::peer_discovery_type,
-                   kythira::seed_peer_discovery<std::uint64_t, std::string>>;
+                   kythira::seed_peer_discovery<node_id_type, std::string>>;
 
 // PEERS as ClusterJoin seeds when joining, nothing otherwise.
 auto join_seeds(const chaos_node::node_config& cfg) -> seed_list {
@@ -104,7 +109,7 @@ struct tcp_raft_types_with_docker_qm : tcp_raft_types_joinable {
 // Requirement 5.3). Selected at startup, not combined with
 // tcp_raft_types_with_docker_qm above in this pass — OTLP + docker quorum
 // manager together is future work, not required by that spec.
-struct tcp_raft_types_with_otlp : kythira::tcp_raft_types {
+struct tcp_raft_types_with_otlp : host_tcp_raft_types {
     using logger_type = kythira::otlp_logger;
     using metrics_type = kythira::otlp_metrics;
 };
@@ -112,13 +117,13 @@ struct tcp_raft_types_with_otlp : kythira::tcp_raft_types {
 // Self-hosted metrics backends (doc/TODO.md "Metrics Backends"). Same
 // swap-one-alias pattern as tcp_raft_types_with_otlp; logger stays the
 // default console_logger — these backends are metrics-only.
-struct tcp_raft_types_with_prometheus : kythira::tcp_raft_types {
+struct tcp_raft_types_with_prometheus : host_tcp_raft_types {
     using metrics_type = kythira::prometheus_metrics;
 };
-struct tcp_raft_types_with_victoriametrics : kythira::tcp_raft_types {
+struct tcp_raft_types_with_victoriametrics : host_tcp_raft_types {
     using metrics_type = kythira::victoriametrics_metrics;
 };
-struct tcp_raft_types_with_telegraf : kythira::tcp_raft_types {
+struct tcp_raft_types_with_telegraf : host_tcp_raft_types {
     using metrics_type = kythira::telegraf_metrics;
 };
 
@@ -135,16 +140,16 @@ struct tcp_raft_types_with_victoriametrics_victorialogs : tcp_raft_types_with_vi
 struct tcp_raft_types_with_telegraf_logs : tcp_raft_types_with_telegraf {
     using logger_type = kythira::telegraf_logger;
 };
-struct tcp_raft_types_with_netdata : kythira::tcp_raft_types {
+struct tcp_raft_types_with_netdata : host_tcp_raft_types {
     using metrics_type = kythira::netdata_metrics;
 };
 
 #ifdef KYTHIRA_CHAOS_NODE_RPC_TLS
 // The RPC transport swapped for the mutual-TLS one (RPC_TLS_* in
 // config.hpp); everything else is the plain path's.
-struct tcp_raft_types_with_tls : kythira::tcp_raft_types {
-    using network_client_type = kythira::tls_tcp_rpc_client;
-    using network_server_type = kythira::tls_tcp_rpc_server;
+struct tcp_raft_types_with_tls : host_tcp_raft_types {
+    using network_client_type = kythira::basic_tls_tcp_rpc_client<node_id_type>;
+    using network_server_type = kythira::basic_tls_tcp_rpc_server<node_id_type>;
 };
 
 auto read_text_file(const std::string& path) -> std::string {
@@ -161,15 +166,16 @@ auto read_text_file(const std::string& path) -> std::string {
 // PEERS gives for it, and binds each one to that peer's id, so one member's
 // certificate cannot speak for another and a certificate the same root
 // issued to anything else is refused.
-auto rpc_tls_config_of(const chaos_node::node_config& cfg) -> kythira::tls_tcp_rpc_config {
-    std::map<std::string, std::uint64_t> names;
+auto rpc_tls_config_of(const chaos_node::node_config& cfg)
+    -> kythira::basic_tls_tcp_rpc_config<node_id_type> {
+    std::map<std::string, node_id_type> names;
     for (const auto& p : cfg.peers) {
         names.emplace(p.host, p.node_id);
     }
-    return kythira::tls_tcp_rpc_config{
+    return kythira::basic_tls_tcp_rpc_config<node_id_type>{
         .cert_path = cfg.rpc_tls_cert_path,
         .key_path = cfg.rpc_tls_key_path,
-        .trust_policy = kythira::ca_root_only(read_text_file(cfg.rpc_tls_ca_path))
+        .trust_policy = kythira::ca_root_only<node_id_type>(read_text_file(cfg.rpc_tls_ca_path))
                             .binding_peer_node_ids(std::move(names)),
     };
 }
@@ -285,15 +291,16 @@ int main(int argc, char** argv) {
     // docker quorum manager alongside it.
     if (cfg.rpc_tls()) {
 #ifdef KYTHIRA_CHAOS_NODE_RPC_TLS
-        kythira::tls_tcp_rpc_config tls_cfg;
+        kythira::basic_tls_tcp_rpc_config<node_id_type> tls_cfg;
         try {
             tls_cfg = rpc_tls_config_of(cfg);
         } catch (const std::exception& e) {
             std::cerr << e.what() << "\n";
             return 1;
         }
-        kythira::tls_tcp_rpc_server tls_server(cfg.rpc_port, tls_cfg, cfg.rpc_address);
-        kythira::tls_tcp_rpc_client tls_client(tls_cfg);
+        kythira::basic_tls_tcp_rpc_server<node_id_type> tls_server(cfg.rpc_port, tls_cfg,
+                                                                   cfg.rpc_address);
+        kythira::basic_tls_tcp_rpc_client<node_id_type> tls_client(tls_cfg);
         for (const auto& p : cfg.peers) {
             tls_client.add_peer(p.node_id, p.host, p.port);
         }
@@ -307,10 +314,10 @@ int main(int argc, char** argv) {
             .node_id = cfg.node_id,
             .network_client = std::move(tls_client),
             .network_server = std::move(tls_server),
-            .persistence = kythira::file_persistence_engine<>(cfg.data_dir),
+            .persistence = kythira::file_persistence_engine<node_id_type>(cfg.data_dir),
             .logger = kythira::console_logger{},
             .metrics = kythira::noop_metrics{},
-            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
             .config = raft_cfg,
         };
         return run_node<tcp_raft_types_with_tls>(cfg, std::move(ncfg));
@@ -323,8 +330,8 @@ int main(int argc, char** argv) {
     // ── Components ───────────────────────────────────────────────────────────
     // Bound to cfg.rpc_address: the server's port-only constructor listens on
     // every IPv4 interface whatever RPC_ADDRESS says.
-    kythira::tcp_rpc_server server(cfg.rpc_port, cfg.rpc_address);
-    kythira::tcp_rpc_client client;
+    kythira::basic_tcp_rpc_server<node_id_type> server(cfg.rpc_port, cfg.rpc_address);
+    kythira::basic_tcp_rpc_client<node_id_type> client;
     for (const auto& p : cfg.peers) {
         client.add_peer(p.node_id, p.host, p.port);
     }
@@ -333,9 +340,9 @@ int main(int argc, char** argv) {
     server.set_peer_seen_handler(client.peer_seen_handler());
     // Members that joined after this node started are not in PEERS.
     if (cfg.peer_address_template) {
-        client.set_peer_resolver([cfg](const std::uint64_t& id) { return cfg.resolve(id); });
+        client.set_peer_resolver([cfg](const node_id_type& id) { return cfg.resolve(id); });
     }
-    kythira::file_persistence_engine<> persistence(cfg.data_dir);
+    kythira::file_persistence_engine<node_id_type> persistence(cfg.data_dir);
 
     // ── OTLP telemetry (.kiro/specs/otlp-telemetry-backend/, Req 5.3) ─────────
     // Opt-in and additive: unset OTLP_ENDPOINT leaves today's console_logger/
@@ -349,7 +356,7 @@ int main(int argc, char** argv) {
 
         kythira::otlp_resource otlp_res;
         otlp_res.service_name = cfg.otlp_service_name;
-        otlp_res.service_instance_id = std::to_string(cfg.node_id);
+        otlp_res.service_instance_id = kythira::host_node_id_text(cfg.node_id);
 
         std::cerr << "[info] telemetry: otlp (" << *cfg.otlp_endpoint << ")\n";
 
@@ -360,7 +367,7 @@ int main(int argc, char** argv) {
             .persistence = std::move(persistence),
             .logger = kythira::otlp_logger{otlp_cfg, otlp_res},
             .metrics = kythira::otlp_metrics{otlp_cfg, otlp_res},
-            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
             .config = raft_cfg,
         };
 
@@ -387,7 +394,7 @@ int main(int argc, char** argv) {
             loki_cfg.endpoint_base_url = *cfg.loki_endpoint;
             kythira::otlp_resource loki_res;
             loki_res.service_name = cfg.otlp_service_name;
-            loki_res.service_instance_id = std::to_string(cfg.node_id);
+            loki_res.service_instance_id = kythira::host_node_id_text(cfg.node_id);
             std::cerr << "[info] logging: loki (" << *cfg.loki_endpoint << ")\n";
 
             kythira::node_config<tcp_raft_types_with_prometheus_loki> ncfg{
@@ -397,7 +404,7 @@ int main(int argc, char** argv) {
                 .persistence = std::move(persistence),
                 .logger = kythira::loki_logger{loki_cfg, loki_res},
                 .metrics = kythira::prometheus_metrics{registry},
-                .membership = kythira::default_membership_manager<std::uint64_t>{},
+                .membership = kythira::default_membership_manager<node_id_type>{},
                 .config = raft_cfg,
             };
             return run_node<tcp_raft_types_with_prometheus_loki>(cfg, std::move(ncfg));
@@ -410,7 +417,7 @@ int main(int argc, char** argv) {
             .persistence = std::move(persistence),
             .logger = kythira::console_logger{},
             .metrics = kythira::prometheus_metrics{registry},
-            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
             .config = raft_cfg,
         };
         return run_node<tcp_raft_types_with_prometheus>(cfg, std::move(ncfg));
@@ -422,7 +429,7 @@ int main(int argc, char** argv) {
         // Pushed series have no scrape target to inherit identity from —
         // job/instance travel as constant labels (victoriametrics_metrics.hpp).
         vm_cfg.constant_labels = {{"job", cfg.otlp_service_name},
-                                  {"instance", std::to_string(cfg.node_id)}};
+                                  {"instance", kythira::host_node_id_text(cfg.node_id)}};
         std::cerr << "[info] telemetry: victoriametrics (" << *cfg.victoriametrics_endpoint
                   << ")\n";
 
@@ -430,7 +437,7 @@ int main(int argc, char** argv) {
             kythira::victorialogs_config vl_cfg;
             vl_cfg.endpoint_base_url = *cfg.victorialogs_endpoint;
             vl_cfg.job = cfg.otlp_service_name;
-            vl_cfg.instance = std::to_string(cfg.node_id);
+            vl_cfg.instance = kythira::host_node_id_text(cfg.node_id);
             std::cerr << "[info] logging: victorialogs (" << *cfg.victorialogs_endpoint << ")\n";
 
             kythira::node_config<tcp_raft_types_with_victoriametrics_victorialogs> ncfg{
@@ -440,7 +447,7 @@ int main(int argc, char** argv) {
                 .persistence = std::move(persistence),
                 .logger = kythira::victorialogs_logger{vl_cfg},
                 .metrics = kythira::victoriametrics_metrics{vm_cfg},
-                .membership = kythira::default_membership_manager<std::uint64_t>{},
+                .membership = kythira::default_membership_manager<node_id_type>{},
                 .config = raft_cfg,
             };
             return run_node<tcp_raft_types_with_victoriametrics_victorialogs>(cfg, std::move(ncfg));
@@ -453,7 +460,7 @@ int main(int argc, char** argv) {
             .persistence = std::move(persistence),
             .logger = kythira::console_logger{},
             .metrics = kythira::victoriametrics_metrics{vm_cfg},
-            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
             .config = raft_cfg,
         };
         return run_node<tcp_raft_types_with_victoriametrics>(cfg, std::move(ncfg));
@@ -475,7 +482,7 @@ int main(int argc, char** argv) {
             tl_cfg.host = tg_cfg.host;
             tl_cfg.port = tg_cfg.port;
             tl_cfg.protocol = tg_cfg.protocol;
-            tl_cfg.constant_tags = {{"node_id", std::to_string(cfg.node_id)}};
+            tl_cfg.constant_tags = {{"node_id", kythira::host_node_id_text(cfg.node_id)}};
             std::cerr << "[info] logging: telegraf (same listener)\n";
 
             kythira::node_config<tcp_raft_types_with_telegraf_logs> ncfg{
@@ -485,7 +492,7 @@ int main(int argc, char** argv) {
                 .persistence = std::move(persistence),
                 .logger = kythira::telegraf_logger{tl_cfg},
                 .metrics = kythira::telegraf_metrics{tg_cfg},
-                .membership = kythira::default_membership_manager<std::uint64_t>{},
+                .membership = kythira::default_membership_manager<node_id_type>{},
                 .config = raft_cfg,
             };
             return run_node<tcp_raft_types_with_telegraf_logs>(cfg, std::move(ncfg));
@@ -498,7 +505,7 @@ int main(int argc, char** argv) {
             .persistence = std::move(persistence),
             .logger = kythira::console_logger{},
             .metrics = kythira::telegraf_metrics{tg_cfg},
-            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
             .config = raft_cfg,
         };
         return run_node<tcp_raft_types_with_telegraf>(cfg, std::move(ncfg));
@@ -518,7 +525,7 @@ int main(int argc, char** argv) {
             .persistence = std::move(persistence),
             .logger = kythira::console_logger{},
             .metrics = kythira::netdata_metrics{nd_cfg},
-            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
             .config = raft_cfg,
         };
         return run_node<tcp_raft_types_with_netdata>(cfg, std::move(ncfg));
@@ -571,8 +578,8 @@ int main(int argc, char** argv) {
         // Every bootstrap member belongs to the manager's one group, so a
         // replacement it provisions for one of them is admitted even though
         // the group is still full while the failed voter is a member.
-        std::unordered_map<std::uint64_t, std::string> placement;
-        for (auto id : cfg.all_node_ids()) {
+        std::unordered_map<node_id_type, std::string> placement;
+        for (const auto& id : cfg.all_node_ids()) {
             placement.emplace(id, qm_cfg.group_id);
         }
 
@@ -586,11 +593,11 @@ int main(int argc, char** argv) {
             .persistence = std::move(persistence),
             .logger = kythira::console_logger{},
             .metrics = kythira::noop_metrics{},
-            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
             .config = raft_cfg,
             .self_address = cfg.self_address,
             .peer_discovery =
-                kythira::seed_peer_discovery<std::uint64_t, std::string>{join_seeds(cfg)},
+                kythira::seed_peer_discovery<node_id_type, std::string>{join_seeds(cfg)},
             .quorum_manager = tcp_raft_types_with_docker_qm::quorum_manager_type{qm_cfg},
             .initial_placement = std::move(placement),
         };
@@ -620,10 +627,10 @@ int main(int argc, char** argv) {
         .persistence = std::move(persistence),
         .logger = kythira::console_logger{},
         .metrics = kythira::noop_metrics{},
-        .membership = kythira::default_membership_manager<std::uint64_t>{},
+        .membership = kythira::default_membership_manager<node_id_type>{},
         .config = raft_cfg,
         .self_address = cfg.self_address,
-        .peer_discovery = kythira::seed_peer_discovery<std::uint64_t, std::string>{join_seeds(cfg)},
+        .peer_discovery = kythira::seed_peer_discovery<node_id_type, std::string>{join_seeds(cfg)},
         .quorum_manager =
             kythira::node_config<tcp_raft_types_joinable>::quorum_manager_type{std::move(topology)},
     };

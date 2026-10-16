@@ -82,7 +82,7 @@
 namespace kythira::bench::host {
 
 [[nodiscard]] inline auto url_map(const node_options& opt)
-    -> std::unordered_map<std::uint64_t, std::string> {
+    -> std::unordered_map<kythira::host_node_id, std::string> {
     return {opt._peers.begin(), opt._peers.end()};
 }
 
@@ -98,8 +98,8 @@ namespace kythira::bench::host {
 
 template<typename Serializer> struct httplib_stack {
     using bundle = kythira::testing::harness_transport_types<Serializer>;
-    using client_type = kythira::cpp_httplib_client<bundle>;
-    using server_type = kythira::cpp_httplib_server<bundle>;
+    using client_type = kythira::cpp_httplib_client<bundle, kythira::host_node_id>;
+    using server_type = kythira::cpp_httplib_server<bundle, kythira::host_node_id>;
     static constexpr std::string_view k_name = "cpp-httplib";
 
     explicit httplib_stack(const node_options& opt)
@@ -130,8 +130,8 @@ template<typename Serializer> struct httplib_stack {
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
 template<typename Serializer> struct beast_stack {
     using bundle = kythira::testing::harness_transport_types<Serializer>;
-    using client_type = kythira::boost_beast_client<bundle>;
-    using server_type = kythira::boost_beast_server<bundle>;
+    using client_type = kythira::boost_beast_client<bundle, kythira::host_node_id>;
+    using server_type = kythira::boost_beast_server<bundle, kythira::host_node_id>;
     static constexpr std::string_view k_name = "beast";
 
     explicit beast_stack(const node_options& opt)
@@ -198,8 +198,8 @@ template<typename Serializer> struct beast_stack {
 /// so no Raft RPC is in flight on these threads when they are torn down.
 template<typename Serializer> struct proxygen_stack {
     using bundle = kythira::testing::harness_transport_types<Serializer>;
-    using client_type = kythira::proxygen_client<bundle>;
-    using server_type = kythira::proxygen_server<bundle>;
+    using client_type = kythira::proxygen_client<bundle, kythira::host_node_id>;
+    using server_type = kythira::proxygen_server<bundle, kythira::host_node_id>;
     static constexpr std::string_view k_name = "proxygen";
 
     explicit proxygen_stack(const node_options& opt)
@@ -267,7 +267,7 @@ template<typename Stack> struct host_types {
     using promise_type = kythira::promise_default<std::vector<std::byte>>;
     using try_type = kythira::try_default<std::vector<std::byte>>;
 
-    using node_id_type = std::uint64_t;
+    using node_id_type = kythira::host_node_id;
     using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
     using group_id_type = std::uint64_t;
@@ -282,9 +282,9 @@ template<typename Stack> struct host_types {
     // counters out of the measured process, so this host counts nothing about
     // itself.
     using network_client_type =
-        kythira::testing::transport_client_handle<typename Stack::client_type>;
+        kythira::testing::transport_client_handle<typename Stack::client_type, node_id_type>;
     using network_server_type =
-        kythira::testing::transport_server_handle<typename Stack::server_type>;
+        kythira::testing::transport_server_handle<typename Stack::server_type, node_id_type>;
 
     using persistence_engine_type = kythira::bench::switchable_persistence;
     using logger_type = kythira::console_logger;
@@ -338,7 +338,8 @@ auto run_host(const node_options& opt, Capacity capacity = {}) -> int {
     using types = host_types<Stack>;
     using host_type = kythira::multi_raft<types, std::string, std::uint64_t>;
     using config_type = kythira::multi_raft_config<types, std::string, std::uint64_t>;
-    using descriptor_type = kythira::shard_descriptor<std::uint64_t, std::string, std::uint64_t>;
+    using descriptor_type =
+        kythira::shard_descriptor<std::uint64_t, std::string, kythira::host_node_id>;
 
     Stack stack{opt};
 

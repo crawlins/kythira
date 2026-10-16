@@ -35,6 +35,7 @@ target_link_libraries(redis_gateway_node PRIVATE
     boost_json
     OpenSSL::SSL
     OpenSSL::Crypto
+    kythira_host_node_id   # KYTHIRA_NODE_ID_KIND
 )
 
 target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_BENCH_HAS_BEAST)

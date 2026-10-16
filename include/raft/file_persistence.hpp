@@ -695,7 +695,7 @@ private:
         obj["state"] = bytes_to_base64(snap.state_machine_state());
         // primary (new) configuration nodes
         boost::json::array nodes;
-        for (auto n : snap.configuration().nodes()) {
+        for (const auto& n : snap.configuration().nodes()) {
             if constexpr (std::is_same_v<NodeId, std::string>) {
                 nodes.push_back(boost::json::string(n));
             } else {
@@ -706,7 +706,7 @@ private:
         obj["is_joint_consensus"] = snap.configuration().is_joint_consensus();
         if (snap.configuration().is_joint_consensus() && snap.configuration().old_nodes()) {
             boost::json::array old_nodes;
-            for (auto n : *snap.configuration().old_nodes()) {
+            for (const auto& n : *snap.configuration().old_nodes()) {
                 if constexpr (std::is_same_v<NodeId, std::string>) {
                     old_nodes.push_back(boost::json::string(n));
                 } else {

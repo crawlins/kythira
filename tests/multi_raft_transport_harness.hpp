@@ -160,7 +160,11 @@ struct rpc_counters {
 /// underlying transport does — no more (which would produce a link error at
 /// best) and no fewer (which would silently disable leadership transfer on a
 /// transport that supports it).
-template<typename Client> class transport_client_handle {
+///
+/// `NodeId` is the RPC target and request id type: `std::uint64_t` for every
+/// harness row, a host binary's `kythira::host_node_id` for the `cmd/` hosts
+/// built with `KYTHIRA_NODE_ID_KIND=text`.
+template<typename Client, typename NodeId = std::uint64_t> class transport_client_handle {
 public:
     using client_type = Client;
 
@@ -169,7 +173,8 @@ public:
 
     // ── the three every transport has ────────────────────────────────────────
 
-    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+    auto send_request_vote(const NodeId& target,
+                           const kythira::request_vote_request<NodeId>& request,
                            std::chrono::milliseconds timeout) {
         if (_counters != nullptr) {
             _counters->_request_vote.fetch_add(1, std::memory_order_relaxed);
@@ -177,7 +182,8 @@ public:
         return _client->send_request_vote(target, request, timeout);
     }
 
-    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+    auto send_append_entries(const NodeId& target,
+                             const kythira::append_entries_request<NodeId>& request,
                              std::chrono::milliseconds timeout) {
         if (_counters != nullptr) {
             // Counted on the way out, before the transport can fail it. An RPC
@@ -194,8 +200,8 @@ public:
         return _client->send_append_entries(target, request, timeout);
     }
 
-    auto send_install_snapshot(std::uint64_t target,
-                               const kythira::install_snapshot_request<>& request,
+    auto send_install_snapshot(const NodeId& target,
+                               const kythira::install_snapshot_request<NodeId>& request,
                                std::chrono::milliseconds timeout) {
         if (_counters != nullptr) {
             _counters->_install_snapshot.fetch_add(1, std::memory_order_relaxed);
@@ -205,25 +211,25 @@ public:
 
     // ── the optional ones, mirrored from the underlying transport ────────────
 
-    auto send_request_pre_vote(std::uint64_t target,
-                               const kythira::request_pre_vote_request<>& request,
+    auto send_request_pre_vote(const NodeId& target,
+                               const kythira::request_pre_vote_request<NodeId>& request,
                                std::chrono::milliseconds timeout)
-    requires kythira::network_client_with_pre_vote<Client>
+    requires kythira::network_client_with_pre_vote<Client, NodeId>
     {
         return _client->send_request_pre_vote(target, request, timeout);
     }
 
-    auto send_fetch_log_entries(std::uint64_t target,
-                                const kythira::fetch_log_entries_request<>& request,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const kythira::fetch_log_entries_request<NodeId>& request,
                                 std::chrono::milliseconds timeout)
-    requires kythira::network_client_with_log_fetch<Client>
+    requires kythira::network_client_with_log_fetch<Client, NodeId>
     {
         return _client->send_fetch_log_entries(target, request, timeout);
     }
 
-    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+    auto send_timeout_now(const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
                           std::chrono::milliseconds timeout)
-    requires kythira::network_client_with_timeout_now<Client>
+    requires kythira::network_client_with_timeout_now<Client, NodeId>
     {
         return _client->send_timeout_now(target, request, timeout);
     }
@@ -242,50 +248,52 @@ private:
 /// `start()` and `stop()` are forwarded rather than suppressed: the host is the
 /// component that knows when the transport should be live, and every fixture
 /// below constructs its server *stopped* precisely so that stays true.
-template<typename Server> class transport_server_handle {
+/// `NodeId` as for `transport_client_handle`.
+template<typename Server, typename NodeId = std::uint64_t> class transport_server_handle {
 public:
     using server_type = Server;
 
     explicit transport_server_handle(Server& server) noexcept : _server(&server) {}
 
-    auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
-            handler) -> void {
+    auto register_request_vote_handler(std::function<kythira::request_vote_response<>(
+                                           const kythira::request_vote_request<NodeId>&)>
+                                           handler) -> void {
         _server->register_request_vote_handler(std::move(handler));
     }
 
-    auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
-            handler) -> void {
+    auto register_append_entries_handler(std::function<kythira::append_entries_response<>(
+                                             const kythira::append_entries_request<NodeId>&)>
+                                             handler) -> void {
         _server->register_append_entries_handler(std::move(handler));
     }
 
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
-                                               const kythira::install_snapshot_request<>&)>
+                                               const kythira::install_snapshot_request<NodeId>&)>
                                                handler) -> void {
         _server->register_install_snapshot_handler(std::move(handler));
     }
 
     auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
-                                               const kythira::request_pre_vote_request<>&)>
+                                               const kythira::request_pre_vote_request<NodeId>&)>
                                                handler) -> void
-    requires kythira::network_server_with_pre_vote<Server>
+    requires kythira::network_server_with_pre_vote<Server, NodeId>
     {
         _server->register_request_pre_vote_handler(std::move(handler));
     }
 
-    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
-                                                const kythira::fetch_log_entries_request<>&)>
-                                                handler) -> void
-    requires kythira::network_server_with_log_fetch<Server>
+    auto register_fetch_log_entries_handler(
+        std::function<kythira::fetch_log_entries_response<NodeId>(
+            const kythira::fetch_log_entries_request<NodeId>&)>
+            handler) -> void
+    requires kythira::network_server_with_log_fetch<Server, NodeId>
     {
         _server->register_fetch_log_entries_handler(std::move(handler));
     }
 
     auto register_timeout_now_handler(
-        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
             handler) -> void
-    requires kythira::network_server_with_timeout_now<Server>
+    requires kythira::network_server_with_timeout_now<Server, NodeId>
     {
         _server->register_timeout_now_handler(std::move(handler));
     }

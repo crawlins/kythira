@@ -28,6 +28,7 @@ target_link_libraries(ca_cluster_node PRIVATE
     httplib::httplib
     OpenSSL::SSL
     OpenSSL::Crypto
+    kythira_host_node_id   # KYTHIRA_NODE_ID_KIND
 )
 
 target_compile_features(ca_cluster_node PRIVATE cxx_std_23)

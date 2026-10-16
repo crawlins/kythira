@@ -106,11 +106,13 @@
 
 namespace {
 
+using ca_cluster_node::node_id_type;
+
 // Extends tcp_raft_types (real TCP RPC transport, file-backed persistence,
 // JSON serialisation — the same components cmd/chaos_node uses) with the
 // CA-specific state machine. The default, plain-TCP RPC configuration
 // (Requirement 3.3's fallback).
-struct ca_cluster_raft_types_plain : kythira::tcp_raft_types {
+struct ca_cluster_raft_types_plain : kythira::basic_tcp_raft_types<node_id_type> {
     using state_machine_type = raft::testing::ca_state_machine;
 };
 
@@ -120,10 +122,10 @@ struct ca_cluster_raft_types_plain : kythira::tcp_raft_types {
 // 3.2). node<Types> never needs to know which of these two Types it was
 // instantiated with — both satisfy network_client/network_server
 // identically.
-struct ca_cluster_raft_types_tls : kythira::tcp_raft_types {
+struct ca_cluster_raft_types_tls : kythira::basic_tcp_raft_types<node_id_type> {
     using state_machine_type = raft::testing::ca_state_machine;
-    using network_client_type = kythira::tls_tcp_rpc_client;
-    using network_server_type = kythira::tls_tcp_rpc_server;
+    using network_client_type = kythira::basic_tls_tcp_rpc_client<node_id_type>;
+    using network_server_type = kythira::basic_tls_tcp_rpc_server<node_id_type>;
 };
 #endif
 
@@ -289,12 +291,21 @@ auto persist_rpc_peer_identity(const std::string& data_dir, const std::string& c
 
 // This node's own RPC identity options (Requirement 5.2) — a CN that
 // unambiguously identifies the node, sufficient for peer-to-peer mutual
-// verification and not intended for any external client-facing use.
-auto rpc_peer_identity_options(std::uint64_t node_id) -> raft::testing::leaf_certificate_options {
+// verification and not intended for any external client-facing use. A
+// textual id's identity is its reserved URI SAN (cloud-composite-node-ids
+// Requirement 12.2); the CN is then a fixed label, since canonical text can
+// exceed the 64 characters X.509 allows a CN, and only the SAN is checked.
+auto rpc_peer_identity_options(const node_id_type& node_id)
+    -> raft::testing::leaf_certificate_options {
     raft::testing::leaf_certificate_options opts;
-    std::string name = raft::testing::peer_identity_dns_name(node_id);
-    opts.subject.common_name = name;
-    opts.dns_names = {name};
+    std::string name = raft::testing::peer_identity_name(node_id);
+    if constexpr (raft::testing::peer_identity_is_uri<node_id_type>) {
+        opts.subject.common_name = "kythira-ca-cluster-peer";
+        opts.uri_names = {name};
+    } else {
+        opts.subject.common_name = name;
+        opts.dns_names = {name};
+    }
     opts.server_auth = true;
     opts.client_auth = true;
     return opts;
@@ -304,10 +315,10 @@ auto rpc_peer_identity_options(std::uint64_t node_id) -> raft::testing::leaf_cer
 // only CA-chained certificates RPC TLS accepts, each bound to the node it
 // names (tls_rpc_trust_policy::peer_node_ids).
 auto cluster_peer_node_ids(const ca_cluster_node::ca_cluster_node_config& cfg)
-    -> std::map<std::string, std::uint64_t> {
-    std::map<std::string, std::uint64_t> ids;
-    for (auto id : cfg.all_node_ids()) {
-        ids[raft::testing::peer_identity_dns_name(id)] = id;
+    -> std::map<std::string, node_id_type> {
+    std::map<std::string, node_id_type> ids;
+    for (const auto& id : cfg.all_node_ids()) {
+        ids[raft::testing::peer_identity_name(id)] = id;
     }
     return ids;
 }
@@ -317,7 +328,7 @@ auto cluster_peer_node_ids(const ca_cluster_node::ca_cluster_node_config& cfg)
 // node's reserved peer name. The leader's response may arrive over plaintext
 // HTTP (loopback or --allow-plaintext-http), so it is not trusted on its own.
 auto issued_peer_cert_ok(const std::string& cert_pem, const std::string& root_pem,
-                         std::uint64_t node_id) -> bool {
+                         const node_id_type& node_id) -> bool {
     BIO* bio = BIO_new_mem_buf(cert_pem.data(), static_cast<int>(cert_pem.size()));
     X509* issued = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
@@ -325,8 +336,8 @@ auto issued_peer_cert_ok(const std::string& cert_pem, const std::string& root_pe
         return false;
     }
     bool ok = raft::testing::cert_chains_to_root(issued, root_pem) &&
-              raft::testing::cert_has_dns_san_in(issued,
-                                                 {raft::testing::peer_identity_dns_name(node_id)});
+              raft::testing::cert_has_peer_name_in<node_id_type>(
+                  issued, {raft::testing::peer_identity_name(node_id)});
     X509_free(issued);
     return ok;
 }
@@ -359,13 +370,12 @@ auto make_peer_client(const std::string& http_address,
 // every configured node has enrolled its CA-issued peer identity, and which
 // peer certificates have been revoked.
 auto rpc_trust_state_of(const raft::testing::ca_state_machine& state,
-                        const std::vector<std::uint64_t>& node_ids)
+                        const std::vector<node_id_type>& node_ids)
     -> raft::testing::peer_rpc_trust_state {
     raft::testing::peer_rpc_trust_state out;
     out.root_pem = state.root_certificate_pem();
-    auto ready = state.rpc_tls_ready_node_ids();
-    out.cutover_complete =
-        std::ranges::all_of(node_ids, [&](std::uint64_t id) { return ready.contains(id); });
+    out.cutover_complete = std::ranges::all_of(
+        node_ids, [&](const node_id_type& id) { return state.is_rpc_tls_ready(id); });
     for (const auto& entry : state.ledger()) {
         if (entry.revoked_at.has_value() &&
             (std::ranges::any_of(entry.dns_names,
@@ -555,11 +565,22 @@ auto acquire_rpc_peer_certificate(kythira::node<Types>& raft_node,
         dns_arr.push_back(boost::json::string(d));
     }
     body["dns_names"] = dns_arr;
+    boost::json::array uri_arr;
+    for (const auto& u : sign_opts.uri_names) {
+        uri_arr.push_back(boost::json::string(u));
+    }
+    body["uri_names"] = uri_arr;
     body["server_auth"] = sign_opts.server_auth;
     body["client_auth"] = sign_opts.client_auth;
     // Requirement 5.3: the leader commits record_rpc_tls_ready for this id
     // right after this CSR's issuance (see the function comment).
-    body["rpc_tls_ready_node_id"] = cfg.node_id;
+    // A number for a numeric id; canonical text, a JSON string, for a
+    // textual one (the textual record_rpc_tls_ready form, Requirement 12.4).
+    if constexpr (kythira::host_node_id_is_text) {
+        body["rpc_tls_ready_node_id"] = kythira::host_node_id_text(cfg.node_id);
+    } else {
+        body["rpc_tls_ready_node_id"] = cfg.node_id;
+    }
     const auto request_body = boost::json::serialize(body);
 
     // The Raft-known leader first, then every configured peer: once the
@@ -647,8 +668,8 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // KYTHIRA_HAS_OPENSSL (root CMakeLists.txt) — so it is always defined in
     // this translation unit; k_rpc_tls is what actually distinguishes the
     // two Types this function is instantiated with.
-    constexpr bool k_rpc_tls =
-        std::is_same_v<typename Types::network_client_type, kythira::tls_tcp_rpc_client>;
+    constexpr bool k_rpc_tls = std::is_same_v<typename Types::network_client_type,
+                                              kythira::basic_tls_tcp_rpc_client<node_id_type>>;
 
     kythira::raft_configuration raft_cfg;
     raft_cfg._election_timeout_min = cfg.election_timeout_min;
@@ -703,7 +724,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         }
     }();
 
-    kythira::file_persistence_engine<> persistence(cfg.data_dir);
+    kythira::file_persistence_engine<node_id_type> persistence(cfg.data_dir);
 
     kythira::node_config<Types> ncfg{
         .node_id = cfg.node_id,
@@ -712,7 +733,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         .persistence = std::move(persistence),
         .logger = kythira::console_logger{},
         .metrics = kythira::noop_metrics{},
-        .membership = kythira::default_membership_manager<std::uint64_t>{},
+        .membership = kythira::default_membership_manager<node_id_type>{},
         .config = raft_cfg,
     };
 
@@ -933,7 +954,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             if (!trusted_root.has_value()) {
                 return;
             }
-            kythira::tls_rpc_trust_policy policy;
+            kythira::basic_tls_rpc_trust_policy<node_id_type> policy;
             policy.ca_root_pem = *trusted_root;
             if (!cutover_finalized) {
                 policy.bootstrap_fingerprint_hex = bootstrap_fingerprint;
@@ -1023,6 +1044,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
             raft::testing::csr_signing_options sign_opts;
             sign_opts.dns_names = leaf_opts.dns_names;
+            sign_opts.uri_names = leaf_opts.uri_names;
             sign_opts.server_auth = leaf_opts.server_auth;
             sign_opts.client_auth = leaf_opts.client_auth;
 
@@ -1117,6 +1139,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 // the original (Requirement 5.1), ledger record included.
                 raft::testing::csr_signing_options sign_opts;
                 sign_opts.dns_names = leaf_opts.dns_names;
+                sign_opts.uri_names = leaf_opts.uri_names;
                 sign_opts.server_auth = leaf_opts.server_auth;
                 sign_opts.client_auth = leaf_opts.client_auth;
                 try {
@@ -1469,22 +1492,43 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 std::string csr_pem = std::string(csr_val->as_string());
                 auto options = raft::testing::parse_csr_signing_options(body);
 
-                // Reserved "ca-cluster-node-*" names and rpc_tls_ready_node_id
-                // are Raft peer enrollment, not ordinary issuance: they need the
-                // peer-enrollment MAC, which the client bearer token alone
-                // cannot produce (see classify_peer_enrollment).
-                std::optional<std::uint64_t> ready_node_id;
+                // Reserved "ca-cluster-node-*" / "urn:kythira:node:*" names and
+                // rpc_tls_ready_node_id are Raft peer enrollment, not ordinary
+                // issuance: they need the peer-enrollment MAC, which the client
+                // bearer token alone cannot produce (see classify_peer_enrollment).
+                // The id is a JSON number in a numeric build and canonical text,
+                // a JSON string, in a text build; the other form is refused.
+                std::optional<node_id_type> ready_node_id;
                 if (auto* v = body.if_contains("rpc_tls_ready_node_id")) {
-                    if (!v->is_number()) {
-                        throw std::invalid_argument("rpc_tls_ready_node_id must be a number");
+                    // `#if`, not `if constexpr`: this handler is not a
+                    // template, so a discarded branch would still be checked
+                    // and the other kind's assignment does not compile.
+#if defined(KYTHIRA_NODE_ID_TEXT)
+                    {
+                        if (!v->is_string()) {
+                            throw std::invalid_argument(
+                                "rpc_tls_ready_node_id must be a string (canonical node id text)");
+                        }
+                        auto id = kythira::parse_host_peer_node_id(v->as_string());
+                        if (!id) {
+                            throw std::invalid_argument("rpc_tls_ready_node_id: " + id.error());
+                        }
+                        ready_node_id = std::move(id).value();
                     }
-                    ready_node_id = v->to_number<std::uint64_t>();
+#else
+                    {
+                        if (!v->is_number()) {
+                            throw std::invalid_argument("rpc_tls_ready_node_id must be a number");
+                        }
+                        ready_node_id = v->to_number<std::uint64_t>();
+                    }
+#endif
                 }
                 auto ids = cfg.all_node_ids();
-                auto enrollment = raft::testing::classify_peer_enrollment(
+                auto enrollment = raft::testing::classify_peer_enrollment<node_id_type>(
                     options, ready_node_id,
                     req.get_header_value(raft::testing::k_peer_enrollment_header),
-                    std::set<std::uint64_t>(ids.begin(), ids.end()), cfg.peer_enrollment_key,
+                    std::set<node_id_type>(ids.begin(), ids.end()), cfg.peer_enrollment_key,
                     csr_pem);
                 if (!enrollment.allowed) {
                     res.status = bearer_ok ? 403 : 401;
@@ -1857,7 +1901,7 @@ int main(int argc, char** argv) {
     bool use_rpc_tls = !cfg.rpc_tls_cert_path.empty() || have_persisted;
 
     if (use_rpc_tls) {
-        kythira::tls_tcp_rpc_config rpc_tls_config;
+        kythira::basic_tls_tcp_rpc_config<node_id_type> rpc_tls_config;
         if (have_persisted) {
             rpc_tls_config.cert_path = rpc_peer_cert_path(cfg.data_dir);
             rpc_tls_config.key_path = rpc_peer_key_path(cfg.data_dir);
@@ -1869,7 +1913,7 @@ int main(int argc, char** argv) {
             // the full ready set. Using ca_root_only immediately would risk
             // rejecting a peer that itself hasn't cut over yet.
             auto root_pem = read_whole_file(rpc_peer_root_path(cfg.data_dir));
-            kythira::tls_rpc_trust_policy policy;
+            kythira::basic_tls_rpc_trust_policy<node_id_type> policy;
             policy.ca_root_pem = root_pem;
             policy = policy.binding_peer_node_ids(cluster_peer_node_ids(cfg));
             // Once this node has seen the whole cluster cut over, a restart
@@ -1904,7 +1948,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 auto root = raft::testing::root_cert_from_pem_bundle(*bundle);
-                rpc_tls_config.trust_policy = kythira::pinned_fingerprint(
+                rpc_tls_config.trust_policy = kythira::pinned_fingerprint<node_id_type>(
                     raft::testing::ca_bootstrap_detail::sha256_fingerprint_hex_bare(root.get()));
             } catch (const std::exception& ex) {
                 std::cerr << "ca_cluster_node: failed to compute bootstrap credential fingerprint "
