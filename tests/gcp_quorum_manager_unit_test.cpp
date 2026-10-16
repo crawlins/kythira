@@ -173,6 +173,12 @@ BOOST_AUTO_TEST_SUITE_END()
 #include <raft/gcp_compute_quorum_manager.hpp>
 #include <raft/gcp_mig_quorum_manager.hpp>
 #include <raft/gcp_operation_wait.hpp>
+#include <raft/generated_node_name.hpp>
+
+#include <algorithm>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #ifdef FIU_ENABLE
 #include <fiu-control.h>
@@ -768,6 +774,313 @@ BOOST_AUTO_TEST_CASE(decommission_zone_operation_poll_fault_returns_exceptional_
 }
 
 #endif  // FIU_ENABLE
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Composite and string mode (cloud-composite-node-ids Requirement 5) ──────
+//
+// The node id is the instance: {project}/{zone} and its name. The manager
+// generates the name before the insert, so nothing is drawn or listed, and
+// a node is found by the zone and name its id carries.
+
+namespace {
+
+static_assert(
+    kythira::quorum_manager<kythira::gcp_compute_quorum_manager<kythira::gcp_instance_node_id>,
+                            kythira::gcp_instance_node_id, std::string, std::string>);
+static_assert(kythira::quorum_manager<kythira::gcp_compute_quorum_manager<std::string>, std::string,
+                                      std::string, std::string>);
+static_assert(kythira::gcp_compute_quorum_manager<kythira::gcp_instance_node_id>::name_is_node_id);
+static_assert(kythira::gcp_compute_quorum_manager<std::string>::name_is_node_id);
+static_assert(!kythira::gcp_compute_quorum_manager<std::uint64_t>::name_is_node_id);
+
+/// `kythira-<cluster part>-<8 lower-case base32>`, a valid instance name.
+auto is_generated_instance_name(const std::string& name, const std::string& cluster_part) -> bool {
+    const std::string prefix = "kythira-" + cluster_part + "-";
+    return name.size() == prefix.size() + kythira::generated_name_suffix_length &&
+           name.starts_with(prefix) && kythira::is_valid_gcp_resource_name(name) &&
+           std::ranges::all_of(name.substr(prefix.size()), [](char c) {
+               return kythira::generated_name_alphabet.find(c) != std::string_view::npos;
+           });
+}
+
+template<typename NodeId> auto gcp_id(const std::string& zone, const std::string& name) -> NodeId {
+    kythira::gcp_instance_node_id id{"test-project/" + zone, name};
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return id.to_string();
+    } else {
+        return id;
+    }
+}
+
+auto metadata_value(const fakes::cv1::Instance& inst, const std::string& key) -> std::string {
+    for (const auto& item : inst.metadata().items()) {
+        if (item.key() == key) {
+            return item.value();
+        }
+    }
+    return "<absent>";
+}
+
+template<typename NodeId>
+auto make_named(const fakes::fake_compute& f,
+                kythira::gcp_compute_quorum_manager_config<std::string> cfg =
+                    valid_compute_config()) -> kythira::gcp_compute_quorum_manager<NodeId> {
+    return kythira::gcp_compute_quorum_manager<NodeId>{fast(std::move(cfg)), f.instances_client(),
+                                                       f.zone_operations_client()};
+}
+
+/// Provision across two zones, check the names, labels and ids, assess,
+/// stop one, decommission one: the same walk for composite and string mode.
+template<typename NodeId> void run_gcp_lifecycle() {
+    fakes::fake_compute f;
+    auto cfg = valid_compute_config();
+    cfg.topology.groups.push_back({.group_id = "us-central1-b", .target_count = 3});
+    cfg.subnetwork_by_group["us-central1-b"] = "default";
+    auto mgr = make_named<NodeId>(f, cfg);
+
+    std::vector<NodeId> ids;
+    std::vector<std::string> zones;
+    for (const std::string zone : {"us-central1-a", "us-central1-b", "us-central1-b"}) {
+        auto peer = mgr.provision_node(zone, std::nullopt).get();
+        const auto& inst = f.instances->instances.back();
+        BOOST_CHECK_MESSAGE(is_generated_instance_name(inst.name(), "test-cluster"),
+                            "name " << inst.name());
+        BOOST_CHECK_EQUAL(inst.zone(), zone);
+        BOOST_CHECK(peer.node_id == gcp_id<NodeId>(zone, inst.name()));
+        BOOST_CHECK_EQUAL(peer.address, inst.network_interfaces(0).network_ip() + ":7000");
+        auto loc = mgr.instance_location_of(peer.node_id);
+        BOOST_REQUIRE(loc.has_value());
+        BOOST_CHECK_EQUAL(loc->zone, zone);
+        BOOST_CHECK_EQUAL(loc->name, inst.name());
+        // Canonical text is not a valid label value, so the label carries the
+        // instance name (with the instance's own project and zone, the id).
+        BOOST_CHECK_EQUAL(inst.labels().at("kythira-node-id"), inst.name());
+        BOOST_CHECK(kythira::is_valid_gcp_label(inst.labels().at("kythira-node-id")));
+        BOOST_CHECK_EQUAL(inst.labels().at("kythira-cluster"), "test-cluster");
+        ids.push_back(peer.node_id);
+        zones.push_back(zone);
+    }
+    // Nothing was listed to allocate an id.
+    BOOST_CHECK_EQUAL(f.instances->list_calls, 0);
+    BOOST_CHECK(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
+
+    std::vector<kythira::node_placement<NodeId, std::string>> cluster;
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        cluster.push_back({.node_id = ids[i], .group_id = zones[i]});
+    }
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK(health.status == kythira::quorum_status::healthy);
+    BOOST_CHECK_EQUAL(health.live_node_count, 3u);
+    BOOST_CHECK_EQUAL(f.instances->list_calls, 0);  // read by name, not by label
+
+    f.instances->find("us-central1-a", mgr.instance_location_of(ids[0])->name)
+        ->set_status("TERMINATED");
+    health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK(health.status == kythira::quorum_status::critical);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1u);
+    BOOST_CHECK(health.unreachable_nodes[0] == ids[0]);
+
+    // Decommission deletes in the zone the id carries, with no zone scan.
+    const auto victim = *mgr.instance_location_of(ids[2]);
+    mgr.decommission_node(ids[2]).get();
+    BOOST_CHECK_EQUAL(f.instances->delete_calls, 1);
+    BOOST_CHECK(f.instances->find("us-central1-b", victim.name) == nullptr);
+    BOOST_CHECK_EQUAL(f.instances->instances.size(), 2u);
+    BOOST_CHECK_EQUAL(f.zone_ops->polled.back(), "op-delete-" + victim.name);
+    health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK(health.status == kythira::quorum_status::lost);
+}
+
+/// Refuses the first `refuse` inserts with ALREADY_EXISTS, as if another
+/// process held the name.
+class refusing_instances : public fakes::fake_instances_connection {
+public:
+    using fake_instances_connection::InsertInstance;
+    int refuse = 1;
+    std::vector<std::string> refused;
+
+    auto InsertInstance(const fakes::inst_v1::InsertInstanceRequest& request)
+        -> google::cloud::future<google::cloud::StatusOr<fakes::cv1::Operation>> override {
+        if (refuse > 0) {
+            --refuse;
+            ++insert_calls;
+            refused.push_back(request.instance_resource().name());
+            return fakes::ready(
+                google::cloud::Status(google::cloud::StatusCode::kAlreadyExists, "already exists"));
+        }
+        return fake_instances_connection::InsertInstance(request);
+    }
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(gcp_compute_composite_node_id)
+
+BOOST_AUTO_TEST_CASE(composite_mode_lifecycle) {
+    run_gcp_lifecycle<kythira::gcp_instance_node_id>();
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_lifecycle) {
+    run_gcp_lifecycle<std::string>();
+}
+
+// The id is known before the insert: {NODE_ID} in the startup script and the
+// kythira-node-id metadata item carry its canonical text.
+BOOST_AUTO_TEST_CASE(composite_mode_insert_carries_canonical_text) {
+    auto cfg = valid_compute_config();
+    cfg.startup_script_template = "node={NODE_ID} zone={ZONE}";
+    kythira::gcp_compute_quorum_manager<kythira::gcp_instance_node_id> mgr{cfg};
+    const kythira::gcp_instance_node_id id{"test-project/us-central1-a",
+                                           "kythira-test-cluster-abcdefgh"};
+    auto inst = mgr.build_instance(std::string(id.native()), id, "us-central1-a", "default");
+    BOOST_CHECK_EQUAL(metadata_value(inst, "startup-script"),
+                      "node=gcp:test-project/us-central1-a:kythira-test-cluster-abcdefgh "
+                      "zone=us-central1-a");
+    BOOST_CHECK_EQUAL(metadata_value(inst, "kythira-node-id"), id.to_string());
+    BOOST_CHECK_EQUAL(inst.labels().at("kythira-node-id"), "kythira-test-cluster-abcdefgh");
+
+    // Numeric mode is unchanged: decimal label, no metadata item.
+    compute_mgr num{cfg};
+    auto numeric = num.build_instance("kythira-test-cluster-42", 42, "us-central1-a", "default");
+    BOOST_CHECK_EQUAL(numeric.labels().at("kythira-node-id"), "42");
+    BOOST_CHECK_EQUAL(metadata_value(numeric, "kythira-node-id"), "<absent>");
+    BOOST_CHECK_EQUAL(metadata_value(numeric, "startup-script"), "node=42 zone=us-central1-a");
+}
+
+// GCE names are RFC 1035 labels of at most 63 characters, which the manager
+// did not check before: a long cluster name is cut to fit (and a separator
+// left at the cut dropped), the random suffix never is. Numeric mode still
+// refuses the same cluster name, as its 20-digit worst case cannot fit.
+BOOST_AUTO_TEST_CASE(composite_mode_cuts_a_long_cluster_name_to_fit) {
+    fakes::fake_compute f;
+    auto cfg = valid_compute_config();
+    cfg.cluster_name = std::string(45, 'c') + "-dddd";  // a valid 50-character label
+    auto mgr = make_named<kythira::gcp_instance_node_id>(f, cfg);
+
+    auto peer = mgr.provision_node("us-central1-a", std::nullopt).get();
+    const auto& name = f.instances->instances.back().name();
+    // 63 - "kythira-" - "-" - 8 leaves 46: "ccc...c-", whose '-' is dropped.
+    BOOST_CHECK_EQUAL(name.size(), 62u);
+    BOOST_CHECK_MESSAGE(is_generated_instance_name(name, std::string(45, 'c')), "name " << name);
+    BOOST_CHECK_EQUAL(peer.node_id.native(), name);
+    BOOST_CHECK_EQUAL(f.instances->instances.back().labels().at("kythira-cluster"),
+                      cfg.cluster_name);
+
+    BOOST_CHECK_THROW(compute_mgr{cfg}, std::invalid_argument);
+}
+
+// A cluster name that cannot start an instance name, or a zone that cannot
+// be in the id's scope, is refused up front in the textual modes.
+BOOST_AUTO_TEST_CASE(textual_modes_validate_the_name_and_scope) {
+    auto cfg = valid_compute_config();
+    cfg.cluster_name = "test_cluster";  // a valid label, not a valid instance name
+    BOOST_CHECK_THROW(kythira::gcp_compute_quorum_manager<kythira::gcp_instance_node_id>{cfg},
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(kythira::gcp_compute_quorum_manager<std::string>{cfg}, std::invalid_argument);
+
+    cfg = valid_compute_config();
+    cfg.subnetwork_by_group["Bad_Zone"] = "default";
+    BOOST_CHECK_THROW(kythira::gcp_compute_quorum_manager<kythira::gcp_instance_node_id>{cfg},
+                      std::invalid_argument);
+    BOOST_CHECK_NO_THROW(compute_mgr{cfg});
+}
+
+// A name already in use is retried under a fresh name; give up after five.
+BOOST_AUTO_TEST_CASE(composite_mode_retries_a_name_collision) {
+    fakes::fake_compute f;
+    auto refusing = std::make_shared<refusing_instances>();
+    f.instances = refusing;
+    auto mgr = make_named<kythira::gcp_instance_node_id>(f);
+
+    auto peer = mgr.provision_node("us-central1-a", std::nullopt).get();
+    BOOST_REQUIRE_EQUAL(refusing->refused.size(), 1u);
+    BOOST_CHECK_NE(peer.node_id.native(), refusing->refused[0]);
+    BOOST_CHECK_EQUAL(refusing->insert_calls, 2);
+    BOOST_CHECK_EQUAL(refusing->delete_calls, 0);
+
+    refusing->refuse = 100;
+    BOOST_CHECK_THROW(mgr.provision_node("us-central1-a", std::nullopt).get(), std::exception);
+    BOOST_CHECK_EQUAL(refusing->insert_calls, 7);
+    BOOST_CHECK_EQUAL(refusing->delete_calls, 0);
+}
+
+// An id in another project, or text that is not canonical gcp text, is
+// unreachable and does not fail the assessment; decommission refuses it.
+BOOST_AUTO_TEST_CASE(composite_mode_reports_foreign_ids_unreachable) {
+    fakes::fake_compute f;
+    f.instances->add("us-central1-a", "kythira-test-cluster-aaaaaaaa", "RUNNING");
+    auto mgr = make_named<kythira::gcp_instance_node_id>(f);
+
+    std::vector<kythira::gcp_instance_node_id> ids{
+        {"test-project/us-central1-a", "kythira-test-cluster-aaaaaaaa"},
+        {"other-project/us-central1-a", "kythira-test-cluster-aaaaaaaa"},
+        {"test-project/us-central1-a", "kythira-test-cluster-missing1"}};
+    std::vector<kythira::node_placement<kythira::gcp_instance_node_id, std::string>> cluster;
+    for (const auto& id : ids) {
+        cluster.push_back({.node_id = id, .group_id = "us-central1-a"});
+    }
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 2u);
+    BOOST_CHECK(health.unreachable_nodes[0] == ids[1]);
+    BOOST_CHECK(health.unreachable_nodes[1] == ids[2]);
+
+    BOOST_CHECK_THROW(mgr.decommission_node(ids[1]).get(), std::exception);
+    BOOST_CHECK_EQUAL(f.instances->delete_calls, 0);
+    // A missing instance in this project is already gone: success.
+    BOOST_CHECK_NO_THROW(mgr.decommission_node(ids[2]).get());
+    BOOST_CHECK_EQUAL(f.instances->instances.size(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_rejects_non_canonical_text) {
+    fakes::fake_compute f;
+    f.instances->add("us-central1-a", "kythira-test-cluster-aaaaaaaa", "RUNNING");
+    f.instances->add("us-central1-a", "kythira-test-cluster-1", "RUNNING");
+    auto mgr = make_named<std::string>(f);
+
+    std::vector<kythira::node_placement<std::string, std::string>> cluster{
+        {.node_id = "gcp:test-project/us-central1-a:kythira-test-cluster-aaaaaaaa",
+         .group_id = "us-central1-a"},
+        {.node_id = "kythira-test-cluster-aaaaaaaa", .group_id = "us-central1-a"},
+        {.node_id = "1", .group_id = "us-central1-a"}};
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), 2u);
+    BOOST_CHECK_THROW(mgr.decommission_node("1").get(), std::exception);
+    BOOST_CHECK_EQUAL(f.instances->delete_calls, 0);
+}
+
+// The keyed lookup takes the id from the instance's own name and the zone it
+// was listed in.
+BOOST_AUTO_TEST_CASE(composite_mode_find_by_idempotency_key_reads_the_name) {
+    fakes::fake_compute f;
+    f.instances->add(
+        "us-central1-a", "kythira-test-cluster-abcdefgh", "RUNNING",
+        {{"kythira-cluster", "test-cluster"}, {"kythira-idempotency-key", "cap-1-2-3"}});
+    auto mgr = make_named<kythira::gcp_instance_node_id>(f);
+
+    auto found = mgr.find_by_idempotency_key("cap-1-2-3").get();
+    BOOST_REQUIRE(found.has_value());
+    BOOST_CHECK(found->node_id == kythira::gcp_instance_node_id("test-project/us-central1-a",
+                                                                "kythira-test-cluster-abcdefgh"));
+    BOOST_CHECK_EQUAL(found->address, "10.0.0.1:7000");
+}
+
+BOOST_AUTO_TEST_CASE(instance_id_round_trip) {
+    using mgr_t = kythira::gcp_compute_quorum_manager<std::string>;
+    auto id = mgr_t::node_id_for_instance("example.com:proj", "europe-west4-b", "kythira-c-x2");
+    BOOST_REQUIRE(id.has_value());
+    BOOST_CHECK_EQUAL(*id, "gcp:example.com%3Aproj/europe-west4-b:kythira-c-x2");
+    auto loc = mgr_t::instance_for_node("example.com:proj", *id);
+    BOOST_REQUIRE(loc.has_value());
+    BOOST_CHECK_EQUAL(loc->zone, "europe-west4-b");
+    BOOST_CHECK_EQUAL(loc->name, "kythira-c-x2");
+    BOOST_CHECK(!mgr_t::instance_for_node("other", *id));
+    BOOST_CHECK(!mgr_t::node_id_for_instance("p", "us-central1-a", "Upper"));
+    BOOST_CHECK(!mgr_t::node_id_for_instance("p", "us-central1-a", std::string(64, 'a')));
+}
 
 BOOST_AUTO_TEST_SUITE_END()
 
