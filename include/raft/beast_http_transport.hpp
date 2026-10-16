@@ -672,7 +672,17 @@ private:
 /// so no caller ever holds a reference into the pool across an unlocked window.
 ///
 /// `_mutex` guards only the pool's structure, never a connection's I/O.
-template<typename Types>
+///
+/// `NodeId` names the peers: the URL map's key, the capability cache's and
+/// idle pool's key, every `send_*` target and the peer-seen hook's id, and the
+/// id type the requests carry. It defaults to `std::uint64_t`, so
+/// `boost_beast_client<Types>` is the numeric client it always was
+/// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2). No id travels in
+/// a URL or a header -- every RPC posts to a fixed path and the ids ride in
+/// the body -- so a textual id needs no escaping, and TLS still binds each
+/// connection to the URL's host (`beast_bind_peer_identity`), not to the
+/// peer's id.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::future_default_transport_types<Types>
 class boost_beast_client {
 public:
@@ -681,6 +691,7 @@ public:
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
+    using node_id_type = NodeId;
 
     /// @param context_keeper  optional owner of `ioc`, propagated to every
     ///     connection this client makes and to the Folly executor each one
@@ -691,7 +702,7 @@ public:
     ///     outlive the RPC that armed them, and can outlive the whole client.
     ///     See `beast_detail::asio_strand_executor::_context_keeper`.
     boost_beast_client(net::io_context& ioc,
-                       std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
+                       std::unordered_map<NodeId, std::string> node_id_to_url_map,
                        boost_beast_client_config config, metrics_type metrics,
                        std::shared_ptr<void> context_keeper = {});
     ~boost_beast_client();
@@ -701,35 +712,37 @@ public:
     boost_beast_client(boost_beast_client&&) = delete;
     auto operator=(boost_beast_client&&) -> boost_beast_client& = delete;
 
-    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+    auto send_request_vote(const NodeId& target,
+                           const kythira::request_vote_request<NodeId>& request,
                            std::chrono::milliseconds timeout)
         -> future_template<kythira::request_vote_response<>>;
 
-    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+    auto send_append_entries(const NodeId& target,
+                             const kythira::append_entries_request<NodeId>& request,
                              std::chrono::milliseconds timeout)
         -> future_template<kythira::append_entries_response<>>;
 
-    auto send_install_snapshot(std::uint64_t target,
-                               const kythira::install_snapshot_request<>& request,
+    auto send_install_snapshot(const NodeId& target,
+                               const kythira::install_snapshot_request<NodeId>& request,
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::install_snapshot_response<>>;
 
     /// Satisfies `network_client_with_log_fetch`: a peer-to-peer catch-up
     /// fetch, sent to `/v1/raft/fetch_log_entries`.
-    auto send_fetch_log_entries(std::uint64_t target,
-                                const kythira::fetch_log_entries_request<>& request,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const kythira::fetch_log_entries_request<NodeId>& request,
                                 std::chrono::milliseconds timeout)
-        -> future_template<kythira::fetch_log_entries_response<>>;
+        -> future_template<kythira::fetch_log_entries_response<NodeId>>;
     // Optional extensions (.kiro/specs/http-coap-pre-vote-timeout-now/). A
     // peer on a build without the route answers 404, and one without a
     // registered handler 501; both fail the future with
     // `rpc_not_implemented_exception`, which the core treats as "older peer".
-    auto send_request_pre_vote(std::uint64_t target,
-                               const kythira::request_pre_vote_request<>& request,
+    auto send_request_pre_vote(const NodeId& target,
+                               const kythira::request_pre_vote_request<NodeId>& request,
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::request_pre_vote_response<>>;
 
-    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+    auto send_timeout_now(const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
                           std::chrono::milliseconds timeout)
         -> future_template<kythira::timeout_now_response<>>;
 
@@ -740,14 +753,14 @@ public:
     ///     rootless Podman is reached this way while aardvark-dns still
     ///     answers nothing (see bounded_resolver.hpp). A URL whose host is an
     ///     address literal needs no hint and gets none.
-    auto note_peer_seen(std::uint64_t id, const sockaddr_storage& from, socklen_t len) -> void;
+    auto note_peer_seen(const NodeId& id, const sockaddr_storage& from, socklen_t len) -> void;
 
     /// @brief `note_peer_seen()` packaged for
     ///     `boost_beast_server::set_peer_seen_handler()`. It carries its own
     ///     copy of the URL table rather than referring to this client, so it
     ///     outlives any move or destruction of the client.
     [[nodiscard]] auto peer_seen_handler() const
-        -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)>;
+        -> std::function<void(const NodeId&, const sockaddr_storage&, socklen_t)>;
 
     /// @brief Validates the configured TLS material, then drops every pooled
     ///     connection so subsequent RPCs build fresh ones using the reloaded
@@ -840,10 +853,10 @@ private:
     /// no longer tears down a connection another RPC is using.
     class connection_lease {
     public:
-        connection_lease(boost_beast_client* owner, std::uint64_t target, pooled_connection conn,
+        connection_lease(boost_beast_client* owner, NodeId target, pooled_connection conn,
                          std::shared_ptr<in_flight_guard> in_flight)
             : _owner(owner),
-              _target(target),
+              _target(std::move(target)),
               _conn(std::move(conn)),
               _in_flight(std::move(in_flight)) {}
 
@@ -873,7 +886,7 @@ private:
 
     private:
         boost_beast_client* _owner;
-        std::uint64_t _target;
+        NodeId _target;
         pooled_connection _conn;
         /// Held so the destructor's `release_connection` — which takes the
         /// client's `_mutex` and touches `_idle_connections` — provably runs
@@ -898,15 +911,15 @@ private:
     serializer_registry_type _registry;
     /// What each peer last answered in. Advisory only — the full `Accept` list
     /// still rides on every request.
-    peer_capability_cache<std::uint64_t> _capability_cache;
-    std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
+    peer_capability_cache<NodeId> _capability_cache;
+    std::unordered_map<NodeId, std::string> _node_id_to_url;
     boost_beast_client_config _config;
     metrics_type _metrics;
     std::optional<net::ssl::context> _ssl_ctx;
     mutable std::mutex _mutex;
     /// Idle connections per target, available for checkout. A connection that
     /// is currently leased is in nobody's map — its lease owns it.
-    std::unordered_map<std::uint64_t, std::vector<pooled_connection>> _idle_connections;
+    std::unordered_map<NodeId, std::vector<pooled_connection>> _idle_connections;
     /// Every connection this client has created and not yet seen destroyed,
     /// weakly. The destructor force-closes through this so that a *leased*
     /// connection — absent from `_idle_connections` by definition — is closed
@@ -944,19 +957,19 @@ private:
     /// dangling-reference crash — the old signature returned
     /// `pooled_connection&`, and any concurrent teardown erased the map node
     /// underneath it.
-    auto acquire_connection(std::uint64_t target, std::chrono::milliseconds timeout)
+    auto acquire_connection(const NodeId& target, std::chrono::milliseconds timeout)
         -> pooled_connection;
     /// @brief Return a leased connection. Pooled only when `reusable` and the
     /// TLS generation still matches; dropped otherwise.
-    auto release_connection(std::uint64_t target, pooled_connection conn, bool reusable) -> void;
+    auto release_connection(const NodeId& target, pooled_connection conn, bool reusable) -> void;
     /// @brief Build a fresh connection to `target`. Caller must NOT hold
     /// `_mutex`: resolving the target can block for up to `timeout`.
-    auto make_connection(std::uint64_t target, std::chrono::milliseconds timeout)
+    auto make_connection(const NodeId& target, std::chrono::milliseconds timeout)
         -> pooled_connection;
 
     /// @brief Where `target` lives, resolved within `timeout` and without
     /// `_mutex`. Throws when the name does not resolve in time.
-    auto resolve_target(std::uint64_t target, std::chrono::milliseconds timeout) -> resolved_target;
+    auto resolve_target(const NodeId& target, std::chrono::milliseconds timeout) -> resolved_target;
 
     /// @param attempted Media types already refused by this peer for this call.
     ///        Empty on the caller's first entry; the 415 retry path re-enters
@@ -975,7 +988,7 @@ private:
     ///        discarded that and walked the preference list blind; the only
     ///        symptom was one extra round trip, which nothing observed.
     template<typename Request, typename Response>
-    auto send_rpc(std::uint64_t target, std::string_view endpoint, const Request& request,
+    auto send_rpc(NodeId target, std::string_view endpoint, const Request& request,
                   std::chrono::milliseconds timeout, std::vector<std::string> attempted = {},
                   std::string chosen_media_type = {}) -> future_template<Response>;
 };
@@ -994,7 +1007,10 @@ private:
 /// `shared_from_this`, the standard Beast server pattern), and a single
 /// connection's I/O error never stops `do_accept()` from continuing to serve
 /// other connections.
-template<typename Types>
+///
+/// `NodeId` is the id type the decoded requests carry and the peer-seen hook
+/// reports, defaulting to `std::uint64_t` as for the client.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::future_default_transport_types<Types>
 class boost_beast_server {
 public:
@@ -1003,6 +1019,7 @@ public:
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
+    using node_id_type = NodeId;
 
     boost_beast_server(net::io_context& ioc, std::string bind_address, std::uint16_t bind_port,
                        boost_beast_server_config config, metrics_type metrics);
@@ -1013,31 +1030,32 @@ public:
     boost_beast_server(boost_beast_server&&) = delete;
     auto operator=(boost_beast_server&&) -> boost_beast_server& = delete;
 
-    auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
-            handler) -> void;
+    auto register_request_vote_handler(std::function<kythira::request_vote_response<>(
+                                           const kythira::request_vote_request<NodeId>&)>
+                                           handler) -> void;
 
-    auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
-            handler) -> void;
+    auto register_append_entries_handler(std::function<kythira::append_entries_response<>(
+                                             const kythira::append_entries_request<NodeId>&)>
+                                             handler) -> void;
 
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
-                                               const kythira::install_snapshot_request<>&)>
+                                               const kythira::install_snapshot_request<NodeId>&)>
                                                handler) -> void;
 
     /// Satisfies `network_server_with_log_fetch` (peer-to-peer catch-up).
-    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
-                                                const kythira::fetch_log_entries_request<>&)>
-                                                handler) -> void;
+    auto register_fetch_log_entries_handler(
+        std::function<kythira::fetch_log_entries_response<NodeId>(
+            const kythira::fetch_log_entries_request<NodeId>&)>
+            handler) -> void;
     // Optional extensions. Left unregistered, their routes answer 501 rather
     // than the mandatory RPCs' 500, so a caller can tell "cannot serve this"
     // from "failed while serving it".
     auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
-                                               const kythira::request_pre_vote_request<>&)>
+                                               const kythira::request_pre_vote_request<NodeId>&)>
                                                handler) -> void;
 
     auto register_timeout_now_handler(
-        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
             handler) -> void;
 
     auto start() -> void;
@@ -1099,7 +1117,7 @@ public:
                   std::string& response_media_type,
                   const std::optional<net::ip::tcp::endpoint>& from = std::nullopt) -> void;
 
-    using peer_seen_fn = std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)>;
+    using peer_seen_fn = std::function<void(const NodeId&, const sockaddr_storage&, socklen_t)>;
 
     /// @brief Called, before the registered handler, with the node an RPC
     ///     names as its sender (the candidate of a vote request, the leader
@@ -1150,18 +1168,21 @@ private:
     std::shared_ptr<net::ssl::context> _ssl_ctx;
     /// One per address `_bind_address` resolves to (see net_bind.hpp).
     std::vector<std::shared_ptr<net::ip::tcp::acceptor>> _acceptors;
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
         _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+    std::function<kythira::append_entries_response<>(
+        const kythira::append_entries_request<NodeId>&)>
         _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+    std::function<kythira::install_snapshot_response<>(
+        const kythira::install_snapshot_request<NodeId>&)>
         _install_snapshot_handler;
-    std::function<kythira::fetch_log_entries_response<>(
-        const kythira::fetch_log_entries_request<>&)>
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         _fetch_log_entries_handler;
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+    std::function<kythira::request_pre_vote_response<>(
+        const kythira::request_pre_vote_request<NodeId>&)>
         _request_pre_vote_handler;
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
         _timeout_now_handler;
     peer_seen_fn _peer_seen;
     /// `max_concurrent_connections`, shared by every acceptor. A

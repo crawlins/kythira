@@ -253,11 +253,22 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
     add_beast_test(beast_server_test beast_server_test.cpp)
     add_beast_test(beast_integration_test beast_integration_test.cpp)
     add_beast_test(beast_ssl_test beast_ssl_test.cpp)
+    # Textual and composite node ids (.kiro/specs/cloud-composite-node-ids/
+    # tasks 6.2, 6.5): every RPC to a std::string and an aws_ec2_node_id
+    # target, and the HTTPS host binding with a textual target. Its
+    # certificates come from the test CA.
+    if(TARGET certificate_authority)
+        add_beast_test(beast_textual_node_id_test beast_textual_node_id_test.cpp)
+        target_link_libraries(beast_textual_node_id_test PRIVATE certificate_authority)
+    else()
+        message(STATUS "beast_textual_node_id_test: skipped (requires certificate_authority)")
+    endif()
 else()
     message(STATUS "beast_client_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
     message(STATUS "beast_server_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
     message(STATUS "beast_integration_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
     message(STATUS "beast_ssl_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_textual_node_id_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
 endif()
 # Task 15 (Property 9): cpp_httplib_client/server vs. boost_beast_client/
 # server run against the same RPC sequence -- needs both transports enabled,
