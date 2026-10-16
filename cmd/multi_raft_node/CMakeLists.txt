@@ -57,6 +57,7 @@ target_link_libraries(multi_raft_node PRIVATE
     network_simulator   # Folly, boost_context, Boost::system/thread
     boost_json
     httplib::httplib
+    kythira_host_node_id   # KYTHIRA_NODE_ID_KIND
 )
 
 target_compile_features(multi_raft_node PRIVATE cxx_std_23)

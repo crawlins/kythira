@@ -27,6 +27,7 @@
 #include "config.hpp"
 
 #include <raft/file_persistence.hpp>
+#include <raft/host_node_id.hpp>
 #include <raft/persistence.hpp>
 
 #include <cstdint>
@@ -40,10 +41,12 @@ namespace kythira::bench {
 
 namespace detail {
 
+// Votes and snapshot configurations name nodes, so both engines store the
+// host's node id kind (`KYTHIRA_NODE_ID_KIND`).
 using switchable_memory_engine =
-    kythira::memory_persistence_engine<std::uint64_t, std::uint64_t, std::uint64_t>;
+    kythira::memory_persistence_engine<kythira::host_node_id, std::uint64_t, std::uint64_t>;
 using switchable_file_engine =
-    kythira::file_persistence_engine<std::uint64_t, std::uint64_t, std::uint64_t>;
+    kythira::file_persistence_engine<kythira::host_node_id, std::uint64_t, std::uint64_t>;
 
 /// The two engines the handle can hold. Exactly one is engaged.
 ///
@@ -98,10 +101,10 @@ public:
     auto load_current_term() -> std::uint64_t {
         return dispatch([&](auto& e) { return e.load_current_term(); });
     }
-    auto save_voted_for(std::uint64_t node) -> void {
+    auto save_voted_for(const kythira::host_node_id& node) -> void {
         dispatch([&](auto& e) { e.save_voted_for(node); });
     }
-    auto load_voted_for() -> std::optional<std::uint64_t> {
+    auto load_voted_for() -> std::optional<kythira::host_node_id> {
         return dispatch([&](auto& e) { return e.load_voted_for(); });
     }
 

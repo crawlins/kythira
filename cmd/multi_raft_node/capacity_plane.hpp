@@ -68,7 +68,9 @@
 
 namespace kythira::bench::capacity {
 
-using node_id = std::uint64_t;
+/// `kythira::host_node_id`. On the capacity wire a node id is a JSON number,
+/// or a JSON string in a build with `KYTHIRA_NODE_ID_KIND=text`.
+using node_id = kythira::host_node_id;
 using group_id = std::uint64_t;
 using key_type = std::string;
 using descriptor = shard_descriptor<group_id, key_type, node_id>;
@@ -119,6 +121,10 @@ inline auto ids_from(const json::value& v) -> std::vector<node_id> {
 
 inline auto u64(const json::object& o, std::string_view k) -> std::uint64_t {
     return json::value_to<std::uint64_t>(o.at(k));
+}
+
+inline auto node_of(const json::object& o, std::string_view k) -> node_id {
+    return json::value_to<node_id>(o.at(k));
 }
 
 inline auto num(const json::object& o, std::string_view k) -> double {
@@ -181,7 +187,7 @@ inline auto decode_report(const json::value& v) -> report {
     const auto& o = v.as_object();
     report r;
     r._descriptor = decode_descriptor(o.at("d"));
-    r._leader = u64(o, "leader");
+    r._leader = node_of(o, "leader");
     r._down_replicas = ids_from(o.at("down"));
     r._down_replica_count = r._down_replicas.size();
     r._pending_replicas = ids_from(o.at("pending"));
@@ -226,7 +232,7 @@ inline auto encode(const node_rep& r) -> json::object {
 inline auto decode_node(const json::value& v) -> node_rep {
     const auto& o = v.as_object();
     node_rep r;
-    r._node_id = u64(o, "id");
+    r._node_id = node_of(o, "id");
     r._capacity_bytes = u64(o, "cap");
     r._available_bytes = u64(o, "avail");
     r._used_bytes = u64(o, "used");
@@ -283,7 +289,7 @@ inline auto decode_operation(const json::value& v) -> operation {
     op._epoch._version = u64(o, "ev");
     op._epoch._conf_version = u64(o, "ecv");
     const auto kind = std::string(o.at("kind").as_string());
-    const auto node = u64(o, "node");
+    const auto node = node_of(o, "node");
     if (kind == "add") {
         op._operator =
             add_replica_operator<node_id>{._node = node, ._as_learner = o.at("learner").as_bool()};
@@ -780,7 +786,8 @@ auto wire_hooks(Config& cfg, const node_options& opt, Plane& plane) -> void {
         s._shard_split_size_bytes = std::size_t{1} << 40U;
         s._shard_max_size_bytes = std::size_t{1} << 41U;
         s._shard_merge_max_size_bytes = 1;
-        auto policy = std::make_shared<threshold_split_merge_policy<group_id, key_type>>(s);
+        auto policy =
+            std::make_shared<threshold_split_merge_policy<group_id, key_type, node_id>>(s);
         if (!policy->validate()) {
             throw std::runtime_error("multi_raft_node: --split-keys gives an invalid split policy");
         }

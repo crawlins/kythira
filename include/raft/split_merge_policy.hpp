@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <optional>
@@ -129,10 +130,15 @@ struct threshold_split_merge_policy_config {
 ///
 /// @tparam GroupId Must satisfy `raft_group_id`.
 /// @tparam Key     Must satisfy `shard_key`.
-template<raft_group_id GroupId, shard_key Key> class threshold_split_merge_policy {
+/// @tparam NodeId  Must satisfy `node_id`. The node id type of the
+///                 `shard_stats` the host hands over; the policy reads no
+///                 node-valued field, so this only has to match the host's.
+template<raft_group_id GroupId, shard_key Key, typename NodeId = std::uint64_t>
+requires node_id<NodeId>
+class threshold_split_merge_policy {
 public:
     using config_type = threshold_split_merge_policy_config;
-    using stats_type = shard_stats<GroupId, Key>;
+    using stats_type = shard_stats<GroupId, Key, NodeId>;
 
     threshold_split_merge_policy() = default;
     explicit threshold_split_merge_policy(config_type cfg) : _cfg(std::move(cfg)) {}

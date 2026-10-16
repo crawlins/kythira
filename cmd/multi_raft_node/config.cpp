@@ -12,6 +12,7 @@
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace kythira::bench {
 namespace {
@@ -28,14 +29,25 @@ namespace {
     return std::chrono::milliseconds{static_cast<std::int64_t>(to_u64(s, what))};
 }
 
+/// A peer's node id: `kythira::host_node_id`'s forms, never `metadata:`
+/// (only this host's own id is read from instance metadata).
+[[nodiscard]] auto to_peer_id(const std::string& s, const char* what) -> kythira::host_node_id {
+    auto id = kythira::parse_host_peer_node_id(s);
+    if (!id) {
+        throw std::runtime_error(std::string("multi_raft_node: ") + what + ": " + id.error());
+    }
+    return std::move(id).value();
+}
+
 /// `id=url` — the form both `--peer` and `--peers-from` use, so a Tier E
 /// deployment can move a command line into a file without translating it.
+/// Canonical id text holds no `=`, so the first one ends the id.
 auto add_peer(node_options& out, const std::string& spec) -> void {
     const auto eq = spec.find('=');
     if (eq == std::string::npos) {
         throw std::runtime_error("multi_raft_node: --peer expects <id>=<url>, got: " + spec);
     }
-    out._peers[to_u64(spec.substr(0, eq), "--peer id")] = spec.substr(eq + 1);
+    out._peers[to_peer_id(spec.substr(0, eq), "--peer id")] = spec.substr(eq + 1);
 }
 
 auto add_peer_control(node_options& out, const std::string& spec) -> void {
@@ -44,7 +56,7 @@ auto add_peer_control(node_options& out, const std::string& spec) -> void {
         throw std::runtime_error(
             "multi_raft_node: --peer-control expects <id>=<host>:<port>, got: " + spec);
     }
-    out._peer_control[to_u64(spec.substr(0, eq), "--peer-control id")] = spec.substr(eq + 1);
+    out._peer_control[to_peer_id(spec.substr(0, eq), "--peer-control id")] = spec.substr(eq + 1);
 }
 
 auto add_voters(node_options& out, const std::string& spec) -> void {
@@ -53,7 +65,7 @@ auto add_voters(node_options& out, const std::string& spec) -> void {
     std::string part;
     while (std::getline(in, part, ',')) {
         if (!part.empty()) {
-            out._voters.push_back(to_u64(part, "--voters"));
+            out._voters.push_back(to_peer_id(part, "--voters"));
         }
     }
 }
@@ -342,7 +354,13 @@ auto parse_node_options(int argc, char** argv) -> node_options {
     std::function<void(node_options&, const std::string&, const std::string&)> apply =
         [&apply](node_options& o, const std::string& flag, const std::string& value) {
             if (flag == "--node-id") {
-                o._node_id = to_u64(value, flag.c_str());
+                // metadata:<provider> is resolved here, so a host that cannot
+                // learn its id refuses to start with the metadata error.
+                auto id = kythira::parse_host_node_id(value);
+                if (!id) {
+                    throw std::runtime_error("multi_raft_node: --node-id: " + id.error());
+                }
+                o._node_id = std::move(id).value();
             } else if (flag == "--bind") {
                 o._bind_address = value;
             } else if (flag == "--raft-port") {

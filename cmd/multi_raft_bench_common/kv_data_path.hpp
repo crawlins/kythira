@@ -42,6 +42,8 @@
 /// silently forwarded would make that measurement impossible to repeat at
 /// Tier C.
 
+#include <raft/host_node_id.hpp>
+
 #include <httplib.h>
 
 #include <chrono>
@@ -163,7 +165,9 @@ struct kv_result {
     std::vector<std::byte> _value;
     /// Who leads the shard, if the answer said so. `nullopt` on any other
     /// outcome, and also on a not-leader answer from a host that does not know.
-    std::optional<std::uint64_t> _leader;
+    /// A `kythira::host_node_id`, so the driver and the hosts agree on the
+    /// id kind they were built with.
+    std::optional<kythira::host_node_id> _leader;
     std::optional<std::uint64_t> _group;
 
     [[nodiscard]] auto ok() const -> bool { return _outcome == kv_outcome::ok; }
@@ -306,6 +310,21 @@ private:
         }
     }
 
+    /// The leader header as a node id: decimal text, or canonical text in a
+    /// text build. Anything else reads as "no leader named".
+    [[nodiscard]] static auto header_node_id(const httplib::Response& res, std::string_view name)
+        -> std::optional<kythira::host_node_id> {
+        const std::string key{name};
+        if (!res.has_header(key.c_str())) {
+            return std::nullopt;
+        }
+        auto id = kythira::parse_host_peer_node_id(res.get_header_value(key.c_str()));
+        if (!id) {
+            return std::nullopt;
+        }
+        return std::move(id).value();
+    }
+
     [[nodiscard]] static auto interpret(const httplib::Result& res) -> kv_result {
         kv_result out;
         if (!res) {
@@ -317,7 +336,7 @@ private:
             out._outcome = kv_outcome::timeout;
             return out;
         }
-        out._leader = header_u64(*res, k_leader_header);
+        out._leader = header_node_id(*res, k_leader_header);
         out._group = header_u64(*res, k_group_header);
         switch (res->status) {
             case data_path_status::k_ok:

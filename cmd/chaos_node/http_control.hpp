@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <raft/host_node_id.hpp>
 #include <raft/raft.hpp>
 #include <raft/tcp_raft_types.hpp>
 
@@ -13,6 +14,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace chaos_node {
 
@@ -20,6 +22,8 @@ namespace chaos_node {
 // Endpoints:
 //   GET  /health           → 200 {"status":"running"} or 503
 //   GET  /status           → 200 {node_id,role,term,leader_id,commit_index,last_applied}
+//                            (node_id is a JSON number, or a string in a build
+//                            with KYTHIRA_NODE_ID_KIND=text)
 //   POST /command          → body {"key":"k","value":"v"} → 200/503
 //   GET  /log/:index       → 200 {index,term,command_b64} or 404
 
@@ -27,8 +31,8 @@ template<typename NodeType> class http_control_tmpl {
 public:
     using node_t = NodeType;
 
-    http_control_tmpl(node_t& n, std::uint64_t node_id, std::uint16_t port)
-        : _node(n), _node_id(node_id), _port(port) {}
+    http_control_tmpl(node_t& n, kythira::host_node_id node_id, std::uint16_t port)
+        : _node(n), _node_id(std::move(node_id)), _port(port) {}
 
     ~http_control_tmpl() { stop(); }
 
@@ -56,10 +60,11 @@ public:
                     role = "follower";
                     break;
             }
-            auto body = std::string(R"({"node_id":)") + std::to_string(_node_id) + R"(,"role":")" +
-                        role + '"' + R"(,"term":)" + std::to_string(state.current_term) +
-                        R"(,"commit_index":)" + std::to_string(state.commit_index) +
-                        R"(,"last_applied":)" + std::to_string(state.last_applied) + '}';
+            auto body = std::string(R"({"node_id":)") + kythira::node_id_json(_node_id) +
+                        R"(,"role":")" + role + '"' + R"(,"term":)" +
+                        std::to_string(state.current_term) + R"(,"commit_index":)" +
+                        std::to_string(state.commit_index) + R"(,"last_applied":)" +
+                        std::to_string(state.last_applied) + '}';
             res.set_content(body, "application/json");
         });
 
@@ -138,13 +143,14 @@ public:
 
 private:
     node_t& _node;
-    std::uint64_t _node_id;
+    kythira::host_node_id _node_id;
     std::uint16_t _port;
     httplib::Server _server;
     std::thread _thread;
 };
 
-// Backward-compatible alias for the existing tcp_raft_types node type
-using http_control = http_control_tmpl<kythira::node<kythira::tcp_raft_types>>;
+// Backward-compatible alias for the host's tcp_raft_types node type
+using http_control =
+    http_control_tmpl<kythira::node<kythira::basic_tcp_raft_types<kythira::host_node_id>>>;
 
 }  // namespace chaos_node

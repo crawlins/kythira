@@ -147,7 +147,18 @@ Output
     }
 }
 
-/// `ID@ADDR:DATA:CONTROL`
+/// A host's node id: `kythira::host_node_id`'s forms (the driver must be
+/// built with the same `KYTHIRA_NODE_ID_KIND` as the hosts it drives).
+[[nodiscard]] auto to_host_id(const std::string& s) -> kythira::host_node_id {
+    auto id = kythira::parse_host_peer_node_id(s);
+    if (!id) {
+        throw std::runtime_error("multi_raft_bench: --host id: " + id.error());
+    }
+    return std::move(id).value();
+}
+
+/// `ID@ADDR:DATA:CONTROL`. Canonical id text holds no `@`, so the first one
+/// ends the id.
 auto add_host(driver_options& out, const std::string& spec) -> void {
     const auto at = spec.find('@');
     if (at == std::string::npos) {
@@ -163,7 +174,7 @@ auto add_host(driver_options& out, const std::string& spec) -> void {
         throw std::runtime_error("multi_raft_bench: --host is missing the data port: " + spec);
     }
     out._target._hosts.push_back(host_endpoint{
-        ._node_id = to_u64(spec.substr(0, at), "--host id"),
+        ._node_id = to_host_id(spec.substr(0, at)),
         ._address = rest.substr(0, second),
         ._data_port = static_cast<std::uint16_t>(
             to_u64(rest.substr(second + 1, first - second - 1), "--host data port")),

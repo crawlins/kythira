@@ -41,7 +41,7 @@ namespace kythira::bench {
 
 /// @brief One host of the cluster under test, as the driver addresses it.
 struct host_endpoint {
-    std::uint64_t _node_id{0};
+    kythira::host_node_id _node_id{};
     std::string _address;
     std::uint16_t _data_port{0};
     std::uint16_t _control_port{0};
@@ -316,7 +316,8 @@ private:
         return std::nullopt;
     }
 
-    auto note_leader(std::uint64_t group, std::optional<std::uint64_t> leader_id) -> void {
+    auto note_leader(std::uint64_t group, const std::optional<kythira::host_node_id>& leader_id)
+        -> void {
         if (!leader_id.has_value()) {
             return;
         }

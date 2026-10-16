@@ -44,6 +44,8 @@ namespace kythira::bench {
 template<typename Host> class kv_data_server {
 public:
     using host_type = Host;
+    using node_id_type = typename Host::node_id_type;
+    using not_leader_type = kythira::shard_not_leader_exception<std::uint64_t, node_id_type>;
 
     kv_data_server(host_type& host, std::string bind_address, std::uint16_t port,
                    std::string media_type, std::chrono::milliseconds op_timeout,
@@ -122,7 +124,7 @@ private:
             auto value = std::move(future).get();
             res.status = data_path_status::k_ok;
             res.set_content(to_string_body(value), _media_type);
-        } catch (const kythira::shard_not_leader_exception<std::uint64_t, std::uint64_t>& e) {
+        } catch (const not_leader_type& e) {
             misdirect(res, e.leader_hint());
         } catch (const std::exception&) {
             // Anything else — an epoch mismatch, a merging shard, a transport
@@ -169,7 +171,7 @@ private:
             auto value = std::move(future).get();
             res.status = data_path_status::k_ok;
             res.set_content(to_string_body(value), _media_type);
-        } catch (const kythira::shard_not_leader_exception<std::uint64_t, std::uint64_t>& e) {
+        } catch (const not_leader_type& e) {
             misdirect(res, e.leader_hint());
         } catch (const std::exception&) {
             res.status = data_path_status::k_unavailable;
@@ -230,7 +232,8 @@ private:
             const auto leader =
                 node->is_leader() ? std::optional{_host.node_id()} : node->known_leader();
             if (leader.has_value()) {
-                res.set_header(std::string(k_leader_header), std::to_string(*leader));
+                res.set_header(std::string(k_leader_header),
+                               kythira::node_id_traits<node_id_type>::to_text(*leader));
             }
         }
     }
@@ -241,10 +244,12 @@ private:
     /// leader's identity and could proxy the request in one hop; doing so would
     /// move the routing cost inside the cluster where no client-side
     /// measurement can see it, and this project prices routing deliberately.
-    static auto misdirect(httplib::Response& res, std::optional<std::uint64_t> leader) -> void {
+    static auto misdirect(httplib::Response& res, const std::optional<node_id_type>& leader)
+        -> void {
         res.status = data_path_status::k_misdirected;
         if (leader.has_value()) {
-            res.set_header(std::string(k_leader_header), std::to_string(*leader));
+            res.set_header(std::string(k_leader_header),
+                           kythira::node_id_traits<node_id_type>::to_text(*leader));
         }
     }
 

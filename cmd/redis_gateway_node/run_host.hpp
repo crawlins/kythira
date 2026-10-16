@@ -48,17 +48,17 @@ namespace kythira::redis_node {
 
 template<typename Serializer> struct beast_stack {
     using bundle = kythira::testing::harness_transport_types<Serializer>;
-    using client_type = kythira::boost_beast_client<bundle>;
-    using server_type = kythira::boost_beast_server<bundle>;
+    using client_type = kythira::boost_beast_client<bundle, kythira::host_node_id>;
+    using server_type = kythira::boost_beast_server<bundle, kythira::host_node_id>;
 
     explicit beast_stack(const node_options& opt)
         : _work(boost::asio::make_work_guard(*_ioc)),
           _server(*_ioc, opt._bind_address, opt._raft_port, kythira::boost_beast_server_config{},
                   kythira::noop_metrics{}),
-          _client(
-              *_ioc,
-              std::unordered_map<std::uint64_t, std::string>{opt._peers.begin(), opt._peers.end()},
-              kythira::boost_beast_client_config{}, kythira::noop_metrics{}, _ioc) {
+          _client(*_ioc,
+                  std::unordered_map<kythira::host_node_id, std::string>{opt._peers.begin(),
+                                                                         opt._peers.end()},
+                  kythira::boost_beast_client_config{}, kythira::noop_metrics{}, _ioc) {
         // A peer that speaks to this node has told it where it is: how a
         // gateway finds the shard leader to forward to while its name does
         // not resolve, e.g. right after the gateways restart at new
@@ -68,7 +68,7 @@ template<typename Serializer> struct beast_stack {
         // is learned here from the same sighting.
         _server.set_peer_seen_handler(
             [raft = _client.peer_seen_handler(), gateways = opt._peer_gateways](
-                std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+                const kythira::host_node_id& id, const sockaddr_storage& from, socklen_t len) {
                 raft(id, from, len);
                 auto it = gateways.find(id);
                 if (it == gateways.end()) {
@@ -121,7 +121,7 @@ template<typename Stack> struct host_types {
     using promise_type = kythira::promise_default<std::vector<std::byte>>;
     using try_type = kythira::try_default<std::vector<std::byte>>;
 
-    using node_id_type = std::uint64_t;
+    using node_id_type = kythira::host_node_id;
     using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
     using group_id_type = std::uint64_t;
@@ -130,9 +130,9 @@ template<typename Stack> struct host_types {
     using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
     using network_client_type =
-        kythira::testing::transport_client_handle<typename Stack::client_type>;
+        kythira::testing::transport_client_handle<typename Stack::client_type, node_id_type>;
     using network_server_type =
-        kythira::testing::transport_server_handle<typename Stack::server_type>;
+        kythira::testing::transport_server_handle<typename Stack::server_type, node_id_type>;
 
     // A cache: in-memory persistence is the honest choice. A replica that
     // restarts catches up from its peers, and a cluster that loses every
@@ -182,7 +182,8 @@ template<typename Serializer> auto run_host(const node_options& opt) -> int {
     using types = host_types<stack_type>;
     using host_type = kythira::multi_raft<types, std::string, std::uint64_t>;
     using config_type = kythira::multi_raft_config<types, std::string, std::uint64_t>;
-    using descriptor_type = kythira::shard_descriptor<std::uint64_t, std::string, std::uint64_t>;
+    using descriptor_type =
+        kythira::shard_descriptor<std::uint64_t, std::string, typename types::node_id_type>;
     using gateway_type =
         kythira::redis_gateway<host_type, kythira::console_logger, kythira::noop_metrics>;
 
@@ -208,7 +209,7 @@ template<typename Serializer> auto run_host(const node_options& opt) -> int {
 
     stack_type stack{opt};
 
-    std::vector<std::uint64_t> voters;
+    std::vector<typename types::node_id_type> voters;
     for (const auto& [id, url] : opt._peers) {
         voters.push_back(id);
     }
@@ -255,14 +256,15 @@ template<typename Serializer> auto run_host(const node_options& opt) -> int {
     host->start();
 
     auto peer_gateways = opt._peer_gateways;
-    gateway_type gateway(*host, acl, logger, metrics, gateway_cfg,
-                         [peer_gateways](const std::uint64_t& id) -> std::optional<std::string> {
-                             auto it = peer_gateways.find(id);
-                             if (it == peer_gateways.end()) {
-                                 return std::nullopt;
-                             }
-                             return it->second;
-                         });
+    gateway_type gateway(
+        *host, acl, logger, metrics, gateway_cfg,
+        [peer_gateways](const typename types::node_id_type& id) -> std::optional<std::string> {
+            auto it = peer_gateways.find(id);
+            if (it == peer_gateways.end()) {
+                return std::nullopt;
+            }
+            return it->second;
+        });
     gateway.start();
 
     // The driver thread: tick the host, and run the gateway's maintenance

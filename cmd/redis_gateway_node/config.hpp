@@ -12,6 +12,7 @@
 /// line is world-readable in `ps`, the environment of another user's process
 /// is not.
 
+#include <raft/host_node_id.hpp>
 #include <raft/logger.hpp>
 #include <raft/redis_gateway.hpp>
 
@@ -30,17 +31,19 @@ enum class wire_serializer : std::uint8_t {
 
 struct node_options {
     // ── the Raft side ────────────────────────────────────────────────────────
-    std::uint64_t _node_id{1};
+    /// `kythira::host_node_id`: a number, or canonical composite text in a
+    /// `KYTHIRA_NODE_ID_KIND=text` build.
+    kythira::host_node_id _node_id{kythira::host_node_id_from_number(1)};
     std::string _bind_address{"0.0.0.0"};
     std::uint16_t _raft_port{7000};
     /// Raft RPC here is plain, unauthenticated HTTP. A non-loopback
     /// `_bind_address` needs this explicit opt-in (KYTHIRA_ALLOW_PLAINTEXT_RAFT).
     bool _allow_plaintext_raft{false};
     /// Every voter's Raft base URL, this node included: `id=http://host:port`.
-    std::map<std::uint64_t, std::string> _peers;
+    std::map<kythira::host_node_id, std::string> _peers;
     /// Every voter's gateway `host:port`, for forwarding. Defaults to the
     /// peer's host with this node's own plaintext listen port.
-    std::map<std::uint64_t, std::string> _peer_gateways;
+    std::map<kythira::host_node_id, std::string> _peer_gateways;
     /// Keys the initial shard map is cut at; empty means one shard covering
     /// the whole key space, from which the split policy takes over.
     std::vector<std::string> _shard_cuts;

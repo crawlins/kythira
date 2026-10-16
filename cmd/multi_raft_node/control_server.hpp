@@ -282,7 +282,7 @@ private:
     /// **Deliberately not derived from the peer's Raft URL.** A convention
     /// ("control is Raft plus two") would silently probe whatever happens to be
     /// listening on that port and report the answer as this cluster's network.
-    [[nodiscard]] auto control_endpoint_of(std::uint64_t peer_id) const
+    [[nodiscard]] auto control_endpoint_of(const kythira::host_node_id& peer_id) const
         -> std::optional<std::pair<std::string, std::uint16_t>> {
         const auto it = _options._peer_control.find(peer_id);
         if (it == _options._peer_control.end()) {
