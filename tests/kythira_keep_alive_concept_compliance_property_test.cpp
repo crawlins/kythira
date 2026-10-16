@@ -246,39 +246,50 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_thread_safety, *boost::unit_t
     constexpr int num_threads = 8;
     constexpr int operations_per_thread = 50;
     std::atomic<int> total_operations{0};
+    // Boost.Test is not thread-safe: every assertion writes the framework's
+    // shared checkpoint string, so workers count failed checks and the main
+    // thread asserts after join().
+    std::atomic<int> failed_checks{0};
     std::vector<std::thread> threads;
 
     // Launch threads that perform various KeepAlive operations
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&keep_alive_instance, &total_operations, operations_per_thread, i]() {
-            for (int j = 0; j < operations_per_thread; ++j) {
-                // Test get() method thread safety
-                auto* executor_ptr = keep_alive_instance.get();
-                BOOST_CHECK(executor_ptr != nullptr);
+        threads.emplace_back(
+            [&keep_alive_instance, &total_operations, &failed_checks, operations_per_thread, i]() {
+                const auto check = [&failed_checks](bool ok) {
+                    if (!ok) {
+                        failed_checks.fetch_add(1, std::memory_order_relaxed);
+                    }
+                };
+                for (int j = 0; j < operations_per_thread; ++j) {
+                    // Test get() method thread safety
+                    auto* executor_ptr = keep_alive_instance.get();
+                    check(executor_ptr != nullptr);
 
-                // Test is_valid() method thread safety
-                BOOST_CHECK(keep_alive_instance.is_valid());
+                    // Test is_valid() method thread safety
+                    check(keep_alive_instance.is_valid());
 
-                // Test copy construction thread safety
-                KeepAlive copy(keep_alive_instance);
-                BOOST_CHECK(copy.get() == executor_ptr);
+                    // Test copy construction thread safety
+                    KeepAlive copy(keep_alive_instance);
+                    check(copy.get() == executor_ptr);
 
-                // Test work submission thread safety
-                copy.add([&total_operations, i, j]() {
-                    total_operations.fetch_add(1, std::memory_order_relaxed);
-                });
+                    // Test work submission thread safety
+                    copy.add([&total_operations, i, j]() {
+                        total_operations.fetch_add(1, std::memory_order_relaxed);
+                    });
 
-                // Test move construction thread safety
-                KeepAlive moved(std::move(copy));
-                BOOST_CHECK(moved.get() == executor_ptr);
-            }
-        });
+                    // Test move construction thread safety
+                    KeepAlive moved(std::move(copy));
+                    check(moved.get() == executor_ptr);
+                }
+            });
     }
 
     // Wait for all threads to complete
     for (auto& thread : threads) {
         thread.join();
     }
+    BOOST_CHECK_EQUAL(failed_checks.load(), 0);
 
     // Wait for all tasks to complete
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

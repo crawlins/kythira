@@ -160,17 +160,23 @@ BOOST_AUTO_TEST_CASE(concurrent_record_and_get_do_not_race) {
             cache.record(1, i % 2 == 0 ? "application/json" : "application/cbor");
         }
     });
+    // Boost.Test is not thread-safe, so the reader counts bad reads and the
+    // main thread asserts after join().
+    int torn_reads = 0;
     std::thread reader([&] {
         for (int i = 0; i < iterations; ++i) {
             if (const auto v = cache.get(1)) {
                 // Whatever we read must be one of the two values ever written —
                 // never a torn string.
-                BOOST_TEST((*v == "application/json" || *v == "application/cbor"));
+                if (*v != "application/json" && *v != "application/cbor") {
+                    ++torn_reads;
+                }
             }
         }
     });
     writer.join();
     reader.join();
+    BOOST_CHECK_EQUAL(torn_reads, 0);
     BOOST_CHECK_EQUAL(cache.size(), 1U);
 }
 

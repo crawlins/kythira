@@ -1572,7 +1572,9 @@ unverified completion claim.
       address: 0x6000000000`) at 0.63 s in a Coverage job (job 112724270778).
       Passing runs take 0.04-1.24 s, far inside every budget. The stdexec/
       boost timing sensitivity noted elsewhere in this file did not show up
-      in CI. The one SegFault is unexplained.
+      in CI. The SegFault was most likely Boost.Test's checkpoint string
+      racing between worker threads that asserted concurrently; fixed
+      October 16, 2026 (see CHANGELOG).
     - Rescued by retry and **not** allowlisted, by job count: `beast_server_test`
       70 (PR #516), `ca_cluster_node_test` 24 (20 are the clang++-18 SegFault
       ~0.1 s in), `redis_gateway_integration_test` 17 (always ~19 s),

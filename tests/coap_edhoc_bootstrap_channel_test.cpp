@@ -128,13 +128,15 @@ BOOST_AUTO_TEST_CASE(responder_rendezvous_carries_a_three_message_exchange,
     kythira::edhoc_responder_channel channel;
 
     // Stands in for run_edhoc_handshake(): receive message_1, answer with
-    // message_2, receive message_3, then finish.
-    std::thread responder([&channel] {
-        const auto message_1 = channel.receive();
-        BOOST_TEST((message_1 == bytes({0x01})));
+    // message_2, receive message_3, then finish. Boost.Test is not
+    // thread-safe, so the responder only records what it received and the
+    // main thread asserts on it after join().
+    decltype(channel.receive()) message_1;
+    decltype(channel.receive()) message_3;
+    std::thread responder([&channel, &message_1, &message_3] {
+        message_1 = channel.receive();
         channel.send(bytes({0x02}));
-        const auto message_3 = channel.receive();
-        BOOST_TEST((message_3 == bytes({0x03})));
+        message_3 = channel.receive();
         channel.finish();
     });
 
@@ -149,6 +151,8 @@ BOOST_AUTO_TEST_CASE(responder_rendezvous_carries_a_three_message_exchange,
     BOOST_TEST(reply_to_3->empty());
 
     responder.join();
+    BOOST_TEST((message_1 == bytes({0x01})));
+    BOOST_TEST((message_3 == bytes({0x03})));
 }
 
 // A handshake that throws must not leave the CoAP handler blocked until its

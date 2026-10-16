@@ -101,6 +101,26 @@ current list of outstanding work, see [TODO.md](TODO.md).
   in-tree tests that did so now name it. Spec `cloud-composite-node-ids`
   task 3.4.
 
+- **Tests no longer assert from worker threads.** Boost.Test is
+  not thread-safe: every assertion rewrites the framework's shared
+  checkpoint string, so assertions racing in several threads can free that
+  string under each other. This is the likely cause of the one SegFault of
+  `performance_equivalence_property_test` (a wild address, 0x6000000000, in
+  a Coverage job). ThreadSanitizer reported 7 races in that test; a plain
+  `-O2` build crashed once in about 1,300 runs. Every test that asserted
+  inside a `std::thread` now counts failures in the worker and asserts once
+  on the main thread after `join()`. Five could race:
+  `performance_equivalence_property_test`, `performance_benchmark_test`,
+  `behavioral_preservation_property_test` and
+  `kythira_keep_alive_concept_compliance_property_test` assert from four or
+  eight threads at once, and `coap_edhoc_bootstrap_channel_test`'s
+  responder asserted while the main thread did. The other two,
+  `http_content_negotiation_unit_test` and
+  `memory_pool_metrics_monitoring_test`, asserted from one thread while the
+  main thread waited, which is safe today but breaks as soon as anyone adds
+  a check on the main thread. TSan now reports 0 for the three future tests,
+  which build without Folly.
+
 ### What Changed (October 15, 2026)
 
 - **Shape 2 perf rows stop calling separate machines containers.**
