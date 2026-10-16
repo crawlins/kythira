@@ -162,7 +162,7 @@ struct azure_vmss_quorum_manager_config {
 /// learns its own id with `--node-id=metadata:azure` rather than from
 /// `{NODE_ID}` (Requirement 6.4). Numeric mode (an unsigned `NodeId`) is
 /// unchanged.
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = azure_vm_node_id, typename Address = std::string>
 requires kythira::node_id<NodeId>
 class azure_vmss_quorum_manager {
 public:

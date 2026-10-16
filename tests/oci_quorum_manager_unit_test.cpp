@@ -177,14 +177,14 @@ BOOST_AUTO_TEST_SUITE(oci_quorum_manager_construction)
 /// this regresses; the runtime case exists so the intent is visible in the test
 /// output rather than only in a compile error nobody reads.
 BOOST_AUTO_TEST_CASE(the_manager_satisfies_the_quorum_manager_concept) {
-    static_assert(kythira::quorum_manager<oci_instance_pool_quorum_manager<>, std::uint64_t,
-                                          std::string, std::string>);
+    static_assert(kythira::quorum_manager<oci_instance_pool_quorum_manager<std::uint64_t>,
+                                          std::uint64_t, std::string, std::string>);
     BOOST_CHECK(true);
 }
 
 BOOST_AUTO_TEST_CASE(a_valid_config_constructs_and_reads_the_pools_availability_domains,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    oci_instance_pool_quorum_manager<> mgr{valid_config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{valid_config()};
     BOOST_REQUIRE_EQUAL(mgr.availability_domains().size(), 1U);
     BOOST_CHECK_EQUAL(mgr.availability_domains().front(), fixture().server->availability_domain());
 }
@@ -195,25 +195,29 @@ BOOST_AUTO_TEST_CASE(a_valid_config_constructs_and_reads_the_pools_availability_
 BOOST_AUTO_TEST_CASE(an_empty_compartment_id_throws) {
     auto cfg = unreachable_config();
     cfg.compartment_id.clear();
-    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(an_empty_cluster_name_throws) {
     auto cfg = unreachable_config();
     cfg.cluster_name.clear();
-    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(an_empty_instance_pool_id_throws) {
     auto cfg = unreachable_config();
     cfg.instance_pool_id.clear();
-    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(a_zero_node_port_throws) {
     auto cfg = unreachable_config();
     cfg.node_port = 0;
-    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 /// Requirement 2.2's API-key clause. The four fields are checked together here
@@ -224,22 +228,26 @@ BOOST_AUTO_TEST_CASE(a_missing_api_key_field_throws_when_instance_principal_is_o
     {
         auto cfg = unreachable_config();
         cfg.oci.tenancy_id.clear();
-        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                          std::invalid_argument);
     }
     {
         auto cfg = unreachable_config();
         cfg.oci.user_id.clear();
-        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                          std::invalid_argument);
     }
     {
         auto cfg = unreachable_config();
         cfg.oci.fingerprint.clear();
-        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                          std::invalid_argument);
     }
     {
         auto cfg = unreachable_config();
         cfg.oci.private_key_pem.clear();
-        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+        BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                          std::invalid_argument);
     }
 }
 
@@ -257,11 +265,12 @@ BOOST_AUTO_TEST_CASE(a_security_token_passes_validation_without_the_api_key_trip
     cfg.oci.user_id.clear();
     cfg.oci.fingerprint.clear();
     cfg.oci.security_token = "hdr.payload.sig";
-    oci_instance_pool_quorum_manager<> mgr{cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_CHECK_EQUAL(mgr.availability_domains().size(), 1U);
 
     cfg.oci.private_key_pem.clear();
-    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 /// Requirement 2.3: an unreachable or unknown pool is a construction failure,
@@ -272,7 +281,7 @@ BOOST_AUTO_TEST_CASE(an_unknown_instance_pool_throws_at_construction,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     auto cfg = valid_config();
     cfg.instance_pool_id = "ocid1.instancepool.oc1.phx.does-not-exist";
-    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<>{cfg}), std::runtime_error);
+    BOOST_CHECK_THROW((oci_instance_pool_quorum_manager<std::uint64_t>{cfg}), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -291,7 +300,7 @@ BOOST_AUTO_TEST_CASE(tag_writes_merge_onto_the_instances_existing_tags,
     const auto instance_id =
         fixture().server->add_instance({{"owner", "platform-team"}, {"cost-center", "42"}});
 
-    oci_instance_pool_quorum_manager<> mgr{valid_config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{valid_config()};
     const auto merged = mgr.merged_tags(
         instance_id, {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "7"}});
 
@@ -335,7 +344,7 @@ BOOST_AUTO_TEST_SUITE(oci_quorum_manager_fault_injection)
 /// here would pass whether the fault point existed or not.
 BOOST_AUTO_TEST_CASE(the_list_instances_fault_rejects_the_future,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    oci_instance_pool_quorum_manager<> mgr{valid_config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{valid_config()};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{
         {.node_id = 1, .group_id = fixture().server->availability_domain()}};
 
@@ -350,7 +359,7 @@ BOOST_AUTO_TEST_CASE(the_list_instances_fault_rejects_the_future,
 /// the pool size is read either side and must not have moved.
 BOOST_AUTO_TEST_CASE(the_update_size_fault_rejects_the_future_without_growing_the_pool,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    oci_instance_pool_quorum_manager<> mgr{valid_config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{valid_config()};
     const auto before = fixture().server->pool_size();
 
     fiu_enable("raft/oci/instance_pool/update_size", 1, nullptr, 0);
@@ -364,7 +373,7 @@ BOOST_AUTO_TEST_CASE(the_update_size_fault_rejects_the_future_without_growing_th
 /// Requirement 10.3.
 BOOST_AUTO_TEST_CASE(the_detach_instance_fault_rejects_the_future,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    oci_instance_pool_quorum_manager<> mgr{valid_config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{valid_config()};
 
     fiu_enable("raft/oci/instance_pool/detach_instance", 1, nullptr, 0);
     auto fut = mgr.decommission_node(std::uint64_t{1});
@@ -378,7 +387,7 @@ BOOST_AUTO_TEST_CASE(the_detach_instance_fault_rejects_the_future,
 /// short-circuiting `assess_quorum` cannot mask it.
 BOOST_AUTO_TEST_CASE(the_maintain_quorum_fault_rejects_the_future,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    oci_instance_pool_quorum_manager<> mgr{valid_config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{valid_config()};
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
 
     fiu_enable("raft/oci/instance_pool/maintain_quorum", 1, nullptr, 0);

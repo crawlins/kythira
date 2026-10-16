@@ -227,7 +227,7 @@ BOOST_AUTO_TEST_CASE(stalled_lro_poll_is_abandoned_and_retried, *boost::unit_tes
     curl_options.CAInfo = ca_root.cert_path();
     auto transport = std::make_shared<Azure::Core::Http::CurlTransport>(curl_options);
 
-    kythira::azure_vm_quorum_manager<> mgr{make_config(mock.origin(), transport)};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{make_config(mock.origin(), transport)};
 
     const auto start = std::chrono::steady_clock::now();
     try {

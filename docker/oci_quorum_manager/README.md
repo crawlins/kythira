@@ -7,6 +7,18 @@ Setup for `kythira::oci_instance_pool_quorum_manager` and
 configuration field; this file is about the OCI resources those fields point
 at, all of which the library deliberately does **not** create.
 
+## Node ids
+
+`oci_instance_pool_quorum_manager<>` defaults to `oci_instance_node_id`
+(`oci:<region key>:<instance OCID>`): a node's id is the instance the pool
+created, and the scope is the region field of the pool's own OCID, so the
+pool id must be an OCID. The `kythira-node-id` freeform tag carries the
+id's text. The first template argument picks the node id. Write `std::uint64_t` to
+keep numeric mode, which existing clusters and every `cmd/` binary use
+today: the manager allocates the next free number and stores it in a tag
+or label. `std::string` holds the composite id's canonical text, not a
+decimal number.
+
 ## What kythira does and does not create
 
 | Resource | Created by |

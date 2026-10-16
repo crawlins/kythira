@@ -182,7 +182,7 @@ struct azure_vm_quorum_manager_config {
 /// Liveness is determined solely from ARM `instanceView` power state — there is
 /// no application-level heartbeat tag in this design (see design.md's "ARM Tag
 /// Schema" section for the scope rationale).
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = azure_vm_node_id, typename Address = std::string>
 requires kythira::node_id<NodeId>
 class azure_vm_quorum_manager {
     static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||

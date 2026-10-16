@@ -29,6 +29,7 @@
 #include <folly/init/Init.h>
 #endif
 
+#include <concepts>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -564,6 +565,10 @@ BOOST_AUTO_TEST_CASE(unparseable_node_id_tags_do_not_steer_allocation) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// Composite mode is the default (task 4.4); numeric mode must be asked for.
+static_assert(
+    std::same_as<kythira::azure_vmss_quorum_manager<>::node_id_type, kythira::azure_vm_node_id>);
 
 // ── Composite and string node ids (cloud-composite-node-ids task 4.2) ────────
 

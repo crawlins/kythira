@@ -304,7 +304,7 @@ BOOST_AUTO_TEST_SUITE(alibaba_quorum_manager_mock_construction)
 BOOST_AUTO_TEST_CASE(construction_probes_the_group_over_a_signed_request,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     MockFixture fixture;
-    const alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    const alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
 
     BOOST_CHECK_EQUAL(mgr.topology().groups.size(), 1U);
     BOOST_CHECK_EQUAL(fixture.server.count_requests("RPC DescribeScalingGroups"), 1U);
@@ -318,7 +318,8 @@ BOOST_AUTO_TEST_CASE(an_absent_scaling_group_fails_construction,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     MockFixture fixture;
     fixture.server.set_group_exists(false);
-    BOOST_CHECK_THROW(alibaba_ess_quorum_manager<>{fixture.config()}, std::runtime_error);
+    BOOST_CHECK_THROW(alibaba_ess_quorum_manager<std::uint64_t>{fixture.config()},
+                      std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -336,7 +337,7 @@ BOOST_AUTO_TEST_CASE(a_stopped_instance_reads_as_unreachable,
     fixture.seed_node(2);
     fixture.seed_node(3, "Stopped");
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     auto health = std::move(mgr.assess_quorum(cluster_of({1, 2, 3}))).get();
 
     BOOST_CHECK_EQUAL(health.live_node_count, 2U);
@@ -358,7 +359,7 @@ BOOST_AUTO_TEST_CASE(an_out_of_service_instance_reads_as_unreachable,
     const auto pending = fixture.seed_node(2);
     fixture.server.set_instance_lifecycle(pending, "Pending");
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config(2)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config(2)};
     auto health = std::move(mgr.assess_quorum(cluster_of({1, 2}))).get();
 
     BOOST_CHECK_EQUAL(health.live_node_count, 1U);
@@ -380,7 +381,7 @@ BOOST_AUTO_TEST_CASE(a_foreign_clusters_instance_is_not_counted,
     // ...and an instance nobody has adopted at all (Requirement 5.4).
     fixture.server.add_instance({{"owner", "platform-team"}}, "InService", "Running", k_zone);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     auto health = std::move(mgr.assess_quorum(cluster_of({1, 2, 3}))).get();
 
     BOOST_CHECK_EQUAL(health.live_node_count, 3U);
@@ -401,7 +402,7 @@ BOOST_AUTO_TEST_CASE(the_scaling_instance_listing_is_paginated_to_exhaustion,
         fixture.seed_node(id);
     }
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 56U);
     // Two full pages plus the short third that ends the walk.
     BOOST_CHECK_GE(fixture.server.count_requests("RPC DescribeScalingInstances"), 2U);
@@ -413,7 +414,7 @@ BOOST_AUTO_TEST_CASE(the_scaling_instance_listing_is_paginated_to_exhaustion,
 BOOST_AUTO_TEST_CASE(assessing_an_empty_cluster_makes_no_api_call,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     MockFixture fixture;
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     fixture.server.clear_request_log();
 
     auto health =
@@ -442,7 +443,7 @@ BOOST_AUTO_TEST_CASE(provisioning_grows_the_group_adopts_the_newcomer_and_return
     fixture.seed_node(1);
     fixture.seed_node(2);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
 
     BOOST_CHECK_EQUAL(peer.node_id, 3U);
@@ -465,7 +466,7 @@ BOOST_AUTO_TEST_CASE(adoption_preserves_tags_the_manager_did_not_write,
     MockFixture fixture;
     fixture.server.set_launch_tags({{"owner", "platform-team"}, {"cost-center", "infra-42"}});
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config(1)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config(1)};
     auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
 
     const auto instances = fixture.server.instances();
@@ -486,7 +487,7 @@ BOOST_AUTO_TEST_CASE(extra_tags_cannot_override_the_well_known_keys,
     auto cfg = fixture.config(1);
     cfg.extra_tags = {{"env", "test"}, {"kythira-node-id", "999"}};
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get();
 
     const auto instances = fixture.server.instances();
@@ -503,7 +504,7 @@ BOOST_AUTO_TEST_CASE(a_zone_mismatch_proceeds_rather_than_failing,
     MockFixture fixture;
     fixture.server.set_launch_zone(k_other_zone);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config(1)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config(1)};
     auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
 
     BOOST_CHECK_EQUAL(peer.node_id, 1U);
@@ -523,7 +524,7 @@ BOOST_AUTO_TEST_CASE(an_instance_that_never_comes_up_times_out_and_rolls_capacit
     cfg.provision_timeout = 1s;
     fixture.server.set_launch_status("Starting");
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_CHECK_THROW((void)std::move(mgr.provision_node(k_zone, std::nullopt)).get(),
                       std::runtime_error);
 
@@ -547,7 +548,7 @@ BOOST_AUTO_TEST_CASE(a_launch_that_never_happens_times_out_and_rolls_capacity_ba
     auto cfg = fixture.config();
     cfg.provision_timeout = 1s;
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_CHECK_THROW((void)std::move(mgr.provision_node(k_zone, std::nullopt)).get(),
                       std::runtime_error);
 
@@ -574,7 +575,7 @@ BOOST_AUTO_TEST_CASE(a_refused_launch_reports_the_ess_error_code_in_the_timeout,
     auto cfg = fixture.config();
     cfg.provision_timeout = 1s;
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_CHECK_EXCEPTION(
         (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get(), std::runtime_error,
         [](const std::runtime_error& ex) {
@@ -611,7 +612,7 @@ BOOST_AUTO_TEST_CASE(an_accepted_but_undelivered_launch_says_ess_did_not_refuse,
     auto cfg = fixture.config();
     cfg.provision_timeout = 1s;
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_CHECK_EXCEPTION(
         (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get(), std::runtime_error,
         [](const std::runtime_error& ex) {
@@ -635,7 +636,7 @@ BOOST_AUTO_TEST_CASE(two_provisions_in_a_row_each_add_exactly_one,
     fixture.seed_node(1);
     fixture.seed_node(2);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config(4)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config(4)};
     auto first = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
     auto second = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
 
@@ -654,7 +655,7 @@ BOOST_AUTO_TEST_CASE(a_replacement_does_not_inherit_the_retired_node_id,
     fixture.seed_node(1);
     fixture.seed_node(2);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     auto peer = std::move(mgr.provision_node(k_zone, std::uint64_t{1})).get();
 
     BOOST_CHECK_EQUAL(peer.node_id, 3U);
@@ -682,7 +683,7 @@ BOOST_AUTO_TEST_CASE(decommission_removes_the_instance_and_shrinks_capacity,
     fixture.seed_node(2);
     fixture.seed_node(3);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     std::move(mgr.decommission_node(2)).get();
 
     BOOST_CHECK_EQUAL(fixture.server.instance_count(), 2U);
@@ -701,7 +702,7 @@ BOOST_AUTO_TEST_CASE(decommissioning_an_absent_node_succeeds_without_mutating,
     MockFixture fixture;
     fixture.seed_node(1);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     std::move(mgr.decommission_node(1)).get();
     fixture.server.clear_request_log();
 
@@ -720,7 +721,7 @@ BOOST_AUTO_TEST_CASE(decommission_never_touches_a_foreign_clusters_instance,
     fixture.server.add_instance({{"kythira-cluster", "someone-elses"}, {"kythira-node-id", "7"}},
                                 "InService", "Running", k_zone);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     std::move(mgr.decommission_node(7)).get();
 
     BOOST_CHECK_EQUAL(fixture.server.instance_count(), 2U);
@@ -738,7 +739,7 @@ BOOST_AUTO_TEST_CASE(a_min_size_refusal_surfaces_as_a_failure,
     fixture.seed_node(1);
     fixture.server.set_min_size(1);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     BOOST_CHECK_THROW(std::move(mgr.decommission_node(1)).get(), std::runtime_error);
 
     // The instance is still there — a failed decommission must not look like a
@@ -774,7 +775,7 @@ BOOST_AUTO_TEST_CASE(maintain_replaces_an_unreachable_node_and_reports_pre_remed
     fixture.seed_node(2);
     fixture.seed_node(3, "Stopped");
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     auto pre = std::move(mgr.maintain_quorum(cluster_of({1, 2, 3}))).get();
 
     BOOST_CHECK_EQUAL(pre.live_node_count, 2U);
@@ -802,7 +803,7 @@ BOOST_AUTO_TEST_CASE(an_assessed_id_no_longer_in_the_group_is_not_reassigned,
     fixture.seed_node(1);
     fixture.seed_node(2);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
 
     auto health = std::move(mgr.assess_quorum(cluster_of({1, 2, 3}))).get();
@@ -823,7 +824,7 @@ BOOST_AUTO_TEST_CASE(maintaining_a_healthy_cluster_mutates_nothing,
     fixture.seed_node(2);
     fixture.seed_node(3);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     fixture.server.clear_request_log();
     auto health = std::move(mgr.maintain_quorum(cluster_of({1, 2, 3}))).get();
 
@@ -842,7 +843,7 @@ BOOST_AUTO_TEST_CASE(maintain_fills_a_deficit_with_no_failures_present,
     MockFixture fixture;
     fixture.seed_node(1);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     auto pre = std::move(mgr.maintain_quorum(cluster_of({1}))).get();
 
     BOOST_CHECK_EQUAL(pre.live_node_count, 1U);
@@ -865,7 +866,7 @@ BOOST_AUTO_TEST_CASE(a_failed_remediation_is_logged_and_stepped_over,
     auto cfg = fixture.config();
     cfg.provision_timeout = 1s;
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     auto pre = std::move(mgr.maintain_quorum(cluster_of({1}))).get();
 
     // A one-node cluster with its one node live is `critical`, not `healthy`:
@@ -886,7 +887,7 @@ BOOST_AUTO_TEST_CASE(an_assessment_failure_aborts_before_any_remediation,
     MockFixture fixture;
     fixture.seed_node(1);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     fixture.server.stop();
     fixture.server.clear_request_log();
 
@@ -920,7 +921,7 @@ BOOST_AUTO_TEST_CASE(a_timed_out_launch_is_removed_by_id_and_every_voter_kept,
     // RemoveInstances until it finishes (Requirement 2.4).
     fixture.server.set_activity_in_progress_reads(3);
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     std::string message;
     try {
         (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get();
@@ -951,7 +952,7 @@ BOOST_AUTO_TEST_CASE(a_timeout_with_nothing_launched_restores_capacity,
     auto cfg = fixture.config();
     cfg.provision_timeout = 1s;
 
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     std::string message;
     try {
         (void)std::move(mgr.provision_node(k_zone, std::nullopt)).get();
@@ -970,7 +971,7 @@ BOOST_AUTO_TEST_CASE(a_timeout_with_nothing_launched_restores_capacity,
 BOOST_AUTO_TEST_CASE(adoption_sets_scale_in_protection_and_the_node_stays_live,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     MockFixture fixture;
-    alibaba_ess_quorum_manager<> mgr{fixture.config(1)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config(1)};
     const auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
 
     const auto instances = fixture.server.instances();
@@ -987,7 +988,7 @@ BOOST_AUTO_TEST_CASE(adoption_sets_scale_in_protection_and_the_node_stays_live,
 BOOST_AUTO_TEST_CASE(a_protection_failure_on_adoption_is_not_fatal,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     MockFixture fixture;
-    alibaba_ess_quorum_manager<> mgr{fixture.config(1)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config(1)};
     fixture.server.set_protection_error("Throttling");
     const auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
     BOOST_CHECK_EQUAL(peer.node_id, 1U);
@@ -1006,7 +1007,7 @@ BOOST_AUTO_TEST_CASE(construction_protects_adopted_members_only,
     const auto untagged =
         fixture.server.add_instance({{"owner", "platform-team"}}, "InService", "Running", k_zone);
 
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     BOOST_CHECK_EQUAL(fixture.server.instance(ours)->lifecycle_state, "Protected");
     BOOST_CHECK_EQUAL(fixture.server.instance(foreign)->lifecycle_state, "InService");
     BOOST_CHECK_EQUAL(fixture.server.instance(untagged)->lifecycle_state, "InService");
@@ -1019,9 +1020,10 @@ BOOST_AUTO_TEST_CASE(construction_rejects_a_policy_without_set_instances_protect
     MockFixture fixture;
     fixture.seed_node(1);
     fixture.server.set_protection_error("Forbidden.RAM");
-    BOOST_CHECK_THROW(alibaba_ess_quorum_manager<>{fixture.config()}, std::invalid_argument);
+    BOOST_CHECK_THROW(alibaba_ess_quorum_manager<std::uint64_t>{fixture.config()},
+                      std::invalid_argument);
     fixture.server.set_protection_error("Throttling");
-    BOOST_CHECK_NO_THROW(alibaba_ess_quorum_manager<>{fixture.config()});
+    BOOST_CHECK_NO_THROW(alibaba_ess_quorum_manager<std::uint64_t>{fixture.config()});
 }
 
 /// Requirement 4.4: decommission still removes a protected node. ESS
@@ -1032,7 +1034,7 @@ BOOST_AUTO_TEST_CASE(decommission_removes_a_protected_node,
     MockFixture fixture;
     const auto keep = fixture.seed_node(1);
     const auto gone = fixture.seed_node(2);
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     BOOST_REQUIRE_EQUAL(fixture.server.instance(gone)->lifecycle_state, "Protected");
 
     std::move(mgr.decommission_node(2)).get();
@@ -1049,7 +1051,7 @@ BOOST_AUTO_TEST_CASE(a_blind_decrease_skips_protected_members,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     MockFixture fixture;
     const auto voter = fixture.seed_node(1);
-    alibaba_ess_quorum_manager<> mgr{fixture.config()};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{fixture.config()};
     const auto stray =
         fixture.server.add_instance({{"owner", "platform-team"}}, "InService", "Running", k_zone);
     BOOST_REQUIRE_EQUAL(fixture.server.desired_capacity(), 2);
@@ -1155,6 +1157,10 @@ template<typename NodeId> void run_textual_lifecycle() {
 
 }  // namespace
 
+// Composite mode is the default (task 4.4); numeric mode must be asked for.
+static_assert(std::same_as<kythira::alibaba_ess_quorum_manager<>::node_id_type,
+                           kythira::alibaba_ecs_node_id>);
+
 BOOST_AUTO_TEST_SUITE(alibaba_quorum_manager_mock_composite_ids)
 
 BOOST_AUTO_TEST_CASE(composite_mode_lifecycle,
@@ -1223,7 +1229,7 @@ BOOST_AUTO_TEST_CASE(textual_modes_require_a_region,
     BOOST_CHECK_THROW(alibaba_ess_quorum_manager<kythira::alibaba_ecs_node_id>{cfg},
                       std::invalid_argument);
     BOOST_CHECK_THROW(alibaba_ess_quorum_manager<std::string>{cfg}, std::invalid_argument);
-    BOOST_CHECK_NO_THROW(alibaba_ess_quorum_manager<>{cfg});
+    BOOST_CHECK_NO_THROW(alibaba_ess_quorum_manager<std::uint64_t>{cfg});
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -21,6 +21,7 @@
 
 #include <boost/json.hpp>
 
+#include <concepts>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -128,37 +129,42 @@ BOOST_AUTO_TEST_SUITE(vm_construction)
 
 BOOST_AUTO_TEST_CASE(valid_config_constructs) {
     auto cfg = make_vm_config();
-    BOOST_CHECK_NO_THROW((kythira::azure_vm_quorum_manager<>{cfg}));
+    BOOST_CHECK_NO_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}));
 }
 
 BOOST_AUTO_TEST_CASE(empty_cluster_name_throws) {
     auto cfg = make_vm_config();
     cfg.cluster_name.clear();
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(empty_subscription_id_throws) {
     auto cfg = make_vm_config();
     cfg.azure.subscription_id.clear();
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(empty_resource_group_throws) {
     auto cfg = make_vm_config();
     cfg.azure.resource_group.clear();
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(empty_location_throws) {
     auto cfg = make_vm_config();
     cfg.azure.location.clear();
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(zero_node_port_throws) {
     auto cfg = make_vm_config();
     cfg.node_port = 0;
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(image_reference_both_forms_set_throws) {
@@ -166,19 +172,22 @@ BOOST_AUTO_TEST_CASE(image_reference_both_forms_set_throws) {
     cfg.image_reference.shared_gallery_image_id =
         "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-rg/providers/"
         "Microsoft.Compute/galleries/test-gallery/images/test-image/versions/1.0.0";
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(image_reference_neither_form_set_throws) {
     auto cfg = make_vm_config();
     cfg.image_reference = kythira::azure_image_reference{};
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(missing_subnet_for_topology_group_throws) {
     auto cfg = make_vm_config();
     cfg.topology.groups.push_back({.group_id = "2", .target_count = 1});
-    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vm_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -189,25 +198,28 @@ BOOST_AUTO_TEST_SUITE(vmss_construction)
 
 BOOST_FIXTURE_TEST_CASE(valid_config_constructs, VmssSkipUpgradePolicyFixture) {
     auto cfg = make_vmss_config();
-    BOOST_CHECK_NO_THROW((kythira::azure_vmss_quorum_manager<>{cfg}));
+    BOOST_CHECK_NO_THROW((kythira::azure_vmss_quorum_manager<std::uint64_t>{cfg}));
 }
 
 BOOST_AUTO_TEST_CASE(empty_cluster_name_throws) {
     auto cfg = make_vmss_config();
     cfg.cluster_name.clear();
-    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(empty_scale_set_by_group_throws) {
     auto cfg = make_vmss_config();
     cfg.scale_set_by_group.clear();
-    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(missing_scale_set_for_topology_group_throws) {
     auto cfg = make_vmss_config();
     cfg.topology.groups.push_back({.group_id = "2", .target_count = 1});
-    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -217,14 +229,14 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(unknown_group_provision)
 
 BOOST_AUTO_TEST_CASE(vm_provision_unknown_group_returns_exceptional_future) {
-    kythira::azure_vm_quorum_manager<> mgr{make_vm_config()};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{make_vm_config()};
     auto fut = mgr.provision_node("no-such-group", std::nullopt);
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
 
 BOOST_FIXTURE_TEST_CASE(vmss_provision_unknown_group_returns_exceptional_future,
                         VmssSkipUpgradePolicyFixture) {
-    kythira::azure_vmss_quorum_manager<> mgr{make_vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{make_vmss_config()};
     auto fut = mgr.provision_node("no-such-group", std::nullopt);
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
@@ -855,6 +867,10 @@ public:
 
 }  // namespace
 
+// Composite mode is the default (task 4.4); numeric mode must be asked for.
+static_assert(
+    std::same_as<kythira::azure_vm_quorum_manager<>::node_id_type, kythira::azure_vm_node_id>);
+
 BOOST_AUTO_TEST_SUITE(vm_composite_node_id)
 
 BOOST_AUTO_TEST_CASE(composite_mode_lifecycle) {
@@ -984,7 +1000,7 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(fault_injection)
 
 BOOST_AUTO_TEST_CASE(vm_find_by_idempotency_key_fault) {
-    kythira::azure_vm_quorum_manager<> mgr{make_vm_config()};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{make_vm_config()};
     fiu_enable("raft/azure/vm/find_by_idempotency_key", 1, nullptr, 0);
     auto fut = mgr.find_by_idempotency_key("cap-1-2-3");
     fiu_disable("raft/azure/vm/find_by_idempotency_key");
@@ -1001,26 +1017,26 @@ struct FaultPointFixture {
 
 BOOST_AUTO_TEST_CASE(vm_assess_quorum_fault) {
     FaultPointFixture fp("raft/azure/vm/get_instance_view");
-    kythira::azure_vm_quorum_manager<> mgr{make_vm_config()};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{make_vm_config()};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{1, "1"}};
     BOOST_CHECK_THROW(std::move(mgr.assess_quorum(cluster)).get(), std::exception);
 }
 
 BOOST_AUTO_TEST_CASE(vm_provision_node_fault) {
     FaultPointFixture fp("raft/azure/vm/create_vm");
-    kythira::azure_vm_quorum_manager<> mgr{make_vm_config()};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{make_vm_config()};
     BOOST_CHECK_THROW(std::move(mgr.provision_node("1", std::nullopt)).get(), std::exception);
 }
 
 BOOST_AUTO_TEST_CASE(vm_decommission_node_fault) {
     FaultPointFixture fp("raft/azure/vm/delete_vm");
-    kythira::azure_vm_quorum_manager<> mgr{make_vm_config()};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{make_vm_config()};
     BOOST_CHECK_THROW(std::move(mgr.decommission_node(1)).get(), std::exception);
 }
 
 BOOST_AUTO_TEST_CASE(vm_maintain_quorum_fault) {
     FaultPointFixture fp("raft/azure/vm/maintain_quorum");
-    kythira::azure_vm_quorum_manager<> mgr{make_vm_config()};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{make_vm_config()};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{1, "1"}};
     BOOST_CHECK_THROW(std::move(mgr.maintain_quorum(cluster)).get(), std::exception);
 }
@@ -1028,7 +1044,7 @@ BOOST_AUTO_TEST_CASE(vm_maintain_quorum_fault) {
 BOOST_AUTO_TEST_CASE(vmss_assess_quorum_fault) {
     VmssSkipUpgradePolicyFixture skip;
     FaultPointFixture fp("raft/azure/vmss/list_instances");
-    kythira::azure_vmss_quorum_manager<> mgr{make_vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{make_vmss_config()};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{1, "1"}};
     BOOST_CHECK_THROW(std::move(mgr.assess_quorum(cluster)).get(), std::exception);
 }
@@ -1036,21 +1052,21 @@ BOOST_AUTO_TEST_CASE(vmss_assess_quorum_fault) {
 BOOST_AUTO_TEST_CASE(vmss_provision_node_fault) {
     VmssSkipUpgradePolicyFixture skip;
     FaultPointFixture fp("raft/azure/vmss/update_capacity");
-    kythira::azure_vmss_quorum_manager<> mgr{make_vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{make_vmss_config()};
     BOOST_CHECK_THROW(std::move(mgr.provision_node("1", std::nullopt)).get(), std::exception);
 }
 
 BOOST_AUTO_TEST_CASE(vmss_decommission_node_fault) {
     VmssSkipUpgradePolicyFixture skip;
     FaultPointFixture fp("raft/azure/vmss/delete_instance");
-    kythira::azure_vmss_quorum_manager<> mgr{make_vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{make_vmss_config()};
     BOOST_CHECK_THROW(std::move(mgr.decommission_node(1)).get(), std::exception);
 }
 
 BOOST_AUTO_TEST_CASE(vmss_maintain_quorum_fault) {
     VmssSkipUpgradePolicyFixture skip;
     FaultPointFixture fp("raft/azure/vmss/maintain_quorum");
-    kythira::azure_vmss_quorum_manager<> mgr{make_vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{make_vmss_config()};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{1, "1"}};
     BOOST_CHECK_THROW(std::move(mgr.maintain_quorum(cluster)).get(), std::exception);
 }

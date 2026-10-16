@@ -175,6 +175,7 @@ BOOST_AUTO_TEST_SUITE_END()
 #include <raft/gcp_operation_wait.hpp>
 #include <raft/generated_node_name.hpp>
 
+#include <concepts>
 #include <algorithm>
 #include <string>
 #include <string_view>
@@ -246,8 +247,8 @@ auto valid_mig_config() -> kythira::gcp_mig_quorum_manager_config<std::string> {
 }
 
 namespace fakes = kythira::test::gcp_fakes;
-using compute_mgr = kythira::gcp_compute_quorum_manager<>;
-using mig_mgr = kythira::gcp_mig_quorum_manager<>;
+using compute_mgr = kythira::gcp_compute_quorum_manager<std::uint64_t>;
+using mig_mgr = kythira::gcp_mig_quorum_manager<std::uint64_t>;
 using placements = std::vector<kythira::node_placement<std::uint64_t, std::string>>;
 
 /// Shrinks every wait so a fake-backed call that polls returns in milliseconds.
@@ -295,51 +296,58 @@ auto what_of(auto&& fut) -> std::string {
 BOOST_AUTO_TEST_SUITE(gcp_compute_construction)
 
 BOOST_AUTO_TEST_CASE(valid_config_constructs) {
-    BOOST_CHECK_NO_THROW((kythira::gcp_compute_quorum_manager<>{valid_compute_config()}));
+    BOOST_CHECK_NO_THROW(
+        (kythira::gcp_compute_quorum_manager<std::uint64_t>{valid_compute_config()}));
 }
 
 BOOST_AUTO_TEST_CASE(empty_cluster_name_throws) {
     auto cfg = valid_compute_config();
     cfg.cluster_name.clear();
-    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(empty_boot_disk_image_throws) {
     auto cfg = valid_compute_config();
     cfg.boot_disk_image.clear();
-    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(zero_node_port_throws) {
     auto cfg = valid_compute_config();
     cfg.node_port = 0;
-    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(invalid_cluster_name_label_throws) {
     auto cfg = valid_compute_config();
     cfg.cluster_name = "Test:Cluster";  // uppercase + colon → not a valid GCP label
-    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(missing_subnetwork_for_group_throws) {
     auto cfg = valid_compute_config();
     cfg.topology.groups.push_back({.group_id = "us-central1-b", .target_count = 3});
     // No subnetwork for us-central1-b — must throw.
-    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(invalid_extra_label_throws) {
     auto cfg = valid_compute_config();
     cfg.extra_labels["Bad-Key"] = "value";  // uppercase key
-    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_compute_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(topology_returns_configured_groups) {
     auto cfg = valid_compute_config();
     cfg.topology.groups.push_back({.group_id = "us-central1-b", .target_count = 3});
     cfg.subnetwork_by_group["us-central1-b"] = "default";
-    kythira::gcp_compute_quorum_manager<> mgr{cfg};
+    kythira::gcp_compute_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_REQUIRE_EQUAL(mgr.topology().groups.size(), 2u);
     BOOST_CHECK_EQUAL(mgr.topology().total_size(), 6u);
 }
@@ -383,25 +391,25 @@ BOOST_AUTO_TEST_SUITE(gcp_mig_construction)
 BOOST_AUTO_TEST_CASE(empty_mig_by_group_throws) {
     auto cfg = valid_mig_config();
     cfg.mig_by_group.clear();
-    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(empty_cluster_name_throws) {
     auto cfg = valid_mig_config();
     cfg.cluster_name.clear();
-    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(zero_node_port_throws) {
     auto cfg = valid_mig_config();
     cfg.node_port = 0;
-    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(missing_mig_for_group_throws) {
     auto cfg = valid_mig_config();
     cfg.topology.groups.push_back({.group_id = "us-central1-b", .target_count = 3});
-    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::gcp_mig_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -413,7 +421,7 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(gcp_fault_injection)
 
 BOOST_AUTO_TEST_CASE(compute_list_instances_fault_returns_exceptional_future) {
-    kythira::gcp_compute_quorum_manager<> mgr{valid_compute_config()};
+    kythira::gcp_compute_quorum_manager<std::uint64_t> mgr{valid_compute_config()};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     cluster.push_back({.node_id = 42, .group_id = "us-central1-a"});
 
@@ -424,7 +432,7 @@ BOOST_AUTO_TEST_CASE(compute_list_instances_fault_returns_exceptional_future) {
 }
 
 BOOST_AUTO_TEST_CASE(compute_insert_instance_fault_returns_exceptional_future) {
-    kythira::gcp_compute_quorum_manager<> mgr{valid_compute_config()};
+    kythira::gcp_compute_quorum_manager<std::uint64_t> mgr{valid_compute_config()};
     fiu_enable("raft/gcp/compute/insert_instance", 1, nullptr, 0);
     auto fut = mgr.provision_node("us-central1-a", std::nullopt);
     fiu_disable("raft/gcp/compute/insert_instance");
@@ -432,7 +440,7 @@ BOOST_AUTO_TEST_CASE(compute_insert_instance_fault_returns_exceptional_future) {
 }
 
 BOOST_AUTO_TEST_CASE(compute_delete_instance_fault_returns_exceptional_future) {
-    kythira::gcp_compute_quorum_manager<> mgr{valid_compute_config()};
+    kythira::gcp_compute_quorum_manager<std::uint64_t> mgr{valid_compute_config()};
     fiu_enable("raft/gcp/compute/delete_instance", 1, nullptr, 0);
     auto fut = mgr.decommission_node(std::uint64_t{42});
     fiu_disable("raft/gcp/compute/delete_instance");
@@ -440,7 +448,7 @@ BOOST_AUTO_TEST_CASE(compute_delete_instance_fault_returns_exceptional_future) {
 }
 
 BOOST_AUTO_TEST_CASE(compute_maintain_quorum_fault_returns_exceptional_future) {
-    kythira::gcp_compute_quorum_manager<> mgr{valid_compute_config()};
+    kythira::gcp_compute_quorum_manager<std::uint64_t> mgr{valid_compute_config()};
     fiu_enable("raft/gcp/compute/maintain_quorum", 1, nullptr, 0);
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     auto fut = mgr.maintain_quorum(cluster);
@@ -569,7 +577,7 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(gcp_target_group_rejection)
 
 BOOST_AUTO_TEST_CASE(compute_provision_unknown_group_returns_exceptional_future) {
-    kythira::gcp_compute_quorum_manager<> mgr{valid_compute_config()};
+    kythira::gcp_compute_quorum_manager<std::uint64_t> mgr{valid_compute_config()};
     auto fut = mgr.provision_node("no-such-zone", std::nullopt);
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
 }
@@ -919,6 +927,12 @@ public:
 };
 
 }  // namespace
+
+// Composite mode is the default (task 4.4); numeric mode must be asked for.
+static_assert(std::same_as<kythira::gcp_compute_quorum_manager<>::node_id_type,
+                           kythira::gcp_instance_node_id>);
+static_assert(
+    std::same_as<kythira::gcp_mig_quorum_manager<>::node_id_type, kythira::gcp_instance_node_id>);
 
 BOOST_AUTO_TEST_SUITE(gcp_compute_composite_node_id)
 

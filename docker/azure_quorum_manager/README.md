@@ -12,6 +12,19 @@ Both are built when the Azure SDK is found (`KYTHIRA_HAS_AZURE_SDK`;
 `azure-core-cpp` and `azure-identity-cpp`). They speak ARM REST through the
 SDK's HTTP pipeline; there is no Compute SDK dependency.
 
+## Node ids
+
+Both managers default to `azure_vm_node_id` (`azure-vm:<resource
+group>:<VM name>`). `azure_vm_quorum_manager` names each VM
+`kythira-<cluster>-<8 random base32 characters>` before creating it, so it
+knows the id up front and substitutes it for `{NODE_ID}` in custom data.
+`azure_vmss_quorum_manager` takes the id from the member VM the scale set
+created. The `kythira:node-id` tag carries the id's text. The first template argument picks the node id. Write `std::uint64_t` to
+keep numeric mode, which existing clusters and every `cmd/` binary use
+today: the manager allocates the next free number and stores it in a tag
+or label. `std::string` holds the composite id's canonical text, not a
+decimal number.
+
 ## Which manager
 
 | | `azure_vm_quorum_manager` | `azure_vmss_quorum_manager` |

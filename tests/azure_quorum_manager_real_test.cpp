@@ -730,7 +730,7 @@ public:
 /// `assess_quorum` on the rebuilt manager still address them correctly.
 class escalating_vm_manager {
 public:
-    using manager_type = kythira::azure_vm_quorum_manager<>;
+    using manager_type = kythira::azure_vm_quorum_manager<std::uint64_t>;
 
     /// Which rungs of the ladder this manager is allowed to use.
     ///
@@ -1157,7 +1157,7 @@ BOOST_FIXTURE_TEST_CASE(decommission_idempotent, AzureIntegrationFixture,
         BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
         return;
     }
-    kythira::azure_vm_quorum_manager<> mgr{vm_config(1)};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{vm_config(1)};
     // Decommissioning a NodeId that was never provisioned must be a no-op,
     // not an error (Property 2: idempotency of decommission).
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(999999999)).get());
@@ -1176,7 +1176,7 @@ BOOST_FIXTURE_TEST_CASE(provision_timeout_cleanup, AzureIntegrationFixture,
     // without needing to wait for a real provisioning failure.
     cfg.provision_timeout = std::chrono::seconds{1};
     cfg.poll_interval = std::chrono::milliseconds{500};
-    kythira::azure_vm_quorum_manager<> mgr{cfg};
+    kythira::azure_vm_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_CHECK_THROW(std::move(mgr.provision_node("1", std::nullopt)).get(), std::exception);
 }
 
@@ -1527,7 +1527,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_increments_capacity, AzureIntegrationFixt
         return;
     }
     TestCostReport cost{.test_name = "vmss_provision_increments_capacity"};
-    kythira::azure_vmss_quorum_manager<> mgr{vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{vmss_config()};
 
     auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
@@ -1552,7 +1552,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture
         return;
     }
     TestCostReport cost{.test_name = "vmss_assess_detects_not_running"};
-    kythira::azure_vmss_quorum_manager<> mgr{vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{vmss_config()};
 
     auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
@@ -1585,7 +1585,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_decommission_removes_instance, AzureIntegrationFixt
         return;
     }
     TestCostReport cost{.test_name = "vmss_decommission_removes_instance"};
-    kythira::azure_vmss_quorum_manager<> mgr{vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{vmss_config()};
 
     auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
@@ -1612,7 +1612,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_decommission_idempotent, AzureIntegrationFixture,
         BOOST_TEST_MESSAGE("Skipping: preflight failed or AZURE_TEST_VMSS_NAME unset (see stderr)");
         return;
     }
-    kythira::azure_vmss_quorum_manager<> mgr{vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{vmss_config()};
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(999999999)).get());
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(999999999)).get());
 }
@@ -1639,7 +1639,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_timeout_removes_only_the_fresh_member,
         return;
     }
     TestCostReport cost{.test_name = "vmss_provision_timeout_removes_only_the_fresh_member"};
-    kythira::azure_vmss_quorum_manager<> voter_mgr{vmss_config()};
+    kythira::azure_vmss_quorum_manager<std::uint64_t> voter_mgr{vmss_config()};
     auto voter = std::move(voter_mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
         {.label = "VMSS instance (voter)", .hourly_rate = vmss_instance_hourly_rate()});
@@ -1654,7 +1654,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_timeout_removes_only_the_fresh_member,
         auto cfg = vmss_config();
         cfg.provision_timeout = timeout;
         cfg.poll_interval = std::chrono::milliseconds{2000};
-        kythira::azure_vmss_quorum_manager<> mgr{cfg};
+        kythira::azure_vmss_quorum_manager<std::uint64_t> mgr{cfg};
         try {
             auto adopted = std::move(mgr.provision_node("1", std::nullopt)).get();
             std::cerr << "[azure_quorum_manager_real_test] a " << timeout.count()
@@ -1738,7 +1738,8 @@ BOOST_FIXTURE_TEST_CASE(vmss_rejects_automatic_upgrade_mode, AzureIntegrationFix
     }
     auto cfg = vmss_config();
     cfg.scale_set_by_group["1"] = *automatic_scale_set;
-    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((kythira::azure_vmss_quorum_manager<std::uint64_t>{cfg}),
+                      std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

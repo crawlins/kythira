@@ -12,6 +12,22 @@ design (node identity, the label scheme, the autohealing guard) is in
 Both are built when `google-cloud-cpp`'s compute components are found
 (`KYTHIRA_HAS_GCP_SDK`).
 
+## Node ids
+
+Both managers default to `gcp_instance_node_id`
+(`gcp:<project>/<zone>:<instance name>`). `gcp_compute_quorum_manager`
+names each instance `kythira-<cluster>-<8 random base32 characters>`
+(63 characters at most) before inserting it, so `{NODE_ID}` in the startup
+script is substituted, and the full id is also in the instance metadata
+item `kythira-node-id`. `gcp_mig_quorum_manager` takes the id from the
+managed instance's name. GCP label values cannot hold `:` or `/`, so the
+`kythira-node-id` label carries the instance name; with the instance's
+project and zone that is the same id. The first template argument picks the node id. Write `std::uint64_t` to
+keep numeric mode, which existing clusters and every `cmd/` binary use
+today: the manager allocates the next free number and stores it in a tag
+or label. `std::string` holds the composite id's canonical text, not a
+decimal number.
+
 ## Which manager
 
 | | `gcp_compute_quorum_manager` | `gcp_mig_quorum_manager` |

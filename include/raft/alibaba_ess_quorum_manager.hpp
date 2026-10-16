@@ -336,11 +336,12 @@ struct alibaba_ess_quorum_manager_config {
 
 /// @brief `quorum_manager` driving an ESS scaling group's DesiredCapacity.
 ///
-/// @tparam NodeId  Node identifier type; defaults to `std::uint64_t`.
-///                 `alibaba_ecs_node_id` or `std::string` makes the node id
-///                 the instance itself (see the file comment).
+/// @tparam NodeId  Node identifier type; defaults to `alibaba_ecs_node_id`,
+///                 which (like `std::string`) makes the node id the instance
+///                 itself (see the file comment). Write `std::uint64_t` for
+///                 numeric mode.
 /// @tparam Address Network address type; defaults to `std::string`.
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = alibaba_ecs_node_id, typename Address = std::string>
 requires node_id<NodeId>
 class alibaba_ess_quorum_manager {
 public:

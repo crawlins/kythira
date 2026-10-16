@@ -10,6 +10,19 @@ see `.kiro/specs/alibaba-cloud-services/design.md` for why):
 
 Configuration: copy `alibaba_quorum_manager.env.example` and fill it in.
 
+## Node ids
+
+`alibaba_ess_quorum_manager<>` defaults to `alibaba_ecs_node_id`: a node's
+id is the ECS instance the scaling group adopted
+(`alibaba-ecs:<region>:<instance id>`), so nothing is allocated, and
+mapping an id back to its instance needs no tag search. The
+`kythira-node-id` tag still carries the id's text, and `alibaba.region`
+must be set. The first template argument picks the node id. Write `std::uint64_t` to
+keep numeric mode, which existing clusters and every `cmd/` binary use
+today: the manager allocates the next free number and stores it in a tag
+or label. `std::string` holds the composite id's canonical text, not a
+decimal number.
+
 ## Prerequisite resources (the code deliberately does not create these)
 
 Like every other cloud provider in this tree, these components operate

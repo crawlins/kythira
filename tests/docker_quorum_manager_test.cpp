@@ -10,6 +10,7 @@
 #include <httplib.h>
 #include <boost/json.hpp>
 
+#include <concepts>
 #include <algorithm>
 #include <chrono>
 #include <map>
@@ -81,21 +82,21 @@ BOOST_AUTO_TEST_CASE(constructor_rejects_empty_image) {
     docker_quorum_manager_config cfg;
     cfg.cluster_name = "c";
     cfg.network_name = "n";
-    BOOST_CHECK_THROW((docker_quorum_manager<>(cfg)), std::invalid_argument);
+    BOOST_CHECK_THROW((docker_quorum_manager<std::uint64_t>(cfg)), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(constructor_rejects_empty_cluster_name) {
     docker_quorum_manager_config cfg;
     cfg.image = "img";
     cfg.network_name = "n";
-    BOOST_CHECK_THROW((docker_quorum_manager<>(cfg)), std::invalid_argument);
+    BOOST_CHECK_THROW((docker_quorum_manager<std::uint64_t>(cfg)), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(constructor_rejects_empty_network_name) {
     docker_quorum_manager_config cfg;
     cfg.image = "img";
     cfg.cluster_name = "c";
-    BOOST_CHECK_THROW((docker_quorum_manager<>(cfg)), std::invalid_argument);
+    BOOST_CHECK_THROW((docker_quorum_manager<std::uint64_t>(cfg)), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(constructor_rejects_zero_target_count) {
@@ -104,7 +105,7 @@ BOOST_AUTO_TEST_CASE(constructor_rejects_zero_target_count) {
     cfg.cluster_name = "c";
     cfg.network_name = "n";
     cfg.target_count = 0;
-    BOOST_CHECK_THROW((docker_quorum_manager<>(cfg)), std::invalid_argument);
+    BOOST_CHECK_THROW((docker_quorum_manager<std::uint64_t>(cfg)), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(constructor_rejects_zero_node_port) {
@@ -113,13 +114,13 @@ BOOST_AUTO_TEST_CASE(constructor_rejects_zero_node_port) {
     cfg.cluster_name = "c";
     cfg.network_name = "n";
     cfg.node_port = 0;
-    BOOST_CHECK_THROW((docker_quorum_manager<>(cfg)), std::invalid_argument);
+    BOOST_CHECK_THROW((docker_quorum_manager<std::uint64_t>(cfg)), std::invalid_argument);
 }
 
 // ── topology ──────────────────────────────────────────────────────────────────
 
 BOOST_FIXTURE_TEST_CASE(topology_returns_configured_group, MockDockerServer) {
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     auto t = mgr.topology();
     BOOST_REQUIRE_EQUAL(t.groups.size(), 1u);
     BOOST_CHECK_EQUAL(t.groups[0].target_count, 3u);
@@ -133,7 +134,7 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_all_running_is_healthy, MockDockerServer) 
     serve_container_state("2", "running");
     serve_container_state("3", "running");
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     Cluster cluster{{1u, "default"}, {2u, "default"}, {3u, "default"}};
     auto h = mgr.assess_quorum(cluster).get();
 
@@ -147,7 +148,7 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_two_of_three_is_critical, MockDockerServer
     serve_container_state("2", "exited");
     serve_container_state("3", "running");
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     Cluster cluster{{1u, "default"}, {2u, "default"}, {3u, "default"}};
     auto h = mgr.assess_quorum(cluster).get();
 
@@ -164,7 +165,7 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_one_of_three_is_lost, MockDockerServer) {
                [](const httplib::Request&, httplib::Response& res) { res.status = 404; });
     serve_container_state("3", "exited");
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     Cluster cluster{{1u, "default"}, {2u, "default"}, {3u, "default"}};
     auto h = mgr.assess_quorum(cluster).get();
 
@@ -177,7 +178,7 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_degraded_for_five_node_cluster, MockDocker
     // 4 of 5 running → degraded (above majority, below total)
     auto cfg = make_cfg();
     cfg.target_count = 5;
-    docker_quorum_manager<> mgr(cfg);
+    docker_quorum_manager<std::uint64_t> mgr(cfg);
 
     for (int i = 1; i <= 4; ++i) {
         serve_container_state(std::to_string(i), "running");
@@ -195,7 +196,7 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_degraded_for_five_node_cluster, MockDocker
 }
 
 BOOST_FIXTURE_TEST_CASE(assess_quorum_empty_cluster_is_healthy, MockDockerServer) {
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     auto h = mgr.assess_quorum({}).get();
     BOOST_CHECK_EQUAL(h.status, quorum_status::healthy);
     BOOST_CHECK_EQUAL(h.live_node_count, 0u);
@@ -215,7 +216,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_success, MockDockerServer) {
     server.Post(R"(/containers/kythira-test-cluster-1/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     auto peer = mgr.provision_node("default", std::nullopt).get();
 
     BOOST_CHECK_EQUAL(peer.node_id, 1u);
@@ -239,7 +240,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_increments_max_existing_id, MockDockerSer
     server.Post(R"(/containers/kythira-test-cluster-4/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     auto peer = mgr.provision_node("default", std::nullopt).get();
 
     BOOST_CHECK_EQUAL(peer.node_id, 4u);
@@ -257,7 +258,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_create_failure_returns_exceptional, MockD
     server.Delete(R"(/containers/kythira-test-cluster-1)",
                   [](const httplib::Request&, httplib::Response& res) { res.status = 404; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
 }
 
@@ -274,7 +275,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_start_failure_returns_exceptional, MockDo
     server.Delete(R"(/containers/kythira-test-cluster-1)",
                   [](const httplib::Request&, httplib::Response& res) { res.status = 200; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
 }
 
@@ -289,7 +290,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_with_replacing_hint, MockDockerServer) {
     server.Post(R"(/containers/kythira-test-cluster-1/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     // replacing hint is accepted but single-group impl ignores it
     auto peer = mgr.provision_node("default", std::optional<uint64_t>{2u}).get();
     BOOST_CHECK_EQUAL(peer.node_id, 1u);
@@ -301,7 +302,7 @@ BOOST_FIXTURE_TEST_CASE(decommission_node_success_on_200, MockDockerServer) {
     server.Delete(R"(/containers/kythira-test-cluster-5)",
                   [](const httplib::Request&, httplib::Response& res) { res.status = 200; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_NO_THROW(mgr.decommission_node(5u).get());
 }
 
@@ -309,7 +310,7 @@ BOOST_FIXTURE_TEST_CASE(decommission_node_404_is_idempotent, MockDockerServer) {
     server.Delete(R"(/containers/kythira-test-cluster-5)",
                   [](const httplib::Request&, httplib::Response& res) { res.status = 404; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_NO_THROW(mgr.decommission_node(5u).get());
 }
 
@@ -317,7 +318,7 @@ BOOST_FIXTURE_TEST_CASE(decommission_node_failure_returns_exceptional, MockDocke
     server.Delete(R"(/containers/kythira-test-cluster-5)",
                   [](const httplib::Request&, httplib::Response& res) { res.status = 500; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.decommission_node(5u).get(), std::runtime_error);
 }
 
@@ -332,7 +333,7 @@ BOOST_AUTO_TEST_CASE(make_client_unix_url_constructs_without_throw) {
     cfg.cluster_name = "c";
     cfg.network_name = "n";
     // construction must succeed; first Get() would fail, but we don't call it
-    BOOST_CHECK_NO_THROW((docker_quorum_manager<>(cfg)));
+    BOOST_CHECK_NO_THROW((docker_quorum_manager<std::uint64_t>(cfg)));
 }
 
 // ── make_client — TCP without explicit port ───────────────────────────────────
@@ -350,7 +351,7 @@ BOOST_FIXTURE_TEST_CASE(make_client_tcp_no_port_uses_default, MockDockerServer) 
     cfg.image = "img";
     cfg.cluster_name = "c";
     cfg.network_name = "n";
-    BOOST_CHECK_NO_THROW((docker_quorum_manager<>(cfg)));
+    BOOST_CHECK_NO_THROW((docker_quorum_manager<std::uint64_t>(cfg)));
 }
 
 // ── unix socket path exercises the unix:// branch of make_client() ───────────
@@ -361,7 +362,7 @@ BOOST_AUTO_TEST_CASE(assess_quorum_fails_when_daemon_socket_missing) {
     cfg.image = "img";
     cfg.cluster_name = "c";
     cfg.network_name = "n";
-    docker_quorum_manager<> mgr(cfg);
+    docker_quorum_manager<std::uint64_t> mgr(cfg);
     // Req 18 AC 10/22: an unreachable daemon fails the assessment.  Reporting
     // the node unreachable instead would read as quorum loss.
     std::vector<node_placement<uint64_t, std::string>> cluster{{1u, "default"}};
@@ -374,7 +375,7 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_below_target_is_degraded, MockDockerServer
     serve_container_state("1", "running");
     serve_container_state("2", "running");
 
-    docker_quorum_manager<> mgr(make_cfg());  // target_count = 3
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());  // target_count = 3
     Cluster cluster{{1u, "default"}, {2u, "default"}};
     auto h = mgr.assess_quorum(cluster).get();
 
@@ -403,7 +404,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_skips_ids_of_assessed_members, MockDocker
     server.Post(R"(/containers/kythira-test-cluster-4/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     Cluster cluster{{1u, "default"}, {2u, "default"}, {3u, "default"}};
     mgr.assess_quorum(cluster).get();
     auto peer = mgr.provision_node("default", std::optional<uint64_t>{3u}).get();
@@ -431,7 +432,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_forwards_extra_args, MockDockerServer) {
     server.Post(R"(/containers/kythira-test-cluster-1/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(cfg);
+    docker_quorum_manager<std::uint64_t> mgr(cfg);
     mgr.provision_node("default", std::nullopt).get();
 
     BOOST_CHECK(captured_body.find("--join") != std::string::npos);
@@ -454,7 +455,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_forwards_extra_env, MockDockerServer) {
     server.Post(R"(/containers/kythira-test-cluster-1/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(cfg);
+    docker_quorum_manager<std::uint64_t> mgr(cfg);
     mgr.provision_node("default", std::nullopt).get();
 
     BOOST_CHECK(captured_body.find("FOO=bar") != std::string::npos);
@@ -476,7 +477,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_keyed_labels_the_container_with_its_key, 
     server.Post(R"(/containers/kythira-test-cluster-1/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     const auto peer = mgr.provision_node_keyed("default", std::nullopt, "intent-42").get();
     BOOST_CHECK_EQUAL(peer.node_id, 1u);
     const auto body = boost::json::parse(captured_body).as_object();
@@ -499,7 +500,7 @@ BOOST_FIXTURE_TEST_CASE(an_unkeyed_provision_carries_no_key_label, MockDockerSer
     server.Post(R"(/containers/kythira-test-cluster-1/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     mgr.provision_node("default", std::nullopt).get();
     const auto body = boost::json::parse(captured_body).as_object();
     BOOST_CHECK(!body.at("Labels").as_object().contains("kythira.idempotency-key"));
@@ -516,7 +517,7 @@ BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_filters_on_cluster_and_key, Mock
                         "application/json");
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     const auto found = mgr.find_by_idempotency_key("intent-42").get();
     BOOST_REQUIRE(found.has_value());
     BOOST_CHECK_EQUAL(found->node_id, 7u);
@@ -530,14 +531,14 @@ BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_returns_nothing_when_absent, Moc
     server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
         res.set_content("[]", "application/json");
     });
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK(!mgr.find_by_idempotency_key("missing").get().has_value());
 }
 
 BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_fails_on_a_daemon_error, MockDockerServer) {
     server.Get("/containers/json",
                [](const httplib::Request&, httplib::Response& res) { res.status = 500; });
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.find_by_idempotency_key("k").get(), std::runtime_error);
 }
 
@@ -561,7 +562,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_ignores_labels_it_could_not_have_written,
     server.Post(R"(/containers/kythira-test-cluster-3/start)",
                 [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_EQUAL(mgr.provision_node("default", std::nullopt).get().node_id, 3u);
 }
 
@@ -578,7 +579,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_refuses_to_wrap_past_the_largest_id, Mock
         res.set_content(R"({"Id":"n0"})", "application/json");
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::exception);
     BOOST_CHECK(!created);
 }
@@ -594,7 +595,7 @@ BOOST_FIXTURE_TEST_CASE(find_by_idempotency_key_skips_an_unparseable_label, Mock
             R"("kythira.idempotency-key":"k"}}])",
             "application/json");
     });
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     const auto found = mgr.find_by_idempotency_key("k").get();
     BOOST_REQUIRE(found.has_value());
     BOOST_CHECK_EQUAL(found->node_id, 6u);
@@ -633,7 +634,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_moves_past_an_id_another_process_claimed,
         res.status = 204;
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     auto peer = mgr.provision_node("default", std::nullopt).get();
 
     BOOST_CHECK_EQUAL(peer.node_id, 2u);
@@ -665,7 +666,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_gives_up_after_repeated_collisions, MockD
         res.status = 204;
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
     BOOST_CHECK_EQUAL(creates, decltype(mgr)::max_id_claim_attempts);
     BOOST_CHECK_EQUAL(deletes, 0u);
@@ -682,7 +683,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_fails_when_the_listing_fails, MockDockerS
         res.status = 201;
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
     BOOST_CHECK(!created);
 }
@@ -711,7 +712,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_cleanup_removes_only_its_own_container, M
         res.status = 204;
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
     BOOST_REQUIRE_EQUAL(deletes.size(), 1u);
     BOOST_CHECK_EQUAL(deletes[0], "/containers/kythira-test-cluster-1");
@@ -735,7 +736,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_cleanup_spares_another_process_container,
         res.status = 204;
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
     BOOST_CHECK_EQUAL(deletes, 0u);
 }
@@ -758,7 +759,7 @@ BOOST_FIXTURE_TEST_CASE(provision_node_start_failure_removes_by_container_id, Mo
         res.status = 204;
     });
 
-    docker_quorum_manager<> mgr(make_cfg());
+    docker_quorum_manager<std::uint64_t> mgr(make_cfg());
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
     BOOST_REQUIRE_EQUAL(deletes.size(), 1u);
     BOOST_CHECK_EQUAL(deletes[0], "/containers/deadbeef");
@@ -924,6 +925,10 @@ template<typename NodeId> void run_named_lifecycle(MockDockerServer& srv) {
 }
 
 }  // namespace
+
+// Composite mode is the default (task 4.4); numeric mode must be asked for.
+static_assert(std::same_as<kythira::docker_quorum_manager<>::node_id_type,
+                           kythira::docker_container_node_id>);
 
 BOOST_FIXTURE_TEST_CASE(composite_mode_lifecycle, MockDockerServer) {
     run_named_lifecycle<docker_container_node_id>(*this);
