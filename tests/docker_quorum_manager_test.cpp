@@ -5,12 +5,20 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/docker_quorum_manager.hpp>
+#include <raft/generated_node_name.hpp>
 
 #include <httplib.h>
+#include <boost/json.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <map>
+#include <mutex>
+#include <set>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 using namespace kythira;
 using namespace std::chrono_literals;
@@ -405,25 +413,6 @@ BOOST_FIXTURE_TEST_CASE(provision_node_skips_ids_of_assessed_members, MockDocker
     BOOST_CHECK_EQUAL(list_query, "true");
 }
 
-BOOST_FIXTURE_TEST_CASE(provision_node_orders_string_ids_numerically, MockDockerServer) {
-    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(
-            R"([{"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"9"}},
-                {"Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"10"}}])",
-            "application/json");
-    });
-    server.Post("/containers/create", [](const httplib::Request&, httplib::Response& res) {
-        res.status = 201;
-        res.set_content(R"({"Id":"n11"})", "application/json");
-    });
-    server.Post(R"(/containers/kythira-test-cluster-11/start)",
-                [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
-
-    docker_quorum_manager<std::string> mgr(make_cfg());
-    auto peer = mgr.provision_node("default", std::nullopt).get();
-    BOOST_CHECK_EQUAL(peer.node_id, "11");
-}
-
 // ── extra_env / extra_args are wired into the create body ────────────────────
 
 BOOST_FIXTURE_TEST_CASE(provision_node_forwards_extra_args, MockDockerServer) {
@@ -773,4 +762,316 @@ BOOST_FIXTURE_TEST_CASE(provision_node_start_failure_removes_by_container_id, Mo
     BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
     BOOST_REQUIRE_EQUAL(deletes.size(), 1u);
     BOOST_CHECK_EQUAL(deletes[0], "/containers/deadbeef");
+}
+
+// ── Composite and string mode (cloud-composite-node-ids Requirement 5) ───────
+//
+// The node id is the container: {cluster_name, container name}. The manager
+// generates the name before the create, so nothing is listed or allocated,
+// and the id rides in the create request as canonical text.
+
+namespace {
+
+static_assert(quorum_manager<docker_quorum_manager<docker_container_node_id>,
+                             docker_container_node_id, std::string, std::string>);
+static_assert(
+    quorum_manager<docker_quorum_manager<std::string>, std::string, std::string, std::string>);
+static_assert(docker_quorum_manager<docker_container_node_id>::name_is_node_id);
+static_assert(docker_quorum_manager<std::string>::name_is_node_id);
+static_assert(!docker_quorum_manager<std::uint64_t>::name_is_node_id);
+
+/// `kythira-<cluster part>-<8 lower-case base32>`.
+auto is_generated_name(const std::string& name, const std::string& cluster_part) -> bool {
+    const std::string prefix = "kythira-" + cluster_part + "-";
+    if (name.size() != prefix.size() + generated_name_suffix_length || !name.starts_with(prefix)) {
+        return false;
+    }
+    return std::ranges::all_of(name.substr(prefix.size()), [](char c) {
+        return generated_name_alphabet.find(c) != std::string_view::npos;
+    });
+}
+
+template<typename NodeId>
+auto docker_id(const std::string& cluster, const std::string& name) -> NodeId {
+    docker_container_node_id id{cluster, name};
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return id.to_string();
+    } else {
+        return id;
+    }
+}
+
+/// A daemon whose containers are created through the API, and which a test
+/// can stop. A create under a name already held is refused with 409.
+struct NamedContainers {
+    std::map<std::string, std::string> state;  // name -> State.Status
+    std::vector<std::string> create_names;
+    std::vector<boost::json::value> create_bodies;
+    std::vector<std::string> deletes;
+    std::size_t lists = 0;
+    std::size_t inspects = 0;
+    /// Creates to refuse with 409, as if another process held the name.
+    std::size_t refuse_creates = 0;
+    std::mutex mu;
+
+    void serve(httplib::Server& server) {
+        server.Get("/containers/json", [this](const httplib::Request&, httplib::Response& res) {
+            std::lock_guard lock(mu);
+            ++lists;
+            res.set_content("[]", "application/json");
+        });
+        server.Post("/containers/create",
+                    [this](const httplib::Request& req, httplib::Response& res) {
+                        std::lock_guard lock(mu);
+                        const auto name = req.get_param_value("name");
+                        create_names.push_back(name);
+                        create_bodies.push_back(boost::json::parse(req.body));
+                        if (state.contains(name) || refuse_creates > 0) {
+                            refuse_creates -= refuse_creates > 0 ? 1 : 0;
+                            res.status = 409;
+                            return;
+                        }
+                        state[name] = "created";
+                        res.status = 201;
+                        res.set_content(R"({"Id":"id-)" + name + R"("})", "application/json");
+                    });
+        server.Post(R"(/containers/([^/]+)/start)",
+                    [this](const httplib::Request& req, httplib::Response& res) {
+                        std::lock_guard lock(mu);
+                        state[req.matches[1]] = "running";
+                        res.status = 204;
+                    });
+        server.Get(R"(/containers/([^/]+)/json)", [this](const httplib::Request& req,
+                                                         httplib::Response& res) {
+            std::lock_guard lock(mu);
+            ++inspects;
+            auto it = state.find(req.matches[1]);
+            if (it == state.end()) {
+                res.status = 404;
+                return;
+            }
+            res.set_content(R"({"State":{"Status":")" + it->second + R"("}})", "application/json");
+        });
+        server.Delete(R"(/containers/([^/?]+))",
+                      [this](const httplib::Request& req, httplib::Response& res) {
+                          std::lock_guard lock(mu);
+                          deletes.push_back(req.matches[1]);
+                          res.status = state.erase(req.matches[1]) > 0 ? 204 : 404;
+                      });
+    }
+};
+
+/// Provision three nodes, check what each create carried, assess them, stop
+/// one, decommission one: the same walk for composite and string mode.
+template<typename NodeId> void run_named_lifecycle(MockDockerServer& srv) {
+    NamedContainers daemon;
+    daemon.serve(srv.server);
+    auto cfg = srv.make_cfg();
+    cfg.extra_env = {"PEER_ID={NODE_ID}"};
+    cfg.extra_args = {"--node-id={NODE_ID}", "--port=7000"};
+    docker_quorum_manager<NodeId> mgr(cfg);
+
+    std::vector<NodeId> ids;
+    for (int i = 0; i < 3; ++i) {
+        auto peer = mgr.provision_node("default", std::nullopt).get();
+        const auto name = daemon.create_names.back();
+        BOOST_CHECK_MESSAGE(is_generated_name(name, "test-cluster"), "name " << name);
+        BOOST_CHECK(peer.node_id == docker_id<NodeId>("test-cluster", name));
+        BOOST_CHECK_EQUAL(peer.address, name + ":7000");
+        BOOST_CHECK_EQUAL(mgr.container_name_of(peer.node_id).value_or(""), name);
+
+        // The id is known before the create, so it rides in the request.
+        const auto text = "docker:test-cluster:" + name;
+        const auto& body = daemon.create_bodies.back().as_object();
+        BOOST_CHECK_EQUAL(body.at("Labels").at("kythira.node_id").as_string(), text);
+        BOOST_CHECK_EQUAL(body.at("Hostname").as_string(), name);
+        const auto& env = body.at("Env").as_array();
+        BOOST_CHECK(std::ranges::find(env, boost::json::value("KYTHIRA_NODE_ID=" + text)) !=
+                    env.end());
+        BOOST_CHECK(std::ranges::find(env, boost::json::value("PEER_ID=" + text)) != env.end());
+        BOOST_CHECK_EQUAL(body.at("Cmd").as_array().at(0).as_string(), "--node-id=" + text);
+        BOOST_CHECK_EQUAL(body.at("Cmd").as_array().at(1).as_string(), "--port=7000");
+        ids.push_back(peer.node_id);
+    }
+    // Nothing was allocated: no label scan, and three distinct names.
+    BOOST_CHECK_EQUAL(daemon.lists, 0u);
+    BOOST_CHECK(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
+
+    std::vector<node_placement<NodeId, std::string>> cluster;
+    for (const auto& id : ids) {
+        cluster.push_back({.node_id = id, .group_id = "default"});
+    }
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK(health.status == quorum_status::healthy);
+    BOOST_CHECK_EQUAL(health.live_node_count, 3u);
+
+    {
+        std::lock_guard lock(daemon.mu);
+        daemon.state[*mgr.container_name_of(ids[0])] = "exited";
+    }
+    health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK(health.status == quorum_status::critical);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1u);
+    BOOST_CHECK(health.unreachable_nodes[0] == ids[0]);
+
+    // Decommission removes the named container, and only it.
+    mgr.decommission_node(ids[1]).get();
+    BOOST_REQUIRE_EQUAL(daemon.deletes.size(), 1u);
+    BOOST_CHECK_EQUAL(daemon.deletes[0], *mgr.container_name_of(ids[1]));
+    health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK(health.status == quorum_status::lost);
+}
+
+}  // namespace
+
+BOOST_FIXTURE_TEST_CASE(composite_mode_lifecycle, MockDockerServer) {
+    run_named_lifecycle<docker_container_node_id>(*this);
+}
+
+BOOST_FIXTURE_TEST_CASE(string_mode_lifecycle, MockDockerServer) {
+    run_named_lifecycle<std::string>(*this);
+}
+
+// The name is also the hostname and the DNS label peers dial, so it is held to
+// 63 characters: a long cluster name is cut, the random suffix never is.
+BOOST_FIXTURE_TEST_CASE(composite_mode_cuts_a_long_cluster_name_to_fit, MockDockerServer) {
+    NamedContainers daemon;
+    daemon.serve(server);
+    auto cfg = make_cfg();
+    cfg.cluster_name = std::string(50, 'c') + "-" + std::string(12, 'd');  // 63 characters
+    docker_quorum_manager<docker_container_node_id> mgr(cfg);
+
+    auto peer = mgr.provision_node("default", std::nullopt).get();
+    const auto& name = daemon.create_names.back();
+    BOOST_CHECK_EQUAL(name.size(), 63u);
+    // 63 - "kythira-" - "-" - 8 leaves 46 characters of the cluster name.
+    BOOST_CHECK_MESSAGE(is_generated_name(name, std::string(46, 'c')), "name " << name);
+    // The scope keeps the whole cluster name.
+    BOOST_CHECK_EQUAL(peer.node_id.scope(), cfg.cluster_name);
+    BOOST_CHECK_EQUAL(peer.node_id.native(), name);
+}
+
+// A cluster name that cannot be the id's scope is refused up front in the
+// textual modes; numeric mode does not use it as a scope and accepts it.
+BOOST_FIXTURE_TEST_CASE(composite_mode_requires_a_valid_scope, MockDockerServer) {
+    auto cfg = make_cfg();
+    cfg.cluster_name = "Test.Cluster";
+    BOOST_CHECK_THROW(docker_quorum_manager<docker_container_node_id>{cfg}, std::invalid_argument);
+    BOOST_CHECK_THROW(docker_quorum_manager<std::string>{cfg}, std::invalid_argument);
+    BOOST_CHECK_NO_THROW(docker_quorum_manager<std::uint64_t>{cfg});
+}
+
+// A name another process already holds is retried under a fresh name and
+// never removed.
+BOOST_FIXTURE_TEST_CASE(composite_mode_retries_a_name_collision, MockDockerServer) {
+    NamedContainers daemon;
+    daemon.refuse_creates = 1;
+    daemon.serve(server);
+    docker_quorum_manager<docker_container_node_id> mgr(make_cfg());
+
+    auto peer = mgr.provision_node("default", std::nullopt).get();
+    const auto& creates = daemon.create_names;
+    BOOST_REQUIRE_EQUAL(creates.size(), 2u);
+    BOOST_CHECK_NE(creates[0], creates[1]);
+    BOOST_CHECK_EQUAL(peer.node_id.native(), creates[1]);
+    BOOST_CHECK(daemon.deletes.empty());
+
+    // Every attempt colliding gives up, still without removing anything.
+    daemon.refuse_creates = 100;
+    BOOST_CHECK_THROW(mgr.provision_node("default", std::nullopt).get(), std::runtime_error);
+    BOOST_CHECK_EQUAL(creates.size(), 2u + decltype(mgr)::max_id_claim_attempts);
+    BOOST_CHECK(daemon.deletes.empty());
+}
+
+// An id scoped to another cluster, or text that is not canonical docker text,
+// is unreachable without a daemon call and does not fail the assessment; it
+// cannot be decommissioned either.
+BOOST_FIXTURE_TEST_CASE(composite_mode_reports_foreign_ids_unreachable, MockDockerServer) {
+    NamedContainers daemon;
+    daemon.state["kythira-test-cluster-aaaaaaaa"] = "running";
+    daemon.state["kythira-other-aaaaaaaa"] = "running";
+    daemon.serve(server);
+    docker_quorum_manager<docker_container_node_id> mgr(make_cfg());
+
+    std::vector<node_placement<docker_container_node_id, std::string>> cluster{
+        {.node_id = {"test-cluster", "kythira-test-cluster-aaaaaaaa"}, .group_id = "default"},
+        {.node_id = {"other", "kythira-other-aaaaaaaa"}, .group_id = "default"}};
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1u);
+    BOOST_CHECK(health.unreachable_nodes[0] == cluster[1].node_id);
+    BOOST_CHECK_EQUAL(daemon.inspects, 1u);
+
+    BOOST_CHECK_THROW(mgr.decommission_node(cluster[1].node_id).get(), std::runtime_error);
+    BOOST_CHECK(daemon.deletes.empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(string_mode_rejects_non_canonical_text, MockDockerServer) {
+    NamedContainers daemon;
+    daemon.state["kythira-test-cluster-aaaaaaaa"] = "running";
+    daemon.state["kythira-test-cluster-1"] = "running";
+    daemon.serve(server);
+    docker_quorum_manager<std::string> mgr(make_cfg());
+
+    std::vector<node_placement<std::string, std::string>> cluster{
+        {.node_id = "docker:test-cluster:kythira-test-cluster-aaaaaaaa", .group_id = "default"},
+        {.node_id = "kythira-test-cluster-aaaaaaaa", .group_id = "default"},
+        {.node_id = "1", .group_id = "default"}};
+    auto health = mgr.assess_quorum(cluster).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), 2u);
+    BOOST_CHECK_THROW(mgr.decommission_node("1").get(), std::runtime_error);
+    BOOST_CHECK(daemon.deletes.empty());
+}
+
+// The keyed lookup reads the id from the container's own name, not from its
+// label; a container whose name is not a valid id is skipped.
+BOOST_FIXTURE_TEST_CASE(composite_mode_find_by_idempotency_key_reads_the_name, MockDockerServer) {
+    server.Get("/containers/json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(R"([{"Names":["/-bad name"],"Labels":{"kythira.cluster":"test-cluster",)"
+                        R"("kythira.node_id":"docker:test-cluster:-bad name"}},)"
+                        R"({"Names":["/kythira-test-cluster-abcdefgh"],)"
+                        R"("Labels":{"kythira.cluster":"test-cluster","kythira.node_id":"7",)"
+                        R"("kythira.idempotency-key":"intent-42"}}])",
+                        "application/json");
+    });
+    docker_quorum_manager<docker_container_node_id> mgr(make_cfg());
+    const auto found = mgr.find_by_idempotency_key("intent-42").get();
+    BOOST_REQUIRE(found.has_value());
+    BOOST_CHECK(found->node_id ==
+                docker_container_node_id("test-cluster", "kythira-test-cluster-abcdefgh"));
+    BOOST_CHECK_EQUAL(found->address, "kythira-test-cluster-abcdefgh:7000");
+}
+
+// ── generated_node_name ──────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE(generated_node_name_fits_the_limit) {
+    BOOST_CHECK_EQUAL(generated_node_name("c", "abcdefgh", 63), "kythira-c-abcdefgh");
+    // Exactly fits: no cut.
+    const std::string fits(46, 'x');
+    BOOST_CHECK_EQUAL(generated_node_name(fits, "abcdefgh", 63), "kythira-" + fits + "-abcdefgh");
+    // One over: the cluster part loses one character, the suffix none.
+    BOOST_CHECK_EQUAL(generated_node_name(fits + "y", "abcdefgh", 63),
+                      "kythira-" + fits + "-abcdefgh");
+    // A cut that ends on separators drops them.
+    BOOST_CHECK_EQUAL(generated_node_name(std::string(44, 'x') + "-._zz", "abcdefgh", 63),
+                      "kythira-" + std::string(44, 'x') + "-abcdefgh");
+    // No room for any of the cluster: kythira-<suffix>.
+    BOOST_CHECK_EQUAL(generated_node_name("cluster", "abcdefgh", 16), "kythira-abcdefgh");
+    BOOST_CHECK_EQUAL(generated_node_name("cluster", "abcdefgh", 17), "kythira-abcdefgh");
+    BOOST_CHECK_EQUAL(generated_node_name("cluster", "abcdefgh", 18), "kythira-c-abcdefgh");
+    BOOST_CHECK_THROW(generated_node_name("cluster", "abcdefgh", 15), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(random_name_suffix_is_lower_case_base32) {
+    std::set<std::string> seen;
+    for (int i = 0; i < 64; ++i) {
+        const auto s = random_name_suffix();
+        BOOST_CHECK_EQUAL(s.size(), generated_name_suffix_length);
+        BOOST_CHECK(std::ranges::all_of(
+            s, [](char c) { return generated_name_alphabet.find(c) != std::string_view::npos; }));
+        seen.insert(s);
+    }
+    BOOST_CHECK_GT(seen.size(), 60u);  // 40 random bits: a repeat is vanishingly rare
 }
