@@ -925,7 +925,7 @@ BOOST_FIXTURE_TEST_CASE(bootstrap_and_cutover_survives_bootstrap_credential_dele
         cfg.subnet_by_group[az] = subnet_id;
     }
 
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::vector<std::string> public_ips;
@@ -1039,7 +1039,7 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
     }
     BOOST_REQUIRE_EQUAL(azs.size(), 3u);
 
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
 
     // Provision all three instances upfront — user-data installs the
     // unseal key and bootstrap credential and returns, but does not start
@@ -1155,7 +1155,7 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
         azs.push_back(az);
     }
 
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::vector<std::string> public_ips;
@@ -1321,7 +1321,7 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
         azs.push_back(az);
     }
 
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::vector<std::string> public_ips;

@@ -150,11 +150,11 @@ struct aws_ec2_quorum_manager_config {
 ///
 /// Node identity depends on `NodeId` (spec cloud-composite-node-ids, R4 and R11):
 ///
-/// - `aws_ec2_node_id`, or `std::string` holding its canonical text: the node id IS
+/// - `aws_ec2_node_id` (the default), or `std::string` holding its canonical text: the node id IS
 ///   the instance, `{configured region, instance id}`. Mapping a node to its
 ///   instance is a field read; nothing is parsed as a number, so every EC2 id
 ///   (17 hex digits with any first digit, or a legacy 8-digit id) fits.
-/// - an unsigned integer (numeric mode, today's default): the manager allocates
+/// - an unsigned integer (numeric mode; write `<std::uint64_t>` to keep it): the manager allocates
 ///   `max(kythira:node-id over the cluster) + 1` before launch, puts it in the
 ///   launch request's tags and `{NODE_ID}`, and maps an id back to its instance
 ///   with DescribeInstances filtered on `kythira:cluster` and `kythira:node-id`.
@@ -167,7 +167,7 @@ struct aws_ec2_quorum_manager_config {
 ///
 /// A node is live iff its instance state is `running`, read from DescribeInstances
 /// (not heartbeats).
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = aws_ec2_node_id, typename Address = std::string>
 requires node_id<NodeId>
 class aws_ec2_quorum_manager {
     static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||

@@ -852,7 +852,7 @@ void dump_node_logs(const std::vector<std::string>& ips, const std::string& priv
 // seven steps. The Boost timeout covers fixture setup and teardown too.
 BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
                         three_az_network_fixture, *boost::unit_test::timeout(1800)) {
-    using manager_t = kythira::aws_ec2_quorum_manager<>;
+    using manager_t = kythira::aws_ec2_quorum_manager<std::uint64_t>;
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;

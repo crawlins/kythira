@@ -254,7 +254,7 @@ Aws::Auth::AWSCredentials dummy_creds() {
 
 // ── Ec2LocalstackFixture ──────────────────────────────────────────────────────
 
-using ec2_manager = kythira::aws_ec2_quorum_manager<>;
+using ec2_manager = kythira::aws_ec2_quorum_manager<std::uint64_t>;
 using ec2_cluster = std::vector<kythira::node_placement<std::uint64_t, std::string>>;
 
 auto tag_value(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::string& key)
@@ -731,7 +731,7 @@ BOOST_AUTO_TEST_CASE(keyed_provision_is_found_by_its_key) {
     cfg.poll_interval = std::chrono::seconds{2};
     cfg.aws = make_localstack_cfg();
 
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
 
     const std::string key = "cap-1-" + uuid;
     auto peer = mgr.provision_node_keyed("AZ1", std::nullopt, key).get();
@@ -761,7 +761,7 @@ BOOST_FIXTURE_TEST_SUITE(asg_localstack, AsgLocalstackFixture,
                          *boost::unit_test::precondition(autoscaling_available{}))
 
 BOOST_AUTO_TEST_CASE(asg_provision_increments_desired_capacity) {
-    kythira::aws_asg_quorum_manager<> mgr{asg_cfg()};
+    kythira::aws_asg_quorum_manager<std::uint64_t> mgr{asg_cfg()};
     const int before = desired_capacity();
     auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
     BOOST_CHECK_NE(peer.node_id, 0u);
@@ -769,7 +769,7 @@ BOOST_AUTO_TEST_CASE(asg_provision_increments_desired_capacity) {
 }
 
 BOOST_AUTO_TEST_CASE(asg_assess_detects_not_inservice) {
-    kythira::aws_asg_quorum_manager<> mgr{asg_cfg()};
+    kythira::aws_asg_quorum_manager<std::uint64_t> mgr{asg_cfg()};
     auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
     ec2_cluster cluster{{.node_id = peer.node_id, .group_id = "AZ1"}};
     BOOST_CHECK_EQUAL(std::move(mgr.assess_quorum(cluster)).get().live_node_count, 1u);
@@ -782,7 +782,7 @@ BOOST_AUTO_TEST_CASE(asg_assess_detects_not_inservice) {
 }
 
 BOOST_AUTO_TEST_CASE(asg_decommission_decrements_desired_capacity) {
-    kythira::aws_asg_quorum_manager<> mgr{asg_cfg()};
+    kythira::aws_asg_quorum_manager<std::uint64_t> mgr{asg_cfg()};
     auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
     const int before = desired_capacity();
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(peer.node_id)).get());
@@ -790,7 +790,7 @@ BOOST_AUTO_TEST_CASE(asg_decommission_decrements_desired_capacity) {
 }
 
 BOOST_AUTO_TEST_CASE(asg_decommission_idempotent) {
-    kythira::aws_asg_quorum_manager<> mgr{asg_cfg()};
+    kythira::aws_asg_quorum_manager<std::uint64_t> mgr{asg_cfg()};
     auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(peer.node_id)).get());
     const int after_first = desired_capacity();
@@ -799,7 +799,7 @@ BOOST_AUTO_TEST_CASE(asg_decommission_idempotent) {
 }
 
 BOOST_AUTO_TEST_CASE(assess_empty_asg_is_healthy_with_empty_cluster) {
-    kythira::aws_asg_quorum_manager<> mgr{asg_cfg()};
+    kythira::aws_asg_quorum_manager<std::uint64_t> mgr{asg_cfg()};
     ec2_cluster empty_cluster;
     auto health = std::move(mgr.assess_quorum(empty_cluster)).get();
     BOOST_CHECK_EQUAL(health.status, kythira::quorum_status::healthy);
