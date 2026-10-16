@@ -366,6 +366,24 @@ BOOST_AUTO_TEST_CASE(a_learned_address_stands_in_after_a_failed_lookup) {
     BOOST_CHECK_EQUAL(port_of(hinted->front()), 5);
 }
 
+// A peer that speaks before its name ever resolved still gets its name
+// looked up: the hint answers only until DNS does.
+BOOST_AUTO_TEST_CASE(a_name_learned_before_it_resolved_is_still_looked_up) {
+    nr::learn("early", {address(5)});
+    std::atomic<int> runs{0};
+    auto lookup = [&runs] {
+        ++runs;
+        return found(address(1));
+    };
+    auto hinted = nr::resolve_using("early", 2s, lookup, 10s);
+    BOOST_REQUIRE(hinted.has_value());
+    std::this_thread::sleep_for(50ms);  // the lookup runs on its own thread
+    BOOST_CHECK_EQUAL(runs.load(), 1);
+    auto resolved = nr::resolve_using("early", 2s, lookup, 10s);
+    BOOST_REQUIRE(resolved.has_value());
+    BOOST_CHECK_EQUAL(port_of(resolved->front()), 1);  // DNS wins once it answers
+}
+
 // A hint older than the last unreachable report was already tried: it is
 // not dialled again until the peer speaks again.
 BOOST_AUTO_TEST_CASE(a_learned_address_is_retired_by_an_unreachable_report) {
