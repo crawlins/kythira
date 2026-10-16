@@ -6612,6 +6612,34 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(coap_cantcoap_dtls_test PROPERTIES
         TIMEOUT 300 LABELS "coap;cantcoap;security;integration")
 
+    # Composite node ids over cantcoap (cloud-composite-node-ids task 6.2):
+    # std::string and aws_ec2_node_id clients/servers for every RPC kind, from
+    # the cases shared with libnyoci (coap_alternate_textual_node_id_cases.hpp).
+    # Unconditional like the targets above, collapsing to one skipped case
+    # without cantcoap. The DTLS-PKI binding case also needs
+    # CPPHTTPLIB_OPENSSL_SUPPORT (network_simulator carries it when
+    # KYTHIRA_HTTP_TLS is on), for coap_peer_identity_validator.
+    add_executable(coap_cantcoap_textual_node_id_test coap_cantcoap_textual_node_id_test.cpp)
+    target_link_libraries(coap_cantcoap_textual_node_id_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(coap_cantcoap_textual_node_id_test PRIVATE Folly::folly)
+    endif()
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(coap_cantcoap_textual_node_id_test PRIVATE
+            OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(TARGET httplib::httplib)
+        target_link_libraries(coap_cantcoap_textual_node_id_test PRIVATE httplib::httplib)
+    endif()
+    target_compile_features(coap_cantcoap_textual_node_id_test PRIVATE cxx_std_23)
+    add_test(NAME coap_cantcoap_textual_node_id_test COMMAND coap_cantcoap_textual_node_id_test)
+    set_tests_properties(coap_cantcoap_textual_node_id_test PROPERTIES
+        TIMEOUT 300 LABELS "coap;cantcoap;integration;composite_node_id")
+
     # Revocation, cn_validator and ACE-OAuth on the two alternate backends,
     # held to the same cases (coap_alternate_security_parity_cases.hpp) so
     # they behave as libcoap does (coap-alternate-backend-security-parity).
