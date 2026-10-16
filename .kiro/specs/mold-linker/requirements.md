@@ -332,6 +332,10 @@ the cost of debug info and was rejected for that reason.
    includes the compiler, so it holds clang and GCC packages side by side
    with no change. That roughly doubles what it stores for the shared ports.
    The GitHub Actions cache gains one whole tree per clang feature set and
-   architecture; if that pushes the repository past its Actions cache quota,
-   the quota is raised in the repository settings, not worked around here.
+   architecture. That cache is only the first layer: on a miss, vcpkg
+   restores each package from the OCI bucket, so an evicted tree costs a
+   download rather than a rebuild once `main` has written the clang
+   packages there. Raising the Actions cache quota is therefore optional
+   (decided October 15, 2026). The OCI bucket is the store that must hold
+   both compilers' packages.
 

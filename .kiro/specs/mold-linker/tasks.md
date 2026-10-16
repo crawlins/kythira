@@ -1,10 +1,10 @@
 # Implementation Plan — mold Linker Adoption
 
-## Status: 5/8 tasks complete
+## Status: 6/8 tasks complete
 
-**Last Updated**: October 15, 2026 (task 1 measured; gate waived by the
-maintainer; tasks 2-4 and 8 done; task 5 is wired and waits on one
-dispatched real-cloud run; tasks 6-7 follow the merge).
+**Last Updated**: October 16, 2026 (task 1 measured; gate waived by the
+maintainer; tasks 2-5 and 8 done and merged in PR #545; tasks 6-7 follow
+the merge).
 
 ## Overview
 
@@ -158,7 +158,7 @@ Reference material to read before starting:
     `workflow-input-limits`, `aws-ci-policies`, `docs` or `docs-deploy`.
   - _Requirements: 3.2, 3.3, 5.1-5.3, 6.2_
 
-- [ ] 5. CI wiring in the other workflows
+- [x] 5. CI wiring in the other workflows
   - Same three edits in `container-tests.yml`, `arm64-docker-smoke-test.yml`,
     `perf-cloud.yml`, `coap-flake-measure.yml` and the linking jobs of
     `real-cloud-tests.yml` (not `ami-build`).
@@ -166,10 +166,12 @@ Reference material to read before starting:
     by dispatch, and one dispatched run of the cheapest AWS real-cloud leg;
     the remaining real-cloud and perf jobs pick it up on their next scheduled
     run, which task 6 checks.
-  - Status: the edits are in. `container-tests.yml` is verified by this
-    change's own PR run. The `arm64-docker-smoke-test` dispatch and the AWS
-    real-cloud dispatch cost runner time and cloud money respectively, and
-    wait for Clark's go-ahead.
+  - Status: done. `container-tests.yml` passed on PR #545's own runs. With
+    Clark's go-ahead on October 15, `arm64-docker-smoke-test` passed by
+    dispatch (run 38730504666), and the AWS real-cloud dispatch (run
+    38730513173, every other provider and bundle input set to false)
+    passed on x64 and arm64: the mold `.comment` check, the S3
+    object-persistence and ACM PCA bundles, and the leak audits.
   - _Requirements: 5.1-5.3_
 
 - [x] 8. Clang-built vcpkg trees for the clang jobs
