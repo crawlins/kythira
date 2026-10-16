@@ -481,11 +481,11 @@ inline constexpr std::uint16_t content_format_application_oscore = 10001;
 #endif  // LIBCOAP_AVAILABLE
 
 // CoAP client implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-coap_client<Types>::coap_client(
-    std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint_map,
-    coap_client_config config, metrics_type metrics)
+coap_client<Types, NodeId>::coap_client(
+    std::unordered_map<NodeId, std::string> node_id_to_endpoint_map, coap_client_config config,
+    metrics_type metrics)
     : _serializer{},
       _registry{},
       _capability_cache{},
@@ -578,7 +578,8 @@ coap_client<Types>::coap_client(
         [](coap_session_t* session, const coap_pdu_t* sent, const coap_pdu_t* received,
            const coap_mid_t mid) -> coap_response_t {
             // Extract client instance from session user data
-            auto* client = static_cast<coap_client<Types>*>(coap_session_get_app_data(session));
+            auto* client =
+                static_cast<coap_client<Types, NodeId>*>(coap_session_get_app_data(session));
             if (client) {
                 client->_io_dispatches.fetch_add(1, std::memory_order_relaxed);
                 // Extract token from received PDU
@@ -607,7 +608,8 @@ coap_client<Types>::coap_client(
         _coap_context,
         [](coap_session_t* session, const coap_pdu_t* sent, const coap_nack_reason_t reason,
            const coap_mid_t /*mid*/) -> void {
-            auto* client = static_cast<coap_client<Types>*>(coap_session_get_app_data(session));
+            auto* client =
+                static_cast<coap_client<Types, NodeId>*>(coap_session_get_app_data(session));
             if (!client || (sent == nullptr)) {
                 return;
             }
@@ -782,9 +784,9 @@ coap_client<Types>::coap_client(
           _config.enable_serialization_caching ? "true" : "false"}});
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-coap_client<Types>::~coap_client() {
+coap_client<Types, NodeId>::~coap_client() {
     _logger.info(
         "CoAP client shutting down",
         {{"transport", "coap"}, {"pending_requests", std::to_string(_pending_requests.size())}});
@@ -865,93 +867,88 @@ coap_client<Types>::~coap_client() {
     _logger.info("CoAP client shutdown complete");
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::security_provider() const -> const coap_security_provider* {
+auto coap_client<Types, NodeId>::security_provider() const -> const coap_security_provider* {
     return _security_provider.get();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_request_vote(std::uint64_t target,
-                                           const kythira::request_vote_request<>& request,
-                                           std::chrono::milliseconds timeout)
-    -> future_template<kythira::request_vote_response<>> {
+auto coap_client<Types, NodeId>::send_request_vote(
+    const NodeId& target, const kythira::request_vote_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::request_vote_response<>> {
     // Send RequestVote RPC using CoAP POST to /raft/request_vote
-    return send_rpc<request_vote_request<>, request_vote_response<>>(target, "/raft/request_vote",
-                                                                     request, timeout);
+    return send_rpc<request_vote_request<NodeId>, request_vote_response<>>(
+        target, "/raft/request_vote", request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_append_entries(std::uint64_t target,
-                                             const kythira::append_entries_request<>& request,
-                                             std::chrono::milliseconds timeout)
-    -> future_template<kythira::append_entries_response<>> {
+auto coap_client<Types, NodeId>::send_append_entries(
+    const NodeId& target, const kythira::append_entries_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::append_entries_response<>> {
     // Send AppendEntries RPC using CoAP POST to /raft/append_entries. A
     // request too large for one PDU goes block-wise inside send_rpc().
-    return send_rpc<append_entries_request<>, append_entries_response<>>(
+    return send_rpc<append_entries_request<NodeId>, append_entries_response<>>(
         target, "/raft/append_entries", request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_install_snapshot(std::uint64_t target,
-                                               const kythira::install_snapshot_request<>& request,
-                                               std::chrono::milliseconds timeout)
-    -> future_template<kythira::install_snapshot_response<>> {
+auto coap_client<Types, NodeId>::send_install_snapshot(
+    const NodeId& target, const kythira::install_snapshot_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::install_snapshot_response<>> {
     // Send InstallSnapshot RPC using CoAP POST to /raft/install_snapshot. A
     // snapshot chunk too large for one PDU goes block-wise inside send_rpc().
-    return send_rpc<install_snapshot_request<>, install_snapshot_response<>>(
+    return send_rpc<install_snapshot_request<NodeId>, install_snapshot_response<>>(
         target, "/raft/install_snapshot", request, timeout,
         coap_message_reliability::always_confirmable);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_timeout_now(std::uint64_t target,
-                                          const kythira::timeout_now_request<>& request,
-                                          std::chrono::milliseconds timeout)
-    -> future_template<kythira::timeout_now_response<>> {
+auto coap_client<Types, NodeId>::send_timeout_now(
+    const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::timeout_now_response<>> {
     // A path beside the other three rather than an option on one of them, so
     // the server's dispatch stays one resource per RPC and a packet capture
     // reads the same way for every RPC. Confirmable regardless of
     // use_confirmable_messages: see the declaration.
-    return send_rpc<timeout_now_request<>, timeout_now_response<>>(
+    return send_rpc<timeout_now_request<NodeId>, timeout_now_response<>>(
         target, "/raft/timeout_now", request, timeout,
         coap_message_reliability::always_confirmable);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_fetch_log_entries(std::uint64_t target,
-                                                const kythira::fetch_log_entries_request<>& request,
-                                                std::chrono::milliseconds timeout)
-    -> future_template<kythira::fetch_log_entries_response<>> {
+auto coap_client<Types, NodeId>::send_fetch_log_entries(
+    const NodeId& target, const kythira::fetch_log_entries_request<NodeId>& request,
+    std::chrono::milliseconds timeout)
+    -> future_template<kythira::fetch_log_entries_response<NodeId>> {
     // Follows use_confirmable_messages like AppendEntries: a lost fetch only
     // delays catch-up until the next tick retries it. A response too large
     // for one PDU comes back block-wise (Block2) inside send_rpc().
-    return send_rpc<fetch_log_entries_request<>, fetch_log_entries_response<>>(
+    return send_rpc<fetch_log_entries_request<NodeId>, fetch_log_entries_response<NodeId>>(
         target, "/raft/fetch_log_entries", request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_request_pre_vote(std::uint64_t target,
-                                               const kythira::request_pre_vote_request<>& request,
-                                               std::chrono::milliseconds timeout)
-    -> future_template<kythira::request_pre_vote_response<>> {
+auto coap_client<Types, NodeId>::send_request_pre_vote(
+    const NodeId& target, const kythira::request_pre_vote_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::request_pre_vote_response<>> {
     // RequestVote's reliability, not TimeoutNow's forced CON: see the
     // declaration.
-    return send_rpc<request_pre_vote_request<>, request_pre_vote_response<>>(
+    return send_rpc<request_pre_vote_request<NodeId>, request_pre_vote_response<>>(
         target, "/raft/request_pre_vote", request, timeout);
 }
 
 // CoAP server implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_port,
-                                coap_server_config config, metrics_type metrics)
+coap_server<Types, NodeId>::coap_server(std::string bind_address, std::uint16_t bind_port,
+                                        coap_server_config config, metrics_type metrics)
     : _serializer{},
       _registry{},
       _coap_context{nullptr},
@@ -1087,9 +1084,9 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
           _config.enable_serialization_caching ? "true" : "false"}});
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-coap_server<Types>::~coap_server() {
+coap_server<Types, NodeId>::~coap_server() {
     _logger.info("CoAP server shutting down");
 
     // Stop the server if it's running
@@ -1112,17 +1109,17 @@ coap_server<Types>::~coap_server() {
     _logger.info("CoAP server shutdown complete");
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::security_provider() const -> const coap_security_provider* {
+auto coap_server<Types, NodeId>::security_provider() const -> const coap_security_provider* {
     return _security_provider.get();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::register_request_vote_handler(
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler)
-    -> void {
+auto coap_server<Types, NodeId>::register_request_vote_handler(
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard lock(_mutex);
 
     if (!handler) {
@@ -1139,10 +1136,11 @@ auto coap_server<Types>::register_request_vote_handler(
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::register_append_entries_handler(
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+auto coap_server<Types, NodeId>::register_append_entries_handler(
+    std::function<
+        kythira::append_entries_response<>(const kythira::append_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard lock(_mutex);
 
@@ -1160,10 +1158,11 @@ auto coap_server<Types>::register_append_entries_handler(
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::register_install_snapshot_handler(
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+auto coap_server<Types, NodeId>::register_install_snapshot_handler(
+    std::function<
+        kythira::install_snapshot_response<>(const kythira::install_snapshot_request<NodeId>&)>
         handler) -> void {
     std::lock_guard lock(_mutex);
 
@@ -1181,11 +1180,11 @@ auto coap_server<Types>::register_install_snapshot_handler(
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::register_timeout_now_handler(
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
-    -> void {
+auto coap_server<Types, NodeId>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard lock(_mutex);
 
     if (!handler) {
@@ -1199,11 +1198,11 @@ auto coap_server<Types>::register_timeout_now_handler(
     // registered after start() is picked up without re-registering anything.
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::register_fetch_log_entries_handler(
-    std::function<
-        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+auto coap_server<Types, NodeId>::register_fetch_log_entries_handler(
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard lock(_mutex);
 
@@ -1217,10 +1216,11 @@ auto coap_server<Types>::register_fetch_log_entries_handler(
     // this member per request, so registering after start() needs nothing.
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::register_request_pre_vote_handler(
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+auto coap_server<Types, NodeId>::register_request_pre_vote_handler(
+    std::function<
+        kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<NodeId>&)>
         handler) -> void {
     std::lock_guard lock(_mutex);
 
@@ -1234,9 +1234,9 @@ auto coap_server<Types>::register_request_pre_vote_handler(
     // this member per request, so a late registration needs nothing more.
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::start() -> void {
+auto coap_server<Types, NodeId>::start() -> void {
     std::lock_guard lock(_mutex);
 
     if (_running.load()) {
@@ -1441,9 +1441,9 @@ auto coap_server<Types>::start() -> void {
                   {"block_transfer_enabled", _config.enable_block_transfer ? "true" : "false"}});
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::stop() -> void {
+auto coap_server<Types, NodeId>::stop() -> void {
     // Stop the I/O-pump thread first, before taking _mutex below or
     // touching _coap_context further down -- it reads _coap_context on
     // every loop iteration and holds no lock of its own, so joining it
@@ -1526,33 +1526,34 @@ auto coap_server<Types>::stop() -> void {
                   {"final_concurrent_requests", std::to_string(_concurrent_requests.load())}});
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::is_running() const -> bool {
+auto coap_server<Types, NodeId>::is_running() const -> bool {
     return _running.load();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::bound_port() const -> port_type {
+auto coap_server<Types, NodeId>::bound_port() const -> port_type {
     return _actual_bound_port;
 }
 
 // CoAP client helper method implementations
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_endpoint_uri(std::uint64_t node_id) const -> std::string {
+auto coap_client<Types, NodeId>::get_endpoint_uri(const NodeId& node_id) const -> std::string {
     auto it = _node_id_to_endpoint.find(node_id);
     if (it == _node_id_to_endpoint.end()) {
-        throw coap_network_error("No endpoint configured for node " + std::to_string(node_id));
+        throw coap_network_error("No endpoint configured for node " +
+                                 node_id_traits<NodeId>::to_text(node_id));
     }
     return it->second;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::add_uri_path_options(coap_pdu_t* pdu, const std::string& resource_path)
-    -> bool {
+auto coap_client<Types, NodeId>::add_uri_path_options(coap_pdu_t* pdu,
+                                                      const std::string& resource_path) -> bool {
 #ifdef LIBCOAP_AVAILABLE
     std::size_t start = resource_path.front() == '/' ? 1 : 0;
     while (start < resource_path.size()) {
@@ -1572,9 +1573,9 @@ auto coap_client<Types>::add_uri_path_options(coap_pdu_t* pdu, const std::string
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::generate_message_token() -> std::string {
+auto coap_client<Types, NodeId>::generate_message_token() -> std::string {
     // Fixed width, so the token cannot outgrow coap_max_token_length as the
     // counter climbs -- see format_sequential_token() for the failure this
     // replaces. The counter goes through a per-client secret permutation
@@ -1589,17 +1590,17 @@ auto coap_client<Types>::generate_message_token() -> std::string {
         _token_scrambler(static_cast<std::uint32_t>(_token_counter.fetch_add(1))));
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::generate_message_id() -> std::uint16_t {
+auto coap_client<Types, NodeId>::generate_message_id() -> std::uint16_t {
     // Generate a unique message ID for duplicate detection
     // CoAP message IDs are 16-bit values
     return _next_message_id.fetch_add(1);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::setup_dtls_context() -> void {
+auto coap_client<Types, NodeId>::setup_dtls_context() -> void {
     // Explicit channel-security mode (coap-transport-security spec,
     // Requirement 1.2): dispatch entirely to the provider and skip the
     // legacy field-inference body below, which stays untouched so every
@@ -1652,7 +1653,7 @@ auto coap_client<Types>::setup_dtls_context() -> void {
             pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
                                                   size_t asn1_length, coap_session_t* session,
                                                   unsigned depth, int found, void* arg) -> int {
-                auto* client = static_cast<coap_client<Types>*>(arg);
+                auto* client = static_cast<coap_client<Types, NodeId>*>(arg);
                 try {
                     // Convert ASN.1 certificate to PEM format for validation
                     BIO* bio = BIO_new(BIO_s_mem());
@@ -1843,9 +1844,9 @@ auto coap_client<Types>::setup_dtls_context() -> void {
 // same coap_context_set_pki() entry point setup_dtls_context() already uses
 // at startup, handing it the freshly read bytes rather than the paths (see
 // detail::set_coap_pki_key()).
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::reload_tls_material() -> void {
+auto coap_client<Types, NodeId>::reload_tls_material() -> void {
     if (_config.cert_file.empty() || _config.key_file.empty()) {
         throw std::logic_error(
             "reload_tls_material() requires cert_file and key_file to be configured");
@@ -1886,7 +1887,7 @@ auto coap_client<Types>::reload_tls_material() -> void {
         pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
                                               size_t asn1_length, coap_session_t* session,
                                               unsigned depth, int found, void* arg) -> int {
-            auto* client = static_cast<coap_client<Types>*>(arg);
+            auto* client = static_cast<coap_client<Types, NodeId>*>(arg);
             try {
                 BIO* bio = BIO_new(BIO_s_mem());
                 if (bio == nullptr) {
@@ -1936,9 +1937,9 @@ auto coap_client<Types>::reload_tls_material() -> void {
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto coap_client<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -1961,18 +1962,18 @@ auto coap_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) 
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::disable_auto_reload() -> void {
+auto coap_client<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) -> bool {
+auto coap_client<Types, NodeId>::initiate_dtls_handshake(const std::string& endpoint) -> bool {
     // Starts a DTLS handshake with `endpoint` without waiting for it.
     // libcoap sends the ClientHello as soon as a COAP_PROTO_DTLS session
     // exists, and _io_thread drives the rest of the exchange from there;
@@ -2043,9 +2044,9 @@ auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) ->
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::complete_dtls_handshake(const std::string& endpoint) -> bool {
+auto coap_client<Types, NodeId>::complete_dtls_handshake(const std::string& endpoint) -> bool {
     // Waits for the handshake initiate_dtls_handshake() started (starting
     // one first if it was not) and reports whether it succeeded. A failed
     // handshake -- wrong credentials, a rejected certificate, no peer --
@@ -2112,10 +2113,10 @@ auto coap_client<Types>::complete_dtls_handshake(const std::string& endpoint) ->
 
 // Cipher suite configuration methods implementation
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::validate_cipher_suites(const std::vector<std::string>& cipher_suites)
-    -> void {
+auto coap_client<Types, NodeId>::validate_cipher_suites(
+    const std::vector<std::string>& cipher_suites) -> void {
     // Validate cipher suite configuration
     // This stub implementation performs basic validation
 
@@ -2147,9 +2148,9 @@ auto coap_client<Types>::validate_cipher_suites(const std::vector<std::string>& 
                  {{"valid_cipher_suites", std::to_string(cipher_suites.size())}});
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::select_cipher_suites() -> std::vector<std::string> {
+auto coap_client<Types, NodeId>::select_cipher_suites() -> std::vector<std::string> {
     // Select cipher suites based on configuration
     // This stub implementation returns configured cipher suites or defaults
 
@@ -2171,9 +2172,9 @@ auto coap_client<Types>::select_cipher_suites() -> std::vector<std::string> {
     return default_ciphers;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_supported_cipher_suites() const -> std::vector<std::string> {
+auto coap_client<Types, NodeId>::get_supported_cipher_suites() const -> std::vector<std::string> {
     // Return list of supported cipher suites
     // This stub implementation returns a mock list of secure cipher suites
 
@@ -2196,10 +2197,10 @@ auto coap_client<Types>::get_supported_cipher_suites() const -> std::vector<std:
     return supported_ciphers;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::handle_nack(const std::string& token,
-                                     const std::string& reason_description) -> void {
+auto coap_client<Types, NodeId>::handle_nack(const std::string& token,
+                                             const std::string& reason_description) -> void {
     std::lock_guard lock(_mutex);
     auto it = _pending_requests.find(token);
     if (it == _pending_requests.end()) {
@@ -2215,9 +2216,10 @@ auto coap_client<Types>::handle_nack(const std::string& token,
     _pending_requests.erase(it);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string& token) -> void {
+auto coap_client<Types, NodeId>::handle_response(coap_pdu_t* response, const std::string& token)
+    -> void {
     // Handle CoAP response and resolve the corresponding future
     std::lock_guard lock(_mutex);
     auto it = _pending_requests.find(token);
@@ -2393,9 +2395,9 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::handle_acknowledgment(std::uint16_t message_id) -> void {
+auto coap_client<Types, NodeId>::handle_acknowledgment(std::uint16_t message_id) -> void {
     // Handle CoAP acknowledgment for confirmable messages
     std::lock_guard lock(_mutex);
 
@@ -2410,29 +2412,31 @@ auto coap_client<Types>::handle_acknowledgment(std::uint16_t message_id) -> void
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::is_duplicate_message(const std::string& peer, std::uint16_t message_id,
-                                              std::string_view token) -> bool {
+auto coap_client<Types, NodeId>::is_duplicate_message(const std::string& peer,
+                                                      std::uint16_t message_id,
+                                                      std::string_view token) -> bool {
     // A retransmission of an exchange already seen from this same peer. The
     // Message ID alone is not enough: every peer numbers its own messages.
     std::lock_guard lock(_mutex);
     return _received_messages.is_duplicate(peer, message_id, token);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::record_received_message(const std::string& peer, std::uint16_t message_id,
-                                                 std::string_view token) -> void {
+auto coap_client<Types, NodeId>::record_received_message(const std::string& peer,
+                                                         std::uint16_t message_id,
+                                                         std::string_view token) -> void {
     // Expiry is amortised inside the table itself; sweeping the whole table on
     // every record, as this used to, cost O(entries) per received message.
     std::lock_guard lock(_mutex);
     _received_messages.record(peer, message_id, token);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::retransmit_message(const std::string& token) -> void {
+auto coap_client<Types, NodeId>::retransmit_message(const std::string& token) -> void {
     // Retransmit a message that hasn't been acknowledged
     std::lock_guard lock(_mutex);
 
@@ -2462,18 +2466,18 @@ auto coap_client<Types>::retransmit_message(const std::string& token) -> void {
     // For now, just update the tracking information
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::cleanup_expired_messages() -> void {
+auto coap_client<Types, NodeId>::cleanup_expired_messages() -> void {
     // Clean up old received message records to prevent memory growth. The
     // horizon is RFC 7252's EXCHANGE_LIFETIME (coap_exchange_lifetime).
     // Note: This method assumes the caller already holds _mutex
     _received_messages.sweep();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) -> bool {
+auto coap_client<Types, NodeId>::establish_dtls_connection(const std::string& endpoint) -> bool {
     // Establish DTLS connection to the specified endpoint
     if (!_config.enable_dtls) {
         // DTLS not enabled, regular CoAP connection
@@ -2623,9 +2627,10 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
     return true;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_data) -> bool {
+auto coap_client<Types, NodeId>::validate_peer_certificate(const std::string& peer_cert_data)
+    -> bool {
     // Validate peer certificate data with actual X.509 processing
     if (!_config.enable_dtls) {
         // DTLS not enabled, no certificate validation needed
@@ -2920,15 +2925,15 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
     return true;  // Stub implementation always succeeds for valid format
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::is_dtls_enabled() const -> bool {
+auto coap_client<Types, NodeId>::is_dtls_enabled() const -> bool {
     return _config.enable_dtls;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::calculate_retransmission_timeout(std::size_t attempt) const
+auto coap_client<Types, NodeId>::calculate_retransmission_timeout(std::size_t attempt) const
     -> std::chrono::milliseconds {
     // Calculate timeout with exponential backoff, with overflow protection
     auto base_timeout = _config.retransmission_timeout.count();
@@ -2952,13 +2957,14 @@ auto coap_client<Types>::calculate_retransmission_timeout(std::size_t attempt) c
     return std::chrono::milliseconds{timeout_ms};
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
 template<typename Request, typename Response>
-auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resource_path,
-                                  const Request& request, std::chrono::milliseconds timeout,
-                                  coap_message_reliability reliability,
-                                  std::vector<std::string> attempted) -> future_template<Response> {
+auto coap_client<Types, NodeId>::send_rpc(const NodeId& target, const std::string& resource_path,
+                                          const Request& request, std::chrono::milliseconds timeout,
+                                          coap_message_reliability reliability,
+                                          std::vector<std::string> attempted)
+    -> future_template<Response> {
     // Generic RPC sending implementation with comprehensive error handling
 
     try {
@@ -3322,7 +3328,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                 group_field = " group=" + std::to_string(request.group_id());
             }
             std::cout << ("[stall-probe] send_rpc token=" + token +
-                          " target=" + std::to_string(target) +
+                          " target=" + node_id_traits<NodeId>::to_text(target) +
                           " lock_wait_ms=" + ms(probe_entered, probe_locked) +
                           " resolve_ms=" + ms(probe_locked, probe_resolved) +
                           " session_ms=" + ms(probe_resolved, probe_session) +
@@ -3350,7 +3356,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         signal_io_wake();
 
         _logger.debug("CoAP RPC request sent successfully",
-                      {{"target_node", std::to_string(target)},
+                      {{"target_node", node_id_traits<NodeId>::to_text(target)},
                        {"resource_path", resource_path},
                        {"token", token},
                        {"message_id", std::to_string(mid)}});
@@ -3373,7 +3379,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             auto request_metric = _metrics;
             request_metric.set_metric_name("coap.client.request.sent");
             request_metric.add_dimension("resource_path", resource_path);
-            request_metric.add_dimension("target_node_id", std::to_string(target));
+            request_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             request_metric.add_dimension("media_type", request_media_type);
             request_metric.add_one();
             request_metric.emit();
@@ -3412,7 +3418,8 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                             auto retry_metric = _metrics;
                             retry_metric.set_metric_name("coap.client.media_type_retry");
                             retry_metric.add_dimension("resource_path", resource_path);
-                            retry_metric.add_dimension("target_node_id", std::to_string(target));
+                            retry_metric.add_dimension("target_node_id",
+                                                       node_id_traits<NodeId>::to_text(target));
                             retry_metric.add_dimension("rejected_media_type", request_media_type);
                             retry_metric.add_dimension("media_type", *next);
                             retry_metric.add_one();
@@ -3438,7 +3445,8 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 #else
         // Stub implementation when libcoap is not available
         _logger.trace("Stub implementation returning successful future",
-                      {{"target_node", std::to_string(target)}, {"resource_path", resource_path}});
+                      {{"target_node", node_id_traits<NodeId>::to_text(target)},
+                       {"resource_path", resource_path}});
 
         // Create a default response for the stub implementation
         Response response{};
@@ -3467,9 +3475,9 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 }
 
 // CoAP server helper method implementations
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::setup_resources() -> void {
+auto coap_server<Types, NodeId>::setup_resources() -> void {
     // Set up CoAP resources for each RPC type with actual libcoap integration
 #ifdef LIBCOAP_AVAILABLE
     if (_coap_context == nullptr) {
@@ -3495,9 +3503,9 @@ auto coap_server<Types>::setup_resources() -> void {
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
                const coap_string_t* query, coap_pdu_t* response) -> void {
                 auto* server =
-                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                    static_cast<coap_server<Types, NodeId>*>(coap_resource_get_userdata(resource));
                 if (server && server->_request_vote_handler) {
-                    server->template handle_rpc_resource<request_vote_request<>,
+                    server->template handle_rpc_resource<request_vote_request<NodeId>,
                                                          request_vote_response<>>(
                         resource, session, request, query, response, server->_request_vote_handler);
                 } else {
@@ -3529,9 +3537,9 @@ auto coap_server<Types>::setup_resources() -> void {
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
                const coap_string_t* query, coap_pdu_t* response) -> void {
                 auto* server =
-                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                    static_cast<coap_server<Types, NodeId>*>(coap_resource_get_userdata(resource));
                 if (server && server->_append_entries_handler) {
-                    server->template handle_rpc_resource<append_entries_request<>,
+                    server->template handle_rpc_resource<append_entries_request<NodeId>,
                                                          append_entries_response<>>(
                         resource, session, request, query, response,
                         server->_append_entries_handler);
@@ -3577,9 +3585,9 @@ auto coap_server<Types>::setup_resources() -> void {
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
                const coap_string_t* query, coap_pdu_t* response) -> void {
                 auto* server =
-                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                    static_cast<coap_server<Types, NodeId>*>(coap_resource_get_userdata(resource));
                 if (server && server->_install_snapshot_handler) {
-                    server->template handle_rpc_resource<install_snapshot_request<>,
+                    server->template handle_rpc_resource<install_snapshot_request<NodeId>,
                                                          install_snapshot_response<>>(
                         resource, session, request, query, response,
                         server->_install_snapshot_handler);
@@ -3631,9 +3639,9 @@ auto coap_server<Types>::setup_resources() -> void {
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
                const coap_string_t* query, coap_pdu_t* response) -> void {
                 auto* server =
-                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                    static_cast<coap_server<Types, NodeId>*>(coap_resource_get_userdata(resource));
                 if (server && server->_timeout_now_handler) {
-                    server->template handle_rpc_resource<timeout_now_request<>,
+                    server->template handle_rpc_resource<timeout_now_request<NodeId>,
                                                          timeout_now_response<>>(
                         resource, session, request, query, response, server->_timeout_now_handler);
                 } else {
@@ -3667,10 +3675,10 @@ auto coap_server<Types>::setup_resources() -> void {
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
                const coap_string_t* query, coap_pdu_t* response) -> void {
                 auto* server =
-                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                    static_cast<coap_server<Types, NodeId>*>(coap_resource_get_userdata(resource));
                 if (server && server->_fetch_log_entries_handler) {
-                    server->template handle_rpc_resource<fetch_log_entries_request<>,
-                                                         fetch_log_entries_response<>>(
+                    server->template handle_rpc_resource<fetch_log_entries_request<NodeId>,
+                                                         fetch_log_entries_response<NodeId>>(
                         resource, session, request, query, response,
                         server->_fetch_log_entries_handler);
                 } else {
@@ -3704,9 +3712,9 @@ auto coap_server<Types>::setup_resources() -> void {
             [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
                const coap_string_t* query, coap_pdu_t* response) -> void {
                 auto* server =
-                    static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+                    static_cast<coap_server<Types, NodeId>*>(coap_resource_get_userdata(resource));
                 if (server && server->_request_pre_vote_handler) {
-                    server->template handle_rpc_resource<request_pre_vote_request<>,
+                    server->template handle_rpc_resource<request_pre_vote_request<NodeId>,
                                                          request_pre_vote_response<>>(
                         resource, session, request, query, response,
                         server->_request_pre_vote_handler);
@@ -3766,9 +3774,9 @@ auto coap_server<Types>::setup_resources() -> void {
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::setup_oscore_resources() -> void {
+auto coap_server<Types, NodeId>::setup_oscore_resources() -> void {
 #ifdef LIBCOAP_AVAILABLE
     // A protected request's Uri-Path is Class E: it travels inside the
     // ciphertext, so the outer request names no path and libcoap routes it to
@@ -3782,7 +3790,8 @@ auto coap_server<Types>::setup_oscore_resources() -> void {
         root, COAP_REQUEST_POST,
         [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
            const coap_string_t* query, coap_pdu_t* response) -> void {
-            auto* server = static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
+            auto* server =
+                static_cast<coap_server<Types, NodeId>*>(coap_resource_get_userdata(resource));
             server->handle_oscore_request(resource, session, request, query, response);
         });
     coap_resource_set_userdata(root, this);
@@ -3813,12 +3822,13 @@ auto coap_server<Types>::setup_oscore_resources() -> void {
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::handle_oscore_request(coap_resource_t* resource, coap_session_t* session,
-                                               const coap_pdu_t* request,
-                                               const coap_string_t* query, coap_pdu_t* response)
-    -> void {
+auto coap_server<Types, NodeId>::handle_oscore_request(coap_resource_t* resource,
+                                                       coap_session_t* session,
+                                                       const coap_pdu_t* request,
+                                                       const coap_string_t* query,
+                                                       coap_pdu_t* response) -> void {
 #ifdef LIBCOAP_AVAILABLE
     // RFC 8613 Section 8.2: a request that cannot be verified is answered
     // unprotected -- there is no context to protect the answer with -- with
@@ -3886,16 +3896,16 @@ auto coap_server<Types>::handle_oscore_request(coap_resource_t* resource, coap_s
     if (inner.code != COAP_REQUEST_CODE_POST) {
         coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_NOT_ALLOWED);
     } else if (path == "raft/request_vote") {
-        dispatch(_request_vote_handler, std::type_identity<request_vote_request<>>{},
+        dispatch(_request_vote_handler, std::type_identity<request_vote_request<NodeId>>{},
                  std::type_identity<request_vote_response<>>{});
     } else if (path == "raft/append_entries") {
-        dispatch(_append_entries_handler, std::type_identity<append_entries_request<>>{},
+        dispatch(_append_entries_handler, std::type_identity<append_entries_request<NodeId>>{},
                  std::type_identity<append_entries_response<>>{});
     } else if (path == "raft/install_snapshot") {
-        dispatch(_install_snapshot_handler, std::type_identity<install_snapshot_request<>>{},
+        dispatch(_install_snapshot_handler, std::type_identity<install_snapshot_request<NodeId>>{},
                  std::type_identity<install_snapshot_response<>>{});
     } else if (path == "raft/timeout_now") {
-        dispatch(_timeout_now_handler, std::type_identity<timeout_now_request<>>{},
+        dispatch(_timeout_now_handler, std::type_identity<timeout_now_request<NodeId>>{},
                  std::type_identity<timeout_now_response<>>{});
     } else {
         coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_NOT_FOUND);
@@ -3956,39 +3966,39 @@ auto coap_server<Types>::handle_oscore_request(coap_resource_t* resource, coap_s
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::forget_oscore_group(std::uint64_t group_id) -> void {
+auto coap_server<Types, NodeId>::forget_oscore_group(std::uint64_t group_id) -> void {
     if (_oscore != nullptr) {
         _oscore->forget_group(group_id);
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::oscore_group_counters() const
+auto coap_server<Types, NodeId>::oscore_group_counters() const
     -> std::optional<oscore::group_context_counters> {
     return _oscore != nullptr ? _oscore->group_counters() : std::nullopt;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::forget_oscore_group(std::uint64_t group_id) -> void {
+auto coap_client<Types, NodeId>::forget_oscore_group(std::uint64_t group_id) -> void {
     if (_oscore != nullptr) {
         _oscore->forget_group(group_id);
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::oscore_group_counters() const
+auto coap_client<Types, NodeId>::oscore_group_counters() const
     -> std::optional<oscore::group_context_counters> {
     return _oscore != nullptr ? _oscore->group_counters() : std::nullopt;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::setup_dtls_context() -> void {
+auto coap_server<Types, NodeId>::setup_dtls_context() -> void {
     // Explicit channel-security mode (coap-transport-security spec,
     // Requirement 1.2): dispatch entirely to the provider and skip the
     // legacy field-inference body below, which stays untouched so every
@@ -4050,7 +4060,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
             pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
                                                   size_t asn1_length, coap_session_t* session,
                                                   unsigned depth, int found, void* arg) -> int {
-                auto* server = static_cast<coap_server<Types>*>(arg);
+                auto* server = static_cast<coap_server<Types, NodeId>*>(arg);
                 try {
                     // Convert certificate to string for validation
                     std::string cert_data(reinterpret_cast<const char*>(asn1_public_cert),
@@ -4110,7 +4120,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         // Set up PSK callback for client authentication
         spsk_config.validate_id_call_back = [](coap_bin_const_t* identity, coap_session_t* session,
                                                void* arg) -> const coap_bin_const_t* {
-            auto* server = static_cast<coap_server<Types>*>(arg);
+            auto* server = static_cast<coap_server<Types, NodeId>*>(arg);
 
             // Validate client identity matches expected PSK identity
             std::string client_identity(reinterpret_cast<const char*>(identity->s),
@@ -4225,9 +4235,9 @@ auto coap_server<Types>::setup_dtls_context() -> void {
 // Re-reads cert_file/key_file/ca_file from disk and re-applies them to the
 // live _coap_context via coap_context_set_pki() (Requirement 16.2), without
 // tearing down the context or any existing DTLS association.
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::reload_tls_material() -> void {
+auto coap_server<Types, NodeId>::reload_tls_material() -> void {
     if (_config.cert_file.empty() || _config.key_file.empty()) {
         throw std::logic_error(
             "reload_tls_material() requires cert_file and key_file to be configured");
@@ -4268,7 +4278,7 @@ auto coap_server<Types>::reload_tls_material() -> void {
         pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
                                               size_t asn1_length, coap_session_t* session,
                                               unsigned depth, int found, void* arg) -> int {
-            auto* server = static_cast<coap_server<Types>*>(arg);
+            auto* server = static_cast<coap_server<Types, NodeId>*>(arg);
             try {
                 std::string cert_data(reinterpret_cast<const char*>(asn1_public_cert), asn1_length);
                 return server->validate_client_certificate(cert_data) ? 1 : 0;
@@ -4298,9 +4308,9 @@ auto coap_server<Types>::reload_tls_material() -> void {
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto coap_server<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -4325,18 +4335,18 @@ auto coap_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) 
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::disable_auto_reload() -> void {
+auto coap_server<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::initiate_dtls_handshake(coap_session_t* session) -> bool {
+auto coap_server<Types, NodeId>::initiate_dtls_handshake(coap_session_t* session) -> bool {
     // A server never starts a DTLS handshake: the client's ClientHello does,
     // and libcoap answers it from inside the I/O loop with the credentials
     // setup_dtls_context() installed. What the server side can say is
@@ -4377,9 +4387,9 @@ auto coap_server<Types>::initiate_dtls_handshake(coap_session_t* session) -> boo
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::complete_dtls_handshake(coap_session_t* session) -> bool {
+auto coap_server<Types, NodeId>::complete_dtls_handshake(coap_session_t* session) -> bool {
     // Reports whether the handshake on `session` has finished successfully.
     // Deliberately does not wait: the server's I/O thread is what advances
     // the handshake, and this may well be called from that same thread (a
@@ -4419,10 +4429,10 @@ auto coap_server<Types>::complete_dtls_handshake(coap_session_t* session) -> boo
 
 // Cipher suite configuration methods implementation for server
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::validate_cipher_suites(const std::vector<std::string>& cipher_suites)
-    -> void {
+auto coap_server<Types, NodeId>::validate_cipher_suites(
+    const std::vector<std::string>& cipher_suites) -> void {
     // Validate cipher suite configuration
     // This stub implementation performs basic validation
 
@@ -4454,9 +4464,9 @@ auto coap_server<Types>::validate_cipher_suites(const std::vector<std::string>& 
                  {{"valid_cipher_suites", std::to_string(cipher_suites.size())}});
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::select_cipher_suites() -> std::vector<std::string> {
+auto coap_server<Types, NodeId>::select_cipher_suites() -> std::vector<std::string> {
     // Select cipher suites based on configuration
     // This stub implementation returns configured cipher suites or defaults
 
@@ -4478,9 +4488,9 @@ auto coap_server<Types>::select_cipher_suites() -> std::vector<std::string> {
     return default_ciphers;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::get_supported_cipher_suites() const -> std::vector<std::string> {
+auto coap_server<Types, NodeId>::get_supported_cipher_suites() const -> std::vector<std::string> {
     // Return list of supported cipher suites
     // This stub implementation returns a mock list of secure cipher suites
 
@@ -4503,10 +4513,10 @@ auto coap_server<Types>::get_supported_cipher_suites() const -> std::vector<std:
     return supported_ciphers;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::send_error_response(coap_pdu_t* response, coap_pdu_code_t code,
-                                             const std::string& message) -> void {
+auto coap_server<Types, NodeId>::send_error_response(coap_pdu_t* response, coap_pdu_code_t code,
+                                                     const std::string& message) -> void {
     // Send CoAP error response
 #ifdef LIBCOAP_AVAILABLE
     // Set response code in the PDU
@@ -4530,37 +4540,39 @@ auto coap_server<Types>::send_error_response(coap_pdu_t* response, coap_pdu_code
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::is_duplicate_message(const std::string& peer, std::uint16_t message_id,
-                                              std::string_view token) -> bool {
+auto coap_server<Types, NodeId>::is_duplicate_message(const std::string& peer,
+                                                      std::uint16_t message_id,
+                                                      std::string_view token) -> bool {
     // A retransmission of an exchange already seen from this same peer. The
     // Message ID alone is not enough: every peer numbers its own messages.
     std::lock_guard lock(_mutex);
     return _received_messages.is_duplicate(peer, message_id, token);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::record_received_message(const std::string& peer, std::uint16_t message_id,
-                                                 std::string_view token) -> void {
+auto coap_server<Types, NodeId>::record_received_message(const std::string& peer,
+                                                         std::uint16_t message_id,
+                                                         std::string_view token) -> void {
     // Expiry is amortised inside the table itself; sweeping the whole table on
     // every record, as this used to, cost O(entries) per received message.
     std::lock_guard lock(_mutex);
     _received_messages.record(peer, message_id, token);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::cleanup_expired_messages() -> void {
+auto coap_server<Types, NodeId>::cleanup_expired_messages() -> void {
     // Clean up old received message records to prevent memory growth. The
     // horizon is RFC 7252's EXCHANGE_LIFETIME (coap_exchange_lifetime).
     _received_messages.sweep();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::cleanup_expired_multicast_groups() -> void {
+auto coap_server<Types, NodeId>::cleanup_expired_multicast_groups() -> void {
     // Clean up expired multicast groups to prevent memory growth
     // Note: This is a placeholder implementation - in a real implementation,
     // we would track group membership timestamps and clean up unused groups
@@ -4588,9 +4600,10 @@ auto coap_server<Types>::cleanup_expired_multicast_groups() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::validate_client_certificate(const std::string& client_cert_data) -> bool {
+auto coap_server<Types, NodeId>::validate_client_certificate(const std::string& client_cert_data)
+    -> bool {
     // Validate client certificate data with actual X.509 processing
     if (!_config.enable_dtls) {
         // DTLS not enabled, no certificate validation needed
@@ -4897,21 +4910,20 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::is_dtls_enabled() const -> bool {
+auto coap_server<Types, NodeId>::is_dtls_enabled() const -> bool {
     return _config.enable_dtls;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
 template<typename Request, typename Response>
-auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_session_t* session,
-                                             const coap_pdu_t* request, const coap_string_t* query,
-                                             coap_pdu_t* response,
-                                             std::function<Response(const Request&)> handler,
-                                             std::optional<std::uint64_t> oscore_group,
-                                             bool oscore_inner) -> void {
+auto coap_server<Types, NodeId>::handle_rpc_resource(
+    coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
+    const coap_string_t* query, coap_pdu_t* response,
+    std::function<Response(const Request&)> handler, std::optional<std::uint64_t> oscore_group,
+    bool oscore_inner) -> void {
     // Generic RPC resource handler with comprehensive error handling
     try {
 #ifdef LIBCOAP_AVAILABLE
@@ -5263,10 +5275,10 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
 
 // Missing method implementations for tests
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::should_use_block_transfer(const std::vector<std::byte>& payload) const
-    -> bool {
+auto coap_client<Types, NodeId>::should_use_block_transfer(
+    const std::vector<std::byte>& payload) const -> bool {
     if (!_config.enable_block_transfer) {
         return false;
     }
@@ -5290,10 +5302,10 @@ auto coap_client<Types>::should_use_block_transfer(const std::vector<std::byte>&
     return should_use;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::split_payload_into_blocks(const std::vector<std::byte>& payload) const
-    -> std::vector<std::vector<std::byte>> {
+auto coap_client<Types, NodeId>::split_payload_into_blocks(
+    const std::vector<std::byte>& payload) const -> std::vector<std::vector<std::byte>> {
     std::vector<std::vector<std::byte>> blocks;
 
     if (payload.empty()) {
@@ -5357,9 +5369,10 @@ auto coap_client<Types>::split_payload_into_blocks(const std::vector<std::byte>&
     return blocks;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> coap_session_t* {
+auto coap_client<Types, NodeId>::get_or_create_session(const std::string& endpoint)
+    -> coap_session_t* {
     std::lock_guard lock(_mutex);
 
     // If pooling is disabled, return nullptr to indicate no pooling
@@ -5518,10 +5531,10 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::return_session_to_pool(const std::string& endpoint,
-                                                coap_session_t* session) -> void {
+auto coap_client<Types, NodeId>::return_session_to_pool(const std::string& endpoint,
+                                                        coap_session_t* session) -> void {
     if (!_config.enable_session_reuse || !_config.enable_connection_pooling || session == nullptr) {
         return;
     }
@@ -5581,9 +5594,9 @@ auto coap_client<Types>::return_session_to_pool(const std::string& endpoint,
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::cleanup_expired_sessions() -> void {
+auto coap_client<Types, NodeId>::cleanup_expired_sessions() -> void {
     std::lock_guard lock(_mutex);
 
     auto now = std::chrono::steady_clock::now();
@@ -5669,9 +5682,9 @@ auto coap_client<Types>::cleanup_expired_sessions() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::handle_resource_exhaustion() -> void {
+auto coap_client<Types, NodeId>::handle_resource_exhaustion() -> void {
     // Handle resource exhaustion by cleaning up old data and enforcing limits
     std::lock_guard lock(_mutex);
 
@@ -5762,9 +5775,9 @@ auto coap_client<Types>::handle_resource_exhaustion() -> void {
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::enforce_connection_limits() -> void {
+auto coap_client<Types, NodeId>::enforce_connection_limits() -> void {
     std::lock_guard lock(_mutex);
 
     std::size_t total_sessions = 0;
@@ -5780,9 +5793,10 @@ auto coap_client<Types>::enforce_connection_limits() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::detect_malformed_message(const std::vector<std::byte>& data) -> bool {
+auto coap_client<Types, NodeId>::detect_malformed_message(const std::vector<std::byte>& data)
+    -> bool {
     // Comprehensive malformed message detection
     if (data.empty()) {
         _logger.debug("Malformed message: empty data");
@@ -5971,9 +5985,9 @@ auto coap_client<Types>::detect_malformed_message(const std::vector<std::byte>& 
     return false;  // Message appears valid
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::detect_network_partition(const std::string& endpoint) -> bool {
+auto coap_client<Types, NodeId>::detect_network_partition(const std::string& endpoint) -> bool {
     // Detect network partition by tracking consecutive failures to an endpoint
     if (endpoint.empty()) {
         return true;  // Empty endpoint indicates partition
@@ -6044,9 +6058,9 @@ auto coap_client<Types>::detect_network_partition(const std::string& endpoint) -
     return false;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::attempt_network_recovery(const std::string& endpoint) -> bool {
+auto coap_client<Types, NodeId>::attempt_network_recovery(const std::string& endpoint) -> bool {
     if (endpoint.empty()) {
         _logger.error("Network partition recovery failed",
                       {{"endpoint", endpoint}, {"error", "Empty endpoint"}});
@@ -6119,9 +6133,9 @@ auto coap_client<Types>::attempt_network_recovery(const std::string& endpoint) -
     return false;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
+auto coap_client<Types, NodeId>::allocate_from_pool(std::size_t size) -> std::byte* {
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return nullptr;
     }
@@ -6159,9 +6173,9 @@ auto coap_client<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
     return nullptr;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::deallocate_to_pool(void* ptr) -> void {
+auto coap_client<Types, NodeId>::deallocate_to_pool(void* ptr) -> void {
     if (!_config.enable_memory_optimization || !_memory_pool || ptr == nullptr) {
         return;
     }
@@ -6180,9 +6194,9 @@ auto coap_client<Types>::deallocate_to_pool(void* ptr) -> void {
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::reset_memory_pool() -> void {
+auto coap_client<Types, NodeId>::reset_memory_pool() -> void {
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return;
     }
@@ -6203,9 +6217,9 @@ auto coap_client<Types>::reset_memory_pool() -> void {
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_pool_metrics() const -> memory_pool_metrics {
+auto coap_client<Types, NodeId>::get_pool_metrics() const -> memory_pool_metrics {
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return memory_pool_metrics{};
     }
@@ -6213,9 +6227,9 @@ auto coap_client<Types>::get_pool_metrics() const -> memory_pool_metrics {
     return _memory_pool->get_metrics();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> {
+auto coap_client<Types, NodeId>::detect_memory_leaks() -> std::vector<memory_leak_info> {
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return {};
     }
@@ -6244,9 +6258,9 @@ auto coap_client<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> 
     return leaks;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_cached_serialization(std::size_t hash)
+auto coap_client<Types, NodeId>::get_cached_serialization(std::size_t hash)
     -> std::optional<std::vector<std::byte>> {
     if (!_config.enable_serialization_caching) {
         return std::nullopt;
@@ -6279,10 +6293,10 @@ auto coap_client<Types>::get_cached_serialization(std::size_t hash)
     return std::nullopt;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::cache_serialization(std::size_t hash, const std::vector<std::byte>& data)
-    -> void {
+auto coap_client<Types, NodeId>::cache_serialization(std::size_t hash,
+                                                     const std::vector<std::byte>& data) -> void {
     if (!_config.enable_serialization_caching) {
         return;
     }
@@ -6328,9 +6342,9 @@ auto coap_client<Types>::cache_serialization(std::size_t hash, const std::vector
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::cleanup_serialization_cache() -> void {
+auto coap_client<Types, NodeId>::cleanup_serialization_cache() -> void {
     if (!_config.enable_serialization_caching) {
         return;
     }
@@ -6388,11 +6402,11 @@ auto coap_client<Types>::cleanup_serialization_cache() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::reassemble_blocks(const std::string& token,
-                                           const std::vector<std::byte>& block_data,
-                                           const kythira::block_option& block_opt)
+auto coap_client<Types, NodeId>::reassemble_blocks(const std::string& token,
+                                                   const std::vector<std::byte>& block_data,
+                                                   const kythira::block_option& block_opt)
     -> std::optional<std::vector<std::byte>> {
     // Note: This method assumes the caller already holds _mutex
 
@@ -6529,9 +6543,9 @@ auto coap_client<Types>::reassemble_blocks(const std::string& token,
     return std::nullopt;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::cleanup_expired_block_transfers() -> void {
+auto coap_client<Types, NodeId>::cleanup_expired_block_transfers() -> void {
     std::lock_guard lock(_mutex);
 
     auto now = std::chrono::steady_clock::now();
@@ -6607,10 +6621,10 @@ auto coap_client<Types>::cleanup_expired_block_transfers() -> void {
 
 // Server method implementations
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::should_use_block_transfer(const std::vector<std::byte>& payload) const
-    -> bool {
+auto coap_server<Types, NodeId>::should_use_block_transfer(
+    const std::vector<std::byte>& payload) const -> bool {
     if (!_config.enable_block_transfer) {
         return false;
     }
@@ -6634,10 +6648,10 @@ auto coap_server<Types>::should_use_block_transfer(const std::vector<std::byte>&
     return should_use;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::split_payload_into_blocks(const std::vector<std::byte>& payload) const
-    -> std::vector<std::vector<std::byte>> {
+auto coap_server<Types, NodeId>::split_payload_into_blocks(
+    const std::vector<std::byte>& payload) const -> std::vector<std::vector<std::byte>> {
     std::vector<std::vector<std::byte>> blocks;
 
     if (payload.empty()) {
@@ -6701,9 +6715,9 @@ auto coap_server<Types>::split_payload_into_blocks(const std::vector<std::byte>&
     return blocks;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::handle_resource_exhaustion() -> void {
+auto coap_server<Types, NodeId>::handle_resource_exhaustion() -> void {
     // Handle resource exhaustion by cleaning up old data and enforcing limits
     std::lock_guard lock(_mutex);
 
@@ -6782,9 +6796,9 @@ auto coap_server<Types>::handle_resource_exhaustion() -> void {
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::enforce_connection_limits() -> void {
+auto coap_server<Types, NodeId>::enforce_connection_limits() -> void {
     std::lock_guard lock(_mutex);
 
     std::size_t current_connections = _active_connections.load();
@@ -6796,9 +6810,10 @@ auto coap_server<Types>::enforce_connection_limits() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::detect_malformed_message(const std::vector<std::byte>& data) -> bool {
+auto coap_server<Types, NodeId>::detect_malformed_message(const std::vector<std::byte>& data)
+    -> bool {
     // Comprehensive malformed message detection with detailed validation
     if (data.empty()) {
         _logger.debug("Malformed message: empty data");
@@ -7015,9 +7030,9 @@ auto coap_server<Types>::detect_malformed_message(const std::vector<std::byte>& 
     return false;  // Message appears valid
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::cleanup_expired_block_transfers() -> void {
+auto coap_server<Types, NodeId>::cleanup_expired_block_transfers() -> void {
     // Clean up expired block transfer state. Like cleanup_expired_messages()/
     // cleanup_expired_multicast_groups(), this assumes the caller already
     // holds _mutex -- its only caller, handle_resource_exhaustion(), takes
@@ -7094,9 +7109,9 @@ auto coap_server<Types>::cleanup_expired_block_transfers() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::setup_multicast_listener() -> void {
+auto coap_server<Types, NodeId>::setup_multicast_listener() -> void {
     // Set up multicast listener for CoAP multicast discovery
     if (!_config.enable_multicast) {
         return;
@@ -7172,11 +7187,11 @@ auto coap_server<Types>::setup_multicast_listener() -> void {
 }
 
 // CoAP server block transfer method implementations
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::reassemble_blocks(const std::string& token,
-                                           const std::vector<std::byte>& block_data,
-                                           const kythira::block_option& block_opt)
+auto coap_server<Types, NodeId>::reassemble_blocks(const std::string& token,
+                                                   const std::vector<std::byte>& block_data,
+                                                   const kythira::block_option& block_opt)
     -> std::optional<std::vector<std::byte>> {
     // Note: This method assumes the caller already holds _mutex
 
@@ -7313,10 +7328,10 @@ auto coap_server<Types>::reassemble_blocks(const std::string& token,
     return std::nullopt;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::reject_malformed_request(coap_pdu_t* response, const std::string& reason)
-    -> void {
+auto coap_server<Types, NodeId>::reject_malformed_request(coap_pdu_t* response,
+                                                          const std::string& reason) -> void {
     // Reject malformed request with appropriate error response
 
     // Log the malformed request
@@ -7337,9 +7352,9 @@ auto coap_server<Types>::reject_malformed_request(coap_pdu_t* response, const st
 }
 
 // Performance optimization method implementations for coap_client
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::acquire_concurrent_slot() -> bool {
+auto coap_client<Types, NodeId>::acquire_concurrent_slot() -> bool {
     // Concurrent request processing control
     if (!_config.enable_concurrent_processing) {
         return true;  // No limit if concurrent processing is disabled
@@ -7369,24 +7384,24 @@ auto coap_client<Types>::acquire_concurrent_slot() -> bool {
     return false;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::release_concurrent_slot() -> void {
+auto coap_client<Types, NodeId>::release_concurrent_slot() -> void {
     // Release concurrent request slot
     if (_config.enable_concurrent_processing) {
         _concurrent_requests.fetch_sub(1);
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::acquire_concurrent_slot() -> bool {
+auto coap_server<Types, NodeId>::acquire_concurrent_slot() -> bool {
     // Concurrent request processing control
     if (!_config.enable_concurrent_processing) {
         return true;  // No limit if concurrent processing is disabled
     }
 
-    // See coap_client<Types>::acquire_concurrent_slot()'s comment: a plain
+    // See coap_client<Types, NodeId>::acquire_concurrent_slot()'s comment: a plain
     // load()-then-fetch_add() lets concurrent real callers both pass the
     // check and exceed the configured limit. compare_exchange_weak makes
     // the check-and-increment atomic as a whole.
@@ -7404,18 +7419,18 @@ auto coap_server<Types>::acquire_concurrent_slot() -> bool {
     return false;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::release_concurrent_slot() -> void {
+auto coap_server<Types, NodeId>::release_concurrent_slot() -> void {
     // Release concurrent request slot
     if (_config.enable_concurrent_processing) {
         _concurrent_requests.fetch_sub(1);
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
+auto coap_server<Types, NodeId>::allocate_from_pool(std::size_t size) -> std::byte* {
     // Memory pool allocation for optimization
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return nullptr;  // Use regular allocation if optimization is disabled
@@ -7455,9 +7470,9 @@ auto coap_server<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
     return nullptr;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::deallocate_to_pool(void* ptr) -> void {
+auto coap_server<Types, NodeId>::deallocate_to_pool(void* ptr) -> void {
     if (!_config.enable_memory_optimization || !_memory_pool || ptr == nullptr) {
         return;
     }
@@ -7476,9 +7491,9 @@ auto coap_server<Types>::deallocate_to_pool(void* ptr) -> void {
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::reset_memory_pool() -> void {
+auto coap_server<Types, NodeId>::reset_memory_pool() -> void {
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return;
     }
@@ -7499,9 +7514,9 @@ auto coap_server<Types>::reset_memory_pool() -> void {
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::get_pool_metrics() const -> memory_pool_metrics {
+auto coap_server<Types, NodeId>::get_pool_metrics() const -> memory_pool_metrics {
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return memory_pool_metrics{};
     }
@@ -7509,9 +7524,9 @@ auto coap_server<Types>::get_pool_metrics() const -> memory_pool_metrics {
     return _memory_pool->get_metrics();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> {
+auto coap_server<Types, NodeId>::detect_memory_leaks() -> std::vector<memory_leak_info> {
     if (!_config.enable_memory_optimization || !_memory_pool) {
         return {};
     }
@@ -7541,9 +7556,9 @@ auto coap_server<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> 
     return leaks;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::get_cached_serialization(std::size_t hash)
+auto coap_server<Types, NodeId>::get_cached_serialization(std::size_t hash)
     -> std::optional<std::vector<std::byte>> {
     // Serialization cache lookup
     if (!_config.enable_serialization_caching) {
@@ -7570,10 +7585,10 @@ auto coap_server<Types>::get_cached_serialization(std::size_t hash)
     return std::nullopt;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::cache_serialization(std::size_t hash, const std::vector<std::byte>& data)
-    -> void {
+auto coap_server<Types, NodeId>::cache_serialization(std::size_t hash,
+                                                     const std::vector<std::byte>& data) -> void {
     // Cache serialized data
     if (!_config.enable_serialization_caching) {
         return;
@@ -7595,9 +7610,9 @@ auto coap_server<Types>::cache_serialization(std::size_t hash, const std::vector
     _serialization_cache.insert_or_assign(hash, cache_entry{data, hash});
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::cleanup_serialization_cache() -> void {
+auto coap_server<Types, NodeId>::cleanup_serialization_cache() -> void {
     // Clean up expired cache entries
     std::lock_guard lock(_mutex);
 
@@ -7614,13 +7629,13 @@ auto coap_server<Types>::cleanup_serialization_cache() -> void {
 }
 
 // Multicast support implementation for CoAP client
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_multicast_message(const std::string& multicast_address,
-                                                std::uint16_t multicast_port,
-                                                const std::string& resource_path,
-                                                const std::vector<std::byte>& payload,
-                                                std::chrono::milliseconds timeout)
+auto coap_client<Types, NodeId>::send_multicast_message(const std::string& multicast_address,
+                                                        std::uint16_t multicast_port,
+                                                        const std::string& resource_path,
+                                                        const std::vector<std::byte>& payload,
+                                                        std::chrono::milliseconds timeout)
     -> future_template<std::vector<std::vector<std::byte>>> {
     _logger.info("Sending multicast message", {{"multicast_address", multicast_address},
                                                {"multicast_port", std::to_string(multicast_port)},
@@ -7750,11 +7765,11 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::discover_raft_nodes(const std::string& multicast_address,
-                                             std::uint16_t multicast_port,
-                                             std::chrono::milliseconds timeout)
+auto coap_client<Types, NodeId>::discover_raft_nodes(const std::string& multicast_address,
+                                                     std::uint16_t multicast_port,
+                                                     std::chrono::milliseconds timeout)
     -> future_template<std::vector<std::string>> {
     // Send multicast discovery message to find Raft nodes
     _logger.info("Starting Raft node discovery",
@@ -7814,12 +7829,12 @@ auto coap_client<Types>::discover_raft_nodes(const std::string& multicast_addres
         });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::send_multicast_heartbeat(const std::string& multicast_address,
-                                                  std::uint16_t multicast_port,
-                                                  const std::string& node_id,
-                                                  std::chrono::milliseconds timeout)
+auto coap_client<Types, NodeId>::send_multicast_heartbeat(const std::string& multicast_address,
+                                                          std::uint16_t multicast_port,
+                                                          const std::string& node_id,
+                                                          std::chrono::milliseconds timeout)
     -> future_template<std::vector<std::string>> {
     // Send multicast heartbeat to announce presence and discover peers
     _logger.debug("Sending multicast heartbeat",
@@ -7882,9 +7897,10 @@ auto coap_client<Types>::send_multicast_heartbeat(const std::string& multicast_a
         });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::join_multicast_group(const std::string& multicast_address) -> bool {
+auto coap_client<Types, NodeId>::join_multicast_group(const std::string& multicast_address)
+    -> bool {
     // Join a multicast group for receiving multicast messages
     std::lock_guard lock(_mutex);
 
@@ -7995,9 +8011,10 @@ auto coap_client<Types>::join_multicast_group(const std::string& multicast_addre
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::leave_multicast_group(const std::string& multicast_address) -> bool {
+auto coap_client<Types, NodeId>::leave_multicast_group(const std::string& multicast_address)
+    -> bool {
     // Leave a multicast group
     std::lock_guard lock(_mutex);
 
@@ -8093,9 +8110,9 @@ auto coap_client<Types>::leave_multicast_group(const std::string& multicast_addr
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_joined_multicast_groups() const -> std::vector<std::string> {
+auto coap_client<Types, NodeId>::get_joined_multicast_groups() const -> std::vector<std::string> {
     std::lock_guard lock(_mutex);
 
     std::vector<std::string> groups;
@@ -8106,11 +8123,11 @@ auto coap_client<Types>::get_joined_multicast_groups() const -> std::vector<std:
     return groups;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::handle_multicast_response(const std::string& token,
-                                                   const std::vector<std::byte>& response_data,
-                                                   const std::string& sender_address) -> void {
+auto coap_client<Types, NodeId>::handle_multicast_response(
+    const std::string& token, const std::vector<std::byte>& response_data,
+    const std::string& sender_address) -> void {
     // Handle response from a multicast receiver
     std::lock_guard lock(_mutex);
 
@@ -8146,9 +8163,10 @@ auto coap_client<Types>::handle_multicast_response(const std::string& token,
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::finalize_multicast_response_collection(const std::string& token) -> void {
+auto coap_client<Types, NodeId>::finalize_multicast_response_collection(const std::string& token)
+    -> void {
     // Finalize multicast response collection and resolve future
     // Note: This method assumes the caller already holds _mutex
 
@@ -8191,9 +8209,9 @@ auto coap_client<Types>::finalize_multicast_response_collection(const std::strin
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::cleanup_expired_multicast_requests() -> void {
+auto coap_client<Types, NodeId>::cleanup_expired_multicast_requests() -> void {
     // Ends every multicast collection whose window has closed, resolving it
     // with the responses gathered so far. Runs on every I/O-thread pass, so
     // the common case -- nothing in flight -- has to stay cheap.
@@ -8246,9 +8264,9 @@ auto coap_client<Types>::cleanup_expired_multicast_requests() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::next_multicast_deadline_locked() const
+auto coap_client<Types, NodeId>::next_multicast_deadline_locked() const
     -> std::optional<std::chrono::milliseconds> {
     if (_multicast_requests.empty()) {
         return std::nullopt;
@@ -8266,9 +8284,9 @@ auto coap_client<Types>::next_multicast_deadline_locked() const
     return std::chrono::ceil<std::chrono::milliseconds>(remaining);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::expire_overdue_requests() -> void {
+auto coap_client<Types, NodeId>::expire_overdue_requests() -> void {
     {
         std::lock_guard lock(_mutex);
         const auto now = std::chrono::steady_clock::now();
@@ -8297,9 +8315,9 @@ auto coap_client<Types>::expire_overdue_requests() -> void {
     run_deferred_completions();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::next_request_deadline_locked() const
+auto coap_client<Types, NodeId>::next_request_deadline_locked() const
     -> std::optional<std::chrono::milliseconds> {
     if (_request_deadlines.empty()) {
         return std::nullopt;
@@ -8313,9 +8331,9 @@ auto coap_client<Types>::next_request_deadline_locked() const
     return std::chrono::ceil<std::chrono::milliseconds>(remaining);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::signal_io_wake() noexcept -> void {
+auto coap_client<Types, NodeId>::signal_io_wake() noexcept -> void {
     const int fd = _io_wake_fd.get();
     if (fd < 0) {
         return;  // paced mode never waits longer than io_paced_interval
@@ -8334,9 +8352,9 @@ auto coap_client<Types>::signal_io_wake() noexcept -> void {
     [[maybe_unused]] const auto written = ::write(fd, &one, sizeof one);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::io_drain_step() -> void {
+auto coap_client<Types, NodeId>::io_drain_step() -> void {
 #ifdef LIBCOAP_AVAILABLE
     {
         std::lock_guard lock(_mutex);
@@ -8349,27 +8367,29 @@ auto coap_client<Types>::io_drain_step() -> void {
     _io_drain_steps.fetch_add(1, std::memory_order_relaxed);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::defer_resolve(pending_message& message, std::vector<std::byte> data,
-                                       const std::string& media_type) -> void {
+auto coap_client<Types, NodeId>::defer_resolve(pending_message& message,
+                                               std::vector<std::byte> data,
+                                               const std::string& media_type) -> void {
     _deferred_completions.emplace_back(
         [callback = std::move(message.resolve_callback), data = std::move(data),
          media_type]() mutable { callback(std::move(data), media_type); });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::defer_reject(pending_message& message, std::exception_ptr error) -> void {
+auto coap_client<Types, NodeId>::defer_reject(pending_message& message, std::exception_ptr error)
+    -> void {
     _deferred_completions.emplace_back(
         [callback = std::move(message.reject_callback), error = std::move(error)]() mutable {
             callback(std::move(error));
         });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::run_deferred_completions() -> void {
+auto coap_client<Types, NodeId>::run_deferred_completions() -> void {
     std::vector<std::function<void()>> batch;
     {
         std::lock_guard lock(_mutex);
@@ -8387,9 +8407,9 @@ auto coap_client<Types>::run_deferred_completions() -> void {
     _completion_cv.notify_one();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::run_completion_loop(const std::stop_token& stop_token) -> void {
+auto coap_client<Types, NodeId>::run_completion_loop(const std::stop_token& stop_token) -> void {
     // Off the I/O thread on purpose. A completion is the caller's code: a
     // Raft node takes its own lock, advances its indices and often sends
     // again. Run on the I/O thread -- under _mutex as it first was, or
@@ -8419,18 +8439,18 @@ auto coap_client<Types>::run_completion_loop(const std::stop_token& stop_token) 
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::record_io_pass(bool budget_hit) -> void {
+auto coap_client<Types, NodeId>::record_io_pass(bool budget_hit) -> void {
     _io_passes.fetch_add(1, std::memory_order_relaxed);
     if (budget_hit) {
         _io_budget_exhausted.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::io_loop_stats() const -> coap_io_loop_stats {
+auto coap_client<Types, NodeId>::io_loop_stats() const -> coap_io_loop_stats {
     return coap_io_loop_stats{
         .mode = _io_mode,
         .passes = _io_passes.load(std::memory_order_relaxed),
@@ -8440,9 +8460,9 @@ auto coap_client<Types>::io_loop_stats() const -> coap_io_loop_stats {
     };
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void {
+auto coap_client<Types, NodeId>::run_io_loop(const std::stop_token& stop_token) -> void {
 #ifdef LIBCOAP_AVAILABLE
     // The I/O thread (coap-client-event-driven-io spec). Each pass drains,
     // does housekeeping, then waits.
@@ -8647,9 +8667,9 @@ auto coap_client<Types>::run_io_loop(const std::stop_token& stop_token) -> void 
 }
 
 // Enhanced multicast helper methods for CoAP client
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::create_discovery_message(const std::string& node_id)
+auto coap_client<Types, NodeId>::create_discovery_message(const std::string& node_id)
     -> std::vector<std::byte> {
     // Create a simple discovery message with node ID
     std::string message = "RAFT_DISCOVERY";
@@ -8667,10 +8687,10 @@ auto coap_client<Types>::create_discovery_message(const std::string& node_id)
     return payload;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::parse_discovery_response(const std::vector<std::byte>& response_data)
-    -> std::optional<std::string> {
+auto coap_client<Types, NodeId>::parse_discovery_response(
+    const std::vector<std::byte>& response_data) -> std::optional<std::string> {
     // Parse discovery response to extract node ID
     if (response_data.empty()) {
         return std::nullopt;
@@ -8697,9 +8717,9 @@ auto coap_client<Types>::parse_discovery_response(const std::vector<std::byte>& 
     return std::nullopt;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::is_valid_multicast_address(const std::string& address) -> bool {
+auto coap_client<Types, NodeId>::is_valid_multicast_address(const std::string& address) -> bool {
     // Validate IPv4 multicast address (224.0.0.0/4 range - 224.0.0.0 to 239.255.255.255)
     if (address.empty()) {
         return false;
@@ -8753,10 +8773,10 @@ auto coap_client<Types>::is_valid_multicast_address(const std::string& address) 
     return false;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::handle_multicast_error(const std::string& token,
-                                                const std::exception_ptr& error) -> void {
+auto coap_client<Types, NodeId>::handle_multicast_error(const std::string& token,
+                                                        const std::exception_ptr& error) -> void {
     // Handle multicast-specific errors
     std::lock_guard lock(_mutex);
 
@@ -8821,11 +8841,11 @@ auto coap_client<Types>::handle_multicast_error(const std::string& token,
     _metrics.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::collect_multicast_response(coap_session_t* session,
-                                                    const coap_pdu_t* response,
-                                                    const std::string& token) -> bool {
+auto coap_client<Types, NodeId>::collect_multicast_response(coap_session_t* session,
+                                                            const coap_pdu_t* response,
+                                                            const std::string& token) -> bool {
 #ifdef LIBCOAP_AVAILABLE
     std::lock_guard lock(_mutex);
     auto it = _multicast_requests.find(token);
@@ -8881,9 +8901,9 @@ auto coap_client<Types>::collect_multicast_response(coap_session_t* session,
 }
 
 // Multicast support implementation for CoAP server
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::is_valid_multicast_address(const std::string& address) -> bool {
+auto coap_server<Types, NodeId>::is_valid_multicast_address(const std::string& address) -> bool {
     // Validate IPv4 multicast address (224.0.0.0 to 239.255.255.255)
     if (address.empty()) {
         return false;
@@ -8924,11 +8944,11 @@ auto coap_server<Types>::is_valid_multicast_address(const std::string& address) 
     return false;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::handle_multicast_message(const std::vector<std::byte>& message_data,
-                                                  const std::string& resource_path,
-                                                  const std::string& sender_address) -> void {
+auto coap_server<Types, NodeId>::handle_multicast_message(
+    const std::vector<std::byte>& message_data, const std::string& resource_path,
+    const std::string& sender_address) -> void {
     // Handle incoming multicast message
     _logger.debug("Handling multicast message",
                   {{"resource_path", resource_path},
@@ -8982,19 +9002,19 @@ auto coap_server<Types>::handle_multicast_message(const std::vector<std::byte>& 
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::handle_multicast_request_vote(const std::vector<std::byte>& message_data,
-                                                       const std::string& sender_address) -> void {
+auto coap_server<Types, NodeId>::handle_multicast_request_vote(
+    const std::vector<std::byte>& message_data, const std::string& sender_address) -> void {
     // Handle multicast RequestVote message
     try {
         // Deserialize the request
-        auto request = _serializer.template deserialize<request_vote_request<>>(message_data);
+        auto request = _serializer.template deserialize<request_vote_request<NodeId>>(message_data);
 
         _logger.debug("Processing multicast RequestVote",
                       {{"sender_address", sender_address},
                        {"term", std::to_string(request.term())},
-                       {"candidate_id", std::to_string(request.candidate_id())},
+                       {"candidate_id", node_id_traits<NodeId>::to_text(request.candidate_id())},
                        // The multi-Raft group selector rides inside the
                        // serializer's framing, not this transport's own — CoAP
                        // hands the whole message to Types::serializer_type. It
@@ -9021,20 +9041,20 @@ auto coap_server<Types>::handle_multicast_request_vote(const std::vector<std::by
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::handle_multicast_append_entries(const std::vector<std::byte>& message_data,
-                                                         const std::string& sender_address)
-    -> void {
+auto coap_server<Types, NodeId>::handle_multicast_append_entries(
+    const std::vector<std::byte>& message_data, const std::string& sender_address) -> void {
     // Handle multicast AppendEntries message
     try {
         // Deserialize the request
-        auto request = _serializer.template deserialize<append_entries_request<>>(message_data);
+        auto request =
+            _serializer.template deserialize<append_entries_request<NodeId>>(message_data);
 
         _logger.debug("Processing multicast AppendEntries",
                       {{"sender_address", sender_address},
                        {"term", std::to_string(request.term())},
-                       {"leader_id", std::to_string(request.leader_id())},
+                       {"leader_id", node_id_traits<NodeId>::to_text(request.leader_id())},
                        {"entries_count", std::to_string(request.entries().size())}});
 
         // Call the registered handler
@@ -9057,19 +9077,20 @@ auto coap_server<Types>::handle_multicast_append_entries(const std::vector<std::
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::handle_multicast_install_snapshot(
+auto coap_server<Types, NodeId>::handle_multicast_install_snapshot(
     const std::vector<std::byte>& message_data, const std::string& sender_address) -> void {
     // Handle multicast InstallSnapshot message
     try {
         // Deserialize the request
-        auto request = _serializer.template deserialize<install_snapshot_request<>>(message_data);
+        auto request =
+            _serializer.template deserialize<install_snapshot_request<NodeId>>(message_data);
 
         _logger.debug("Processing multicast InstallSnapshot",
                       {{"sender_address", sender_address},
                        {"term", std::to_string(request.term())},
-                       {"leader_id", std::to_string(request.leader_id())},
+                       {"leader_id", node_id_traits<NodeId>::to_text(request.leader_id())},
                        {"snapshot_size", std::to_string(request.data().size())}});
 
         // Call the registered handler
@@ -9091,11 +9112,10 @@ auto coap_server<Types>::handle_multicast_install_snapshot(
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_server<Types>::send_multicast_response(const std::string& target_address,
-                                                 const std::vector<std::byte>& response_data)
-    -> void {
+auto coap_server<Types, NodeId>::send_multicast_response(
+    const std::string& target_address, const std::vector<std::byte>& response_data) -> void {
     // Send unicast response to multicast sender
     _logger.debug("Sending multicast response",
                   {{"target_address", target_address},
@@ -9217,12 +9237,13 @@ auto coap_server<Types>::send_multicast_response(const std::string& target_addre
 
 // Enhanced libcoap integration methods for coap_client
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_address_t* dst_addr,
-                                               coap_uri_t* uri) -> coap_session_t* {
+auto coap_client<Types, NodeId>::get_or_create_session(const NodeId& target,
+                                                       coap_address_t* dst_addr, coap_uri_t* uri)
+    -> coap_session_t* {
 #ifdef LIBCOAP_AVAILABLE
-    std::string endpoint_key = std::to_string(target);
+    std::string endpoint_key = node_id_traits<NodeId>::to_text(target);
 
     // One session per peer, held by the pool and lent to each caller.
     //
@@ -9253,7 +9274,8 @@ auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_addres
         auto* session = pool.back();
         if (coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
             _logger.debug("Reusing existing session",
-                          {{"target", std::to_string(target)}, {"session_state", "established"}});
+                          {{"target", node_id_traits<NodeId>::to_text(target)},
+                           {"session_state", "established"}});
             return coap_session_reference(session);
         }
         pool.pop_back();
@@ -9272,9 +9294,9 @@ auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_addres
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::new_dtls_client_session(const coap_address_t* dst_addr)
+auto coap_client<Types, NodeId>::new_dtls_client_session(const coap_address_t* dst_addr)
     -> coap_session_t* {
 #ifdef LIBCOAP_AVAILABLE
     // libcoap keeps a *client's* PSK on the session, not the context.
@@ -9330,9 +9352,9 @@ auto coap_client<Types>::new_dtls_client_session(const coap_address_t* dst_addr)
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t* uri)
+auto coap_client<Types, NodeId>::create_new_session(coap_address_t* dst_addr, coap_uri_t* uri)
     -> coap_session_t* {
 #ifdef LIBCOAP_AVAILABLE
     coap_session_t* session = nullptr;
@@ -9404,9 +9426,10 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::vector<std::byte> {
+auto coap_client<Types, NodeId>::get_cached_or_serialize(const auto& request)
+    -> std::vector<std::byte> {
     if (!_config.enable_serialization_caching) {
         return _serializer.serialize(request);
     }
@@ -9460,10 +9483,11 @@ auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::ve
     return serialized_data;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::cache_serialization_result(std::size_t hash,
-                                                    const std::vector<std::byte>& data) -> void {
+auto coap_client<Types, NodeId>::cache_serialization_result(std::size_t hash,
+                                                            const std::vector<std::byte>& data)
+    -> void {
     if (!_config.enable_serialization_caching) {
         return;
     }
@@ -9501,9 +9525,9 @@ auto coap_client<Types>::cache_serialization_result(std::size_t hash,
 
 // Enhanced response handling helper methods
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::validate_response_pdu(coap_pdu_t* response) -> bool {
+auto coap_client<Types, NodeId>::validate_response_pdu(coap_pdu_t* response) -> bool {
 #ifndef LIBCOAP_AVAILABLE
     return response != nullptr;
 #else
@@ -9551,9 +9575,9 @@ auto coap_client<Types>::validate_response_pdu(coap_pdu_t* response) -> bool {
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::map_coap_error_code(coap_pdu_code_t code) -> coap_error_info {
+auto coap_client<Types, NodeId>::map_coap_error_code(coap_pdu_code_t code) -> coap_error_info {
     coap_error_info info;
     info.code = code;
 
@@ -9672,10 +9696,10 @@ auto coap_client<Types>::map_coap_error_code(coap_pdu_code_t code) -> coap_error
     return info;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::should_retry_on_error(const coap_error_info& error_info,
-                                               std::size_t attempt_count) -> bool {
+auto coap_client<Types, NodeId>::should_retry_on_error(const coap_error_info& error_info,
+                                                       std::size_t attempt_count) -> bool {
     // Don't retry if error is not retryable
     if (!error_info.is_retryable) {
         return false;
@@ -9707,9 +9731,9 @@ auto coap_client<Types>::should_retry_on_error(const coap_error_info& error_info
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::handle_response_timeout(const std::string& token) -> void {
+auto coap_client<Types, NodeId>::handle_response_timeout(const std::string& token) -> void {
     std::lock_guard lock(_mutex);
 
     auto it = _pending_requests.find(token);
@@ -9761,10 +9785,10 @@ auto coap_client<Types>::handle_response_timeout(const std::string& token) -> vo
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::correlate_response_with_request(const std::string& token,
-                                                         coap_pdu_t* response) -> bool {
+auto coap_client<Types, NodeId>::correlate_response_with_request(const std::string& token,
+                                                                 coap_pdu_t* response) -> bool {
     std::lock_guard lock(_mutex);
 
     auto it = _pending_requests.find(token);
@@ -9845,6 +9869,20 @@ static_assert(kythira::network_client_with_log_fetch<coap_client<coap_detail::co
               "coap_client must satisfy network_client_with_log_fetch");
 static_assert(kythira::network_server_with_log_fetch<coap_server<coap_detail::conformance_types>>,
               "coap_server must satisfy network_server_with_log_fetch");
+
+// The same surface at a textual node id type (.kiro/specs/cloud-composite-node-ids/,
+// Requirement 9.2): a node<Types> named by std::string or composite ids keeps
+// PreVote, TimeoutNow and catch-up over CoAP.
+using coap_text_client = coap_client<coap_detail::conformance_types, std::string>;
+using coap_text_server = coap_server<coap_detail::conformance_types, std::string>;
+static_assert(kythira::network_client<coap_text_client, std::string>);
+static_assert(kythira::network_server<coap_text_server, std::string>);
+static_assert(kythira::network_client_with_pre_vote<coap_text_client, std::string>);
+static_assert(kythira::network_server_with_pre_vote<coap_text_server, std::string>);
+static_assert(kythira::network_client_with_timeout_now<coap_text_client, std::string>);
+static_assert(kythira::network_server_with_timeout_now<coap_text_server, std::string>);
+static_assert(kythira::network_client_with_log_fetch<coap_text_client, std::string>);
+static_assert(kythira::network_server_with_log_fetch<coap_text_server, std::string>);
 
 }  // namespace kythira
 

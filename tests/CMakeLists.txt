@@ -1768,6 +1768,18 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
             LABELS "coap;coap-security;integration;libcoap")
     endif()
 
+    # Composite node ids over CoAP (cloud-composite-node-ids task 6.2):
+    # std::string and aws_ec2_node_id clients/servers for every RPC kind, and
+    # DTLS-PKI peers bound to their ids via coap_peer_identity_validator. The
+    # validator uses ca_http_helpers.hpp's TLS-only SAN helpers, so it also
+    # needs KYTHIRA_HTTP_TLS (CPPHTTPLIB_OPENSSL_SUPPORT).
+    if(LIBCOAP_FOUND AND TARGET OpenSSL::SSL AND KYTHIRA_HTTP_TLS)
+        add_network_test(coap_textual_node_id_test coap_textual_node_id_test.cpp)
+        target_link_libraries(coap_textual_node_id_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        set_tests_properties(coap_textual_node_id_test PROPERTIES TIMEOUT 300
+            LABELS "coap;coap-security;integration;libcoap;composite_node_id")
+    endif()
+
     # Real-libcoap smoke coverage for the remaining providers' configure_session()/
     # create_client_session()/validation-callback bodies (no_auth, dtls_psk,
     # dtls_pki, plus bonus dtls_rpk/oscore calls) that coap_dtls_rpk_test.cpp and

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <raft/types.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/future_default.hpp>
 #include <raft/coap_block_option.hpp>
 #include <raft/network.hpp>
@@ -307,10 +308,22 @@ private:
 };
 
 // CoAP client class declaration
-template<typename Types>
+//
+// `NodeId` is the type peers are named by and the requests carry
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2): the endpoint map,
+// the peer capability cache and every `send_*` target use it. It defaults to
+// `std::uint64_t`, so `coap_client<Types>` is the numeric client every
+// existing caller uses. Node ids never travel in a Uri-Path or Uri-Query:
+// the resource is fixed per RPC ("/raft/request_vote", ...) and the ids ride
+// in the serialized body, which `Types::serializer_type` already encodes for
+// any id type. Peer authentication is not keyed by node id either; see
+// raft/coap_peer_identity.hpp for binding DTLS certificates to node ids,
+// and for why PSK identities and OSCORE ids stay operator-provisioned.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::transport_types<Types>
 class coap_client {
 public:
+    using node_id_type = NodeId;
     template<typename T> using future_template = typename Types::template future_template<T>;
     // Not required by kythira::transport_types (avoids a breaking change for
     // existing Types implementations that don't need it) - only needed by
@@ -325,22 +338,24 @@ public:
     using logger_type = typename Types::logger_type;
 
     // Constructor and destructor
-    coap_client(std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint_map,
+    coap_client(std::unordered_map<NodeId, std::string> node_id_to_endpoint_map,
                 kythira::coap_client_config config, metrics_type metrics);
 
     ~coap_client();
 
     // RPC methods
-    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+    auto send_request_vote(const NodeId& target,
+                           const kythira::request_vote_request<NodeId>& request,
                            std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::request_vote_response<>>;
 
-    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+    auto send_append_entries(const NodeId& target,
+                             const kythira::append_entries_request<NodeId>& request,
                              std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::append_entries_response<>>;
 
-    auto send_install_snapshot(std::uint64_t target,
-                               const kythira::install_snapshot_request<>& request,
+    auto send_install_snapshot(const NodeId& target,
+                               const kythira::install_snapshot_request<NodeId>& request,
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
         -> future_template<kythira::install_snapshot_response<>>;
 
@@ -349,7 +364,7 @@ public:
     /// confirmable, whatever use_confirmable_messages says: one rare message
     /// whose loss costs a whole election timeout is the case CoAP's own
     /// retransmission is worth paying for.
-    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+    auto send_timeout_now(const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
                           std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::timeout_now_response<>>;
 
@@ -357,18 +372,18 @@ public:
     /// network_client_with_log_fetch. A follower asks a peer for a range of
     /// committed entries; the response can be large, so it travels
     /// block-wise when enable_block_transfer is set.
-    auto send_fetch_log_entries(std::uint64_t target,
-                                const kythira::fetch_log_entries_request<>& request,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const kythira::fetch_log_entries_request<NodeId>& request,
                                 std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
-        -> future_template<kythira::fetch_log_entries_response<>>;
+        -> future_template<kythira::fetch_log_entries_response<NodeId>>;
     /// PreVote (dissertation §9.6): POST /raft/request_pre_vote, satisfying
     /// network_client_with_pre_vote. Sent with RequestVote's reliability, not
     /// TimeoutNow's forced CON: start_pre_vote() retries a lost one, and it
     /// goes out as often as RequestVote does. A peer without the resource
     /// (4.04) or without a handler (5.01) fails the future with
     /// rpc_not_implemented_exception.
-    auto send_request_pre_vote(std::uint64_t target,
-                               const kythira::request_pre_vote_request<>& request,
+    auto send_request_pre_vote(const NodeId& target,
+                               const kythira::request_pre_vote_request<NodeId>& request,
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::request_pre_vote_response<>>;
 
@@ -465,8 +480,8 @@ private:
     /// Last media type each peer answered in, so repeat calls converge on a
     /// format that worked instead of renegotiating from the default every
     /// time (Requirement 6.3).
-    peer_capability_cache<std::uint64_t> _capability_cache;
-    std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
+    peer_capability_cache<NodeId> _capability_cache;
+    std::unordered_map<NodeId, std::string> _node_id_to_endpoint;
     coap_context_t* _coap_context;
     std::unique_ptr<coap_security_provider> _security_provider;
     // OpenSSL cipher list built from pki_credentials::cipher_suites; empty
@@ -590,12 +605,12 @@ private:
     /// @param reliability Whether this request must travel as CON even when
     ///        the configuration says NON (see coap_message_reliability).
     template<typename Request, typename Response>
-    auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
+    auto send_rpc(const NodeId& target, const std::string& resource_path, const Request& request,
                   std::chrono::milliseconds timeout,
                   coap_message_reliability reliability = coap_message_reliability::per_config,
                   std::vector<std::string> attempted = {}) -> future_template<Response>;
 
-    auto get_endpoint_uri(std::uint64_t node_id) const -> std::string;
+    auto get_endpoint_uri(const NodeId& node_id) const -> std::string;
     auto generate_message_token() -> std::string;
     auto generate_message_id() -> std::uint16_t;
     auto setup_dtls_context() -> void;
@@ -626,7 +641,7 @@ private:
 
     // Session management methods
     auto get_or_create_session(const std::string& endpoint) -> coap_session_t*;
-    auto get_or_create_session(std::uint64_t target, coap_address_t* dst_addr, coap_uri_t* uri)
+    auto get_or_create_session(const NodeId& target, coap_address_t* dst_addr, coap_uri_t* uri)
         -> coap_session_t*;
     auto create_new_session(coap_address_t* dst_addr, coap_uri_t* uri) -> coap_session_t*;
     // A DTLS client session carrying this client's credentials. Caller holds
@@ -733,10 +748,15 @@ private:
 };
 
 // CoAP server class declaration
-template<typename Types>
+//
+// `NodeId` is the type the requests' node ids are decoded into
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2); it defaults to
+// `std::uint64_t`, so `coap_server<Types>` is the numeric server.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::transport_types<Types>
 class coap_server {
 public:
+    using node_id_type = NodeId;
     template<typename T> using future_template = typename Types::template future_template<T>;
     // Not required by kythira::transport_types (avoids a breaking change for
     // existing Types implementations that don't need it) - only needed by
@@ -759,34 +779,35 @@ public:
     ~coap_server();
 
     // Handler registration
-    auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
-            handler) -> void;
+    auto register_request_vote_handler(std::function<kythira::request_vote_response<>(
+                                           const kythira::request_vote_request<NodeId>&)>
+                                           handler) -> void;
 
-    auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
-            handler) -> void;
+    auto register_append_entries_handler(std::function<kythira::append_entries_response<>(
+                                             const kythira::append_entries_request<NodeId>&)>
+                                             handler) -> void;
 
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
-                                               const kythira::install_snapshot_request<>&)>
+                                               const kythira::install_snapshot_request<NodeId>&)>
                                                handler) -> void;
 
     /// Serves POST /raft/timeout_now, satisfying
     /// network_server_with_timeout_now.
     auto register_timeout_now_handler(
-        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
             handler) -> void;
 
     /// Serves POST /raft/fetch_log_entries, satisfying
     /// network_server_with_log_fetch.
-    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
-                                                const kythira::fetch_log_entries_request<>&)>
-                                                handler) -> void;
+    auto register_fetch_log_entries_handler(
+        std::function<kythira::fetch_log_entries_response<NodeId>(
+            const kythira::fetch_log_entries_request<NodeId>&)>
+            handler) -> void;
     /// Serves POST /raft/request_pre_vote, satisfying
     /// network_server_with_pre_vote. Until one is registered the resource
     /// answers 5.01 Not Implemented.
     auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
-                                               const kythira::request_pre_vote_request<>&)>
+                                               const kythira::request_pre_vote_request<NodeId>&)>
                                                handler) -> void;
 
     // Server lifecycle
@@ -921,18 +942,21 @@ private:
     std::string _is_block_size_attr_value;
 
     // RPC handlers
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
         _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+    std::function<kythira::append_entries_response<>(
+        const kythira::append_entries_request<NodeId>&)>
         _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+    std::function<kythira::install_snapshot_response<>(
+        const kythira::install_snapshot_request<NodeId>&)>
         _install_snapshot_handler;
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
         _timeout_now_handler;
-    std::function<kythira::fetch_log_entries_response<>(
-        const kythira::fetch_log_entries_request<>&)>
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         _fetch_log_entries_handler;
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+    std::function<kythira::request_pre_vote_response<>(
+        const kythira::request_pre_vote_request<NodeId>&)>
         _request_pre_vote_handler;
 
     // Synchronization
@@ -1019,15 +1043,18 @@ private:
 // Wraps coap_client::discover_raft_nodes() as a peer_discovery implementation.
 // NodeId and Address are both std::string; the discovered address is used as
 // the node ID (convention: each CoAP Raft node uses its address as its ID).
-// Types must satisfy kythira::transport_types.
-template<typename Types>
+// Types must satisfy kythira::transport_types. `ClientNodeId` is the wrapped
+// client's node id type, so a client built for std::string ids -- the ids
+// this adaptor reports -- can be wrapped as well as a numeric one
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.6).
+template<typename Types, typename ClientNodeId = std::uint64_t>
 requires kythira::transport_types<Types>
 class coap_multicast_peer_discovery {
 public:
     using node_id_type = std::string;
     using address_type = std::string;
 
-    explicit coap_multicast_peer_discovery(coap_client<Types>& client,
+    explicit coap_multicast_peer_discovery(coap_client<Types, ClientNodeId>& client,
                                            std::string multicast_address = "224.0.1.187",
                                            uint16_t multicast_port = 5683)
         : _client{client},
@@ -1054,7 +1081,7 @@ public:
     }
 
 private:
-    coap_client<Types>& _client;
+    coap_client<Types, ClientNodeId>& _client;
     std::string _multicast_address;
     uint16_t _multicast_port;
 };

@@ -600,38 +600,40 @@ public:
 
     // Generic deserialize method that dispatches to specific deserialize methods
     template<typename T> [[nodiscard]] auto deserialize(const Data& data) const -> T {
-        if constexpr (std::same_as<T, request_vote_request<>>) {
-            return deserialize_request_vote_request(data);
+        // The node id type T carries, so textual ids decode too.
+        using N = rpc_message_node_id_t<T>;
+        if constexpr (std::same_as<T, request_vote_request<N>>) {
+            return deserialize_request_vote_request<N>(data);
         } else if constexpr (std::same_as<T, request_vote_response<>>) {
             return deserialize_request_vote_response(data);
-        } else if constexpr (std::same_as<T, request_pre_vote_request<>>) {
-            return deserialize_request_pre_vote_request(data);
+        } else if constexpr (std::same_as<T, request_pre_vote_request<N>>) {
+            return deserialize_request_pre_vote_request<N>(data);
         } else if constexpr (std::same_as<T, request_pre_vote_response<>>) {
             return deserialize_request_pre_vote_response(data);
-        } else if constexpr (std::same_as<T, timeout_now_request<>>) {
-            return deserialize_timeout_now_request(data);
+        } else if constexpr (std::same_as<T, timeout_now_request<N>>) {
+            return deserialize_timeout_now_request<N>(data);
         } else if constexpr (std::same_as<T, timeout_now_response<>>) {
             return deserialize_timeout_now_response(data);
-        } else if constexpr (std::same_as<T, append_entries_request<>>) {
-            return deserialize_append_entries_request(data);
+        } else if constexpr (std::same_as<T, append_entries_request<N>>) {
+            return deserialize_append_entries_request<N>(data);
         } else if constexpr (std::same_as<T, append_entries_response<>>) {
             return deserialize_append_entries_response(data);
-        } else if constexpr (std::same_as<T, install_snapshot_request<>>) {
-            return deserialize_install_snapshot_request(data);
+        } else if constexpr (std::same_as<T, install_snapshot_request<N>>) {
+            return deserialize_install_snapshot_request<N>(data);
         } else if constexpr (std::same_as<T, install_snapshot_response<>>) {
             return deserialize_install_snapshot_response(data);
-        } else if constexpr (std::same_as<T, cluster_join_request<>>) {
-            return deserialize_cluster_join_request(data);
-        } else if constexpr (std::same_as<T, cluster_join_response<>>) {
-            return deserialize_cluster_join_response(data);
-        } else if constexpr (std::same_as<T, cluster_leave_request<>>) {
-            return deserialize_cluster_leave_request(data);
-        } else if constexpr (std::same_as<T, cluster_leave_response<>>) {
-            return deserialize_cluster_leave_response(data);
-        } else if constexpr (std::same_as<T, fetch_log_entries_request<>>) {
-            return deserialize_fetch_log_entries_request(data);
-        } else if constexpr (std::same_as<T, fetch_log_entries_response<>>) {
-            return deserialize_fetch_log_entries_response(data);
+        } else if constexpr (std::same_as<T, cluster_join_request<N>>) {
+            return deserialize_cluster_join_request<N>(data);
+        } else if constexpr (std::same_as<T, cluster_join_response<N>>) {
+            return deserialize_cluster_join_response<N>(data);
+        } else if constexpr (std::same_as<T, cluster_leave_request<N>>) {
+            return deserialize_cluster_leave_request<N>(data);
+        } else if constexpr (std::same_as<T, cluster_leave_response<N>>) {
+            return deserialize_cluster_leave_response<N>(data);
+        } else if constexpr (std::same_as<T, fetch_log_entries_request<N>>) {
+            return deserialize_fetch_log_entries_request<N>(data);
+        } else if constexpr (std::same_as<T, fetch_log_entries_response<N>>) {
+            return deserialize_fetch_log_entries_response<N>(data);
         } else {
             static_assert(std::is_same_v<T, void>, "Unsupported type for deserialization");
         }
