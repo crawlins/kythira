@@ -12,6 +12,8 @@
 /// merely to hold a `certificate_authority`. See `certificate_authority_impl.hpp`
 /// for the implementation.
 
+#include <raft/certificate_serial.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -75,7 +77,10 @@ struct pem_material {
     std::string private_key_pem;  ///< Empty for `sign_csr()` results — the CA never sees the key.
     std::string chain_pem;        ///< Leaf first, then each issuer up to and including the
                                   ///< root, PEM-concatenated. Empty only for the root itself.
-    std::uint64_t serial{0};      ///< Exposed so `revoke()` can match without reparsing PEM.
+    /// Exposed so `revoke()` can match without reparsing PEM. Up to 20 octets
+    /// for a cloud provider's certificate; this CA's own serials fit 64 bits.
+    /// Zero when a provider could not read it.
+    certificate_serial serial;
 };
 
 /// Options controlling `certificate_authority::sign_csr()`: the same SAN/keyUsage/
@@ -137,7 +142,7 @@ public:
     /// `ca_cluster_node` replaying a replicated ledger into a signer rebuilt
     /// via `from_existing()` after a leader failover, which has no local
     /// record of certificates issued by a different instance). Idempotent.
-    auto mark_revoked_externally(std::uint64_t serial,
+    auto mark_revoked_externally(const certificate_serial& serial,
                                  std::chrono::system_clock::time_point revoked_at) -> void;
 
     /// Returns a PEM-encoded, CA-signed CRL listing every revoked serial and its

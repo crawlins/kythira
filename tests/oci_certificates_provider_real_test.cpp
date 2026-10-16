@@ -209,7 +209,9 @@ BOOST_AUTO_TEST_CASE(sign_csr_issues_from_the_callers_csr_and_returns_no_private
 /// — the search simply finds nothing. Cheap: it issues no certificate.
 BOOST_AUTO_TEST_CASE(revoking_an_unknown_serial_is_idempotent,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(600))) {
-    BOOST_CHECK_NO_THROW(std::move(provider->revoke("999999999999")).get());
+    BOOST_CHECK_NO_THROW(
+        std::move(provider->revoke(raft::testing::certificate_serial::from_u64(999999999999)))
+            .get());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

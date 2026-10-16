@@ -80,6 +80,11 @@ BOOST_AUTO_TEST_CASE(sign_csr_via_http01_chains_to_test_server_root,
     BOOST_TEST(!material.certificate_pem.empty());
     BOOST_TEST(material.private_key_pem.empty());  // ACME never sees the CSR's key
     BOOST_TEST(!material.chain_pem.empty());
+    // ACME returns no serial of its own; the provider reads the leaf's
+    // (cloud-composite-node-ids Requirement 12.5).
+    BOOST_TEST(!material.serial.is_zero());
+    BOOST_TEST(
+        (raft::testing::serial_from_certificate_pem(material.certificate_pem) == material.serial));
 
     auto root_pem = provider.root_certificate_pem().get();
     BOOST_TEST(root_pem == server.root_certificate_pem());

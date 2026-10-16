@@ -11,6 +11,8 @@
 ///        client-facing HTTP API as ca_service --serve").
 
 #include <raft/certificate_authority.hpp>
+#include <raft/certificate_serial.hpp>
+#include <raft/certificate_serial_x509.hpp>
 #include <raft/composite_node_id.hpp>
 
 #include <boost/json.hpp>
@@ -31,6 +33,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -59,7 +62,101 @@ inline auto pem_material_to_json(const pem_material& mat) -> boost::json::object
     boost::json::object obj;
     obj["certificate_pem"] = mat.certificate_pem;
     obj["chain_pem"] = mat.chain_pem;
+    // Named like the revoke request field that takes the same encoding.
+    // Left out when the provider could not read it, rather than naming
+    // serial 00.
+    if (!mat.serial.is_zero()) {
+        obj["serial_hex"] = mat.serial.to_hex();
+    }
     return obj;
+}
+
+/// How a /v1/certificates/revoke endpoint has always read "serial".
+enum class legacy_revoke_serial {
+    /// A non-negative JSON integer, or a string of decimal digits that fits
+    /// 64 bits: the in-house CA's endpoints (`ca_service --provider local`,
+    /// `ca_cluster_node`).
+    decimal,
+    /// A hex string: `ca_service --provider aws-acm-pca`, which passed it to
+    /// ACM Private CA verbatim.
+    hex,
+};
+
+/// Parses the serial of a /v1/certificates/revoke body
+/// (`.kiro/specs/cloud-composite-node-ids/` Requirement 12.5).
+///
+/// Exactly one of two fields must be present:
+/// - "serial" keeps the meaning it has always had on that endpoint
+///   (`legacy`). Decimal is strict: digits only, no sign, whitespace or
+///   overflow, so a hex string such as "0a1b" is refused rather than read as
+///   some other certificate's serial.
+/// - "serial_hex" is any serial of up to 20 octets, in
+///   `certificate_serial::parse`'s forms ("0a1b2c", "0A:1B:2C", "0a 1b 2c").
+///   It is how a cloud CA's wide serial is named, and the field issuance and
+///   renewal responses report.
+///
+/// Throws std::invalid_argument (a 400) when both or neither are present, or
+/// when the value present is malformed.
+[[nodiscard]] inline auto parse_revoke_serial(
+    const boost::json::object& body, legacy_revoke_serial legacy = legacy_revoke_serial::decimal)
+    -> certificate_serial {
+    const auto* serial = body.if_contains("serial");
+    const auto* serial_hex = body.if_contains("serial_hex");
+    if (serial != nullptr && serial_hex != nullptr) {
+        throw std::invalid_argument("give one of serial and serial_hex, not both");
+    }
+    if (serial_hex != nullptr) {
+        const auto* text = serial_hex->if_string();
+        auto parsed = text == nullptr
+                          ? std::nullopt
+                          : certificate_serial::parse(std::string_view(text->data(), text->size()));
+        if (!parsed.has_value()) {
+            throw std::invalid_argument(
+                "serial_hex must be hex of at most 20 octets, e.g. \"0a1b2c\" or \"0a:1b:2c\"");
+        }
+        return *parsed;
+    }
+    if (serial == nullptr) {
+        throw std::invalid_argument("serial or serial_hex is required");
+    }
+    if (legacy == legacy_revoke_serial::hex) {
+        const auto* text = serial->if_string();
+        auto parsed = text == nullptr
+                          ? std::nullopt
+                          : certificate_serial::parse(std::string_view(text->data(), text->size()));
+        if (!parsed.has_value()) {
+            throw std::invalid_argument("serial is required as a hex string");
+        }
+        return *parsed;
+    }
+    if (const auto* u = serial->if_uint64(); u != nullptr) {
+        return certificate_serial::from_u64(*u);
+    }
+    if (const auto* i = serial->if_int64(); i != nullptr && *i >= 0) {
+        return certificate_serial::from_u64(static_cast<std::uint64_t>(*i));
+    }
+    if (const auto* text = serial->if_string(); text != nullptr && !text->empty()) {
+        std::uint64_t value = 0;
+        bool ok = true;
+        for (char c : *text) {
+            if (c < '0' || c > '9') {
+                ok = false;
+                break;
+            }
+            const auto digit = static_cast<std::uint64_t>(c - '0');
+            if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10) {
+                ok = false;
+                break;
+            }
+            value = value * 10 + digit;
+        }
+        if (ok) {
+            return certificate_serial::from_u64(value);
+        }
+    }
+    throw std::invalid_argument(
+        "serial must be a non-negative integer or a decimal string that fits 64 bits; "
+        "send a hex serial as serial_hex");
 }
 
 // Upper bound on a caller-requested leaf lifetime. Requests used to be passed

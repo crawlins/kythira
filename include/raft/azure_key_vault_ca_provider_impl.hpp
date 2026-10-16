@@ -288,8 +288,8 @@ inline void sign_with_key_vault(X509* cert, EVP_PKEY* ca_key, KeyVaultCryptograp
 /// A CSPRNG serial, the same one `certificate_authority` issues with (see
 /// `raft::testing::detail::random_serial`). This provider keeps no record of
 /// what it issued, so uniqueness rests on the 64 random bits alone.
-[[nodiscard]] inline auto next_serial() -> std::uint64_t {
-    return raft::testing::detail::random_serial();
+[[nodiscard]] inline auto next_serial() -> raft::testing::certificate_serial {
+    return raft::testing::certificate_serial::from_u64(raft::testing::detail::random_serial());
 }
 
 }  // namespace azure_detail

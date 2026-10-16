@@ -15,6 +15,8 @@
 #include <raft/csr_policy.hpp>
 #include <raft/tls_tcp_rpc.hpp>
 
+#include "wide_serial_test_support.hpp"
+
 #include <boost/json.hpp>
 
 #include <openssl/bio.h>
@@ -22,13 +24,20 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace raft::testing;
+
+// Optionals compared in BOOST_TEST have no operator<<.
+BOOST_TEST_DONT_PRINT_LOG_VALUE(std::optional<raft::testing::certificate_serial>)
+BOOST_TEST_DONT_PRINT_LOG_VALUE(std::optional<std::uint64_t>)
 
 namespace {
 
@@ -159,7 +168,137 @@ BOOST_AUTO_TEST_CASE(revoked_cert_is_found_in_crl, *boost::unit_test::timeout(30
     BOOST_TEST(!cert_revoked_in_crl(load(kept.certificate_pem).get(), crl));
     // Fail closed on an unusable CRL.
     BOOST_TEST(cert_revoked_in_crl(load(kept.certificate_pem).get(), "garbage"));
-    BOOST_TEST(cert_serial_u64(load(kept.certificate_pem).get()).value() == kept.serial);
+    BOOST_TEST(cert_serial_u64(load(kept.certificate_pem).get()).value() ==
+               kept.serial.to_u64().value());
+    BOOST_TEST(serial_of(load(kept.certificate_pem).get()) == kept.serial);
+}
+
+// ── Wide serials (.kiro/specs/cloud-composite-node-ids/ Requirement 12.5) ────
+
+// The renew handlers' CRL check and serial lookup work at full width: a
+// cloud CA's 20-octet serial, revoked through the ledger replay path, is
+// found in the CRL, and is read back whole rather than as "does not fit".
+BOOST_AUTO_TEST_CASE(twenty_octet_serial_is_revocable_and_found_in_crl,
+                     *boost::unit_test::timeout(30)) {
+    certificate_authority ca;
+    csr_signing_options signing;
+    signing.dns_names = {"wide.example.com"};
+    const auto wide = kythira::testing::twenty_octet_serial();
+    auto material = kythira::testing::sign_csr_with_serial(
+        ca, csr_for("wide", "wide.example.com").csr_pem, signing, wide);
+    auto cert = load(material.certificate_pem);
+
+    BOOST_TEST(serial_of(cert.get()) == wide);
+    BOOST_TEST(!cert_serial_u64(cert.get()).has_value());
+    BOOST_TEST(!cert_revoked_in_crl(cert.get(), ca.crl_pem()));
+    // The JSON a client gets back names the serial as "serial_hex", the
+    // field revoke takes for that encoding; a body built from it revokes
+    // this certificate.
+    auto response = pem_material_to_json(material);
+    BOOST_TEST(!response.contains("serial"));
+    BOOST_TEST(response.at("serial_hex").as_string() == wide.to_hex());
+    boost::json::object body;
+    body["serial_hex"] = response.at("serial_hex");
+    const auto parsed = parse_revoke_serial(body);
+    BOOST_TEST(parsed == wide);
+    ca.mark_revoked_externally(parsed, std::chrono::system_clock::now());
+    BOOST_TEST(cert_revoked_in_crl(cert.get(), ca.crl_pem()));
+}
+
+namespace {
+
+auto revoke_body(std::string_view json) -> boost::json::object {
+    return boost::json::parse(json).as_object();
+}
+
+}  // namespace
+
+// "serial" keeps exactly the meaning it had before serial_hex existed: a
+// non-negative integer, or a string of decimal digits that fits 64 bits.
+BOOST_AUTO_TEST_CASE(revoke_serial_keeps_its_decimal_meaning, *boost::unit_test::timeout(30)) {
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial":42})")) ==
+               certificate_serial::from_u64(42));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial":"42"})")) ==
+               certificate_serial::from_u64(42));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial":"0042"})")) ==
+               certificate_serial::from_u64(42));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial":18446744073709551615})")) ==
+               certificate_serial::from_u64(std::numeric_limits<std::uint64_t>::max()));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial":"18446744073709551615"})")) ==
+               certificate_serial::from_u64(std::numeric_limits<std::uint64_t>::max()));
+
+    // Hex in "serial" is refused, never reinterpreted: "0a1b" is an error,
+    // not some other certificate's serial. So are signs, whitespace,
+    // overflow and anything that is not an integer.
+    for (const char* bad :
+         {R"({"serial":"0a1b"})", R"({"serial":"2a"})", R"({"serial":"0A:1B"})", R"({"serial":""})",
+          R"({"serial":"-1"})", R"({"serial":"+1"})", R"({"serial":" 1"})", R"({"serial":"1 "})",
+          R"({"serial":"18446744073709551616"})", R"({"serial":-1})", R"({"serial":1.5})",
+          R"({"serial":true})", R"({"serial":null})", R"({"serial":[]})"}) {
+        BOOST_CHECK_THROW((void)parse_revoke_serial(revoke_body(bad)), std::invalid_argument);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(revoke_serial_hex_takes_any_width, *boost::unit_test::timeout(30)) {
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial_hex":"0a1b"})")) ==
+               certificate_serial::from_u64(0x0a1b));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial_hex":"0A:1B:2C"})")) ==
+               certificate_serial::from_u64(0x0a1b2c));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial_hex":"0a 1b 2c"})")) ==
+               certificate_serial::from_u64(0x0a1b2c));
+    boost::json::object wide;
+    wide["serial_hex"] = kythira::testing::twenty_octet_serial().to_hex();
+    BOOST_TEST(parse_revoke_serial(wide) == kythira::testing::twenty_octet_serial());
+
+    for (const char* bad :
+         {R"({"serial_hex":""})", R"({"serial_hex":"abc"})", R"({"serial_hex":"zz"})",
+          R"({"serial_hex":"0x2a"})", R"({"serial_hex":"2a:"})", R"({"serial_hex":"2a:1b 3c"})",
+          R"({"serial_hex":"ff00000000000000000000000000000000000000ff"})", R"({"serial_hex":42})",
+          R"({"serial_hex":null})"}) {
+        BOOST_CHECK_THROW((void)parse_revoke_serial(revoke_body(bad)), std::invalid_argument);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(revoke_serial_needs_exactly_one_field, *boost::unit_test::timeout(30)) {
+    BOOST_CHECK_THROW((void)parse_revoke_serial(revoke_body(R"({"serial":42,"serial_hex":"2a"})")),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW((void)parse_revoke_serial(revoke_body(R"({})")), std::invalid_argument);
+    BOOST_CHECK_THROW((void)parse_revoke_serial(revoke_body(R"({"reason":"x"})")),
+                      std::invalid_argument);
+}
+
+// ca_service's aws-acm-pca path always took "serial" as a hex string, which
+// it passed to ACM Private CA; it keeps that meaning.
+BOOST_AUTO_TEST_CASE(revoke_serial_keeps_its_hex_meaning_on_acm, *boost::unit_test::timeout(30)) {
+    constexpr auto hex = legacy_revoke_serial::hex;
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial":"0a:1b"})"), hex) ==
+               certificate_serial::from_u64(0x0a1b));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial":"42"})"), hex) ==
+               certificate_serial::from_u64(0x42));
+    BOOST_TEST(parse_revoke_serial(revoke_body(R"({"serial_hex":"42"})"), hex) ==
+               certificate_serial::from_u64(0x42));
+    for (const char* bad : {R"({"serial":42})", R"({"serial":""})", R"({"serial":"zz"})",
+                            R"({"serial":"2a","serial_hex":"2a"})", R"({})"}) {
+        BOOST_CHECK_THROW((void)parse_revoke_serial(revoke_body(bad), hex), std::invalid_argument);
+    }
+}
+
+// A peer certificate always comes from the in-house CA and so has a 64-bit
+// serial; once any peer serial is revoked, a presented certificate whose
+// serial does not fit is refused rather than waved through.
+BOOST_AUTO_TEST_CASE(rpc_trust_refuses_wide_serial_peer_once_revocations_exist,
+                     *boost::unit_test::timeout(30)) {
+    certificate_authority ca;
+    csr_signing_options signing;
+    signing.dns_names = {peer_identity_dns_name(2)};
+    auto wide = load(kythira::testing::sign_csr_with_serial(
+                         ca, csr_for("peer", peer_identity_dns_name(2)).csr_pem, signing,
+                         kythira::testing::twenty_octet_serial())
+                         .certificate_pem);
+    auto policy = kythira::ca_root_only(ca.root_certificate_pem())
+                      .binding_peer_node_ids({{peer_identity_dns_name(2), 2}});
+    BOOST_TEST(policy.accepts(wide.get()));
+    BOOST_TEST(!policy.revoking_serials({1}).accepts(wide.get()));
 }
 
 // ── Raft peer enrollment ─────────────────────────────────────────────────────
@@ -288,7 +427,7 @@ BOOST_AUTO_TEST_CASE(rpc_trust_refuses_revoked_peer_certs, *boost::unit_test::ti
     BOOST_TEST(policy.accepts(peer.get()));
     BOOST_TEST(policy.binds(peer.get(), 2));
 
-    auto revoking = policy.revoking_serials({issued.serial});
+    auto revoking = policy.revoking_serials({issued.serial.to_u64().value()});
     BOOST_TEST(!revoking.accepts(peer.get()));
     BOOST_TEST(!revoking.binds(peer.get(), 2));
     BOOST_TEST(!revoking.authenticated_node_id(peer.get()).has_value());

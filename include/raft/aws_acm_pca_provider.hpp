@@ -73,8 +73,9 @@ public:
     /// Not cached: an operator can change the configuration at any time.
     [[nodiscard]] auto revocation_configured() -> kythira::future_default<bool>;
 
-    /// Calls `RevokeCertificate` with `certificate_serial` (the hexadecimal
-    /// serial, as `openssl x509 -serial` or `-text` prints it) and `reason`,
+    /// Calls `RevokeCertificate` with `serial` (sent as colon-separated
+    /// lower-case hex, the form `openssl x509 -text` prints and the real-CA
+    /// tests measured AWS accepting) and `reason`,
     /// or `aws_acm_pca_provider_config::revocation_reason` when `reason` is
     /// empty. An unknown reason rejects with `std::invalid_argument` before any
     /// AWS call; any AWS error is surfaced to the caller rather than
@@ -82,7 +83,7 @@ public:
     /// with no CRL/OCSP configuration but publishes it nowhere, so callers
     /// that need the revocation to take effect check
     /// `revocation_configured()` first, as ca_service does.
-    [[nodiscard]] auto revoke(const std::string& certificate_serial, const std::string& reason = {})
+    [[nodiscard]] auto revoke(const certificate_serial& serial, const std::string& reason = {})
         -> kythira::future_default<void>;
 
 private:

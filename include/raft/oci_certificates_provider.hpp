@@ -30,6 +30,7 @@
 /// exactly as `aws_acm_pca_provider` treats the ACM Private CA.
 
 #include <raft/certificate_provider.hpp>
+#include <raft/certificate_serial_x509.hpp>
 #include <raft/csr_policy.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
@@ -319,12 +320,17 @@ public:
                     certificate_id + ": " + ex.what());
             }
 
+            // The certificate is authoritative; OCI's own `serialNumber`
+            // is the fallback.
+            auto serial = serial_from_certificate_pem(certificate_pem);
+            if (!serial.has_value()) {
+                serial = parse_serial(oci_certificates_detail::json_string(bundle, "serialNumber"));
+            }
             return kythira::future_factory_default::makeReadyFuture(pem_material{
                 .certificate_pem = std::move(certificate_pem),
                 .private_key_pem = {},
                 .chain_pem = std::move(chain_pem),
-                .serial =
-                    parse_serial(oci_certificates_detail::json_string(bundle, "serialNumber")),
+                .serial = serial.value_or(certificate_serial{}),
             });
         } catch (const std::invalid_argument&) {
             // A rejected request stays an invalid_argument (HTTP 400, not 502).
@@ -337,8 +343,9 @@ public:
         }
     }
 
-    /// @brief Revokes the certificate version carrying @p certificate_serial
-    ///        (Requirement 12.6).
+    /// @brief Revokes the certificate version carrying @p serial
+    ///        (Requirement 12.6). Any width up to 20 octets
+    ///        (cloud-composite-node-ids Requirement 12.5).
     ///
     /// `RevokeCertificateVersion`, not `ScheduleCertificateDeletion` — the
     /// latter deletes the certificate *resource*, which is a different operation
@@ -346,24 +353,24 @@ public:
     ///
     /// OCI addresses a version by `(certificate OCID, version number)`, and a
     /// serial is neither, so this searches: the CA's certificates, then each
-    /// one's versions, for a matching `serialNumber`. That costs API calls, and
+    /// one's versions, for a `serialNumber` equal in value (OCI spells it as
+    /// space-separated hex octets). That costs API calls, and
     /// the alternative — caching what `sign_csr` issued — would work only until
     /// the process restarted, which is precisely when a revocation is most
     /// likely to be needed.
     ///
     /// Idempotent: an unmatched serial, or a version already `REVOKED`, resolves
     /// successfully without a second revoke call.
-    [[nodiscard]] auto revoke(const std::string& certificate_serial)
-        -> kythira::future_default<void> {
+    [[nodiscard]] auto revoke(const certificate_serial& serial) -> kythira::future_default<void> {
         try {
             fiu_do_on("raft/oci/certificates/revoke",
                       throw std::runtime_error("fault: raft/oci/certificates/revoke"););
 
-            if (certificate_serial.empty()) {
-                throw std::invalid_argument("revoke: certificate_serial must be non-empty");
+            if (serial.is_zero()) {
+                throw std::invalid_argument("revoke: serial must be non-zero");
             }
 
-            const auto found = find_version_by_serial(certificate_serial);
+            const auto found = find_version_by_serial(serial);
             if (!found.has_value()) {
                 return kythira::future_factory_default::makeFuture();
             }
@@ -457,7 +464,7 @@ private:
         }
     }
 
-    [[nodiscard]] auto find_version_by_serial(const std::string& serial) const
+    [[nodiscard]] auto find_version_by_serial(const certificate_serial& serial) const
         -> std::optional<located_version> {
         const auto certificates =
             _http.request("certificatesmanagement", "GET",
@@ -480,7 +487,8 @@ private:
                 continue;
             }
             for (const auto& version : *version_items) {
-                if (oci_certificates_detail::json_string(version, "serialNumber") != serial) {
+                if (parse_serial(oci_certificates_detail::json_string(version, "serialNumber")) !=
+                    serial) {
                     continue;
                 }
                 located_version out;
@@ -519,22 +527,15 @@ private:
         return nullptr;
     }
 
-    /// OCI serials are decimal strings that may exceed 64 bits (X.509 allows 20
-    /// octets). `pem_material::serial` is a `std::uint64_t`, so anything that
-    /// does not fit comes back as 0 rather than as a truncated value that would
-    /// silently match the wrong certificate. `revoke` takes the string form for
-    /// exactly this reason.
-    [[nodiscard]] static auto parse_serial(const std::string& raw) -> std::uint64_t {
-        if (raw.empty()) {
-            return 0;
-        }
-        try {
-            std::size_t consumed = 0;
-            const auto value = std::stoull(raw, &consumed);
-            return consumed == raw.size() ? value : 0;
-        } catch (const std::exception&) {
-            return 0;
-        }
+    /// OCI documents `serialNumber` as hex octets separated by spaces
+    /// ("03 AC FC FA ..."), up to the 20 octets X.509 allows; plain or
+    /// colon-separated hex is accepted too. `std::nullopt` for anything else,
+    /// so an unreadable value never matches a serial. This used to be read as
+    /// decimal into a `std::uint64_t`, which misread OCI's own form and
+    /// returned 0 for every serial wider than 64 bits.
+    [[nodiscard]] static auto parse_serial(const std::string& raw)
+        -> std::optional<certificate_serial> {
+        return certificate_serial::parse(raw);
     }
 
     oci_certificates_provider_config _config;

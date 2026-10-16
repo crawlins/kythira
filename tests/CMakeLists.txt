@@ -4916,6 +4916,22 @@ set_tests_properties(certificate_authority_unit_test PROPERTIES
     LABELS "unit;certificate_authority;ca"
 )
 
+# certificate_serial: the up-to-20-octet serial type and its OpenSSL
+# conversions (.kiro/specs/cloud-composite-node-ids/ Requirement 12.5).
+add_executable(certificate_serial_unit_test certificate_serial_unit_test.cpp)
+target_link_libraries(certificate_serial_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+target_compile_features(certificate_serial_unit_test PRIVATE cxx_std_23)
+add_test(NAME certificate_serial_unit_test COMMAND certificate_serial_unit_test)
+set_tests_properties(certificate_serial_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;certificate_authority;ca"
+)
+
 add_executable(certificate_authority_property_test certificate_authority_property_test.cpp)
 target_link_libraries(certificate_authority_property_test PRIVATE
     certificate_authority

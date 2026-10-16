@@ -327,6 +327,13 @@ BOOST_AUTO_TEST_CASE(assembled_certificate_signature_validates) {
     auto material = std::move(provider.sign_csr(csr.csr_pem, options)).get();
     BOOST_CHECK(!material.certificate_pem.empty());
     BOOST_CHECK(material.private_key_pem.empty());
+    // The provider chooses the serial, 64 random bits like the in-house CA,
+    // and reports the one in the certificate (cloud-composite-node-ids
+    // Requirement 12.5).
+    BOOST_CHECK(!material.serial.is_zero());
+    BOOST_CHECK(material.serial.to_u64().has_value());
+    BOOST_CHECK(raft::testing::serial_from_certificate_pem(material.certificate_pem) ==
+                material.serial);
 
     BIO* bio = BIO_new_mem_buf(material.certificate_pem.data(),
                                static_cast<int>(material.certificate_pem.size()));

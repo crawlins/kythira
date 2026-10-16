@@ -44,6 +44,8 @@
 /// are therefore globally distinct, which they naturally are: the two services
 /// have different API-version prefixes.
 
+#include <raft/certificate_serial_x509.hpp>
+
 #include <httplib.h>
 
 #include <boost/json.hpp>
@@ -1129,12 +1131,23 @@ private:
                     return;
                 }
             }
+            // OCI's documented spelling: upper-case hex octets separated by
+            // spaces. The real leaf's serial when there is a leaf, so a
+            // provider can match the two; otherwise one made up from the
+            // ordinal.
+            auto serial = raft::testing::serial_from_certificate_pem(cert.leaf_pem)
+                              .value_or(raft::testing::certificate_serial::from_u64(
+                                  100000 + static_cast<std::uint64_t>(ordinal)));
+            auto serial_number = serial.to_hex(' ');
+            std::ranges::transform(serial_number, serial_number.begin(), [](unsigned char c) {
+                return static_cast<char>(std::toupper(c));
+            });
             cert.creating_polls_remaining = _certificate_creating_polls;
             cert.lifecycle_state = cert.creating_polls_remaining > 0 ? "CREATING" : "ACTIVE";
             cert.versions.push_back(certificate_version_state{
                 .version_number = 1,
                 .version_name = "v1",
-                .serial_number = std::to_string(100000 + ordinal),
+                .serial_number = std::move(serial_number),
                 .revoked = false,
             });
             const auto id = cert.id;

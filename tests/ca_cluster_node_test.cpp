@@ -751,39 +751,69 @@ BOOST_AUTO_TEST_CASE(property_17_issuance_survives_leader_failover,
     // lead (a 308). Neither says anything about the ledger, so ask whichever
     // node leads now until one answers 200 or 404. Revocation is idempotent:
     // re-revoking a serial that a cancelled-but-committed attempt already
-    // marked still answers 200.
-    boost::json::object revoke_body;
-    revoke_body["serial"] = std::to_string(serial);
-    httplib::Result revoke_res;
-    auto revoke_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    // marked still answers 200. A 400 is final too: the body was refused.
     std::optional<leader_probe_result> current_leader = new_leader;
-    while (std::chrono::steady_clock::now() < revoke_deadline) {
-        if (!current_leader) {
-            current_leader = find_leader(cluster.nodes, k_auth_token, std::chrono::seconds(30));
+    auto revoke = [&](const boost::json::object& revoke_body) -> httplib::Result {
+        httplib::Result revoke_res;
+        auto revoke_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        while (std::chrono::steady_clock::now() < revoke_deadline) {
             if (!current_leader) {
-                continue;
+                current_leader = find_leader(cluster.nodes, k_auth_token, std::chrono::seconds(30));
+                if (!current_leader) {
+                    continue;
+                }
             }
+            httplib::Client client("127.0.0.1",
+                                   cluster.nodes[current_leader->node_index]->http_port);
+            client.set_connection_timeout(5, 0);
+            client.set_read_timeout(65, 0);
+            revoke_res = client.Post("/v1/certificates/revoke", cluster.auth_headers(),
+                                     boost::json::serialize(revoke_body), "application/json");
+            if (revoke_res && (revoke_res->status == 200 || revoke_res->status == 404 ||
+                               revoke_res->status == 400)) {
+                break;
+            }
+            BOOST_TEST_MESSAGE("revoke attempt on node "
+                               << cluster.nodes[current_leader->node_index]->node_id << ": "
+                               << (revoke_res
+                                       ? std::to_string(revoke_res->status) + " " + revoke_res->body
+                                       : std::string("no response"))
+                               << "; asking the current leader again");
+            current_leader.reset();
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
-        httplib::Client client("127.0.0.1", cluster.nodes[current_leader->node_index]->http_port);
-        client.set_connection_timeout(5, 0);
-        client.set_read_timeout(65, 0);
-        revoke_res = client.Post("/v1/certificates/revoke", cluster.auth_headers(),
-                                 boost::json::serialize(revoke_body), "application/json");
-        if (revoke_res && (revoke_res->status == 200 || revoke_res->status == 404)) {
-            break;
-        }
-        BOOST_TEST_MESSAGE("revoke attempt on node "
-                           << cluster.nodes[current_leader->node_index]->node_id << ": "
-                           << (revoke_res
-                                   ? std::to_string(revoke_res->status) + " " + revoke_res->body
-                                   : std::string("no response"))
-                           << "; asking the current leader again");
-        current_leader.reset();
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    }
+        return revoke_res;
+    };
+
+    // The issuance response names the serial as "serial_hex"
+    // (cloud-composite-node-ids Requirement 12.5).
+    auto hex = raft::testing::certificate_serial::from_u64(serial).to_hex();
+    BOOST_TEST(!issued.contains("serial"));
+    BOOST_TEST(std::string(issued["serial_hex"].as_string()) == hex);
+    // "serial" as a decimal string, exactly as before.
+    auto revoke_res = revoke({{"serial", std::to_string(serial)}});
     BOOST_REQUIRE(revoke_res);
     BOOST_TEST_MESSAGE("revoke response: " << revoke_res->status << " " << revoke_res->body);
     BOOST_TEST(revoke_res->status == 200);
+
+    auto status_of = [&](const boost::json::object& revoke_body) {
+        auto res = revoke(revoke_body);
+        BOOST_REQUIRE(res);
+        BOOST_TEST_MESSAGE("revoke " << boost::json::serialize(revoke_body) << ": " << res->status
+                                     << " " << res->body);
+        return res->status;
+    };
+    // A JSON number, and serial_hex, name the same (already revoked) serial.
+    BOOST_TEST(status_of({{"serial", serial}}) == 200);
+    BOOST_TEST(status_of({{"serial_hex", hex}}) == 200);
+    // A cloud-width serial_hex the ledger never held is a clean 404.
+    BOOST_TEST(status_of({{"serial_hex", std::string(40, 'a')}}) == 404);
+    // Hex in "serial" is refused rather than reinterpreted.
+    BOOST_TEST(status_of({{"serial", "0a1b"}}) == 400);
+    // Malformed serial_hex, both fields, or neither: 400.
+    BOOST_TEST(status_of({{"serial_hex", "abc"}}) == 400);
+    BOOST_TEST(status_of({{"serial", std::to_string(serial)}, {"serial_hex", hex}}) == 400);
+    BOOST_TEST(status_of({}) == 400);
 }
 
 // Kill and restart one FOLLOWER (not the leader) pointed at the same

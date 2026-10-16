@@ -375,7 +375,13 @@ auto rpc_trust_state_of(const raft::testing::ca_state_machine& state,
              std::ranges::any_of(entry.uri_names, [](const std::string& uri) {
                  return raft::testing::is_reserved_peer_uri(uri);
              }))) {
-            out.revoked_peer_serials.insert(entry.serial);
+            // Peer certificates come from this cluster's own CA, whose
+            // serials always fit 64 bits; a wider one cannot be a peer
+            // certificate. tls_rpc_trust_policy also refuses any presented
+            // serial wider than 64 bits once this set is non-empty.
+            if (auto narrow = entry.serial.to_u64(); narrow.has_value()) {
+                out.revoked_peer_serials.insert(*narrow);
+            }
         }
     }
     return out;
@@ -1581,7 +1587,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 }
                 // A revoked certificate must not be able to renew itself into a
                 // fresh, unrevoked serial — that would make revocation a no-op.
-                auto presented_serial = raft::testing::cert_serial_u64(peer_cert);
+                auto presented_serial = raft::testing::serial_of(peer_cert);
                 bool revoked = !presented_serial.has_value();
                 for (const auto& e : state.ledger()) {
                     if (presented_serial.has_value() && e.serial == *presented_serial &&
@@ -1657,15 +1663,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 }
                 try {
                     auto body = boost::json::parse(req.body).as_object();
-                    auto* serial_val = body.if_contains("serial");
-                    if (serial_val == nullptr) {
-                        res.status = 400;
-                        res.set_content(json_error("serial is required"), "application/json");
-                        return;
-                    }
-                    std::uint64_t serial = serial_val->is_string()
-                                               ? std::stoull(std::string(serial_val->as_string()))
-                                               : serial_val->to_number<std::uint64_t>();
+                    // "serial" (decimal, as before) or "serial_hex"; a missing,
+                    // duplicated or malformed serial is invalid_argument, a 400.
+                    auto serial = raft::testing::parse_revoke_serial(body);
                     auto revoked_at = std::chrono::system_clock::now();
 
                     auto result =

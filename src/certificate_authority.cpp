@@ -58,7 +58,7 @@ auto certificate_authority::revoke(const pem_material& cert) -> void {
 }
 
 auto certificate_authority::mark_revoked_externally(
-    std::uint64_t serial, std::chrono::system_clock::time_point revoked_at) -> void {
+    const certificate_serial& serial, std::chrono::system_clock::time_point revoked_at) -> void {
     _impl->mark_revoked_externally(serial, revoked_at);
 }
 
@@ -152,9 +152,8 @@ auto write_file(const std::filesystem::path& path, const std::string& content, b
 temp_cert_files::temp_cert_files(const pem_material& material) {
     // mkdtemp: a fresh 0700 directory with an unpredictable name, so another
     // user on the host can neither pre-create it nor read what lands in it.
-    std::filesystem::path dir =
-        raft::make_private_temp_directory(std::filesystem::temp_directory_path(),
-                                          "kythira_ca_" + std::to_string(material.serial) + "_");
+    std::filesystem::path dir = raft::make_private_temp_directory(
+        std::filesystem::temp_directory_path(), "kythira_ca_" + material.serial.to_hex() + "_");
     _dir = dir.string();
 
     _cert_path = write_file(dir / "cert.pem", material.certificate_pem, /*restrict_perms=*/false);
