@@ -23,6 +23,7 @@
 /// The `raft_grpc_transport` CMake target is gated on Folly's availability
 /// accordingly.
 
+#include <raft/composite_node_id.hpp>
 #include <raft/grpc_transport.hpp>
 #include <raft/grpc_exceptions.hpp>
 #include <raft/grpc_message_conversion.hpp>
@@ -86,15 +87,22 @@ struct client_call_state {
 /// `io_context`): `Types::executor_type` — e.g. `folly::CPUThreadPoolExecutor`
 /// — is neither copyable nor movable, so it is passed by reference and every
 /// promise fulfillment is posted onto it (Requirement 8.2).
-template<typename Types>
+///
+/// `NodeId` is the type peers are named by and the requests carry
+/// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2): the target map,
+/// the channel cache and every `send_*` target use it. It defaults to
+/// `std::uint64_t`, so `grpc_client<Types>` is the numeric client every
+/// existing caller uses.
+template<typename Types, typename NodeId = std::uint64_t>
 requires grpc_transport_types<Types>
 class grpc_client {
 public:
+    using node_id_type = NodeId;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
 
-    grpc_client(std::unordered_map<std::uint64_t, std::string> node_id_to_target_map,
+    grpc_client(std::unordered_map<NodeId, std::string> node_id_to_target_map,
                 grpc_client_config config, metrics_type metrics, executor_type& executor)
         : _node_id_to_target(std::move(node_id_to_target_map)),
           _config(std::move(config)),
@@ -148,7 +156,7 @@ public:
 
     // ── network_client ──────────────────────────────────────────────────────
 
-    auto send_request_vote(std::uint64_t target, const request_vote_request<>& request,
+    auto send_request_vote(const NodeId& target, const request_vote_request<NodeId>& request,
                            std::chrono::milliseconds timeout)
         -> future_template<request_vote_response<>> {
         auto channel = get_or_create_channel(target);
@@ -156,14 +164,15 @@ public:
             std::shared_ptr<raft::v1::RaftService::Stub>(raft::v1::RaftService::NewStub(channel));
         return call_unary<raft::v1::RequestVoteRequest, raft::v1::RequestVoteResponse,
                           request_vote_response<>>(
-            "request_vote", target, to_proto(request), stub, timeout,
+            "request_vote", node_id_traits<NodeId>::to_text(target), to_proto(request), stub,
+            timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::RequestVoteRequest* req,
                    raft::v1::RequestVoteResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->RequestVote(ctx, req, resp, std::move(cb));
             });
     }
 
-    auto send_append_entries(std::uint64_t target, const append_entries_request<>& request,
+    auto send_append_entries(const NodeId& target, const append_entries_request<NodeId>& request,
                              std::chrono::milliseconds timeout)
         -> future_template<append_entries_response<>> {
         auto channel = get_or_create_channel(target);
@@ -171,14 +180,16 @@ public:
             std::shared_ptr<raft::v1::RaftService::Stub>(raft::v1::RaftService::NewStub(channel));
         return call_unary<raft::v1::AppendEntriesRequest, raft::v1::AppendEntriesResponse,
                           append_entries_response<>>(
-            "append_entries", target, to_proto(request), stub, timeout,
+            "append_entries", node_id_traits<NodeId>::to_text(target), to_proto(request), stub,
+            timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::AppendEntriesRequest* req,
                    raft::v1::AppendEntriesResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->AppendEntries(ctx, req, resp, std::move(cb));
             });
     }
 
-    auto send_install_snapshot(std::uint64_t target, const install_snapshot_request<>& request,
+    auto send_install_snapshot(const NodeId& target,
+                               const install_snapshot_request<NodeId>& request,
                                std::chrono::milliseconds timeout)
         -> future_template<install_snapshot_response<>> {
         auto channel = get_or_create_channel(target);
@@ -186,7 +197,8 @@ public:
             std::shared_ptr<raft::v1::RaftService::Stub>(raft::v1::RaftService::NewStub(channel));
         return call_unary<raft::v1::InstallSnapshotRequest, raft::v1::InstallSnapshotResponse,
                           install_snapshot_response<>>(
-            "install_snapshot", target, to_proto(request), stub, timeout,
+            "install_snapshot", node_id_traits<NodeId>::to_text(target), to_proto(request), stub,
+            timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::InstallSnapshotRequest* req,
                    raft::v1::InstallSnapshotResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->InstallSnapshot(ctx, req, resp, std::move(cb));
@@ -195,7 +207,8 @@ public:
 
     // ── network_client_with_pre_vote (Requirement 16) ─────────────────────────
 
-    auto send_request_pre_vote(std::uint64_t target, const request_pre_vote_request<>& request,
+    auto send_request_pre_vote(const NodeId& target,
+                               const request_pre_vote_request<NodeId>& request,
                                std::chrono::milliseconds timeout)
         -> future_template<request_pre_vote_response<>> {
         auto channel = get_or_create_channel(target);
@@ -203,7 +216,8 @@ public:
             raft::v1::RaftElectionExtensionService::NewStub(channel));
         return call_unary<raft::v1::RequestPreVoteRequest, raft::v1::RequestPreVoteResponse,
                           request_pre_vote_response<>>(
-            "request_pre_vote", target, to_proto(request), stub, timeout,
+            "request_pre_vote", node_id_traits<NodeId>::to_text(target), to_proto(request), stub,
+            timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::RequestPreVoteRequest* req,
                    raft::v1::RequestPreVoteResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->RequestPreVote(ctx, req, resp, std::move(cb));
@@ -218,7 +232,7 @@ public:
     // service if EITHER handler is configured, and gRPC core answers the other
     // method with UNIMPLEMENTED on its own.
 
-    auto send_timeout_now(std::uint64_t target, const timeout_now_request<>& request,
+    auto send_timeout_now(const NodeId& target, const timeout_now_request<NodeId>& request,
                           std::chrono::milliseconds timeout)
         -> future_template<timeout_now_response<>> {
         auto channel = get_or_create_channel(target);
@@ -226,7 +240,8 @@ public:
             raft::v1::RaftElectionExtensionService::NewStub(channel));
         return call_unary<raft::v1::TimeoutNowRequest, raft::v1::TimeoutNowResponse,
                           timeout_now_response<>>(
-            "timeout_now", target, to_proto(request), stub, timeout,
+            "timeout_now", node_id_traits<NodeId>::to_text(target), to_proto(request), stub,
+            timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::TimeoutNowRequest* req,
                    raft::v1::TimeoutNowResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->TimeoutNow(ctx, req, resp, std::move(cb));
@@ -238,30 +253,32 @@ public:
     // node is not yet in the address book) — routed via the address-keyed
     // channel overload (Requirement 15.3).
 
-    auto send_cluster_join_request(const std::string& addr, const cluster_join_request<>& request,
+    auto send_cluster_join_request(const std::string& addr,
+                                   const cluster_join_request<NodeId>& request,
                                    std::chrono::milliseconds timeout)
-        -> future_template<cluster_join_response<>> {
-        auto channel = get_or_create_channel(addr);
+        -> future_template<cluster_join_response<NodeId>> {
+        auto channel = get_or_create_address_channel(addr);
         auto stub = std::shared_ptr<raft::v1::RaftBootstrapService::Stub>(
             raft::v1::RaftBootstrapService::NewStub(channel));
         return call_unary<raft::v1::ClusterJoinRequest, raft::v1::ClusterJoinResponse,
-                          cluster_join_response<>>(
-            "cluster_join", 0, to_proto(request), stub, timeout,
+                          cluster_join_response<NodeId>>(
+            "cluster_join", "0", to_proto(request), stub, timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::ClusterJoinRequest* req,
                    raft::v1::ClusterJoinResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->ClusterJoin(ctx, req, resp, std::move(cb));
             });
     }
 
-    auto send_cluster_leave_request(const std::string& addr, const cluster_leave_request<>& request,
+    auto send_cluster_leave_request(const std::string& addr,
+                                    const cluster_leave_request<NodeId>& request,
                                     std::chrono::milliseconds timeout)
-        -> future_template<cluster_leave_response<>> {
-        auto channel = get_or_create_channel(addr);
+        -> future_template<cluster_leave_response<NodeId>> {
+        auto channel = get_or_create_address_channel(addr);
         auto stub = std::shared_ptr<raft::v1::RaftBootstrapService::Stub>(
             raft::v1::RaftBootstrapService::NewStub(channel));
         return call_unary<raft::v1::ClusterLeaveRequest, raft::v1::ClusterLeaveResponse,
-                          cluster_leave_response<>>(
-            "cluster_leave", 0, to_proto(request), stub, timeout,
+                          cluster_leave_response<NodeId>>(
+            "cluster_leave", "0", to_proto(request), stub, timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::ClusterLeaveRequest* req,
                    raft::v1::ClusterLeaveResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->ClusterLeave(ctx, req, resp, std::move(cb));
@@ -270,15 +287,17 @@ public:
 
     // ── network_client_with_log_fetch (Requirement 17) ────────────────────────
 
-    auto send_fetch_log_entries(std::uint64_t target, const fetch_log_entries_request<>& request,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const fetch_log_entries_request<NodeId>& request,
                                 std::chrono::milliseconds timeout)
-        -> future_template<fetch_log_entries_response<>> {
+        -> future_template<fetch_log_entries_response<NodeId>> {
         auto channel = get_or_create_channel(target);
         auto stub = std::shared_ptr<raft::v1::RaftPeerReplicationService::Stub>(
             raft::v1::RaftPeerReplicationService::NewStub(channel));
         return call_unary<raft::v1::FetchLogEntriesRequest, raft::v1::FetchLogEntriesResponse,
-                          fetch_log_entries_response<>>(
-            "fetch_log_entries", target, to_proto(request), stub, timeout,
+                          fetch_log_entries_response<NodeId>>(
+            "fetch_log_entries", node_id_traits<NodeId>::to_text(target), to_proto(request), stub,
+            timeout,
             [stub](grpc::ClientContext* ctx, const raft::v1::FetchLogEntriesRequest* req,
                    raft::v1::FetchLogEntriesResponse* resp, std::function<void(grpc::Status)> cb) {
                 stub->async()->FetchLogEntries(ctx, req, resp, std::move(cb));
@@ -305,29 +324,31 @@ private:
         return args;
     }
 
-    auto get_or_create_channel(std::uint64_t target) -> std::shared_ptr<grpc::Channel> {
+    auto get_or_create_channel(const NodeId& target) -> std::shared_ptr<grpc::Channel> {
         std::lock_guard<std::mutex> lock(_mutex);
         if (auto it = _channels.find(target); it != _channels.end()) {
-            emit_channel_metric("grpc.client.channel.reused", std::to_string(target));
+            emit_channel_metric("grpc.client.channel.reused",
+                                node_id_traits<NodeId>::to_text(target));
             return it->second;
         }
         auto target_it = _node_id_to_target.find(target);
         if (target_it == _node_id_to_target.end()) {
-            throw grpc_client_error(
-                grpc::StatusCode::NOT_FOUND,
-                std::format("no gRPC target string configured for node {}", target));
+            throw grpc_client_error(grpc::StatusCode::NOT_FOUND,
+                                    std::format("no gRPC target string configured for node {}",
+                                                node_id_traits<NodeId>::to_text(target)));
         }
         auto channel = grpc::CreateCustomChannel(target_it->second, _channel_credentials,
                                                  make_channel_arguments());
         _channels.emplace(target, channel);
-        emit_channel_metric("grpc.client.channel.created", std::to_string(target));
+        emit_channel_metric("grpc.client.channel.created", node_id_traits<NodeId>::to_text(target));
         return channel;
     }
 
-    // Address-keyed overload for the bootstrap path (Requirement 15.3): the
+    // Address-keyed variant for the bootstrap path (Requirement 15.3): the
     // joining/leaving node is not yet a known node ID, so the channel is keyed
-    // by its raw contact-address string instead.
-    auto get_or_create_channel(const std::string& target_address)
+    // by its raw contact-address string instead. Not an overload of
+    // get_or_create_channel: with a std::string NodeId the two would collide.
+    auto get_or_create_address_channel(const std::string& target_address)
         -> std::shared_ptr<grpc::Channel> {
         std::lock_guard<std::mutex> lock(_mutex);
         if (auto it = _address_channels.find(target_address); it != _address_channels.end()) {
@@ -368,14 +389,14 @@ private:
         if (_config.enable_tls) {
             return;
         }
-        std::vector<std::uint64_t> ids;
+        std::vector<NodeId> ids;
         ids.reserve(_node_id_to_target.size());
         for (const auto& [id, target] : _node_id_to_target) {
             ids.push_back(id);
         }
         std::ranges::sort(ids);
         bool loopback_only = true;
-        for (auto id : ids) {
+        for (const auto& id : ids) {
             const auto& target = _node_id_to_target.at(id);
             require_plaintext_allowed(target);
             loopback_only = loopback_only && grpc_detail::target_is_local(target);
@@ -456,7 +477,7 @@ private:
     // ── generic unary call (Requirement 8.1, 8.2, 10, 11, 13.2) ──────────────
 
     template<typename ProtoRequest, typename ProtoResponse, typename Response, typename Invoke>
-    auto call_unary(std::string_view rpc_type, std::uint64_t target_metric, ProtoRequest proto_req,
+    auto call_unary(std::string_view rpc_type, std::string target_metric, ProtoRequest proto_req,
                     std::shared_ptr<void> stub_keepalive, std::chrono::milliseconds timeout,
                     Invoke invoke) -> future_template<Response> {
         using state_t = grpc_detail::client_call_state<ProtoRequest, ProtoResponse, Response>;
@@ -475,7 +496,7 @@ private:
 
         std::function<void(grpc::Status)> completion = [this, state,
                                                         rpc_type = std::string(rpc_type),
-                                                        target_metric,
+                                                        target_metric = target_metric,
                                                         timeout](grpc::Status status) mutable {
             const auto latency = std::chrono::steady_clock::now() - state->start;
             if (status.ok()) {
@@ -484,7 +505,7 @@ private:
                 emit_size_metric("grpc.client.call.response_size", rpc_type, target_metric,
                                  static_cast<double>(state->response.ByteSizeLong()));
                 try {
-                    Response resp = from_proto(state->response);
+                    Response resp = from_proto_for<NodeId>(state->response);
                     _executor.add([p = std::move(state->promise), r = std::move(resp)]() mutable {
                         p.setValue(std::move(r));
                     });
@@ -510,43 +531,44 @@ private:
 
     // ── metrics helpers ───────────────────────────────────────────────────────
 
-    auto emit_call_metric(std::string_view name, std::string_view rpc_type, std::uint64_t target)
+    auto emit_call_metric(std::string_view name, std::string_view rpc_type, std::string_view target)
         -> void {
         auto metric = _metrics;
         metric.set_metric_name(name);
         metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("target_node_id", target);
         metric.add_one();
         metric.emit();
     }
 
-    auto emit_size_metric(std::string_view name, std::string_view rpc_type, std::uint64_t target,
+    auto emit_size_metric(std::string_view name, std::string_view rpc_type, std::string_view target,
                           double size) -> void {
         auto metric = _metrics;
         metric.set_metric_name(name);
         metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("target_node_id", target);
         metric.add_value(size);
         metric.emit();
     }
 
-    auto emit_latency_metric(std::string_view name, std::string_view rpc_type, std::uint64_t target,
-                             std::string_view status, std::chrono::nanoseconds latency) -> void {
+    auto emit_latency_metric(std::string_view name, std::string_view rpc_type,
+                             std::string_view target, std::string_view status,
+                             std::chrono::nanoseconds latency) -> void {
         auto metric = _metrics;
         metric.set_metric_name(name);
         metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("target_node_id", target);
         metric.add_dimension("status", status);
         metric.add_duration(latency);
         metric.emit();
     }
 
-    auto emit_error_metric(std::string_view name, std::string_view rpc_type, std::uint64_t target,
-                           grpc::StatusCode code) -> void {
+    auto emit_error_metric(std::string_view name, std::string_view rpc_type,
+                           std::string_view target, grpc::StatusCode code) -> void {
         auto metric = _metrics;
         metric.set_metric_name(name);
         metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("target_node_id", target);
         metric.add_dimension("status_code", std::to_string(static_cast<int>(code)));
         metric.add_one();
         metric.emit();
@@ -560,8 +582,8 @@ private:
         metric.emit();
     }
 
-    std::unordered_map<std::uint64_t, std::string> _node_id_to_target;
-    std::unordered_map<std::uint64_t, std::shared_ptr<grpc::Channel>> _channels;
+    std::unordered_map<NodeId, std::string> _node_id_to_target;
+    std::unordered_map<NodeId, std::shared_ptr<grpc::Channel>> _channels;
     std::unordered_map<std::string, std::shared_ptr<grpc::Channel>> _address_channels;
     std::shared_ptr<grpc::ChannelCredentials> _channel_credentials;
     grpc_client_config _config;
@@ -586,13 +608,18 @@ private:
 /// `grpc::ServerBuilder`; a client that calls an unregistered extension service
 /// therefore gets `UNIMPLEMENTED` from gRPC core with no application code
 /// (Requirement 6.3, Property 5).
-template<typename Types>
+///
+/// `NodeId` is the type the requests' node ids are decoded into
+/// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2); it defaults to
+/// `std::uint64_t`, so `grpc_server<Types>` is the numeric server.
+template<typename Types, typename NodeId = std::uint64_t>
 requires grpc_transport_types<Types>
 class grpc_server final : public raft::v1::RaftService::CallbackService,
                           public raft::v1::RaftElectionExtensionService::CallbackService,
                           public raft::v1::RaftBootstrapService::CallbackService,
                           public raft::v1::RaftPeerReplicationService::CallbackService {
 public:
+    using node_id_type = NodeId;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
 
@@ -657,52 +684,56 @@ public:
     // ── handler registration (Requirement 6.1, 15-17) ────────────────────────
 
     auto register_request_vote_handler(
-        std::function<request_vote_response<>(const request_vote_request<>&)> handler) -> void {
+        std::function<request_vote_response<>(const request_vote_request<NodeId>&)> handler)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _request_vote_handler = std::move(handler);
     }
 
     auto register_append_entries_handler(
-        std::function<append_entries_response<>(const append_entries_request<>&)> handler) -> void {
+        std::function<append_entries_response<>(const append_entries_request<NodeId>&)> handler)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _append_entries_handler = std::move(handler);
     }
 
     auto register_install_snapshot_handler(
-        std::function<install_snapshot_response<>(const install_snapshot_request<>&)> handler)
+        std::function<install_snapshot_response<>(const install_snapshot_request<NodeId>&)> handler)
         -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _install_snapshot_handler = std::move(handler);
     }
 
     auto register_request_pre_vote_handler(
-        std::function<request_pre_vote_response<>(const request_pre_vote_request<>&)> handler)
+        std::function<request_pre_vote_response<>(const request_pre_vote_request<NodeId>&)> handler)
         -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _request_pre_vote_handler = std::move(handler);
     }
 
     auto register_timeout_now_handler(
-        std::function<timeout_now_response<>(const timeout_now_request<>&)> handler) -> void {
+        std::function<timeout_now_response<>(const timeout_now_request<NodeId>&)> handler) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _timeout_now_handler = std::move(handler);
     }
 
     auto register_cluster_join_handler(
-        std::function<cluster_join_response<>(const cluster_join_request<>&)> handler) -> void {
+        std::function<cluster_join_response<NodeId>(const cluster_join_request<NodeId>&)> handler)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _cluster_join_handler = std::move(handler);
     }
 
     auto register_cluster_leave_handler(
-        std::function<cluster_leave_response<>(const cluster_leave_request<>&)> handler) -> void {
+        std::function<cluster_leave_response<NodeId>(const cluster_leave_request<NodeId>&)> handler)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _cluster_leave_handler = std::move(handler);
     }
 
     auto register_fetch_log_entries_handler(
-        std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)> handler)
-        -> void {
+        std::function<fetch_log_entries_response<NodeId>(const fetch_log_entries_request<NodeId>&)>
+            handler) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _fetch_log_entries_handler = std::move(handler);
     }
@@ -864,56 +895,56 @@ public:
     grpc::ServerUnaryReactor* RequestVote(grpc::CallbackServerContext* context,
                                           const raft::v1::RequestVoteRequest* request,
                                           raft::v1::RequestVoteResponse* response) override {
-        return handle_unary<request_vote_request<>, request_vote_response<>>(
+        return handle_unary<request_vote_request<NodeId>, request_vote_response<>>(
             "request_vote", context, request, response, get_handler(_request_vote_handler));
     }
 
     grpc::ServerUnaryReactor* AppendEntries(grpc::CallbackServerContext* context,
                                             const raft::v1::AppendEntriesRequest* request,
                                             raft::v1::AppendEntriesResponse* response) override {
-        return handle_unary<append_entries_request<>, append_entries_response<>>(
+        return handle_unary<append_entries_request<NodeId>, append_entries_response<>>(
             "append_entries", context, request, response, get_handler(_append_entries_handler));
     }
 
     grpc::ServerUnaryReactor* InstallSnapshot(
         grpc::CallbackServerContext* context, const raft::v1::InstallSnapshotRequest* request,
         raft::v1::InstallSnapshotResponse* response) override {
-        return handle_unary<install_snapshot_request<>, install_snapshot_response<>>(
+        return handle_unary<install_snapshot_request<NodeId>, install_snapshot_response<>>(
             "install_snapshot", context, request, response, get_handler(_install_snapshot_handler));
     }
 
     grpc::ServerUnaryReactor* RequestPreVote(grpc::CallbackServerContext* context,
                                              const raft::v1::RequestPreVoteRequest* request,
                                              raft::v1::RequestPreVoteResponse* response) override {
-        return handle_unary<request_pre_vote_request<>, request_pre_vote_response<>>(
+        return handle_unary<request_pre_vote_request<NodeId>, request_pre_vote_response<>>(
             "request_pre_vote", context, request, response, get_handler(_request_pre_vote_handler));
     }
 
     grpc::ServerUnaryReactor* TimeoutNow(grpc::CallbackServerContext* context,
                                          const raft::v1::TimeoutNowRequest* request,
                                          raft::v1::TimeoutNowResponse* response) override {
-        return handle_unary<timeout_now_request<>, timeout_now_response<>>(
+        return handle_unary<timeout_now_request<NodeId>, timeout_now_response<>>(
             "timeout_now", context, request, response, get_handler(_timeout_now_handler));
     }
 
     grpc::ServerUnaryReactor* ClusterJoin(grpc::CallbackServerContext* context,
                                           const raft::v1::ClusterJoinRequest* request,
                                           raft::v1::ClusterJoinResponse* response) override {
-        return handle_unary<cluster_join_request<>, cluster_join_response<>>(
+        return handle_unary<cluster_join_request<NodeId>, cluster_join_response<NodeId>>(
             "cluster_join", context, request, response, get_handler(_cluster_join_handler));
     }
 
     grpc::ServerUnaryReactor* ClusterLeave(grpc::CallbackServerContext* context,
                                            const raft::v1::ClusterLeaveRequest* request,
                                            raft::v1::ClusterLeaveResponse* response) override {
-        return handle_unary<cluster_leave_request<>, cluster_leave_response<>>(
+        return handle_unary<cluster_leave_request<NodeId>, cluster_leave_response<NodeId>>(
             "cluster_leave", context, request, response, get_handler(_cluster_leave_handler));
     }
 
     grpc::ServerUnaryReactor* FetchLogEntries(
         grpc::CallbackServerContext* context, const raft::v1::FetchLogEntriesRequest* request,
         raft::v1::FetchLogEntriesResponse* response) override {
-        return handle_unary<fetch_log_entries_request<>, fetch_log_entries_response<>>(
+        return handle_unary<fetch_log_entries_request<NodeId>, fetch_log_entries_response<NodeId>>(
             "fetch_log_entries", context, request, response,
             get_handler(_fetch_log_entries_handler));
     }
@@ -999,7 +1030,8 @@ private:
                        handler = std::move(handler), start]() mutable {
             Request kythira_request;
             try {
-                kythira_request = from_proto(request_copy);  // may throw → INVALID_ARGUMENT
+                // may throw → INVALID_ARGUMENT
+                kythira_request = from_proto_for<NodeId>(request_copy);
             } catch (const std::exception& e) {
                 emit_server_error_metric("grpc.server.error", rpc_type,
                                          grpc::StatusCode::INVALID_ARGUMENT);
@@ -1073,17 +1105,20 @@ private:
         metric.emit();
     }
 
-    std::function<request_vote_response<>(const request_vote_request<>&)> _request_vote_handler;
-    std::function<append_entries_response<>(const append_entries_request<>&)>
+    std::function<request_vote_response<>(const request_vote_request<NodeId>&)>
+        _request_vote_handler;
+    std::function<append_entries_response<>(const append_entries_request<NodeId>&)>
         _append_entries_handler;
-    std::function<install_snapshot_response<>(const install_snapshot_request<>&)>
+    std::function<install_snapshot_response<>(const install_snapshot_request<NodeId>&)>
         _install_snapshot_handler;
-    std::function<request_pre_vote_response<>(const request_pre_vote_request<>&)>
+    std::function<request_pre_vote_response<>(const request_pre_vote_request<NodeId>&)>
         _request_pre_vote_handler;
-    std::function<timeout_now_response<>(const timeout_now_request<>&)> _timeout_now_handler;
-    std::function<cluster_join_response<>(const cluster_join_request<>&)> _cluster_join_handler;
-    std::function<cluster_leave_response<>(const cluster_leave_request<>&)> _cluster_leave_handler;
-    std::function<fetch_log_entries_response<>(const fetch_log_entries_request<>&)>
+    std::function<timeout_now_response<>(const timeout_now_request<NodeId>&)> _timeout_now_handler;
+    std::function<cluster_join_response<NodeId>(const cluster_join_request<NodeId>&)>
+        _cluster_join_handler;
+    std::function<cluster_leave_response<NodeId>(const cluster_leave_request<NodeId>&)>
+        _cluster_leave_handler;
+    std::function<fetch_log_entries_response<NodeId>(const fetch_log_entries_request<NodeId>&)>
         _fetch_log_entries_handler;
 
     std::string _bind_address;
@@ -1132,5 +1167,22 @@ static_assert(kythira::network_server_with_cluster_leave<grpc_server<grpc_kythir
               "grpc_server must satisfy network_server_with_cluster_leave");
 static_assert(kythira::network_server_with_log_fetch<grpc_server<grpc_kythira_transport_types>>,
               "grpc_server must satisfy network_server_with_log_fetch");
+
+// A textual instantiation satisfies the same concepts at its own node id type
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2).
+using grpc_text_client = grpc_client<grpc_kythira_transport_types, std::string>;
+using grpc_text_server = grpc_server<grpc_kythira_transport_types, std::string>;
+static_assert(kythira::network_client<grpc_text_client, std::string>);
+static_assert(kythira::network_client_with_pre_vote<grpc_text_client, std::string>);
+static_assert(kythira::network_client_with_timeout_now<grpc_text_client, std::string>);
+static_assert(kythira::network_client_with_cluster_join<grpc_text_client, std::string>);
+static_assert(kythira::network_client_with_cluster_leave<grpc_text_client, std::string>);
+static_assert(kythira::network_client_with_log_fetch<grpc_text_client, std::string>);
+static_assert(kythira::network_server<grpc_text_server, std::string>);
+static_assert(kythira::network_server_with_pre_vote<grpc_text_server, std::string>);
+static_assert(kythira::network_server_with_timeout_now<grpc_text_server, std::string>);
+static_assert(kythira::network_server_with_cluster_join<grpc_text_server, std::string>);
+static_assert(kythira::network_server_with_cluster_leave<grpc_text_server, std::string>);
+static_assert(kythira::network_server_with_log_fetch<grpc_text_server, std::string>);
 
 }  // namespace kythira

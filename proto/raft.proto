@@ -36,6 +36,27 @@ enum EntryType {
   ENTRY_TYPE_MERGE_ABANDONED = 7;
 }
 
+// A node id of any type (.kiro/specs/cloud-composite-node-ids/,
+// Requirement 9.5). Numeric ids use `numeric`; std::string and composite
+// cloud ids (canonical text such as "aws-ec2:us-east-1:i-0abc") use `text`.
+// Same shape as kythira.raft.serializer.v1.NodeIdValue in
+// raft_messages.proto, declared again here because the two packages are
+// deliberately independent.
+//
+// Every message that names a node keeps its original uint64 field and gains
+// one of these at a new tag beside it. A numeric sender fills both; a textual
+// sender fills only the NodeIdValue (its uint64 stays 0, so absent on the
+// wire). A receiver prefers the NodeIdValue and falls back to the uint64, so
+// a numeric cluster upgrades one node at a time in either direction: an old
+// receiver skips the unknown tag and reads the uint64 it always read, and a
+// new receiver reads an old sender's uint64.
+message NodeIdValue {
+  oneof value {
+    uint64 numeric = 1;
+    string text = 2;
+  }
+}
+
 // Mirrors kythira::log_entry<TermId, LogIndex>. `command` is opaque state-machine
 // bytes; `type` discriminates normal/configuration/no-op entries.
 message LogEntry {
@@ -54,6 +75,8 @@ message RequestVoteRequest {
   uint64 last_log_term = 4;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 5;
+  // Preferred over candidate_id (see NodeIdValue).
+  NodeIdValue candidate = 6;
 }
 
 message RequestVoteResponse {
@@ -72,6 +95,8 @@ message AppendEntriesRequest {
   uint64 leader_commit = 6;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 7;
+  // Preferred over leader_id (see NodeIdValue).
+  NodeIdValue leader = 8;
 }
 
 message AppendEntriesResponse {
@@ -98,6 +123,8 @@ message InstallSnapshotRequest {
   bool done = 7;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 8;
+  // Preferred over leader_id (see NodeIdValue).
+  NodeIdValue leader = 9;
 }
 
 message InstallSnapshotResponse {
@@ -132,6 +159,8 @@ message RequestPreVoteRequest {
   uint64 last_log_term = 4;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 5;
+  // Preferred over candidate_id (see NodeIdValue).
+  NodeIdValue candidate = 6;
 }
 
 message RequestPreVoteResponse {
@@ -156,6 +185,8 @@ message TimeoutNowRequest {
   uint64 last_log_index = 3;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 4;
+  // Preferred over leader_id (see NodeIdValue).
+  NodeIdValue leader = 5;
 }
 
 message TimeoutNowResponse {
@@ -179,11 +210,15 @@ service RaftElectionExtensionService {
 message PeerInfo {
   uint64 node_id = 1;
   string address = 2;
+  // Preferred over node_id (see NodeIdValue).
+  NodeIdValue node = 3;
 }
 
 message ClusterJoinRequest {
   uint64 node_id = 1;
   string contact_address = 2;
+  // Preferred over node_id (see NodeIdValue).
+  NodeIdValue node = 3;
 }
 
 message ClusterJoinResponse {
@@ -193,6 +228,8 @@ message ClusterJoinResponse {
 
 message ClusterLeaveRequest {
   uint64 node_id = 1;
+  // Preferred over node_id (see NodeIdValue).
+  NodeIdValue node = 2;
 }
 
 message ClusterLeaveResponse {
@@ -214,6 +251,8 @@ message FetchLogEntriesRequest {
   uint64 to_index = 3;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 4;
+  // Preferred over requester_id (see NodeIdValue).
+  NodeIdValue requester = 5;
 }
 
 message FetchLogEntriesResponse {
@@ -223,6 +262,9 @@ message FetchLogEntriesResponse {
   repeated LogEntry entries = 4;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 5;
+  // Preferred over responder_id (see NodeIdValue). The same tag as
+  // FetchLogEntriesResponse.responder in raft_messages.proto.
+  NodeIdValue responder = 6;
 }
 
 service RaftPeerReplicationService {
