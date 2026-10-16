@@ -40,6 +40,12 @@
 #                             configs/ci_alt_coap_defconfig, which is this
 #                             file plus the two symbols. Keep the two in sync
 #                             as well.
+#   KYTHIRA_NODE_ID_TEXT    — a choice, not a dependency: numeric node ids
+#                             stay the default here. ci.yml's config-variants
+#                             job builds the cmd/ binaries with textual ids
+#                             from configs/ci_text_node_id_defconfig, which is
+#                             this file plus that symbol. Keep the two in sync
+#                             too.
 #
 # `default y` symbols explicitly turned OFF, because the edhoc-feature image
 # does not install their dependency and under strict mode default-y would be

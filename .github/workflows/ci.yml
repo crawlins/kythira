@@ -1174,6 +1174,49 @@ jobs:
             --floor 1 \
             -- -R '^object_store_persistence_unit_test$'
 
+      # Every cmd/ binary built with textual node ids (KYTHIRA_NODE_ID_KIND=
+      # text; .kiro/specs/cloud-composite-node-ids/ task 8.4). Here rather
+      # than as another build-and-test leg because only the binaries'
+      # std::string instantiations are new: the library and tests take NodeId
+      # as a template parameter and the full legs already compile them over
+      # textual ids, so building host_binaries alone covers the difference
+      # without a second test suite build. Strict, like ci_full_defconfig
+      # which it extends; it shares that file's vcpkg tree and sccache
+      # objects for everything outside the binaries.
+      - name: Configure (ci_text_node_id_defconfig, strict)
+        run: |
+          cmake -B build-textid -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_text_node_id_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      # Above all that CONFIG_KYTHIRA_NODE_ID_TEXT=y resolved to y: if it
+      # silently stayed n, the build below would be the numeric one again.
+      - name: Assert the text node id build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build-textid \
+            --defconfig configs/ci_text_node_id_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON
+
+      - name: Build (ci_text_node_id_defconfig, host binaries)
+        run: cmake --build build-textid -j$(nproc) --target host_binaries host_node_id_test
+
+      # The id parsers in the kind the binaries were built with. The test is
+      # small and covers both kinds' templates; this run pins the alias.
+      - name: Test (ci_text_node_id_defconfig)
+        run: |
+          ctest --test-dir build-textid --output-on-failure --no-tests=error \
+            -R '^host_node_id_test$'
+
+      - name: Remove the text node id build tree
+        run: rm -rf build-textid
+
       # The script configures its own throwaway build directory against the
       # prefix below (Requirement 6). CXX, the generator and the launcher come
       # from the environment so its one target builds like the rest of this
