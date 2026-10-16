@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "object_persistence_real_cases.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <raft/aws_s3_client.hpp>
 
@@ -40,9 +41,16 @@ struct AwsSdkFixture {
     auto operator=(AwsSdkFixture&&) -> AwsSdkFixture& = delete;
 };
 
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 using SignalTeardown = obj::signal_teardown_fixture;
-BOOST_GLOBAL_FIXTURE(SignalTeardown);
+
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+// The SDK is up before the signal teardown is armed, and still up
+// when it runs.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<AwsSdkFixture, SignalTeardown>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 constexpr const char* k_provider = "s3";
 

@@ -156,7 +156,10 @@ extern "C" inline void alibaba_signal_handler(int signum) {
 }
 
 /// Installs the signal handlers once per process; declare with
-/// BOOST_GLOBAL_FIXTURE in each real suite.
+/// BOOST_GLOBAL_FIXTURE in each real suite. A suite with more than one global
+/// fixture lists them all in one `kythira::testing::ordered_global_fixtures`
+/// alias (tests/ordered_global_fixtures.hpp) and registers that once instead,
+/// since separate registrations run in link-address order.
 struct signal_handler_fixture {
     signal_handler_fixture() {
         for (const int sig : {SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGPIPE}) {

@@ -15,6 +15,8 @@
 #include <fiu-control.h>
 #endif
 
+#include "ordered_global_fixtures.hpp"
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #include <memory>
@@ -33,6 +35,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 struct AwsSdkFixture {
@@ -51,10 +55,12 @@ struct AwsSdkFixture {
 
 }  // namespace
 
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, AwsSdkFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 BOOST_AUTO_TEST_SUITE(acm_pca_construction)
 

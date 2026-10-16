@@ -31,6 +31,7 @@
 #include <raft/oci_instance_pool_quorum_manager.hpp>
 
 #include "oci_real_test_support.hpp"
+#include "ordered_global_fixtures.hpp"
 #include "test_timeout_scale.hpp"
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
@@ -73,11 +74,17 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
-BOOST_GLOBAL_FIXTURE(OciSignalHandlerFixture);
-BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, OciSignalHandlerFixture,
+                                              CostSummaryFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 /// Exit code CTest is told to read as "not run" rather than "failed" when the
 /// tenancy is not configured, matching `aws_quorum_manager_localstack_test`'s

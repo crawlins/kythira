@@ -23,6 +23,7 @@
 #ifdef KYTHIRA_HAS_AZURE_KEY_VAULT
 
 #include "azure_sdk_log_fixture.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <raft/azure_key_vault_ca_provider_impl.hpp>
 #include <raft/certificate_provider.hpp>
@@ -40,7 +41,8 @@
 struct FiuInitFixture {
     FiuInitFixture() { fiu_init(0); }
 };
-BOOST_GLOBAL_FIXTURE(FiuInitFixture);
+#else
+using FiuInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 #ifdef KYTHIRA_HAS_AZURE_SDK
@@ -49,8 +51,16 @@ BOOST_GLOBAL_FIXTURE(FiuInitFixture);
 // real cause (AADSTS700024, with both timestamps) sat in `az`'s stderr. See the
 // fixture's own comment.
 using kythira::testing::azure_real::AzureSdkLogFixture;
-BOOST_GLOBAL_FIXTURE(AzureSdkLogFixture);
+#else
+using AzureSdkLogFixture = kythira::testing::no_global_fixture;
 #endif
+
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FiuInitFixture, AzureSdkLogFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 namespace {
 

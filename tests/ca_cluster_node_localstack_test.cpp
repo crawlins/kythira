@@ -42,6 +42,8 @@
 
 #include <raft/aws_ec2_quorum_manager.hpp>
 
+#include "ordered_global_fixtures.hpp"
+
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentials.h>
 #include <aws/ec2/EC2Client.h>
@@ -143,9 +145,11 @@ bool localstack_reachable(std::chrono::milliseconds timeout) {
 // distinct, unrelated function with internal linkage that Boost's
 // precompiled main() never calls (no redefinition error, just silently
 // dead code; confirmed by disassembling the built binary, which only ever
-// contained the auto-generated `return 0;` stub). Global fixtures run in
-// registration order, so registering this one first still guarantees it
-// runs before FollyInitFixture/AwsSdkFixture below.
+// contained the auto-generated `return 0;` stub). Boost.Test runs separately
+// registered global fixtures in link-address order, not registration order,
+// so this one is listed first in the single ordered_global_fixtures
+// registration below, which is what guarantees it runs before
+// FollyInitFixture/AwsSdkFixture.
 struct PreflightSkipFixture {
     PreflightSkipFixture() {
         if (!localstack_reachable(std::chrono::milliseconds{2000})) {
@@ -164,6 +168,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 struct AwsSdkFixture {
@@ -177,11 +183,14 @@ struct AwsSdkFixture {
     }
 };
 
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
+// One registration, constructed in this order and destroyed in reverse.
+// Separate BOOST_GLOBAL_FIXTURE lines would run in link-address order
+// instead (see ordered_global_fixtures.hpp), which can put SDK work
+// ahead of PreflightSkipFixture or ahead of Aws::InitAPI.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture,
+                                              AwsSdkFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 auto make_client_cfg() -> Aws::Client::ClientConfiguration {
     Aws::Client::ClientConfiguration c;

@@ -13,6 +13,8 @@
 #include <fiu-control.h>
 #endif
 
+#include "ordered_global_fixtures.hpp"
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #include <memory>
@@ -31,15 +33,25 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 #ifdef FIU_ENABLE
 struct FiuInitFixture {
     FiuInitFixture() { fiu_init(0); }
 };
-BOOST_GLOBAL_FIXTURE(FiuInitFixture);
+#else
+using FiuInitFixture = kythira::testing::no_global_fixture;
 #endif
+
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+// folly::Init first, then fiu_init.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, FiuInitFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 auto valid_config() -> gcp_privateca_certificate_provider_config {
     gcp_privateca_certificate_provider_config cfg;

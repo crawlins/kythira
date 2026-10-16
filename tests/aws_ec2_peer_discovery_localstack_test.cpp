@@ -31,6 +31,8 @@
 
 #include <raft/aws_ec2_peer_discovery.hpp>
 
+#include "ordered_global_fixtures.hpp"
+
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentials.h>
 #include <aws/ec2/EC2Client.h>
@@ -107,7 +109,8 @@ bool localstack_reachable(std::chrono::milliseconds timeout) {
     return connected;
 }
 
-// Registered first so it runs before the SDK fixture; exits with the code
+// Listed first in SuiteGlobalFixtures so it runs before the SDK fixture;
+// exits with the code
 // tests/CMakeLists.txt maps to SKIP_RETURN_CODE so ctest says "Not Run"
 // rather than "Failed" when no LocalStack is up.
 struct PreflightSkipFixture {
@@ -128,6 +131,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 // LocalStack does not check credentials, but the SDK refuses to sign without
@@ -156,12 +161,14 @@ struct AwsSdkFixture {
 
 }  // namespace
 
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(DummyCredentialsFixture);
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
+// One registration, constructed in this order and destroyed in reverse.
+// Separate BOOST_GLOBAL_FIXTURE lines would run in link-address order
+// instead (see ordered_global_fixtures.hpp), which can put SDK work
+// ahead of PreflightSkipFixture or ahead of Aws::InitAPI.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture,
+                                              DummyCredentialsFixture, AwsSdkFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 namespace {
 

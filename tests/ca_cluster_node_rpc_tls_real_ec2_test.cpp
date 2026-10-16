@@ -85,6 +85,7 @@
 
 #endif
 #include "aws_real_ec2_test_support.hpp"
+#include "ordered_global_fixtures.hpp"
 
 #include <boost/json.hpp>
 
@@ -142,9 +143,11 @@ auto region() -> std::string {
 // distinct, unrelated function with internal linkage that Boost's
 // precompiled main() never calls (no redefinition error, just silently
 // dead code; confirmed by disassembling the built binary, which only ever
-// contained the auto-generated `return 0;` stub). Global fixtures run in
-// registration order, so registering this one first still guarantees it
-// runs before FollyInitFixture/AwsSdkFixture below.
+// contained the auto-generated `return 0;` stub). Boost.Test runs separately
+// registered global fixtures in link-address order, not registration order,
+// so this one is listed first in the single ordered_global_fixtures
+// registration below, which is what guarantees it runs before
+// FollyInitFixture/AwsSdkFixture.
 struct PreflightSkipFixture {
     PreflightSkipFixture() {
         if (env("KYTHIRA_EC2_TEST_AMI").empty()) {
@@ -163,6 +166,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 struct AwsSdkFixture {
@@ -176,18 +181,20 @@ struct AwsSdkFixture {
     }
 };
 
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
-
-// BOOST_GLOBAL_FIXTURE forms an identifier from its argument, so a
-// namespace-qualified type must be brought into scope unqualified first.
 using kythira::testing::aws_real_ec2::AwsSignalHandlerFixture;
 using kythira::testing::aws_real_ec2::CostSummaryFixture;
-BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
-BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
+
+// One registration, constructed in this order and destroyed in reverse.
+// Separate BOOST_GLOBAL_FIXTURE lines would run in link-address order
+// instead (see ordered_global_fixtures.hpp), which can put SDK work
+// ahead of PreflightSkipFixture or ahead of Aws::InitAPI.
+//
+// BOOST_GLOBAL_FIXTURE forms an identifier from its argument, hence the
+// alias.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture, AwsSdkFixture,
+                                              CostSummaryFixture, AwsSignalHandlerFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 // Identical to ca_cluster_node_real_ec2_test.cpp's own ssh_execute() — see
 // that file for why this is duplicated rather than shared (design.md's

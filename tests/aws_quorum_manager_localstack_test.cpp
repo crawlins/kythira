@@ -16,6 +16,8 @@
 #include <raft/aws_asg_quorum_manager.hpp>
 #include <raft/aws_ec2_quorum_manager.hpp>
 
+#include "ordered_global_fixtures.hpp"
+
 #include <aws/autoscaling/AutoScalingClient.h>
 #include <aws/autoscaling/model/CreateAutoScalingGroupRequest.h>
 #include <aws/autoscaling/model/CreateLaunchConfigurationRequest.h>
@@ -129,9 +131,11 @@ bool localstack_reachable(std::chrono::milliseconds timeout) {
 // distinct, unrelated function with internal linkage that Boost's
 // precompiled main() never calls (no redefinition error, just silently
 // dead code; confirmed by disassembling the built binary, which only ever
-// contained the auto-generated `return 0;` stub). Global fixtures run in
-// registration order, so registering this one first still guarantees it
-// runs before FollyInitFixture/AwsSdkFixture below.
+// contained the auto-generated `return 0;` stub). Boost.Test runs separately
+// registered global fixtures in link-address order, not registration order,
+// so this one is listed first in the single ordered_global_fixtures
+// registration below, which is what guarantees it runs before
+// FollyInitFixture/AwsSdkFixture.
 struct PreflightSkipFixture {
     PreflightSkipFixture() {
         if (!localstack_reachable(std::chrono::milliseconds{2000})) {
@@ -150,6 +154,8 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 // Whether LocalStack serves the autoscaling API, and if not, why. Set once by
@@ -199,8 +205,12 @@ struct AwsSdkFixture {
     /// own, immediately after `Aws::InitAPI()`. A separate
     /// `BOOST_GLOBAL_FIXTURE` registered after this one crashed in "Test
     /// setup" with a memory access violation even though the registration
-    /// order was right, so the ordering is made structural here instead of
-    /// depending on Boost.Test's fixture sequencing.
+    /// order was right. Boost.Test runs separately registered global
+    /// fixtures in link-address order, not registration order (see
+    /// ordered_global_fixtures.hpp), so the probe most likely ran before
+    /// `Aws::InitAPI()`. The suite's fixtures are now registered once, in
+    /// order, through `ordered_global_fixtures`; the probe stays here anyway
+    /// so it cannot be separated from the `InitAPI()` it depends on.
     static void probe_autoscaling() {
         Aws::Client::ClientConfiguration c;
         c.region = DUMMY_REGION;
@@ -225,11 +235,14 @@ struct AwsSdkFixture {
     }
 };
 
-BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
-#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
-#endif
-BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
+// One registration, constructed in this order and destroyed in reverse.
+// Separate BOOST_GLOBAL_FIXTURE lines would run in link-address order
+// instead (see ordered_global_fixtures.hpp), which can put SDK work
+// ahead of PreflightSkipFixture or ahead of Aws::InitAPI.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<PreflightSkipFixture, FollyInitFixture,
+                                              AwsSdkFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 kythira::aws_client_config make_localstack_cfg() {
     kythira::aws_client_config cfg;

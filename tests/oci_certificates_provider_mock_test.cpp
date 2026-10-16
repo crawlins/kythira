@@ -27,6 +27,7 @@
 #include <raft/pem_chain.hpp>
 
 #include "oci_mock_server.hpp"
+#include "ordered_global_fixtures.hpp"
 #include "recording_metrics.hpp"
 #include "test_timeout_scale.hpp"
 
@@ -102,15 +103,25 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#else
+using FollyInitFixture = kythira::testing::no_global_fixture;
 #endif
 
 #ifdef FIU_ENABLE
 struct FiuInitFixture {
     FiuInitFixture() { fiu_init(0); }
 };
-BOOST_GLOBAL_FIXTURE(FiuInitFixture);
+#else
+using FiuInitFixture = kythira::testing::no_global_fixture;
 #endif
+
+// One registration, constructed in this order and destroyed in reverse:
+// separately registered global fixtures run in link-address order, not
+// declaration order (see ordered_global_fixtures.hpp).
+// folly::Init first, then fiu_init.
+using SuiteGlobalFixtures =
+    kythira::testing::ordered_global_fixtures<FollyInitFixture, FiuInitFixture>;
+BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 struct MockFixture {
     MockFixture() : server(test_port) {
