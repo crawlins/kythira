@@ -309,7 +309,11 @@ auto resolve_using(const std::string& key, std::chrono::milliseconds timeout, Lo
             const auto& k = it->second;
             if (!k.suspect) {
                 answer = k.result;
-                refresh = std::chrono::steady_clock::now() - k.at >= max_age;
+                // learn() marks a never-resolved entry with time_point::min(),
+                // and now() - min() overflows (it wrapped negative, so the
+                // name was never looked up): test for it before subtracting.
+                refresh = k.at == std::chrono::steady_clock::time_point::min() ||
+                          std::chrono::steady_clock::now() - k.at >= max_age;
             }
             if ((k.suspect || !k.result) && k.hint && k.hint_at > k.unreachable_at) {
                 answer = k.hint;  // DNS has nothing usable; the peer said where it is
