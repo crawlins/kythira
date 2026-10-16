@@ -297,8 +297,19 @@ endif()
 # ── proxygen-http-transport (.kiro/specs/proxygen-http-transport/) ───────────
 if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
     add_proxygen_test(proxygen_transport_test proxygen_transport_test.cpp)
+    # Textual and composite node ids (.kiro/specs/cloud-composite-node-ids/
+    # tasks 6.2, 6.5): every RPC to a std::string and an aws_ec2_node_id
+    # target, and the HTTPS host binding with a textual target. Its
+    # certificates come from the test CA.
+    if(TARGET certificate_authority)
+        add_proxygen_test(proxygen_textual_node_id_test proxygen_textual_node_id_test.cpp)
+        target_link_libraries(proxygen_textual_node_id_test PRIVATE certificate_authority)
+    else()
+        message(STATUS "proxygen_textual_node_id_test: skipped (requires certificate_authority)")
+    endif()
 else()
     message(STATUS "proxygen_transport_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+    message(STATUS "proxygen_textual_node_id_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
 # transport-multi-serializer Task 10a: content negotiation against a live
 # proxygen_server, driven by a raw httplib::Client. Gated on cpp-httplib as

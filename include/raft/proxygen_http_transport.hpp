@@ -560,7 +560,16 @@ struct pooled_connection {
 /// `_connections_mutex` only guards the map's own structure, never a
 /// connection's I/O (which is always routed through that connection's own
 /// pinned `EventBase`, per `pooled_connection`'s own comment).
-template<typename Types>
+///
+/// `NodeId` names the peers: the URL map's key, the capability cache's and
+/// connection pool's key, every `send_*` target, and the id type the requests
+/// carry. It defaults to `std::uint64_t`, so `proxygen_client<Types>` is the
+/// numeric client it always was (.kiro/specs/cloud-composite-node-ids/,
+/// Requirement 9.2). No id travels in a URL or a header -- every RPC posts to
+/// a fixed path and the ids ride in the body -- so a textual id needs no
+/// escaping, and TLS still binds each connection to the URL's host
+/// (`peer_identity_error`), not to the peer's id.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::proxygen_future_default_transport_types<Types>
 class proxygen_client {
 public:
@@ -569,9 +578,10 @@ public:
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
+    using node_id_type = NodeId;
 
     proxygen_client(folly::IOThreadPoolExecutorBase& io_executor,
-                    std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
+                    std::unordered_map<NodeId, std::string> node_id_to_url_map,
                     proxygen_client_config config, metrics_type metrics);
     ~proxygen_client();
 
@@ -580,35 +590,37 @@ public:
     proxygen_client(proxygen_client&&) = delete;
     auto operator=(proxygen_client&&) -> proxygen_client& = delete;
 
-    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+    auto send_request_vote(const NodeId& target,
+                           const kythira::request_vote_request<NodeId>& request,
                            std::chrono::milliseconds timeout)
         -> future_template<kythira::request_vote_response<>>;
 
-    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+    auto send_append_entries(const NodeId& target,
+                             const kythira::append_entries_request<NodeId>& request,
                              std::chrono::milliseconds timeout)
         -> future_template<kythira::append_entries_response<>>;
 
-    auto send_install_snapshot(std::uint64_t target,
-                               const kythira::install_snapshot_request<>& request,
+    auto send_install_snapshot(const NodeId& target,
+                               const kythira::install_snapshot_request<NodeId>& request,
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::install_snapshot_response<>>;
 
     /// Satisfies `network_client_with_log_fetch`: a peer-to-peer catch-up
     /// fetch, sent to `/v1/raft/fetch_log_entries`.
-    auto send_fetch_log_entries(std::uint64_t target,
-                                const kythira::fetch_log_entries_request<>& request,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const kythira::fetch_log_entries_request<NodeId>& request,
                                 std::chrono::milliseconds timeout)
-        -> future_template<kythira::fetch_log_entries_response<>>;
+        -> future_template<kythira::fetch_log_entries_response<NodeId>>;
     // Optional extensions (.kiro/specs/http-coap-pre-vote-timeout-now/). A
     // peer on a build without the route answers 404, and one without a
     // registered handler 501; both fail the future with
     // `rpc_not_implemented_exception`, which the core treats as "older peer".
-    auto send_request_pre_vote(std::uint64_t target,
-                               const kythira::request_pre_vote_request<>& request,
+    auto send_request_pre_vote(const NodeId& target,
+                               const kythira::request_pre_vote_request<NodeId>& request,
                                std::chrono::milliseconds timeout)
         -> future_template<kythira::request_pre_vote_response<>>;
 
-    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+    auto send_timeout_now(const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
                           std::chrono::milliseconds timeout)
         -> future_template<kythira::timeout_now_response<>>;
 
@@ -641,7 +653,7 @@ public:
     ///     outside this class, not from a nested template whose second
     ///     parameter would otherwise vary independently of `Types`.
     template<typename Request, typename Response>
-    auto send_rpc_via_generic_bridge_for_test(std::uint64_t target, std::string_view endpoint,
+    auto send_rpc_via_generic_bridge_for_test(const NodeId& target, std::string_view endpoint,
                                               const Request& request,
                                               std::chrono::milliseconds timeout)
         -> future_template<Response> {
@@ -662,21 +674,21 @@ private:
     /// never a failed exchange. Carries its own mutex, which matters more here
     /// than for the other transports: both client paths touch it from an
     /// `EventBase` thread that is not the caller's.
-    peer_capability_cache<std::uint64_t> _capability_cache;
-    std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
+    peer_capability_cache<NodeId> _capability_cache;
+    std::unordered_map<NodeId, std::string> _node_id_to_url;
     proxygen_client_config _config;
     metrics_type _metrics;
     std::shared_ptr<folly::SSLContext> _ssl_ctx;
     mutable std::mutex _mutex;
-    std::unordered_map<std::uint64_t, proxygen_detail::pooled_connection> _connections;
+    std::unordered_map<NodeId, proxygen_detail::pooled_connection> _connections;
     std::vector<std::shared_ptr<folly::SSLContext>> _retired_ssl_contexts;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
 
     auto validate_certificate_files() const -> void;
     auto build_ssl_context() -> std::shared_ptr<folly::SSLContext>;
-    auto get_or_create_slot(std::uint64_t target) -> proxygen_detail::pooled_connection&;
-    auto resolve_target(std::uint64_t target) const
+    auto get_or_create_slot(const NodeId& target) -> proxygen_detail::pooled_connection&;
+    auto resolve_target(const NodeId& target) const
         -> std::tuple<std::vector<folly::SocketAddress>, std::string, bool>;
 
     /// @param attempted Media types this peer has already refused with 415 for
@@ -694,7 +706,7 @@ private:
     ///        discarded that and walked the preference list blind; the only
     ///        symptom was one extra round trip, which nothing observed.
     template<typename Request, typename Response>
-    auto send_rpc(std::uint64_t target, std::string_view endpoint, const Request& request,
+    auto send_rpc(NodeId target, std::string_view endpoint, const Request& request,
                   std::chrono::milliseconds timeout, std::vector<std::string> attempted = {},
                   std::string chosen_media_type = {}) -> future_template<Response>;
 
@@ -709,9 +721,9 @@ private:
     ///        parameter is what makes it structurally impossible for them to
     ///        disagree about which encoding a given call used.
     template<typename Request, typename Response>
-    auto send_rpc_generic_bridge(std::uint64_t target, std::string_view endpoint,
-                                 const Request& request, std::chrono::milliseconds timeout,
-                                 const std::string& content_type) -> future_template<Response>;
+    auto send_rpc_generic_bridge(NodeId target, std::string_view endpoint, const Request& request,
+                                 std::chrono::milliseconds timeout, const std::string& content_type)
+        -> future_template<Response>;
 
     /// @brief Requirement 16: the Folly-native fast path, taken instead of
     ///     `send_rpc` above when `future_template<Response>` is
@@ -724,8 +736,8 @@ private:
     ///     (Requirement 16.3), avoiding the cross-thread post the generic
     ///     bridge does not itself guarantee avoiding.
     template<typename Request, typename Response>
-    auto send_rpc_folly_fast_path(std::uint64_t target, std::string_view endpoint,
-                                  const Request& request, std::chrono::milliseconds timeout,
+    auto send_rpc_folly_fast_path(NodeId target, std::string_view endpoint, const Request& request,
+                                  std::chrono::milliseconds timeout,
                                   const std::string& content_type) -> kythira::Future<Response>;
 };
 
@@ -739,7 +751,10 @@ private:
 ///     `std::shared_ptr<folly::IOThreadPoolExecutorBase>` (Requirement
 ///     8.2) -- when absent, `HTTPServer::start()` constructs its own,
 ///     matching `cpp_httplib_server`'s self-contained-by-default posture.
-template<typename Types>
+///
+/// `NodeId` is the id type the decoded requests carry, defaulting to
+/// `std::uint64_t` as for the client.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::proxygen_future_default_transport_types<Types>
 class proxygen_server {
 public:
@@ -748,6 +763,7 @@ public:
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
+    using node_id_type = NodeId;
 
     proxygen_server(std::string bind_address, std::uint16_t bind_port,
                     proxygen_server_config config, metrics_type metrics,
@@ -759,31 +775,32 @@ public:
     proxygen_server(proxygen_server&&) = delete;
     auto operator=(proxygen_server&&) -> proxygen_server& = delete;
 
-    auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
-            handler) -> void;
+    auto register_request_vote_handler(std::function<kythira::request_vote_response<>(
+                                           const kythira::request_vote_request<NodeId>&)>
+                                           handler) -> void;
 
-    auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
-            handler) -> void;
+    auto register_append_entries_handler(std::function<kythira::append_entries_response<>(
+                                             const kythira::append_entries_request<NodeId>&)>
+                                             handler) -> void;
 
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
-                                               const kythira::install_snapshot_request<>&)>
+                                               const kythira::install_snapshot_request<NodeId>&)>
                                                handler) -> void;
 
     /// Satisfies `network_server_with_log_fetch` (peer-to-peer catch-up).
-    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
-                                                const kythira::fetch_log_entries_request<>&)>
-                                                handler) -> void;
+    auto register_fetch_log_entries_handler(
+        std::function<kythira::fetch_log_entries_response<NodeId>(
+            const kythira::fetch_log_entries_request<NodeId>&)>
+            handler) -> void;
     // Optional extensions. Left unregistered, their routes answer 501 rather
     // than the mandatory RPCs' 500, so a caller can tell "cannot serve this"
     // from "failed while serving it".
     auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
-                                               const kythira::request_pre_vote_request<>&)>
+                                               const kythira::request_pre_vote_request<NodeId>&)>
                                                handler) -> void;
 
     auto register_timeout_now_handler(
-        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
             handler) -> void;
 
     auto start() -> void;
@@ -888,18 +905,21 @@ private:
     std::exception_ptr _start_error;
     std::atomic<bool> _running{false};
 
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
         _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+    std::function<kythira::append_entries_response<>(
+        const kythira::append_entries_request<NodeId>&)>
         _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+    std::function<kythira::install_snapshot_response<>(
+        const kythira::install_snapshot_request<NodeId>&)>
         _install_snapshot_handler;
-    std::function<kythira::fetch_log_entries_response<>(
-        const kythira::fetch_log_entries_request<>&)>
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         _fetch_log_entries_handler;
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+    std::function<kythira::request_pre_vote_response<>(
+        const kythira::request_pre_vote_request<NodeId>&)>
         _request_pre_vote_handler;
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
         _timeout_now_handler;
 
     std::mutex _requests_mutex;
