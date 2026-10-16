@@ -15,6 +15,7 @@
 
 #ifdef KYTHIRA_HAS_GCP_PRIVATECA
 
+#include <raft/certificate_serial_x509.hpp>
 #include <raft/csr_policy.hpp>
 
 #include <google/cloud/credentials.h>
@@ -58,6 +59,19 @@ inline auto make_client(const kythira::gcp_client_config& gcp)
 inline auto ca_pool_path(const gcp_privateca_certificate_provider_config& cfg) -> std::string {
     return "projects/" + cfg.gcp.project_id + "/locations/" + cfg.location + "/caPools/" +
            cfg.ca_pool_id;
+}
+
+/// A CAS certificate's serial (up to 20 octets). Read from the certificate
+/// itself, which is authoritative; CAS's own `hex_serial_number` is the
+/// fallback when the PEM is missing or unreadable. `std::nullopt` when
+/// neither yields one.
+inline auto serial_of(const google::cloud::security::privateca::v1::Certificate& certificate)
+    -> std::optional<certificate_serial> {
+    if (auto serial = serial_from_certificate_pem(certificate.pem_certificate())) {
+        return serial;
+    }
+    return certificate_serial::parse(
+        certificate.certificate_description().subject_description().hex_serial_number());
 }
 
 }  // namespace gcp_privateca_detail
@@ -202,8 +216,7 @@ inline auto gcp_privateca_certificate_provider::sign_csr(std::string csr_pem,
                 out.chain_pem += '\n';
             }
         }
-        // serial left 0 — CAS identifies certificates by resource name, not the
-        // local monotonic-counter scheme certificate_authority uses.
+        out.serial = gcp_privateca_detail::serial_of(*issued).value_or(certificate_serial{});
         return kythira::future_factory_default::makeReadyFuture(std::move(out));
     } catch (const std::invalid_argument&) {
         // A rejected request (e.g. by enforce_csr_matches_options) stays an
@@ -217,16 +230,15 @@ inline auto gcp_privateca_certificate_provider::sign_csr(std::string csr_pem,
     }
 }
 
-inline auto gcp_privateca_certificate_provider::revoke(std::string serial)
+inline auto gcp_privateca_certificate_provider::revoke(std::string resource_name)
     -> kythira::future_default<void> {
     try {
         fiu_do_on("raft/gcp/privateca/revoke_certificate",
                   throw std::runtime_error("fault: raft/gcp/privateca/revoke_certificate"););
 
         google::cloud::security::privateca::v1::RevokeCertificateRequest req;
-        // CAS addresses a certificate by resource name; `serial` here is the
-        // certificate resource name (or id) the caller recorded at issuance.
-        req.set_name(serial);
+        // CAS addresses a certificate by resource name.
+        req.set_name(resource_name);
         req.set_reason(google::cloud::security::privateca::v1::RevocationReason::
                            REVOCATION_REASON_UNSPECIFIED);
 
@@ -236,6 +248,38 @@ inline auto gcp_privateca_certificate_provider::revoke(std::string serial)
                                      revoked.status().message());
         }
         return kythira::future_factory_default::makeFuture();
+    } catch (const std::exception& ex) {
+        return kythira::future_factory_default::makeExceptionalFuture<void>(
+            std::make_exception_ptr(std::runtime_error(
+                std::string("gcp_privateca_certificate_provider::revoke: ") + ex.what())));
+    }
+}
+
+inline auto gcp_privateca_certificate_provider::revoke(const certificate_serial& serial)
+    -> kythira::future_default<void> {
+    try {
+        fiu_do_on("raft/gcp/privateca/list_certificates",
+                  throw std::runtime_error("fault: raft/gcp/privateca/list_certificates"););
+
+        google::cloud::security::privateca::v1::ListCertificatesRequest list_req;
+        list_req.set_parent(gcp_privateca_detail::ca_pool_path(_config));
+        std::string match;
+        bool already_revoked = false;
+        for (auto& certificate : _client.ListCertificates(list_req)) {
+            if (!certificate) {
+                throw std::runtime_error("gcp privateca ListCertificates: " +
+                                         certificate.status().message());
+            }
+            if (gcp_privateca_detail::serial_of(*certificate) == serial) {
+                match = certificate->name();
+                already_revoked = certificate->has_revocation_details();
+                break;
+            }
+        }
+        if (match.empty() || already_revoked) {
+            return kythira::future_factory_default::makeFuture();
+        }
+        return revoke(std::move(match));
     } catch (const std::exception& ex) {
         return kythira::future_factory_default::makeExceptionalFuture<void>(
             std::make_exception_ptr(std::runtime_error(
