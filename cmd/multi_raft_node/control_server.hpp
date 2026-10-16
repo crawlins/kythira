@@ -90,7 +90,8 @@ public:
             // one.
             server.Get("/leaders", [this](const httplib::Request&, httplib::Response& res) {
                 std::ostringstream out;
-                out << '{' << R"("node_id":)" << _options._node_id << R"(,"leads":[)";
+                out << '{' << R"("node_id":)" << kythira::node_id_json(_options._node_id)
+                    << R"(,"leads":[)";
                 bool first = true;
                 for (auto group : _host.group_ids()) {
                     auto* node = _host.group_node(group);
@@ -113,9 +114,9 @@ public:
             // assumption about how somebody launched it.
             server.Get("/describe", [this](const httplib::Request&, httplib::Response& res) {
                 std::ostringstream out;
-                out << '{' << R"("node_id":)" << _options._node_id << R"(,"transport":")"
-                    << _transport << R"(","groups":)" << _options._groups << R"(,"key_count":)"
-                    << _options._key_count << R"(,"tick_interval_ms":)"
+                out << '{' << R"("node_id":)" << kythira::node_id_json(_options._node_id)
+                    << R"(,"transport":")" << _transport << R"(","groups":)" << _options._groups
+                    << R"(,"key_count":)" << _options._key_count << R"(,"tick_interval_ms":)"
                     << _options._tick_interval.count() << R"(,"persistence":")"
                     << persistence_name() << R"(","durable":)" << (durable() ? "true" : "false")
                     << R"(,"shard_split":"pre-split")"
@@ -166,8 +167,8 @@ public:
                     }
                 }
                 std::ostringstream out;
-                out << R"({"node_id":)" << _options._node_id << R"(,"groups":)" << groups
-                    << R"(,"term_sum":)" << total << '}';
+                out << R"({"node_id":)" << kythira::node_id_json(_options._node_id)
+                    << R"(,"groups":)" << groups << R"(,"term_sum":)" << total << '}';
                 res.set_content(out.str(), "application/json");
             });
         };
@@ -204,7 +205,7 @@ private:
         static constexpr std::size_t k_probe_bytes = 1U << 20;
 
         std::ostringstream out;
-        out << R"({"node_id":)" << _options._node_id << R"(,"peers":[)";
+        out << R"({"node_id":)" << kythira::node_id_json(_options._node_id) << R"(,"peers":[)";
         bool first = true;
         for (const auto& [peer_id, url] : _options._peers) {
             if (peer_id == _options._node_id) {
@@ -222,7 +223,7 @@ private:
                 // like a peer that does not exist, and Requirement 18.4 of
                 // `.kiro/specs/multi-raft-performance/` is that an absent
                 // figure is null and never guessed.
-                out << '{' << R"("peer":)" << peer_id
+                out << '{' << R"("peer":)" << kythira::node_id_json(peer_id)
                     << R"(,"rtt_median_us":null,"bandwidth_mib_per_sec":null,)"
                     << R"("reason":"no --peer-control address"})";
                 continue;
@@ -255,8 +256,8 @@ private:
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - bw_started)
                     .count();
 
-            out << '{' << R"("peer":)" << peer_id << R"(,"rtt_samples":)" << rtt_us.size()
-                << R"(,"rtt_median_us":)";
+            out << '{' << R"("peer":)" << kythira::node_id_json(peer_id) << R"(,"rtt_samples":)"
+                << rtt_us.size() << R"(,"rtt_median_us":)";
             if (rtt_us.empty()) {
                 // Not stated, never guessed. An unreachable peer's round trip
                 // is absent, and a zero here would read as "instantaneous".
