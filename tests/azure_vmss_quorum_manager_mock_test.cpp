@@ -36,8 +36,11 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -351,7 +354,8 @@ struct Cloud {
         }
     }
 
-    [[nodiscard]] auto make() const -> manager {
+    template<typename NodeId = std::uint64_t>
+    [[nodiscard]] auto make() const -> kythira::azure_vmss_quorum_manager<NodeId, std::string> {
         kythira::azure_vmss_quorum_manager_config cfg;
         cfg.cluster_name = cluster;
         cfg.azure.subscription_id = subscription;
@@ -365,7 +369,7 @@ struct Cloud {
         cfg.provision_timeout = std::chrono::seconds{1};
         cfg.decommission_timeout = std::chrono::seconds{1};
         cfg.poll_interval = std::chrono::milliseconds{1};
-        return manager{cfg};
+        return kythira::azure_vmss_quorum_manager<NodeId, std::string>{cfg};
     }
 };
 
@@ -557,6 +561,193 @@ BOOST_AUTO_TEST_CASE(unparseable_node_id_tags_do_not_steer_allocation) {
     auto mgr = cloud.make();
     const auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
     BOOST_TEST(peer.node_id == 4U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Composite and string node ids (cloud-composite-node-ids task 4.2) ────────
+
+namespace {
+
+/// The node id of VM @p name in @p group: an `azure_vm_node_id`, or its
+/// canonical text in string mode.
+template<typename NodeId>
+auto vm_id(const std::string& name, const std::string& group = resource_group) -> NodeId {
+    kythira::azure_vm_node_id id{group, name};
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return id.to_string();
+    } else {
+        return id;
+    }
+}
+
+auto canonical(const std::string& name) -> std::string {
+    return kythira::azure_vm_node_id{resource_group, name}.to_string();
+}
+
+/// Three voters adopted by a composite- or string-mode manager: tagged with
+/// their own canonical id, not a number.
+struct VmIdCloud {
+    std::shared_ptr<ArmScaleSet> arm = std::make_shared<ArmScaleSet>();
+    std::vector<std::string> voters{"kythira_1", "kythira_2", "kythira_3"};
+
+    VmIdCloud() {
+        for (const auto& v : voters) {
+            arm->seed(v, node_tags(canonical(v)), true);
+        }
+    }
+
+    template<typename NodeId> [[nodiscard]] auto make() const {
+        Cloud base;  // Only for its configuration; its own double is replaced.
+        base.arm = arm;
+        return base.template make<NodeId>();
+    }
+};
+
+template<typename NodeId> auto placements(const std::vector<NodeId>& ids) {
+    std::vector<kythira::node_placement<NodeId, std::string>> out;
+    for (const auto& id : ids) {
+        out.push_back({.node_id = id, .group_id = "1"});
+    }
+    return out;
+}
+
+using vm_id_modes = std::tuple<kythira::azure_vm_node_id, std::string>;
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(vmss_vm_node_ids)
+
+// Provision adopts the new member and its name in the resource group is the
+// node id: nothing allocated, and the tag carries the canonical text.
+BOOST_AUTO_TEST_CASE_TEMPLATE(provision_takes_the_id_from_the_member_name, NodeId, vm_id_modes) {
+    VmIdCloud cloud;
+    auto mgr = cloud.make<NodeId>();
+    const auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    const auto name = cloud.arm->last_launch();
+    BOOST_TEST((peer.node_id == vm_id<NodeId>(name)));
+    BOOST_TEST(peer.address == "10.0.0.5:7000");
+    const auto adopted = cloud.arm->find(name);
+    BOOST_REQUIRE(adopted.has_value());
+    BOOST_TEST(adopted->tags.at("kythira:node-id") == canonical(name));
+    BOOST_TEST(adopted->tags.at("kythira:cluster") == cluster);
+    BOOST_TEST(adopted->protected_from_scale_in);
+
+    // A second provision gets the next member's name, not a counter.
+    const auto second = std::move(mgr.provision_node("1", std::nullopt)).get();
+    BOOST_TEST(cloud.arm->last_launch() != name);
+    BOOST_TEST((second.node_id == vm_id<NodeId>(cloud.arm->last_launch())));
+}
+
+// A node whose id is another resource group's VM, a VM that does not exist,
+// or another cluster's member is unreachable; none fails the assessment.
+BOOST_AUTO_TEST_CASE_TEMPLATE(assess_reports_foreign_and_missing_ids_unreachable, NodeId,
+                              vm_id_modes) {
+    VmIdCloud cloud;
+    cloud.arm->seed("other_4", node_tags(canonical("other_4"), "other-cluster"), true);
+    auto mgr = cloud.make<NodeId>();
+
+    std::vector<NodeId> ids;
+    for (const auto& v : cloud.voters) {
+        ids.push_back(vm_id<NodeId>(v));
+    }
+    const auto out_of_scope = vm_id<NodeId>("kythira_1", "other-rg");
+    const auto missing = vm_id<NodeId>("kythira_9");
+    const auto foreign = vm_id<NodeId>("other_4");
+    ids.insert(ids.end(), {out_of_scope, missing, foreign});
+    if constexpr (std::same_as<NodeId, std::string>) {
+        ids.push_back("7");  // A numeric-mode id: not azure-vm text at all.
+    }
+
+    const auto health = std::move(mgr.assess_quorum(placements(ids))).get();
+    BOOST_TEST(health.live_node_count == 3U);
+    BOOST_TEST(health.total_node_count == ids.size());
+    BOOST_TEST(health.unreachable_nodes.size() == ids.size() - 3);
+    for (const auto& id : {out_of_scope, missing, foreign}) {
+        BOOST_TEST(
+            (std::ranges::find(health.unreachable_nodes, id) != health.unreachable_nodes.end()));
+    }
+}
+
+// A member that has not settled is reported unreachable by its own id.
+BOOST_AUTO_TEST_CASE_TEMPLATE(assess_reports_an_unsettled_member_unreachable, NodeId, vm_id_modes) {
+    VmIdCloud cloud;
+    cloud.arm->seed("kythira_4", node_tags(canonical("kythira_4")), true, "Updating");
+    auto mgr = cloud.make<NodeId>();
+    const auto health = std::move(mgr.assess_quorum(placements<NodeId>(
+                                      {vm_id<NodeId>("kythira_1"), vm_id<NodeId>("kythira_4")})))
+                            .get();
+    BOOST_TEST(health.live_node_count == 1U);
+    BOOST_REQUIRE(health.unreachable_nodes.size() == 1U);
+    BOOST_TEST((health.unreachable_nodes.front() == vm_id<NodeId>("kythira_4")));
+}
+
+// Decommission deletes the member the id names, by its name, and nothing else.
+BOOST_AUTO_TEST_CASE_TEMPLATE(decommission_deletes_the_named_member, NodeId, vm_id_modes) {
+    VmIdCloud cloud;
+    auto mgr = cloud.make<NodeId>();
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(vm_id<NodeId>("kythira_2"))).get());
+    BOOST_TEST(!cloud.arm->find("kythira_2").has_value());
+    BOOST_TEST(cloud.arm->capacity() == 2);
+    BOOST_TEST(cloud.arm->find("kythira_1").has_value());
+    BOOST_TEST(cloud.arm->find("kythira_3").has_value());
+
+    // Already gone: idempotent.
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(vm_id<NodeId>("kythira_2"))).get());
+    BOOST_TEST(cloud.arm->capacity() == 2);
+}
+
+// The id is the VM, not a tag value: a member whose tag says something else
+// (here a numeric-mode id) is still found by its name.
+BOOST_AUTO_TEST_CASE_TEMPLATE(decommission_finds_the_member_by_name_not_by_tag, NodeId,
+                              vm_id_modes) {
+    VmIdCloud cloud;
+    cloud.arm->seed("kythira_4", node_tags("2"), true);
+    auto mgr = cloud.make<NodeId>();
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(vm_id<NodeId>("kythira_4"))).get());
+    BOOST_TEST(!cloud.arm->find("kythira_4").has_value());
+}
+
+// Another cluster's member is not ours to delete, even by its exact id; an
+// id outside this resource group is refused outright.
+BOOST_AUTO_TEST_CASE_TEMPLATE(decommission_leaves_foreign_members_alone, NodeId, vm_id_modes) {
+    VmIdCloud cloud;
+    cloud.arm->seed("other_4", node_tags(canonical("other_4"), "other-cluster"), true);
+    auto mgr = cloud.make<NodeId>();
+
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(vm_id<NodeId>("other_4"))).get());
+    BOOST_TEST(cloud.arm->find("other_4").has_value());
+
+    BOOST_CHECK_THROW(
+        std::move(mgr.decommission_node(vm_id<NodeId>("kythira_1", "other-rg"))).get(),
+        std::exception);
+    BOOST_TEST(cloud.arm->find("kythira_1").has_value());
+    BOOST_TEST(cloud.arm->capacity() == 4);
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_refuses_text_that_is_not_an_azure_vm_id) {
+    VmIdCloud cloud;
+    auto mgr = cloud.make<std::string>();
+    for (const std::string bad :
+         {"1", "azure-vm:TEST-RG:kythira_1", "gcp:p/us-east1-b:kythira-1"}) {
+        BOOST_CHECK_THROW(std::move(mgr.decommission_node(bad)).get(), std::exception);
+    }
+    BOOST_TEST(cloud.arm->names() == cloud.voters);
+}
+
+// The resource group is the scope of every id, so it must be a valid one.
+BOOST_AUTO_TEST_CASE(construction_requires_a_valid_resource_group_scope) {
+    kythira::azure_vmss_quorum_manager_config cfg;
+    cfg.cluster_name = cluster;
+    cfg.azure.subscription_id = subscription;
+    cfg.azure.resource_group = "bad rg";
+    cfg.azure.arm_endpoint_override = "https://arm.test";
+    cfg.azure.credential = std::make_shared<FakeTokenCredential>();
+    cfg.azure.transport = std::make_shared<ArmScaleSet>();
+    cfg.scale_set_by_group["1"] = scale_set;
+    using composite_manager =
+        kythira::azure_vmss_quorum_manager<kythira::azure_vm_node_id, std::string>;
+    BOOST_CHECK_THROW((void)composite_manager{cfg}, std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

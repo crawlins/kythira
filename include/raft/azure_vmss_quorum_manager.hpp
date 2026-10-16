@@ -148,6 +148,20 @@ struct azure_vmss_quorum_manager_config {
 /// `Microsoft.Compute/virtualMachines` resource with tags of its own, while a
 /// Uniform member has none and merely reflects the scale set's. The constructor
 /// enforces it.
+///
+/// **Composite and string mode** (`NodeId = azure_vm_node_id`, or
+/// `std::string` holding its canonical text; cloud-composite-node-ids
+/// Requirement 5): the node id is the adopted member itself, its VM name in
+/// the configured resource group, which is unique there even across several
+/// scale sets. Nothing is allocated: there is no tag scan, no floor and no
+/// reuse after a decommission. A node id is mapped back to its member by
+/// reading the VM name out of it and reading that VM directly. The
+/// `kythira:node-id` tag still carries the canonical text, for discovery and
+/// the leak audit, and an untagged member is still what provisioning adopts.
+/// The member's name is not known until the scale set creates it, so a node
+/// learns its own id with `--node-id=metadata:azure` rather than from
+/// `{NODE_ID}` (Requirement 6.4). Numeric mode (an unsigned `NodeId`) is
+/// unchanged.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires kythira::node_id<NodeId>
 class azure_vmss_quorum_manager {
@@ -155,6 +169,9 @@ public:
     using node_id_type = NodeId;
     using address_type = Address;
     using placement_group_id_type = std::string;
+
+    /// True when the node id is the member VM itself (composite or string mode).
+    static constexpr bool vm_is_node_id = node_id_traits<NodeId>::is_textual;
 
     /// Constructs the manager, validates the configuration, and verifies of
     /// every configured scale set that it uses **Flexible** orchestration and
@@ -187,6 +204,17 @@ public:
             if (_cfg.scale_set_by_group.find(gt.group_id) == _cfg.scale_set_by_group.end()) {
                 throw std::invalid_argument(
                     "azure_vmss_quorum_manager: no scale set configured for group: " + gt.group_id);
+            }
+        }
+        if constexpr (vm_is_node_id) {
+            // The resource group is the scope of every node id, so one that
+            // cannot be an azure-vm scope would make every member unaddressable.
+            if (!azure_vm_rules::valid(
+                    composite_node_id_detail::to_lower_ascii(_cfg.azure.resource_group), "probe")) {
+                throw std::invalid_argument(
+                    "azure_vmss_quorum_manager: azure.resource_group must name a resource group "
+                    "when the node id is the member VM (got '" +
+                    _cfg.azure.resource_group + "')");
             }
         }
 
@@ -290,6 +318,33 @@ public:
                 return build_health(cluster, {});
             }
 
+            if constexpr (vm_is_node_id) {
+                // One direct read per node, by the VM name its id carries. An
+                // id that is not azure-vm text in this resource group, or names
+                // a VM that is gone, outside every configured scale set, or
+                // another cluster's, is left out of the map and so reported
+                // unreachable; it never fails the assessment.
+                std::map<std::string, bool> live_map;
+                for (const auto& np : cluster) {
+                    const auto vm_name = vm_name_of(np.node_id);
+                    if (!vm_name) {
+                        std::cerr << "[azure_vmss_quorum_manager::assess_quorum] node "
+                                  << node_id_str(np.node_id) << " is not a VM in resource group "
+                                  << _cfg.azure.resource_group << "; reporting it unreachable\n";
+                        continue;
+                    }
+                    std::optional<std::pair<std::string, boost::json::object>> member;
+                    try {
+                        member = our_member(*vm_name);
+                    } catch (const std::exception&) {
+                        member.reset();  // As vm_is_ready: an unreadable member is not ready.
+                    }
+                    live_map[node_id_str(np.node_id)] =
+                        member && vm_object_is_ready(member->second);
+                }
+                return build_health(cluster, live_map);
+            }
+
             // Only the node IDs this call was asked about, so an unrelated
             // cluster sharing the scale set costs nothing to assess.
             std::set<std::string> wanted;
@@ -383,7 +438,9 @@ public:
     /// Increments `target_group`'s scale set capacity by one, waits for a
     /// `PowerState/running` instance that was not a member before the
     /// increment and lacks a `kythira:node-id` tag, then tags it with a
-    /// freshly-assigned NodeId and protects it from scale-in.
+    /// freshly-assigned NodeId (numeric mode) or with its own id, its VM name
+    /// in the resource group (composite and string mode), and protects it from
+    /// scale-in.
     ///
     /// On timeout the increment is undone without letting the scale set choose
     /// a victim (group-scale-up-rollback Requirements 2-3): every member the
@@ -464,9 +521,28 @@ public:
                                          group_rollback::describe(rollback, orig_capacity + 1));
             }
 
-            NodeId new_id = next_node_id();
-            // Spent from here on, even if tagging fails below.
-            _id_floor.raise(new_id);
+            NodeId new_id{};
+            if constexpr (vm_is_node_id) {
+                // The member's own name is its id; nothing to allocate.
+                auto from_vm = node_id_of_vm(found_instance_id);
+                if (!from_vm) {
+                    // Azure's naming rules are not exactly the azure-vm id's
+                    // (`[a-z0-9._-]`, 1-64, case-folded), so a scale set whose
+                    // naming produces another name cannot host this cluster.
+                    // The member is ours and untagged: remove it rather than
+                    // leave it running and billed with no node behind it.
+                    (void)delete_member(scale_set, found_instance_id);
+                    throw std::runtime_error("scale set " + scale_set + " created member '" +
+                                             found_instance_id +
+                                             "', whose name is not a valid azure-vm node id; "
+                                             "the member was deleted");
+                }
+                new_id = std::move(*from_vm);
+            } else {
+                new_id = next_node_id();
+                // Spent from here on, even if tagging fails below.
+                _id_floor.raise(new_id);
+            }
             tag_instance(found_instance_id, found_vm, new_id, target_group);
             // Not fatal: the node is up and tagged, and the constructor's
             // reconcile protects it on the next start. Failing the provision
@@ -522,6 +598,11 @@ public:
 
     /// Deletes the scale-set member identified by `node_id`, idempotently.
     ///
+    /// In composite and string mode the member is the VM the id names, read
+    /// directly; an id that is not an azure-vm id in this resource group is
+    /// refused with `std::invalid_argument`, and one naming a VM that is gone,
+    /// outside the configured scale sets, or another cluster's is a no-op.
+    ///
     /// The scale set's own `POST .../delete` action, taking the member's VM
     /// name in `instanceIds` -- under Flexible there is no separate numeric
     /// instance id, the name is the id. Measured: this decrements
@@ -535,7 +616,14 @@ public:
             fiu_do_on("raft/azure/vmss/delete_instance",
                       throw std::runtime_error("fault: raft/azure/vmss/delete_instance"););
 
-            auto found = find_instance(node_id);
+            if constexpr (vm_is_node_id) {
+                if (!vm_name_of(node_id)) {
+                    throw std::invalid_argument("node " + node_id_str(node_id) +
+                                                " is not a VM in resource group " +
+                                                _cfg.azure.resource_group);
+                }
+            }
+            auto found = locate_member(node_id);
             if (!found) {
                 return future_factory_default::makeFuture();
             }
@@ -554,7 +642,7 @@ public:
             // has not done its job, and says so.
             auto deadline = std::chrono::steady_clock::now() + _cfg.decommission_timeout;
             for (;;) {
-                if (!find_instance(node_id)) {
+                if (!locate_member(node_id)) {
                     return future_factory_default::makeFuture();
                 }
                 if (std::chrono::steady_clock::now() >= deadline) {
@@ -694,8 +782,23 @@ private:
     /// state per VM for the same reason, and clusters here are small.
     [[nodiscard]] auto vm_is_ready(const std::string& vm_name) const -> bool {
         try {
-            auto body = arm_get("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
-                                "?$expand=instanceView&api-version=" + compute_api_version);
+            return vm_object_is_ready(get_vm_with_instance_view(vm_name));
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
+    /// The VM resource @p vm_name with its instance view. Throws
+    /// `arm_not_found` when there is no such VM.
+    [[nodiscard]] auto get_vm_with_instance_view(const std::string& vm_name) const
+        -> boost::json::value {
+        return arm_get("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
+                       "?$expand=instanceView&api-version=" + compute_api_version);
+    }
+
+    /// `vm_is_ready` over a VM already read with its instance view.
+    [[nodiscard]] static auto vm_object_is_ready(const boost::json::value& body) -> bool {
+        try {
             std::string provisioning_state;
             try {
                 provisioning_state =
@@ -761,7 +864,9 @@ private:
     /// manual delete, or the highest-numbered node's decommission). The floor
     /// is per process; across leader changes the Raft node's refusal of a
     /// replacement id that is already a member is what keeps a reuse safe.
-    [[nodiscard]] auto next_node_id() const -> NodeId {
+    [[nodiscard]] auto next_node_id() const -> NodeId
+    requires(!vm_is_node_id)
+    {
         std::uint64_t max_id = 0;
         for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
             (void)group;
@@ -789,7 +894,9 @@ private:
     /// Scans every scale set in `scale_set_by_group` for an instance whose
     /// `kythira:node-id` tag matches `node_id`.
     [[nodiscard]] auto find_instance(const NodeId& node_id) const
-        -> std::optional<std::pair<std::string, std::string>> {
+        -> std::optional<std::pair<std::string, std::string>>
+    requires(!vm_is_node_id)
+    {
         std::string target = node_id_str(node_id);
         for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
             (void)group;
@@ -806,6 +913,110 @@ private:
                     // Flexible -- there is no separate numeric instance id.
                     return std::make_pair(scale_set, vm_name);
                 }
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// The (scale set, VM name) a node runs on, or nullopt when it has none.
+    /// Numeric mode scans for the `kythira:node-id` tag (`find_instance`);
+    /// composite and string mode read the VM the id names (`our_member`).
+    [[nodiscard]] auto locate_member(const NodeId& node_id) const
+        -> std::optional<std::pair<std::string, std::string>> {
+        if constexpr (vm_is_node_id) {
+            const auto vm_name = vm_name_of(node_id);
+            if (!vm_name) {
+                return std::nullopt;
+            }
+            auto member = our_member(*vm_name);
+            if (!member) {
+                return std::nullopt;
+            }
+            // The name as ARM spells it: the id holds it folded to lower case.
+            std::string name = *vm_name;
+            if (const auto* it = member->second.find("name");
+                it != member->second.end() && it->value().is_string()) {
+                name = std::string(it->value().as_string());
+            }
+            return std::make_pair(std::move(member->first), std::move(name));
+        } else {
+            return find_instance(node_id);
+        }
+    }
+
+    // ── composite and string mode: the member VM is the node id ─────────────
+
+    /// `{resource group, vm_name}` as a NodeId, or nullopt when `vm_name` is
+    /// not a valid azure-vm name. Never allocates or parses a number.
+    [[nodiscard]] auto node_id_of_vm(const std::string& vm_name) const -> std::optional<NodeId>
+    requires vm_is_node_id
+    {
+        try {
+            azure_vm_node_id id{_cfg.azure.resource_group, vm_name};
+            if constexpr (std::same_as<NodeId, std::string>) {
+                return id.to_string();
+            } else {
+                return id;
+            }
+        } catch (const std::invalid_argument&) {
+            return std::nullopt;
+        }
+    }
+
+    /// The VM name a node id carries, or nullopt when the id is not canonical
+    /// azure-vm text or its scope is another resource group (Requirement
+    /// 4.4's out-of-scope rule, applied here).
+    [[nodiscard]] auto vm_name_of(const NodeId& nid) const -> std::optional<std::string>
+    requires vm_is_node_id
+    {
+        std::optional<azure_vm_node_id> id;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            id = azure_vm_node_id::parse(nid);
+        } else {
+            id = nid;
+        }
+        // The type stores the scope folded to lower case, as Azure compares it.
+        if (!id ||
+            id->scope() != composite_node_id_detail::to_lower_ascii(_cfg.azure.resource_group)) {
+            return std::nullopt;
+        }
+        return std::string(id->native());
+    }
+
+    /// The scale set holding @p vm_name and the VM itself (with its instance
+    /// view), read directly by name. Nullopt when there is no such VM, it is
+    /// in none of the configured scale sets, or its `kythira:cluster` tag
+    /// names another cluster: a VM name is unique in the resource group, but
+    /// only a member this cluster adopted is ours to assess or delete.
+    /// Any other ARM error throws.
+    [[nodiscard]] auto our_member(const std::string& vm_name) const
+        -> std::optional<std::pair<std::string, boost::json::object>>
+    requires vm_is_node_id
+    {
+        boost::json::value body;
+        try {
+            body = get_vm_with_instance_view(vm_name);
+        } catch (const arm_not_found&) {
+            return std::nullopt;
+        }
+        if (!body.is_object()) {
+            return std::nullopt;
+        }
+        const auto& vm = body.as_object();
+        std::string owner;
+        try {
+            owner =
+                std::string(vm.at("properties").at("virtualMachineScaleSet").at("id").as_string());
+        } catch (const std::exception&) {
+            return std::nullopt;  // An ordinary VM, not a scale-set member.
+        }
+        if (cluster_tag(vm) != _cfg.cluster_name) {
+            return std::nullopt;
+        }
+        for (const auto& [group, scale_set] : _cfg.scale_set_by_group) {
+            (void)group;
+            if (resource_id_names_scale_set(owner, scale_set)) {
+                return std::make_pair(scale_set, vm);
             }
         }
         return std::nullopt;
@@ -1184,6 +1395,12 @@ private:
 static_assert(quorum_manager<azure_vmss_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "azure_vmss_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<azure_vmss_quorum_manager<azure_vm_node_id, std::string>,
+                             azure_vm_node_id, std::string, std::string>,
+              "azure_vmss_quorum_manager<azure_vm_node_id> must satisfy quorum_manager");
+static_assert(quorum_manager<azure_vmss_quorum_manager<std::string, std::string>, std::string,
+                             std::string, std::string>,
+              "azure_vmss_quorum_manager<std::string> must satisfy quorum_manager");
 
 }  // namespace kythira
 
