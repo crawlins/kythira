@@ -59,6 +59,7 @@
 // unavailability at run time instead of failing the build (Requirement 2.2).
 //
 #include <raft/types.hpp>
+#include <raft/composite_node_id.hpp>
 #include <raft/network.hpp>
 // coap_client_config / coap_server_config / pending_message /
 // translate_legacy_fields(), shared with the libcoap backend. NOT
@@ -989,10 +990,19 @@ template<typename Rpc> inline auto protect_next_request_block(Rpc& rpc) -> void 
 // Templated on Types alone and constrained by transport_types<Types>, exactly
 // like the libcoap coap_client — so callers get the same Future backend and the
 // same metrics_type regardless of CoAP library (Requirement 1.3).
-template<typename Types>
+//
+// `NodeId` is the type peers are named by and the requests carry
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2): the endpoint map,
+// the peer capability cache and every `send_*` target use it. It defaults to
+// `std::uint64_t`, so `coap_libnyoci_client<Types>` is the numeric client.
+// Node ids never travel in a Uri-Path, Uri-Query or other option -- the
+// resource is fixed per RPC and the ids ride in the serialized body -- so no
+// id ever needs percent-encoding into the request URI built here.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::transport_types<Types>
 class coap_libnyoci_client {
 public:
+    using node_id_type = NodeId;
     template<typename T> using future_template = typename Types::template future_template<T>;
     // Not required by kythira::transport_types (see coap_client's own note on
     // the same alias): needed only to build a promise/future pair matching
@@ -1003,7 +1013,7 @@ public:
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
 
-    coap_libnyoci_client(std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint_map,
+    coap_libnyoci_client(std::unordered_map<NodeId, std::string> node_id_to_endpoint_map,
                          kythira::coap_client_config config, metrics_type metrics)
         : _registry{},
           _node_id_to_endpoint{std::move(node_id_to_endpoint_map)},
@@ -1087,35 +1097,39 @@ public:
 
     // --- network_client concept surface (matches network.hpp exactly) ---
 
-    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+    auto send_request_vote(const NodeId& target,
+                           const kythira::request_vote_request<NodeId>& request,
                            std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::request_vote_response<>> {
-        return send_rpc<kythira::request_vote_request<>, kythira::request_vote_response<>>(
+        return send_rpc<kythira::request_vote_request<NodeId>, kythira::request_vote_response<>>(
             target, libnyoci_request_vote_path, request, timeout);
     }
 
-    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+    auto send_append_entries(const NodeId& target,
+                             const kythira::append_entries_request<NodeId>& request,
                              std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::append_entries_response<>> {
-        return send_rpc<kythira::append_entries_request<>, kythira::append_entries_response<>>(
-            target, libnyoci_append_entries_path, request, timeout);
+        return send_rpc<kythira::append_entries_request<NodeId>,
+                        kythira::append_entries_response<>>(target, libnyoci_append_entries_path,
+                                                            request, timeout);
     }
 
-    auto send_install_snapshot(std::uint64_t target,
-                               const kythira::install_snapshot_request<>& request,
+    auto send_install_snapshot(const NodeId& target,
+                               const kythira::install_snapshot_request<NodeId>& request,
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
         -> future_template<kythira::install_snapshot_response<>> {
-        return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
+        return send_rpc<kythira::install_snapshot_request<NodeId>,
+                        kythira::install_snapshot_response<>>(
             target, libnyoci_install_snapshot_path, request, timeout,
             coap_message_reliability::always_confirmable);
     }
 
     /// Leadership transfer (Requirement 3). Always sent confirmable, whatever
     /// `use_confirmable_messages` says, exactly as the libcoap client does.
-    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+    auto send_timeout_now(const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
                           std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::timeout_now_response<>> {
-        return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+        return send_rpc<kythira::timeout_now_request<NodeId>, kythira::timeout_now_response<>>(
             target, libnyoci_timeout_now_path, request, timeout,
             coap_message_reliability::always_confirmable);
     }
@@ -1123,22 +1137,23 @@ public:
     /// Peer-to-peer catch-up (network_client_with_log_fetch). Follows
     /// `use_confirmable_messages` like AppendEntries; a large response comes
     /// back block-wise.
-    auto send_fetch_log_entries(std::uint64_t target,
-                                const kythira::fetch_log_entries_request<>& request,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const kythira::fetch_log_entries_request<NodeId>& request,
                                 std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
-        -> future_template<kythira::fetch_log_entries_response<>> {
-        return send_rpc<kythira::fetch_log_entries_request<>,
-                        kythira::fetch_log_entries_response<>>(
+        -> future_template<kythira::fetch_log_entries_response<NodeId>> {
+        return send_rpc<kythira::fetch_log_entries_request<NodeId>,
+                        kythira::fetch_log_entries_response<NodeId>>(
             target, libnyoci_fetch_log_entries_path, request, timeout);
     }
 
     /// PreVote (.kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 5).
     /// RequestVote's reliability, not TimeoutNow's forced CON, as on libcoap.
-    auto send_request_pre_vote(std::uint64_t target,
-                               const kythira::request_pre_vote_request<>& request,
+    auto send_request_pre_vote(const NodeId& target,
+                               const kythira::request_pre_vote_request<NodeId>& request,
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
         -> future_template<kythira::request_pre_vote_response<>> {
-        return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+        return send_rpc<kythira::request_pre_vote_request<NodeId>,
+                        kythira::request_pre_vote_response<>>(
             target, libnyoci_request_pre_vote_path, request, timeout);
     }
 
@@ -1163,7 +1178,7 @@ private:
     struct pending_rpc {
         std::string uri;
         std::string resource_path;
-        std::uint64_t target{0};
+        NodeId target{};
         std::vector<std::byte> payload;
         std::string request_media_type;
         std::vector<std::uint16_t> accept_formats;
@@ -1231,14 +1246,14 @@ private:
     /// POST `payload` verbatim to `resource_path` on `target` and hand back the
     /// response body. No serializer, no negotiation, no OSCORE -- this exists
     /// for the EDHOC bootstrap, which runs before any Security Context does.
-    [[nodiscard]] auto post_raw(std::uint64_t target, const std::string& resource_path,
+    [[nodiscard]] auto post_raw(const NodeId& target, const std::string& resource_path,
                                 std::vector<std::byte> payload, std::chrono::milliseconds timeout)
         -> std::vector<std::byte> {
 #ifdef LIBNYOCI_AVAILABLE
         const auto endpoint = _node_id_to_endpoint.find(target);
         if (endpoint == _node_id_to_endpoint.end()) {
             throw coap_network_error("no CoAP endpoint configured for node " +
-                                     std::to_string(target));
+                                     node_id_traits<NodeId>::to_text(target));
         }
         auto promise = std::make_shared<promise_template<std::vector<std::byte>>>();
         auto future = promise->getFuture();
@@ -1283,7 +1298,7 @@ private:
     /// client is constructed, and a constructor is the wrong place to block on
     /// the network. The first RPC to a peer pays for the handshake; the rest
     /// reuse the context. Guarded so concurrent first calls run it once.
-    auto ensure_edhoc_context(std::uint64_t target) -> void {
+    auto ensure_edhoc_context(const NodeId& target) -> void {
         const std::lock_guard lock(_bootstrap_mutex);
         if (_oscore) {
             return;
@@ -1301,7 +1316,7 @@ private:
     }
 
     template<typename Request, typename Response>
-    auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
+    auto send_rpc(const NodeId& target, const std::string& resource_path, const Request& request,
                   std::chrono::milliseconds timeout,
                   coap_message_reliability reliability = coap_message_reliability::per_config)
         -> future_template<Response> {
@@ -1313,7 +1328,7 @@ private:
             const auto endpoint = _node_id_to_endpoint.find(target);
             if (endpoint == _node_id_to_endpoint.end()) {
                 throw coap_network_error("no CoAP endpoint configured for node " +
-                                         std::to_string(target));
+                                         node_id_traits<NodeId>::to_text(target));
             }
 
             // Same negotiation the libcoap client does: send in whatever this
@@ -1397,7 +1412,7 @@ private:
             auto request_metric = _metrics;
             request_metric.set_metric_name("coap.client.request.sent");
             request_metric.add_dimension("resource_path", resource_path);
-            request_metric.add_dimension("target_node_id", std::to_string(target));
+            request_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             request_metric.add_dimension("media_type", request_media_type);
             request_metric.add_one();
             request_metric.emit();
@@ -1820,8 +1835,8 @@ private:
     /// `_registry`.
     serializer_type _serializer;
     serializer_registry_type _registry;
-    peer_capability_cache<std::uint64_t> _capability_cache;
-    std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
+    peer_capability_cache<NodeId> _capability_cache;
+    std::unordered_map<NodeId, std::string> _node_id_to_endpoint;
     kythira::coap_client_config _config;
     metrics_type _metrics;
 
@@ -1856,10 +1871,15 @@ private:
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
-template<typename Types>
+//
+// `NodeId` is the type the requests' node ids are decoded into
+// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.2); it defaults to
+// `std::uint64_t`, so `coap_libnyoci_server<Types>` is the numeric server.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::transport_types<Types>
 class coap_libnyoci_server {
 public:
+    using node_id_type = NodeId;
     template<typename T> using future_template = typename Types::template future_template<T>;
     using serializer_type = typename Types::serializer_type;
     using serializer_registry_type = typename Types::serializer_registry_type;
@@ -1907,22 +1927,22 @@ public:
 
     // --- network_server concept surface ---
 
-    auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
-            handler) -> void {
+    auto register_request_vote_handler(std::function<kythira::request_vote_response<>(
+                                           const kythira::request_vote_request<NodeId>&)>
+                                           handler) -> void {
         const std::lock_guard lock(_mutex);
         _request_vote_handler = std::move(handler);
     }
 
-    auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
-            handler) -> void {
+    auto register_append_entries_handler(std::function<kythira::append_entries_response<>(
+                                             const kythira::append_entries_request<NodeId>&)>
+                                             handler) -> void {
         const std::lock_guard lock(_mutex);
         _append_entries_handler = std::move(handler);
     }
 
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
-                                               const kythira::install_snapshot_request<>&)>
+                                               const kythira::install_snapshot_request<NodeId>&)>
                                                handler) -> void {
         const std::lock_guard lock(_mutex);
         _install_snapshot_handler = std::move(handler);
@@ -1931,7 +1951,7 @@ public:
     /// Optional extension (network_server_with_timeout_now). Until one is
     /// registered, `/raft/timeout_now` answers 5.01 Not Implemented.
     auto register_timeout_now_handler(
-        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
             handler) -> void {
         if (!handler) {
             throw std::invalid_argument("timeout_now handler must not be empty");
@@ -1942,9 +1962,10 @@ public:
 
     /// Optional extension (network_server_with_log_fetch). Until one is
     /// registered, `/raft/fetch_log_entries` answers 5.01 Not Implemented.
-    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
-                                                const kythira::fetch_log_entries_request<>&)>
-                                                handler) -> void {
+    auto register_fetch_log_entries_handler(
+        std::function<kythira::fetch_log_entries_response<NodeId>(
+            const kythira::fetch_log_entries_request<NodeId>&)>
+            handler) -> void {
         if (!handler) {
             throw std::invalid_argument("fetch_log_entries handler must not be empty");
         }
@@ -1955,7 +1976,7 @@ public:
     /// Optional extension (network_server_with_pre_vote). Until one is
     /// registered, `/raft/request_pre_vote` answers 5.01 Not Implemented.
     auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
-                                               const kythira::request_pre_vote_request<>&)>
+                                               const kythira::request_pre_vote_request<NodeId>&)>
                                                handler) -> void {
         if (!handler) {
             throw std::invalid_argument("request_pre_vote handler must not be empty");
@@ -2158,35 +2179,37 @@ private:
 
         try {
             if (resource_path == libnyoci_request_vote_path) {
-                return dispatch<kythira::request_vote_request<>, kythira::request_vote_response<>>(
+                return dispatch<kythira::request_vote_request<NodeId>,
+                                kythira::request_vote_response<>>(
                     copy_handler(_request_vote_handler), body, request_media_type,
                     response_media_type, options);
             }
             if (resource_path == libnyoci_append_entries_path) {
-                return dispatch<kythira::append_entries_request<>,
+                return dispatch<kythira::append_entries_request<NodeId>,
                                 kythira::append_entries_response<>>(
                     copy_handler(_append_entries_handler), body, request_media_type,
                     response_media_type, options);
             }
             if (resource_path == libnyoci_install_snapshot_path) {
-                return dispatch<kythira::install_snapshot_request<>,
+                return dispatch<kythira::install_snapshot_request<NodeId>,
                                 kythira::install_snapshot_response<>>(
                     copy_handler(_install_snapshot_handler), body, request_media_type,
                     response_media_type, options);
             }
             if (resource_path == libnyoci_timeout_now_path) {
-                return dispatch<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
-                    copy_handler(_timeout_now_handler), body, request_media_type,
-                    response_media_type, options);
+                return dispatch<kythira::timeout_now_request<NodeId>,
+                                kythira::timeout_now_response<>>(copy_handler(_timeout_now_handler),
+                                                                 body, request_media_type,
+                                                                 response_media_type, options);
             }
             if (resource_path == libnyoci_fetch_log_entries_path) {
-                return dispatch<kythira::fetch_log_entries_request<>,
-                                kythira::fetch_log_entries_response<>>(
+                return dispatch<kythira::fetch_log_entries_request<NodeId>,
+                                kythira::fetch_log_entries_response<NodeId>>(
                     copy_handler(_fetch_log_entries_handler), body, request_media_type,
                     response_media_type, options);
             }
             if (resource_path == libnyoci_request_pre_vote_path) {
-                return dispatch<kythira::request_pre_vote_request<>,
+                return dispatch<kythira::request_pre_vote_request<NodeId>,
                                 kythira::request_pre_vote_response<>>(
                     copy_handler(_request_pre_vote_handler), body, request_media_type,
                     response_media_type, options);
@@ -2365,7 +2388,7 @@ private:
                 }
                 body = _registry.encode_with(
                     response_media_type,
-                    handler(_registry.template decode_with<kythira::request_vote_request<>>(
+                    handler(_registry.template decode_with<kythira::request_vote_request<NodeId>>(
                         request_media_type, request_body)));
             } else if (resource_path == libnyoci_append_entries_path) {
                 auto handler = copy_handler(_append_entries_handler);
@@ -2374,7 +2397,7 @@ private:
                 }
                 body = _registry.encode_with(
                     response_media_type,
-                    handler(_registry.template decode_with<kythira::append_entries_request<>>(
+                    handler(_registry.template decode_with<kythira::append_entries_request<NodeId>>(
                         request_media_type, request_body)));
             } else if (resource_path == libnyoci_install_snapshot_path) {
                 auto handler = copy_handler(_install_snapshot_handler);
@@ -2383,8 +2406,9 @@ private:
                 }
                 body = _registry.encode_with(
                     response_media_type,
-                    handler(_registry.template decode_with<kythira::install_snapshot_request<>>(
-                        request_media_type, request_body)));
+                    handler(
+                        _registry.template decode_with<kythira::install_snapshot_request<NodeId>>(
+                            request_media_type, request_body)));
             } else if (resource_path == libnyoci_timeout_now_path) {
                 auto handler = copy_handler(_timeout_now_handler);
                 if (!handler) {
@@ -2392,7 +2416,7 @@ private:
                 }
                 body = _registry.encode_with(
                     response_media_type,
-                    handler(_registry.template decode_with<kythira::timeout_now_request<>>(
+                    handler(_registry.template decode_with<kythira::timeout_now_request<NodeId>>(
                         request_media_type, request_body)));
             } else if (resource_path == libnyoci_fetch_log_entries_path) {
                 auto handler = copy_handler(_fetch_log_entries_handler);
@@ -2401,8 +2425,9 @@ private:
                 }
                 body = _registry.encode_with(
                     response_media_type,
-                    handler(_registry.template decode_with<kythira::fetch_log_entries_request<>>(
-                        request_media_type, request_body)));
+                    handler(
+                        _registry.template decode_with<kythira::fetch_log_entries_request<NodeId>>(
+                            request_media_type, request_body)));
             } else if (resource_path == libnyoci_request_pre_vote_path) {
                 auto handler = copy_handler(_request_pre_vote_handler);
                 if (!handler) {
@@ -2410,8 +2435,9 @@ private:
                 }
                 body = _registry.encode_with(
                     response_media_type,
-                    handler(_registry.template decode_with<kythira::request_pre_vote_request<>>(
-                        request_media_type, request_body)));
+                    handler(
+                        _registry.template decode_with<kythira::request_pre_vote_request<NodeId>>(
+                            request_media_type, request_body)));
             } else {
                 return respond_oscore(binding, 0x84, 0, {});  // 4.04
             }
@@ -2639,18 +2665,21 @@ private:
     std::shared_ptr<edhoc_responder_channel> _edhoc_channel;
     std::jthread _edhoc_thread;
 
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
         _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+    std::function<kythira::append_entries_response<>(
+        const kythira::append_entries_request<NodeId>&)>
         _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+    std::function<kythira::install_snapshot_response<>(
+        const kythira::install_snapshot_request<NodeId>&)>
         _install_snapshot_handler;
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
         _timeout_now_handler;
-    std::function<kythira::fetch_log_entries_response<>(
-        const kythira::fetch_log_entries_request<>&)>
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         _fetch_log_entries_handler;
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+    std::function<kythira::request_pre_vote_response<>(
+        const kythira::request_pre_vote_request<NodeId>&)>
         _request_pre_vote_handler;
 
     mutable std::mutex _mutex;
@@ -2710,5 +2739,19 @@ static_assert(
 static_assert(
     kythira::network_server_with_log_fetch<coap_libnyoci_server<coap_detail::conformance_types>>,
     "coap_libnyoci_server must implement log fetch; see design §2's capability table");
+
+// The same surface at a textual node id type (.kiro/specs/cloud-composite-node-ids/,
+// Requirement 9.2): a node<Types> named by std::string or composite ids keeps
+// PreVote, TimeoutNow and catch-up over this backend too.
+using coap_libnyoci_text_client = coap_libnyoci_client<coap_detail::conformance_types, std::string>;
+using coap_libnyoci_text_server = coap_libnyoci_server<coap_detail::conformance_types, std::string>;
+static_assert(kythira::network_client<coap_libnyoci_text_client, std::string>);
+static_assert(kythira::network_server<coap_libnyoci_text_server, std::string>);
+static_assert(kythira::network_client_with_pre_vote<coap_libnyoci_text_client, std::string>);
+static_assert(kythira::network_server_with_pre_vote<coap_libnyoci_text_server, std::string>);
+static_assert(kythira::network_client_with_timeout_now<coap_libnyoci_text_client, std::string>);
+static_assert(kythira::network_server_with_timeout_now<coap_libnyoci_text_server, std::string>);
+static_assert(kythira::network_client_with_log_fetch<coap_libnyoci_text_client, std::string>);
+static_assert(kythira::network_server_with_log_fetch<coap_libnyoci_text_server, std::string>);
 
 }  // namespace kythira
