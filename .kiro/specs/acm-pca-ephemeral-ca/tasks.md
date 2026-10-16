@@ -1,6 +1,6 @@
 # Implementation Plan — ACM Private CA Ephemeral Test CA
 
-## Status: In progress (6/7 tasks; only task 7's deliberate-leak check is left)
+## Status: Complete (7/7 tasks)
 
 **Last Updated**: October 16, 2026
 
@@ -17,9 +17,10 @@
   `doc/aws_acm_pca_test_cost_estimate.md`. Billing confirms self-issued
   roots are charged as certificates and deleted CAs stop accruing. The
   Actions run showed AWS accepts `RevokeCertificate` on a CA with no CRL
-  or OCSP, and #537 changed the test to expect that. Left: task 5's
-  deliberate-leak check (a SIGKILL'd run, `audit` naming the CA, `sweep`
-  removing it), which deletes a real CA and needs Clark's go-ahead.
+  or OCSP, and #537 changed the test to expect that. The deliberate-leak
+  check from task 5 passed on October 16 too: a SIGKILL'd run left one
+  tagged CA, `audit` named it and exited 1, `sweep` deleted it, and the
+  next `audit` was clean.
 - The local run first crashed at startup: Boost.Test ran
   `CaLifetimeFixture` before `AwsSdkFixture`, because it orders global
   fixtures by address, not declaration. Fixed with
@@ -165,7 +166,7 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
     actionlint reports nothing new (16 pre-existing findings before and
     after).
 
-- [ ] 7. First real runs and cost doc
+- [x] 7. First real runs and cost doc
   - Run locally with `KYTHIRA_ACM_PCA_REAL_TESTS=1`, then once in Actions
     after the bundle is on the CI role. Both need Clark's go-ahead per the
     real-cloud cost rules.
@@ -183,5 +184,15 @@ a PEM-join bug in `sign_csr()`, fixed alongside this spec.
   - 2026-10-16: local run on Clark's machine (us-west-2): 5/5 cases,
     $0.232, audit clean before and after. Cost Explorer over
     2026-10-03..15 shows every self-issued root billed as a $0.058
-    certificate and no CA charge on any day without a run. Still open:
-    the deliberate-leak check moved here from task 5.
+    certificate and no CA charge on any day without a run.
+  - 2026-10-16: deliberate-leak check on Clark's machine (us-west-2),
+    with the binary run directly rather than through ctest so the signal
+    reached the test process. Audit before: clean. The suite was killed
+    with SIGKILL (exit 137) 3 s in, right after its first CA went ACTIVE;
+    that CA kept its `kythira:suite` and `kythira:run-id` tags, and no
+    `[aws-cost]` line printed, since the summary runs in teardown. An
+    audit inside the 300 s grace period was clean, as designed. The audit
+    after it exited 1 naming the CA (ACTIVE, 5 min old, with its run id);
+    `sweep` disabled and deleted it and exited 0; the audit after that was
+    clean. It was the only non-DELETED CA in the region, so the sweep could
+    touch nothing else.

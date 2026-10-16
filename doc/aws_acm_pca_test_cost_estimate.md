@@ -115,6 +115,10 @@ Measured on the first Actions run (Real Cloud Tests run 38065882804,
 x64 and arm64 legs, so one dispatch creates two CA pairs and costs about
 **$0.46**. Both legs' leak audits were clean. A local run on
 2026-10-16 (us-west-2, 5/5 cases) measured the same $0.232.
+A deliberately leaked CA (the suite killed with SIGKILL right after its
+first CA went ACTIVE, on 2026-10-16) was ACTIVE for about 6 minutes before
+`scripts/aws-acm-pca-leaks.sh sweep` deleted it. That run's cost was not
+measured: the suite's cost summary prints in teardown, which SIGKILL skips.
 
 The billing console (Cost Explorer, service "AWS Certificate Manager",
 daily by usage type, 2026-10-03 to 2026-10-15) confirms both assumptions
