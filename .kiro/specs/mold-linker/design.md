@@ -308,7 +308,9 @@ per branch, after their own first run.
   A cold build has already lost a runner once (task 1: "The hosted runner
   lost communication with the server" during the x64 clang install, while
   the coverage leg built the same tree fine); a rerun restored the saved
-  tree.
+  tree. Until `main` writes the clang packages to the OCI bucket (PR runs
+  only read it), a PR whose Actions cache entry was evicted rebuilds the
+  tree from source; afterwards it restores package by package from OCI.
 - **Debuggers and tools.** gdb, `llvm-cov`, `addr2line` and the sanitizer
   symbolizers read standard DWARF and symbol tables, which mold emits. The
   coverage comparison and sanitizer runs in Requirement 4 are the check.
