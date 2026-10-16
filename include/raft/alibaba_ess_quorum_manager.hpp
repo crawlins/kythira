@@ -10,8 +10,8 @@
 ///
 /// Two siblings, split by concern. The **semantics** are
 /// `aws_asg_quorum_manager`'s — a scaling group whose DesiredCapacity is the
-/// only provisioning lever, NodeIds carried in tags because the cloud's own
-/// instance identifiers give nothing derivable, and the zone caveat below. The
+/// only provisioning lever, the node id recorded in a tag, and the zone caveat
+/// below. The
 /// **transport** is `oci_instance_pool_quorum_manager`'s — a hand-rolled
 /// signed HTTP client, futures produced by `future_factory_default`, and
 /// exceptions flattened into exceptional futures at every public entry point.
@@ -63,6 +63,19 @@
 /// group: an instance another tool launches mid-provision is "fresh" and
 /// would be removed on a timeout. The RAM policy needs
 /// `ess:SetInstancesProtection` and `ess:RemoveInstances`.
+///
+/// **Node ids: the instance, or a number** (`.kiro/specs/cloud-composite-node-ids/`,
+/// Requirement 5). With `NodeId = alibaba_ecs_node_id`, or `std::string`
+/// holding that id's canonical text (`alibaba-ecs:<region>:<i-...>`), the node
+/// id *is* the adopted ECS instance in the configured region: nothing is
+/// allocated, mapping an id back to its instance is a field read, and an id
+/// that does not parse or names another region is reported unreachable rather
+/// than failing the assessment. The `kythira-node-id` tag is still written,
+/// holding the canonical text, for discovery and the leak audit. With an
+/// unsigned `NodeId` the manager allocates `max(tag) + 1` and resolves ids by
+/// tag, as it always has. A node that needs its own id reads it from instance
+/// metadata (`--node-id=metadata:alibaba`), since the id does not exist until
+/// ESS has launched the instance.
 ///
 /// Header-only and always compiled — there is no Alibaba SDK to detect. The
 /// Kconfig symbol `CONFIG_ALIBABA_QUORUM_MANAGER` selects whether the *tests*
@@ -324,6 +337,8 @@ struct alibaba_ess_quorum_manager_config {
 /// @brief `quorum_manager` driving an ESS scaling group's DesiredCapacity.
 ///
 /// @tparam NodeId  Node identifier type; defaults to `std::uint64_t`.
+///                 `alibaba_ecs_node_id` or `std::string` makes the node id
+///                 the instance itself (see the file comment).
 /// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires node_id<NodeId>
@@ -332,6 +347,9 @@ public:
     using node_id_type = NodeId;
     using address_type = Address;
     using placement_group_id_type = std::string;  ///< A Zone ID, e.g. `cn-hangzhou-b`.
+
+    /// True when the node id is the ECS instance (composite or string mode).
+    static constexpr bool instance_is_node_id = node_id_traits<NodeId>::is_textual;
 
     /// @brief Validates the config and probes the scaling group
     ///        (Requirement 3.2).
@@ -366,6 +384,18 @@ public:
         require(_cfg.scaling_group_id, "scaling_group_id");
         if (_cfg.node_port == 0) {
             throw std::invalid_argument("alibaba_ess_quorum_manager: node_port must be non-zero");
+        }
+        if constexpr (instance_is_node_id) {
+            // The region is the id's scope, so it is required even where the
+            // endpoint override would otherwise make it optional. Only the
+            // scope half is under test here; "i-0" stands in for any valid
+            // instance id.
+            if (!alibaba_ecs_rules::valid(_cfg.alibaba.region, "i-0")) {
+                throw std::invalid_argument(
+                    "alibaba_ess_quorum_manager: alibaba.region must name a region when the "
+                    "node id is the instance (got '" +
+                    _cfg.alibaba.region + "')");
+            }
         }
 
         boost::json::value described;
@@ -418,19 +448,43 @@ public:
             if (cluster.empty()) {
                 return build_health(cluster, {});
             }
-            for (const auto& np : cluster) {
-                _id_floor.raise(np.node_id);
-            }
 
             std::map<std::string, bool> live_map;
-            for (const auto& inst : cluster_members()) {
-                const auto id_tag = inst.tags.find(alibaba_ess_detail::tag_node_id);
-                if (id_tag == inst.tags.end()) {
-                    // Requirement 5.4: in the group and ours, but not yet
-                    // adopted. It has no NodeId to be counted under.
-                    continue;
+            if constexpr (instance_is_node_id) {
+                // Keyed by the instance each id names, not by tag. An id that
+                // names no instance here is left out of the map, and so is
+                // reported unreachable; it never fails the assessment.
+                std::map<std::string, std::string> node_by_instance;
+                for (const auto& np : cluster) {
+                    if (auto iid = instance_id_of(np.node_id)) {
+                        node_by_instance.emplace(std::move(*iid), node_id_str(np.node_id));
+                    } else {
+                        std::cerr << "[alibaba_ess_quorum_manager::assess_quorum] node "
+                                  << node_id_str(np.node_id) << " is not an ECS instance in region "
+                                  << _cfg.alibaba.region << "; reporting it unreachable\n";
+                    }
                 }
-                live_map[id_tag->second] = is_live(inst);
+                if (!node_by_instance.empty()) {
+                    for (const auto& inst : cluster_members()) {
+                        if (const auto it = node_by_instance.find(inst.id);
+                            it != node_by_instance.end()) {
+                            live_map[it->second] = is_live(inst);
+                        }
+                    }
+                }
+            } else {
+                for (const auto& np : cluster) {
+                    _id_floor.raise(np.node_id);
+                }
+                for (const auto& inst : cluster_members()) {
+                    const auto id_tag = inst.tags.find(alibaba_ess_detail::tag_node_id);
+                    if (id_tag == inst.tags.end()) {
+                        // Requirement 5.4: in the group and ours, but not yet
+                        // adopted. It has no NodeId to be counted under.
+                        continue;
+                    }
+                    live_map[id_tag->second] = is_live(inst);
+                }
             }
             return build_health(cluster, live_map);
         } catch (const std::exception& ex) {
@@ -536,6 +590,8 @@ public:
     /// @param replacing Diagnostic only. The new instance always receives a
     ///        fresh NodeId (Requirement 7.5): reusing the retired one would
     ///        resurrect an identity the Raft log may still be reasoning about.
+    ///        In composite and string mode the NodeId is the adopted
+    ///        instance itself, so it is fresh by construction.
     auto provision_node(std::string target_group, std::optional<NodeId> replacing)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         const auto started = std::chrono::steady_clock::now();
@@ -676,14 +732,28 @@ public:
                              "only way to constrain it)\n";
             }
 
-            // Computed from the same listing the candidate came from rather
-            // than a fresh one: two scans could disagree, and the one that
-            // matters is the one that identified the instance.
             NodeId new_id{};
             try {
-                new_id = next_node_id_from(members);
-                // Spent from here on, even if tagging fails below.
-                _id_floor.raise(new_id);
+                if constexpr (instance_is_node_id) {
+                    // The id is the instance ESS launched: nothing to
+                    // allocate, so nothing two provisions can race over.
+                    auto from_instance = node_id_of_instance(launched->id);
+                    if (!from_instance) {
+                        throw std::runtime_error("ESS launched instance '" + launched->id +
+                                                 "', which is not a valid ECS instance id in "
+                                                 "region " +
+                                                 _cfg.alibaba.region);
+                    }
+                    new_id = std::move(*from_instance);
+                } else {
+                    // Computed from the same listing the candidate came from
+                    // rather than a fresh one: two scans could disagree, and
+                    // the one that matters is the one that identified the
+                    // instance.
+                    new_id = next_node_id_from(members);
+                    // Spent from here on, even if tagging fails below.
+                    _id_floor.raise(new_id);
+                }
 
                 std::map<std::string, std::string> tags = _cfg.extra_tags;
                 // Written last so an operator cannot redirect a managed
@@ -743,12 +813,29 @@ public:
     /// The group's MinSize is ESS's business, not this class's: removing the
     /// last instance is attempted, and a MinSize refusal surfaces as the
     /// vendor's own error (Requirement 8.4).
+    ///
+    /// In composite and string mode the instance is the id's native half,
+    /// found among this cluster's members by instance id rather than by tag;
+    /// an id that is not an ECS instance in this region is refused with
+    /// `std::invalid_argument`, since no instance of this manager's can
+    /// carry it.
     auto decommission_node(const NodeId& node_id) -> kythira::future_default<void> {
         try {
             fiu_do_on("raft/alibaba/ess/remove_instances",
                       throw std::runtime_error("fault: raft/alibaba/ess/remove_instances"););
 
-            const auto found = find_instance(node_id);
+            std::optional<alibaba_ess_detail::instance_view> found;
+            if constexpr (instance_is_node_id) {
+                const auto iid = instance_id_of(node_id);
+                if (!iid) {
+                    throw std::invalid_argument("node " + node_id_str(node_id) +
+                                                " is not an ECS instance in region " +
+                                                _cfg.alibaba.region);
+                }
+                found = find_member(*iid);
+            } else {
+                found = find_instance(node_id);
+            }
             if (!found.has_value()) {
                 return future_factory_default::makeFuture();
             }
@@ -854,8 +941,69 @@ public:
     ///
     /// Exposed for tests and diagnostics; `provision_node` computes the same
     /// value from the listing it already holds, so the two cannot disagree.
-    [[nodiscard]] auto next_node_id() const -> NodeId {
+    ///
+    /// Numeric mode only: in composite and string mode nothing is allocated.
+    [[nodiscard]] auto next_node_id() const -> NodeId
+    requires(!instance_is_node_id)
+    {
         return next_node_id_from(describe_members());
+    }
+
+    /// @brief The ECS instance id @p nid names, or `std::nullopt` when it
+    ///        names none of this manager's.
+    ///
+    /// Composite and string mode: the id's native half, when it is
+    /// alibaba-ecs canonical text in the configured region. No API call.
+    /// Numeric mode: the cluster member carrying @p nid in its
+    /// `kythira-node-id` tag.
+    [[nodiscard]] auto instance_id_of(const NodeId& nid) const -> std::optional<std::string> {
+        if constexpr (instance_is_node_id) {
+            std::optional<alibaba_ecs_node_id> id;
+            if constexpr (std::same_as<NodeId, std::string>) {
+                id = alibaba_ecs_node_id::parse(nid);
+            } else {
+                id = nid;
+            }
+            if (!id || id->scope() != _cfg.alibaba.region) {
+                return std::nullopt;
+            }
+            return std::string(id->native());
+        } else {
+            if (auto found = find_instance(nid)) {
+                return found->id;
+            }
+            return std::nullopt;
+        }
+    }
+
+    /// @brief The node id of ECS instance @p instance_id, or `std::nullopt`.
+    ///
+    /// Composite and string mode: `{region, instance_id}`, or nullopt when
+    /// @p instance_id is not a valid ECS instance id. No API call, and never
+    /// parsed as a number. Numeric mode: the instance's `kythira-node-id`
+    /// tag, when it is one of this cluster's members and the tag parses.
+    [[nodiscard]] auto node_id_of_instance(const std::string& instance_id) const
+        -> std::optional<NodeId> {
+        if constexpr (instance_is_node_id) {
+            try {
+                alibaba_ecs_node_id id{_cfg.alibaba.region, instance_id};
+                if constexpr (std::same_as<NodeId, std::string>) {
+                    return id.to_string();
+                } else {
+                    return id;
+                }
+            } catch (const std::invalid_argument&) {
+                return std::nullopt;
+            }
+        } else {
+            if (auto found = find_member(instance_id)) {
+                if (const auto tag = found->tags.find(alibaba_ess_detail::tag_node_id);
+                    tag != found->tags.end()) {
+                    return node_id_traits<NodeId>::from_text(tag->second);
+                }
+            }
+            return std::nullopt;
+        }
     }
 
 private:
@@ -1241,12 +1389,16 @@ private:
     /// The highest NodeId this manager may assign. A tag at this value leaves
     /// no max+1, and wrapping to 0 would hand every later provision the same
     /// identity, so it is a refusal rather than an assignment.
-    static constexpr auto node_id_ceiling() -> std::uint64_t {
+    static constexpr auto node_id_ceiling() -> std::uint64_t
+    requires(!instance_is_node_id)
+    {
         return numeric_node_id_ceiling<NodeId>();
     }
 
     [[nodiscard]] auto next_node_id_from(
-        const std::vector<alibaba_ess_detail::instance_view>& instances) const -> NodeId {
+        const std::vector<alibaba_ess_detail::instance_view>& instances) const -> NodeId
+    requires(!instance_is_node_id)
+    {
         std::uint64_t highest = 0;
         for (const auto& inst : instances) {
             const auto cluster = inst.tags.find(alibaba_ess_detail::tag_cluster);
@@ -1282,12 +1434,28 @@ private:
     /// `next_node_id`. Kept across copies and moves of this manager.
     numeric_node_id_floor _id_floor;
 
+    /// Numeric mode: the cluster member whose `kythira-node-id` tag is @p node.
     [[nodiscard]] auto find_instance(const NodeId& node) const
-        -> std::optional<alibaba_ess_detail::instance_view> {
+        -> std::optional<alibaba_ess_detail::instance_view>
+    requires(!instance_is_node_id)
+    {
         const auto wanted = node_id_str(node);
         for (auto& inst : cluster_members()) {
             const auto tag = inst.tags.find(alibaba_ess_detail::tag_node_id);
             if (tag != inst.tags.end() && tag->second == wanted) {
+                return inst;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// The cluster member that is ECS instance @p instance_id. A group member
+    /// tagged for another cluster, or for none, is not found: the cluster
+    /// filter bounds every mutating call (design.md Property 4).
+    [[nodiscard]] auto find_member(const std::string& instance_id) const
+        -> std::optional<alibaba_ess_detail::instance_view> {
+        for (auto& inst : cluster_members()) {
+            if (inst.id == instance_id) {
                 return inst;
             }
         }
@@ -1457,5 +1625,11 @@ private:
 static_assert(quorum_manager<alibaba_ess_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "alibaba_ess_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<alibaba_ess_quorum_manager<alibaba_ecs_node_id, std::string>,
+                             alibaba_ecs_node_id, std::string, std::string>,
+              "alibaba_ess_quorum_manager<alibaba_ecs_node_id> must satisfy quorum_manager");
+static_assert(quorum_manager<alibaba_ess_quorum_manager<std::string, std::string>, std::string,
+                             std::string, std::string>,
+              "alibaba_ess_quorum_manager<std::string> must satisfy quorum_manager");
 
 }  // namespace kythira

@@ -48,8 +48,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -1059,6 +1061,169 @@ BOOST_AUTO_TEST_CASE(a_blind_decrease_skips_protected_members,
                    {{"ScalingGroupId", raw.scaling_group_id}, {"DesiredCapacity", "1"}});
     BOOST_CHECK(fixture.server.instance(voter).has_value());
     BOOST_CHECK(!fixture.server.instance(stray).has_value());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Composite and string node ids (cloud-composite-node-ids Requirement 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// The node id of ECS instance @p instance_id in the fixture's region, as
+/// `NodeId` holds it.
+template<typename NodeId> auto ecs_node_id(const std::string& instance_id) -> NodeId {
+    kythira::alibaba_ecs_node_id id{"cn-hangzhou", instance_id};
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return id.to_string();
+    } else {
+        return id;
+    }
+}
+
+template<typename NodeId>
+auto textual_cluster_of(const std::vector<NodeId>& ids)
+    -> std::vector<node_placement<NodeId, std::string>> {
+    std::vector<node_placement<NodeId, std::string>> out;
+    out.reserve(ids.size());
+    for (const auto& id : ids) {
+        out.push_back({.node_id = id, .group_id = k_zone});
+    }
+    return out;
+}
+
+/// Provision three nodes, assess them, lose one, decommission one (twice),
+/// with the node id being the instance.
+template<typename NodeId> void run_textual_lifecycle() {
+    using text = kythira::node_id_traits<NodeId>;
+    MockFixture fixture;
+    alibaba_ess_quorum_manager<NodeId> mgr{fixture.config()};
+
+    std::vector<NodeId> ids;
+    std::vector<std::string> instance_ids;
+    for (int i = 0; i < 3; ++i) {
+        auto peer = std::move(mgr.provision_node(k_zone, std::nullopt)).get();
+        const auto instance_id = mgr.instance_id_of(peer.node_id);
+        BOOST_REQUIRE(instance_id.has_value());
+        const auto inst = fixture.server.instance(*instance_id);
+        BOOST_REQUIRE(inst.has_value());
+
+        // The id is the launched instance in the configured region, and maps
+        // back to it both ways without an API call.
+        BOOST_CHECK(peer.node_id == ecs_node_id<NodeId>(*instance_id));
+        BOOST_CHECK(mgr.node_id_of_instance(*instance_id) == std::optional<NodeId>{peer.node_id});
+        BOOST_CHECK_EQUAL(peer.address, inst->private_ip + ":7000");
+        // The tag is still written, holding canonical text.
+        BOOST_CHECK_EQUAL(inst->tags.at("kythira-node-id"),
+                          "alibaba-ecs:cn-hangzhou:" + *instance_id);
+        BOOST_CHECK_EQUAL(inst->tags.at("kythira-node-id"), text::to_text(peer.node_id));
+        BOOST_CHECK_EQUAL(inst->tags.at("kythira-cluster"), k_cluster);
+        ids.push_back(peer.node_id);
+        instance_ids.push_back(*instance_id);
+    }
+    BOOST_CHECK(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
+    BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 3);
+
+    auto health = std::move(mgr.assess_quorum(textual_cluster_of(ids))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 3U);
+    BOOST_CHECK_EQUAL(health.status, quorum_status::healthy);
+
+    // A stopped instance is unreachable; the others stay live.
+    fixture.server.set_instance_status(instance_ids[0], "Stopped");
+    health = std::move(mgr.assess_quorum(textual_cluster_of(ids))).get();
+    BOOST_CHECK_EQUAL(health.status, quorum_status::critical);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1U);
+    BOOST_CHECK(health.unreachable_nodes.front() == ids[0]);
+
+    // Decommission removes exactly the instance the id names.
+    std::move(mgr.decommission_node(ids[1])).get();
+    BOOST_CHECK(!fixture.server.instance(instance_ids[1]).has_value());
+    BOOST_CHECK(fixture.server.instance(instance_ids[0]).has_value());
+    BOOST_CHECK(fixture.server.instance(instance_ids[2]).has_value());
+    BOOST_CHECK_EQUAL(fixture.server.desired_capacity(), 2);
+    health = std::move(mgr.assess_quorum(textual_cluster_of(ids))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+    BOOST_CHECK_EQUAL(health.status, quorum_status::lost);
+
+    // A second decommission of the same node is the idempotent no-op.
+    fixture.server.clear_request_log();
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(ids[1])).get());
+    BOOST_CHECK_EQUAL(fixture.server.count_requests("RPC RemoveInstances"), 0U);
+    BOOST_CHECK_EQUAL(fixture.server.signature_failures(), 0U);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(alibaba_quorum_manager_mock_composite_ids)
+
+BOOST_AUTO_TEST_CASE(composite_mode_lifecycle,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    run_textual_lifecycle<kythira::alibaba_ecs_node_id>();
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_lifecycle,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    run_textual_lifecycle<std::string>();
+}
+
+/// An id in another region, an id that is not canonical text, and an id whose
+/// instance belongs to another cluster are each reported unreachable without
+/// failing the assessment, and none of them can remove an instance.
+BOOST_AUTO_TEST_CASE(foreign_and_out_of_scope_ids_are_unreachable_and_never_removed,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    MockFixture fixture;
+    const auto ours = fixture.server.add_instance(
+        {{"kythira-cluster", k_cluster}, {"kythira-node-id", "alibaba-ecs:cn-hangzhou:i-mock1"}},
+        "InService", "Running", k_zone);
+    const auto theirs = fixture.server.add_instance(
+        {{"kythira-cluster", "someone-elses"}, {"kythira-node-id", "7"}}, "InService", "Running",
+        k_zone);
+    BOOST_REQUIRE_EQUAL(ours, "i-mock1");
+
+    {
+        alibaba_ess_quorum_manager<kythira::alibaba_ecs_node_id> mgr{fixture.config()};
+        const std::vector<kythira::alibaba_ecs_node_id> ids{
+            {"cn-hangzhou", ours}, {"cn-beijing", ours}, {"cn-hangzhou", theirs}};
+        auto health = std::move(mgr.assess_quorum(textual_cluster_of(ids))).get();
+        BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+        BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 2U);
+        BOOST_CHECK(health.unreachable_nodes[0] == ids[1]);
+        BOOST_CHECK(health.unreachable_nodes[1] == ids[2]);
+
+        // Another region's id names no instance this manager can reach.
+        BOOST_CHECK_THROW(std::move(mgr.decommission_node(ids[1])).get(), std::exception);
+        // Another cluster's instance resolves to nothing here.
+        BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(ids[2])).get());
+        BOOST_CHECK_EQUAL(fixture.server.count_requests("RPC RemoveInstances"), 0U);
+        BOOST_CHECK_EQUAL(fixture.server.instance_count(), 2U);
+    }
+    {
+        alibaba_ess_quorum_manager<std::string> mgr{fixture.config()};
+        const std::vector<std::string> ids{"alibaba-ecs:cn-hangzhou:" + ours, ours, "1",
+                                           "alibaba-ecs:cn-beijing:" + ours};
+        auto health = std::move(mgr.assess_quorum(textual_cluster_of(ids))).get();
+        BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+        BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), 3U);
+        for (const auto& bad : {ids[1], ids[2], ids[3]}) {
+            BOOST_CHECK_THROW(std::move(mgr.decommission_node(bad)).get(), std::exception);
+        }
+        BOOST_CHECK_EQUAL(fixture.server.count_requests("RPC RemoveInstances"), 0U);
+        BOOST_CHECK_EQUAL(fixture.server.instance_count(), 2U);
+    }
+}
+
+/// The region is the id's scope, so composite and string mode need it even
+/// where the endpoint override would let numeric mode run without one.
+BOOST_AUTO_TEST_CASE(textual_modes_require_a_region,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    MockFixture fixture;
+    auto cfg = fixture.config();
+    cfg.alibaba.region.clear();
+    BOOST_CHECK_THROW(alibaba_ess_quorum_manager<kythira::alibaba_ecs_node_id>{cfg},
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(alibaba_ess_quorum_manager<std::string>{cfg}, std::invalid_argument);
+    BOOST_CHECK_NO_THROW(alibaba_ess_quorum_manager<>{cfg});
 }
 
 BOOST_AUTO_TEST_SUITE_END()
