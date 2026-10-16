@@ -50,8 +50,8 @@ Raft and sharding:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KYTHIRA_NODE_ID` | required | This node's id, a positive integer |
-| `KYTHIRA_PEERS` | required | `id=http://host:port,...` for every voter, this node included |
+| `KYTHIRA_NODE_ID` | required | This node's id: a positive integer, or in a `KYTHIRA_NODE_ID_KIND=text` build also canonical composite text or `metadata:<provider>` (see `README.md`, "Node ids in the host binaries") |
+| `KYTHIRA_PEERS` | required | `id=http://host:port,...` for every voter, this node included; each id in the form `KYTHIRA_NODE_ID` takes, never `metadata:` |
 | `KYTHIRA_RAFT_BIND` | `0.0.0.0` | Bind address for Raft RPCs |
 | `KYTHIRA_ALLOW_PLAINTEXT_RAFT` | `false` | Raft RPC has no TLS. The daemon refuses to start on a non-loopback `KYTHIRA_RAFT_BIND` unless this is `true`, and warns at every start when it is |
 | `KYTHIRA_RAFT_PORT` | `7000` | Raft RPC port |

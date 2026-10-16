@@ -38,6 +38,28 @@ node starts. A data directory written by an earlier, root-running image is
 owned by root and must be re-owned once (`chown -R 10002:10002`) before the
 upgraded image can open it.
 
+## Node ids
+
+`--node-id` (`NODE_ID` in the env file) and every id in `--peers` take the
+forms of the kind the binary was built with, `KYTHIRA_NODE_ID_KIND` (see
+[Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind)):
+
+- **numeric**: a decimal integer, as in every example in this directory.
+  `docker/ca_cluster_node/Dockerfile` configures without Kconfig (the
+  builder stage installs no `kconfiglib`), which builds numeric ids, so the
+  image, the ECS task definitions and the Packer AMI built from it are
+  numeric.
+- **text**: canonical composite text, a decimal integer (normalised, so
+  `NODE_ID=1` still works), or `metadata:<provider>` for this node's own id,
+  read from the instance metadata service after every other flag has been
+  parsed. On EC2 that is `--node-id=metadata:aws`, which gives
+  `aws-ec2:<region>:<instance id>`.
+
+The kind decides the peer certificate's name (see "Peer identity" below)
+and the form of `rpc_tls_ready_node_id`, so every node of one cluster must
+be built in the same kind, and an existing cluster keeps the kind its data
+was written with.
+
 ## Path 1 — manual, 3 EC2 instances (systemd)
 
 See `ca_cluster_node.service`'s header comment for the install steps. Copy
@@ -145,13 +167,18 @@ previous behaviour.
 **Peer identity is separate from client identity.** The cluster root signs
 both Raft peer certificates and ordinary client certificates, so RPC TLS does
 not trust "any certificate chaining to the root": a CA-issued certificate is
-accepted as a Raft peer only if it carries a configured node's reserved DNS
-name, `ca-cluster-node-<node_id>`, and it may then act only as that node: an
+accepted as a Raft peer only if it carries a configured node's reserved
+peer name, and it may then act only as that node. In a numeric build the
+name is the DNS SAN `ca-cluster-node-<node_id>`; in a text build it is the
+URI SAN `urn:kythira:node:<canonical text>` (percent-encoded) under the
+common name `kythira-ca-cluster-peer`, because canonical text is not a DNS
+name, and the readiness record carries the id as a string (version 2). An
 RPC claiming a different sender (`leader_id`/`candidate_id`) is dropped, and a
 node refuses a peer answering in place of the one it dialled. Those names can only be obtained through
 peer enrollment, which is authenticated with an HMAC key derived from the
 unseal passphrase — `POST /v1/certificates` answers `403` to a request for a
-`ca-cluster-node-*` name (or one carrying `rpc_tls_ready_node_id`) that holds
+`ca-cluster-node-*` name or a `urn:kythira:node:` URI (or one carrying
+`rpc_tls_ready_node_id`) that holds
 only the client bearer token. The same key authenticates the RPC trust state
 a node fetches from the leader's peer-only `GET /v1/peer/rpc-trust`: the
 cluster root (its RPC trust anchor), whether every node has cut over, and the
@@ -247,6 +274,14 @@ suite — `aws_ec2_quorum_manager` needed no CA-specific change to provision a
 3-AZ-spread `ca_cluster_node` fleet, so this path introduces no new code, only
 this configuration. See `include/raft/aws_ec2_quorum_manager.hpp` for the full
 config surface.
+
+Pick the manager's node id to match the binary (see "Node ids" above). The
+AMI's binary is numeric, so instantiate
+`kythira::aws_ec2_quorum_manager<std::uint64_t, std::string>`: the manager
+then allocates the id and substitutes it for `{NODE_ID}` in the user data
+that writes the node's env file. A fleet of text-mode binaries uses the
+default, `aws_ec2_quorum_manager<>`, and starts each node with
+`--node-id=metadata:aws`, since the instance id is not known until launch.
 
 ## Verifying a deployment
 

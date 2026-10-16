@@ -10,6 +10,34 @@ fields point at, which the library deliberately does **not** create.
 Both are built when the AWS SDK is found (`KYTHIRA_HAS_AWS_SDK`;
 `aws-sdk-cpp` features `ec2`, `autoscaling`, `sts`).
 
+## Node ids
+
+Both managers default to `aws_ec2_node_id`
+(`aws-ec2:<region>:<instance id>`): a node's id is the instance itself, so
+nothing is allocated or parsed as a number, and mapping an id back to its
+instance needs no lookup. The `kythira:node-id` tag carries the id's text.
+The first template argument picks the node id. `std::string` holds the
+composite id's canonical text. `std::uint64_t` keeps numeric mode: the
+manager allocates the next free number with a tag scan, writes it to the
+`kythira:node-id` tag in the launch request, and maps it back with a
+tag-filtered `DescribeInstances`. An existing numeric cluster must stay in
+numeric mode, because a cluster cannot change id kind in place: name
+`std::uint64_t` explicitly, and keep its node binaries on
+`KYTHIRA_NODE_ID_KIND=numeric`. An instance launched before numeric mode
+used tags is still found by its `kythira:node-id` tag, or, if that is
+missing, by the old derivation from its instance id.
+
+**Running the node binaries on composite ids.** Build them with
+`KYTHIRA_NODE_ID_KIND=text`; see
+[Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind).
+The instance id does not exist until `RunInstances` (or the ASG) returns,
+so the manager cannot put it in user data. Start the node with
+`--node-id=metadata:aws` (or `NODE_ID=metadata:aws`): it reads
+`instance-id` and `placement/region` from IMDSv2 and builds the same
+`aws-ec2:<region>:<instance id>` the manager reports. IMDSv2 must be
+reachable (the default hop limit of 1 is enough on the host; a container on
+the instance needs 2). Peer lists take the same canonical text.
+
 ## Which manager
 
 | | `aws_ec2_quorum_manager` | `aws_asg_quorum_manager` |
@@ -19,8 +47,7 @@ Both are built when the AWS SDK is found (`KYTHIRA_HAS_AWS_SDK`;
 | Decommissions by | `TerminateInstances` | `TerminateInstanceInAutoScalingGroup`, decrementing desired capacity |
 | Best for | Dev, staging, simple deployments | Production: launch templates, mixed instances policies, one place to change the image |
 
-Both identify a node by its EC2 instance id (the hex digits after `i-`, read
-as a 64-bit integer), so mapping a node to its instance needs no lookup, and
+Both identify a node by its EC2 instance (see [Node ids](#node-ids)), and
 both judge liveness by `DescribeInstanceStatus` returning `running`. A
 running instance whose kythira process has crashed still looks live to the
 manager; the Raft leader that owns it catches that case instead, counting a
@@ -124,13 +151,10 @@ kythira::aws_ec2_quorum_manager_config cfg{
 kythira::aws_ec2_quorum_manager<std::uint64_t, std::string> mgr{cfg};
 ```
 
-The first template argument picks the node id. The default,
-`kythira::aws_ec2_node_id`, makes the node id the instance itself
-(`aws-ec2:<region>:<instance id>`), so nothing is allocated or parsed as a
-number. `std::uint64_t`, as above, keeps numeric mode: the manager allocates
-the next free id and stores it in the `kythira:node-id` tag. A cluster
-whose nodes run with numeric ids, which includes every `cmd/` binary
-today, needs numeric mode, so name it explicitly.
+`std::uint64_t`, as above, keeps [numeric mode](#node-ids), which a
+cluster whose node binaries are built with `KYTHIRA_NODE_ID_KIND=numeric`
+needs. Leave the first argument at its default, `aws_ec2_node_id`, for a
+cluster of text-mode binaries started with `--node-id=metadata:aws`.
 
 ## 5. Verifying
 
@@ -182,8 +206,8 @@ new to the manager and is terminated if that provision times out.
 
 - **In the default composite mode, `{NODE_ID}` is not substituted in the
   EC2 manager's user data.** The node id comes from the instance id, which
-  does not exist until `RunInstances` returns. Have the node read its own id
-  from instance metadata or its `kythira:node-id` tag. Numeric mode knows
-  the id before launch and substitutes it.
+  does not exist until `RunInstances` returns. Start the node with
+  `--node-id=metadata:aws` instead ([Node ids](#node-ids)). Numeric mode
+  knows the id before launch and substitutes it.
 - **The ASG manager accepts a `replacing` hint and ignores it.** A
   replacement always gets a fresh instance and so a fresh node id.

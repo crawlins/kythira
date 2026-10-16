@@ -35,7 +35,14 @@ independent `#ifdef KYTHIRA_HAS_GCP_PRIVATECA` (mirroring how
 > **October 2026:** both GCP managers now default to composite node ids
 > (`gcp_instance_node_id`, the instance's own name in its project and
 > zone); see `docker/gcp_quorum_manager/README.md`. What follows describes
-> numeric mode, which `<std::uint64_t>` still selects.
+> numeric mode, which `<std::uint64_t>` still selects and which an existing
+> numeric cluster must keep. In composite mode the canonical text
+> (`gcp:<project>/<zone>:<instance name>`) is the id end to end: the node
+> binaries built with `KYTHIRA_NODE_ID_KIND=text` take it as `--node-id`,
+> either substituted for `{NODE_ID}` (Compute) or read at start-up with
+> `--node-id=metadata:gcp` (either manager; the only way under a MIG). See
+> `README.md`, "Node ids in the host binaries", and
+> `.kiro/specs/cloud-composite-node-ids/`.
 
 This is the one place the GCP design cannot simply mirror the AWS design, and it
 shapes almost everything else.

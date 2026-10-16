@@ -1,5 +1,14 @@
 # Requirements Document
 
+> **Node ids revised (noted October 16, 2026).** Requirements 5, 6, 7, 8,
+> 12, 13 and 14 derive the `NodeId` from the EC2 instance id's hex digits.
+> That derivation is gone: by default both managers use `aws_ec2_node_id`
+> (`aws-ec2:<region>:<instance id>`), and `<std::uint64_t>` selects a
+> numeric mode that allocates the id over the `kythira:node-id` tags and
+> finds it by a tag-filtered `DescribeInstances` (Requirements 4 and 11
+> there); see `.kiro/specs/cloud-composite-node-ids/`. The criteria below
+> are kept as written, as the record of the original design.
+
 ## Introduction
 
 This document specifies the requirements for two AWS-based `quorum_manager`
@@ -180,6 +189,10 @@ std::string>` so that I can wire it into a Raft node without any glue code.
 
 ### Requirement 5: `aws_ec2_quorum_manager` Node Tagging Scheme
 
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirements 4 and 11.
+
 **User Story:** As an operator, I want every managed EC2 instance to carry
 well-known tags so that I can audit which instances belong to a cluster, and so
 that the quorum manager can reconstruct state after a process restart without
@@ -252,6 +265,10 @@ instances are detected without relying on an application-level heartbeat.
 ---
 
 ### Requirement 7: `aws_ec2_quorum_manager::provision_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirements 4 and 11.
 
 **User Story:** As an orchestrator that has detected a degraded placement group,
 I need `provision_node` to launch a new EC2 instance in the target AZ, wait
@@ -440,6 +457,10 @@ reflect actual EC2 state rather than application-level heartbeats.
 ---
 
 ### Requirement 13: `aws_asg_quorum_manager::provision_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirements 4 and 11.
 
 **User Story:** As an orchestrator, I need `provision_node` to increase the
 target ASG's desired capacity by one and wait for a new `InService` instance

@@ -22,11 +22,24 @@ script is substituted, and the full id is also in the instance metadata
 item `kythira-node-id`. `gcp_mig_quorum_manager` takes the id from the
 managed instance's name. GCP label values cannot hold `:` or `/`, so the
 `kythira-node-id` label carries the instance name; with the instance's
-project and zone that is the same id. The first template argument picks the node id. Write `std::uint64_t` to
-keep numeric mode, which existing clusters and every `cmd/` binary use
-today: the manager allocates the next free number and stores it in a tag
-or label. `std::string` holds the composite id's canonical text, not a
-decimal number.
+project and zone that is the same id. The first template argument picks the node id. `std::string` holds the
+composite id's canonical text, not a decimal number. `std::uint64_t`
+keeps numeric mode: the manager allocates the next free number and
+stores it in a tag or label. An existing numeric cluster must stay in
+numeric mode, because a cluster cannot change id kind in place: name
+`std::uint64_t` explicitly, and keep its node binaries on
+`KYTHIRA_NODE_ID_KIND=numeric`.
+
+**Running the node binaries on composite ids.** Build them with
+`KYTHIRA_NODE_ID_KIND=text`; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). `gcp_compute_quorum_manager` substitutes the canonical text for
+`{NODE_ID}` in the startup script, so `--node-id={NODE_ID}` works
+there. A MIG names its own instances, so under `gcp_mig_quorum_manager`
+start the node with `--node-id=metadata:gcp` (or
+`NODE_ID=metadata:gcp`): it reads `instance/name`, `instance/zone` and
+`project/project-id` from the metadata server and builds the same
+`gcp:<project>/<zone>:<instance name>` the manager reports. Either
+works under the Compute manager. Peer lists take the same canonical
+text.
 
 ## Which manager
 

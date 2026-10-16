@@ -1,5 +1,13 @@
 # Requirements Document
 
+> **Node ids revised (noted October 16, 2026).** Requirements 4, 6 and 7
+> assign the `NodeId` by a tag scan and find an instance by its
+> `kythira-node-id` tag. That is now numeric mode only
+> (`<std::uint64_t>`): by default the id is the pool's instance,
+> `oci_instance_node_id` (`oci:<region key>:<instance OCID>`) (Requirement
+> 5 there); see `.kiro/specs/cloud-composite-node-ids/`. The criteria
+> below are kept as written, as the record of the original design.
+
 ## Introduction
 
 This document specifies the requirements for Oracle Cloud Infrastructure (OCI)
@@ -361,6 +369,10 @@ into a Raft node the same way as any AWS quorum manager, with no glue code.
 
 ### Requirement 4: Node Tagging Scheme
 
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
+
 **User Story:** As an operator, I want every managed instance to carry
 well-known freeform tags so I can audit cluster membership and so the
 quorum manager can reconstruct its NodeId ↔ instance mapping after a
@@ -447,6 +459,10 @@ crashed-but-still-running instances are all detected.
 
 ### Requirement 6: `provision_node`
 
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
+
 **User Story:** As an orchestrator that has detected a degraded AD, I need
 `provision_node` to grow the Instance Pool by one, wait for the new instance
 to become live, tag it, and return its address so it can join the cluster.
@@ -507,6 +523,10 @@ to become live, tag it, and return its address so it can join the cluster.
 ---
 
 ### Requirement 7: `decommission_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
 
 **User Story:** As an orchestrator removing a broken node, I need
 `decommission_node` to detach and terminate the instance from its pool so it

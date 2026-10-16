@@ -13,11 +13,22 @@ at, all of which the library deliberately does **not** create.
 (`oci:<region key>:<instance OCID>`): a node's id is the instance the pool
 created, and the scope is the region field of the pool's own OCID, so the
 pool id must be an OCID. The `kythira-node-id` freeform tag carries the
-id's text. The first template argument picks the node id. Write `std::uint64_t` to
-keep numeric mode, which existing clusters and every `cmd/` binary use
-today: the manager allocates the next free number and stores it in a tag
-or label. `std::string` holds the composite id's canonical text, not a
-decimal number.
+id's text. The first template argument picks the node id. `std::string` holds the
+composite id's canonical text, not a decimal number. `std::uint64_t`
+keeps numeric mode: the manager allocates the next free number and
+stores it in a tag or label. An existing numeric cluster must stay in
+numeric mode, because a cluster cannot change id kind in place: name
+`std::uint64_t` explicitly, and keep its node binaries on
+`KYTHIRA_NODE_ID_KIND=numeric`.
+
+**Running the node binaries on composite ids.** Build them with
+`KYTHIRA_NODE_ID_KIND=text`; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). The pool launches the instance, so the manager learns the id only
+after launch and cannot put it in the instance configuration's
+cloud-init. Start the node with `--node-id=metadata:oci` (or
+`NODE_ID=metadata:oci`): it reads `instance/id` from IMDS v2 and takes
+the scope from the OCID's region field, giving the same
+`oci:<region key>:<instance OCID>` the manager reports. Peer lists
+take the same canonical text.
 
 ## What kythira does and does not create
 

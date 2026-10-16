@@ -67,6 +67,12 @@ header comment and `ca_cluster_node.env.example` already document. This AMI
 only removes the "install the software" step from that flow — every launched
 instance still needs its own configuration before the unit can start.
 
+The binary comes from `docker/ca_cluster_node/Dockerfile`, which configures
+without Kconfig and so builds numeric node ids: `NODE_ID` and the ids in
+`--peers` are decimal integers. See
+[`docker/ca_cluster_node/README.md`](../../docker/ca_cluster_node/README.md#node-ids)
+for the text kind and `--node-id=metadata:aws`.
+
 ## Naming and tags
 
 ```

@@ -1,5 +1,12 @@
 # Requirements Document
 
+> **Node ids revised (noted October 16, 2026).** Requirements 5, 7 and 8
+> assign the `NodeId` by a tag scan. That is now numeric mode only
+> (`<std::uint64_t>`): by default the id is the adopted ECS instance,
+> `alibaba_ecs_node_id` (Requirement 5 there); see
+> `.kiro/specs/cloud-composite-node-ids/`. The criteria below are kept as
+> written, as the record of the original design.
+
 ## Introduction
 
 This spec adds Alibaba Cloud as the fifth cloud provider (doc/TODO.md, Cloud
@@ -247,6 +254,10 @@ Azure, GCP, and OCI managers.
 
 ### Requirement 5: Node Tagging Scheme
 
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
+
 **User Story:** As a developer, I want cluster membership and node
 identity carried on ECS tags, so that NodeIds survive process restarts and
 the manager stays stateless.
@@ -307,6 +318,10 @@ live cloud state.
 ---
 
 ### Requirement 7: `provision_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
 
 **User Story:** As the quorum-management layer, I want to add a node by
 growing the scaling group, so that replacement capacity appears without
