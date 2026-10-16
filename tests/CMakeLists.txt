@@ -1064,6 +1064,19 @@ foreach(_node_id_test composite_node_id_test node_id_traits_test)
     add_test(NAME ${_node_id_test} COMMAND ${_node_id_test})
     set_tests_properties(${_node_id_test} PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
 endforeach()
+
+# self_node_id (Requirement 6): each metadata service's lookup against a
+# cpp-httplib fake on loopback. No cloud SDK and no network beyond 127.0.0.1,
+# so outside every cloud gate; it needs only httplib and Boost.JSON.
+if(TARGET httplib::httplib AND TARGET boost_json)
+    add_executable(self_node_id_test self_node_id_test.cpp)
+    target_link_libraries(self_node_id_test PRIVATE
+        Boost::unit_test_framework httplib::httplib boost_json)
+    target_include_directories(self_node_id_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(self_node_id_test PRIVATE cxx_std_23)
+    add_test(NAME self_node_id_test COMMAND self_node_id_test)
+    set_tests_properties(self_node_id_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
+endif()
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)
 add_raft_completion_test(striped_executor_unit_test striped_executor_unit_test.cpp)
