@@ -8,6 +8,9 @@
 
 #include <raft/gcp_privateca_certificate_provider.hpp>
 #include <raft/gcp_privateca_certificate_provider_impl.hpp>
+#include <raft/certificate_provider.hpp>
+
+#include "wide_serial_test_support.hpp"
 
 #ifdef FIU_ENABLE
 #include <fiu-control.h>
@@ -94,6 +97,45 @@ BOOST_AUTO_TEST_CASE(satisfies_certificate_provider_concept) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// .kiro/specs/cloud-composite-node-ids/ Requirement 12.5: a CAS certificate's
+// serial, at full width, from the certificate itself or else from CAS's own
+// hex_serial_number.
+BOOST_AUTO_TEST_SUITE(gcp_privateca_serial)
+
+BOOST_AUTO_TEST_CASE(serial_is_read_from_the_certificate_then_the_description) {
+    certificate_authority ca;
+    leaf_certificate_options leaf;
+    leaf.subject.common_name = "cas-leaf";
+    leaf.dns_names = {"cas-leaf.example.com"};
+    auto csr = generate_key_and_csr(leaf);
+    csr_signing_options signing;
+    signing.dns_names = leaf.dns_names;
+    const auto wide = kythira::testing::twenty_octet_serial();
+    auto material = kythira::testing::sign_csr_with_serial(ca, csr.csr_pem, signing, wide);
+
+    google::cloud::security::privateca::v1::Certificate certificate;
+    certificate.set_pem_certificate(material.certificate_pem);
+    // The PEM wins over a disagreeing description.
+    certificate.mutable_certificate_description()
+        ->mutable_subject_description()
+        ->set_hex_serial_number("01");
+    BOOST_TEST((gcp_privateca_detail::serial_of(certificate) == wide));
+
+    certificate.clear_pem_certificate();
+    // Upper case, as CAS may spell it.
+    certificate.mutable_certificate_description()
+        ->mutable_subject_description()
+        ->set_hex_serial_number("808182838485868788898A8B8C8D8E8F90919214");
+    BOOST_TEST((gcp_privateca_detail::serial_of(certificate) == wide));
+
+    certificate.mutable_certificate_description()
+        ->mutable_subject_description()
+        ->set_hex_serial_number("not hex");
+    BOOST_TEST(!gcp_privateca_detail::serial_of(certificate).has_value());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 #ifdef FIU_ENABLE
 
 BOOST_AUTO_TEST_SUITE(gcp_privateca_fault_injection)
@@ -122,6 +164,20 @@ BOOST_AUTO_TEST_CASE(revoke_certificate_fault_returns_exceptional_future) {
     auto fut = provider.revoke("projects/p/locations/l/caPools/pool/certificates/c");
     fiu_disable("raft/gcp/privateca/revoke_certificate");
     BOOST_CHECK_THROW(std::move(fut).get(), std::exception);
+}
+
+// Revoking by serial lists the pool first; a failure there rejects the
+// future rather than silently revoking nothing.
+BOOST_AUTO_TEST_CASE(revoke_by_serial_list_fault_returns_exceptional_future) {
+    gcp_privateca_certificate_provider provider{valid_config()};
+    fiu_enable("raft/gcp/privateca/list_certificates", 1, nullptr, 0);
+    auto fut = provider.revoke(kythira::testing::twenty_octet_serial());
+    fiu_disable("raft/gcp/privateca/list_certificates");
+    // BOOST_CHECK_THROW wraps its statement in a loop, so a std::move(fut)
+    // written inside it reads to clang-tidy as a move on every iteration.
+    // Moving inside a lambda keeps the single move visible as single.
+    auto wait = [&fut] { std::move(fut).get(); };
+    BOOST_CHECK_THROW(wait(), std::exception);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -5802,10 +5802,12 @@ set_tests_properties(gcp_quorum_manager_unit_test PROPERTIES
 )
 
 # ── GCP Certificate Authority Service provider tests ──────────────────────────
-if(_KYTHIRA_GCP_PRIVATECA_FOUND)
+if(_KYTHIRA_GCP_PRIVATECA_FOUND AND TARGET certificate_authority)
     add_executable(gcp_privateca_provider_unit_test gcp_privateca_provider_unit_test.cpp)
+    # certificate_authority: the serial cases sign test certificates.
     target_link_libraries(gcp_privateca_provider_unit_test PRIVATE
         network_simulator
+        certificate_authority
         Boost::unit_test_framework
     )
     if(TARGET Folly::folly)
@@ -5823,7 +5825,7 @@ if(_KYTHIRA_GCP_PRIVATECA_FOUND)
         LABELS "unit;gcp;certificate_authority"
     )
 else()
-    message(STATUS "google-cloud-cpp privateca component not found — gcp_privateca_provider_unit_test will not be built")
+    message(STATUS "google-cloud-cpp privateca component (or certificate_authority target) not found — gcp_privateca_provider_unit_test will not be built")
 endif()
 
 # ── GCP real-cloud integration tests (opt-in: -DKYTHIRA_GCP_REAL_TESTS=ON) ────

@@ -67,9 +67,21 @@ public:
     [[nodiscard]] auto sign_csr(std::string csr_pem, csr_signing_options options)
         -> kythira::future_default<pem_material>;
 
-    /// Optional: calls `RevokeCertificate`. Mirrors `aws_acm_pca_provider`'s
-    /// optional `revoke`.
-    [[nodiscard]] auto revoke(std::string serial) -> kythira::future_default<void>;
+    /// Optional: calls `RevokeCertificate` on the certificate resource
+    /// `resource_name` (`projects/.../caPools/.../certificates/...`), which is
+    /// how CAS addresses a certificate.
+    [[nodiscard]] auto revoke(std::string resource_name) -> kythira::future_default<void>;
+
+    /// Revokes the certificate in the configured pool whose serial is
+    /// `serial`, for callers that hold only the serial (as `pem_material`
+    /// does). CAS cannot address a certificate by serial, so this lists the
+    /// pool's certificates and compares each one's serial, then revokes the
+    /// match by resource name. The comparison is done here on parsed values,
+    /// not with a server-side filter on `hex_serial_number`, because that
+    /// filter is a string match whose case and padding CAS does not document.
+    /// Idempotent: no match, or a match already revoked, resolves without a
+    /// revoke call. Mirrors `oci_certificates_provider::revoke`.
+    [[nodiscard]] auto revoke(const certificate_serial& serial) -> kythira::future_default<void>;
 
 private:
     gcp_privateca_certificate_provider_config _config;
