@@ -9,18 +9,29 @@
 ///        analogue of `aws_ec2_quorum_manager` / `docker_quorum_manager`, and
 ///        the primary GCP quorum manager.
 ///
-/// Node identity is minted by kythira, not GCP: `provision_node` draws a random
-/// 63-bit `NodeId` and encodes it into a deterministic instance name
-/// (`kythira-{cluster}-{node_id}`), so `node_id_to_instance_name` /
-/// `instance_name_to_node_id` are pure functions requiring no API call — the
-/// same statelessness `aws_ec2_quorum_manager` gets from the EC2 instance ID,
-/// via a different mechanism (see `.kiro/specs/gcp-cloud-services/design.md`,
-/// "The Core Design Decision: Node Identity").
+/// Node identity is minted by kythira, not GCP, before `instances.insert`. How
+/// depends on `NodeId` (spec cloud-composite-node-ids, Requirement 5):
+///
+/// - `gcp_instance_node_id`, or `std::string` holding its canonical text: the
+///   node id IS the instance, `{project}/{zone}` and its name. `provision_node`
+///   generates the name, `kythira-{cluster}-{8 random base32 characters}`,
+///   kept within GCE's 63-character RFC 1035 limit by cutting the cluster part.
+///   Mapping an id to its instance reads the id's zone and name: no scan.
+/// - an unsigned integer (numeric mode): `provision_node` draws a random
+///   63-bit `NodeId` and encodes it into a deterministic instance name
+///   (`kythira-{cluster}-{node_id}`), so `node_id_to_instance_name` /
+///   `instance_name_to_node_id` are pure functions requiring no API call (see
+///   `.kiro/specs/gcp-cloud-services/design.md`, "The Core Design Decision:
+///   Node Identity").
+///
+/// Either way the id is known before the insert, so `{NODE_ID}` in the startup
+/// script is its text (canonical composite text in the textual modes).
 
 #include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/gcp_client_config.hpp>
+#include <raft/generated_node_name.hpp>
 #include <raft/gcp_client_options.hpp>
 #include <raft/gcp_operation_wait.hpp>
 #include <raft/quorum_management.hpp>
@@ -175,10 +186,36 @@ template<typename GroupId = std::string> struct gcp_compute_quorum_manager_confi
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires node_id<NodeId>
 class gcp_compute_quorum_manager {
+    static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||
+                      std::same_as<NodeId, gcp_instance_node_id>,
+                  "gcp_compute_quorum_manager: NodeId must be an unsigned integer, std::string or "
+                  "gcp_instance_node_id");
+
 public:
     using node_id_type = NodeId;
     using address_type = Address;
     using placement_group_id_type = std::string;
+
+    /// True when the node id is the instance itself (composite or string
+    /// mode): its name, scoped by `{project}/{zone}`.
+    static constexpr bool name_is_node_id = node_id_traits<NodeId>::is_textual;
+
+    /// Longest instance name GCE accepts (an RFC 1035 label), and so the
+    /// longest name the manager generates in composite and string mode.
+    static constexpr std::size_t max_instance_name_length = 63;
+
+    /// Where an instance lives: its zone and name in the configured project.
+    struct instance_location {
+        std::string zone;
+        std::string name;
+    };
+
+    /// Metadata key that carries the node id's canonical text in composite and
+    /// string mode. The `kythira-node-id` label cannot: GCP label values allow
+    /// only `[a-z0-9_-]`, and canonical text contains `:` and `/` (and can pass
+    /// 63 characters). The label carries the instance name instead, which with
+    /// the instance's own project and zone is the same id.
+    static constexpr std::string_view node_id_metadata_key = "kythira-node-id";
 
     /// @brief Constructs the manager and validates the configuration.
     ///
@@ -187,6 +224,9 @@ public:
     ///   any `extra_labels` key/value is not a valid GCP label, any topology
     ///   group has no `subnetwork_by_group` entry, or the worst-case instance
     ///   name (`cluster_name` + max `NodeId`) is not a valid GCE resource name.
+    ///   In composite and string mode the last check is instead that a
+    ///   generated name (whose cluster part is cut to fit) is a valid instance
+    ///   name and, with the project and each configured zone, a valid id.
     explicit gcp_compute_quorum_manager(gcp_compute_quorum_manager_config<std::string> config)
         // `config` is copied, not moved: the client factories below read
         // `config.gcp` in the same argument list, and argument evaluation
@@ -243,16 +283,37 @@ public:
                     gt.group_id);
             }
         }
-        // Validate the worst-case instance name length up front so a provision
-        // call can never fail on a name-too-long error introduced by an unlucky
-        // random NodeId draw (Requirement 6 AC 3). The widest decimal NodeId is
-        // the max uint64_t (20 digits); a signed NodeId is narrower, so this is
-        // a safe upper bound.
-        const std::string worst_case = "kythira-" + _config.cluster_name + "-18446744073709551615";
-        if (!is_valid_gcp_resource_name(worst_case)) {
-            throw std::invalid_argument(
-                "gcp_compute_quorum_manager: cluster_name '" + _config.cluster_name +
-                "' is too long — the derived instance name can exceed 63 characters");
+        if constexpr (name_is_node_id) {
+            // Every generated name has the same cluster part and a suffix that
+            // is always valid, so one sample settles the name; the project
+            // and each zone must form the id's scope.
+            const auto sample =
+                generated_instance_name(std::string(generated_name_suffix_length, 'a'));
+            if (!is_valid_gcp_resource_name(sample)) {
+                throw std::invalid_argument(
+                    "gcp_compute_quorum_manager: cluster_name '" + _config.cluster_name +
+                    "' cannot start a valid instance name ('" + sample + "'); use only [a-z0-9-]");
+            }
+            for (const auto& [zone, _] : _config.subnetwork_by_group) {
+                if (!node_id_for_instance(_config.gcp.project_id, zone, sample)) {
+                    throw std::invalid_argument("gcp_compute_quorum_manager: project '" +
+                                                _config.gcp.project_id + "' and zone '" + zone +
+                                                "' do not form a valid gcp node id scope");
+                }
+            }
+        } else {
+            // Validate the worst-case instance name length up front so a provision
+            // call can never fail on a name-too-long error introduced by an unlucky
+            // random NodeId draw (Requirement 6 AC 3). The widest decimal NodeId is
+            // the max uint64_t (20 digits); a signed NodeId is narrower, so this is
+            // a safe upper bound.
+            const std::string worst_case =
+                "kythira-" + _config.cluster_name + "-18446744073709551615";
+            if (!is_valid_gcp_resource_name(worst_case)) {
+                throw std::invalid_argument(
+                    "gcp_compute_quorum_manager: cluster_name '" + _config.cluster_name +
+                    "' is too long — the derived instance name can exceed 63 characters");
+            }
         }
     }
 
@@ -263,51 +324,81 @@ public:
 
     /// @brief Reports which nodes are live at the GCE infrastructure layer.
     ///
-    /// Groups the cluster vector by zone and issues one label-filtered
-    /// `instances.list` per distinct zone (GCE's list is zone-scoped, unlike
-    /// AWS's single multi-AZ call). A node is live iff its computed instance
-    /// name appears in its zone's results with `status == RUNNING`.
+    /// Numeric mode: groups the cluster vector by zone and issues one
+    /// label-filtered `instances.list` per distinct zone (GCE's list is
+    /// zone-scoped, unlike AWS's single multi-AZ call). A node is live iff its
+    /// computed instance name appears in its zone's results with
+    /// `status == RUNNING`.
+    ///
+    /// Composite and string mode: one `instances.get` per node, in the zone
+    /// and under the name the id itself carries. A node is live iff that
+    /// instance's `status == RUNNING`; a missing instance, or an id that names
+    /// another project (or is not canonical gcp text), is unreachable and does
+    /// not fail the assessment.
     auto assess_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
         -> kythira::future_default<quorum_health<NodeId, std::string>> {
         try {
             if (cluster.empty()) {
                 return build_health(cluster, {});
             }
-
-            std::vector<std::string> zones;
-            for (const auto& np : cluster) {
-                if (std::find(zones.begin(), zones.end(), np.group_id) == zones.end()) {
-                    zones.push_back(np.group_id);
-                }
-            }
-
-            // instance name → running? across all zones.
-            std::map<std::string, bool> name_running;
-            for (const auto& zone : zones) {
-                fiu_do_on("raft/gcp/compute/list_instances",
-                          throw std::runtime_error("fault: raft/gcp/compute/list_instances"););
-
-                google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
-                req.set_project(_config.gcp.project_id);
-                req.set_zone(zone);
-                req.set_filter("labels.kythira-cluster = \"" + _config.cluster_name + "\"");
-
-                for (auto const& maybe_inst : _instances.ListInstances(req)) {
-                    if (!maybe_inst) {
-                        throw std::runtime_error("gcp instances.list (" + zone +
-                                                 "): " + maybe_inst.status().message());
+            if constexpr (name_is_node_id) {
+                std::map<std::string, bool> live_map;
+                for (const auto& np : cluster) {
+                    // The assess read's fault point, as in numeric mode.
+                    fiu_do_on("raft/gcp/compute/list_instances",
+                              throw std::runtime_error("fault: raft/gcp/compute/list_instances"););
+                    const auto loc = instance_location_of(np.node_id);
+                    if (!loc) {
+                        continue;
                     }
-                    name_running[maybe_inst->name()] = (maybe_inst->status() == "RUNNING");
+                    auto got = _instances.GetInstance(_config.gcp.project_id, loc->zone, loc->name);
+                    if (!got) {
+                        if (got.status().code() == google::cloud::StatusCode::kNotFound) {
+                            continue;
+                        }
+                        throw std::runtime_error("gcp instances.get (" + loc->zone + "/" +
+                                                 loc->name + "): " + got.status().message());
+                    }
+                    live_map[node_id_str(np.node_id)] = (got->status() == "RUNNING");
                 }
-            }
+                return build_health(cluster, live_map);
+            } else {
+                std::vector<std::string> zones;
+                for (const auto& np : cluster) {
+                    if (std::find(zones.begin(), zones.end(), np.group_id) == zones.end()) {
+                        zones.push_back(np.group_id);
+                    }
+                }
 
-            std::map<std::string, bool> live_map;
-            for (const auto& np : cluster) {
-                const std::string name = node_id_to_instance_name(_config.cluster_name, np.node_id);
-                auto it = name_running.find(name);
-                live_map[node_id_str(np.node_id)] = (it != name_running.end() && it->second);
+                // instance name → running? across all zones.
+                std::map<std::string, bool> name_running;
+                for (const auto& zone : zones) {
+                    fiu_do_on("raft/gcp/compute/list_instances",
+                              throw std::runtime_error("fault: raft/gcp/compute/list_instances"););
+
+                    google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
+                    req.set_project(_config.gcp.project_id);
+                    req.set_zone(zone);
+                    req.set_filter("labels.kythira-cluster = \"" + _config.cluster_name + "\"");
+
+                    for (auto const& maybe_inst : _instances.ListInstances(req)) {
+                        if (!maybe_inst) {
+                            throw std::runtime_error("gcp instances.list (" + zone +
+                                                     "): " + maybe_inst.status().message());
+                        }
+                        name_running[maybe_inst->name()] = (maybe_inst->status() == "RUNNING");
+                    }
+                }
+
+                std::map<std::string, bool> live_map;
+                for (const auto& np : cluster) {
+                    const std::string name =
+                        node_id_to_instance_name(_config.cluster_name, np.node_id);
+                    auto it = name_running.find(name);
+                    live_map[node_id_str(np.node_id)] = (it != name_running.end() && it->second);
+                }
+                return build_health(cluster, live_map);
             }
-            return build_health(cluster, live_map);
         } catch (const std::exception& ex) {
             return future_factory_default::makeExceptionalFuture<
                 quorum_health<NodeId, std::string>>(std::make_exception_ptr(std::runtime_error(
@@ -443,8 +534,9 @@ public:
                         throw std::runtime_error("gcp instances.list (" + zone +
                                                  "): " + maybe_inst.status().message());
                     }
-                    if (auto peer = keyed_instance_peer(*maybe_inst, _config.cluster_name, label,
-                                                        _config.node_port)) {
+                    if (auto peer =
+                            keyed_instance_peer(*maybe_inst, _config.cluster_name, label,
+                                                _config.node_port, _config.gcp.project_id, zone)) {
                         return future_factory_default::makeFuture(result{std::move(*peer)});
                     }
                 }
@@ -463,11 +555,13 @@ public:
     ///
     /// `instances.list` already filtered on both labels; this re-checks them so
     /// an endpoint that ignores the filter (a test double, an emulator) cannot
-    /// hand back another cluster's machine. Pure — public for testing.
+    /// hand back another cluster's machine. In composite and string mode the
+    /// id is the instance's own name in @p project and @p zone, the zone the
+    /// listing was made in. Pure — public for testing.
     [[nodiscard]] static auto keyed_instance_peer(
         const google::cloud::cpp::compute::v1::Instance& instance, const std::string& cluster_name,
-        const std::string& label_value, std::uint16_t node_port)
-        -> std::optional<peer_info<NodeId, Address>> {
+        const std::string& label_value, std::uint16_t node_port, std::string_view project = {},
+        std::string_view zone = {}) -> std::optional<peer_info<NodeId, Address>> {
         const auto& labels = instance.labels();
         auto cl = labels.find("kythira-cluster");
         auto k = labels.find(std::string{gcp_idempotency_key_label});
@@ -475,7 +569,12 @@ public:
             k->second != label_value) {
             return std::nullopt;
         }
-        auto id = instance_name_to_node_id(cluster_name, instance.name());
+        std::optional<NodeId> id;
+        if constexpr (name_is_node_id) {
+            id = node_id_for_instance(project, zone, instance.name());
+        } else {
+            id = instance_name_to_node_id(cluster_name, instance.name());
+        }
         if (!id) {
             return std::nullopt;
         }
@@ -522,7 +621,9 @@ public:
             }
         }
 
-        // Metadata: startup-script (rendered) + enable-guest-attributes=TRUE.
+        // Metadata: startup-script (rendered) + enable-guest-attributes=TRUE,
+        // and in composite and string mode the id's canonical text, which the
+        // kythira-node-id label cannot hold (see node_id_metadata_key).
         auto* metadata = instance.mutable_metadata();
         if (!_config.startup_script_template.empty()) {
             auto* item = metadata->add_items();
@@ -534,6 +635,11 @@ public:
             item->set_key("enable-guest-attributes");
             item->set_value("TRUE");
         }
+        if constexpr (name_is_node_id) {
+            auto* item = metadata->add_items();
+            item->set_key(std::string(node_id_metadata_key));
+            item->set_value(node_id_str(node_id));
+        }
 
         // Labels: the six standard labels plus extra_labels (which never
         // override the standard set), plus the idempotency key when there is
@@ -541,7 +647,7 @@ public:
         // reads.
         auto& labels = *instance.mutable_labels();
         labels["kythira-cluster"] = _config.cluster_name;
-        labels["kythira-node-id"] = node_id_str(node_id);
+        labels["kythira-node-id"] = node_id_label_value(node_id);
         labels["kythira-group"] = target_group;
         labels["kythira-managed-by"] = "kythira-gce-quorum-manager";
         labels["kythira-market"] = _config.spot ? "spot" : "standard";
@@ -587,8 +693,23 @@ private:
             constexpr int kMaxAttempts = 5;
             std::exception_ptr last_error;
             for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-                NodeId new_id = generate_node_id();
-                const std::string name = node_id_to_instance_name(_config.cluster_name, new_id);
+                // Composite and string mode generate the name and take the id
+                // from it; numeric mode draws the id and derives the name.
+                // Either way a name collision retries with a fresh draw.
+                NodeId new_id{};
+                std::string name;
+                if constexpr (name_is_node_id) {
+                    name = generated_instance_name(random_name_suffix());
+                    auto id = node_id_for_instance(_config.gcp.project_id, target_group, name);
+                    if (!id) {
+                        throw std::runtime_error("generated instance name " + name + " in zone " +
+                                                 target_group + " is not a valid gcp node id");
+                    }
+                    new_id = std::move(*id);
+                } else {
+                    new_id = generate_node_id();
+                    name = node_id_to_instance_name(_config.cluster_name, new_id);
+                }
 
                 fiu_do_on("raft/gcp/compute/insert_instance",
                           throw std::runtime_error("fault: raft/gcp/compute/insert_instance"););
@@ -673,8 +794,22 @@ public:
             fiu_do_on("raft/gcp/compute/delete_instance",
                       throw std::runtime_error("fault: raft/gcp/compute/delete_instance"););
 
-            const std::string name = node_id_to_instance_name(_config.cluster_name, node_id);
-            const std::string zone = zone_for_node(node_id);
+            std::string name;
+            std::string zone;
+            if constexpr (name_is_node_id) {
+                // The id carries its zone, so there is no zone scan.
+                auto loc = instance_location_of(node_id);
+                if (!loc) {
+                    throw std::invalid_argument("node " + node_id_str(node_id) +
+                                                " is not an instance in project " +
+                                                _config.gcp.project_id);
+                }
+                zone = std::move(loc->zone);
+                name = std::move(loc->name);
+            } else {
+                name = node_id_to_instance_name(_config.cluster_name, node_id);
+                zone = zone_for_node(node_id);
+            }
 
             auto del = _instances.DeleteInstance(_config.gcp.project_id, zone, name).get();
             if (!del) {
@@ -700,18 +835,23 @@ public:
 
     // ── Pure name <-> NodeId functions (no API call) ────────────────────────
 
-    /// @brief Renders `"kythira-{cluster_name}-{node_id}"`. Public for testing
-    ///        (Requirement 23 AC 10).
+    /// @brief Numeric mode: renders `"kythira-{cluster_name}-{node_id}"`.
+    ///        Public for testing (Requirement 23 AC 10).
     [[nodiscard]] static std::string node_id_to_instance_name(const std::string& cluster_name,
-                                                              NodeId node_id) {
+                                                              NodeId node_id)
+    requires(!name_is_node_id)
+    {
         return "kythira-" + cluster_name + "-" + node_id_str(node_id);
     }
 
-    /// @brief Inverse of `node_id_to_instance_name`. Returns `std::nullopt` on
-    ///        any mismatch (wrong prefix, non-numeric suffix) rather than
-    ///        throwing, so it can defensively scan `instances.list` results.
+    /// @brief Numeric mode: inverse of `node_id_to_instance_name`. Returns
+    ///        `std::nullopt` on any mismatch (wrong prefix, non-numeric suffix)
+    ///        rather than throwing, so it can defensively scan `instances.list`
+    ///        results.
     [[nodiscard]] static std::optional<NodeId> instance_name_to_node_id(
-        const std::string& cluster_name, const std::string& instance_name) {
+        const std::string& cluster_name, const std::string& instance_name)
+    requires(!name_is_node_id)
+    {
         const std::string prefix = "kythira-" + cluster_name + "-";
         if (instance_name.size() <= prefix.size() ||
             instance_name.compare(0, prefix.size(), prefix) != 0) {
@@ -726,6 +866,60 @@ public:
         return id;
     }
 
+    // ── Composite and string mode: the id is the instance ───────────────────
+
+    /// @brief `{project}/{zone}` and @p name as a NodeId, or `std::nullopt`
+    ///        when any part is not valid in a gcp id. Pure — no API call.
+    [[nodiscard]] static auto node_id_for_instance(std::string_view project, std::string_view zone,
+                                                   std::string_view name) -> std::optional<NodeId>
+    requires name_is_node_id
+    {
+        try {
+            gcp_instance_node_id id{std::string(project) + "/" + std::string(zone),
+                                    std::string(name)};
+            if constexpr (std::same_as<NodeId, std::string>) {
+                return id.to_string();
+            } else {
+                return id;
+            }
+        } catch (const std::invalid_argument&) {
+            return std::nullopt;
+        }
+    }
+
+    /// @brief The zone and name @p nid carries, or `std::nullopt` when it is
+    ///        not canonical gcp text or names a project other than
+    ///        @p project. Pure — no API call.
+    [[nodiscard]] static auto instance_for_node(std::string_view project, const NodeId& nid)
+        -> std::optional<instance_location>
+    requires name_is_node_id
+    {
+        std::optional<gcp_instance_node_id> id;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            id = gcp_instance_node_id::parse(nid);
+        } else {
+            id = nid;
+        }
+        if (!id) {
+            return std::nullopt;
+        }
+        const auto scope = id->scope();
+        const auto slash = scope.find('/');
+        if (scope.substr(0, slash) != project) {
+            return std::nullopt;
+        }
+        return instance_location{.zone = std::string(scope.substr(slash + 1)),
+                                 .name = std::string(id->native())};
+    }
+
+    /// @brief The instance a node runs on, in the configured project.
+    [[nodiscard]] auto instance_location_of(const NodeId& nid) const
+        -> std::optional<instance_location>
+    requires name_is_node_id
+    {
+        return instance_for_node(_config.gcp.project_id, nid);
+    }
+
 private:
     gcp_compute_quorum_manager_config<std::string> _config;
     google::cloud::compute_instances_v1::InstancesClient _instances;
@@ -737,9 +931,34 @@ private:
         return node_id_traits<NodeId>::to_text(id);
     }
 
+    /// The `kythira-node-id` label value: the decimal id in numeric mode; in
+    /// composite and string mode the instance name, because canonical text is
+    /// not a valid label value (see `node_id_metadata_key`).
+    static auto node_id_label_value(const NodeId& id) -> std::string {
+        if constexpr (name_is_node_id) {
+            std::optional<gcp_instance_node_id> composite;
+            if constexpr (std::same_as<NodeId, std::string>) {
+                composite = gcp_instance_node_id::parse(id);
+            } else {
+                composite = id;
+            }
+            return composite ? std::string(composite->native()) : std::string{};
+        } else {
+            return node_id_str(id);
+        }
+    }
+
+    /// Composite and string mode: `kythira-{cluster}-{suffix}` within
+    /// `max_instance_name_length`, the cluster part cut to fit.
+    [[nodiscard]] auto generated_instance_name(std::string_view suffix) const -> std::string {
+        return generated_node_name(_config.cluster_name, suffix, max_instance_name_length);
+    }
+
     /// Strict decimal that fits `NodeId` (`parse_numeric_node_id`), or
     /// `std::nullopt`.
-    static auto parse_node_id(std::string_view s) -> std::optional<NodeId> {
+    static auto parse_node_id(std::string_view s) -> std::optional<NodeId>
+    requires(!name_is_node_id)
+    {
         const auto v = parse_numeric_node_id<NodeId>(s);
         if (!v) {
             return std::nullopt;
@@ -750,7 +969,9 @@ private:
     /// Draws a cryptographically-strong random id in [1, 2^63 - 1], or within
     /// a narrower `NodeId`'s range rather than truncated into it
     /// (Requirement 5; cloud-composite-node-ids Requirement 7.6).
-    static auto generate_node_id() -> NodeId {
+    static auto generate_node_id() -> NodeId
+    requires(!name_is_node_id)
+    {
         std::random_device rd;
         return random_numeric_node_id<NodeId>(rd);
     }
@@ -762,7 +983,9 @@ private:
     /// zone, so decommission scans the configured zones. When only one zone is
     /// configured the answer is unambiguous; otherwise `instances.delete` is
     /// attempted per zone until one succeeds or all report NOT_FOUND.
-    auto zone_for_node(const NodeId& node_id) -> std::string {
+    auto zone_for_node(const NodeId& node_id) -> std::string
+    requires(!name_is_node_id)
+    {
         const std::string name = node_id_to_instance_name(_config.cluster_name, node_id);
         for (const auto& [zone, _] : _config.subnetwork_by_group) {
             auto got = _instances.GetInstance(_config.gcp.project_id, zone, name);
@@ -892,6 +1115,12 @@ private:
 static_assert(quorum_manager<gcp_compute_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "gcp_compute_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<gcp_compute_quorum_manager<gcp_instance_node_id, std::string>,
+                             gcp_instance_node_id, std::string, std::string>,
+              "gcp_compute_quorum_manager<gcp_instance_node_id> must satisfy quorum_manager");
+static_assert(quorum_manager<gcp_compute_quorum_manager<std::string, std::string>, std::string,
+                             std::string, std::string>,
+              "gcp_compute_quorum_manager<std::string> must satisfy quorum_manager");
 
 }  // namespace kythira
 
