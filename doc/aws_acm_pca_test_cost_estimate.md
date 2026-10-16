@@ -107,16 +107,33 @@ billed. Two CAs for about 10 minutes plus four certificates:
 | 4 certificates | $0.058 each | ≈ $0.23 |
 | **Total** | | **≈ $0.25** |
 
-The suite prints its own `[aws-cost]` block at the end of each run.
+The suite prints its own cost summary block ("AWS Real-EC2 Test Cost
+Estimate Summary") at the end of each run.
 Measured on the first Actions run (Real Cloud Tests run 38065882804,
 2026-10-10): **$0.232 per architecture**, with both CAs ACTIVE in about
 2.5 s and the whole suite finishing in 8-9 s. The Actions step runs on the
 x64 and arm64 legs, so one dispatch creates two CA pairs and costs about
-**$0.46**. Both legs' leak audits were clean. The `[aws-cost]` figure bills
-the self-issued roots as certificates; whether AWS actually does still
-needs a look at the billing console. The 2026-10-03 manual run (one
-hand-made CA for 8 min 45 s, three certificates) came to about $0.18 on
-the same assumption. When
+**$0.46**. Both legs' leak audits were clean. A local run on
+2026-10-16 (us-west-2, 5/5 cases) measured the same $0.232.
+
+The billing console (Cost Explorer, service "AWS Certificate Manager",
+daily by usage type, 2026-10-03 to 2026-10-15) confirms both assumptions
+the figure rests on:
+
+- **Self-issued roots are billed as certificates.** The 2026-10-10
+  two-leg dispatch billed 8 short-lived certificates ($0.464), not the 4
+  leaves, and the 2026-10-03 manual run billed 3 (one root, two leaves,
+  $0.174). Every day comes to exactly $0.058 per certificate.
+- **A deleted CA stops accruing.** The CA charge ($50 per CA-month,
+  prorated) appears only on run days, at seconds to minutes of CA time
+  ($0.0004-$0.01 per day), and is zero on every day without a run,
+  including the six days after the 2026-10-03 CA was deleted.
+
+So a run's cost is almost all certificate fees: four certificates at
+$0.058 is $0.232, and the two CAs' few seconds add well under a cent.
+
+The 2026-10-03 manual run (one hand-made CA for 8 min 45 s, three
+certificates) came to $0.184 billed. When
 `$KYTHIRA_TEST_ACM_PCA_ARN` names an existing CA, only the other kind is
 created, so the run costs about half as much.
 
