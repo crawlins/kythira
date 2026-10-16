@@ -41,7 +41,7 @@ the audit and `design.md` for the types and per-component changes.
   - [x] 2.5 Unit and mock tests for each fix
   - _Requirements: 3.4, 7.1-7.7_
 
-- [ ] 3. AWS managers
+- [x] 3. AWS managers
   - [x] 3.1 Replace `ec2_id_to_node_id`/`node_id_to_ec2_id` with
     `to_instance_id`/`from_instance`; composite and string mode use
     `aws_ec2_node_id` (landed as `instance_id_of`/`node_id_of_instance`
@@ -50,7 +50,10 @@ the audit and `design.md` for the types and per-component changes.
   - [x] 3.2 Numeric mode: tag-based allocation and lookup, identity tags
     and `{NODE_ID}` in the launch request, and the R11.4 fallback
   - [x] 3.3 ASG manager: route through the new helpers in both modes
-  - [ ] 3.4 Change both defaults to `aws_ec2_node_id` (breaking)
+  - [x] 3.4 Change both defaults to `aws_ec2_node_id` (breaking) (done
+    October 16, 2026; every in-tree `<>` that relied on numeric ids now
+    names `<std::uint64_t>`, and the mock suite's composite cases run
+    through the default)
   - [x] 3.5 Unit tests with `i-f0123456789abcdef`, `i-1234abcd` and
     `i-0123456789abcdef0` in all three modes
     (`tests/aws_ec2_node_id_mock_test.cpp`, a local EC2/Auto Scaling fake)

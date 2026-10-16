@@ -95,7 +95,7 @@ using kythira::testing::aws_real_ec2::g_cost_accumulator;
 using kythira::testing::aws_real_ec2::signal_cleanup_target;
 using kythira::testing::aws_real_ec2::TestCostReport;
 
-using ec2_manager = kythira::aws_ec2_quorum_manager<>;
+using ec2_manager = kythira::aws_ec2_quorum_manager<std::uint64_t>;
 using node_id = ec2_manager::node_id_type;
 using ec2_cluster = std::vector<kythira::node_placement<node_id, std::string>>;
 

@@ -3,6 +3,17 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 16, 2026)
+
+- **Breaking: the AWS quorum managers default to composite node ids.**
+  `aws_ec2_quorum_manager<>` and `aws_asg_quorum_manager<>` now mean
+  `NodeId = aws_ec2_node_id`: the node id is the instance itself
+  (`aws-ec2:<region>:<instance id>`), so no instance id is parsed as a
+  number or needs a tag lookup to find. Code that wrote `<>` and stores
+  numeric ids must write `<std::uint64_t>` to keep numeric mode; the
+  in-tree tests that did so now name it. Spec `cloud-composite-node-ids`
+  task 3.4.
+
 ### What Changed (October 15, 2026)
 
 - **Shape 2 perf rows stop calling separate machines containers.**

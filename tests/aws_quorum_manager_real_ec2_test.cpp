@@ -1600,7 +1600,7 @@ BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
 BOOST_FIXTURE_TEST_SUITE(real_ec2, RealEc2Fixture)
 
 BOOST_AUTO_TEST_CASE(provision_three_nodes_one_per_az, *boost::unit_test::timeout(1500)) {
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (const auto& az : {"AZ1", "AZ2", "AZ3"}) {
         auto peer = mgr.provision_node(az, std::nullopt).get();
@@ -1615,7 +1615,7 @@ BOOST_AUTO_TEST_CASE(provision_three_nodes_one_per_az, *boost::unit_test::timeou
 }
 
 BOOST_AUTO_TEST_CASE(decommission_is_idempotent, *boost::unit_test::timeout(1500)) {
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
     auto peer = mgr.provision_node("AZ1", std::nullopt).get();
     track_instances(1);
     BOOST_CHECK_NO_THROW(mgr.decommission_node(peer.node_id).get());
@@ -1625,7 +1625,7 @@ BOOST_AUTO_TEST_CASE(decommission_is_idempotent, *boost::unit_test::timeout(1500
 BOOST_AUTO_TEST_CASE(quarantine_sg_causes_unreachable, *boost::unit_test::timeout(1500)) {
     // A stopped (non-running) instance is detected as unreachable via
     // DescribeInstanceStatus; restarting it restores liveness.
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     auto peer = mgr.provision_node("AZ1", std::nullopt).get();
@@ -1647,7 +1647,7 @@ BOOST_AUTO_TEST_CASE(quarantine_sg_causes_unreachable, *boost::unit_test::timeou
 }
 
 BOOST_AUTO_TEST_CASE(hardware_failure_via_terminate_instances, *boost::unit_test::timeout(1500)) {
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     auto peer = mgr.provision_node("AZ1", std::nullopt).get();
@@ -1666,7 +1666,7 @@ BOOST_AUTO_TEST_CASE(process_crash_via_ssh_kill, *boost::unit_test::timeout(1500
     // The SSH path to the bastion is exercised even though the actual
     // halt is issued through the EC2 StopInstances API (cluster nodes
     // are launched without an SSH key pair, so the inner SSH is a no-op).
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     auto peer = mgr.provision_node("AZ1", std::nullopt).get();
@@ -1695,7 +1695,7 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_restores_full_cluster, *boost::unit_test::t
     cfg.topology.groups.push_back({.group_id = "AZ1", .target_count = 3});
     cfg.subnet_by_group.clear();
     cfg.subnet_by_group["AZ1"] = subnet_az1_id;
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (int i = 0; i < 3; ++i) {
@@ -1739,7 +1739,7 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_restores_full_cluster, *boost::unit_test::t
 // add up to ~5.5 minutes on top of each case's own real work, which pushed
 // two of these four 9-node/3-AZ cases past the old 1200s cap on real CI runs.
 BOOST_AUTO_TEST_CASE(nine_node_full_cluster_healthy, *boost::unit_test::timeout(1500)) {
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (const auto& az : {"AZ1", "AZ2", "AZ3"}) {
         for (int i = 0; i < 3; ++i) {
@@ -1766,7 +1766,7 @@ BOOST_AUTO_TEST_CASE(az_outage_during_rolling_deployment, *boost::unit_test::tim
     // 5/9 live → critical. maintain_quorum: decommissions 4, provisions 3 in AZ3 + 1 in AZ2.
     // EC2 instance ID is the node ID, so no DescribeInstances lookup is required.
 
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::map<std::string, std::vector<std::uint64_t>> by_az;
@@ -1829,7 +1829,7 @@ BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::
     // maintain_quorum (broken mgr): AZ3 provisions fail (logged), AZ2 provision succeeds.
     // assess_quorum (original mgr): degraded (AZ1=3, AZ2=3, AZ3=0).
 
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::map<std::string, std::vector<std::uint64_t>> by_az;
@@ -1852,7 +1852,7 @@ BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::
     // Broken manager: invalid subnet for AZ3 → RunInstances will fail for AZ3.
     kythira::aws_ec2_quorum_manager_config broken_cfg = mgr_cfg;
     broken_cfg.subnet_by_group["AZ3"] = "subnet-00000000000000000";
-    kythira::aws_ec2_quorum_manager<> broken_mgr{broken_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> broken_mgr{broken_cfg};
 
     // maintain_quorum must NOT throw even though AZ3 provisions fail
     // (Requirement 19.5), and still returns the pre-remediation health.
@@ -1894,7 +1894,7 @@ BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_te
     // through the EC2 control plane even though AZ3's data plane is blocked.
     // DescribeInstanceStatus sees replacements as running → AZ3 recovers in assess_quorum.
 
-    kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{mgr_cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::map<std::string, std::vector<std::uint64_t>> by_az;

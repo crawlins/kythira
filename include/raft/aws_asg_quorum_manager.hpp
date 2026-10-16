@@ -125,10 +125,10 @@ struct aws_asg_quorum_manager_config {
 /// instance the ASG launched; with an unsigned integer it is allocated when the new
 /// instance is adopted, written to `kythira:node-id`, and looked up by that tag.
 ///
-/// @tparam NodeId  Node identifier type; defaults to `uint64_t`. An unsigned integer,
-///                 `std::string` or `aws_ec2_node_id`.
+/// @tparam NodeId  Node identifier type; defaults to `aws_ec2_node_id`. An unsigned
+///                 integer (numeric mode), `std::string` or `aws_ec2_node_id`.
 /// @tparam Address Network address type; defaults to `std::string`.
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = aws_ec2_node_id, typename Address = std::string>
 requires node_id<NodeId>
 class aws_asg_quorum_manager {
     using ec2_mgr_t = aws_ec2_quorum_manager<NodeId, Address>;

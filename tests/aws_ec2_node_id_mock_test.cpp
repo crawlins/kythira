@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
@@ -577,12 +578,18 @@ template<typename Manager, typename Config> void run_lifecycle(fake_aws& fake, c
 
 // ── EC2 manager ──────────────────────────────────────────────────────────────
 
+// Composite mode is the default (task 3.4); numeric mode must be asked for.
+static_assert(
+    std::same_as<kythira::aws_ec2_quorum_manager<>::node_id_type, kythira::aws_ec2_node_id>);
+static_assert(
+    std::same_as<kythira::aws_asg_quorum_manager<>::node_id_type, kythira::aws_ec2_node_id>);
+
 BOOST_AUTO_TEST_SUITE(ec2_manager)
 
+// Through the default template argument, so the default's behaviour is tested.
 BOOST_AUTO_TEST_CASE(composite_mode_lifecycle) {
     fake_aws fake;
-    run_lifecycle<kythira::aws_ec2_quorum_manager<kythira::aws_ec2_node_id>>(fake,
-                                                                             ec2_config(fake));
+    run_lifecycle<kythira::aws_ec2_quorum_manager<>>(fake, ec2_config(fake));
     // The id is unknown before launch, so {NODE_ID} is left for the node.
     BOOST_CHECK_EQUAL(fake.get(awkward_ids[2]).user_data, "node={NODE_ID} cluster=ids");
 }
@@ -850,8 +857,7 @@ BOOST_AUTO_TEST_SUITE(asg_manager)
 
 BOOST_AUTO_TEST_CASE(composite_mode_lifecycle) {
     fake_aws fake;
-    run_lifecycle<kythira::aws_asg_quorum_manager<kythira::aws_ec2_node_id>>(fake,
-                                                                             asg_config(fake));
+    run_lifecycle<kythira::aws_asg_quorum_manager<>>(fake, asg_config(fake));
 }
 
 BOOST_AUTO_TEST_CASE(string_mode_lifecycle) {

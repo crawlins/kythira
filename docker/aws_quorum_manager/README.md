@@ -124,6 +124,14 @@ kythira::aws_ec2_quorum_manager_config cfg{
 kythira::aws_ec2_quorum_manager<std::uint64_t, std::string> mgr{cfg};
 ```
 
+The first template argument picks the node id. The default,
+`kythira::aws_ec2_node_id`, makes the node id the instance itself
+(`aws-ec2:<region>:<instance id>`), so nothing is allocated or parsed as a
+number. `std::uint64_t`, as above, keeps numeric mode: the manager allocates
+the next free id and stores it in the `kythira:node-id` tag. A cluster
+whose nodes run with numeric ids, which includes every `cmd/` binary
+today, needs numeric mode, so name it explicitly.
+
 ## 5. Verifying
 
 - **Without an AWS account**: `docker compose -f docker/aws-localstack-compose.yml up -d`,
@@ -172,9 +180,10 @@ new to the manager and is terminated if that provision times out.
 
 ## Known limitations
 
-- **`{NODE_ID}` is not substituted in the EC2 manager's user data.** The
-  node id comes from the instance id, which does not exist until
-  `RunInstances` returns. Have the node read its own id from instance
-  metadata or its `kythira:node-id` tag.
+- **In the default composite mode, `{NODE_ID}` is not substituted in the
+  EC2 manager's user data.** The node id comes from the instance id, which
+  does not exist until `RunInstances` returns. Have the node read its own id
+  from instance metadata or its `kythira:node-id` tag. Numeric mode knows
+  the id before launch and substitutes it.
 - **The ASG manager accepts a `replacing` hint and ignores it.** A
   replacement always gets a fresh instance and so a fresh node id.

@@ -113,7 +113,7 @@ using kythira::testing::aws_real_ec2::g_cost_accumulator;
 using kythira::testing::aws_real_ec2::signal_cleanup_target;
 using kythira::testing::aws_real_ec2::TestCostReport;
 
-using asg_manager = kythira::aws_asg_quorum_manager<>;
+using asg_manager = kythira::aws_asg_quorum_manager<std::uint64_t>;
 using asg_node_id = asg_manager::node_id_type;
 using asg_cluster = std::vector<kythira::node_placement<asg_node_id, std::string>>;
 
@@ -1079,7 +1079,7 @@ BOOST_AUTO_TEST_CASE(fixture_provisions_idle_ec2_health_groups, *boost::unit_tes
         BOOST_CHECK_EQUAL(g->GetInstances().size(), 0U);
         BOOST_CHECK_EQUAL(std::string(g->GetVPCZoneIdentifier()), subnet_ids[i]);
     }
-    BOOST_CHECK_NO_THROW(kythira::aws_asg_quorum_manager<>{mgr_cfg});
+    BOOST_CHECK_NO_THROW(kythira::aws_asg_quorum_manager<std::uint64_t>{mgr_cfg});
 }
 
 // Requirement 3.8 / spec task 11: the constructor refuses a group whose
@@ -1098,7 +1098,7 @@ BOOST_AUTO_TEST_CASE(rejects_non_ec2_health_check, *boost::unit_test::timeout(18
     kythira::aws_asg_quorum_manager_config cfg = mgr_cfg;
     cfg.asg_by_group = {{"elb", name}};
     cfg.topology.groups = {{.group_id = "elb", .target_count = 1}};
-    BOOST_CHECK_THROW(kythira::aws_asg_quorum_manager<>{cfg}, std::invalid_argument);
+    BOOST_CHECK_THROW(kythira::aws_asg_quorum_manager<std::uint64_t>{cfg}, std::invalid_argument);
 }
 
 // Requirement 3.1 / spec task 5.

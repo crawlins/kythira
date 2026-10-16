@@ -351,7 +351,7 @@ BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_and_replaces_one_node_per_a
     }
     cfg.security_group_ids = {sg_id};
 
-    kythira::aws_ec2_quorum_manager<> mgr{cfg};
+    kythira::aws_ec2_quorum_manager<std::uint64_t> mgr{cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (const std::string& az : {"us-east-1a", "us-east-1b", "us-east-1c"}) {
