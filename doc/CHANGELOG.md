@@ -5,6 +5,30 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 16, 2026)
 
+- **Every Raft transport works with textual and composite node ids.**
+  The cpp-httplib, Boost.Beast, Proxygen, gRPC and CoAP (libcoap,
+  cantcoap, libnyoci) clients and servers take a `NodeId` template
+  parameter; the existing names are the `std::uint64_t` instantiation, so
+  numeric clusters build and talk exactly as before. gRPC's `raft.proto`
+  gains a `NodeIdValue` field beside each uint64 id at a new tag: numeric
+  senders fill both, so old and new nodes interoperate during a rolling
+  upgrade in either direction, and a textual id sent to a numeric server
+  is refused as `INVALID_ARGUMENT`. CoAP peers can be bound to their ids
+  with `coap_peer_identity_validator`, and libcoap's DTLS name check now
+  runs on the peer's leaf certificate only, as the other two backends
+  already did; before, a name validator refused the CA certificate and
+  the handshake failed. Spec `cloud-composite-node-ids` task 6.
+
+- **Certificate serials up to 20 octets.** `certificate_serial` carries
+  RFC 5280 serials through the CA, its Raft ledger, the CRL, both revoke
+  endpoints and the ACM PCA, GCP CAS, OCI and ACME providers, so a CA
+  that issues wide serials can be revoked by them. Ledger entries and
+  snapshots are unchanged for serials that fit 64 bits. Revoke requests
+  keep `"serial"` with its old meaning and add `"serial_hex"` for any
+  width; issue and renew responses report `"serial_hex"`. C++ callers of
+  `pem_material::serial`, `mark_revoked_externally` and the ACM/OCI
+  `revoke` now pass a `certificate_serial`. Spec task 7.2.
+
 - **Breaking: every quorum manager now defaults to composite node ids.**
   Alibaba ESS, OCI pool, Azure VM and VMSS, GCP Compute and MIG, and
   Docker gain composite and string modes (spec `cloud-composite-node-ids`

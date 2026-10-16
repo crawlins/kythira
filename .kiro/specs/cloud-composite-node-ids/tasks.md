@@ -107,15 +107,15 @@ the audit and `design.md` for the types and per-component changes.
     gap for numeric ids at or above 2^63 was closed separately.)
   - _Requirements: 8.1-8.6_
 
-- [ ] 6. Transports
+- [x] 6. Transports
   - [x] 6.1 Parameterise the three `network_client` concepts on the
     target type
-  - [ ] 6.2 Add a `NodeId` parameter to the simulator, TCP, TLS-TCP,
+  - [x] 6.2 Add a `NodeId` parameter to the simulator, TCP, TLS-TCP,
     httplib, Proxygen, Beast, gRPC and CoAP transports
-  - [ ] 6.3 Fix `tcp_rpc` address dispatch and `tls_tcp_rpc` peer names
-  - [ ] 6.4 Add dual node id fields to `proto/raft.proto` and the gRPC
+  - [x] 6.3 Fix `tcp_rpc` address dispatch and `tls_tcp_rpc` peer names
+  - [x] 6.4 Add dual node id fields to `proto/raft.proto` and the gRPC
     conversion
-  - [ ] 6.5 `std::string`-target smoke test per transport; three-node
+  - [x] 6.5 `std::string`-target smoke test per transport; three-node
     composite-id cluster test over the simulator with forced catch-up
   - First part done: 6.1 in full; 6.2 for the simulator and TCP; 6.3's
     `tcp_rpc` half; 6.5's TCP smoke test and the simulator cluster test
@@ -136,8 +136,19 @@ the audit and `design.md` for the types and per-component changes.
     old names; the policy matches a textual id's URI SAN and a numeric
     id's DNS SAN, never the other (`cert_has_peer_name_in<NodeId>`);
     `tls_tcp_rpc_textual_node_id_test` covers `std::string` and
-    `aws_ec2_node_id` peers. Still open: httplib, Proxygen, Beast, gRPC
-    (6.4) and CoAP.
+    `aws_ec2_node_id` peers. Third part done: httplib, Beast, Proxygen,
+    gRPC and all three CoAP backends. As built: each client and server
+    takes `NodeId` defaulting to `std::uint64_t` (old names stay the
+    numeric instantiation) and renders ids with `node_id_traits::to_text`.
+    No transport puts an id in a URL path, header or CoAP option, so
+    nothing needed percent-encoding. The HTTP transports still bind TLS to
+    the dialled host's DNS/IP SAN, not to the node id; libcoap, cantcoap
+    and libnyoci gain `coap_peer_identity_validator` (URI SAN for textual
+    ids), and libcoap now runs its name check on the leaf only. gRPC adds
+    `NodeIdValue` beside every uint64 id field at a new tag: numeric
+    senders fill both, textual senders only the new one, receivers prefer
+    it, so a rolling upgrade works both ways. Each transport has a
+    `*_textual_node_id_test` over `std::string` and `aws_ec2_node_id`.
   - _Requirements: 9.1-9.6, 14.4, 14.5_
 
 - [ ] 7. CA identity and serials
@@ -149,8 +160,15 @@ the audit and `design.md` for the types and per-component changes.
     field with the id as a JSON string. `ca_cluster_node`'s config, routes
     and `rpc_tls_ready_node_id` body field stay numeric until task 8.2
     gives the binaries a textual id)
-  - [ ] 7.2 Add `certificate_serial`; use it in the CA, the three cloud
+  - [x] 7.2 Add `certificate_serial`; use it in the CA, the three cloud
     CA providers and both revoke endpoints
+    (done; as built: up to 20 octets, ledger entries keep the numeric
+    encoding when a serial fits 64 bits and use `"version": 2` with hex
+    otherwise; revoke bodies keep `"serial"` as a decimal number or
+    string, hex on the ACM path where it always was, and accept the new
+    `"serial_hex"` for any width; issue/renew responses carry
+    `"serial_hex"`. The in-house CA still issues 64-bit serials, and the
+    peer-trust revocation set stays 64-bit)
   - [ ] 7.3 Tests: numeric enrollment unchanged, textual enrollment and
     verification, reserved-URI refusal, 20-octet serial revoke
   - _Requirements: 12.1-12.5_
