@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <raft/composite_node_id.hpp>
+
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -37,15 +39,41 @@ public:
         : network_exception("peer " + std::to_string(target) + " does not implement RPC '" + rpc +
                             "' (not implemented)"),
           _rpc{std::move(rpc)},
-          _target{target} {}
+          _target{target},
+          _target_text{std::to_string(target)} {}
+
+    /// A peer named by a textual or composite id
+    /// (.kiro/specs/cloud-composite-node-ids/): `target()` is 0 and
+    /// `target_text()` carries the id's canonical text.
+    rpc_not_implemented_exception(std::string rpc, std::string target_text)
+        : network_exception("peer " + target_text + " does not implement RPC '" + rpc +
+                            "' (not implemented)"),
+          _rpc{std::move(rpc)},
+          _target{0},
+          _target_text{std::move(target_text)} {}
 
     [[nodiscard]] auto rpc() const -> const std::string& { return _rpc; }
     [[nodiscard]] auto target() const -> std::uint64_t { return _target; }
+    /// The peer's id as text, for every id type.
+    [[nodiscard]] auto target_text() const -> const std::string& { return _target_text; }
 
 private:
     std::string _rpc;
     std::uint64_t _target;
+    std::string _target_text;
 };
+
+/// @brief The `rpc_not_implemented_exception` for @p target, whatever its id
+///        type: numeric ids keep `target()`, textual ones fill `target_text()`.
+template<typename NodeId>
+[[nodiscard]] auto rpc_not_implemented_for(std::string rpc, const NodeId& target)
+    -> rpc_not_implemented_exception {
+    if constexpr (node_id_traits<NodeId>::is_textual) {
+        return {std::move(rpc), node_id_traits<NodeId>::to_text(target)};
+    } else {
+        return {std::move(rpc), static_cast<std::uint64_t>(target)};
+    }
+}
 
 // Exception for persistence-related errors
 class persistence_exception : public raft_exception {

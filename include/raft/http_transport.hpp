@@ -173,7 +173,16 @@ struct cpp_httplib_server_config {
 };
 
 // HTTP client implementation
-template<typename Types>
+//
+// `NodeId` names the peers: the URL map's key, the capability cache's key and
+// every `send_*` target, and the id type the requests carry. It defaults to
+// `std::uint64_t`, so `cpp_httplib_client<Types>` is the numeric client it
+// always was; a textual or composite id (.kiro/specs/cloud-composite-node-ids/,
+// Requirement 9.2) instantiates it on that type instead. No id travels in a
+// URL or a header -- every RPC posts to a fixed path and the ids ride in the
+// body -- so a textual id needs no escaping here, and HTTPS still binds each
+// connection to the URL's host, not to the peer's id.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::transport_types<Types>
 class cpp_httplib_client {
 public:
@@ -183,44 +192,47 @@ public:
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
+    using node_id_type = NodeId;
 
     // Constructor
-    cpp_httplib_client(std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
+    cpp_httplib_client(std::unordered_map<NodeId, std::string> node_id_to_url_map,
                        cpp_httplib_client_config config, metrics_type metrics);
 
     // Destructor
     ~cpp_httplib_client();
 
     // Network client interface
-    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+    auto send_request_vote(const NodeId& target,
+                           const kythira::request_vote_request<NodeId>& request,
                            std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::request_vote_response<>>;
 
-    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+    auto send_append_entries(const NodeId& target,
+                             const kythira::append_entries_request<NodeId>& request,
                              std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::append_entries_response<>>;
 
-    auto send_install_snapshot(std::uint64_t target,
-                               const kythira::install_snapshot_request<>& request,
+    auto send_install_snapshot(const NodeId& target,
+                               const kythira::install_snapshot_request<NodeId>& request,
                                std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::install_snapshot_response<>>;
 
     /// Satisfies `network_client_with_log_fetch`: a peer-to-peer catch-up
     /// fetch, sent to `/v1/raft/fetch_log_entries`.
-    auto send_fetch_log_entries(std::uint64_t target,
-                                const kythira::fetch_log_entries_request<>& request,
+    auto send_fetch_log_entries(const NodeId& target,
+                                const kythira::fetch_log_entries_request<NodeId>& request,
                                 std::chrono::milliseconds timeout) ->
-        typename Types::template future_template<kythira::fetch_log_entries_response<>>;
+        typename Types::template future_template<kythira::fetch_log_entries_response<NodeId>>;
     // Optional extensions (.kiro/specs/http-coap-pre-vote-timeout-now/). A
     // peer on a build without the route answers 404, and one without a
     // registered handler 501; both fail the future with
     // `rpc_not_implemented_exception`, which the core treats as "older peer".
-    auto send_request_pre_vote(std::uint64_t target,
-                               const kythira::request_pre_vote_request<>& request,
+    auto send_request_pre_vote(const NodeId& target,
+                               const kythira::request_pre_vote_request<NodeId>& request,
                                std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::request_pre_vote_response<>>;
 
-    auto send_timeout_now(std::uint64_t target, const kythira::timeout_now_request<>& request,
+    auto send_timeout_now(const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
                           std::chrono::milliseconds timeout) ->
         typename Types::template future_template<kythira::timeout_now_response<>>;
 
@@ -247,8 +259,8 @@ private:
     /// What each peer last answered in. An optimisation only — every request
     /// still advertises the full `Accept` list, so a stale entry costs a
     /// re-choice, never a failure.
-    peer_capability_cache<std::uint64_t> _capability_cache;
-    std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
+    peer_capability_cache<NodeId> _capability_cache;
+    std::unordered_map<NodeId, std::string> _node_id_to_url;
     /// One connection to a peer. An RPC leases it out of its peer's pool and
     /// owns it exclusively until it is returned, so the per-call timeout
     /// setters never race another request on the same client.
@@ -270,7 +282,7 @@ private:
 
     /// Held by unique_ptr so a waiter's condition variable stays put while
     /// other peers' pools are added.
-    std::unordered_map<std::uint64_t, std::unique_ptr<peer_pool>> _pools;
+    std::unordered_map<NodeId, std::unique_ptr<peer_pool>> _pools;
     std::uint64_t _tls_generation{0};
     cpp_httplib_client_config _config;
     metrics_type _metrics;
@@ -279,32 +291,33 @@ private:
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
 
     // Helper methods
-    auto get_base_url(std::uint64_t node_id) const -> std::string;
+    auto get_base_url(const NodeId& node_id) const -> std::string;
     /// Takes an idle connection to `node_id`, or opens one if the pool has
     /// room, or waits for one to be returned until `deadline`. `nullopt`
     /// means the deadline passed first.
-    auto lease_connection(std::uint64_t node_id, std::chrono::steady_clock::time_point deadline)
+    auto lease_connection(const NodeId& node_id, std::chrono::steady_clock::time_point deadline)
         -> std::optional<pooled_connection>;
     /// Returns a leased connection. One that failed (`reusable` false) or was
     /// built before a TLS reload is closed instead of pooled.
-    auto release_connection(std::uint64_t node_id, pooled_connection conn, bool reusable) -> void;
+    auto release_connection(const NodeId& node_id, pooled_connection conn, bool reusable) -> void;
     /// Closes idle connections past `keep_alive_timeout` in every pool.
     /// Caller holds `_mutex`.
     auto evict_idle_connections_locked(std::chrono::steady_clock::time_point now) -> void;
-    auto make_http_client(const std::string& base_url, std::uint64_t node_id)
+    auto make_http_client(const std::string& base_url, const NodeId& node_id)
         -> std::unique_ptr<httplib::Client>;
     auto configure_ssl_client(httplib::Client* client) -> void;
     auto load_client_certificates() -> void;
     auto validate_certificate_files() const -> void;
 
     template<typename Request, typename Response>
-    auto send_rpc(std::uint64_t target, const std::string& endpoint, const Request& request,
+    auto send_rpc(const NodeId& target, const std::string& endpoint, const Request& request,
                   std::chrono::milliseconds timeout) ->
         typename Types::template future_template<Response>;
 };
 
-// HTTP server implementation
-template<typename Types>
+// HTTP server implementation. `NodeId` is the id type the requests it decodes
+// carry, defaulting to `std::uint64_t` as for the client.
+template<typename Types, typename NodeId = std::uint64_t>
 requires kythira::transport_types<Types>
 class cpp_httplib_server {
 public:
@@ -314,6 +327,7 @@ public:
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
+    using node_id_type = NodeId;
 
     // Constructor
     cpp_httplib_server(std::string bind_address, std::uint16_t bind_port,
@@ -323,31 +337,32 @@ public:
     ~cpp_httplib_server();
 
     // Network server interface
-    auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
-            handler) -> void;
+    auto register_request_vote_handler(std::function<kythira::request_vote_response<>(
+                                           const kythira::request_vote_request<NodeId>&)>
+                                           handler) -> void;
 
-    auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
-            handler) -> void;
+    auto register_append_entries_handler(std::function<kythira::append_entries_response<>(
+                                             const kythira::append_entries_request<NodeId>&)>
+                                             handler) -> void;
 
     auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
-                                               const kythira::install_snapshot_request<>&)>
+                                               const kythira::install_snapshot_request<NodeId>&)>
                                                handler) -> void;
 
     /// Satisfies `network_server_with_log_fetch` (peer-to-peer catch-up).
-    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
-                                                const kythira::fetch_log_entries_request<>&)>
-                                                handler) -> void;
+    auto register_fetch_log_entries_handler(
+        std::function<kythira::fetch_log_entries_response<NodeId>(
+            const kythira::fetch_log_entries_request<NodeId>&)>
+            handler) -> void;
     // Optional extensions. Left unregistered, their routes answer 501 rather
     // than the mandatory RPCs' 500, so a caller can tell "cannot serve this"
     // from "failed while serving it".
     auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
-                                               const kythira::request_pre_vote_request<>&)>
+                                               const kythira::request_pre_vote_request<NodeId>&)>
                                                handler) -> void;
 
     auto register_timeout_now_handler(
-        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+        std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
             handler) -> void;
 
     auto start() -> void;
@@ -395,18 +410,21 @@ private:
     /// Built by the constructor; a `shared_ptr` because each connection's
     /// slot keeps it alive.
     std::shared_ptr<http_detail::connection_gate> _gate;
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
         _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+    std::function<kythira::append_entries_response<>(
+        const kythira::append_entries_request<NodeId>&)>
         _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+    std::function<kythira::install_snapshot_response<>(
+        const kythira::install_snapshot_request<NodeId>&)>
         _install_snapshot_handler;
-    std::function<kythira::fetch_log_entries_response<>(
-        const kythira::fetch_log_entries_request<>&)>
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         _fetch_log_entries_handler;
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+    std::function<kythira::request_pre_vote_response<>(
+        const kythira::request_pre_vote_request<NodeId>&)>
         _request_pre_vote_handler;
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)>
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
         _timeout_now_handler;
     std::string _bind_address;
     std::uint16_t _bind_port;
