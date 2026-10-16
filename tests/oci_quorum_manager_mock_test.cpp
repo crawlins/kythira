@@ -36,8 +36,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -654,15 +656,175 @@ BOOST_AUTO_TEST_CASE(another_clusters_pool_members_are_ignored,
         fixture.server.hits("POST /20160918/instancePools/{id}/actions/detachInstance"), 0U);
 }
 
-/// Requirement 7.7: the manager compiles and allocates with `std::string` ids,
-/// which `static_cast<NodeId>(highest + 1)` could not.
-BOOST_AUTO_TEST_CASE(string_node_ids_are_allocated_as_decimal_text,
+BOOST_AUTO_TEST_SUITE_END()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Composite and string node ids (cloud-composite-node-ids Requirement 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// The mock pool's region field, and so the scope of every id it launches.
+constexpr const char* k_scope = "phx";
+
+/// The node id of instance @p ocid, as `NodeId` holds it.
+template<typename NodeId> auto oci_node_id(const std::string& ocid) -> NodeId {
+    kythira::oci_instance_node_id id{k_scope, ocid};
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return id.to_string();
+    } else {
+        return id;
+    }
+}
+
+template<typename NodeId>
+auto textual_cluster_of(const MockFixture& fixture, const std::vector<NodeId>& ids)
+    -> std::vector<node_placement<NodeId, std::string>> {
+    std::vector<node_placement<NodeId, std::string>> out;
+    out.reserve(ids.size());
+    for (const auto& id : ids) {
+        out.push_back({.node_id = id, .group_id = fixture.server.availability_domain()});
+    }
+    return out;
+}
+
+/// Provision three nodes, assess them, lose one, decommission one (twice),
+/// with the node id being the instance.
+template<typename NodeId> void run_textual_lifecycle() {
+    using text = kythira::node_id_traits<NodeId>;
+    MockFixture fixture;
+    oci_instance_pool_quorum_manager<NodeId> mgr{fixture.config()};
+    const auto ad = fixture.server.availability_domain();
+
+    std::vector<NodeId> ids;
+    std::vector<std::string> ocids;
+    for (int i = 0; i < 3; ++i) {
+        auto peer = std::move(mgr.provision_node(ad, std::nullopt)).get();
+        const auto ocid = mgr.instance_id_of(peer.node_id);
+        BOOST_REQUIRE(ocid.has_value());
+        const auto inst = fixture.server.instance(*ocid);
+        BOOST_REQUIRE(inst.has_value());
+
+        // The id is the launched instance, scoped by its OCID's region, and
+        // maps back to it both ways without an API call.
+        BOOST_CHECK(peer.node_id == oci_node_id<NodeId>(*ocid));
+        BOOST_CHECK(mgr.node_id_of_instance(*ocid) == std::optional<NodeId>{peer.node_id});
+        BOOST_CHECK_EQUAL(peer.address, inst->private_ip + ":7000");
+        // The tag is still written, holding canonical text.
+        BOOST_CHECK_EQUAL(inst->freeform_tags.at("kythira-node-id"), "oci:phx:" + *ocid);
+        BOOST_CHECK_EQUAL(inst->freeform_tags.at("kythira-node-id"), text::to_text(peer.node_id));
+        BOOST_CHECK_EQUAL(inst->freeform_tags.at("kythira-cluster"), "mock-cluster");
+        ids.push_back(peer.node_id);
+        ocids.push_back(*ocid);
+    }
+    BOOST_CHECK(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
+    BOOST_CHECK_EQUAL(fixture.server.pool_size(), 3);
+
+    auto health = std::move(mgr.assess_quorum(textual_cluster_of(fixture, ids))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 3U);
+    BOOST_CHECK_EQUAL(health.status, quorum_status::healthy);
+
+    // A stopped instance is unreachable; the others stay live.
+    fixture.server.set_lifecycle_state(ocids[0], "STOPPED");
+    health = std::move(mgr.assess_quorum(textual_cluster_of(fixture, ids))).get();
+    BOOST_CHECK_EQUAL(health.status, quorum_status::critical);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1U);
+    BOOST_CHECK(health.unreachable_nodes.front() == ids[0]);
+
+    // Decommission detaches exactly the instance the id names.
+    std::move(mgr.decommission_node(ids[1])).get();
+    BOOST_CHECK(!fixture.server.instance(ocids[1])->in_pool);
+    BOOST_CHECK(fixture.server.instance(ocids[0])->in_pool);
+    BOOST_CHECK(fixture.server.instance(ocids[2])->in_pool);
+    BOOST_CHECK_EQUAL(fixture.server.pool_size(), 2);
+    health = std::move(mgr.assess_quorum(textual_cluster_of(fixture, ids))).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+    BOOST_CHECK_EQUAL(health.status, quorum_status::lost);
+
+    // A second decommission of the same node is the idempotent no-op.
+    const auto detaches =
+        fixture.server.hits("POST /20160918/instancePools/{id}/actions/detachInstance");
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(ids[1])).get());
+    BOOST_CHECK_EQUAL(
+        fixture.server.hits("POST /20160918/instancePools/{id}/actions/detachInstance"), detaches);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(oci_quorum_manager_mock_composite_ids)
+
+BOOST_AUTO_TEST_CASE(composite_mode_lifecycle,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    run_textual_lifecycle<kythira::oci_instance_node_id>();
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_lifecycle,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    run_textual_lifecycle<std::string>();
+}
+
+/// An id in another region, an id that is not canonical text, an instance
+/// outside the pool and another cluster's pool member are each reported
+/// unreachable without failing the assessment, and none of them can detach
+/// an instance.
+BOOST_AUTO_TEST_CASE(foreign_and_out_of_scope_ids_are_unreachable_and_never_detached,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    MockFixture fixture;
+    const auto ours = fixture.server.add_instance({{"kythira-cluster", "mock-cluster"}});
+    const auto theirs = fixture.server.add_instance({{"kythira-cluster", "other-cluster"}});
+    const std::string detach_hits = "POST /20160918/instancePools/{id}/actions/detachInstance";
+
+    {
+        using kythira::oci_instance_node_id;
+        oci_instance_pool_quorum_manager<oci_instance_node_id> mgr{fixture.config()};
+        const std::vector<oci_instance_node_id> ids{{k_scope, ours},
+                                                    {"iad", "ocid1.instance.oc1.iad.mock1"},
+                                                    {k_scope, theirs},
+                                                    {k_scope, "ocid1.instance.oc1.phx.notinpool"}};
+        auto health = std::move(mgr.assess_quorum(textual_cluster_of(fixture, ids))).get();
+        BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+        BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 3U);
+        BOOST_CHECK(health.unreachable_nodes[0] == ids[1]);
+        BOOST_CHECK(health.unreachable_nodes[1] == ids[2]);
+        BOOST_CHECK(health.unreachable_nodes[2] == ids[3]);
+
+        // Another region's id names no instance this manager can reach.
+        BOOST_CHECK_THROW(std::move(mgr.decommission_node(ids[1])).get(), std::exception);
+        // Another cluster's member, and an instance outside the pool, resolve
+        // to nothing here.
+        BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(ids[2])).get());
+        BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(ids[3])).get());
+        BOOST_CHECK_EQUAL(fixture.server.hits(detach_hits), 0U);
+        BOOST_CHECK(fixture.server.instance(theirs)->in_pool);
+    }
+    {
+        oci_instance_pool_quorum_manager<std::string> mgr{fixture.config()};
+        const std::vector<std::string> ids{"oci:phx:" + ours, ours, "1",
+                                           "oci:iad:ocid1.instance.oc1.iad.mock1"};
+        auto health = std::move(mgr.assess_quorum(textual_cluster_of(fixture, ids))).get();
+        BOOST_CHECK_EQUAL(health.live_node_count, 1U);
+        BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), 3U);
+        for (const auto& bad : {ids[1], ids[2], ids[3]}) {
+            BOOST_CHECK_THROW(std::move(mgr.decommission_node(bad)).get(), std::exception);
+        }
+        BOOST_CHECK_EQUAL(fixture.server.hits(detach_hits), 0U);
+        BOOST_CHECK_EQUAL(fixture.server.pool_size(), 2);
+    }
+}
+
+/// The scope comes from the pool's OCID, so composite and string mode refuse a
+/// pool id that is not one before making any call.
+BOOST_AUTO_TEST_CASE(textual_modes_require_a_pool_ocid,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     MockFixture fixture;
-    fixture.seed_node(9);
-    fixture.seed_node(10);
-    oci_instance_pool_quorum_manager<std::string> mgr{fixture.config()};
-    BOOST_CHECK_EQUAL(mgr.next_node_id(), "11");
+    auto cfg = fixture.config();
+    cfg.instance_pool_id = "my-pool";
+    BOOST_CHECK_THROW(oci_instance_pool_quorum_manager<kythira::oci_instance_node_id>{cfg},
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(oci_instance_pool_quorum_manager<std::string>{cfg}, std::invalid_argument);
+    BOOST_CHECK_EQUAL(fixture.server.hits("GET /20160918/instancePools/{id}"), 0U);
+    BOOST_CHECK(oci_instance_pool_quorum_manager<std::string>::pool_region_of(
+                    fixture.server.pool_id()) == std::optional<std::string>{"phx"});
 }
 
 BOOST_AUTO_TEST_SUITE_END()

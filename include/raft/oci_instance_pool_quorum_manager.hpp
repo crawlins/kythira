@@ -9,13 +9,23 @@
 ///
 /// The OCI analogue of `aws_asg_quorum_manager`, and deliberately close to it in
 /// shape: grow the pool by one to provision, detach-with-terminate to
-/// decommission, and derive nothing about identity from the cloud provider's own
-/// resource identifier. That last point is the one structural difference worth
-/// stating up front — an OCID's trailing segment is an opaque, variable-length
-/// token, so `aws_ec2_quorum_manager`'s "hex-decode the instance ID into a
-/// NodeId" trick has no OCI counterpart. NodeIds are assigned here and recorded
-/// in a `kythira-node-id` freeform tag, exactly as `aws_asg_quorum_manager`
-/// already does for the identical reason.
+/// decommission, and record each node's id in a `kythira-node-id` freeform tag.
+///
+/// **Node ids: the instance, or a number** (`.kiro/specs/cloud-composite-node-ids/`,
+/// Requirement 5). With `NodeId = oci_instance_node_id`, or `std::string`
+/// holding that id's canonical text (`oci:<region>:<instance OCID>`), the node
+/// id *is* the adopted instance: nothing is allocated, and mapping an id back
+/// to its instance puts the OCID in the REST path instead of scanning the
+/// pool's tags. The scope is the OCID's own region field, and this manager
+/// accepts only ids in its pool's region (the region field of
+/// `instance_pool_id`); an id that does not parse or names another region is
+/// reported unreachable rather than failing the assessment. The tag is still
+/// written, holding the canonical text, for discovery and the leak audit. With
+/// an unsigned `NodeId` the manager allocates `max(tag) + 1` over the pool's
+/// cluster members and resolves ids by tag, as it always has. A node that
+/// needs its own id reads it from instance metadata
+/// (`--node-id=metadata:oci`), since the OCID does not exist until the pool
+/// has launched the instance.
 ///
 /// **One Instance Pool per Availability Domain.** `UpdateInstancePool`'s `size`
 /// is a single pool-wide integer and OCI's own placement algorithm decides which
@@ -312,6 +322,25 @@ public:
     using address_type = Address;
     using placement_group_id_type = std::string;  ///< An Availability Domain.
 
+    /// True when the node id is the instance (composite or string mode).
+    static constexpr bool instance_is_node_id = node_id_traits<NodeId>::is_textual;
+
+    /// @brief The region field of an instance pool OCID
+    ///        (`ocid1.instancepool.REALM.REGION.UNIQUE`), or
+    ///        `std::nullopt` when @p pool_id is not one.
+    ///
+    /// The instances a pool launches carry the same region field, which is
+    /// what makes it the scope of this manager's node ids.
+    [[nodiscard]] static auto pool_region_of(std::string_view pool_id)
+        -> std::optional<std::string> {
+        const auto parts = composite_node_id_detail::split(pool_id, '.');
+        if (parts.size() < 5 || parts[0] != "ocid1" || parts[1] != "instancepool" ||
+            parts[2].empty() || parts[3].empty() || parts.back().empty()) {
+            return std::nullopt;
+        }
+        return std::string(parts[3]);
+    }
+
     /// @brief Validates the config and reads the pool's placement configurations.
     ///
     /// The `GetInstancePool` call is not a formality: `provision_node` rejects a
@@ -336,6 +365,16 @@ public:
         if (_cfg.node_port == 0) {
             throw std::invalid_argument(
                 "oci_instance_pool_quorum_manager: node_port must be non-zero");
+        }
+        if constexpr (instance_is_node_id) {
+            auto region = pool_region_of(_cfg.instance_pool_id);
+            if (!region) {
+                throw std::invalid_argument(
+                    "oci_instance_pool_quorum_manager: instance_pool_id must be an instance "
+                    "pool OCID when the node id is the instance (got '" +
+                    _cfg.instance_pool_id + "')");
+            }
+            _scope = std::move(*region);
         }
         // Three auth modes (oci_client_config): Instance Principal and a
         // caller-supplied security token each carry their own credentials,
@@ -422,8 +461,12 @@ public:
             if (cluster.empty()) {
                 return build_health(cluster, {});
             }
-            for (const auto& np : cluster) {
-                _id_floor.raise(np.node_id);
+            if constexpr (instance_is_node_id) {
+                return build_health(cluster, live_by_instance(cluster));
+            } else {
+                for (const auto& np : cluster) {
+                    _id_floor.raise(np.node_id);
+                }
             }
 
             const auto instances = describe_pool_instances();
@@ -637,12 +680,27 @@ public:
                                          group_rollback::describe(rollback, orig_size + 1));
             }
 
-            // Computed from the same snapshot the candidate came from, rather
-            // than a second listing: two scans could disagree, and the one that
-            // matters is the one that identified the untagged instance.
-            const NodeId new_id = next_node_id_from(snapshot);
-            // Spent from here on, even if tagging fails below.
-            _id_floor.raise(new_id);
+            NodeId new_id{};
+            if constexpr (instance_is_node_id) {
+                // The id is the instance the pool launched: nothing to
+                // allocate, so nothing two provisions can race over.
+                auto from_instance = node_id_of_instance(launched->id);
+                if (!from_instance) {
+                    best_effort_detach(launched->id);
+                    throw std::runtime_error("the pool launched instance '" + launched->id +
+                                             "', which is not an instance OCID in region " +
+                                             _scope);
+                }
+                new_id = std::move(*from_instance);
+            } else {
+                // Computed from the same snapshot the candidate came from,
+                // rather than a second listing: two scans could disagree, and
+                // the one that matters is the one that identified the
+                // untagged instance.
+                new_id = next_node_id_from(snapshot);
+                // Spent from here on, even if tagging fails below.
+                _id_floor.raise(new_id);
+            }
 
             std::map<std::string, std::string> tags = _cfg.extra_tags;
             // Assigned after extra_tags so Requirement 4.3 holds: an operator
@@ -701,7 +759,20 @@ public:
             fiu_do_on("raft/oci/instance_pool/detach_instance",
                       throw std::runtime_error("fault: raft/oci/instance_pool/detach_instance"););
 
-            const auto found = find_instance(node_id);
+            std::optional<oci_detail::instance_view> found;
+            if constexpr (instance_is_node_id) {
+                // The OCID is the id's native half: one pool listing to
+                // confirm membership and one GetInstance by OCID, instead of
+                // reading every member's tags.
+                const auto ocid = instance_id_of(node_id);
+                if (!ocid) {
+                    throw std::invalid_argument("node " + node_id_str(node_id) +
+                                                " is not an instance OCID in region " + _scope);
+                }
+                found = find_member(*ocid);
+            } else {
+                found = find_instance(node_id);
+            }
             if (!found.has_value()) {
                 return future_factory_default::makeFuture();
             }
@@ -790,8 +861,65 @@ public:
     /// memory only: a fresh process (a new leader's manager) starts again
     /// from the scan, and the Raft node refuses a
     /// replacement id that is already a member of its configuration.
-    [[nodiscard]] auto next_node_id() const -> NodeId {
+    [[nodiscard]] auto next_node_id() const -> NodeId
+    requires(!instance_is_node_id)
+    {
         return next_node_id_from(describe_pool_instances());
+    }
+
+    /// @brief The instance OCID @p nid names, or `std::nullopt` when it names
+    ///        none of this manager's.
+    ///
+    /// Composite and string mode: the id's native half, when it is oci
+    /// canonical text in this pool's region. No API call. Numeric mode: the
+    /// cluster member carrying @p nid in its `kythira-node-id` tag.
+    [[nodiscard]] auto instance_id_of(const NodeId& nid) const -> std::optional<std::string> {
+        if constexpr (instance_is_node_id) {
+            std::optional<oci_instance_node_id> id;
+            if constexpr (std::same_as<NodeId, std::string>) {
+                id = oci_instance_node_id::parse(nid);
+            } else {
+                id = nid;
+            }
+            if (!id || id->scope() != _scope) {
+                return std::nullopt;
+            }
+            return std::string(id->native());
+        } else {
+            if (auto found = find_instance(nid)) {
+                return found->id;
+            }
+            return std::nullopt;
+        }
+    }
+
+    /// @brief The node id of instance @p ocid, or `std::nullopt`.
+    ///
+    /// Composite and string mode: `{region, ocid}`, or nullopt when @p ocid
+    /// is not an instance OCID in this pool's region. No API call, and never
+    /// parsed as a number. Numeric mode: the instance's `kythira-node-id`
+    /// tag, when it is one of this cluster's pool members and the tag parses.
+    [[nodiscard]] auto node_id_of_instance(const std::string& ocid) const -> std::optional<NodeId> {
+        if constexpr (instance_is_node_id) {
+            try {
+                oci_instance_node_id id{_scope, ocid};
+                if constexpr (std::same_as<NodeId, std::string>) {
+                    return id.to_string();
+                } else {
+                    return id;
+                }
+            } catch (const std::invalid_argument&) {
+                return std::nullopt;
+            }
+        } else {
+            if (auto found = find_member(ocid)) {
+                if (const auto tag = found->freeform_tags.find(oci_detail::tag_node_id);
+                    tag != found->freeform_tags.end()) {
+                    return node_id_traits<NodeId>::from_text(tag->second);
+                }
+            }
+            return std::nullopt;
+        }
     }
 
     /// @brief Merges @p new_tags onto the instance's current `freeformTags`
@@ -906,7 +1034,9 @@ private:
     }
 
     [[nodiscard]] auto next_node_id_from(
-        const std::vector<oci_detail::instance_view>& instances) const -> NodeId {
+        const std::vector<oci_detail::instance_view>& instances) const -> NodeId
+    requires(!instance_is_node_id)
+    {
         std::uint64_t highest = 0;
         for (const auto& inst : instances) {
             if (!in_this_cluster(inst)) {
@@ -937,8 +1067,11 @@ private:
     /// `next_node_id`. Kept across copies and moves of this manager.
     numeric_node_id_floor _id_floor;
 
+    /// Numeric mode: the cluster member whose `kythira-node-id` tag is @p node.
     [[nodiscard]] auto find_instance(const NodeId& node) const
-        -> std::optional<oci_detail::instance_view> {
+        -> std::optional<oci_detail::instance_view>
+    requires(!instance_is_node_id)
+    {
         const auto wanted = node_id_str(node);
         for (auto& inst : describe_pool_instances()) {
             if (!in_this_cluster(inst)) {
@@ -950,6 +1083,64 @@ private:
             }
         }
         return std::nullopt;
+    }
+
+    /// The pool member that is instance @p ocid and carries this cluster's
+    /// tag, read by OCID. An instance outside the pool, or tagged for another
+    /// cluster or none, is not found: the cluster filter bounds every
+    /// mutating call, as it does in numeric mode.
+    [[nodiscard]] auto find_member(const std::string& ocid) const
+        -> std::optional<oci_detail::instance_view> {
+        const auto members = list_pool_instance_ids();
+        if (std::ranges::find(members, ocid) == members.end()) {
+            return std::nullopt;
+        }
+        auto inst = get_instance(ocid);
+        if (!in_this_cluster(inst)) {
+            return std::nullopt;
+        }
+        return inst;
+    }
+
+    /// Composite and string mode: live/dead per node, keyed by
+    /// `node_id_traits::to_text`, reading only the instances the cluster's
+    /// ids name (by OCID) that are members of the pool. An id that names no
+    /// such instance of this cluster is absent, and so reported unreachable.
+    [[nodiscard]] auto live_by_instance(
+        const std::vector<node_placement<NodeId, std::string>>& cluster) const
+        -> std::map<std::string, bool>
+    requires instance_is_node_id
+    {
+        std::map<std::string, std::string> node_by_instance;
+        for (const auto& np : cluster) {
+            if (auto ocid = instance_id_of(np.node_id)) {
+                node_by_instance.emplace(std::move(*ocid), node_id_str(np.node_id));
+            } else {
+                std::cerr << "[oci_instance_pool_quorum_manager::assess_quorum] node "
+                          << node_id_str(np.node_id) << " is not an instance OCID in region "
+                          << _scope << "; reporting it unreachable\n";
+            }
+        }
+        std::map<std::string, bool> live_map;
+        if (node_by_instance.empty()) {
+            return live_map;
+        }
+        std::vector<std::string> wanted;
+        for (auto& id : list_pool_instance_ids()) {
+            if (node_by_instance.contains(id)) {
+                wanted.push_back(std::move(id));
+            }
+        }
+        std::vector<oci_detail::instance_view> views(wanted.size());
+        oci_detail::parallel_for(wanted.size(), max_describe_concurrency,
+                                 [&](std::size_t i) { views[i] = get_instance(wanted[i]); });
+        const auto now = std::time(nullptr);
+        for (const auto& inst : views) {
+            if (in_this_cluster(inst)) {
+                live_map[node_by_instance.at(inst.id)] = is_live(inst, now);
+            }
+        }
+        return live_map;
     }
 
     auto apply_tags(const std::string& instance_id,
@@ -1233,10 +1424,19 @@ private:
     oci_instance_pool_quorum_manager_config _cfg;
     oci_http_client _http;
     std::vector<std::string> _availability_domains;
+    /// Composite and string mode: the region field of the pool's OCID, the
+    /// scope every node id this manager accepts must carry. Empty otherwise.
+    std::string _scope;
 };
 
 static_assert(quorum_manager<oci_instance_pool_quorum_manager<std::uint64_t, std::string>,
                              std::uint64_t, std::string, std::string>,
               "oci_instance_pool_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<oci_instance_pool_quorum_manager<oci_instance_node_id, std::string>,
+                             oci_instance_node_id, std::string, std::string>,
+              "oci_instance_pool_quorum_manager<oci_instance_node_id> must satisfy quorum_manager");
+static_assert(quorum_manager<oci_instance_pool_quorum_manager<std::string, std::string>,
+                             std::string, std::string, std::string>,
+              "oci_instance_pool_quorum_manager<std::string> must satisfy quorum_manager");
 
 }  // namespace kythira
