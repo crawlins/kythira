@@ -1,0 +1,131 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# THROWAWAY: measures the Full suite leg's cold Build step with mold at
+# -j3 (ci.yml today) against -j$(nproc). Never merged.
+name: mold -j experiment
+
+on:
+  pull_request:
+    paths: ['.github/workflows/mold-j-experiment.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Cold build (${{ matrix.backend }}, -j${{ matrix.jobs }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [stdexec, boost]
+        jobs: ['3', 'nproc']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 g++-13 cmake ninja-build libfiu-dev ccache autoconf \
+                 autoconf-archive automake libtool mold; then
+              exit 0
+            fi
+            sleep 30
+          done
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      # Only for vcpkg's binary cache, so the dependency install is warm and
+      # out of the measurement. sccache is never started: the build is cold.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      - name: Cache vcpkg packages
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_DEFAULT_FUTURE_BACKEND=${{ matrix.backend }} \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=none \
+            -DKYTHIRA_LINKER=mold \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Add swap headroom
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile || true
+          sudo fallocate -l 24G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          sudo sysctl vm.swappiness=80
+          nproc; free -h
+
+      - name: Build
+        run: |
+          j=${{ matrix.jobs }}
+          [ "$j" = nproc ] && j=$(nproc)
+          echo "building with -j$j"
+          # Peak used memory and swap, sampled every 15s into the log.
+          ( peak_mem=0; peak_swap=0
+            while sleep 15; do
+              read -r m s < <(free -m | awk '/^Mem:/{m=$3} /^Swap:/{s=$3} END{print m, s}')
+              (( m > peak_mem )) && peak_mem=$m
+              (( s > peak_swap )) && peak_swap=$s
+              echo "$peak_mem $peak_swap" > /tmp/peaks
+            done ) &
+          sampler=$!
+          start=$(date +%s)
+          cmake --build build -j"$j"
+          end=$(date +%s)
+          kill "$sampler" || true
+          read -r pm ps < /tmp/peaks
+          {
+            echo "### ${{ matrix.backend }} -j$j"
+            echo "- Build wall: $(( (end - start) / 60 )) min $(( (end - start) % 60 )) s"
+            echo "- Peak used memory: ${pm} MiB; peak swap: ${ps} MiB"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build

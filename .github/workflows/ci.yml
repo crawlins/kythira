@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths-ignore: ['.github/workflows/mold-j-experiment.yml', '.github/workflows/ci.yml']  # THROWAWAY
     # Every base branch, not just `main`. A **stacked** PR -- one whose base is
     # another feature branch -- used to match no trigger at all and so ran this
     # workflow zero times. That is worse than an absent signal: with no required
