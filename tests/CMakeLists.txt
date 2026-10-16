@@ -4413,6 +4413,31 @@ if(TARGET Folly::folly)
 else()
     message(STATUS "http_ssl_context_configuration_unit_test: skipped (requires Folly)")
 endif()
+# cpp-httplib with textual and composite node ids
+# (.kiro/specs/cloud-composite-node-ids/ tasks 6.2, 6.5): every RPC to a
+# std::string and an aws_ec2_node_id target, and the HTTPS host binding with a
+# textual target. Needs no Folly (http_transport_types falls back to
+# SimpleFuture), only httplib built with TLS and the test CA.
+if(TARGET httplib::httplib AND KYTHIRA_HTTP_TLS AND TARGET certificate_authority)
+    add_executable(http_textual_node_id_test http_textual_node_id_test.cpp)
+    target_link_libraries(http_textual_node_id_test PRIVATE
+        httplib::httplib
+        network_simulator
+        certificate_authority
+        Boost::unit_test_framework
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        boost_json
+    )
+    target_compile_features(http_textual_node_id_test PRIVATE cxx_std_23)
+    add_test(NAME http_textual_node_id_test COMMAND http_textual_node_id_test)
+    set_tests_properties(http_textual_node_id_test PROPERTIES
+        TIMEOUT 120
+        LABELS "integration;http;transport;composite_node_id"
+    )
+else()
+    message(STATUS "http_textual_node_id_test: skipped (requires httplib, CONFIG_HTTP_TRANSPORT_TLS and certificate_authority)")
+endif()
 # HTTP SSL Mutual TLS Integration Tests
 if(TARGET Folly::folly AND KYTHIRA_HTTP_TLS)
     add_executable(http_ssl_mutual_tls_integration_test http_ssl_mutual_tls_integration_test.cpp)

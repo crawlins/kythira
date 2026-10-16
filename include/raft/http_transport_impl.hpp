@@ -775,11 +775,11 @@ auto make_future_with_value(Response&& value) ->
 }
 
 // Constructor implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-cpp_httplib_client<Types>::cpp_httplib_client(
-    std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
-    cpp_httplib_client_config config, typename Types::metrics_type metrics)
+cpp_httplib_client<Types, NodeId>::cpp_httplib_client(
+    std::unordered_map<NodeId, std::string> node_id_to_url_map, cpp_httplib_client_config config,
+    typename Types::metrics_type metrics)
     : _serializer{},
       _registry{},
       _capability_cache{},
@@ -799,14 +799,14 @@ cpp_httplib_client<Types>::cpp_httplib_client(
 }
 
 // Destructor implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-cpp_httplib_client<Types>::~cpp_httplib_client() = default;
+cpp_httplib_client<Types, NodeId>::~cpp_httplib_client() = default;
 
 // Validate certificate files
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::validate_certificate_files() const -> void {
+auto cpp_httplib_client<Types, NodeId>::validate_certificate_files() const -> void {
     // Always validate TLS version range (works without OpenSSL)
     validate_tls_version_range_simple(_config.min_tls_version, _config.max_tls_version);
 
@@ -858,9 +858,9 @@ auto cpp_httplib_client<Types>::validate_certificate_files() const -> void {
 }
 
 // Load client certificates
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::load_client_certificates() -> void {
+auto cpp_httplib_client<Types, NodeId>::load_client_certificates() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     // Certificate loading is handled per-client in make_http_client
     // This method validates that certificates can be loaded
@@ -872,9 +872,9 @@ auto cpp_httplib_client<Types>::load_client_certificates() -> void {
 }
 
 // Configure SSL for a client
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) -> void {
+auto cpp_httplib_client<Types, NodeId>::configure_ssl_client(httplib::Client* client) -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (client == nullptr) {
         throw kythira::ssl_configuration_error("Cannot configure SSL on null client");
@@ -951,9 +951,9 @@ auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) ->
 // cached per-node connection pool so subsequent RPCs pick up the reloaded
 // material (Requirement 16, extended to the client per the design's note that
 // the same pattern applies to cpp_httplib_client's own presented certificate).
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::reload_tls_material() -> void {
+auto cpp_httplib_client<Types, NodeId>::reload_tls_material() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (!_config.client_cert_path.empty() || !_config.client_key_path.empty()) {
         validate_certificate_key_pair(_config.client_cert_path, _config.client_key_path);
@@ -978,9 +978,10 @@ auto cpp_httplib_client<Types>::reload_tls_material() -> void {
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto cpp_httplib_client<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval)
+    -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -1002,9 +1003,9 @@ auto cpp_httplib_client<Types>::enable_auto_reload(std::chrono::seconds poll_int
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::disable_auto_reload() -> void {
+auto cpp_httplib_client<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
@@ -1012,21 +1013,23 @@ auto cpp_httplib_client<Types>::disable_auto_reload() -> void {
 }
 
 // Helper to get base URL for a node
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::get_base_url(std::uint64_t node_id) const -> std::string {
+auto cpp_httplib_client<Types, NodeId>::get_base_url(const NodeId& node_id) const -> std::string {
     std::lock_guard<std::mutex> lock(_mutex);
     auto it = _node_id_to_url.find(node_id);
     if (it == _node_id_to_url.end()) {
-        throw std::runtime_error(std::format("No URL mapping found for node {}", node_id));
+        throw std::runtime_error(std::format("No URL mapping found for node {}",
+                                             node_id_traits<NodeId>::to_text(node_id)));
     }
     return it->second;
 }
 
 // Build one configured client for a peer
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::make_http_client(const std::string& base_url, std::uint64_t node_id)
+auto cpp_httplib_client<Types, NodeId>::make_http_client(const std::string& base_url,
+                                                         const NodeId& node_id)
     -> std::unique_ptr<httplib::Client> {
     // Parse URL to determine if HTTPS
     bool is_https = base_url.starts_with("https://");
@@ -1069,15 +1072,16 @@ auto cpp_httplib_client<Types>::make_http_client(const std::string& base_url, st
 
     } catch (const std::exception& e) {
         throw kythira::ssl_configuration_error(
-            std::format("Failed to create HTTP client for node {}: {}", node_id, e.what()));
+            std::format("Failed to create HTTP client for node {}: {}",
+                        node_id_traits<NodeId>::to_text(node_id), e.what()));
     }
     return client;
 }
 
 // Close idle connections past keep_alive_timeout, in every peer's pool
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::evict_idle_connections_locked(
+auto cpp_httplib_client<Types, NodeId>::evict_idle_connections_locked(
     std::chrono::steady_clock::time_point now) -> void {
     for (auto& [node_id, pool] : _pools) {
         const auto before = pool->idle.size();
@@ -1093,7 +1097,7 @@ auto cpp_httplib_client<Types>::evict_idle_connections_locked(
 
         auto metric = _metrics;
         metric.set_metric_name("http.client.connection.closed");
-        metric.add_dimension("target_node_id", std::to_string(node_id));
+        metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(node_id));
         metric.add_dimension("reason", "idle_timeout");
         metric.add_value(static_cast<double>(evicted));
         metric.emit();
@@ -1101,16 +1105,17 @@ auto cpp_httplib_client<Types>::evict_idle_connections_locked(
 }
 
 // Lease a connection to a node out of its pool
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::lease_connection(std::uint64_t node_id,
-                                                 std::chrono::steady_clock::time_point deadline)
+auto cpp_httplib_client<Types, NodeId>::lease_connection(
+    const NodeId& node_id, std::chrono::steady_clock::time_point deadline)
     -> std::optional<pooled_connection> {
     std::unique_lock<std::mutex> lock(_mutex);
 
     auto url_it = _node_id_to_url.find(node_id);
     if (url_it == _node_id_to_url.end()) {
-        throw std::runtime_error(std::format("No URL mapping found for node {}", node_id));
+        throw std::runtime_error(std::format("No URL mapping found for node {}",
+                                             node_id_traits<NodeId>::to_text(node_id)));
     }
     const std::string base_url = url_it->second;
 
@@ -1135,7 +1140,7 @@ auto cpp_httplib_client<Types>::lease_connection(std::uint64_t node_id,
 
             auto metric = _metrics;
             metric.set_metric_name("http.client.connection.reused");
-            metric.add_dimension("target_node_id", std::to_string(node_id));
+            metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(node_id));
             metric.add_one();
             metric.emit();
             return conn;
@@ -1168,14 +1173,14 @@ auto cpp_httplib_client<Types>::lease_connection(std::uint64_t node_id,
 
     auto metric = _metrics;
     metric.set_metric_name("http.client.connection.created");
-    metric.add_dimension("target_node_id", std::to_string(node_id));
+    metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(node_id));
     metric.add_one();
     metric.emit();
 
     lock.lock();
     metric = _metrics;
     metric.set_metric_name("http.client.connection.pool_size");
-    metric.add_dimension("target_node_id", std::to_string(node_id));
+    metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(node_id));
     metric.add_value(static_cast<double>(pool.open));
     metric.emit();
 
@@ -1183,10 +1188,11 @@ auto cpp_httplib_client<Types>::lease_connection(std::uint64_t node_id,
 }
 
 // Return a leased connection to its pool
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::release_connection(std::uint64_t node_id, pooled_connection conn,
-                                                   bool reusable) -> void {
+auto cpp_httplib_client<Types, NodeId>::release_connection(const NodeId& node_id,
+                                                           pooled_connection conn, bool reusable)
+    -> void {
     std::unique_lock<std::mutex> lock(_mutex);
     auto& pool = *_pools.at(node_id);
 
@@ -1196,7 +1202,7 @@ auto cpp_httplib_client<Types>::release_connection(std::uint64_t node_id, pooled
 
         auto metric = _metrics;
         metric.set_metric_name("http.client.connection.closed");
-        metric.add_dimension("target_node_id", std::to_string(node_id));
+        metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(node_id));
         metric.add_dimension("reason", reusable ? "tls_reload" : "error");
         metric.add_one();
         metric.emit();
@@ -1213,12 +1219,13 @@ auto cpp_httplib_client<Types>::release_connection(std::uint64_t node_id, pooled
 }
 
 // Generic RPC send implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
 template<typename Request, typename Response>
-auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string& endpoint,
-                                         const Request& request, std::chrono::milliseconds timeout)
-    -> typename Types::template future_template<Response> {
+auto cpp_httplib_client<Types, NodeId>::send_rpc(const NodeId& target, const std::string& endpoint,
+                                                 const Request& request,
+                                                 std::chrono::milliseconds timeout) ->
+    typename Types::template future_template<Response> {
     try {
         // The caller's timeout bounds the whole RPC, 415 re-encodes included
         // (Requirement 12). A non-positive timeout means the caller has no
@@ -1236,7 +1243,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
         // leaks a pool slot. Only the normal path below marks it reusable.
         struct lease_return {
             cpp_httplib_client* self;
-            std::uint64_t target;
+            const NodeId& target;
             std::optional<pooled_connection>& lease;
             bool reusable{false};
             auto release() -> void {
@@ -1328,7 +1335,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto metric = _metrics;
             metric.set_metric_name("http.client.request.sent");
             metric.add_dimension("rpc_type", rpc_type);
-            metric.add_dimension("target_node_id", std::to_string(target));
+            metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             metric.add_dimension("media_type", content_type);
             metric.add_one();
             metric.emit();
@@ -1336,7 +1343,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             metric = _metrics;
             metric.set_metric_name("http.client.request.size");
             metric.add_dimension("rpc_type", rpc_type);
-            metric.add_dimension("target_node_id", std::to_string(target));
+            metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             metric.add_dimension("media_type", content_type);
             metric.add_value(static_cast<double>(body.size()));
             metric.emit();
@@ -1383,7 +1390,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto retry_metric = _metrics;
             retry_metric.set_metric_name("http.client.media_type_retry");
             retry_metric.add_dimension("rpc_type", rpc_type);
-            retry_metric.add_dimension("target_node_id", std::to_string(target));
+            retry_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             retry_metric.add_dimension("rejected_media_type", content_type);
             retry_metric.add_dimension("media_type", *next);
             retry_metric.add_one();
@@ -1416,7 +1423,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto error_metric = _metrics;
             error_metric.set_metric_name("http.client.error");
             error_metric.add_dimension("error_type", error_type);
-            error_metric.add_dimension("target_node_id", std::to_string(target));
+            error_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             error_metric.add_one();
             error_metric.emit();
 
@@ -1424,7 +1431,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto latency_metric = _metrics;
             latency_metric.set_metric_name("http.client.request.latency");
             latency_metric.add_dimension("rpc_type", rpc_type);
-            latency_metric.add_dimension("target_node_id", std::to_string(target));
+            latency_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             latency_metric.add_dimension("status", "error");
             latency_metric.add_duration(latency);
             latency_metric.emit();
@@ -1458,7 +1465,8 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                 error_metric.set_metric_name("http.client.error");
                 error_metric.add_dimension("error_type", "unsupported_media_type");
                 error_metric.add_dimension("media_type", response_media_type);
-                error_metric.add_dimension("target_node_id", std::to_string(target));
+                error_metric.add_dimension("target_node_id",
+                                           node_id_traits<NodeId>::to_text(target));
                 error_metric.add_one();
                 error_metric.emit();
 
@@ -1488,7 +1496,8 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                 auto size_metric = _metrics;
                 size_metric.set_metric_name("http.client.response.size");
                 size_metric.add_dimension("rpc_type", rpc_type);
-                size_metric.add_dimension("target_node_id", std::to_string(target));
+                size_metric.add_dimension("target_node_id",
+                                          node_id_traits<NodeId>::to_text(target));
                 size_metric.add_dimension("media_type", response_media_type);
                 size_metric.add_value(static_cast<double>(result->body.size()));
                 size_metric.emit();
@@ -1497,7 +1506,8 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                 auto latency_metric = _metrics;
                 latency_metric.set_metric_name("http.client.request.latency");
                 latency_metric.add_dimension("rpc_type", rpc_type);
-                latency_metric.add_dimension("target_node_id", std::to_string(target));
+                latency_metric.add_dimension("target_node_id",
+                                             node_id_traits<NodeId>::to_text(target));
                 latency_metric.add_dimension("status", "success");
                 latency_metric.add_dimension("media_type", response_media_type);
                 latency_metric.add_duration(latency);
@@ -1509,7 +1519,8 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                 auto error_metric = _metrics;
                 error_metric.set_metric_name("http.client.error");
                 error_metric.add_dimension("error_type", "deserialization_failed");
-                error_metric.add_dimension("target_node_id", std::to_string(target));
+                error_metric.add_dimension("target_node_id",
+                                           node_id_traits<NodeId>::to_text(target));
                 error_metric.add_one();
                 error_metric.emit();
 
@@ -1521,7 +1532,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto error_metric = _metrics;
             error_metric.set_metric_name("http.client.error");
             error_metric.add_dimension("error_type", "4xx");
-            error_metric.add_dimension("target_node_id", std::to_string(target));
+            error_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             error_metric.add_one();
             error_metric.emit();
 
@@ -1529,7 +1540,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto latency_metric = _metrics;
             latency_metric.set_metric_name("http.client.request.latency");
             latency_metric.add_dimension("rpc_type", rpc_type);
-            latency_metric.add_dimension("target_node_id", std::to_string(target));
+            latency_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             latency_metric.add_dimension("status", "error");
             latency_metric.add_duration(latency);
             latency_metric.emit();
@@ -1539,7 +1550,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             // misconfigured peer and keeps its ordinary error.
             if (extension_rpc && result->status == 404) {
                 return make_future_with_exception<Types, Response>(
-                    kythira::rpc_not_implemented_exception(rpc_type, target));
+                    kythira::rpc_not_implemented_for(rpc_type, target));
             }
 
             return make_future_with_exception<Types, Response>(kythira::http_client_error(
@@ -1550,7 +1561,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto error_metric = _metrics;
             error_metric.set_metric_name("http.client.error");
             error_metric.add_dimension("error_type", "5xx");
-            error_metric.add_dimension("target_node_id", std::to_string(target));
+            error_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             error_metric.add_one();
             error_metric.emit();
 
@@ -1558,7 +1569,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             auto latency_metric = _metrics;
             latency_metric.set_metric_name("http.client.request.latency");
             latency_metric.add_dimension("rpc_type", rpc_type);
-            latency_metric.add_dimension("target_node_id", std::to_string(target));
+            latency_metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
             latency_metric.add_dimension("status", "error");
             latency_metric.add_duration(latency);
             latency_metric.emit();
@@ -1566,7 +1577,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             // The peer has the route but no handler registered for it.
             if (extension_rpc && result->status == 501) {
                 return make_future_with_exception<Types, Response>(
-                    kythira::rpc_not_implemented_exception(rpc_type, target));
+                    kythira::rpc_not_implemented_for(rpc_type, target));
             }
 
             return make_future_with_exception<Types, Response>(kythira::http_server_error(
@@ -1583,77 +1594,81 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
 }
 
 // send_request_vote implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::send_request_vote(std::uint64_t target,
-                                                  const kythira::request_vote_request<>& request,
-                                                  std::chrono::milliseconds timeout) ->
+auto cpp_httplib_client<Types, NodeId>::send_request_vote(
+    const NodeId& target, const kythira::request_vote_request<NodeId>& request,
+    std::chrono::milliseconds timeout) ->
     typename Types::template future_template<kythira::request_vote_response<>> {
-    return send_rpc<kythira::request_vote_request<>, kythira::request_vote_response<>>(
+    return send_rpc<kythira::request_vote_request<NodeId>, kythira::request_vote_response<>>(
         target, endpoint_request_vote, request, timeout);
 }
 
 // send_append_entries implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::send_append_entries(
-    std::uint64_t target, const kythira::append_entries_request<>& request,
+auto cpp_httplib_client<Types, NodeId>::send_append_entries(
+    const NodeId& target, const kythira::append_entries_request<NodeId>& request,
     std::chrono::milliseconds timeout) ->
     typename Types::template future_template<kythira::append_entries_response<>> {
-    return send_rpc<kythira::append_entries_request<>, kythira::append_entries_response<>>(
+    return send_rpc<kythira::append_entries_request<NodeId>, kythira::append_entries_response<>>(
         target, endpoint_append_entries, request, timeout);
 }
 
 // send_install_snapshot implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::send_install_snapshot(
-    std::uint64_t target, const kythira::install_snapshot_request<>& request,
+auto cpp_httplib_client<Types, NodeId>::send_install_snapshot(
+    const NodeId& target, const kythira::install_snapshot_request<NodeId>& request,
     std::chrono::milliseconds timeout) ->
     typename Types::template future_template<kythira::install_snapshot_response<>> {
-    return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
-        target, endpoint_install_snapshot, request, timeout);
+    return send_rpc<kythira::install_snapshot_request<NodeId>,
+                    kythira::install_snapshot_response<>>(target, endpoint_install_snapshot,
+                                                          request, timeout);
 }
 
 // send_fetch_log_entries implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::send_fetch_log_entries(
-    std::uint64_t target, const kythira::fetch_log_entries_request<>& request,
+auto cpp_httplib_client<Types, NodeId>::send_fetch_log_entries(
+    const NodeId& target, const kythira::fetch_log_entries_request<NodeId>& request,
     std::chrono::milliseconds timeout) ->
-    typename Types::template future_template<kythira::fetch_log_entries_response<>> {
-    return send_rpc<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
-        target, endpoint_fetch_log_entries, request, timeout);
+    typename Types::template future_template<kythira::fetch_log_entries_response<NodeId>> {
+    return send_rpc<kythira::fetch_log_entries_request<NodeId>,
+                    kythira::fetch_log_entries_response<NodeId>>(target, endpoint_fetch_log_entries,
+                                                                 request, timeout);
 }
 
 // send_request_pre_vote implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::send_request_pre_vote(
-    std::uint64_t target, const kythira::request_pre_vote_request<>& request,
+auto cpp_httplib_client<Types, NodeId>::send_request_pre_vote(
+    const NodeId& target, const kythira::request_pre_vote_request<NodeId>& request,
     std::chrono::milliseconds timeout) ->
     typename Types::template future_template<kythira::request_pre_vote_response<>> {
-    return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
-        target, endpoint_request_pre_vote, request, timeout);
+    return send_rpc<kythira::request_pre_vote_request<NodeId>,
+                    kythira::request_pre_vote_response<>>(target, endpoint_request_pre_vote,
+                                                          request, timeout);
 }
 
 // send_timeout_now implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_client<Types>::send_timeout_now(std::uint64_t target,
-                                                 const kythira::timeout_now_request<>& request,
-                                                 std::chrono::milliseconds timeout) ->
+auto cpp_httplib_client<Types, NodeId>::send_timeout_now(
+    const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
+    std::chrono::milliseconds timeout) ->
     typename Types::template future_template<kythira::timeout_now_response<>> {
-    return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+    return send_rpc<kythira::timeout_now_request<NodeId>, kythira::timeout_now_response<>>(
         target, endpoint_timeout_now, request, timeout);
 }
 
 // Server constructor implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uint16_t bind_port,
-                                              cpp_httplib_server_config config,
-                                              typename Types::metrics_type metrics)
+cpp_httplib_server<Types, NodeId>::cpp_httplib_server(std::string bind_address,
+                                                      std::uint16_t bind_port,
+                                                      cpp_httplib_server_config config,
+                                                      typename Types::metrics_type metrics)
     : _serializer{},
       _registry{},
       _listeners{std::make_unique<kythira::net_bind::httplib_listeners<httplib::Server>>()},
@@ -1690,18 +1705,18 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
 }
 
 // Server destructor implementation
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-cpp_httplib_server<Types>::~cpp_httplib_server() {
+cpp_httplib_server<Types, NodeId>::~cpp_httplib_server() {
     if (_running.load()) {
         stop();
     }
 }
 
 // Validate certificate files for server
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::validate_certificate_files() const -> void {
+auto cpp_httplib_server<Types, NodeId>::validate_certificate_files() const -> void {
     // Always validate TLS version range (works without OpenSSL)
     if (_config.enable_ssl) {
         validate_tls_version_range_simple(_config.min_tls_version, _config.max_tls_version);
@@ -1777,9 +1792,9 @@ auto cpp_httplib_server<Types>::validate_certificate_files() const -> void {
 }
 
 // Load server certificates
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::load_server_certificates() -> void {
+auto cpp_httplib_server<Types, NodeId>::load_server_certificates() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (!_config.enable_ssl) {
         return;  // SSL not enabled
@@ -1819,9 +1834,9 @@ inline auto apply_request_body_limit(httplib::Server& server, std::size_t limit)
 // (Requirement 14) and applies cipher-suite/TLS-version/client-cert-auth
 // configuration to its live SSL_CTX* — the same context handshakes actually
 // use, not a scratch context discarded after validation.
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httplib::Server> {
+auto cpp_httplib_server<Types, NodeId>::configure_ssl_server() -> std::unique_ptr<httplib::Server> {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
 
     if (_config.ssl_cert_path.empty() || _config.ssl_key_path.empty()) {
@@ -1877,9 +1892,9 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> std::unique_ptr<httpli
 // httplib::Server. SSLServer derives from Server, so route registration and
 // listen()/stop() are unaffected by which one it is. start() calls this once
 // per address the bind address resolves to.
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::make_listener() -> std::unique_ptr<httplib::Server> {
+auto cpp_httplib_server<Types, NodeId>::make_listener() -> std::unique_ptr<httplib::Server> {
     if (_config.enable_ssl) {
         try {
             return configure_ssl_server();
@@ -1911,9 +1926,9 @@ auto cpp_httplib_server<Types>::make_listener() -> std::unique_ptr<httplib::Serv
 // to the live SSL_CTX*, without closing the listening socket or dropping any
 // established connection (Requirement 16.1). Validates first (all-or-nothing,
 // Requirement 16.3): a rejected reload leaves the previous material serving.
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::reload_tls_material() -> void {
+auto cpp_httplib_server<Types, NodeId>::reload_tls_material() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     std::vector<httplib::SSLServer*> ssl_servers;
     for (auto* server : _listeners->servers()) {
@@ -1948,9 +1963,10 @@ auto cpp_httplib_server<Types>::reload_tls_material() -> void {
 #endif
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto cpp_httplib_server<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval)
+    -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -1975,9 +1991,9 @@ auto cpp_httplib_server<Types>::enable_auto_reload(std::chrono::seconds poll_int
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::disable_auto_reload() -> void {
+auto cpp_httplib_server<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
@@ -1985,74 +2001,76 @@ auto cpp_httplib_server<Types>::disable_auto_reload() -> void {
 }
 
 // Register RequestVote handler
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::register_request_vote_handler(
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler)
-    -> void {
+auto cpp_httplib_server<Types, NodeId>::register_request_vote_handler(
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _request_vote_handler = std::move(handler);
 }
 
 // Register AppendEntries handler
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::register_append_entries_handler(
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+auto cpp_httplib_server<Types, NodeId>::register_append_entries_handler(
+    std::function<
+        kythira::append_entries_response<>(const kythira::append_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _append_entries_handler = std::move(handler);
 }
 
 // Register InstallSnapshot handler
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::register_install_snapshot_handler(
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+auto cpp_httplib_server<Types, NodeId>::register_install_snapshot_handler(
+    std::function<
+        kythira::install_snapshot_response<>(const kythira::install_snapshot_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _install_snapshot_handler = std::move(handler);
 }
 
 // Register FetchLogEntries handler
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::register_fetch_log_entries_handler(
-    std::function<
-        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+auto cpp_httplib_server<Types, NodeId>::register_fetch_log_entries_handler(
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _fetch_log_entries_handler = std::move(handler);
 }
 
 // Register RequestPreVote handler
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::register_request_pre_vote_handler(
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+auto cpp_httplib_server<Types, NodeId>::register_request_pre_vote_handler(
+    std::function<
+        kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _request_pre_vote_handler = std::move(handler);
 }
 
 // Register TimeoutNow handler
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::register_timeout_now_handler(
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
-    -> void {
+auto cpp_httplib_server<Types, NodeId>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _timeout_now_handler = std::move(handler);
 }
 
 // Generic RPC endpoint handler
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
 template<typename Request, typename Response>
-auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http_req,
-                                                    httplib::Response& http_resp,
-                                                    std::function<Response(const Request&)> handler)
-    -> void {
+auto cpp_httplib_server<Types, NodeId>::handle_rpc_endpoint(
+    const httplib::Request& http_req, httplib::Response& http_resp,
+    std::function<Response(const Request&)> handler) -> void {
     auto start_time = std::chrono::steady_clock::now();
 
     // Determine RPC type for metrics
@@ -2255,20 +2273,7 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
                 // -Wunused-result three times on every translation unit that
                 // instantiates this, which is noise that trains a reader to
                 // ignore the warning that matters.
-                if constexpr (std::is_same_v<Request, kythira::request_vote_request<>>) {
-                    static_cast<void>(_serializer.deserialize_request_vote_request(test_data));
-                } else if constexpr (std::is_same_v<Request, kythira::append_entries_request<>>) {
-                    static_cast<void>(_serializer.deserialize_append_entries_request(test_data));
-                } else if constexpr (std::is_same_v<Request, kythira::install_snapshot_request<>>) {
-                    static_cast<void>(_serializer.deserialize_install_snapshot_request(test_data));
-                } else if constexpr (std::is_same_v<Request,
-                                                    kythira::fetch_log_entries_request<>>) {
-                    static_cast<void>(_serializer.deserialize_fetch_log_entries_request(test_data));
-                } else if constexpr (std::is_same_v<Request, kythira::request_pre_vote_request<>>) {
-                    static_cast<void>(_serializer.deserialize_request_pre_vote_request(test_data));
-                } else if constexpr (std::is_same_v<Request, kythira::timeout_now_request<>>) {
-                    static_cast<void>(_serializer.deserialize_timeout_now_request(test_data));
-                }
+                static_cast<void>(deserialize_message<Request>(_serializer, test_data));
 
                 // If we get here, deserialization worked, so it's a handler exception
                 error_type = "handler_exception";
@@ -2308,13 +2313,13 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
 }
 
 // Setup endpoints
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::setup_endpoints(httplib::Server& server) -> void {
+auto cpp_httplib_server<Types, NodeId>::setup_endpoints(httplib::Server& server) -> void {
     // RequestVote endpoint
     server.Post(endpoint_request_vote,
                 [this](const httplib::Request& req, httplib::Response& resp) {
-                    this->handle_rpc_endpoint<kythira::request_vote_request<>,
+                    this->handle_rpc_endpoint<kythira::request_vote_request<NodeId>,
                                               kythira::request_vote_response<>>(
                         req, resp, _request_vote_handler);
                 });
@@ -2322,7 +2327,7 @@ auto cpp_httplib_server<Types>::setup_endpoints(httplib::Server& server) -> void
     // AppendEntries endpoint
     server.Post(endpoint_append_entries,
                 [this](const httplib::Request& req, httplib::Response& resp) {
-                    this->handle_rpc_endpoint<kythira::append_entries_request<>,
+                    this->handle_rpc_endpoint<kythira::append_entries_request<NodeId>,
                                               kythira::append_entries_response<>>(
                         req, resp, _append_entries_handler);
                 });
@@ -2330,7 +2335,7 @@ auto cpp_httplib_server<Types>::setup_endpoints(httplib::Server& server) -> void
     // InstallSnapshot endpoint
     server.Post(endpoint_install_snapshot,
                 [this](const httplib::Request& req, httplib::Response& resp) {
-                    this->handle_rpc_endpoint<kythira::install_snapshot_request<>,
+                    this->handle_rpc_endpoint<kythira::install_snapshot_request<NodeId>,
                                               kythira::install_snapshot_response<>>(
                         req, resp, _install_snapshot_handler);
                 });
@@ -2338,29 +2343,29 @@ auto cpp_httplib_server<Types>::setup_endpoints(httplib::Server& server) -> void
     // FetchLogEntries endpoint (peer-to-peer catch-up)
     server.Post(endpoint_fetch_log_entries,
                 [this](const httplib::Request& req, httplib::Response& resp) {
-                    this->handle_rpc_endpoint<kythira::fetch_log_entries_request<>,
-                                              kythira::fetch_log_entries_response<>>(
+                    this->handle_rpc_endpoint<kythira::fetch_log_entries_request<NodeId>,
+                                              kythira::fetch_log_entries_response<NodeId>>(
                         req, resp, _fetch_log_entries_handler);
                 });
     // RequestPreVote endpoint (optional extension; 501 when unregistered)
     server.Post(endpoint_request_pre_vote,
                 [this](const httplib::Request& req, httplib::Response& resp) {
-                    this->handle_rpc_endpoint<kythira::request_pre_vote_request<>,
+                    this->handle_rpc_endpoint<kythira::request_pre_vote_request<NodeId>,
                                               kythira::request_pre_vote_response<>>(
                         req, resp, _request_pre_vote_handler);
                 });
 
     // TimeoutNow endpoint (optional extension; 501 when unregistered)
     server.Post(endpoint_timeout_now, [this](const httplib::Request& req, httplib::Response& resp) {
-        this->handle_rpc_endpoint<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
-            req, resp, _timeout_now_handler);
+        this->handle_rpc_endpoint<kythira::timeout_now_request<NodeId>,
+                                  kythira::timeout_now_response<>>(req, resp, _timeout_now_handler);
     });
 }
 
 // Start server
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::start() -> void {
+auto cpp_httplib_server<Types, NodeId>::start() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
 
     if (_running.load()) {
@@ -2404,9 +2409,9 @@ auto cpp_httplib_server<Types>::start() -> void {
 }
 
 // Stop server
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::stop() -> void {
+auto cpp_httplib_server<Types, NodeId>::stop() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
 
     if (!_running.load()) {
@@ -2425,17 +2430,17 @@ auto cpp_httplib_server<Types>::stop() -> void {
 }
 
 // Check if server is running
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::is_running() const -> bool {
+auto cpp_httplib_server<Types, NodeId>::is_running() const -> bool {
     return _running.load();
 }
 
 // The port actually bound by start(); see the declaration for why a caller
 // would pass 0 and read it back here.
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-auto cpp_httplib_server<Types>::bound_port() const -> std::uint16_t {
+auto cpp_httplib_server<Types, NodeId>::bound_port() const -> std::uint16_t {
     return _bound_port.load();
 }
 

@@ -33,11 +33,14 @@
 #include <raft/http_exceptions.hpp>
 #include <raft/types.hpp>
 
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -68,7 +71,67 @@ namespace serializer_registry_detail {
     return pattern == candidate;
 }
 
+/// @brief The node id type an RPC message carries, or `void` for one that
+///        carries none (the responses other than fetch_log_entries').
+template<typename T> struct message_node_id {
+    using type = void;
+};
+template<node_id N> struct message_node_id<request_vote_request<N>> {
+    using type = N;
+};
+template<node_id N> struct message_node_id<request_pre_vote_request<N>> {
+    using type = N;
+};
+template<node_id N> struct message_node_id<timeout_now_request<N>> {
+    using type = N;
+};
+template<node_id N> struct message_node_id<append_entries_request<N>> {
+    using type = N;
+};
+template<node_id N> struct message_node_id<install_snapshot_request<N>> {
+    using type = N;
+};
+template<node_id N> struct message_node_id<fetch_log_entries_request<N>> {
+    using type = N;
+};
+template<node_id N> struct message_node_id<fetch_log_entries_response<N>> {
+    using type = N;
+};
+
 }  // namespace serializer_registry_detail
+
+/// @brief Decodes @p data as @p T with @p s, for any node id type @p T is
+///        instantiated on.
+///
+/// Every serializer's generic `deserialize<T>` names only the default
+/// (`std::uint64_t`) instantiations, while its per-message
+/// `deserialize_*<NodeId>` methods take any id. An HTTP transport carrying
+/// textual or composite ids (.kiro/specs/cloud-composite-node-ids/,
+/// Requirement 9.2) decodes through a registry, so the registries route here:
+/// a numeric message keeps the serializer's own dispatch, and one carrying any
+/// other id goes to the per-message method for that id.
+template<typename T, typename S, typename Data>
+[[nodiscard]] auto deserialize_message(const S& s, const Data& data) -> T {
+    using N = typename serializer_registry_detail::message_node_id<T>::type;
+    if constexpr (std::is_void_v<N> || std::same_as<N, std::uint64_t>) {
+        return s.template deserialize<T>(data);
+    } else if constexpr (std::same_as<T, request_vote_request<N>>) {
+        return s.template deserialize_request_vote_request<N>(data);
+    } else if constexpr (std::same_as<T, request_pre_vote_request<N>>) {
+        return s.template deserialize_request_pre_vote_request<N>(data);
+    } else if constexpr (std::same_as<T, timeout_now_request<N>>) {
+        return s.template deserialize_timeout_now_request<N>(data);
+    } else if constexpr (std::same_as<T, append_entries_request<N>>) {
+        return s.template deserialize_append_entries_request<N>(data);
+    } else if constexpr (std::same_as<T, install_snapshot_request<N>>) {
+        return s.template deserialize_install_snapshot_request<N>(data);
+    } else if constexpr (std::same_as<T, fetch_log_entries_request<N>>) {
+        return s.template deserialize_fetch_log_entries_request<N>(data);
+    } else {
+        static_assert(std::same_as<T, fetch_log_entries_response<N>>);
+        return s.template deserialize_fetch_log_entries_response<N>(data);
+    }
+}
 
 /// @brief A registry holding exactly one serializer.
 /// @tparam S Serializer type; must satisfy `rpc_serializer`.
@@ -132,7 +195,7 @@ public:
         if (!supports(media_type)) {
             throw unsupported_media_type_error(media_type);
         }
-        return _s.template deserialize<T>(data);
+        return deserialize_message<T>(_s, data);
     }
 
     [[nodiscard]] auto serializer() const -> const S& { return _s; }
@@ -252,7 +315,7 @@ public:
         std::optional<T> result;
         std::apply(
             [&](const auto&... s) {
-                ((s.media_type() == media_type ? (result = s.template deserialize<T>(data), void())
+                ((s.media_type() == media_type ? (result = deserialize_message<T>(s, data), void())
                                                : void()),
                  ...);
             },
