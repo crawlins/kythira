@@ -585,10 +585,10 @@ inline auto tls_beast_connection::close() -> void {
 // boost_beast_client
 // ---------------------------------------------------------------------------
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-boost_beast_client<Types>::boost_beast_client(
-    net::io_context& ioc, std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
+boost_beast_client<Types, NodeId>::boost_beast_client(
+    net::io_context& ioc, std::unordered_map<NodeId, std::string> node_id_to_url_map,
     boost_beast_client_config config, metrics_type metrics, std::shared_ptr<void> context_keeper)
     : _context_keeper(std::move(context_keeper)),
       _ioc(ioc),
@@ -603,9 +603,9 @@ boost_beast_client<Types>::boost_beast_client(
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-boost_beast_client<Types>::~boost_beast_client() {
+boost_beast_client<Types, NodeId>::~boost_beast_client() {
     disable_auto_reload();
 
     // Force-close every connection (live or retired) so any in-flight
@@ -632,9 +632,9 @@ boost_beast_client<Types>::~boost_beast_client() {
     _drain_cv.wait(drain_lock, [this] { return _in_flight_operations == 0; });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::validate_certificate_files() const -> void {
+auto boost_beast_client<Types, NodeId>::validate_certificate_files() const -> void {
     beast_validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
     beast_validate_cipher_suites(_config.cipher_suites);
     if (!_config.ca_cert_path.empty()) {
@@ -656,17 +656,17 @@ auto boost_beast_client<Types>::validate_certificate_files() const -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::load_client_certificates() -> void {
+auto boost_beast_client<Types, NodeId>::load_client_certificates() -> void {
     if (!_config.client_cert_path.empty() && !_config.client_key_path.empty()) {
         beast_validate_certificate_key_pair(_config.client_cert_path, _config.client_key_path);
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::build_ssl_context() -> net::ssl::context {
+auto boost_beast_client<Types, NodeId>::build_ssl_context() -> net::ssl::context {
     net::ssl::context ctx(net::ssl::context::tls_client);
     ctx.set_verify_mode(_config.enable_ssl_verification ? net::ssl::verify_peer
                                                         : net::ssl::verify_none);
@@ -684,9 +684,9 @@ auto boost_beast_client<Types>::build_ssl_context() -> net::ssl::context {
     return ctx;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::reload_tls_material() -> void {
+auto boost_beast_client<Types, NodeId>::reload_tls_material() -> void {
     validate_certificate_files();
     auto new_ctx = build_ssl_context();
 
@@ -701,9 +701,10 @@ auto boost_beast_client<Types>::reload_tls_material() -> void {
     _idle_connections.clear();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto boost_beast_client<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval)
+    -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -725,9 +726,9 @@ auto boost_beast_client<Types>::enable_auto_reload(std::chrono::seconds poll_int
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::disable_auto_reload() -> void {
+auto boost_beast_client<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
@@ -768,9 +769,9 @@ inline auto authority_of(const std::string& url) -> url_authority {
 
 // What note_peer_seen() does, on a URL table of its own so the server's
 // handler can outlive the client.
-inline auto learn_url_address(const std::unordered_map<std::uint64_t, std::string>& urls,
-                              std::uint64_t id, const sockaddr_storage& from, socklen_t len)
-    -> void {
+template<typename NodeId>
+auto learn_url_address(const std::unordered_map<NodeId, std::string>& urls, const NodeId& id,
+                       const sockaddr_storage& from, socklen_t len) -> void {
     auto url_it = urls.find(id);
     if (url_it == urls.end()) {
         return;
@@ -793,32 +794,34 @@ inline auto learn_url_address(const std::unordered_map<std::uint64_t, std::strin
 
 }  // namespace beast_detail
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::note_peer_seen(std::uint64_t id, const sockaddr_storage& from,
-                                               socklen_t len) -> void {
+auto boost_beast_client<Types, NodeId>::note_peer_seen(const NodeId& id,
+                                                       const sockaddr_storage& from, socklen_t len)
+    -> void {
     // _node_id_to_url is immutable after construction, so read without the lock.
     beast_detail::learn_url_address(_node_id_to_url, id, from, len);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::peer_seen_handler() const
-    -> std::function<void(std::uint64_t, const sockaddr_storage&, socklen_t)> {
-    return [urls = _node_id_to_url](std::uint64_t id, const sockaddr_storage& from, socklen_t len) {
+auto boost_beast_client<Types, NodeId>::peer_seen_handler() const
+    -> std::function<void(const NodeId&, const sockaddr_storage&, socklen_t)> {
+    return [urls = _node_id_to_url](const NodeId& id, const sockaddr_storage& from, socklen_t len) {
         beast_detail::learn_url_address(urls, id, from, len);
     };
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::resolve_target(std::uint64_t target,
-                                               std::chrono::milliseconds timeout)
+auto boost_beast_client<Types, NodeId>::resolve_target(const NodeId& target,
+                                                       std::chrono::milliseconds timeout)
     -> resolved_target {
     // Immutable after construction, so read without the lock.
     auto url_it = _node_id_to_url.find(target);
     if (url_it == _node_id_to_url.end()) {
-        throw std::runtime_error(std::format("No URL mapping found for node {}", target));
+        throw std::runtime_error(std::format("No URL mapping found for node {}",
+                                             node_id_traits<NodeId>::to_text(target)));
     }
     const std::string& url = url_it->second;
     auto [host, port_str] = beast_detail::authority_of(url);
@@ -843,10 +846,10 @@ auto boost_beast_client<Types>::resolve_target(std::uint64_t target,
     return where;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::make_connection(std::uint64_t target,
-                                                std::chrono::milliseconds timeout)
+auto boost_beast_client<Types, NodeId>::make_connection(const NodeId& target,
+                                                        std::chrono::milliseconds timeout)
     -> pooled_connection {
     auto where = resolve_target(target, timeout);
     const bool is_https = _node_id_to_url.at(target).starts_with("https://");
@@ -856,7 +859,8 @@ auto boost_beast_client<Types>::make_connection(std::uint64_t target,
     if (is_https) {
         if (!_ssl_ctx.has_value()) {
             throw kythira::ssl_configuration_error(
-                std::format("Node {} uses https:// but no TLS material is configured", target));
+                std::format("Node {} uses https:// but no TLS material is configured",
+                            node_id_traits<NodeId>::to_text(target)));
         }
         connection = std::make_shared<beast_detail::tls_beast_connection>(
             beast::ssl_stream<beast::tcp_stream>(net::make_strand(_ioc), *_ssl_ctx),
@@ -874,7 +878,7 @@ auto boost_beast_client<Types>::make_connection(std::uint64_t target,
 
     auto metric = _metrics;
     metric.set_metric_name("beast_http.client.connection.created");
-    metric.add_dimension("target_node_id", std::to_string(target));
+    metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
     metric.add_one();
     metric.emit();
 
@@ -887,10 +891,10 @@ auto boost_beast_client<Types>::make_connection(std::uint64_t target,
                              _tls_generation};
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::acquire_connection(std::uint64_t target,
-                                                   std::chrono::milliseconds timeout)
+auto boost_beast_client<Types, NodeId>::acquire_connection(const NodeId& target,
+                                                           std::chrono::milliseconds timeout)
     -> pooled_connection {
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -915,7 +919,7 @@ auto boost_beast_client<Types>::acquire_connection(std::uint64_t target,
 
                 auto metric = _metrics;
                 metric.set_metric_name("beast_http.client.connection.reused");
-                metric.add_dimension("target_node_id", std::to_string(target));
+                metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
                 metric.add_one();
                 metric.emit();
                 conn.last_used = std::chrono::steady_clock::now();
@@ -927,10 +931,11 @@ auto boost_beast_client<Types>::acquire_connection(std::uint64_t target,
     return make_connection(target, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::release_connection(std::uint64_t target, pooled_connection conn,
-                                                   bool reusable) -> void {
+auto boost_beast_client<Types, NodeId>::release_connection(const NodeId& target,
+                                                           pooled_connection conn, bool reusable)
+    -> void {
     if (!conn.connection) {
         return;
     }
@@ -967,18 +972,19 @@ auto boost_beast_client<Types>::release_connection(std::uint64_t target, pooled_
 
     auto metric = _metrics;
     metric.set_metric_name("beast_http.client.connection.pool_size");
-    metric.add_dimension("target_node_id", std::to_string(target));
+    metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
     metric.add_value(static_cast<double>(idle.size()));
     metric.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
 template<typename Request, typename Response>
-auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view endpoint,
-                                         const Request& request, std::chrono::milliseconds timeout,
-                                         std::vector<std::string> attempted,
-                                         std::string chosen_media_type)
+auto boost_beast_client<Types, NodeId>::send_rpc(NodeId target, std::string_view endpoint,
+                                                 const Request& request,
+                                                 std::chrono::milliseconds timeout,
+                                                 std::vector<std::string> attempted,
+                                                 std::string chosen_media_type)
     -> future_template<Response> {
     std::string rpc_type;
     bool extension_rpc = false;
@@ -1045,7 +1051,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         auto metric = _metrics;
         metric.set_metric_name("beast_http.client.request.sent");
         metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
         metric.add_dimension("media_type", content_type);
         metric.add_one();
         metric.emit();
@@ -1104,7 +1110,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 auto latency_metric = _metrics;
                 latency_metric.set_metric_name("beast_http.client.request.latency");
                 latency_metric.add_dimension("rpc_type", rpc_type);
-                latency_metric.add_dimension("target_node_id", std::to_string(target));
+                latency_metric.add_dimension("target_node_id",
+                                             node_id_traits<NodeId>::to_text(target));
                 latency_metric.add_dimension("status", status == 200 ? "success" : "error");
                 latency_metric.add_duration(latency);
                 latency_metric.emit();
@@ -1131,7 +1138,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                         error_metric.set_metric_name("beast_http.client.error");
                         error_metric.add_dimension("error_type", "unsupported_media_type");
                         error_metric.add_dimension("media_type", response_media_type);
-                        error_metric.add_dimension("target_node_id", std::to_string(target));
+                        error_metric.add_dimension("target_node_id",
+                                                   node_id_traits<NodeId>::to_text(target));
                         error_metric.add_one();
                         error_metric.emit();
                         throw kythira::unsupported_media_type_error(response_media_type);
@@ -1167,7 +1175,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 // mandatory RPC means a misconfigured peer and keeps its
                 // ordinary error.
                 if (extension_rpc && (status == 404 || status == 501)) {
-                    throw kythira::rpc_not_implemented_exception(rpc_type, target);
+                    throw kythira::rpc_not_implemented_for(rpc_type, target);
                 }
                 if (status >= 400 && status < 500) {
                     // Carry `Accept-Post` on the exception: this transport's 415
@@ -1194,7 +1202,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
             .thenError([this, target, in_flight, lease](std::exception_ptr e) -> Response {
                 auto error_metric = _metrics;
                 error_metric.set_metric_name("beast_http.client.error");
-                error_metric.add_dimension("target_node_id", std::to_string(target));
+                error_metric.add_dimension("target_node_id",
+                                           node_id_traits<NodeId>::to_text(target));
                 error_metric.add_one();
                 error_metric.emit();
                 // Property 5: a failed connection is torn down rather than left
@@ -1233,7 +1242,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                                 _registry, attempted, client_error.accept_post())) {
                             auto retry_metric = _metrics;
                             retry_metric.set_metric_name("beast_http.client.media_type_retry");
-                            retry_metric.add_dimension("target_node_id", std::to_string(target));
+                            retry_metric.add_dimension("target_node_id",
+                                                       node_id_traits<NodeId>::to_text(target));
                             retry_metric.add_dimension("rejected_media_type", content_type);
                             retry_metric.add_dimension("media_type", *next);
                             retry_metric.add_one();
@@ -1264,66 +1274,68 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::send_request_vote(std::uint64_t target,
-                                                  const kythira::request_vote_request<>& request,
-                                                  std::chrono::milliseconds timeout)
-    -> future_template<kythira::request_vote_response<>> {
-    return send_rpc<kythira::request_vote_request<>, kythira::request_vote_response<>>(
+auto boost_beast_client<Types, NodeId>::send_request_vote(
+    const NodeId& target, const kythira::request_vote_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::request_vote_response<>> {
+    return send_rpc<kythira::request_vote_request<NodeId>, kythira::request_vote_response<>>(
         target, beast_endpoint_request_vote, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::send_append_entries(
-    std::uint64_t target, const kythira::append_entries_request<>& request,
+auto boost_beast_client<Types, NodeId>::send_append_entries(
+    const NodeId& target, const kythira::append_entries_request<NodeId>& request,
     std::chrono::milliseconds timeout) -> future_template<kythira::append_entries_response<>> {
-    return send_rpc<kythira::append_entries_request<>, kythira::append_entries_response<>>(
+    return send_rpc<kythira::append_entries_request<NodeId>, kythira::append_entries_response<>>(
         target, beast_endpoint_append_entries, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::send_request_pre_vote(
-    std::uint64_t target, const kythira::request_pre_vote_request<>& request,
+auto boost_beast_client<Types, NodeId>::send_request_pre_vote(
+    const NodeId& target, const kythira::request_pre_vote_request<NodeId>& request,
     std::chrono::milliseconds timeout) -> future_template<kythira::request_pre_vote_response<>> {
-    return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
-        target, beast_endpoint_request_pre_vote, request, timeout);
+    return send_rpc<kythira::request_pre_vote_request<NodeId>,
+                    kythira::request_pre_vote_response<>>(target, beast_endpoint_request_pre_vote,
+                                                          request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::send_timeout_now(std::uint64_t target,
-                                                 const kythira::timeout_now_request<>& request,
-                                                 std::chrono::milliseconds timeout)
-    -> future_template<kythira::timeout_now_response<>> {
-    return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+auto boost_beast_client<Types, NodeId>::send_timeout_now(
+    const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::timeout_now_response<>> {
+    return send_rpc<kythira::timeout_now_request<NodeId>, kythira::timeout_now_response<>>(
         target, beast_endpoint_timeout_now, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::send_install_snapshot(
-    std::uint64_t target, const kythira::install_snapshot_request<>& request,
+auto boost_beast_client<Types, NodeId>::send_install_snapshot(
+    const NodeId& target, const kythira::install_snapshot_request<NodeId>& request,
     std::chrono::milliseconds timeout) -> future_template<kythira::install_snapshot_response<>> {
-    return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
-        target, beast_endpoint_install_snapshot, request, timeout);
+    return send_rpc<kythira::install_snapshot_request<NodeId>,
+                    kythira::install_snapshot_response<>>(target, beast_endpoint_install_snapshot,
+                                                          request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_client<Types>::send_fetch_log_entries(
-    std::uint64_t target, const kythira::fetch_log_entries_request<>& request,
-    std::chrono::milliseconds timeout) -> future_template<kythira::fetch_log_entries_response<>> {
-    return send_rpc<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+auto boost_beast_client<Types, NodeId>::send_fetch_log_entries(
+    const NodeId& target, const kythira::fetch_log_entries_request<NodeId>& request,
+    std::chrono::milliseconds timeout)
+    -> future_template<kythira::fetch_log_entries_response<NodeId>> {
+    return send_rpc<kythira::fetch_log_entries_request<NodeId>,
+                    kythira::fetch_log_entries_response<NodeId>>(
         target, beast_endpoint_fetch_log_entries, request, timeout);
 }
 
 // ---------------------------------------------------------------------------
 // server_session: one accepted connection. Not declared in
 // beast_http_transport.hpp -- it is a pure implementation detail, reached
-// only through boost_beast_server<Types>::do_accept(), and only ever needs
+// only through boost_beast_server<Types, NodeId>::do_accept(), and only ever needs
 // three of the server's *public* members (session_started/session_finished/
 // dispatch), so no friendship is required.
 //
@@ -1362,12 +1374,12 @@ inline auto classify_accept_error(const boost::system::error_code& ec) -> accept
     return accept_error_class::retry;
 }
 
-template<typename Types, typename Stream>
-class server_session : public std::enable_shared_from_this<server_session<Types, Stream>> {
+template<typename Server, typename Stream>
+class server_session : public std::enable_shared_from_this<server_session<Server, Stream>> {
 public:
-    server_session(Stream stream, boost_beast_server<Types>* server,
-                   std::chrono::seconds request_timeout, std::chrono::seconds handshake_timeout,
-                   std::size_t max_request_body_size, http_detail::connection_gate::slot slot)
+    server_session(Stream stream, Server* server, std::chrono::seconds request_timeout,
+                   std::chrono::seconds handshake_timeout, std::size_t max_request_body_size,
+                   http_detail::connection_gate::slot slot)
         : _stream(std::move(stream)),
           _executor(beast::get_lowest_layer(_stream).get_executor()),
           _server(server),
@@ -1635,7 +1647,7 @@ private:
     // initializer-list order) so the constructor can build it from
     // beast::get_lowest_layer(_stream).get_executor().
     asio_strand_executor _executor;
-    boost_beast_server<Types>* _server;
+    Server* _server;
     std::size_t _session_id{};
     std::chrono::seconds _request_timeout;
     std::chrono::seconds _handshake_timeout;
@@ -1670,12 +1682,13 @@ private:
 // boost_beast_server
 // ---------------------------------------------------------------------------
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-boost_beast_server<Types>::boost_beast_server(net::io_context& ioc, std::string bind_address,
-                                              std::uint16_t bind_port,
-                                              boost_beast_server_config config,
-                                              metrics_type metrics)
+boost_beast_server<Types, NodeId>::boost_beast_server(net::io_context& ioc,
+                                                      std::string bind_address,
+                                                      std::uint16_t bind_port,
+                                                      boost_beast_server_config config,
+                                                      metrics_type metrics)
     : _ioc(ioc),
       _bind_address(std::move(bind_address)),
       _bind_port(bind_port),
@@ -1688,16 +1701,16 @@ boost_beast_server<Types>::boost_beast_server(net::io_context& ioc, std::string 
     validate_certificate_files();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-boost_beast_server<Types>::~boost_beast_server() {
+boost_beast_server<Types, NodeId>::~boost_beast_server() {
     disable_auto_reload();
     stop();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::validate_certificate_files() const -> void {
+auto boost_beast_server<Types, NodeId>::validate_certificate_files() const -> void {
     beast_validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
     beast_validate_cipher_suites(_config.cipher_suites);
     if (!_config.enable_ssl) {
@@ -1719,15 +1732,15 @@ auto boost_beast_server<Types>::validate_certificate_files() const -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::load_server_certificates() -> void {
+auto boost_beast_server<Types, NodeId>::load_server_certificates() -> void {
     beast_validate_certificate_key_pair(_config.ssl_cert_path, _config.ssl_key_path);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::build_ssl_context() -> net::ssl::context {
+auto boost_beast_server<Types, NodeId>::build_ssl_context() -> net::ssl::context {
     net::ssl::context ctx(net::ssl::context::tls_server);
     ctx.use_certificate_file(_config.ssl_cert_path, net::ssl::context::pem);
     ctx.use_private_key_file(_config.ssl_key_path, net::ssl::context::pem);
@@ -1746,9 +1759,9 @@ auto boost_beast_server<Types>::build_ssl_context() -> net::ssl::context {
     return ctx;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::reload_tls_material() -> void {
+auto boost_beast_server<Types, NodeId>::reload_tls_material() -> void {
     if (!_config.enable_ssl) {
         throw kythira::ssl_configuration_error("SSL is not enabled on this server");
     }
@@ -1764,9 +1777,10 @@ auto boost_beast_server<Types>::reload_tls_material() -> void {
     _ssl_ctx = std::move(new_ctx);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto boost_beast_server<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval)
+    -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -1788,73 +1802,76 @@ auto boost_beast_server<Types>::enable_auto_reload(std::chrono::seconds poll_int
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::disable_auto_reload() -> void {
+auto boost_beast_server<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::register_request_vote_handler(
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler)
-    -> void {
+auto boost_beast_server<Types, NodeId>::register_request_vote_handler(
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _request_vote_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::register_append_entries_handler(
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+auto boost_beast_server<Types, NodeId>::register_append_entries_handler(
+    std::function<
+        kythira::append_entries_response<>(const kythira::append_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _append_entries_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::register_install_snapshot_handler(
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+auto boost_beast_server<Types, NodeId>::register_install_snapshot_handler(
+    std::function<
+        kythira::install_snapshot_response<>(const kythira::install_snapshot_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _install_snapshot_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::register_fetch_log_entries_handler(
-    std::function<
-        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+auto boost_beast_server<Types, NodeId>::register_fetch_log_entries_handler(
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _fetch_log_entries_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::register_request_pre_vote_handler(
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+auto boost_beast_server<Types, NodeId>::register_request_pre_vote_handler(
+    std::function<
+        kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _request_pre_vote_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::register_timeout_now_handler(
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
-    -> void {
+auto boost_beast_server<Types, NodeId>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _timeout_now_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::start() -> void {
+auto boost_beast_server<Types, NodeId>::start() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     if (_running.load()) {
         return;
@@ -1885,9 +1902,9 @@ auto boost_beast_server<Types>::start() -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::stop() -> void {
+auto boost_beast_server<Types, NodeId>::stop() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     if (!_running.load()) {
         return;
@@ -1937,45 +1954,46 @@ auto boost_beast_server<Types>::stop() -> void {
     metric.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::is_running() const -> bool {
+auto boost_beast_server<Types, NodeId>::is_running() const -> bool {
     return _running.load();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::default_media_type() const -> std::string {
+auto boost_beast_server<Types, NodeId>::default_media_type() const -> std::string {
     return _registry.default_media_type();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::accept_post_header() const -> std::string {
+auto boost_beast_server<Types, NodeId>::accept_post_header() const -> std::string {
     return format_accept_header(_registry.preferred_media_types());
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::note_request_too_large() -> void {
+auto boost_beast_server<Types, NodeId>::note_request_too_large() -> void {
     auto metric = _metrics;
     metric.set_metric_name("beast_http.server.request_too_large");
     metric.add_one();
     metric.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::register_session(std::function<void()> closer) -> std::size_t {
+auto boost_beast_server<Types, NodeId>::register_session(std::function<void()> closer)
+    -> std::size_t {
     std::lock_guard<std::mutex> lock(_sessions_mutex);
     auto id = _next_session_id++;
     _session_closers.emplace(id, std::move(closer));
     return id;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::session_finished(std::size_t session_id) -> void {
+auto boost_beast_server<Types, NodeId>::session_finished(std::size_t session_id) -> void {
     {
         std::lock_guard<std::mutex> lock(_sessions_mutex);
         _session_closers.erase(session_id);
@@ -1984,15 +2002,15 @@ auto boost_beast_server<Types>::session_finished(std::size_t session_id) -> void
     _drain_cv.notify_all();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::dispatch(std::string_view target,
-                                         const std::vector<std::byte>& body,
-                                         const std::string& request_media_type,
-                                         const std::vector<std::string>& accepted,
-                                         std::string& response_body, unsigned& status_code,
-                                         std::string& response_media_type,
-                                         const std::optional<net::ip::tcp::endpoint>& from)
+auto boost_beast_server<Types, NodeId>::dispatch(std::string_view target,
+                                                 const std::vector<std::byte>& body,
+                                                 const std::string& request_media_type,
+                                                 const std::vector<std::string>& accepted,
+                                                 std::string& response_body, unsigned& status_code,
+                                                 std::string& response_media_type,
+                                                 const std::optional<net::ip::tcp::endpoint>& from)
     -> void {
     // Error bodies are plain text on every path below; the success path
     // overwrites this with whatever was negotiated.
@@ -2002,7 +2020,7 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
     // peer-seen handler; see set_peer_seen_handler().
     auto handle = [&]<typename Request, typename Response>(
                       const std::function<Response(const Request&)>& handler,
-                      std::string_view rpc_type, std::uint64_t (*sender)(const Request&),
+                      std::string_view rpc_type, NodeId (*sender)(const Request&),
                       bool extension_rpc = false) {
         auto start_time = std::chrono::steady_clock::now();
         auto received_metric = _metrics;
@@ -2089,34 +2107,36 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
     };
 
     if (target == beast_endpoint_request_vote) {
-        handle
-            .template operator()<kythira::request_vote_request<>, kythira::request_vote_response<>>(
-                _request_vote_handler, "request_vote",
-                [](const kythira::request_vote_request<>& r) { return r.candidate_id(); });
+        handle.template
+        operator()<kythira::request_vote_request<NodeId>, kythira::request_vote_response<>>(
+            _request_vote_handler, "request_vote",
+            [](const kythira::request_vote_request<NodeId>& r) { return r.candidate_id(); });
     } else if (target == beast_endpoint_append_entries) {
         handle.template
-        operator()<kythira::append_entries_request<>, kythira::append_entries_response<>>(
+        operator()<kythira::append_entries_request<NodeId>, kythira::append_entries_response<>>(
             _append_entries_handler, "append_entries",
-            [](const kythira::append_entries_request<>& r) { return r.leader_id(); });
+            [](const kythira::append_entries_request<NodeId>& r) { return r.leader_id(); });
     } else if (target == beast_endpoint_install_snapshot) {
         handle.template
-        operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
+        operator()<kythira::install_snapshot_request<NodeId>, kythira::install_snapshot_response<>>(
             _install_snapshot_handler, "install_snapshot",
-            [](const kythira::install_snapshot_request<>& r) { return r.leader_id(); });
+            [](const kythira::install_snapshot_request<NodeId>& r) { return r.leader_id(); });
     } else if (target == beast_endpoint_fetch_log_entries) {
-        handle.template
-        operator()<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+        handle.template operator()<kythira::fetch_log_entries_request<NodeId>,
+                                   kythira::fetch_log_entries_response<NodeId>>(
             _fetch_log_entries_handler, "fetch_log_entries",
-            [](const kythira::fetch_log_entries_request<>& r) { return r.requester_id(); });
+            [](const kythira::fetch_log_entries_request<NodeId>& r) { return r.requester_id(); });
     } else if (target == beast_endpoint_request_pre_vote) {
         handle.template
-        operator()<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+        operator()<kythira::request_pre_vote_request<NodeId>, kythira::request_pre_vote_response<>>(
             _request_pre_vote_handler, "request_pre_vote",
-            [](const kythira::request_pre_vote_request<>& r) { return r.candidate_id(); }, true);
+            [](const kythira::request_pre_vote_request<NodeId>& r) { return r.candidate_id(); },
+            true);
     } else if (target == beast_endpoint_timeout_now) {
-        handle.template operator()<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+        handle.template
+        operator()<kythira::timeout_now_request<NodeId>, kythira::timeout_now_response<>>(
             _timeout_now_handler, "timeout_now",
-            [](const kythira::timeout_now_request<>& r) { return r.leader_id(); }, true);
+            [](const kythira::timeout_now_request<NodeId>& r) { return r.leader_id(); }, true);
     } else {
         status_code = 404;
         response_body = "Not Found";
@@ -2128,85 +2148,85 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor,
-                                          std::shared_ptr<net::steady_timer> backoff_timer,
-                                          std::chrono::milliseconds backoff) -> void {
+auto boost_beast_server<Types, NodeId>::do_accept(std::shared_ptr<net::ip::tcp::acceptor> acceptor,
+                                                  std::shared_ptr<net::steady_timer> backoff_timer,
+                                                  std::chrono::milliseconds backoff) -> void {
     auto& a = *acceptor;
-    a.async_accept(net::make_strand(_ioc), [this, acceptor = std::move(acceptor),
-                                            backoff_timer = std::move(backoff_timer),
-                                            backoff](const boost::system::error_code& ec,
-                                                     net::ip::tcp::socket socket) mutable {
-        if (ec == net::error::operation_aborted || !_running.load()) {
-            return;  // stop() closed the acceptors -- do not recurse.
-        }
-        if (ec) {
-            auto cls = beast_detail::classify_accept_error(ec);
-            auto metric = _metrics;
-            metric.set_metric_name("beast_http.server.accept_error");
-            metric.add_dimension("error_class",
-                                 cls == beast_detail::accept_error_class::backoff ? "backoff"
-                                 : cls == beast_detail::accept_error_class::fatal ? "fatal"
-                                                                                  : "retry");
-            metric.add_one();
-            metric.emit();
-            if (cls == beast_detail::accept_error_class::fatal) {
-                return;  // the listener itself is unusable; retrying would spin.
+    a.async_accept(
+        net::make_strand(_ioc),
+        [this, acceptor = std::move(acceptor), backoff_timer = std::move(backoff_timer), backoff](
+            const boost::system::error_code& ec, net::ip::tcp::socket socket) mutable {
+            if (ec == net::error::operation_aborted || !_running.load()) {
+                return;  // stop() closed the acceptors -- do not recurse.
             }
-            if (cls == beast_detail::accept_error_class::backoff) {
-                // Out of descriptors or memory: the pending connection stays
-                // in the backlog and the listener stays readable, so
-                // accepting again at once fails the same way in a tight
-                // loop that pins a core. Wait for finished sessions to give
-                // descriptors back instead.
-                auto next = std::min(backoff * 2, beast_detail::accept_backoff_max);
-                backoff_timer->expires_after(backoff);
-                auto& timer = *backoff_timer;
-                timer.async_wait([this, acceptor = std::move(acceptor),
-                                  backoff_timer = std::move(backoff_timer),
-                                  next](const boost::system::error_code& wait_ec) mutable {
-                    if (wait_ec == net::error::operation_aborted || !_running.load()) {
-                        return;  // stop() cancelled the timer.
-                    }
-                    do_accept(std::move(acceptor), std::move(backoff_timer), next);
-                });
-                return;
-            }
-        } else {
-            backoff = beast_detail::accept_backoff_min;
-            // Ask for a slot before anything is read or a handshake starts:
-            // a refused connection should cost one accept() and nothing more.
-            auto slot = _gate->try_acquire();
-            if (!slot) {
-                // RST rather than FIN: SO_LINGER {1, 0} makes close() drop
-                // the socket at once instead of parking it in TIME_WAIT, the
-                // same thing wangle's Acceptor does when it sheds load.
-                boost::system::error_code ignored;
-                (void)socket.set_option(net::socket_base::linger(true, 0), ignored);
-                (void)socket.close(ignored);
+            if (ec) {
+                auto cls = beast_detail::classify_accept_error(ec);
                 auto metric = _metrics;
-                metric.set_metric_name("beast_http.server.connection_refused");
+                metric.set_metric_name("beast_http.server.accept_error");
+                metric.add_dimension("error_class",
+                                     cls == beast_detail::accept_error_class::backoff ? "backoff"
+                                     : cls == beast_detail::accept_error_class::fatal ? "fatal"
+                                                                                      : "retry");
                 metric.add_one();
                 metric.emit();
-            } else if (_config.enable_ssl) {
-                beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), *_ssl_ctx);
-                auto session = std::make_shared<
-                    beast_detail::server_session<Types, beast::ssl_stream<beast::tcp_stream>>>(
-                    std::move(stream), this, _config.request_timeout, _config.handshake_timeout,
-                    _config.max_request_body_size, std::move(slot));
-                session->run();
+                if (cls == beast_detail::accept_error_class::fatal) {
+                    return;  // the listener itself is unusable; retrying would spin.
+                }
+                if (cls == beast_detail::accept_error_class::backoff) {
+                    // Out of descriptors or memory: the pending connection stays
+                    // in the backlog and the listener stays readable, so
+                    // accepting again at once fails the same way in a tight
+                    // loop that pins a core. Wait for finished sessions to give
+                    // descriptors back instead.
+                    auto next = std::min(backoff * 2, beast_detail::accept_backoff_max);
+                    backoff_timer->expires_after(backoff);
+                    auto& timer = *backoff_timer;
+                    timer.async_wait([this, acceptor = std::move(acceptor),
+                                      backoff_timer = std::move(backoff_timer),
+                                      next](const boost::system::error_code& wait_ec) mutable {
+                        if (wait_ec == net::error::operation_aborted || !_running.load()) {
+                            return;  // stop() cancelled the timer.
+                        }
+                        do_accept(std::move(acceptor), std::move(backoff_timer), next);
+                    });
+                    return;
+                }
             } else {
-                beast::tcp_stream stream(std::move(socket));
-                auto session =
-                    std::make_shared<beast_detail::server_session<Types, beast::tcp_stream>>(
+                backoff = beast_detail::accept_backoff_min;
+                // Ask for a slot before anything is read or a handshake starts:
+                // a refused connection should cost one accept() and nothing more.
+                auto slot = _gate->try_acquire();
+                if (!slot) {
+                    // RST rather than FIN: SO_LINGER {1, 0} makes close() drop
+                    // the socket at once instead of parking it in TIME_WAIT, the
+                    // same thing wangle's Acceptor does when it sheds load.
+                    boost::system::error_code ignored;
+                    (void)socket.set_option(net::socket_base::linger(true, 0), ignored);
+                    (void)socket.close(ignored);
+                    auto metric = _metrics;
+                    metric.set_metric_name("beast_http.server.connection_refused");
+                    metric.add_one();
+                    metric.emit();
+                } else if (_config.enable_ssl) {
+                    beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), *_ssl_ctx);
+                    auto session = std::make_shared<beast_detail::server_session<
+                        boost_beast_server, beast::ssl_stream<beast::tcp_stream>>>(
                         std::move(stream), this, _config.request_timeout, _config.handshake_timeout,
                         _config.max_request_body_size, std::move(slot));
-                session->run();
+                    session->run();
+                } else {
+                    beast::tcp_stream stream(std::move(socket));
+                    auto session = std::make_shared<
+                        beast_detail::server_session<boost_beast_server, beast::tcp_stream>>(
+                        std::move(stream), this, _config.request_timeout, _config.handshake_timeout,
+                        _config.max_request_body_size, std::move(slot));
+                    session->run();
+                }
             }
-        }
-        do_accept(std::move(acceptor), std::move(backoff_timer), backoff);
-    });
+            do_accept(std::move(acceptor), std::move(backoff_timer), backoff);
+        });
 }
 
 // ── concept conformance (.kiro/specs/http-coap-pre-vote-timeout-now/, Requirement 2) ──
