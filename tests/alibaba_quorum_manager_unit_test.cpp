@@ -444,10 +444,10 @@ BOOST_AUTO_TEST_SUITE(alibaba_quorum_manager_construction)
 /// this regresses; the runtime case exists so the intent shows up in the test
 /// output rather than only in a compile error nobody reads.
 BOOST_AUTO_TEST_CASE(the_manager_satisfies_the_quorum_manager_concept) {
-    static_assert(kythira::quorum_manager<alibaba_ess_quorum_manager<>, std::uint64_t, std::string,
-                                          std::string>);
-    static_assert(
-        std::is_same_v<alibaba_ess_quorum_manager<>::placement_group_id_type, std::string>);
+    static_assert(kythira::quorum_manager<alibaba_ess_quorum_manager<std::uint64_t>, std::uint64_t,
+                                          std::string, std::string>);
+    static_assert(std::is_same_v<alibaba_ess_quorum_manager<std::uint64_t>::placement_group_id_type,
+                                 std::string>);
     BOOST_CHECK(true);
 }
 
@@ -455,7 +455,7 @@ BOOST_AUTO_TEST_CASE(a_valid_config_constructs_against_an_existing_scaling_group
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     EssMock mock;
     mock.start();
-    const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_EQUAL(mgr.topology().groups.size(), 1U);
     BOOST_CHECK_EQUAL(mgr.topology().groups.front().group_id, default_zone);
 }
@@ -466,19 +466,19 @@ BOOST_AUTO_TEST_CASE(a_valid_config_constructs_against_an_existing_scaling_group
 BOOST_AUTO_TEST_CASE(an_empty_cluster_name_throws) {
     auto cfg = unreachable_config();
     cfg.cluster_name.clear();
-    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(an_empty_scaling_group_id_throws) {
     auto cfg = unreachable_config();
     cfg.scaling_group_id.clear();
-    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(a_zero_node_port_throws) {
     auto cfg = unreachable_config();
     cfg.node_port = 0;
-    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 /// Requirement 3.2's parenthesis: `region` is required only when there is no
@@ -489,13 +489,13 @@ BOOST_AUTO_TEST_CASE(an_empty_region_throws_only_without_an_endpoint_override,
     auto cfg = unreachable_config();
     cfg.alibaba.region.clear();
     cfg.alibaba.endpoint_override.clear();
-    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 
     EssMock mock;
     mock.start();
     auto override_cfg = config_for(mock);
     override_cfg.alibaba.region.clear();
-    BOOST_CHECK_NO_THROW((alibaba_ess_quorum_manager<>{override_cfg}));
+    BOOST_CHECK_NO_THROW((alibaba_ess_quorum_manager<std::uint64_t>{override_cfg}));
 }
 
 /// Requirement 3.2's fail-fast probe. `std::runtime_error` rather than
@@ -507,7 +507,7 @@ BOOST_AUTO_TEST_CASE(an_unknown_scaling_group_throws_at_construction,
     mock.start();
     auto cfg = config_for(mock);
     cfg.scaling_group_id = "asg-does-not-exist";
-    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<>{cfg}), std::runtime_error);
+    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<std::uint64_t>{cfg}), std::runtime_error);
 }
 
 /// A dead port stands in for every transport failure. The construction probe
@@ -515,7 +515,8 @@ BOOST_AUTO_TEST_CASE(an_unknown_scaling_group_throws_at_construction,
 /// first remediation.
 BOOST_AUTO_TEST_CASE(an_unreachable_endpoint_throws_at_construction,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<>{unreachable_config()}), std::runtime_error);
+    BOOST_CHECK_THROW((alibaba_ess_quorum_manager<std::uint64_t>{unreachable_config()}),
+                      std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -529,12 +530,12 @@ BOOST_AUTO_TEST_CASE(node_ids_are_tag_scan_max_plus_one,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     EssMock mock;
     mock.start();
-    const alibaba_ess_quorum_manager<> empty_group{config_for(mock)};
+    const alibaba_ess_quorum_manager<std::uint64_t> empty_group{config_for(mock)};
     BOOST_CHECK_EQUAL(empty_group.next_node_id(), 1U);
 
     mock.add_instance(ours(3));
     mock.add_instance(ours(7));
-    const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 8U);
 }
 
@@ -548,7 +549,7 @@ BOOST_AUTO_TEST_CASE(an_unparseable_node_id_tag_is_ignored,
     mock.add_instance(ours(2));
     mock.start();
 
-    const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
 }
 
@@ -566,7 +567,7 @@ BOOST_AUTO_TEST_CASE(signed_or_trailing_garbage_node_id_tags_are_ignored,
     mock.add_instance(ours(2));
     mock.start();
 
-    const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
 }
 
@@ -583,14 +584,14 @@ BOOST_AUTO_TEST_CASE(node_id_assignment_refuses_to_wrap_at_the_ceiling,
         mock.add_instance(
             {{"kythira-cluster", "test-cluster"}, {"kythira-node-id", "99999999999999999999999"}});
         mock.start();
-        const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+        const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
         BOOST_CHECK_EQUAL(mgr.next_node_id(), top);
     }
     {
         EssMock mock;
         mock.add_instance(ours(top));
         mock.start();
-        const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+        const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
         BOOST_CHECK_THROW((void)mgr.next_node_id(), std::overflow_error);
     }
 }
@@ -607,7 +608,7 @@ BOOST_AUTO_TEST_CASE(a_foreign_clusters_node_id_does_not_move_our_numbering,
     mock.add_instance({{"owner", "platform-team"}});  // never adopted at all
     mock.start();
 
-    const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 2U);
 }
 
@@ -626,7 +627,7 @@ BOOST_AUTO_TEST_CASE(liveness_needs_both_inservice_and_running,
     mock.add_instance(ours(3), "Pending", "Running");
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{
         {.node_id = 1, .group_id = default_zone},
         {.node_id = 2, .group_id = default_zone},
@@ -653,7 +654,7 @@ BOOST_AUTO_TEST_CASE(foreign_cluster_instances_are_never_counted_as_members,
     mock.add_instance({{"kythira-cluster", "someone-elses-cluster"}, {"kythira-node-id", "2"}});
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{
         {.node_id = 1, .group_id = default_zone},
         {.node_id = 2, .group_id = default_zone},
@@ -677,7 +678,7 @@ BOOST_AUTO_TEST_CASE(listing_paginates_and_ecs_lookups_batch,
     }
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{
         {.node_id = 1, .group_id = default_zone},
         {.node_id = 51, .group_id = default_zone},
@@ -701,7 +702,7 @@ BOOST_AUTO_TEST_CASE(a_transport_failure_is_an_exceptional_future_not_a_dead_clu
     mock.add_instance(ours(1));
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     mock.shutdown();  // the endpoint is now a dead port
 
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{
@@ -716,7 +717,7 @@ BOOST_AUTO_TEST_CASE(an_empty_cluster_is_healthy_without_touching_the_api,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     EssMock mock;
     mock.start();
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     mock.shutdown();
 
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
@@ -737,7 +738,7 @@ BOOST_AUTO_TEST_CASE(provision_grows_the_group_and_adopts_the_new_instance,
     mock.add_instance(ours(1));
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     const auto peer = std::move(mgr.provision_node(default_zone, std::nullopt)).get();
 
     BOOST_CHECK_EQUAL(peer.node_id, 2U);
@@ -758,7 +759,7 @@ BOOST_AUTO_TEST_CASE(a_provision_with_no_node_id_left_removes_the_launched_insta
     mock.add_instance(ours(std::numeric_limits<std::uint64_t>::max()));
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_THROW(std::move(mgr.provision_node(default_zone, std::nullopt)).get(),
                       std::runtime_error);
     BOOST_CHECK_EQUAL(mock.remove_calls.load(), 1);
@@ -777,7 +778,7 @@ BOOST_AUTO_TEST_CASE(tag_writes_are_additive_and_preserve_operator_tags,
 
     auto cfg = config_for(mock);
     cfg.extra_tags = {{"cost-center", "42"}};
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     const auto peer = std::move(mgr.provision_node(default_zone, std::nullopt)).get();
 
     const auto tags = mock.tags_of("i-mock1");
@@ -798,7 +799,7 @@ BOOST_AUTO_TEST_CASE(extra_tags_cannot_override_the_well_known_keys,
 
     auto cfg = config_for(mock);
     cfg.extra_tags = {{"kythira-node-id", "9999"}, {"kythira-cluster", "hijacked"}};
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
     (void)std::move(mgr.provision_node(default_zone, std::nullopt)).get();
 
     const auto tags = mock.tags_of("i-mock1");
@@ -816,7 +817,7 @@ BOOST_AUTO_TEST_CASE(a_zone_mismatch_proceeds_rather_than_failing,
     mock.launch_zone = "cn-hangzhou-h";
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     const auto peer = std::move(mgr.provision_node("cn-hangzhou-b", std::nullopt)).get();
     BOOST_CHECK_EQUAL(peer.node_id, 1U);
     BOOST_CHECK_EQUAL(mock.instance_count(), 1U);
@@ -837,7 +838,7 @@ BOOST_AUTO_TEST_CASE(a_provision_that_never_settles_times_out_and_rolls_capacity
 
     auto cfg = config_for(mock);
     cfg.provision_timeout = 1s;
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
 
     BOOST_CHECK_THROW(std::move(mgr.provision_node(default_zone, std::nullopt)).get(),
                       std::exception);
@@ -863,7 +864,7 @@ BOOST_AUTO_TEST_CASE(decommission_removes_the_tagged_instance_and_shrinks_capaci
     const auto drop = mock.add_instance(ours(2));
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{2})).get());
 
     BOOST_CHECK_EQUAL(mock.remove_calls.load(), 1);
@@ -884,7 +885,7 @@ BOOST_AUTO_TEST_CASE(decommissioning_an_absent_node_is_idempotent_success,
     mock.add_instance(ours(1));
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{42})).get());
     BOOST_CHECK_EQUAL(mock.remove_calls.load(), 0);
     BOOST_CHECK_EQUAL(mock.instance_count(), 1U);
@@ -906,7 +907,7 @@ BOOST_AUTO_TEST_CASE(decommission_never_touches_a_foreign_clusters_instance,
     mock.add_instance({{"kythira-cluster", "someone-elses-cluster"}, {"kythira-node-id", "1"}});
     mock.start();
 
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{1})).get());
     BOOST_CHECK_EQUAL(mock.remove_calls.load(), 0);
     BOOST_CHECK_EQUAL(mock.instance_count(), 1U);
@@ -929,7 +930,7 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_a_dead_node_and_reports_the_prior_
     auto cfg = config_for(mock);
     cfg.topology.groups.clear();
     cfg.topology.groups.push_back({.group_id = default_zone, .target_count = 1});
-    alibaba_ess_quorum_manager<> mgr{cfg};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{cfg};
 
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{
         {.node_id = 1, .group_id = default_zone}};
@@ -951,7 +952,7 @@ BOOST_AUTO_TEST_CASE(topology_is_synchronous_and_does_no_io,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     EssMock mock;
     mock.start();
-    const alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    const alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     mock.shutdown();
 
     const auto topo = mgr.topology();
@@ -974,7 +975,7 @@ BOOST_AUTO_TEST_CASE(the_list_instances_fault_rejects_the_future,
     EssMock mock;
     mock.add_instance(ours(1));
     mock.start();
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{
         {.node_id = 1, .group_id = default_zone}};
 
@@ -992,7 +993,7 @@ BOOST_AUTO_TEST_CASE(the_modify_capacity_fault_rejects_the_future_without_growin
     EssMock mock;
     mock.add_instance(ours(1));
     mock.start();
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
 
     fiu_enable("raft/alibaba/ess/modify_capacity", 1, nullptr, 0);
     auto fut = mgr.provision_node(default_zone, std::nullopt);
@@ -1010,7 +1011,7 @@ BOOST_AUTO_TEST_CASE(the_remove_instances_fault_rejects_the_future,
     EssMock mock;
     mock.add_instance(ours(1));
     mock.start();
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
 
     fiu_enable("raft/alibaba/ess/remove_instances", 1, nullptr, 0);
     auto fut = mgr.decommission_node(std::uint64_t{1});
@@ -1028,7 +1029,7 @@ BOOST_AUTO_TEST_CASE(the_maintain_quorum_fault_rejects_the_future,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     EssMock mock;
     mock.start();
-    alibaba_ess_quorum_manager<> mgr{config_for(mock)};
+    alibaba_ess_quorum_manager<std::uint64_t> mgr{config_for(mock)};
     const std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
 
     fiu_enable("raft/alibaba/ess/maintain_quorum", 1, nullptr, 0);

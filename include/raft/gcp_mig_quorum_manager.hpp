@@ -275,9 +275,10 @@ template<typename GroupId = std::string> struct gcp_mig_quorum_manager_config {
 /// node learns its own id with `--node-id=metadata:gcp` (Requirement 6.4).
 /// Numeric mode (an unsigned `NodeId`) is unchanged.
 ///
-/// @tparam NodeId  Node identifier type; defaults to `std::uint64_t`.
+/// @tparam NodeId  Node identifier type; defaults to `gcp_instance_node_id`. Write
+///                 `std::uint64_t` for numeric mode.
 /// @tparam Address Network address type; defaults to `std::string`.
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = gcp_instance_node_id, typename Address = std::string>
 requires node_id<NodeId>
 class gcp_mig_quorum_manager {
 public:

@@ -5,6 +5,23 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 16, 2026)
 
+- **Breaking: every quorum manager now defaults to composite node ids.**
+  Alibaba ESS, OCI pool, Azure VM and VMSS, GCP Compute and MIG, and
+  Docker gain composite and string modes (spec `cloud-composite-node-ids`
+  task 4) and their `NodeId` default flips to the provider's composite
+  type: the node id is the instance, VM, managed instance or container
+  itself, so nothing is allocated or found by tag search. Azure VM, GCP
+  Compute and Docker name the resource `kythira-<cluster>-<8 base32>`
+  before creating it, so `{NODE_ID}` is substituted (new for Docker, in
+  `extra_env`/`extra_args`). Ids from another scope read unreachable and
+  are refused by `decommission_node`. `std::string` now holds the
+  composite's canonical text in every manager, not decimal text. Write
+  `<std::uint64_t>` to keep numeric mode; in-tree code that relied on the
+  defaults now does. GCP labels cannot hold the canonical text, so the
+  `kythira-node-id` label holds the instance name (Compute also writes the
+  full id to the `kythira-node-id` metadata item). The provider READMEs
+  gain a "Node ids" section.
+
 - **Breaking: the AWS quorum managers default to composite node ids.**
   `aws_ec2_quorum_manager<>` and `aws_asg_quorum_manager<>` now mean
   `NodeId = aws_ec2_node_id`: the node id is the instance itself

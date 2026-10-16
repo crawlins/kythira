@@ -78,7 +78,7 @@ struct docker_quorum_manager_config {
 // docker_quorum_manager (Req 18 AC 3-4)
 // ============================================================================
 
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = docker_container_node_id, typename Address = std::string>
 requires node_id<NodeId>
 class docker_quorum_manager {
     static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||

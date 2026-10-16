@@ -312,9 +312,10 @@ struct oci_instance_pool_quorum_manager_config {
 
 /// @brief `quorum_manager` driving an OCI Instance Pool's size.
 ///
-/// @tparam NodeId  Node identifier type; defaults to `std::uint64_t`.
+/// @tparam NodeId  Node identifier type; defaults to `oci_instance_node_id`. Write
+///                 `std::uint64_t` for numeric mode.
 /// @tparam Address Network address type; defaults to `std::string`.
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = oci_instance_node_id, typename Address = std::string>
 requires node_id<NodeId>
 class oci_instance_pool_quorum_manager {
 public:

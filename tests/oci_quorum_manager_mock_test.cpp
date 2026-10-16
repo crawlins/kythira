@@ -167,7 +167,7 @@ BOOST_AUTO_TEST_SUITE(oci_quorum_manager_mock_tests)
 BOOST_AUTO_TEST_CASE(oci_provision_three_nodes,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     MockFixture fixture;
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
 
     std::vector<std::uint64_t> assigned;
     std::vector<std::string> addresses;
@@ -223,7 +223,7 @@ BOOST_AUTO_TEST_CASE(provisioning_waits_for_the_instance_to_stop_being_modified,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     MockFixture fixture;
     fixture.server.set_provisioning_reads(3);
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
 
     auto peer =
         std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt)).get();
@@ -251,7 +251,7 @@ BOOST_AUTO_TEST_CASE(decommission_waits_for_the_pool_to_leave_scaling,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     MockFixture fixture;
     fixture.server.set_scaling_reads(2);
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
 
     auto peer =
         std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt)).get();
@@ -272,7 +272,7 @@ BOOST_AUTO_TEST_CASE(extra_tags_are_merged_but_cannot_override_the_well_known_ke
     auto cfg = fixture.config();
     cfg.extra_tags["owner"] = "platform-team";
     cfg.extra_tags["kythira-node-id"] = "9999";
-    oci_instance_pool_quorum_manager<> mgr{cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{cfg};
 
     auto peer =
         std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt)).get();
@@ -291,7 +291,7 @@ BOOST_AUTO_TEST_CASE(extra_tags_are_merged_but_cannot_override_the_well_known_ke
 BOOST_AUTO_TEST_CASE(provisioning_into_an_unconfigured_availability_domain_is_rejected,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     MockFixture fixture;
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
 
     auto fut = mgr.provision_node("kIdk:PHX-AD-9", std::nullopt);
     BOOST_CHECK_THROW(std::move(fut).get(), std::invalid_argument);
@@ -317,7 +317,7 @@ BOOST_AUTO_TEST_CASE(a_provision_timeout_rolls_the_pool_size_back,
     auto cfg = fixture.config();
     cfg.provision_timeout = std::chrono::seconds{2};
     cfg.poll_interval = std::chrono::milliseconds{100};
-    oci_instance_pool_quorum_manager<> mgr{cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{cfg};
 
     auto fut = mgr.provision_node(fixture.server.availability_domain(), std::nullopt);
     BOOST_CHECK_THROW(std::move(fut).get(), std::runtime_error);
@@ -341,7 +341,7 @@ BOOST_AUTO_TEST_CASE(a_provision_timeout_detaches_the_fresh_instance_and_keeps_e
     auto cfg = fixture.config();
     cfg.provision_timeout = std::chrono::seconds{2};
     cfg.poll_interval = std::chrono::milliseconds{100};
-    oci_instance_pool_quorum_manager<> mgr{cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{cfg};
 
     std::string message;
     try {
@@ -376,7 +376,7 @@ BOOST_AUTO_TEST_CASE(a_provision_timeout_with_no_fresh_instance_restores_the_siz
     auto cfg = fixture.config();
     cfg.provision_timeout = std::chrono::seconds{2};
     cfg.poll_interval = std::chrono::milliseconds{100};
-    oci_instance_pool_quorum_manager<> mgr{cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{cfg};
 
     std::string message;
     try {
@@ -403,7 +403,7 @@ BOOST_AUTO_TEST_CASE(an_untagged_instance_that_predates_the_call_is_left_alone,
     auto cfg = fixture.config();
     cfg.provision_timeout = std::chrono::seconds{2};
     cfg.poll_interval = std::chrono::milliseconds{100};
-    oci_instance_pool_quorum_manager<> mgr{cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{cfg};
 
     BOOST_CHECK_THROW(
         (void)std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt))
@@ -429,7 +429,7 @@ BOOST_AUTO_TEST_CASE(oci_assess_detects_stopped_node,
     for (std::uint64_t id = 1; id <= 5; ++id) {
         ids.push_back(fixture.seed_node(id));
     }
-    oci_instance_pool_quorum_manager<> mgr{fixture.config(5)};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config(5)};
 
     auto healthy = std::move(mgr.assess_quorum(cluster_of(fixture, {1, 2, 3, 4, 5}))).get();
     BOOST_CHECK_EQUAL(healthy.status, quorum_status::healthy);
@@ -465,7 +465,7 @@ BOOST_AUTO_TEST_CASE(a_stale_heartbeat_makes_a_running_instance_unreachable,
 
     auto cfg = fixture.config(2);
     cfg.heartbeat_timeout = std::chrono::seconds{30};
-    oci_instance_pool_quorum_manager<> mgr{cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{cfg};
 
     auto health = std::move(mgr.assess_quorum(cluster_of(fixture, {1, 2}))).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 1U);
@@ -478,7 +478,7 @@ BOOST_AUTO_TEST_CASE(a_stale_heartbeat_makes_a_running_instance_unreachable,
     // returned false for every instance for some unrelated reason.
     auto legacy_cfg = fixture.config(2);
     legacy_cfg.heartbeat_timeout = std::chrono::seconds{0};
-    oci_instance_pool_quorum_manager<> legacy{legacy_cfg};
+    oci_instance_pool_quorum_manager<std::uint64_t> legacy{legacy_cfg};
     auto legacy_health = std::move(legacy.assess_quorum(cluster_of(fixture, {1, 2}))).get();
     BOOST_CHECK_EQUAL(legacy_health.live_node_count, 2U);
 }
@@ -491,7 +491,7 @@ BOOST_AUTO_TEST_CASE(oci_decommission_all_nodes_and_repeat_is_idempotent,
     for (std::uint64_t id = 1; id <= 3; ++id) {
         fixture.seed_node(id);
     }
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
     BOOST_REQUIRE_EQUAL(fixture.server.pool_size(), 3);
 
     for (std::uint64_t id = 1; id <= 3; ++id) {
@@ -520,7 +520,7 @@ BOOST_AUTO_TEST_CASE(decommissioning_an_already_terminating_instance_issues_no_d
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     MockFixture fixture;
     fixture.seed_node(1, "TERMINATING");
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
 
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{1})).get());
     BOOST_CHECK_EQUAL(
@@ -547,7 +547,7 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_a_dead_node_and_reports_pre_remedi
     const auto dead_id = fixture.seed_node(3);
     fixture.server.set_lifecycle_state(dead_id, "STOPPED");
 
-    oci_instance_pool_quorum_manager<> mgr{fixture.config(3)};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config(3)};
     auto pre = std::move(mgr.maintain_quorum(cluster_of(fixture, {1, 2, 3}))).get();
 
     BOOST_CHECK_EQUAL(pre.live_node_count, 2U);
@@ -580,7 +580,7 @@ BOOST_AUTO_TEST_CASE(an_assessed_id_no_longer_in_the_pool_is_not_reassigned,
     fixture.seed_node(1);
     fixture.seed_node(2);
 
-    oci_instance_pool_quorum_manager<> mgr{fixture.config(3)};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config(3)};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
 
     auto health = std::move(mgr.assess_quorum(cluster_of(fixture, {1, 2, 3}))).get();
@@ -599,7 +599,7 @@ BOOST_AUTO_TEST_CASE(an_assessed_id_no_longer_in_the_pool_is_not_reassigned,
 BOOST_AUTO_TEST_CASE(assessing_an_empty_cluster_makes_no_api_call,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     MockFixture fixture;
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
     const auto before = fixture.server.hits("GET /20160918/instancePools/{id}/instances");
 
     auto health =
@@ -623,7 +623,7 @@ BOOST_AUTO_TEST_CASE(unparseable_node_id_tags_do_not_steer_allocation,
         fixture.server.add_instance(
             {{"kythira-cluster", "mock-cluster"}, {"kythira-node-id", stray}});
     }
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 3U);
 }
 
@@ -636,7 +636,7 @@ BOOST_AUTO_TEST_CASE(another_clusters_pool_members_are_ignored,
     const auto foreign = fixture.server.add_instance(
         {{"kythira-cluster", "other-cluster"}, {"kythira-node-id", "2"}});
     fixture.server.add_instance({{"kythira-cluster", "other-cluster"}, {"kythira-node-id", "40"}});
-    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+    oci_instance_pool_quorum_manager<std::uint64_t> mgr{fixture.config()};
 
     // Allocation counts only this cluster's ids (and the floor).
     BOOST_CHECK_EQUAL(mgr.next_node_id(), 2U);
@@ -750,6 +750,10 @@ template<typename NodeId> void run_textual_lifecycle() {
 }
 
 }  // namespace
+
+// Composite mode is the default (task 4.4); numeric mode must be asked for.
+static_assert(std::same_as<kythira::oci_instance_pool_quorum_manager<>::node_id_type,
+                           kythira::oci_instance_node_id>);
 
 BOOST_AUTO_TEST_SUITE(oci_quorum_manager_mock_composite_ids)
 

@@ -107,7 +107,7 @@ struct RealOciFixture : signal_cleanup_target {
     /// OCID, before anything else can throw, so teardown and the signal path
     /// both see them.
     std::vector<std::string> direct_instances;
-    std::optional<oci_instance_pool_quorum_manager<>> manager;
+    std::optional<oci_instance_pool_quorum_manager<std::uint64_t>> manager;
     bool usable{false};
 
     RealOciFixture() {
@@ -446,7 +446,7 @@ BOOST_AUTO_TEST_CASE(provision_assess_decommission,
         // structurally could not check.
         auto beat_cfg = manager_cfg;
         beat_cfg.heartbeat_timeout = std::chrono::seconds{60};
-        kythira::oci_instance_pool_quorum_manager<> beat_manager{beat_cfg};
+        kythira::oci_instance_pool_quorum_manager<std::uint64_t> beat_manager{beat_cfg};
         auto beat_health = std::move(beat_manager.assess_quorum(cluster)).get();
         BOOST_CHECK_EQUAL(beat_health.live_node_count, 1U);
         BOOST_CHECK_MESSAGE(beat_health.unreachable_nodes.empty(),

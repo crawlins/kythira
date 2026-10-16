@@ -367,7 +367,7 @@ auto base_compute_config() -> gcp_compute_quorum_manager_config<std::string> {
 /// substituted zone changes the node's group membership.
 class escalating_gce_manager {
 public:
-    using manager_type = gcp_compute_quorum_manager<>;
+    using manager_type = gcp_compute_quorum_manager<std::uint64_t>;
 
     struct placement {
         peer_info<std::uint64_t, std::string> peer;
@@ -782,7 +782,7 @@ BOOST_AUTO_TEST_CASE(stopped_instance_marked_unreachable) {
     auto cfg = base_compute_config();
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
-    gcp_compute_quorum_manager<> mgr{cfg};
+    gcp_compute_quorum_manager<std::uint64_t> mgr{cfg};
     case_cost_recorder cost;
 
     auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
@@ -793,8 +793,8 @@ BOOST_AUTO_TEST_CASE(stopped_instance_marked_unreachable) {
         google::cloud::MakeGoogleDefaultCredentials());
     google::cloud::compute_instances_v1::InstancesClient client(
         google::cloud::compute_instances_v1::MakeInstancesConnectionRest(opts));
-    const std::string name =
-        gcp_compute_quorum_manager<>::node_id_to_instance_name(cfg.cluster_name, peer.node_id);
+    const std::string name = gcp_compute_quorum_manager<std::uint64_t>::node_id_to_instance_name(
+        cfg.cluster_name, peer.node_id);
     client.Stop(cfg.gcp.project_id, zone, name).get();
 
     std::vector<node_placement<std::uint64_t, std::string>> cluster{
@@ -816,7 +816,7 @@ BOOST_AUTO_TEST_CASE(decommission_idempotent) {
     auto cfg = base_compute_config();
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
-    gcp_compute_quorum_manager<> mgr{cfg};
+    gcp_compute_quorum_manager<std::uint64_t> mgr{cfg};
     // A node that was never provisioned decommissions to a resolved future.
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{123456789})).get());
 }
@@ -826,13 +826,13 @@ BOOST_AUTO_TEST_CASE(spot_provision_and_decommission) {
     cfg.spot = true;
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
-    gcp_compute_quorum_manager<> mgr{cfg};
+    gcp_compute_quorum_manager<std::uint64_t> mgr{cfg};
     case_cost_recorder cost;
 
     auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
     const auto billed = cost.add_instance(cfg.machine_type, zone, cfg.spot);
-    const std::string name =
-        gcp_compute_quorum_manager<>::node_id_to_instance_name(cfg.cluster_name, peer.node_id);
+    const std::string name = gcp_compute_quorum_manager<std::uint64_t>::node_id_to_instance_name(
+        cfg.cluster_name, peer.node_id);
 
     // Report *why* rather than "unexpected exception". BOOST_CHECK_NO_THROW,
     // which this replaces, discards the message — and when this case really did
@@ -879,7 +879,7 @@ BOOST_AUTO_TEST_CASE(provision_timeout_cleanup) {
     cfg.provision_timeout = std::chrono::seconds(0);
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
-    gcp_compute_quorum_manager<> mgr{cfg};
+    gcp_compute_quorum_manager<std::uint64_t> mgr{cfg};
     // This case does create a real instance before timing out — briefly, since
     // `delete_best_effort` removes it — so it bills, and reporting a near-zero
     // line is more informative than omitting it.
@@ -926,7 +926,7 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_stopped_node) {
     cfg.cluster_name = "kythira-mq" + std::to_string(::getpid());
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 3});
-    gcp_compute_quorum_manager<> mgr{cfg};
+    gcp_compute_quorum_manager<std::uint64_t> mgr{cfg};
     case_cost_recorder cost;
 
     std::vector<node_placement<std::uint64_t, std::string>> cluster;
@@ -942,7 +942,8 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_stopped_node) {
     auto client = instances_client();
     client
         .Stop(cfg.gcp.project_id, zone,
-              gcp_compute_quorum_manager<>::node_id_to_instance_name(cfg.cluster_name, lost))
+              gcp_compute_quorum_manager<std::uint64_t>::node_id_to_instance_name(cfg.cluster_name,
+                                                                                  lost))
         .get();
     bool unreachable = false;
     for (int i = 0; i < 30 && !unreachable; ++i) {
@@ -965,8 +966,8 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_replaces_stopped_node) {
         after.clear();
         for (const auto& name :
              cluster_instance_names(cfg.gcp.project_id, zone, cfg.cluster_name)) {
-            if (auto nid = gcp_compute_quorum_manager<>::instance_name_to_node_id(cfg.cluster_name,
-                                                                                  name)) {
+            if (auto nid = gcp_compute_quorum_manager<std::uint64_t>::instance_name_to_node_id(
+                    cfg.cluster_name, name)) {
                 after.push_back({.node_id = *nid, .group_id = zone});
             }
         }
@@ -1064,7 +1065,7 @@ BOOST_AUTO_TEST_CASE(mig_provision_increments_target_size) {
         BOOST_TEST_MESSAGE("GCP_TEST_MIG_A unset — skipping MIG provision test");
         return;
     }
-    gcp_mig_quorum_manager<> mgr{base_mig_config()};
+    gcp_mig_quorum_manager<std::uint64_t> mgr{base_mig_config()};
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     // The MIG's instance template owns the machine type, so — unlike the
     // Compute cases — this suite cannot know it without reading the template.
@@ -1086,7 +1087,7 @@ BOOST_AUTO_TEST_CASE(mig_assess_detects_non_running_instance) {
         BOOST_TEST_MESSAGE("GCP_TEST_MIG_A unset — skipping");
         return;
     }
-    gcp_mig_quorum_manager<> mgr{base_mig_config()};
+    gcp_mig_quorum_manager<std::uint64_t> mgr{base_mig_config()};
     // A node id that the MIG never labelled is reported unreachable.
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     std::vector<node_placement<std::uint64_t, std::string>> cluster{
@@ -1100,7 +1101,7 @@ BOOST_AUTO_TEST_CASE(mig_decommission_decrements_target_size) {
         BOOST_TEST_MESSAGE("GCP_TEST_MIG_A unset — skipping");
         return;
     }
-    gcp_mig_quorum_manager<> mgr{base_mig_config()};
+    gcp_mig_quorum_manager<std::uint64_t> mgr{base_mig_config()};
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     case_cost_recorder cost;  // see mig_provision_increments_target_size on pricing
     auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
@@ -1114,7 +1115,7 @@ BOOST_AUTO_TEST_CASE(mig_decommission_idempotent) {
         BOOST_TEST_MESSAGE("GCP_TEST_MIG_A unset — skipping");
         return;
     }
-    gcp_mig_quorum_manager<> mgr{base_mig_config()};
+    gcp_mig_quorum_manager<std::uint64_t> mgr{base_mig_config()};
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(std::uint64_t{888888888})).get());
 }
 
@@ -1134,7 +1135,7 @@ BOOST_AUTO_TEST_CASE(mig_provision_timeout_removes_only_the_fresh_instance) {
     const auto cfg = base_mig_config();
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     case_cost_recorder cost;  // see mig_provision_increments_target_size on pricing
-    gcp_mig_quorum_manager<> voter_mgr{cfg};
+    gcp_mig_quorum_manager<std::uint64_t> voter_mgr{cfg};
     auto voter = std::move(voter_mgr.provision_node(zone, std::nullopt)).get();
     const auto voter_billed = cost.add_instance("mig-template-default", zone, false);
     const auto pre = read_mig(cfg.gcp.project_id, zone, mig);
@@ -1149,7 +1150,7 @@ BOOST_AUTO_TEST_CASE(mig_provision_timeout_removes_only_the_fresh_instance) {
     auto short_cfg = cfg;
     short_cfg.provision_timeout = std::chrono::seconds(5);
     short_cfg.poll_interval = std::chrono::milliseconds(1000);
-    gcp_mig_quorum_manager<> mgr{short_cfg};
+    gcp_mig_quorum_manager<std::uint64_t> mgr{short_cfg};
     const auto fresh_billed = cost.add_instance("mig-template-default", zone, false);
     std::string error;
     try {
@@ -1204,7 +1205,7 @@ BOOST_AUTO_TEST_CASE(mig_construction_rejects_autohealing_policy) {
     cfg.cluster_name = "kythira-it";
     cfg.node_port = 7000;
     cfg.mig_by_group[env_or("GCP_REGION", "us-central1") + "-a"] = mig;
-    BOOST_CHECK_THROW((gcp_mig_quorum_manager<>{cfg}), std::invalid_argument);
+    BOOST_CHECK_THROW((gcp_mig_quorum_manager<std::uint64_t>{cfg}), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -32,6 +32,11 @@ independent `#ifdef KYTHIRA_HAS_GCP_PRIVATECA` (mirroring how
 
 ## The core design decision: node identity
 
+> **October 2026:** both GCP managers now default to composite node ids
+> (`gcp_instance_node_id`, the instance's own name in its project and
+> zone); see `docker/gcp_quorum_manager/README.md`. What follows describes
+> numeric mode, which `<std::uint64_t>` still selects.
+
 This is the one place the GCP design cannot simply mirror the AWS design, and it
 shapes almost everything else.
 

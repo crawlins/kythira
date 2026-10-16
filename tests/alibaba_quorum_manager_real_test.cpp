@@ -42,14 +42,14 @@ struct RealEssFixture {
         alibaba_real::skip_unless_reachable(cfg);
     }
 
-    [[nodiscard]] auto make_manager() const -> alibaba_ess_quorum_manager<> {
+    [[nodiscard]] auto make_manager() const -> alibaba_ess_quorum_manager<std::uint64_t> {
         alibaba_ess_quorum_manager_config mc;
         mc.alibaba = cfg.client_config();
         mc.cluster_name = "kythira-real-test";
         mc.scaling_group_id = cfg.scaling_group_id;
         mc.provision_timeout = 600s;  // a real ECS launch, not a mock
         mc.poll_interval = 10s;
-        return alibaba_ess_quorum_manager<>{mc};
+        return alibaba_ess_quorum_manager<std::uint64_t>{mc};
     }
 };
 

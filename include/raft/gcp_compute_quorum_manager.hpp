@@ -181,9 +181,10 @@ template<typename GroupId = std::string> struct gcp_compute_quorum_manager_confi
 /// @brief `quorum_manager` implementation backed by direct Compute Engine
 ///        instance management (`instances.insert`/`.list`/`.get`/`.delete`).
 ///
-/// @tparam NodeId  Node identifier type; defaults to `std::uint64_t`.
+/// @tparam NodeId  Node identifier type; defaults to `gcp_instance_node_id`. Write
+///                 `std::uint64_t` for numeric mode.
 /// @tparam Address Network address type; defaults to `std::string`.
-template<typename NodeId = std::uint64_t, typename Address = std::string>
+template<typename NodeId = gcp_instance_node_id, typename Address = std::string>
 requires node_id<NodeId>
 class gcp_compute_quorum_manager {
     static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||

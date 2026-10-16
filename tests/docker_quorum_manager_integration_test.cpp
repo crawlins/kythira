@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(provision_assess_decommission_round_trip, *boost::unit_test
         return;
     }
     DaemonFixture f;
-    docker_quorum_manager<> mgr(f.manager_config());
+    docker_quorum_manager<std::uint64_t> mgr(f.manager_config());
 
     // (b) three containers with the right names and labels
     std::vector<std::uint64_t> ids;

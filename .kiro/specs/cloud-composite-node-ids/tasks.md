@@ -59,13 +59,31 @@ the audit and `design.md` for the types and per-component changes.
     (`tests/aws_ec2_node_id_mock_test.cpp`, a local EC2/Auto Scaling fake)
   - _Requirements: 4.1-4.6, 11.1-11.5, 13.1_
 
-- [ ] 4. Other managers in composite mode
-  - [ ] 4.1 Alibaba ESS and OCI pool: id from the adopted instance
-  - [ ] 4.2 Azure VMSS and GCP MIG: id from the member name and scope
-  - [ ] 4.3 Azure VM, GCP Compute and Docker: generated names within
+- [x] 4. Other managers in composite mode
+  - [x] 4.1 Alibaba ESS and OCI pool: id from the adopted instance
+  - [x] 4.2 Azure VMSS and GCP MIG: id from the member name and scope
+  - [x] 4.3 Azure VM, GCP Compute and Docker: generated names within
     provider limits; `{NODE_ID}` substitution
-  - [ ] 4.4 Change each default `NodeId` (breaking)
-  - [ ] 4.5 Composite-mode case per manager in its mock or unit suite
+  - [x] 4.4 Change each default `NodeId` (breaking)
+  - [x] 4.5 Composite-mode case per manager in its mock or unit suite
+  - Done October 16, 2026. As built: the mode switch is
+    `node_id_traits<NodeId>::is_textual`, and numeric mode is unchanged.
+    Every manager still checks the cluster tag or label before counting or
+    removing a member, so an id cannot reach another cluster's instance in a
+    shared group. Out-of-scope or unparseable ids read unreachable in
+    `assess_quorum` and are refused by `decommission_node`
+    (`std::invalid_argument`). Generated names come from
+    `include/raft/generated_node_name.hpp`: the cluster part is cut to fit,
+    never the suffix; collisions get a fresh suffix. Deviations: the OCI
+    pool's scope is the region key in the pool's OCID, not `oci.region`
+    (the two spell the region differently); GCP labels cannot hold `:` or
+    `/`, so both GCP managers' `kythira-node-id` label holds the instance
+    name, and Compute also writes the full text to the instance metadata
+    item `kythira-node-id`; Docker gains `{NODE_ID}` substitution in
+    `extra_env`/`extra_args`, textual modes only. `std::string` now holds
+    canonical text in every manager (R5.1), so R7.7's decimal-text string
+    mode is gone: the OCI and Docker tests for it were replaced. In-tree
+    code that relied on the defaults now names `<std::uint64_t>`.
   - _Requirements: 5.1-5.5, 6.4, 14.3_
 
 - [x] 5. Raft core and serializers

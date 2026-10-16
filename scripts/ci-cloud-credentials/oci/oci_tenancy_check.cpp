@@ -223,7 +223,7 @@ auto main() -> int {
         qcfg.poll_interval = std::chrono::milliseconds{10000};
 
         std::uint64_t node = 0;
-        kythira::oci_instance_pool_quorum_manager<> mgr{qcfg};
+        kythira::oci_instance_pool_quorum_manager<std::uint64_t> mgr{qcfg};
         const std::string ad = mgr.availability_domains().front();
         std::cout << "  availability domain: " << ad << "\n" << std::flush;
         try {
