@@ -19,16 +19,26 @@
 ///
 /// `from_proto(to_proto(value)) == value` for every field, including absent
 /// `std::optional`s and empty `entries()` (Property 2).
+///
+/// Messages that name a node convert for any `NodeId`
+/// (.kiro/specs/cloud-composite-node-ids/, Requirement 9.5): `to_proto`
+/// deduces it from the struct, and `from_proto<NodeId>` decodes into it,
+/// defaulting to `std::uint64_t`. See "Node ids" below for the dual-field
+/// wire rule that keeps numeric peers of either vintage interoperating.
 
+#include <raft/composite_node_id.hpp>
 #include <raft/types.hpp>
 
 #include "raft.pb.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace kythira {
@@ -145,24 +155,109 @@ inline auto from_proto(const raft::v1::LogEntry& proto) -> log_entry<> {
                        ._type = entry_type_from_proto(proto.type())};
 }
 
+// ── Node ids (.kiro/specs/cloud-composite-node-ids/, Requirement 9.5) ───────
+//
+// Every message that names a node carries the id twice: the original uint64
+// field and a NodeIdValue at a new tag. A numeric id fills both, so a peer
+// built before the NodeIdValue fields existed still reads the uint64 it
+// always read. A textual id fills only the NodeIdValue. A receiver prefers
+// the NodeIdValue and falls back to the uint64 when it is absent, so it also
+// reads messages from such a peer. A message whose id cannot be represented
+// as the receiver's NodeId fails closed (INVALID_ARGUMENT on the server).
+
+namespace grpc_detail {
+
+/// @brief The NodeIdValue form of @p id: `numeric` for an unsigned id, the
+/// canonical text (`node_id_traits<NodeId>::to_text`) for anything else.
+template<typename NodeId> auto node_id_to_proto(const NodeId& id) -> raft::v1::NodeIdValue {
+    raft::v1::NodeIdValue value;
+    if constexpr (node_id_traits<NodeId>::is_textual) {
+        value.set_text(node_id_traits<NodeId>::to_text(id));
+    } else {
+        value.set_numeric(static_cast<std::uint64_t>(id));
+    }
+    return value;
+}
+
+/// @brief The value for the legacy uint64 field: the id itself when numeric,
+/// 0 (absent on the wire) when textual.
+template<typename NodeId> auto legacy_node_id(const NodeId& id) -> std::uint64_t {
+    if constexpr (node_id_traits<NodeId>::is_textual) {
+        return 0;
+    } else {
+        return static_cast<std::uint64_t>(id);
+    }
+}
+
+template<typename NodeId>
+auto numeric_node_id_from_wire(std::uint64_t value, const char* field) -> NodeId {
+    if (value > static_cast<std::uint64_t>(std::numeric_limits<NodeId>::max())) {
+        throw grpc_message_conversion_error(std::string(field) +
+                                            ": node id exceeds the node id type's range");
+    }
+    return static_cast<NodeId>(value);
+}
+
+/// @brief Decode a node id: the NodeIdValue when @p has_value, otherwise the
+/// legacy uint64. Throws `grpc_message_conversion_error` when the populated
+/// case does not suit `NodeId` (text for a numeric id, a number for a textual
+/// one), when the text is not a valid `NodeId`, or when a textual `NodeId`
+/// arrives with no NodeIdValue at all.
+template<typename NodeId>
+auto node_id_from_proto(bool has_value, const raft::v1::NodeIdValue& value, std::uint64_t legacy,
+                        const char* field) -> NodeId {
+    if constexpr (node_id_traits<NodeId>::is_textual) {
+        if (!has_value) {
+            throw grpc_message_conversion_error(std::string(field) +
+                                                ": no NodeIdValue for a textual node id");
+        }
+        if (value.value_case() != raft::v1::NodeIdValue::kText) {
+            throw grpc_message_conversion_error(std::string(field) +
+                                                ": expected a textual node id, got a number");
+        }
+        auto id = node_id_traits<NodeId>::from_text(value.text());
+        if (!id) {
+            throw grpc_message_conversion_error(std::string(field) + ": invalid node id \"" +
+                                                value.text() + "\"");
+        }
+        return std::move(*id);
+    } else {
+        if (!has_value) {
+            return numeric_node_id_from_wire<NodeId>(legacy, field);
+        }
+        if (value.value_case() != raft::v1::NodeIdValue::kNumeric) {
+            throw grpc_message_conversion_error(std::string(field) +
+                                                ": expected a numeric node id, got text");
+        }
+        return numeric_node_id_from_wire<NodeId>(value.numeric(), field);
+    }
+}
+
+}  // namespace grpc_detail
+
 // ── RequestVote ─────────────────────────────────────────────────────────────
 
-inline auto to_proto(const request_vote_request<>& req) -> raft::v1::RequestVoteRequest {
+template<typename NodeId>
+auto to_proto(const request_vote_request<NodeId>& req) -> raft::v1::RequestVoteRequest {
     raft::v1::RequestVoteRequest proto;
     proto.set_term(req.term());
-    proto.set_candidate_id(req.candidate_id());
+    proto.set_candidate_id(grpc_detail::legacy_node_id(req.candidate_id()));
+    *proto.mutable_candidate() = grpc_detail::node_id_to_proto(req.candidate_id());
     proto.set_last_log_index(req.last_log_index());
     proto.set_last_log_term(req.last_log_term());
     proto.set_group_id(req.group_id());
     return proto;
 }
 
-inline auto from_proto(const raft::v1::RequestVoteRequest& proto) -> request_vote_request<> {
-    return request_vote_request<>{._term = proto.term(),
-                                  ._candidate_id = proto.candidate_id(),
-                                  ._last_log_index = proto.last_log_index(),
-                                  ._last_log_term = proto.last_log_term(),
-                                  ._group_id = proto.group_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::RequestVoteRequest& proto) -> request_vote_request<NodeId> {
+    return request_vote_request<NodeId>{
+        ._term = proto.term(),
+        ._candidate_id = grpc_detail::node_id_from_proto<NodeId>(
+            proto.has_candidate(), proto.candidate(), proto.candidate_id(), "candidate_id"),
+        ._last_log_index = proto.last_log_index(),
+        ._last_log_term = proto.last_log_term(),
+        ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const request_vote_response<>& resp) -> raft::v1::RequestVoteResponse {
@@ -181,22 +276,27 @@ inline auto from_proto(const raft::v1::RequestVoteResponse& proto) -> request_vo
 
 // ── RequestPreVote (same shape as RequestVote, Requirement 16) ───────────────
 
-inline auto to_proto(const request_pre_vote_request<>& req) -> raft::v1::RequestPreVoteRequest {
+template<typename NodeId>
+auto to_proto(const request_pre_vote_request<NodeId>& req) -> raft::v1::RequestPreVoteRequest {
     raft::v1::RequestPreVoteRequest proto;
     proto.set_term(req.term());
-    proto.set_candidate_id(req.candidate_id());
+    proto.set_candidate_id(grpc_detail::legacy_node_id(req.candidate_id()));
+    *proto.mutable_candidate() = grpc_detail::node_id_to_proto(req.candidate_id());
     proto.set_last_log_index(req.last_log_index());
     proto.set_last_log_term(req.last_log_term());
     proto.set_group_id(req.group_id());
     return proto;
 }
 
-inline auto from_proto(const raft::v1::RequestPreVoteRequest& proto) -> request_pre_vote_request<> {
-    return request_pre_vote_request<>{._term = proto.term(),
-                                      ._candidate_id = proto.candidate_id(),
-                                      ._last_log_index = proto.last_log_index(),
-                                      ._last_log_term = proto.last_log_term(),
-                                      ._group_id = proto.group_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::RequestPreVoteRequest& proto) -> request_pre_vote_request<NodeId> {
+    return request_pre_vote_request<NodeId>{
+        ._term = proto.term(),
+        ._candidate_id = grpc_detail::node_id_from_proto<NodeId>(
+            proto.has_candidate(), proto.candidate(), proto.candidate_id(), "candidate_id"),
+        ._last_log_index = proto.last_log_index(),
+        ._last_log_term = proto.last_log_term(),
+        ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const request_pre_vote_response<>& resp) -> raft::v1::RequestPreVoteResponse {
@@ -216,20 +316,25 @@ inline auto from_proto(const raft::v1::RequestPreVoteResponse& proto)
 
 // ── TimeoutNow (leadership transfer, Ongaro's dissertation §3.10) ────────────
 
-inline auto to_proto(const timeout_now_request<>& req) -> raft::v1::TimeoutNowRequest {
+template<typename NodeId>
+auto to_proto(const timeout_now_request<NodeId>& req) -> raft::v1::TimeoutNowRequest {
     raft::v1::TimeoutNowRequest proto;
     proto.set_term(req.term());
-    proto.set_leader_id(req.leader_id());
+    proto.set_leader_id(grpc_detail::legacy_node_id(req.leader_id()));
+    *proto.mutable_leader() = grpc_detail::node_id_to_proto(req.leader_id());
     proto.set_last_log_index(req.last_log_index());
     proto.set_group_id(req.group_id());
     return proto;
 }
 
-inline auto from_proto(const raft::v1::TimeoutNowRequest& proto) -> timeout_now_request<> {
-    return timeout_now_request<>{._term = proto.term(),
-                                 ._leader_id = proto.leader_id(),
-                                 ._last_log_index = proto.last_log_index(),
-                                 ._group_id = proto.group_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::TimeoutNowRequest& proto) -> timeout_now_request<NodeId> {
+    return timeout_now_request<NodeId>{
+        ._term = proto.term(),
+        ._leader_id = grpc_detail::node_id_from_proto<NodeId>(proto.has_leader(), proto.leader(),
+                                                              proto.leader_id(), "leader_id"),
+        ._last_log_index = proto.last_log_index(),
+        ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const timeout_now_response<>& resp) -> raft::v1::TimeoutNowResponse {
@@ -247,10 +352,12 @@ inline auto from_proto(const raft::v1::TimeoutNowResponse& proto) -> timeout_now
 
 // ── AppendEntries ───────────────────────────────────────────────────────────
 
-inline auto to_proto(const append_entries_request<>& req) -> raft::v1::AppendEntriesRequest {
+template<typename NodeId>
+auto to_proto(const append_entries_request<NodeId>& req) -> raft::v1::AppendEntriesRequest {
     raft::v1::AppendEntriesRequest proto;
     proto.set_term(req.term());
-    proto.set_leader_id(req.leader_id());
+    proto.set_leader_id(grpc_detail::legacy_node_id(req.leader_id()));
+    *proto.mutable_leader() = grpc_detail::node_id_to_proto(req.leader_id());
     proto.set_prev_log_index(req.prev_log_index());
     proto.set_prev_log_term(req.prev_log_term());
     proto.set_leader_commit(req.leader_commit());
@@ -261,14 +368,17 @@ inline auto to_proto(const append_entries_request<>& req) -> raft::v1::AppendEnt
     return proto;
 }
 
-inline auto from_proto(const raft::v1::AppendEntriesRequest& proto) -> append_entries_request<> {
-    append_entries_request<> req{._term = proto.term(),
-                                 ._leader_id = proto.leader_id(),
-                                 ._prev_log_index = proto.prev_log_index(),
-                                 ._prev_log_term = proto.prev_log_term(),
-                                 ._entries = {},
-                                 ._leader_commit = proto.leader_commit(),
-                                 ._group_id = proto.group_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::AppendEntriesRequest& proto) -> append_entries_request<NodeId> {
+    append_entries_request<NodeId> req{
+        ._term = proto.term(),
+        ._leader_id = grpc_detail::node_id_from_proto<NodeId>(proto.has_leader(), proto.leader(),
+                                                              proto.leader_id(), "leader_id"),
+        ._prev_log_index = proto.prev_log_index(),
+        ._prev_log_term = proto.prev_log_term(),
+        ._entries = {},
+        ._leader_commit = proto.leader_commit(),
+        ._group_id = proto.group_id()};
     req._entries.reserve(static_cast<std::size_t>(proto.entries_size()));
     for (const auto& entry : proto.entries()) {
         req._entries.push_back(from_proto(entry));
@@ -309,10 +419,12 @@ inline auto from_proto(const raft::v1::AppendEntriesResponse& proto) -> append_e
 
 // ── InstallSnapshot ─────────────────────────────────────────────────────────
 
-inline auto to_proto(const install_snapshot_request<>& req) -> raft::v1::InstallSnapshotRequest {
+template<typename NodeId>
+auto to_proto(const install_snapshot_request<NodeId>& req) -> raft::v1::InstallSnapshotRequest {
     raft::v1::InstallSnapshotRequest proto;
     proto.set_term(req.term());
-    proto.set_leader_id(req.leader_id());
+    proto.set_leader_id(grpc_detail::legacy_node_id(req.leader_id()));
+    *proto.mutable_leader() = grpc_detail::node_id_to_proto(req.leader_id());
     proto.set_last_included_index(req.last_included_index());
     proto.set_last_included_term(req.last_included_term());
     proto.set_offset(static_cast<std::uint64_t>(req.offset()));
@@ -322,16 +434,18 @@ inline auto to_proto(const install_snapshot_request<>& req) -> raft::v1::Install
     return proto;
 }
 
-inline auto from_proto(const raft::v1::InstallSnapshotRequest& proto)
-    -> install_snapshot_request<> {
-    return install_snapshot_request<>{._term = proto.term(),
-                                      ._leader_id = proto.leader_id(),
-                                      ._last_included_index = proto.last_included_index(),
-                                      ._last_included_term = proto.last_included_term(),
-                                      ._offset = grpc_detail::uint64_to_size(proto.offset()),
-                                      ._data = grpc_detail::bytes_from_proto(proto.data()),
-                                      ._done = proto.done(),
-                                      ._group_id = proto.group_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::InstallSnapshotRequest& proto) -> install_snapshot_request<NodeId> {
+    return install_snapshot_request<NodeId>{
+        ._term = proto.term(),
+        ._leader_id = grpc_detail::node_id_from_proto<NodeId>(proto.has_leader(), proto.leader(),
+                                                              proto.leader_id(), "leader_id"),
+        ._last_included_index = proto.last_included_index(),
+        ._last_included_term = proto.last_included_term(),
+        ._offset = grpc_detail::uint64_to_size(proto.offset()),
+        ._data = grpc_detail::bytes_from_proto(proto.data()),
+        ._done = proto.done(),
+        ._group_id = proto.group_id()};
 }
 
 inline auto to_proto(const install_snapshot_response<>& resp) -> raft::v1::InstallSnapshotResponse {
@@ -348,33 +462,44 @@ inline auto from_proto(const raft::v1::InstallSnapshotResponse& proto)
 
 // ── PeerInfo / peer_info redirect hint (Requirement 15.4) ────────────────────
 
-inline auto to_proto(const peer_info<std::uint64_t, std::string>& peer) -> raft::v1::PeerInfo {
+template<typename NodeId>
+auto to_proto(const peer_info<NodeId, std::string>& peer) -> raft::v1::PeerInfo {
     raft::v1::PeerInfo proto;
-    proto.set_node_id(peer.node_id);
+    proto.set_node_id(grpc_detail::legacy_node_id(peer.node_id));
+    *proto.mutable_node() = grpc_detail::node_id_to_proto(peer.node_id);
     proto.set_address(peer.address);
     return proto;
 }
 
-inline auto from_proto(const raft::v1::PeerInfo& proto) -> peer_info<std::uint64_t, std::string> {
-    return peer_info<std::uint64_t, std::string>{.node_id = proto.node_id(),
-                                                 .address = proto.address()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::PeerInfo& proto) -> peer_info<NodeId, std::string> {
+    return peer_info<NodeId, std::string>{
+        .node_id = grpc_detail::node_id_from_proto<NodeId>(proto.has_node(), proto.node(),
+                                                           proto.node_id(), "node_id"),
+        .address = proto.address()};
 }
 
 // ── ClusterJoin ─────────────────────────────────────────────────────────────
 
-inline auto to_proto(const cluster_join_request<>& req) -> raft::v1::ClusterJoinRequest {
+template<typename NodeId>
+auto to_proto(const cluster_join_request<NodeId>& req) -> raft::v1::ClusterJoinRequest {
     raft::v1::ClusterJoinRequest proto;
-    proto.set_node_id(req.joining_node_id());
+    proto.set_node_id(grpc_detail::legacy_node_id(req.joining_node_id()));
+    *proto.mutable_node() = grpc_detail::node_id_to_proto(req.joining_node_id());
     proto.set_contact_address(req.joining_address());
     return proto;
 }
 
-inline auto from_proto(const raft::v1::ClusterJoinRequest& proto) -> cluster_join_request<> {
-    return cluster_join_request<>{.node_id = proto.node_id(),
-                                  .contact_address = proto.contact_address()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::ClusterJoinRequest& proto) -> cluster_join_request<NodeId> {
+    return cluster_join_request<NodeId>{
+        .node_id = grpc_detail::node_id_from_proto<NodeId>(proto.has_node(), proto.node(),
+                                                           proto.node_id(), "node_id"),
+        .contact_address = proto.contact_address()};
 }
 
-inline auto to_proto(const cluster_join_response<>& resp) -> raft::v1::ClusterJoinResponse {
+template<typename NodeId>
+auto to_proto(const cluster_join_response<NodeId>& resp) -> raft::v1::ClusterJoinResponse {
     raft::v1::ClusterJoinResponse proto;
     proto.set_accepted(resp.is_accepted());
     if (resp.redirect_peer().has_value()) {
@@ -383,27 +508,34 @@ inline auto to_proto(const cluster_join_response<>& resp) -> raft::v1::ClusterJo
     return proto;
 }
 
-inline auto from_proto(const raft::v1::ClusterJoinResponse& proto) -> cluster_join_response<> {
-    cluster_join_response<> resp{.accepted = proto.accepted(), .redirect = std::nullopt};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::ClusterJoinResponse& proto) -> cluster_join_response<NodeId> {
+    cluster_join_response<NodeId> resp{.accepted = proto.accepted(), .redirect = std::nullopt};
     if (proto.has_redirect()) {
-        resp.redirect = from_proto(proto.redirect());
+        resp.redirect = from_proto<NodeId>(proto.redirect());
     }
     return resp;
 }
 
 // ── ClusterLeave ────────────────────────────────────────────────────────────
 
-inline auto to_proto(const cluster_leave_request<>& req) -> raft::v1::ClusterLeaveRequest {
+template<typename NodeId>
+auto to_proto(const cluster_leave_request<NodeId>& req) -> raft::v1::ClusterLeaveRequest {
     raft::v1::ClusterLeaveRequest proto;
-    proto.set_node_id(req.leaving_node_id());
+    proto.set_node_id(grpc_detail::legacy_node_id(req.leaving_node_id()));
+    *proto.mutable_node() = grpc_detail::node_id_to_proto(req.leaving_node_id());
     return proto;
 }
 
-inline auto from_proto(const raft::v1::ClusterLeaveRequest& proto) -> cluster_leave_request<> {
-    return cluster_leave_request<>{.node_id = proto.node_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::ClusterLeaveRequest& proto) -> cluster_leave_request<NodeId> {
+    return cluster_leave_request<NodeId>{
+        .node_id = grpc_detail::node_id_from_proto<NodeId>(proto.has_node(), proto.node(),
+                                                           proto.node_id(), "node_id")};
 }
 
-inline auto to_proto(const cluster_leave_response<>& resp) -> raft::v1::ClusterLeaveResponse {
+template<typename NodeId>
+auto to_proto(const cluster_leave_response<NodeId>& resp) -> raft::v1::ClusterLeaveResponse {
     raft::v1::ClusterLeaveResponse proto;
     proto.set_accepted(resp.is_accepted());
     if (resp.redirect_peer().has_value()) {
@@ -412,37 +544,44 @@ inline auto to_proto(const cluster_leave_response<>& resp) -> raft::v1::ClusterL
     return proto;
 }
 
-inline auto from_proto(const raft::v1::ClusterLeaveResponse& proto) -> cluster_leave_response<> {
-    cluster_leave_response<> resp{.accepted = proto.accepted(), .redirect = std::nullopt};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::ClusterLeaveResponse& proto) -> cluster_leave_response<NodeId> {
+    cluster_leave_response<NodeId> resp{.accepted = proto.accepted(), .redirect = std::nullopt};
     if (proto.has_redirect()) {
-        resp.redirect = from_proto(proto.redirect());
+        resp.redirect = from_proto<NodeId>(proto.redirect());
     }
     return resp;
 }
 
 // ── FetchLogEntries (Requirement 17.3) ──────────────────────────────────────
 
-inline auto to_proto(const fetch_log_entries_request<>& req) -> raft::v1::FetchLogEntriesRequest {
+template<typename NodeId>
+auto to_proto(const fetch_log_entries_request<NodeId>& req) -> raft::v1::FetchLogEntriesRequest {
     raft::v1::FetchLogEntriesRequest proto;
-    proto.set_requester_id(req.requester_id());
+    proto.set_requester_id(grpc_detail::legacy_node_id(req.requester_id()));
+    *proto.mutable_requester() = grpc_detail::node_id_to_proto(req.requester_id());
     proto.set_from_index(req.from_index());
     proto.set_to_index(req.to_index());
     proto.set_group_id(req.group_id());
     return proto;
 }
 
-inline auto from_proto(const raft::v1::FetchLogEntriesRequest& proto)
-    -> fetch_log_entries_request<> {
-    return fetch_log_entries_request<>{._requester_id = proto.requester_id(),
-                                       ._from_index = proto.from_index(),
-                                       ._to_index = proto.to_index(),
-                                       ._group_id = proto.group_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::FetchLogEntriesRequest& proto)
+    -> fetch_log_entries_request<NodeId> {
+    return fetch_log_entries_request<NodeId>{
+        ._requester_id = grpc_detail::node_id_from_proto<NodeId>(
+            proto.has_requester(), proto.requester(), proto.requester_id(), "requester_id"),
+        ._from_index = proto.from_index(),
+        ._to_index = proto.to_index(),
+        ._group_id = proto.group_id()};
 }
 
-inline auto to_proto(const fetch_log_entries_response<>& resp)
-    -> raft::v1::FetchLogEntriesResponse {
+template<typename NodeId>
+auto to_proto(const fetch_log_entries_response<NodeId>& resp) -> raft::v1::FetchLogEntriesResponse {
     raft::v1::FetchLogEntriesResponse proto;
-    proto.set_responder_id(resp.responder_id());
+    proto.set_responder_id(grpc_detail::legacy_node_id(resp.responder_id()));
+    *proto.mutable_responder() = grpc_detail::node_id_to_proto(resp.responder_id());
     proto.set_available(resp.available());
     proto.set_prev_log_term(resp.prev_log_term());
     proto.set_group_id(resp.group_id());
@@ -452,18 +591,32 @@ inline auto to_proto(const fetch_log_entries_response<>& resp)
     return proto;
 }
 
-inline auto from_proto(const raft::v1::FetchLogEntriesResponse& proto)
-    -> fetch_log_entries_response<> {
-    fetch_log_entries_response<> resp{._responder_id = proto.responder_id(),
-                                      ._available = proto.available(),
-                                      ._prev_log_term = proto.prev_log_term(),
-                                      ._entries = {},
-                                      ._group_id = proto.group_id()};
+template<typename NodeId = std::uint64_t>
+auto from_proto(const raft::v1::FetchLogEntriesResponse& proto)
+    -> fetch_log_entries_response<NodeId> {
+    fetch_log_entries_response<NodeId> resp{
+        ._responder_id = grpc_detail::node_id_from_proto<NodeId>(
+            proto.has_responder(), proto.responder(), proto.responder_id(), "responder_id"),
+        ._available = proto.available(),
+        ._prev_log_term = proto.prev_log_term(),
+        ._entries = {},
+        ._group_id = proto.group_id()};
     resp._entries.reserve(static_cast<std::size_t>(proto.entries_size()));
     for (const auto& entry : proto.entries()) {
         resp._entries.push_back(from_proto(entry));
     }
     return resp;
+}
+
+/// @brief `from_proto` for a transport instantiated on `NodeId`: picks the
+/// `from_proto<NodeId>` overload for messages that name a node and the plain
+/// one for those that do not.
+template<typename NodeId, typename Proto> auto from_proto_for(const Proto& proto) {
+    if constexpr (requires { from_proto<NodeId>(proto); }) {
+        return from_proto<NodeId>(proto);
+    } else {
+        return from_proto(proto);
+    }
 }
 
 }  // namespace kythira

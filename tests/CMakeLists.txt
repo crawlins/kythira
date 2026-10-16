@@ -6335,6 +6335,22 @@ if(TARGET raft_grpc_transport)
     set_tests_properties(grpc_transport_conversion_property_test PROPERTIES
         LABELS "grpc;transport;property")
 
+    # Composite node ids over gRPC (cloud-composite-node-ids task 6.4): the
+    # dual uint64/NodeIdValue fields against a legacy schema rebuilt at run
+    # time (rolling upgrade), and std::string / aws_ec2_node_id clients and
+    # servers over loopback for every RPC.
+    add_executable(grpc_textual_node_id_test grpc_textual_node_id_test.cpp)
+    target_link_libraries(grpc_textual_node_id_test PRIVATE
+        kythira_test_pch raft_grpc_transport)
+    if(TARGET Folly::folly)
+        target_link_libraries(grpc_textual_node_id_test PRIVATE Folly::folly)
+    endif()
+    target_precompile_headers(grpc_textual_node_id_test REUSE_FROM kythira_test_pch)
+    add_test(NAME grpc_textual_node_id_test COMMAND grpc_textual_node_id_test)
+    set_tests_properties(grpc_textual_node_id_test PROPERTIES
+        LABELS "grpc;transport;integration;composite_node_id"
+        TIMEOUT 120)
+
     # End-to-end integration: real client/server over loopback, insecure + mTLS.
     # Needs certificate_authority to mint short-lived test certificates rather
     # than checked-in fixtures (Requirement 19.6).

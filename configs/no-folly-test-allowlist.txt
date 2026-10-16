@@ -102,6 +102,7 @@ future_then_try_future_returning_callback_property_test uses Folly directly (`fo
 future_void_specialization_future_returning_callback_test uses Folly directly (`folly::Init`, `folly::CPUThreadPoolExecutor`, `folly::exception_wrapper`)
 generic_future_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 generic_future_transport_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
+grpc_textual_node_id_test raft_grpc_transport is gated on `TARGET Folly::folly` (root CMakeLists.txt): grpc_transport.hpp hardcodes kythira::Future
 grpc_tls_bridge_test raft_grpc_transport is gated on `TARGET Folly::folly` (root CMakeLists.txt): grpc_transport.hpp hardcodes kythira::Future
 grpc_tls_reload_integration_test raft_grpc_transport is gated on `TARGET Folly::folly` (root CMakeLists.txt): grpc_transport.hpp hardcodes kythira::Future
 grpc_transport_conversion_property_test raft_grpc_transport is gated on `TARGET Folly::folly` (root CMakeLists.txt): grpc_transport.hpp hardcodes kythira::Future
