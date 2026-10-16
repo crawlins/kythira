@@ -151,10 +151,20 @@ jobs:
         if: steps.buildcache.outputs.enabled == 'true'
         run: scripts/oci-build-cache/start-sccache.sh
 
+      # -DKYTHIRA_NODE_ID_KIND=numeric pins the cmd/ binaries to numeric node
+      # ids against the text default (see that block in CMakeLists.txt). The
+      # pin exists only because quorum-healing-tests cannot handle text ids:
+      # it waits for replacements named kythira-<cluster>-<n>, which
+      # docker_quorum_manager<std::string> names by a random suffix instead,
+      # and its compose file's QUORUM_CLUSTER makes the text-mode peer
+      # address "{native}:<port>". One configure serves every suite, so the
+      # others run numeric too. Without the pin tests/docker_chaos refuses
+      # to build quorum-healing-tests.
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DKYTHIRA_NODE_ID_KIND=numeric \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_LINKER=mold \

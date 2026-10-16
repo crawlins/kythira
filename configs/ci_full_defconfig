@@ -40,10 +40,14 @@
 #                             configs/ci_alt_coap_defconfig, which is this
 #                             file plus the two symbols. Keep the two in sync
 #                             as well.
-#   KYTHIRA_NODE_ID_TEXT    — a choice, not a dependency: numeric node ids
-#                             stay the default here. ci.yml's config-variants
-#                             job builds the cmd/ binaries with textual ids
-#                             from configs/ci_text_node_id_defconfig, which is
+#   KYTHIRA_NODE_ID_NUMERIC — a choice, not a dependency: these legs build
+#                             the cmd/ binaries with the default, textual node
+#                             ids (KYTHIRA_NODE_ID_KIND=text), and run the
+#                             ca_cluster_node suites against them with
+#                             decimal ids. ci.yml's config-variants job builds
+#                             the binaries with numeric ids, the kind existing
+#                             clusters keep, from
+#                             configs/ci_numeric_node_id_defconfig, which is
 #                             this file plus that symbol. Keep the two in sync
 #                             too.
 #

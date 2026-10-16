@@ -28,7 +28,7 @@ numeric mode, because a cluster cannot change id kind in place: name
 `KYTHIRA_NODE_ID_KIND=numeric`.
 
 **Running the node binaries on composite ids.** Build them with
-`KYTHIRA_NODE_ID_KIND=text`; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). `azure_vm_quorum_manager` substitutes the canonical text for
+`KYTHIRA_NODE_ID_KIND=text`, the default; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). `azure_vm_quorum_manager` substitutes the canonical text for
 `{NODE_ID}` in custom data, so `--node-id={NODE_ID}` works there. A
 VMSS member is named by the scale set, so under
 `azure_vmss_quorum_manager` start the node with

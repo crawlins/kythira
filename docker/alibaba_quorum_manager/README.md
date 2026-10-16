@@ -26,7 +26,7 @@ numeric mode, because a cluster cannot change id kind in place: name
 `KYTHIRA_NODE_ID_KIND=numeric`.
 
 **Running the node binaries on composite ids.** Build them with
-`KYTHIRA_NODE_ID_KIND=text`; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). The scaling group launches the instance, so the manager learns the id
+`KYTHIRA_NODE_ID_KIND=text`, the default; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). The scaling group launches the instance, so the manager learns the id
 only after launch and cannot put it in the launch configuration's user
 data. Start the node with `--node-id=metadata:alibaba` (or
 `NODE_ID=metadata:alibaba`): it reads `instance-id` and `region-id`

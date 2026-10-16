@@ -45,10 +45,10 @@ forms of the kind the binary was built with, `KYTHIRA_NODE_ID_KIND` (see
 [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind)):
 
 - **numeric**: a decimal integer, as in every example in this directory.
-  `docker/ca_cluster_node/Dockerfile` configures without Kconfig (the
-  builder stage installs no `kconfiglib`), which builds numeric ids, so the
-  image, the ECS task definitions and the Packer AMI built from it are
-  numeric.
+  `docker/ca_cluster_node/Dockerfile` pins this kind with
+  `-DKYTHIRA_NODE_ID_KIND=numeric`, so the image, the ECS task definitions
+  and the Packer AMI built from it are numeric. Without that pin it would
+  build text, the default.
 - **text**: canonical composite text, a decimal integer (normalised, so
   `NODE_ID=1` still works), or `metadata:<provider>` for this node's own id,
   read from the instance metadata service after every other flag has been

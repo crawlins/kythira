@@ -1,0 +1,39 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# ci_numeric_node_id_defconfig — ci_full_defconfig plus
+# CONFIG_KYTHIRA_NODE_ID_NUMERIC=y: the host binaries in cmd/ built with
+# numeric (std::uint64_t) node ids instead of the textual default
+# (.kiro/specs/cloud-composite-node-ids/ Requirement 10, tasks 8.4 and
+# 10.3). Numeric is the kind every cluster created before the default
+# flipped keeps, since a cluster cannot change id kind in place, so its
+# std::uint64_t instantiations must keep compiling.
+#
+# Applied by ci.yml's config-variants job, which builds only the
+# host_binaries target from it: the library and the test suite take NodeId
+# as a template parameter and the full build already compiles them over
+# numeric ids, so what this configuration adds is the binaries' own
+# numeric instantiations. Running numeric binaries is left to the
+# container-test and arm64 smoke-test workflows, and to the ca_cluster_node
+# image the real-cloud AWS job deploys; they configure without Kconfig and
+# pin -DKYTHIRA_NODE_ID_KIND=numeric instead (see the KYTHIRA_NODE_ID_KIND
+# block in CMakeLists.txt).
+#
+# Written against -DKYTHIRA_KCONFIG_STRICT=ON, on the same edhoc-feature
+# image as ci_full_defconfig, so every other line below must match that
+# file — see its header for why each symbol is on or off. Keep the two in
+# sync.
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_REDIS_GATEWAY=y
+CONFIG_PROTOBUF_SERIALIZER=y
+CONFIG_KYTHIRA_NODE_ID_NUMERIC=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set

@@ -10,11 +10,16 @@
 ///
 /// The Kconfig choice `KYTHIRA_NODE_ID_KIND` picks the type at build time:
 ///
-/// - **numeric** (the default): `std::uint64_t`. A node id is a decimal
-///   integer, exactly as before textual ids existed.
-/// - **text**: `std::string` holding canonical text. One binary must accept
-///   ids from any provider, which is why it is the string and not one
-///   composite type per provider (design, "Key design decision").
+/// - **text** (the default): `std::string` holding canonical text. One
+///   binary must accept ids from any provider, which is why it is the string
+///   and not one composite type per provider (design, "Key design decision").
+/// - **numeric**: `std::uint64_t`. A node id is a decimal integer, exactly
+///   as before textual ids existed. An existing numeric cluster keeps it.
+///
+/// A configure without kconfiglib follows the same default, text. The CMake
+/// cache variable `-DKYTHIRA_NODE_ID_KIND=numeric|text` picks the kind
+/// explicitly with or without kconfiglib, and is refused if it contradicts a
+/// `.config` or defconfig that sets the choice.
 ///
 /// `genconfig.py` writes the choice into `generated/kythira/autoconf.hpp` as
 /// `KYTHIRA_NODE_ID_TEXT`, and CMake defines that macro on the targets that
