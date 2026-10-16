@@ -154,12 +154,13 @@ check_suites() {
             fi
             # Boost.Test prints --list_content to stderr: suites flush left,
             # cases indented, each enabled one marked with a trailing '*'.
+            # A templated case is listed once per type, as name<type...>.
             if ! listing="$("$binary" --list_content 2>&1)"; then
                 fail "$name: --list_content exited non-zero"
                 printf '%s\n' "$listing" >&2
                 continue
             fi
-            count="$(printf '%s\n' "$listing" | grep -cE '^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*\*?$' || true)"
+            count="$(printf '%s\n' "$listing" | grep -cE '^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(<.*>)?\*?$' || true)"
             stubs="$(printf '%s\n' "$listing" | grep -E "$STUB_CASE_RE" || true)"
             if [[ -n "$stubs" ]]; then
                 fail "$name: lists a stub case, so it was built without its backend:"
