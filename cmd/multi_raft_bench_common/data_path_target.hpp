@@ -347,6 +347,9 @@ private:
     /// `{"node_id":1,"leads":[1,3]}` — small enough that a scan for the digits
     /// after `"leads":[` is clearer than pulling in a parser, and the producer
     /// is `control_server` three files away rather than an arbitrary peer.
+    /// In a `KYTHIRA_NODE_ID_KIND=text` build `node_id` is a JSON string
+    /// (`{"node_id":"aws-ec2:us-east-1:i-0…","leads":[1,3]}`); only the
+    /// group ids are read here, and those are numbers in both kinds.
     [[nodiscard]] static auto parse_leads(const std::string& body) -> std::vector<std::uint64_t> {
         std::vector<std::uint64_t> out;
         const auto open = body.find("\"leads\":[");
