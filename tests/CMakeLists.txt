@@ -6551,6 +6551,34 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(coap_libnyoci_oscore_test PROPERTIES
         TIMEOUT 600 LABELS "coap;libnyoci;oscore;security;integration")
 
+    # Composite node ids over libnyoci (cloud-composite-node-ids task 6.2):
+    # the cases shared with cantcoap (coap_alternate_textual_node_id_cases.hpp).
+    # Unconditional like the targets above, collapsing to one skipped case
+    # without libnyoci. The DTLS-PKI binding case also needs
+    # CPPHTTPLIB_OPENSSL_SUPPORT (network_simulator carries it when
+    # KYTHIRA_HTTP_TLS is on), for coap_peer_identity_validator.
+    add_executable(coap_libnyoci_textual_node_id_test coap_libnyoci_textual_node_id_test.cpp)
+    target_link_libraries(coap_libnyoci_textual_node_id_test PRIVATE
+        ${_kythira_libnyoci}
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(coap_libnyoci_textual_node_id_test PRIVATE Folly::folly)
+    endif()
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(coap_libnyoci_textual_node_id_test PRIVATE
+            OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(TARGET httplib::httplib)
+        target_link_libraries(coap_libnyoci_textual_node_id_test PRIVATE httplib::httplib)
+    endif()
+    target_compile_features(coap_libnyoci_textual_node_id_test PRIVATE cxx_std_23)
+    add_test(NAME coap_libnyoci_textual_node_id_test COMMAND coap_libnyoci_textual_node_id_test)
+    set_tests_properties(coap_libnyoci_textual_node_id_test PROPERTIES
+        TIMEOUT 300 LABELS "coap;libnyoci;integration;composite_node_id")
+
     # ── coap-transport-cantcoap spec: the codec-only CoAP backend ────────────────
     # Unconditional, like the libnyoci targets and for the same reason: the adapter
     # keeps its full concept surface with or without cantcoap, so the conformance
