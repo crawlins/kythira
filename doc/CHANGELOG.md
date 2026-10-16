@@ -5,6 +5,18 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 16, 2026)
 
+- **A peer that speaks before its name resolves is now looked up in DNS.**
+  `net_resolve::learn()` stores `time_point::min()` as a never-resolved
+  name's answer time so the next `resolve_using()` starts a lookup, but
+  `resolve_using()` computed `now() - at` first, which overflows for
+  `min()` (undefined behaviour; in practice it wrapped negative and read
+  as fresh). So a peer whose RPC arrived before its name had ever
+  resolved was dialled at the learned address forever, and DNS was never
+  asked again, at `-O0` and `-O2` alike. `resolve_using()` now checks for
+  the sentinel before subtracting, and `bounded_resolver_test` covers it.
+  Found by the AddressSanitizer/UBSan run that closes
+  `tcp-rpc-server-hardening` task 6.1.
+
 - **Breaking: the host binaries default to textual node ids.**
   `KYTHIRA_NODE_ID_KIND` now defaults to `text`, so `chaos_node`,
   `ca_cluster_node`, `multi_raft_node`, `multi_raft_bench` and

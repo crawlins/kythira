@@ -2,13 +2,33 @@
 
 ## Implementation Status
 
-Tasks 1 to 5, 6.2 and 6.3 are on `main` (PR #423; re-checked against the
-tree October 15, 2026: `MSG_NOSIGNAL` writes and 1 MiB frame reads in
-`tcp_rpc.hpp`, `tcp_connection_tracker.hpp` and its unit test, the
-gossip `listener_limits`, the four suites in the `tsan` job, and the
-CHANGELOG entry). Task 6.1 stays open for its docker_chaos quorum run
-over `chaos_node`; its sanitizer half is what the `tsan` job now does on
-every push. Where #423 differs from the plan below:
+**Complete (6/6), October 16, 2026.** Tasks 1 to 5, 6.2 and 6.3 are on
+`main` (PR #423; re-checked against the tree October 15, 2026:
+`MSG_NOSIGNAL` writes and 1 MiB frame reads in `tcp_rpc.hpp`,
+`tcp_connection_tracker.hpp` and its unit test, the gossip
+`listener_limits`, the four suites in the `tsan` job, and the CHANGELOG
+entry). Task 6.1 closed October 16, 2026:
+
+- ThreadSanitizer: the `tsan` job runs `tcp_connection_tracker_unit_test`,
+  `tcp_rpc_unit_test`, `tls_tcp_rpc_integration_test` and
+  `tcp_gossip_transport_integration_test` on every push.
+- AddressSanitizer: the same four, built locally with
+  `-fsanitize=address,undefined` (g++-13, boost backend). The tracker, TLS
+  and gossip suites were clean. `tcp_rpc_unit_test` hit one UBSan finding,
+  fixed in the same change: `resolve_using()` subtracted the
+  `time_point::min()` that `learn()` stores for a never-resolved name, which
+  overflowed and wrapped negative, so a peer learned from an incoming RPC
+  before its name resolved was never looked up in DNS at all. All four are
+  clean after the fix, and `bounded_resolver_test` has a regression case.
+- docker_chaos: Container Scenario Tests run
+  [38937810252](https://github.com/crawlins/kythira/actions/runs/38937810252)
+  (PR #565's head, October 16) passed under both Docker and rootless
+  Podman, including `docker-chaos-tests`, `quorum-healing-tests` and
+  `docker-mtls-chaos-tests`, whose `chaos_node` clusters talk over the
+  hardened `tcp_rpc` and `tls_tcp_rpc` servers. The weekly schedule keeps
+  running them.
+
+Where #423 differs from the plan below:
 
 - The TLS server cases live in `tests/tls_tcp_rpc_integration_test.cpp`,
   not `tests/tls_tcp_rpc_unit_test.cpp`, because the certificate fixtures
@@ -91,8 +111,8 @@ all of it in `tcp_rpc_server`, `tls_tcp_rpc_server` and the gossip listener.
     `tests/tcp_gossip_transport_integration_test.cpp`
   - _Requirements: 1.3, 2.5, 3, 4, 5, 6.4, 8.2_
 
-- [ ] 6. Verification and documentation
-  - [ ] 6.1 Run the three suites and the new tracker test built with
+- [x] 6. Verification and documentation
+  - [x] 6.1 Run the three suites and the new tracker test built with
     `KYTHIRA_SANITIZER=address` and `=thread`, and the docker_chaos quorum
     scenarios that use `chaos_node` over `tcp_rpc`
   - [x] 6.2 Add the four suites to the `tsan` job in
