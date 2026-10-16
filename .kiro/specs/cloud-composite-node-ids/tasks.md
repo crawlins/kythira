@@ -151,15 +151,18 @@ the audit and `design.md` for the types and per-component changes.
     `*_textual_node_id_test` over `std::string` and `aws_ec2_node_id`.
   - _Requirements: 9.1-9.6, 14.4, 14.5_
 
-- [ ] 7. CA identity and serials
-  - [ ] 7.1 Generalise peer identity, enrollment MAC and `rpc_tls_ready`
+- [x] 7. CA identity and serials
+  - [x] 7.1 Generalise peer identity, enrollment MAC and `rpc_tls_ready`
     to `NodeId`; URI SAN for textual ids; version byte (library half done:
     `peer_identity_name`, `is_reserved_peer_uri`, `peer_enrollment_mac`
     and `classify_peer_enrollment` over `NodeId`, the CA issuing
     `uri_names`, and `record_rpc_tls_ready` version 2, a `"version": 2`
-    field with the id as a JSON string. `ca_cluster_node`'s config, routes
-    and `rpc_tls_ready_node_id` body field stay numeric until task 8.2
-    gives the binaries a textual id)
+    field with the id as a JSON string. Binary half done with task 8.2:
+    `ca_cluster_node` built with `KYTHIRA_NODE_ID_KIND=text` takes a
+    textual `--node-id` and peer ids, certifies its peer identity as the URI
+    SAN under the fixed CN `kythira-ca-cluster-peer`, and carries the id as
+    a string in the readiness command and its HTTP body; numeric builds are
+    unchanged)
   - [x] 7.2 Add `certificate_serial`; use it in the CA, the three cloud
     CA providers and both revoke endpoints
     (done; as built: up to 20 octets, ledger entries keep the numeric
@@ -169,19 +172,54 @@ the audit and `design.md` for the types and per-component changes.
     `"serial_hex"` for any width; issue/renew responses carry
     `"serial_hex"`. The in-house CA still issues 64-bit serials, and the
     peer-trust revocation set stays 64-bit)
-  - [ ] 7.3 Tests: numeric enrollment unchanged, textual enrollment and
+  - [x] 7.3 Tests: numeric enrollment unchanged, textual enrollment and
     verification, reserved-URI refusal, 20-octet serial revoke
+  - 7.1 and 7.3 done October 16, 2026; 7.2 (`certificate_serial`) is
+    ticked with its own change. 7.3's enrollment and URI cases are in
+    `ca_issuance_hardening_unit_test`, `ca_state_machine_unit_test` and
+    `tls_tcp_rpc_textual_node_id_test`; its 20-octet serial case is 7.2's
+    `certificate_serial_unit_test`.
+    `ca_cluster_node_test`, `ca_cluster_node_rpc_tls_test` and
+    `ca_cluster_node_rpc_tls_restart_test` pass against a text-mode
+    `ca_cluster_node` (decimal ids, so URI-SAN peers).
   - _Requirements: 12.1-12.5_
 
-- [ ] 8. Self id and binaries
-  - [ ] 8.1 Add `include/raft/self_node_id.hpp` for the five metadata
+- [x] 8. Self id and binaries
+  - [x] 8.1 Add `include/raft/self_node_id.hpp` for the five metadata
     services, opt-in, bounded timeout; unit tests against a local fake
     endpoint
-  - [ ] 8.2 Add `KYTHIRA_NODE_ID_KIND` to Kconfig and `host_node_id`;
+  - [x] 8.2 Add `KYTHIRA_NODE_ID_KIND` to Kconfig and `host_node_id`;
     convert the `cmd/` aliases and parsers to `parse_host_node_id`
-  - [ ] 8.3 Print textual ids as JSON strings in `multi_raft_node`'s
+  - [x] 8.3 Print textual ids as JSON strings in `multi_raft_node`'s
     control server
-  - [ ] 8.4 Build every binary in both Kconfig modes in CI
+  - [x] 8.4 Build every binary in both Kconfig modes in CI
+  - Done October 16, 2026. As built: `self_node_id.hpp` covers aws-ec2,
+    alibaba-ecs, azure-vm, gcp and oci (`aws`, `alibaba` and `azure` also
+    accepted); the bound is one deadline over the whole lookup (default
+    2 s) rather than one call, since AWS, Alibaba and GCP need two or three
+    requests; there is no IMDSv1 fallback, Alibaba uses the token flow too,
+    GCP is addressed by IP so an off-cloud lookup never waits on DNS, and
+    the result type is `node_id_result<T>` (std::expected's member names)
+    because clang 18 over libstdc++ 13 has no `std::expected`.
+    `host_node_id.hpp` holds the alias and the parsers: text mode takes
+    canonical text of any provider or a decimal integer (normalised), the
+    local id also `metadata:<provider>`, which a numeric build refuses;
+    peer ids never read metadata. Deviations: `KYTHIRA_NODE_ID_TEXT`
+    reaches C++ through the `kythira_host_node_id` CMake target, not an
+    `#include` of `autoconf.hpp` (which would define every feature macro);
+    `multi_raft_node` still reads its id only from `--node-id`, not
+    `KYTHIRA_NODE_ID`. Behaviour in text mode: `chaos_node`'s default peer
+    address becomes `{native}:<port>` (a new placeholder); `ca_cluster_node`
+    uses the URI SAN (7.1); every JSON node id, including
+    `multi_raft_node`'s control server and capacity plane, is a JSON
+    string, through `node_id_json` (8.3). Library touch points, each
+    defaulted: `basic_tcp_raft_types<NodeId>`,
+    `threshold_split_merge_policy<NodeId>`, the multi-Raft harness handles,
+    and by-reference loops in `file_persistence.hpp`. 8.4 builds the
+    `host_binaries` aggregate and `host_node_id_test` in the Config
+    Variants job from a second defconfig, not a full build-and-test leg:
+    the library and tests are already instantiated over textual ids, so
+    only the binaries' own instantiations were missing.
   - _Requirements: 6.1-6.3, 10.1-10.5_
 
 - [x] 9. LocalStack without the hook
@@ -193,10 +231,10 @@ the audit and `design.md` for the types and per-component changes.
   - _Requirements: 13.2, 13.3_
 
 - [ ] 10. Documentation and default flip
-  - [ ] 10.1 Provider READMEs and the quorum-management doc: composite
+  - [x] 10.1 Provider READMEs and the quorum-management doc: composite
     ids, `--node-id=metadata:<provider>`, numeric mode for existing
     clusters
-  - [ ] 10.2 Point the provider specs' node-id criteria to this spec
+  - [x] 10.2 Point the provider specs' node-id criteria to this spec
   - [ ] 10.3 Separately, once tasks 5-7 are on main, flip
     `KYTHIRA_NODE_ID_KIND` to `text` (breaking)
   - _Requirements: 10.1_

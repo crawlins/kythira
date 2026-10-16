@@ -1,5 +1,14 @@
 # Requirements Document
 
+> **Node ids revised (noted October 16, 2026).** Requirements 5, 7 and 13
+> assign the `NodeId` by a tag scan and derive the VM name from it. That
+> is now numeric mode only (`<std::uint64_t>`): by default both managers
+> use `azure_vm_node_id` (`azure-vm:<resource group>:<VM name>`), the VM
+> manager naming the VM before creating it and the VMSS manager taking the
+> member VM's name (Requirement 5 there); see
+> `.kiro/specs/cloud-composite-node-ids/`. The criteria below are kept as
+> written, as the record of the original design.
+
 ## Introduction
 
 This document specifies the requirements for Kythira's Azure support: two
@@ -289,6 +298,10 @@ std::string>` so that I can wire it into a Raft node without any glue code.
 
 ### Requirement 5: `azure_vm_quorum_manager` Node Naming and Tagging Scheme
 
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
+
 **User Story:** As an operator, I want every managed VM to carry well-known
 tags and a predictable name so that I can audit which VMs belong to a
 cluster, and so that the quorum manager can reconstruct its `NodeId`
@@ -376,6 +389,10 @@ heartbeat.
 ---
 
 ### Requirement 7: `azure_vm_quorum_manager::provision_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
 
 **User Story:** As an orchestrator that has detected a degraded placement
 group, I need `provision_node` to create a new Azure VM in the target group,
@@ -589,6 +606,10 @@ state rather than application-level heartbeats.
 ---
 
 ### Requirement 13: `azure_vmss_quorum_manager::provision_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
 
 **User Story:** As an orchestrator, I need `provision_node` to increase the
 target scale set's capacity by one, wait for the new instance to become

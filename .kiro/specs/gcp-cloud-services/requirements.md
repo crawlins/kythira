@@ -1,5 +1,14 @@
 # Requirements Document
 
+> **Node ids revised (noted October 16, 2026).** Requirements 5, 8, 10 and
+> 16 generate a random 63-bit `NodeId` and encode it in the instance name
+> or a label. That is now numeric mode only (`<std::uint64_t>`): by
+> default both managers use `gcp_instance_node_id`
+> (`gcp:<project>/<zone>:<instance name>`), and the `kythira-node-id`
+> label holds the instance name (Requirement 5 there); see
+> `.kiro/specs/cloud-composite-node-ids/`. The criteria below are kept as
+> written, as the record of the original design.
+
 ## Introduction
 
 This document specifies the requirements for Google Cloud Platform (GCP)
@@ -286,6 +295,10 @@ reimplement polling and error-unwrapping.
 
 ### Requirement 5: Node Identity Scheme — Why GCP Cannot Reuse AWS's Approach
 
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
+
 **User Story:** As a maintainer, I want the node-identity design decision
 recorded as a requirement (not just a design-doc aside) because it is the
 single biggest structural difference from the AWS spec and shapes every
@@ -405,6 +418,10 @@ glue code.
 
 ### Requirement 8: `gcp_compute_quorum_manager` Label, Metadata, and Guest Attribute Scheme
 
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
+
 **User Story:** As an operator, I want every managed GCE instance to carry
 well-known labels so that I can audit which instances belong to a cluster,
 and so that the quorum manager can reconstruct state after a process restart
@@ -500,6 +517,10 @@ is alive is the Raft leader's call (AC 11), not this manager's.
 ---
 
 ### Requirement 10: `gcp_compute_quorum_manager::provision_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
 
 **User Story:** As an orchestrator that has detected a degraded placement
 group, I need `provision_node` to launch a new GCE instance in the target
@@ -720,6 +741,10 @@ instance names that kythira does not control.
 ---
 
 ### Requirement 16: `gcp_mig_quorum_manager::provision_node`
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
 
 **User Story:** As an orchestrator, I need `provision_node` to increase the
 target MIG's size by one, wait for the new instance to appear, and label it

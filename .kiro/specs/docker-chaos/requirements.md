@@ -1,5 +1,13 @@
 # Requirements Document
 
+> **Node ids revised (noted October 16, 2026).** Requirement 1's `NODE_ID`
+> and `PEERS` ids are integers in a `KYTHIRA_NODE_ID_KIND=numeric` build
+> of `chaos_node`; a `text` build also takes canonical composite text and,
+> for `NODE_ID`, `metadata:<provider>`, and Requirement 3's `/status` then
+> writes `node_id` as a JSON string (Requirement 10 there); see
+> `.kiro/specs/cloud-composite-node-ids/`. The criteria below are kept as
+> written, as the record of the original design.
+
 ## Introduction
 
 This document specifies the requirements for a Docker-based chaos testing
@@ -53,6 +61,10 @@ The result is two complementary layers:
 ## Requirements
 
 ### Requirement 1: chaos_node Binary
+
+> In a `KYTHIRA_NODE_ID_KIND=text` build the node ids here also take
+> canonical composite text. See `.kiro/specs/cloud-composite-node-ids/`
+> Requirement 10.
 
 **User Story:** As a test author, I want a standalone binary that runs a
 kythira Raft node using real TCP networking, so that I can deploy it in Docker

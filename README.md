@@ -190,6 +190,82 @@ cmake -S . -B build -DKYTHIRA_KCONFIG=configs/ci_full_defconfig -DKYTHIRA_KCONFI
 See [`.kiro/specs/kconfig-integration/`](.kiro/specs/kconfig-integration/)
 for the full design and requirements.
 
+### Node ids in the host binaries (`KYTHIRA_NODE_ID_KIND`)
+
+The library takes the Raft node id as a template parameter, and every cloud
+and Docker quorum manager defaults to its provider's **composite node id**:
+the cloud resource itself, written as canonical text
+`<provider>:<scope>:<native id>`, for example
+`aws-ec2:us-east-1:i-0123456789abcdef0`,
+`gcp:my-project/us-central1-a:kythira-prod-ab12cd34` or
+`oci:iad:ocid1.instance.oc1.iad.…`. A manager does not allocate these ids;
+it reads them from the instance, VM or container. See
+[`.kiro/specs/cloud-composite-node-ids/`](.kiro/specs/cloud-composite-node-ids/)
+and each provider's README under `docker/*_quorum_manager/`.
+
+The binaries in `cmd/` that take a node id (`chaos_node`, `ca_cluster_node`,
+`multi_raft_node`, `multi_raft_bench`, `redis_gateway_node`) are compiled
+for one id type, chosen by the Kconfig choice `KYTHIRA_NODE_ID_KIND`
+("Host Binaries" in `menuconfig`):
+
+| Kind | `node_id_type` | `--node-id` / `NODE_ID` / `KYTHIRA_NODE_ID` accept | Peer lists accept |
+|---|---|---|---|
+| `numeric` (`CONFIG_KYTHIRA_NODE_ID_NUMERIC=y`), the default | `std::uint64_t` | a decimal integer | decimal integers |
+| `text` (`CONFIG_KYTHIRA_NODE_ID_TEXT=y`) | `std::string` holding canonical text | canonical text, a decimal integer, or `metadata:<provider>` | canonical text or decimal integers |
+
+In a text build a decimal id is normalised (`007` is `7`), so a numeric
+cluster's command lines still parse; anything that is neither canonical
+text nor a decimal integer is refused at start-up rather than run as a
+node no manager can map to a resource.
+
+**`--node-id=metadata:<provider>`** (or `NODE_ID=metadata:<provider>`)
+makes the binary read its own id from the cloud's instance metadata
+service at start-up. `<provider>` is `aws` (or `aws-ec2`), `alibaba` (or
+`alibaba-ecs`), `azure` (or `azure-vm`), `gcp`, or `oci`. The lookup runs
+only when asked for, is bounded by one 2-second deadline, is never retried,
+and a failure stops the binary with the metadata error. It is how a node
+launched by a manager that learns the id only after launch (EC2, ASG, ESS,
+VMSS, MIG, OCI pool) finds its id: those managers cannot substitute
+`{NODE_ID}` into the launch script. Docker has no metadata service;
+`docker_quorum_manager` passes the id in `KYTHIRA_NODE_ID`. A numeric build
+refuses `metadata:`, since no cloud id fits a number.
+
+**Existing numeric clusters stay numeric.** A cluster cannot change id kind
+in place: the ids are in every replica's log, snapshots and certificates.
+Keep such a cluster's binaries on `KYTHIRA_NODE_ID_KIND=numeric`, and give
+any quorum manager it uses `std::uint64_t` as its first template argument
+(`aws_ec2_quorum_manager<std::uint64_t, std::string>`), which keeps the
+manager's numeric mode: it allocates the next free number and stores it in
+the `kythira-node-id` (`kythira:node-id` on AWS and Azure) tag or label. To
+move to composite ids, build a new cluster in text mode and restore into it
+from `raft_object_backup`.
+
+What changes in a text build, beyond the accepted forms:
+
+- **JSON output** carries a node id as a JSON string (`"node_id":"7"`, or
+  the canonical text) where a numeric build writes a number:
+  `chaos_node`'s `/status`, `multi_raft_node`'s control server (`/leaders`,
+  `/describe`, `/terms`, `/probe`) and its capacity plane
+  (`/capacity/status`), and `ca_cluster_node`'s RPC-TLS readiness command.
+  Group ids stay numbers.
+- **`ca_cluster_node`** certifies a peer by the URI SAN
+  `urn:kythira:node:<canonical text>` under the common name
+  `kythira-ca-cluster-peer` instead of the DNS SAN `ca-cluster-node-<n>`,
+  because canonical text is not a DNS name. Peer enrollment reserves that
+  URN prefix as it reserves the DNS one.
+- **`chaos_node`**'s default peer address, used for ids that are not in
+  `PEERS` when `QUORUM_CLUSTER` or `KYTHIRA_CLUSTER` is set, is
+  `{native}:<RPC_PORT>`, the native part of a Docker id being the container
+  name, rather than `kythira-<cluster>-{id}:<RPC_PORT>`. Set
+  `PEER_ADDRESS_TEMPLATE` to choose another.
+- **`multi_raft_node`**'s capacity plane runs `docker_quorum_manager` over
+  `std::string`, so the machines it creates are named
+  `kythira-<cluster>-<8 base32 characters>` and identified by Docker
+  canonical text. `multi_raft_bench` must be built in the hosts' kind.
+- `PEERS` entries (`id:host:port`) take canonical text as the id: its own
+  `:`s are the first two of the entry, since a `:` inside a segment is
+  percent-encoded.
+
 ## ARM (arm64) Support
 
 Kythira is built and tested natively on 64-bit ARM (`aarch64`, vcpkg triplet
@@ -1015,12 +1091,12 @@ docker compose -f docker/docker-compose.yml down
 
 | Variable | Default | Description |
 |---|---|---|
-| `NODE_ID` | required | Integer node ID |
+| `NODE_ID` | required | This node's id: a decimal integer, or in a `KYTHIRA_NODE_ID_KIND=text` build also canonical composite text or `metadata:<provider>` (see [Node ids in the host binaries](#node-ids-in-the-host-binaries-kythira_node_id_kind)). `KYTHIRA_NODE_ID` is read when `NODE_ID` is unset |
 | `RPC_PORT` | `7000` | Raft RPC listen port |
 | `HTTP_PORT` | `8080` | HTTP control plane port |
 | `FIU_PORT` | `9000` | fiu_rc_tcp listen port |
 | `DATA_DIR` | `/var/lib/chaos_node` | Persistence directory |
-| `PEERS` | required | `id:host:port,...` peer list |
+| `PEERS` | required | `id:host:port,...` peer list; each id in the form `NODE_ID` takes, never `metadata:` |
 | `ELECTION_TIMEOUT_MIN_MS` | `150` | Min election timeout (ms) |
 | `ELECTION_TIMEOUT_MAX_MS` | `300` | Max election timeout (ms) |
 | `HEARTBEAT_INTERVAL_MS` | `50` | Heartbeat interval (ms) |
@@ -1184,10 +1260,12 @@ the full design and requirements.
 
 - **`azure_vm_quorum_manager`** (`include/raft/azure_vm_quorum_manager.hpp`)
   — direct Azure Resource Manager `PUT`/`DELETE` on
-  `Microsoft.Compute/virtualMachines`. `NodeId` assignment runs in the
-  opposite direction from EC2's (ARM requires the caller to choose the VM
-  name up front, so `next_node_id()` tag-scans for the current maximum
-  rather than deriving an ID from an SDK-assigned identifier); liveness
+  `Microsoft.Compute/virtualMachines`. ARM requires the caller to choose the
+  VM name up front, so the manager names the VM before creating it: by
+  default the node id is that VM (`azure-vm:<resource group>:<VM name>`),
+  and in numeric mode (`<std::uint64_t>`) `next_node_id()` tag-scans for
+  the current maximum (see
+  [`docker/azure_quorum_manager/README.md`](docker/azure_quorum_manager/README.md#node-ids)); liveness
   comes solely from ARM `instanceView` power state. Supports Availability
   Zones, Proximity Placement Groups, Availability Sets, and Spot VMs.
   Best for dev/staging or simple deployments.

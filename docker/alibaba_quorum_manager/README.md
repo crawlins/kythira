@@ -17,11 +17,22 @@ id is the ECS instance the scaling group adopted
 (`alibaba-ecs:<region>:<instance id>`), so nothing is allocated, and
 mapping an id back to its instance needs no tag search. The
 `kythira-node-id` tag still carries the id's text, and `alibaba.region`
-must be set. The first template argument picks the node id. Write `std::uint64_t` to
-keep numeric mode, which existing clusters and every `cmd/` binary use
-today: the manager allocates the next free number and stores it in a tag
-or label. `std::string` holds the composite id's canonical text, not a
-decimal number.
+must be set. The first template argument picks the node id. `std::string` holds the
+composite id's canonical text, not a decimal number. `std::uint64_t`
+keeps numeric mode: the manager allocates the next free number and
+stores it in a tag or label. An existing numeric cluster must stay in
+numeric mode, because a cluster cannot change id kind in place: name
+`std::uint64_t` explicitly, and keep its node binaries on
+`KYTHIRA_NODE_ID_KIND=numeric`.
+
+**Running the node binaries on composite ids.** Build them with
+`KYTHIRA_NODE_ID_KIND=text`; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). The scaling group launches the instance, so the manager learns the id
+only after launch and cannot put it in the launch configuration's user
+data. Start the node with `--node-id=metadata:alibaba` (or
+`NODE_ID=metadata:alibaba`): it reads `instance-id` and `region-id`
+from the ECS metadata service, using the hardened-mode token, and
+builds the same `alibaba-ecs:<region>:<instance id>` the manager
+reports. Peer lists take the same canonical text.
 
 ## Prerequisite resources (the code deliberately does not create these)
 

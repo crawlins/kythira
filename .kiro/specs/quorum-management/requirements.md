@@ -1,5 +1,15 @@
 # Requirements Document
 
+> **Node ids revised (noted October 16, 2026).** Requirement 18's
+> `docker_quorum_manager` allocates a number and serialises it into the
+> container name and the `kythira.node_id` label. That is now numeric mode
+> only (`<std::uint64_t>`): by default the id is the container,
+> `docker_container_node_id` (`docker:<cluster>:<container name>`), named
+> before it is created, and `std::string` holds that canonical text rather
+> than a bare name (Requirement 5 there); see
+> `.kiro/specs/cloud-composite-node-ids/`. The criteria below are kept as
+> written, as the record of the original design.
+
 ## Introduction
 
 This document specifies the requirements for the `quorum_manager` concept and its
@@ -543,6 +553,10 @@ caught before they reach production.
     `quorum_peer_dead_after = 0` disables the rule.
 
 ### Requirement 18: `docker_quorum_manager` Example Implementation
+
+> The node id criteria here describe numeric mode (`<std::uint64_t>`); the
+> default is now the provider's composite id. See
+> `.kiro/specs/cloud-composite-node-ids/` Requirement 5.
 
 **User Story:** As a developer running a Kythira cluster inside Docker (local
 development, CI, or a single-host deployment), I want a ready-made quorum

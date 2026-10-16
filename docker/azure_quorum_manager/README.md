@@ -19,11 +19,24 @@ group>:<VM name>`). `azure_vm_quorum_manager` names each VM
 `kythira-<cluster>-<8 random base32 characters>` before creating it, so it
 knows the id up front and substitutes it for `{NODE_ID}` in custom data.
 `azure_vmss_quorum_manager` takes the id from the member VM the scale set
-created. The `kythira:node-id` tag carries the id's text. The first template argument picks the node id. Write `std::uint64_t` to
-keep numeric mode, which existing clusters and every `cmd/` binary use
-today: the manager allocates the next free number and stores it in a tag
-or label. `std::string` holds the composite id's canonical text, not a
-decimal number.
+created. The `kythira:node-id` tag carries the id's text. The first template argument picks the node id. `std::string` holds the
+composite id's canonical text, not a decimal number. `std::uint64_t`
+keeps numeric mode: the manager allocates the next free number and
+stores it in a tag or label. An existing numeric cluster must stay in
+numeric mode, because a cluster cannot change id kind in place: name
+`std::uint64_t` explicitly, and keep its node binaries on
+`KYTHIRA_NODE_ID_KIND=numeric`.
+
+**Running the node binaries on composite ids.** Build them with
+`KYTHIRA_NODE_ID_KIND=text`; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). `azure_vm_quorum_manager` substitutes the canonical text for
+`{NODE_ID}` in custom data, so `--node-id={NODE_ID}` works there. A
+VMSS member is named by the scale set, so under
+`azure_vmss_quorum_manager` start the node with
+`--node-id=metadata:azure` (or `NODE_ID=metadata:azure`): it reads
+`compute.name` and `compute.resourceGroupName` from IMDS and builds
+the same `azure-vm:<resource group>:<VM name>` the manager reports.
+Either works under the VM manager. Peer lists take the same
+canonical text.
 
 ## Which manager
 

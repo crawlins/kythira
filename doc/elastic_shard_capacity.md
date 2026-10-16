@@ -206,6 +206,17 @@ cpp-httplib/JSON stack only.
 `docker/elastic-capacity-compose.yml` wires three hosts this way. The flags
 are listed in `multi_raft_node --help`.
 
+Node ids on the plane are the host's `kythira::host_node_id`. In a
+`KYTHIRA_NODE_ID_KIND=numeric` build they are JSON numbers, and the
+controller's `docker_quorum_manager<std::uint64_t>` allocates the next free
+number and names the container `kythira-<cluster>-<n>`. In a `text` build
+they are JSON strings, and the manager, over `std::string`, names the
+container `kythira-<cluster>-<8 base32 characters>` and identifies it by
+Docker canonical text (`docker:<cluster>:<container name>`). The compose file
+and `tests/docker_chaos/elastic_capacity_docker_test.cpp`, which reads the
+admitted node as a number, model a numeric cluster. See `README.md`, "Node
+ids in the host binaries".
+
 **The plane can create and destroy machines, so it is authenticated.** It
 listens on `--bind` like the host's other surfaces. Every host takes a shared
 bearer token from `$KYTHIRA_CAPACITY_TOKEN` or `--capacity-token-file` (at
