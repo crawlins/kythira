@@ -20,6 +20,7 @@
 #include <raft/composite_node_id.hpp>
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
+#include <raft/generated_node_name.hpp>
 #include <raft/quorum_management.hpp>
 
 #ifdef KYTHIRA_HAS_AZURE_SDK
@@ -160,13 +161,23 @@ struct azure_vm_quorum_manager_config {
 ///
 /// Unlike `aws_ec2_quorum_manager` (which derives NodeId *from* the AWS-assigned
 /// EC2 instance ID), ARM's `PUT .../virtualMachines/{vmName}` requires the
-/// *caller* to choose `vmName` up front. NodeId assignment therefore runs in the
-/// opposite direction: `next_node_id()` scans existing `kythira:node-id` tags for
-/// the current maximum (the same tag-scan bookkeeping `aws_asg_quorum_manager`
-/// uses), and `node_id_to_vm_name`/`vm_name_to_node_id` are pure string
-/// computations in both directions once that ID is known. Ids are allocated
-/// above an in-memory floor as well, so a deleted VM's id is not handed out
-/// again by the same manager (see `next_node_id`).
+/// *caller* to choose `vmName` up front. How the name relates to the node id
+/// depends on `NodeId` (spec cloud-composite-node-ids, Requirement 5):
+///
+/// - `azure_vm_node_id`, or `std::string` holding its canonical text: the node
+///   id IS the VM, `{resource group, VM name}`. `provision_node` generates the
+///   name, `kythira-{cluster}-{8 random base32 characters}` in lower case and
+///   within Azure's 64-character limit, before the create, so the id is known
+///   up front: `{NODE_ID}` in the custom data and the `kythira:node-id` tag
+///   carry its canonical text. Nothing is allocated; mapping an id to its VM
+///   reads the id's name.
+/// - an unsigned integer (numeric mode): `next_node_id()` scans existing
+///   `kythira:node-id` tags for the current maximum (the same tag-scan
+///   bookkeeping `aws_asg_quorum_manager` uses), and
+///   `node_id_to_vm_name`/`vm_name_to_node_id` are pure string computations in
+///   both directions once that ID is known. Ids are allocated above an
+///   in-memory floor as well, so a deleted VM's id is not handed out again by
+///   the same manager (see `next_node_id`).
 ///
 /// Liveness is determined solely from ARM `instanceView` power state — there is
 /// no application-level heartbeat tag in this design (see design.md's "ARM Tag
@@ -174,10 +185,23 @@ struct azure_vm_quorum_manager_config {
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires kythira::node_id<NodeId>
 class azure_vm_quorum_manager {
+    static_assert(std::unsigned_integral<NodeId> || std::same_as<NodeId, std::string> ||
+                      std::same_as<NodeId, azure_vm_node_id>,
+                  "azure_vm_quorum_manager: NodeId must be an unsigned integer, std::string or "
+                  "azure_vm_node_id");
+
 public:
     using node_id_type = NodeId;
     using address_type = Address;
     using placement_group_id_type = std::string;
+
+    /// True when the node id is the VM itself (composite or string mode): its
+    /// name, scoped by the resource group.
+    static constexpr bool name_is_node_id = node_id_traits<NodeId>::is_textual;
+
+    /// Longest VM name the manager generates in composite and string mode:
+    /// Azure's limit for a Linux VM name (and its computer name).
+    static constexpr std::size_t max_vm_name_length = 64;
 
     /// Constructs the manager and validates the configuration.
     /// Throws std::invalid_argument on any of: empty cluster_name/subscription_id/
@@ -214,6 +238,19 @@ public:
             if (_cfg.subnet_id_by_group.find(gt.group_id) == _cfg.subnet_id_by_group.end()) {
                 throw std::invalid_argument(
                     "azure_vm_quorum_manager: no subnet configured for group: " + gt.group_id);
+            }
+        }
+        if constexpr (name_is_node_id) {
+            // The resource group is the id's scope, and every generated name
+            // must be a valid id in it. The suffix is always valid, so one
+            // sample name settles the cluster part.
+            const auto sample = generated_vm_name(std::string(generated_name_suffix_length, 'a'));
+            if (!node_id_for_vm(_cfg.azure.resource_group, sample)) {
+                throw std::invalid_argument(
+                    "azure_vm_quorum_manager: resource_group '" + _cfg.azure.resource_group +
+                    "' and cluster_name '" + _cfg.cluster_name +
+                    "' must form a valid azure-vm node id (resource group 1-90 of "
+                    "[a-z0-9._()-], VM name of [a-z0-9._-], case-insensitive)");
             }
         }
 
@@ -260,7 +297,7 @@ public:
                 return build_health(cluster, {});
             }
             for (const auto& np : cluster) {
-                _id_floor.raise(np.node_id);
+                raise_id_floor(np.node_id);
             }
 
             std::map<std::string, bool> live_map;
@@ -285,10 +322,18 @@ public:
                 std::vector<std::thread> threads;
                 for (std::size_t i = start; i < end; ++i) {
                     const auto& np = cluster[i];
+                    // An id that names no VM in this resource group (another
+                    // group's, or text that is not an azure-vm id) is left out
+                    // of live_map, so it reads as unreachable rather than
+                    // failing the assessment.
+                    auto name = vm_name_of(np.node_id);
+                    if (!name) {
+                        continue;
+                    }
                     kythira::promise_default<std::pair<std::string, std::optional<bool>>> promise;
                     futures.push_back(promise.getFuture());
-                    threads.emplace_back([this, np, promise = std::move(promise)]() mutable {
-                        std::string vm_name = node_id_to_vm_name(np.node_id);
+                    threads.emplace_back([this, np, vm_name = std::move(*name),
+                                          promise = std::move(promise)]() mutable {
                         try {
                             auto body =
                                 arm_get("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
@@ -457,7 +502,7 @@ public:
                     value != nullptr && value->is_array()) {
                     for (const auto& vm : value->as_array()) {
                         if (auto id = keyed_vm_node_id(vm, key)) {
-                            _id_floor.raise(*id);
+                            raise_id_floor(*id);
                             return future_factory_default::makeFuture(
                                 result{peer_info<NodeId, Address>{*id, vm_address(*id)}});
                         }
@@ -494,28 +539,54 @@ private:
             }
             const std::string& subnet_id = sit->second;
 
-            // ARM is the arbiter of which process gets an id: the VM and NIC
-            // names embed it, and both are created with `If-None-Match: *`, so
-            // a name that already exists is refused (412) instead of being
-            // updated in place.  next_node_id() is only a candidate -- another
-            // leader's manager, with its own in-memory floor, may have listed
-            // the same VMs a moment earlier -- so a refusal means "taken, try
-            // the next id", and the resource holding the name, which may be a
-            // live member's, is never modified or deleted.
-            for (std::size_t attempt = 1;; ++attempt) {
-                NodeId new_id = next_node_id();
-                // Raised before any resource exists: a failed create may still
-                // leave a VM or NIC under this name, so the id is spent either
-                // way.
-                _id_floor.raise(new_id);
-                if (auto peer = create_vm(new_id, target_group, subnet_id, key)) {
-                    return future_factory_default::makeFuture(std::move(*peer));
+            if constexpr (name_is_node_id) {
+                // The name is generated here, so the id is known before the
+                // create. Both creates are `If-None-Match: *`, so a name some
+                // other VM or NIC already holds is refused, not updated; a
+                // random suffix makes that all but impossible, and it is
+                // retried with a fresh one. Nothing is listed or allocated.
+                for (std::size_t attempt = 1;; ++attempt) {
+                    const auto vm_name = generated_vm_name(random_name_suffix());
+                    const auto new_id = node_id_for_vm(_cfg.azure.resource_group, vm_name);
+                    if (!new_id) {
+                        throw std::runtime_error("generated VM name " + vm_name +
+                                                 " is not a valid azure-vm node id");
+                    }
+                    if (auto peer = create_vm(*new_id, vm_name, target_group, subnet_id, key)) {
+                        return future_factory_default::makeFuture(std::move(*peer));
+                    }
+                    if (attempt >= max_id_claim_attempts) {
+                        throw std::runtime_error("generated VM name " + vm_name +
+                                                 " is already in use and " +
+                                                 std::to_string(max_id_claim_attempts) +
+                                                 " attempts to claim a free name all collided");
+                    }
                 }
-                if (attempt >= max_id_claim_attempts) {
-                    throw std::runtime_error("node id " + node_id_str(new_id) +
-                                             " is already in use and " +
-                                             std::to_string(max_id_claim_attempts) +
-                                             " attempts to claim a free id all collided");
+            } else {
+                // ARM is the arbiter of which process gets an id: the VM and NIC
+                // names embed it, and both are created with `If-None-Match: *`, so
+                // a name that already exists is refused (412) instead of being
+                // updated in place.  next_node_id() is only a candidate -- another
+                // leader's manager, with its own in-memory floor, may have listed
+                // the same VMs a moment earlier -- so a refusal means "taken, try
+                // the next id", and the resource holding the name, which may be a
+                // live member's, is never modified or deleted.
+                for (std::size_t attempt = 1;; ++attempt) {
+                    NodeId new_id = next_node_id();
+                    // Raised before any resource exists: a failed create may still
+                    // leave a VM or NIC under this name, so the id is spent either
+                    // way.
+                    _id_floor.raise(new_id);
+                    if (auto peer = create_vm(new_id, node_id_to_vm_name(new_id), target_group,
+                                              subnet_id, key)) {
+                        return future_factory_default::makeFuture(std::move(*peer));
+                    }
+                    if (attempt >= max_id_claim_attempts) {
+                        throw std::runtime_error("node id " + node_id_str(new_id) +
+                                                 " is already in use and " +
+                                                 std::to_string(max_id_claim_attempts) +
+                                                 " attempts to claim a free id all collided");
+                    }
                 }
             }
         } catch (const std::exception& ex) {
@@ -525,13 +596,13 @@ private:
         }
     }
 
-    /// Creates the NIC and VM for `new_id` and waits for it to run.  Returns
-    /// nullopt, having modified nothing that it did not create, when either
-    /// name is already taken; throws on any other failure.
-    auto create_vm(const NodeId& new_id, const std::string& target_group,
-                   const std::string& subnet_id, const std::optional<std::string>& key)
+    /// Creates the NIC and VM `vm_name` for `new_id` and waits for it to run.
+    /// Returns nullopt, having modified nothing that it did not create, when
+    /// either name is already taken; throws on any other failure.
+    auto create_vm(const NodeId& new_id, const std::string& vm_name,
+                   const std::string& target_group, const std::string& subnet_id,
+                   const std::optional<std::string>& key)
         -> std::optional<peer_info<NodeId, Address>> {
-        std::string vm_name = node_id_to_vm_name(new_id);
         std::string nic_name = vm_name + "-nic";
         const std::string vm_resource = "/providers/Microsoft.Compute/virtualMachines/" + vm_name;
         const std::string nic_resource =
@@ -721,7 +792,13 @@ public:
             fiu_do_on("raft/azure/vm/delete_vm",
                       throw std::runtime_error("fault: raft/azure/vm/delete_vm"););
 
-            std::string vm_name = node_id_to_vm_name(node_id);
+            const auto name = vm_name_of(node_id);
+            if (!name) {
+                throw std::invalid_argument("node " + node_id_str(node_id) +
+                                            " is not a VM in resource group " +
+                                            _cfg.azure.resource_group);
+            }
+            const std::string& vm_name = *name;
             std::string nic_name = vm_name + "-nic";
 
             auto async_url = arm_delete("/providers/Microsoft.Compute/virtualMachines/" + vm_name +
@@ -749,14 +826,83 @@ public:
     /// Returns the desired topology from the configuration.
     [[nodiscard]] auto topology() const -> desired_topology<std::string> { return _cfg.topology; }
 
-    /// Pure string computation: no ARM call. `"kythira-" + cluster_name + "-" + nid`.
-    [[nodiscard]] auto node_id_to_vm_name(const NodeId& nid) const -> std::string {
+    /// Numeric mode. Pure string computation: no ARM call.
+    /// `"kythira-" + cluster_name + "-" + nid`.
+    [[nodiscard]] auto node_id_to_vm_name(const NodeId& nid) const -> std::string
+    requires(!name_is_node_id)
+    {
         return "kythira-" + _cfg.cluster_name + "-" + node_id_str(nid);
     }
 
-    /// Inverse of `node_id_to_vm_name`. Returns nullopt if `name` doesn't match
-    /// this cluster's naming scheme or the trailing segment isn't a valid NodeId.
+    /// The VM a node runs on, or nullopt when there is none. Numeric mode:
+    /// `node_id_to_vm_name`. Composite and string mode: the id's own name, a
+    /// field read; nullopt when the id is not canonical azure-vm text or names
+    /// another resource group.
+    [[nodiscard]] auto vm_name_of(const NodeId& nid) const -> std::optional<std::string> {
+        if constexpr (name_is_node_id) {
+            return vm_name_for_node(_cfg.azure.resource_group, nid);
+        } else {
+            return node_id_to_vm_name(nid);
+        }
+    }
+
+    /// Composite and string mode: `{resource_group, name}` as a NodeId (both
+    /// folded to lower case, as Azure compares them), or nullopt when either
+    /// is not valid in an azure-vm id.
+    static auto node_id_for_vm(std::string_view resource_group, std::string_view name)
+        -> std::optional<NodeId>
+    requires name_is_node_id
+    {
+        try {
+            azure_vm_node_id id{std::string(resource_group), std::string(name)};
+            if constexpr (std::same_as<NodeId, std::string>) {
+                return id.to_string();
+            } else {
+                return id;
+            }
+        } catch (const std::invalid_argument&) {
+            return std::nullopt;
+        }
+    }
+
+    /// Composite and string mode: the VM name, or nullopt when `nid` is not
+    /// canonical azure-vm text or is scoped to a resource group other than
+    /// `resource_group` (compared case-insensitively, as Azure does).
+    static auto vm_name_for_node(std::string_view resource_group, const NodeId& nid)
+        -> std::optional<std::string>
+    requires name_is_node_id
+    {
+        std::optional<azure_vm_node_id> id;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            id = azure_vm_node_id::parse(nid);
+        } else {
+            id = nid;
+        }
+        if (!id ||
+            id->scope() != composite_node_id_detail::to_lower_ascii(std::string(resource_group))) {
+            return std::nullopt;
+        }
+        return std::string(id->native());
+    }
+
+    /// The node id a VM named `name` in this resource group stands for, or
+    /// nullopt. Numeric mode: the inverse of `node_id_to_vm_name`, nullopt if
+    /// `name` doesn't match this cluster's naming scheme or the trailing
+    /// segment isn't a valid NodeId. Composite and string mode: the name itself
+    /// in this resource group, nullopt if it is not a valid azure-vm name.
     [[nodiscard]] auto vm_name_to_node_id(const std::string& name) const -> std::optional<NodeId> {
+        if constexpr (name_is_node_id) {
+            return node_id_for_vm(_cfg.azure.resource_group, name);
+        } else {
+            return numeric_vm_name_to_node_id(name);
+        }
+    }
+
+private:
+    [[nodiscard]] auto numeric_vm_name_to_node_id(const std::string& name) const
+        -> std::optional<NodeId>
+    requires(!name_is_node_id)
+    {
         std::string prefix = "kythira-" + _cfg.cluster_name + "-";
         if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) {
             return std::nullopt;
@@ -776,7 +922,6 @@ public:
         return id;
     }
 
-private:
     // ARM API versions used by this class. Pinned to a known-good published
     // version at the time this spec was written; reverify against the current
     // published Microsoft.Compute/Microsoft.Network API surface before relying
@@ -806,8 +951,25 @@ private:
     std::string _resource_id_base;
 
     /// Every node id this manager has assessed or allocated; see
-    /// `next_node_id`. Kept across copies and moves of this manager.
+    /// `next_node_id`. Kept across copies and moves of this manager. Numeric
+    /// mode only.
     numeric_node_id_floor _id_floor;
+
+    /// Numeric mode: raises `_id_floor` to `nid`. Composite and string mode
+    /// allocate nothing, so there is no floor to keep.
+    void raise_id_floor(const NodeId& nid) const {
+        if constexpr (!name_is_node_id) {
+            _id_floor.raise(nid);
+        }
+    }
+
+    /// Composite and string mode: `kythira-{cluster}-{suffix}` within
+    /// `max_vm_name_length`, with the cluster part folded to lower case so the
+    /// name ARM stores is exactly the id's native part.
+    [[nodiscard]] auto generated_vm_name(std::string_view suffix) const -> std::string {
+        return generated_node_name(composite_node_id_detail::to_lower_ascii(_cfg.cluster_name),
+                                   suffix, max_vm_name_length);
+    }
 
     /// Scans every VM tagged `kythira:cluster = {cluster_name}` (all power
     /// states — a VM mid-deletion is still counted) and returns one above both
@@ -828,7 +990,9 @@ private:
     /// .kiro/specs/azure-cloud-services/requirements.md). It is in memory
     /// only: a new leader's manager starts again from the scan, and the Raft
     /// node refuses a replacement id that is already a member.
-    [[nodiscard]] auto next_node_id() const -> NodeId {
+    [[nodiscard]] auto next_node_id() const -> NodeId
+    requires(!name_is_node_id)
+    {
         std::uint64_t max_id = 0;
         // Lists the resource group's VMs unfiltered and matches the cluster tag
         // here rather than server-side.
@@ -870,13 +1034,7 @@ private:
                 if (const auto* name = vm.as_object().if_contains("name");
                     name != nullptr && name->is_string()) {
                     if (auto from_name = vm_name_to_node_id(std::string(name->as_string()))) {
-                        if constexpr (std::is_same_v<NodeId, std::string>) {
-                            if (auto v = node_id_traits<std::uint64_t>::from_text(*from_name)) {
-                                max_id = std::max(max_id, *v);
-                            }
-                        } else {
-                            max_id = std::max(max_id, static_cast<std::uint64_t>(*from_name));
-                        }
+                        max_id = std::max(max_id, static_cast<std::uint64_t>(*from_name));
                     }
                 }
                 if (!vm.as_object().contains("tags")) {
@@ -1181,9 +1339,10 @@ private:
     /// `<NIC private IP>:<node_port>` for @p nid, or empty when it cannot be
     /// read (see `find_by_idempotency_key`).
     [[nodiscard]] auto vm_address(const NodeId& nid) const -> Address {
+        const auto vm_name = vm_name_of(nid).value_or(std::string{});
         try {
-            auto nic = arm_get("/providers/Microsoft.Network/networkInterfaces/" +
-                               node_id_to_vm_name(nid) + "-nic?api-version=" + network_api_version);
+            auto nic = arm_get("/providers/Microsoft.Network/networkInterfaces/" + vm_name +
+                               "-nic?api-version=" + network_api_version);
             const auto& ip_configs = nic.at("properties").at("ipConfigurations").as_array();
             if (!ip_configs.empty()) {
                 const auto* ip =
@@ -1195,8 +1354,7 @@ private:
             }
         } catch (const std::exception& ex) {
             std::cerr << "[azure_vm_quorum_manager::find_by_idempotency_key] NIC read for "
-                      << node_id_to_vm_name(nid) << " failed (address left empty): " << ex.what()
-                      << "\n";
+                      << vm_name << " failed (address left empty): " << ex.what() << "\n";
         }
         return static_cast<Address>(std::string{});
     }
@@ -1283,7 +1441,8 @@ private:
     }
 
     /// Substitutes {NODE_ID}, {NODE_PORT}, {CLUSTER}, {GROUP} in
-    /// custom_data_template.
+    /// custom_data_template. {NODE_ID} is the id's text: decimal in numeric
+    /// mode, canonical composite text in composite and string mode.
     [[nodiscard]] auto render_custom_data(const NodeId& nid, const std::string& group) const
         -> std::string {
         std::string result = _cfg.custom_data_template;
@@ -1370,6 +1529,12 @@ private:
 static_assert(quorum_manager<azure_vm_quorum_manager<std::uint64_t, std::string>, std::uint64_t,
                              std::string, std::string>,
               "azure_vm_quorum_manager must satisfy quorum_manager");
+static_assert(quorum_manager<azure_vm_quorum_manager<azure_vm_node_id, std::string>,
+                             azure_vm_node_id, std::string, std::string>,
+              "azure_vm_quorum_manager<azure_vm_node_id> must satisfy quorum_manager");
+static_assert(quorum_manager<azure_vm_quorum_manager<std::string, std::string>, std::string,
+                             std::string, std::string>,
+              "azure_vm_quorum_manager<std::string> must satisfy quorum_manager");
 
 }  // namespace kythira
 

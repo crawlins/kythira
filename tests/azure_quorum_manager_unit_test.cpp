@@ -11,7 +11,9 @@
 #include <raft/azure_vm_quorum_manager.hpp>
 #include <raft/azure_vmss_quorum_manager.hpp>
 #include <raft/elastic_capacity_controller.hpp>
+#include <raft/generated_node_name.hpp>
 
+#include <azure/core/base64.hpp>
 #include <azure/core/credentials/credentials.hpp>
 #include <azure/core/http/raw_response.hpp>
 #include <azure/core/http/transport.hpp>
@@ -19,6 +21,7 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -28,6 +31,8 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #ifdef FIU_ENABLE
@@ -257,9 +262,6 @@ BOOST_AUTO_TEST_CASE(vm_name_to_node_id_rejects_non_canonical_suffixes) {
           "kythira-test-cluster-1x", "kythira-test-cluster-18446744073709551616"}) {
         BOOST_CHECK_MESSAGE(!mgr.vm_name_to_node_id(name).has_value(), "accepted " << name);
     }
-    kythira::azure_vm_quorum_manager<std::string, std::string> text_mgr{make_vm_config()};
-    BOOST_CHECK_EQUAL(text_mgr.vm_name_to_node_id("kythira-test-cluster-12").value(), "12");
-    BOOST_CHECK(!text_mgr.vm_name_to_node_id("kythira-test-cluster-012").has_value());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -337,6 +339,22 @@ public:
     std::vector<std::string> pages{R"({"value":[]})"};
     /// Names (VM or NIC) that already exist, e.g. created by another process.
     std::set<std::string> existing;
+    /// When set, a VM's instanceView reflects `existing` and `stopped`: 404
+    /// for a VM that does not exist, deallocated for one in `stopped`. When
+    /// clear, every instanceView reads running, as the older cases expect.
+    bool strict_instance_view = false;
+    std::set<std::string> stopped;
+
+    /// The VM an instanceView URL addresses, or "".
+    static auto instance_view_vm(const std::string& url) -> std::string {
+        const std::string kind = "/virtualMachines/";
+        const auto at = url.find(kind);
+        const auto view = url.find("/instanceView");
+        if (at == std::string::npos || view == std::string::npos || view < at) {
+            return "";
+        }
+        return url.substr(at + kind.size(), view - at - kind.size());
+    }
 
     /// The resource name a single-resource URL addresses, or "" for a list
     /// or a sub-resource such as instanceView.
@@ -375,7 +393,15 @@ public:
         } else if (call.method == "GET" && url.find("/virtualMachines?") != std::string::npos) {
             reply = pages.at(0);
         } else if (call.method == "GET" && url.find("/instanceView") != std::string::npos) {
-            reply = R"({"statuses":[{"code":"PowerState/running"}]})";
+            const auto vm = instance_view_vm(url);
+            if (strict_instance_view && !existing.contains(vm)) {
+                status = Azure::Core::Http::HttpStatusCode::NotFound;
+                reply = R"({"error":{"code":"ResourceNotFound","message":"not found"}})";
+            } else if (strict_instance_view && stopped.contains(vm)) {
+                reply = R"({"statuses":[{"code":"PowerState/deallocated"}]})";
+            } else {
+                reply = R"({"statuses":[{"code":"PowerState/running"}]})";
+            }
         } else if (call.method == "GET" && !name.empty() && !existing.contains(name)) {
             status = Azure::Core::Http::HttpStatusCode::NotFound;
             reply = R"({"error":{"code":"ResourceNotFound","message":"not found"}})";
@@ -423,6 +449,17 @@ public:
         }
         BOOST_FAIL("no VM PUT was sent");
         return {};
+    }
+
+    /// Every VM PUT the manager sent, as (VM name, body), in order.
+    [[nodiscard]] auto vm_puts() const -> std::vector<std::pair<std::string, boost::json::value>> {
+        std::vector<std::pair<std::string, boost::json::value>> out;
+        for (const auto& c : calls()) {
+            if (c.method == "PUT" && c.url.find("/virtualMachines/") != std::string::npos) {
+                out.emplace_back(resource_name(c.url), boost::json::parse(c.body));
+            }
+        }
+        return out;
     }
 
 private:
@@ -682,6 +719,260 @@ BOOST_AUTO_TEST_CASE(next_node_id_reads_every_page_and_vm_names) {
                   R"({"value":[{"name":"kythira-other-cluster-40","tags":{}}]})"};
     vm_mgr_t mgr{keyed_vm_config(arm)};
     BOOST_CHECK_EQUAL(mgr.provision_node("1", std::nullopt).get().node_id, 12u);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Composite and string mode (cloud-composite-node-ids Requirement 5) ────────
+//
+// The node id is the VM: {resource group, VM name}. The manager generates the
+// name before the create, so nothing is listed or allocated, and {NODE_ID} in
+// the custom data and the kythira:node-id tag carry canonical text.
+
+namespace {
+
+static_assert(kythira::quorum_manager<kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id>,
+                                      kythira::azure_vm_node_id, std::string, std::string>);
+static_assert(kythira::quorum_manager<kythira::azure_vm_quorum_manager<std::string>, std::string,
+                                      std::string, std::string>);
+static_assert(kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id>::name_is_node_id);
+static_assert(kythira::azure_vm_quorum_manager<std::string>::name_is_node_id);
+static_assert(!kythira::azure_vm_quorum_manager<std::uint64_t>::name_is_node_id);
+
+/// `kythira-<cluster part>-<8 lower-case base32>`.
+auto is_generated_vm_name(const std::string& name, const std::string& cluster_part) -> bool {
+    const std::string prefix = "kythira-" + cluster_part + "-";
+    return name.size() == prefix.size() + kythira::generated_name_suffix_length &&
+           name.starts_with(prefix) && std::ranges::all_of(name.substr(prefix.size()), [](char c) {
+               return kythira::generated_name_alphabet.find(c) != std::string_view::npos;
+           });
+}
+
+template<typename NodeId> auto vm_id(const std::string& rg, const std::string& name) -> NodeId {
+    kythira::azure_vm_node_id id{rg, name};
+    if constexpr (std::same_as<NodeId, std::string>) {
+        return id.to_string();
+    } else {
+        return id;
+    }
+}
+
+auto decoded_custom_data(const boost::json::value& vm_body) -> std::string {
+    const auto bytes = Azure::Core::Convert::Base64Decode(
+        std::string(vm_body.at("properties").at("osProfile").at("customData").as_string()));
+    return {bytes.begin(), bytes.end()};
+}
+
+auto vm_list_reads(const ArmDouble& arm) -> std::size_t {
+    return static_cast<std::size_t>(std::ranges::count_if(arm.calls(), [](const arm_call& c) {
+        return c.method == "GET" && c.url.find("/virtualMachines?") != std::string::npos;
+    }));
+}
+
+template<typename NodeId> auto vm_placements(const std::vector<NodeId>& ids) {
+    std::vector<kythira::node_placement<NodeId, std::string>> out;
+    for (const auto& id : ids) {
+        out.push_back({.node_id = id, .group_id = "1"});
+    }
+    return out;
+}
+
+/// Provision three VMs, check what each create carried, assess them, stop
+/// one, decommission one: the same walk for composite and string mode.
+template<typename NodeId> void run_vm_lifecycle() {
+    auto arm = std::make_shared<ArmDouble>();
+    arm->strict_instance_view = true;
+    auto cfg = keyed_vm_config(arm);
+    cfg.custom_data_template = "node={NODE_ID} cluster={CLUSTER}";
+    kythira::azure_vm_quorum_manager<NodeId> mgr{cfg};
+
+    std::vector<NodeId> ids;
+    for (std::size_t i = 0; i < 3; ++i) {
+        auto peer = mgr.provision_node("1", std::nullopt).get();
+        const auto puts = arm->vm_puts();
+        BOOST_REQUIRE_EQUAL(puts.size(), i + 1);
+        const auto& [name, body] = puts.back();
+        BOOST_CHECK_MESSAGE(is_generated_vm_name(name, "test-cluster"), "name " << name);
+        BOOST_CHECK(peer.node_id == vm_id<NodeId>("test-rg", name));
+        BOOST_CHECK_EQUAL(peer.address, "10.0.0.5:7000");
+        BOOST_CHECK_EQUAL(mgr.vm_name_of(peer.node_id).value_or(""), name);
+        BOOST_CHECK(mgr.vm_name_to_node_id(name) == std::optional<NodeId>{peer.node_id});
+
+        // The id is known before the create, so it rides in the create.
+        const auto text = "azure-vm:test-rg:" + name;
+        BOOST_CHECK_EQUAL(body.at("tags").at("kythira:node-id").as_string(), text);
+        BOOST_CHECK_EQUAL(body.at("properties").at("osProfile").at("computerName").as_string(),
+                          name);
+        BOOST_CHECK_EQUAL(decoded_custom_data(body), "node=" + text + " cluster=test-cluster");
+        BOOST_CHECK(arm->existing.contains(name + "-nic"));
+        ids.push_back(peer.node_id);
+    }
+    // Nothing was allocated: no VM list was read, and the names differ.
+    BOOST_CHECK_EQUAL(vm_list_reads(*arm), 0u);
+    BOOST_CHECK(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
+
+    auto health = mgr.assess_quorum(vm_placements(ids)).get();
+    BOOST_CHECK(health.status == kythira::quorum_status::healthy);
+    BOOST_CHECK_EQUAL(health.live_node_count, 3u);
+
+    arm->stopped.insert(*mgr.vm_name_of(ids[0]));
+    health = mgr.assess_quorum(vm_placements(ids)).get();
+    BOOST_CHECK(health.status == kythira::quorum_status::critical);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1u);
+    BOOST_CHECK(health.unreachable_nodes[0] == ids[0]);
+
+    // Decommission deletes that VM and its NIC, and nothing else.
+    const auto victim = *mgr.vm_name_of(ids[1]);
+    mgr.decommission_node(ids[1]).get();
+    BOOST_CHECK_EQUAL(vm_node_id_floor::deletes_of(*arm, victim), 1u);
+    BOOST_CHECK_EQUAL(vm_node_id_floor::deletes_of(*arm, victim + "-nic"), 1u);
+    BOOST_CHECK_EQUAL(vm_node_id_floor::deletes_of(*arm, *mgr.vm_name_of(ids[2])), 0u);
+    health = mgr.assess_quorum(vm_placements(ids)).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK(health.status == kythira::quorum_status::lost);
+}
+
+/// Refuses the first `refuse` VM names the manager checks, as if another
+/// process held them: the existence GET finds the VM.
+class TakenNameArm : public ArmDouble {
+public:
+    std::size_t refuse = 1;
+    std::vector<std::string> refused;
+
+    auto Send(Azure::Core::Http::Request& request, const Azure::Core::Context& context)
+        -> std::unique_ptr<Azure::Core::Http::RawResponse> override {
+        const auto url = request.GetUrl().GetAbsoluteUrl();
+        const auto name = resource_name(url);
+        if (refuse > 0 && request.GetMethod() == Azure::Core::Http::HttpMethod::Get &&
+            url.find("/virtualMachines/") != std::string::npos && !name.empty()) {
+            --refuse;
+            refused.push_back(name);
+            existing.insert(name);
+        }
+        return ArmDouble::Send(request, context);
+    }
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(vm_composite_node_id)
+
+BOOST_AUTO_TEST_CASE(composite_mode_lifecycle) {
+    run_vm_lifecycle<kythira::azure_vm_node_id>();
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_lifecycle) {
+    run_vm_lifecycle<std::string>();
+}
+
+// Azure compares VM and resource group names case-insensitively, and the id
+// folds both, so the generated name is lower case and is exactly the id's
+// native part; a long cluster name is cut to keep the name within 64.
+BOOST_AUTO_TEST_CASE(composite_mode_name_is_lower_case_and_within_the_limit) {
+    auto arm = std::make_shared<ArmDouble>();
+    auto cfg = keyed_vm_config(arm);
+    cfg.azure.resource_group = "Test-RG";
+    cfg.cluster_name = "Prod-" + std::string(60, 'C');
+    kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id> mgr{cfg};
+
+    auto peer = mgr.provision_node("1", std::nullopt).get();
+    const auto name = arm->vm_puts().back().first;
+    BOOST_CHECK_EQUAL(name.size(), 64u);
+    // 64 - "kythira-" - "-" - 8 leaves 47 characters of the cluster name.
+    BOOST_CHECK_MESSAGE(is_generated_vm_name(name, "prod-" + std::string(42, 'c')),
+                        "name " << name);
+    BOOST_CHECK_EQUAL(peer.node_id.scope(), "test-rg");
+    BOOST_CHECK_EQUAL(peer.node_id.native(), name);
+    // The tag keeps the cluster name as configured.
+    BOOST_CHECK_EQUAL(arm->vm_put().at("tags").at("kythira:cluster").as_string(), cfg.cluster_name);
+}
+
+// A resource group or cluster name that cannot form an id is refused up
+// front in the textual modes; numeric mode does not use them as one.
+BOOST_AUTO_TEST_CASE(textual_modes_require_a_valid_scope_and_name) {
+    auto cfg = make_vm_config();
+    cfg.cluster_name = "bad/name";
+    BOOST_CHECK_THROW(kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id>{cfg},
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(kythira::azure_vm_quorum_manager<std::string>{cfg}, std::invalid_argument);
+    BOOST_CHECK_NO_THROW(kythira::azure_vm_quorum_manager<std::uint64_t>{cfg});
+
+    cfg = make_vm_config();
+    cfg.azure.resource_group = "rg with spaces";
+    BOOST_CHECK_THROW(kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id>{cfg},
+                      std::invalid_argument);
+}
+
+// A name some other VM already holds is retried under a fresh name, and the
+// holder is neither updated nor deleted.
+BOOST_AUTO_TEST_CASE(composite_mode_retries_a_name_collision) {
+    auto arm = std::make_shared<TakenNameArm>();
+    kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id> mgr{keyed_vm_config(arm)};
+
+    auto peer = mgr.provision_node("1", std::nullopt).get();
+    BOOST_REQUIRE_EQUAL(arm->refused.size(), 1u);
+    const auto& taken = arm->refused.front();
+    BOOST_CHECK_NE(peer.node_id.native(), taken);
+    BOOST_CHECK_EQUAL(vm_node_id_floor::puts_to(*arm, taken), 0u);
+    BOOST_CHECK_EQUAL(vm_node_id_floor::deletes_of(*arm, taken), 0u);
+
+    // Every attempt colliding gives up, still touching nothing.
+    arm->refuse = 100;
+    const auto puts_before = arm->vm_puts().size();
+    BOOST_CHECK_THROW(mgr.provision_node("1", std::nullopt).get(), std::runtime_error);
+    BOOST_CHECK_EQUAL(arm->refused.size(), 1u + decltype(mgr)::max_id_claim_attempts);
+    BOOST_CHECK_EQUAL(arm->vm_puts().size(), puts_before);
+}
+
+// An id in another resource group is unreachable without an ARM call and
+// does not fail the assessment; decommission refuses it.
+BOOST_AUTO_TEST_CASE(composite_mode_reports_foreign_ids_unreachable) {
+    auto arm = std::make_shared<ArmDouble>();
+    arm->strict_instance_view = true;
+    arm->existing = {"kythira-test-cluster-aaaaaaaa", "kythira-test-cluster-aaaaaaaa-nic"};
+    kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id> mgr{keyed_vm_config(arm)};
+
+    std::vector<kythira::azure_vm_node_id> ids{{"test-rg", "kythira-test-cluster-aaaaaaaa"},
+                                               {"other-rg", "kythira-test-cluster-aaaaaaaa"}};
+    auto health = mgr.assess_quorum(vm_placements(ids)).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_REQUIRE_EQUAL(health.unreachable_nodes.size(), 1u);
+    BOOST_CHECK(health.unreachable_nodes[0] == ids[1]);
+    BOOST_CHECK_EQUAL(arm->calls().size(), 1u);  // one instanceView, for ids[0]
+
+    BOOST_CHECK_THROW(mgr.decommission_node(ids[1]).get(), std::runtime_error);
+    BOOST_CHECK_EQUAL(vm_node_id_floor::deletes_of(*arm, "kythira-test-cluster-aaaaaaaa"), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(string_mode_rejects_non_canonical_text) {
+    auto arm = std::make_shared<ArmDouble>();
+    arm->strict_instance_view = true;
+    arm->existing = {"kythira-test-cluster-aaaaaaaa", "kythira-test-cluster-1"};
+    kythira::azure_vm_quorum_manager<std::string> mgr{keyed_vm_config(arm)};
+
+    std::vector<std::string> ids{"azure-vm:test-rg:kythira-test-cluster-aaaaaaaa",
+                                 "azure-vm:TEST-RG:kythira-test-cluster-aaaaaaaa",
+                                 "kythira-test-cluster-aaaaaaaa", "1"};
+    auto health = mgr.assess_quorum(vm_placements(ids)).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+    BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), 3u);
+    BOOST_CHECK_THROW(mgr.decommission_node("1").get(), std::runtime_error);
+    BOOST_CHECK_EQUAL(vm_node_id_floor::deletes_of(*arm, "kythira-test-cluster-1"), 0u);
+}
+
+// The keyed lookup takes the id from the VM's own name.
+BOOST_AUTO_TEST_CASE(composite_mode_find_by_idempotency_key_reads_the_name) {
+    auto arm = std::make_shared<ArmDouble>();
+    arm->pages = {R"({"value":[)" +
+                  vm_entry("kythira-test-cluster-abcdefgh", "test-cluster", "cap-1-2-3") + "]}"};
+    arm->existing = {"kythira-test-cluster-abcdefgh-nic"};
+    kythira::azure_vm_quorum_manager<kythira::azure_vm_node_id> mgr{keyed_vm_config(arm)};
+
+    auto found = mgr.find_by_idempotency_key("cap-1-2-3").get();
+    BOOST_REQUIRE(found.has_value());
+    BOOST_CHECK(found->node_id ==
+                kythira::azure_vm_node_id("test-rg", "kythira-test-cluster-abcdefgh"));
+    BOOST_CHECK_EQUAL(found->address, "10.0.0.5:7000");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
