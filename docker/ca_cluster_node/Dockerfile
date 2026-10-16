@@ -14,12 +14,21 @@ COPY . .
 
 # uname -m-derived triplet so the same Dockerfile builds correctly whether
 # the (native, non-emulated) build host is x86_64 or arm64.
+#
+# -DKYTHIRA_NODE_ID_KIND=numeric pins the binary to numeric node ids against
+# the text default (see that block in CMakeLists.txt). The consumer is every
+# cluster deployed from this image: the ECS task definitions, the Packer AMI
+# (packer/ca_cluster_node builds its binary from this Dockerfile) and the
+# clusters running so far all use NODE_ID=1..3, and a cluster cannot change
+# id kind in place. Build a text image deliberately, by changing this pin
+# and rolling out a new cluster, not by accident.
 RUN case "$(uname -m)" in \
         aarch64) TRIPLET=arm64-linux ;; \
         *)       TRIPLET=x64-linux ;; \
     esac; \
     cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DKYTHIRA_NODE_ID_KIND=numeric \
         -DCMAKE_PREFIX_PATH=/src/vcpkg_installed/$TRIPLET && \
     cmake --build build --target ca_cluster_node
 

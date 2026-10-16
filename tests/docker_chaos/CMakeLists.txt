@@ -733,5 +733,39 @@ else()
     message(STATUS "No container runtime found — all docker-* targets disabled")
 endif()
 
+# Two suites model a numeric cluster and cannot pass against binaries built
+# with KYTHIRA_NODE_ID_KIND=text (the Kconfig default since
+# .kiro/specs/cloud-composite-node-ids/ task 10.3):
+#   * quorum-healing-tests: chaos_node's in-container docker_quorum_manager
+#     becomes docker_quorum_manager<std::string>, which names replacements by
+#     a random suffix where the harness waits for kythira-<cluster>-<n>, and
+#     the compose file's QUORUM_CLUSTER makes the text-mode default peer
+#     address "{native}:<port>", which for a decimal id is not a host name.
+#   * docker-elastic-capacity-tests: the test reads the admitted node from
+#     /capacity/status as a JSON number; a text build writes a string.
+# Rather than fail in ways that look like Raft bugs, both refuse to run in a
+# text build. The container-test workflows pin -DKYTHIRA_NODE_ID_KIND=numeric
+# for them, so this fires only when someone builds the two suites against
+# text binaries; run them from a numeric build instead
+# (-DKYTHIRA_NODE_ID_KIND=numeric, configs/ci_numeric_node_id_defconfig, or
+# CONFIG_KYTHIRA_NODE_ID_NUMERIC=y). KYTHIRA_HOST_NODE_ID_KIND is the kind the
+# root CMakeLists.txt resolved, whichever way it was chosen.
+if(KYTHIRA_HOST_NODE_ID_KIND STREQUAL "text")
+    add_custom_target(docker-numeric-node-id-guard
+        COMMAND ${CMAKE_COMMAND} -E echo
+                "quorum-healing-tests and docker-elastic-capacity-tests model a numeric cluster,"
+                "but this build has KYTHIRA_NODE_ID_KIND=text. Configure with"
+                "-DKYTHIRA_NODE_ID_KIND=numeric, or with CONFIG_KYTHIRA_NODE_ID_NUMERIC=y"
+                "e.g. from configs/ci_numeric_node_id_defconfig."
+        COMMAND ${CMAKE_COMMAND} -E false
+        VERBATIM
+    )
+    foreach(_t quorum-healing-tests docker-elastic-capacity-tests)
+        if(TARGET ${_t})
+            add_dependencies(${_t} docker-numeric-node-id-guard)
+        endif()
+    endforeach()
+endif()
+
 # Boost.Test case reports for CI; see cmake/TestReports.cmake.
 kythira_attach_test_reports()

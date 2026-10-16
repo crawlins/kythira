@@ -16,7 +16,7 @@ menu "Host Binaries"
 
 choice KYTHIRA_NODE_ID_KIND
 	prompt "Node id type for the host binaries"
-	default KYTHIRA_NODE_ID_NUMERIC
+	default KYTHIRA_NODE_ID_TEXT
 	help
 	  The node_id_type of every node-id-taking binary in cmd/
 	  (chaos_node, ca_cluster_node, multi_raft_node, multi_raft_bench,
@@ -24,16 +24,26 @@ choice KYTHIRA_NODE_ID_KIND
 	  include/raft/host_node_id.hpp. See
 	  .kiro/specs/cloud-composite-node-ids/ Requirement 10.
 
-	  numeric stays the default until the textual-id work has landed;
-	  flipping it is a separate, breaking change (task 10.3), because a
-	  cluster cannot change id kind in place.
+	  text is the default (task 10.3): the quorum managers default to
+	  composite ids, and only a text build can run on them. A cluster
+	  cannot change id kind in place, so a cluster whose nodes were
+	  built numeric must stay numeric: select KYTHIRA_NODE_ID_NUMERIC
+	  (CONFIG_KYTHIRA_NODE_ID_NUMERIC=y in its .config or defconfig).
+
+	  A configure without kconfiglib follows this default too, so
+	  every build agrees on what the default is. A build that must be
+	  numeric without kconfiglib pins it with the CMake cache variable
+	  -DKYTHIRA_NODE_ID_KIND=numeric; that variable also overrides
+	  this default where kconfiglib is installed, and is a configure
+	  error if it contradicts a .config or defconfig that sets this
+	  choice.
 
 config KYTHIRA_NODE_ID_NUMERIC
 	bool "numeric (std::uint64_t)"
 	help
-	  Node ids are decimal integers, as they always have been.
-	  --node-id=metadata:<provider> is refused: no cloud instance id
-	  fits a number.
+	  Node ids are decimal integers, as they always have been. Select
+	  this for an existing numeric cluster. --node-id=metadata:<provider>
+	  is refused: no cloud instance id fits a number.
 
 config KYTHIRA_NODE_ID_TEXT
 	bool "text (std::string, canonical composite text)"
@@ -43,8 +53,10 @@ config KYTHIRA_NODE_ID_TEXT
 	  aws-ec2:us-east-1:i-0123456789abcdef0) or plain decimal text,
 	  and --node-id / NODE_ID also accept metadata:<provider> (aws,
 	  alibaba, azure, gcp, oci) to read this host's own id from its
-	  instance metadata service at start-up. Backs the
-	  KYTHIRA_NODE_ID_TEXT macro.
+	  instance metadata service at start-up. A plain decimal id is
+	  normalised, so a numeric cluster's command lines still parse, but
+	  JSON output carries ids as strings and ca_cluster_node names peers
+	  by URI SAN. Backs the KYTHIRA_NODE_ID_TEXT macro.
 
 endchoice
 

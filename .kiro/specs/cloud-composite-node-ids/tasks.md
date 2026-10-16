@@ -230,13 +230,36 @@ the audit and `design.md` for the types and per-component changes.
     project memory note
   - _Requirements: 13.2, 13.3_
 
-- [ ] 10. Documentation and default flip
+- [x] 10. Documentation and default flip
   - [x] 10.1 Provider READMEs and the quorum-management doc: composite
     ids, `--node-id=metadata:<provider>`, numeric mode for existing
     clusters
   - [x] 10.2 Point the provider specs' node-id criteria to this spec
-  - [ ] 10.3 Separately, once tasks 5-7 are on main, flip
+  - [x] 10.3 Separately, once tasks 5-7 are on main, flip
     `KYTHIRA_NODE_ID_KIND` to `text` (breaking)
+  - Done October 16, 2026, after tasks 6 and 7.2 reached `main` (#562),
+    in the same change as task 8, whose binaries it flips. As built: the
+    Kconfig default is `text`, so `ci_full_defconfig` and every defconfig
+    derived from it build text binaries, and the build-and-test legs run
+    the `ca_cluster_node` suites against them (with decimal ids, which a
+    text build normalises; all three suites pass locally that way).
+    `configs/ci_numeric_node_id_defconfig` replaces
+    `ci_text_node_id_defconfig`, so Config Variants still builds both
+    kinds. Deviation: the CMake cache variable `KYTHIRA_NODE_ID_KIND`
+    (`-DKYTHIRA_NODE_ID_KIND=numeric|text`) picks the kind without
+    kconfiglib, and a configure without kconfiglib otherwise follows the
+    text default, so "default" means the same on every machine. The
+    order is Kconfig (a config that sets the choice), then the override
+    (a configure error if it contradicts that config), then text. The
+    builds that stay numeric pin the override: the `ca_cluster_node`
+    Dockerfile (and the ECS task definitions and AMI built from it), and
+    the container-test and arm64 smoke-test workflows, because
+    `quorum-healing-tests` and `docker-elastic-capacity-tests` model
+    numeric clusters (container names `kythira-<cluster>-<n>`, the
+    admitted node read as a JSON number). Those two refuse to build in a
+    text build instead of failing obscurely. The other real-cloud jobs
+    run no build-tree host binary (the AWS job deploys the pinned AMI), so
+    they are not pinned.
   - _Requirements: 10.1_
 
 ## Notes

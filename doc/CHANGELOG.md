@@ -5,6 +5,52 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 16, 2026)
 
+- **Breaking: the host binaries default to textual node ids.**
+  `KYTHIRA_NODE_ID_KIND` now defaults to `text`, so `chaos_node`,
+  `ca_cluster_node`, `multi_raft_node`, `multi_raft_bench` and
+  `redis_gateway_node`, in any configure that does not choose numeric
+  (`configs/ci_full_defconfig`, `menuconfig` and a bare configure, with or
+  without kconfiglib, included), use
+  `std::string` node ids holding canonical composite text and accept
+  `--node-id=metadata:<provider>` (`aws`, `alibaba`, `azure`, `gcp`,
+  `oci`) to read their own id from the instance metadata service. Decimal
+  ids still parse (normalised), but node ids in JSON output become strings,
+  `ca_cluster_node` names peers by `urn:kythira:node:` URI SANs, and
+  `multi_raft_node`'s capacity plane names the containers it creates by a
+  random suffix. **To stay numeric**, which an existing cluster must since
+  it cannot change id kind in place, set `CONFIG_KYTHIRA_NODE_ID_NUMERIC=y`
+  (as the new `configs/ci_numeric_node_id_defconfig` does), or, with or
+  without kconfiglib, configure with the new CMake cache variable
+  `-DKYTHIRA_NODE_ID_KIND=numeric`. A configure without kconfiglib now
+  follows the text default too, so installing kconfiglib never changes a
+  build's ids; the override is refused if it contradicts a `.config` that
+  sets the choice, and configure prints the kind and whether it came from
+  Kconfig, the override or the default. The builds that must stay numeric
+  pin the override where they are built: the `ca_cluster_node` Dockerfile
+  (so its ECS task definitions and AMI), and the container-test and arm64
+  smoke-test workflows, for `quorum-healing-tests` and
+  `docker-elastic-capacity-tests`, which model numeric clusters and refuse
+  to build against text binaries. CI's Config Variants job now builds the
+  numeric binaries (`ci_text_node_id_defconfig` is replaced by
+  `ci_numeric_node_id_defconfig`). Spec `cloud-composite-node-ids` task
+  10.3.
+
+- **Operator docs for composite node ids.** `README.md` gains "Node ids in
+  the host binaries" (the two kinds, `metadata:<provider>`, and how a
+  numeric cluster stays numeric); the AWS, Alibaba, Azure, GCP and OCI
+  quorum-manager READMEs, `docker/ca_cluster_node/README.md`,
+  `doc/redis-gateway.md` and `doc/elastic_shard_capacity.md` say how a
+  node gets its composite id and what changes in a text build. The older
+  provider specs carry a dated note pointing their node-id criteria at
+  `cloud-composite-node-ids` (tasks 10.1, 10.2).
+
+- **The host binaries build over either node id kind, and learn their own
+  id from instance metadata.** `include/raft/self_node_id.hpp` (bounded,
+  opt-in metadata lookups for five clouds), `include/raft/host_node_id.hpp`
+  and the `KYTHIRA_NODE_ID_KIND` Kconfig choice; `multi_raft_node`'s
+  control server writes textual ids as JSON strings. Spec
+  `cloud-composite-node-ids` task 8.
+
 - **Every Raft transport works with textual and composite node ids.**
   The cpp-httplib, Boost.Beast, Proxygen, gRPC and CoAP (libcoap,
   cantcoap, libnyoci) clients and servers take a `NodeId` template

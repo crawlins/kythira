@@ -1888,11 +1888,74 @@ foreach(_kythira_host_node_id_dep httplib::httplib boost_json)
         target_link_libraries(kythira_host_node_id INTERFACE ${_kythira_host_node_id_dep})
     endif()
 endforeach()
-if(KCONFIG_KYTHIRA_NODE_ID_TEXT)
-    target_compile_definitions(kythira_host_node_id INTERFACE KYTHIRA_NODE_ID_TEXT=1)
-    message(STATUS "Host binaries: node ids are canonical composite text (KYTHIRA_NODE_ID_KIND=text)")
+#
+# Which kind is chosen, in order:
+#
+#   1. Kconfig, when kconfiglib applied a .config or defconfig that sets
+#      CONFIG_KYTHIRA_NODE_ID_NUMERIC=y or CONFIG_KYTHIRA_NODE_ID_TEXT=y
+#      (configs/ci_numeric_node_id_defconfig is one).
+#   2. The explicit override -DKYTHIRA_NODE_ID_KIND=numeric|text. It needs no
+#      kconfiglib, which is the point: the zero-config builds (the
+#      ca_cluster_node Dockerfile, the container-test workflows) have none.
+#      Given together with a config that sets the choice the other way, it is
+#      a configure error rather than a silent winner; the same way round it
+#      is accepted.
+#   3. The default, text. That is the Kconfig default, and a configure
+#      without kconfiglib follows it too, so "default" means one thing on
+#      every machine. It must not depend on whether a Python package happens
+#      to be installed: adding kconfiglib to an image would otherwise change
+#      its node ids without any file saying so.
+#
+# Every build that must stay numeric therefore says so where it is built,
+# with step 1 or step 2, next to a comment naming the consumer that needs it.
+# KYTHIRA_HOST_NODE_ID_KIND carries the result to tests/docker_chaos, whose
+# numeric-only suites refuse to build against text binaries.
+set(KYTHIRA_NODE_ID_KIND "" CACHE STRING
+    "Node id kind for the host binaries: numeric or text. Empty = Kconfig if a config sets it, else text.")
+set_property(CACHE KYTHIRA_NODE_ID_KIND PROPERTY STRINGS "" numeric text)
+if(NOT KYTHIRA_NODE_ID_KIND STREQUAL "" AND NOT KYTHIRA_NODE_ID_KIND MATCHES "^(numeric|text)$")
+    message(FATAL_ERROR "KYTHIRA_NODE_ID_KIND=${KYTHIRA_NODE_ID_KIND}: expected numeric or text")
+endif()
+set(_kythira_cfg_node_id_kind "")
+if(_KYTHIRA_KCONFIG_OK AND _KYTHIRA_KCONFIG_CFG AND EXISTS "${_KYTHIRA_KCONFIG_CFG}")
+    file(STRINGS "${_KYTHIRA_KCONFIG_CFG}" _kythira_cfg_node_id_lines
+         REGEX "^CONFIG_KYTHIRA_NODE_ID_(NUMERIC|TEXT)=y")
+    if(_kythira_cfg_node_id_lines MATCHES "CONFIG_KYTHIRA_NODE_ID_TEXT=y")
+        set(_kythira_cfg_node_id_kind text)
+    elseif(_kythira_cfg_node_id_lines MATCHES "CONFIG_KYTHIRA_NODE_ID_NUMERIC=y")
+        set(_kythira_cfg_node_id_kind numeric)
+    endif()
+endif()
+if(_kythira_cfg_node_id_kind AND KYTHIRA_NODE_ID_KIND
+   AND NOT _kythira_cfg_node_id_kind STREQUAL KYTHIRA_NODE_ID_KIND)
+    message(FATAL_ERROR
+        "-DKYTHIRA_NODE_ID_KIND=${KYTHIRA_NODE_ID_KIND} contradicts "
+        "${_KYTHIRA_KCONFIG_CFG}, which sets KYTHIRA_NODE_ID_KIND=${_kythira_cfg_node_id_kind}. "
+        "Drop the override or change the config.")
+endif()
+if(_kythira_cfg_node_id_kind)
+    set(KYTHIRA_HOST_NODE_ID_KIND ${_kythira_cfg_node_id_kind})
+    set(_kythira_node_id_kind_source "Kconfig, from ${_KYTHIRA_KCONFIG_CFG}")
+elseif(KYTHIRA_NODE_ID_KIND)
+    set(KYTHIRA_HOST_NODE_ID_KIND ${KYTHIRA_NODE_ID_KIND})
+    set(_kythira_node_id_kind_source "explicit override, -DKYTHIRA_NODE_ID_KIND=${KYTHIRA_NODE_ID_KIND}")
 else()
-    message(STATUS "Host binaries: node ids are numeric (KYTHIRA_NODE_ID_KIND=numeric)")
+    set(KYTHIRA_HOST_NODE_ID_KIND text)
+    set(_kythira_node_id_kind_source "default")
+endif()
+# Keep the KCONFIG_* pair in step with the decision, so nothing that reads
+# them sees a different kind from the one the binaries are built with.
+if(KYTHIRA_HOST_NODE_ID_KIND STREQUAL "text")
+    set(KCONFIG_KYTHIRA_NODE_ID_TEXT ON)
+    set(KCONFIG_KYTHIRA_NODE_ID_NUMERIC OFF)
+    target_compile_definitions(kythira_host_node_id INTERFACE KYTHIRA_NODE_ID_TEXT=1)
+    message(STATUS "Host binaries: node ids are canonical composite text "
+                   "(KYTHIRA_NODE_ID_KIND=text; ${_kythira_node_id_kind_source})")
+else()
+    set(KCONFIG_KYTHIRA_NODE_ID_TEXT OFF)
+    set(KCONFIG_KYTHIRA_NODE_ID_NUMERIC ON)
+    message(STATUS "Host binaries: node ids are numeric "
+                   "(KYTHIRA_NODE_ID_KIND=numeric; ${_kythira_node_id_kind_source})")
 endif()
 
 # Add subdirectories
@@ -1979,8 +2042,8 @@ if(NOT ENABLE_COVERAGE)
         add_subdirectory(cmd/raft_object_backup)
     endif()
 endif()
-# Every cmd/ binary this configuration defines, as one target: CI's text node
-# id build (configs/ci_text_node_id_defconfig) builds exactly this, so the
+# Every cmd/ binary this configuration defines, as one target: CI's numeric
+# node id build (configs/ci_numeric_node_id_defconfig) builds exactly this, so the
 # binaries are compiled in both id kinds without also building the test suite
 # a second time. Each is added only when its own gate above admitted it.
 add_custom_target(host_binaries)

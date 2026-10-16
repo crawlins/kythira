@@ -210,8 +210,30 @@ for one id type, chosen by the Kconfig choice `KYTHIRA_NODE_ID_KIND`
 
 | Kind | `node_id_type` | `--node-id` / `NODE_ID` / `KYTHIRA_NODE_ID` accept | Peer lists accept |
 |---|---|---|---|
-| `numeric` (`CONFIG_KYTHIRA_NODE_ID_NUMERIC=y`), the default | `std::uint64_t` | a decimal integer | decimal integers |
-| `text` (`CONFIG_KYTHIRA_NODE_ID_TEXT=y`) | `std::string` holding canonical text | canonical text, a decimal integer, or `metadata:<provider>` | canonical text or decimal integers |
+| `text` (`CONFIG_KYTHIRA_NODE_ID_TEXT=y`), the default | `std::string` holding canonical text | canonical text, a decimal integer, or `metadata:<provider>` | canonical text or decimal integers |
+| `numeric` (`CONFIG_KYTHIRA_NODE_ID_NUMERIC=y`) | `std::uint64_t` | a decimal integer | decimal integers |
+
+Text has been the default since October 16, 2026; before that it was
+numeric. The kind is chosen, in order, by:
+
+1. **Kconfig**, when the applied `.config` or defconfig sets
+   `CONFIG_KYTHIRA_NODE_ID_NUMERIC=y` or `CONFIG_KYTHIRA_NODE_ID_TEXT=y`
+   (`configs/ci_numeric_node_id_defconfig` sets numeric;
+   `configs/ci_full_defconfig` sets neither).
+2. **An explicit override**, the CMake cache variable
+   `-DKYTHIRA_NODE_ID_KIND=numeric` (or `text`). It works with or without
+   `kconfiglib`, and configure fails if it contradicts a configuration from
+   step 1.
+3. **The default**, `text`, whether or not `kconfiglib` is installed, so
+   installing it never changes a build's ids.
+
+Configure prints the result and where it came from, for example
+`Host binaries: node ids are numeric (KYTHIRA_NODE_ID_KIND=numeric;
+explicit override, -DKYTHIRA_NODE_ID_KIND=numeric)`. The builds that stay
+numeric pin it visibly: `docker/ca_cluster_node/Dockerfile` (and with it the
+ECS tasks and the Packer AMI), the container-test and arm64 smoke-test
+workflows (for `quorum-healing-tests` and `docker-elastic-capacity-tests`,
+which model numeric clusters), and CI's Config Variants leg.
 
 In a text build a decimal id is normalised (`007` is `7`), so a numeric
 cluster's command lines still parse; anything that is neither canonical
@@ -232,7 +254,10 @@ refuses `metadata:`, since no cloud id fits a number.
 
 **Existing numeric clusters stay numeric.** A cluster cannot change id kind
 in place: the ids are in every replica's log, snapshots and certificates.
-Keep such a cluster's binaries on `KYTHIRA_NODE_ID_KIND=numeric`, and give
+Keep such a cluster's binaries on `KYTHIRA_NODE_ID_KIND=numeric`
+(`CONFIG_KYTHIRA_NODE_ID_NUMERIC=y` in its `.config` or defconfig, as
+`configs/ci_numeric_node_id_defconfig` does, or
+`-DKYTHIRA_NODE_ID_KIND=numeric` on the CMake command line), and give
 any quorum manager it uses `std::uint64_t` as its first template argument
 (`aws_ec2_quorum_manager<std::uint64_t, std::string>`), which keeps the
 manager's numeric mode: it allocates the next free number and stores it in

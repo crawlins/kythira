@@ -28,7 +28,7 @@ used tags is still found by its `kythira:node-id` tag, or, if that is
 missing, by the old derivation from its instance id.
 
 **Running the node binaries on composite ids.** Build them with
-`KYTHIRA_NODE_ID_KIND=text`; see
+`KYTHIRA_NODE_ID_KIND=text`, the default; see
 [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind).
 The instance id does not exist until `RunInstances` (or the ASG) returns,
 so the manager cannot put it in user data. Start the node with

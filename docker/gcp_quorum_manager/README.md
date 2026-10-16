@@ -31,7 +31,7 @@ numeric mode, because a cluster cannot change id kind in place: name
 `KYTHIRA_NODE_ID_KIND=numeric`.
 
 **Running the node binaries on composite ids.** Build them with
-`KYTHIRA_NODE_ID_KIND=text`; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). `gcp_compute_quorum_manager` substitutes the canonical text for
+`KYTHIRA_NODE_ID_KIND=text`, the default; see [Node ids in the host binaries](../../README.md#node-ids-in-the-host-binaries-kythira_node_id_kind). `gcp_compute_quorum_manager` substitutes the canonical text for
 `{NODE_ID}` in the startup script, so `--node-id={NODE_ID}` works
 there. A MIG names its own instances, so under `gcp_mig_quorum_manager`
 start the node with `--node-id=metadata:gcp` (or

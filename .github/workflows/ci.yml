@@ -959,9 +959,10 @@ jobs:
           ctest --test-dir build --output-on-failure --no-tests=error \
             -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_serializer_range_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test)$'
 
-  # ── Config variants (minimal, no-cloud, dependency isolation) ───────────────
-  # .kiro/specs/ci-build-matrix-coverage/ Requirements 5 and 6. Three checks no
-  # other job makes, sharing one vcpkg install (Requirement 7.4):
+  # ── Config variants (minimal, no-cloud, dependency isolation, node ids) ─────
+  # .kiro/specs/ci-build-matrix-coverage/ Requirements 5 and 6, plus the
+  # numeric node id build. Four checks no other job makes, sharing one vcpkg
+  # install (Requirement 7.4):
   #
   #   * configs/minimal_defconfig, strict, built in full. Its tests are a
   #     subset of ci_full_defconfig's, which the build-and-test legs already
@@ -971,6 +972,10 @@ jobs:
   #     and running the one test its header's usage block names.
   #   * scripts/verify-optional-dependency-isolation.sh (stdexec-future-backend
   #     Property 5): a configure with stdexec hidden still builds.
+  #   * configs/ci_numeric_node_id_defconfig, strict, building only the cmd/
+  #     binaries with numeric node ids, the kind the build-and-test legs no
+  #     longer build now that text is the default
+  #     (.kiro/specs/cloud-composite-node-ids/ task 10.3).
   #
   # Each gets its own build directory so CMake cache state from one cannot
   # leak into the next (Requirement 5.3).
@@ -1174,48 +1179,53 @@ jobs:
             --floor 1 \
             -- -R '^object_store_persistence_unit_test$'
 
-      # Every cmd/ binary built with textual node ids (KYTHIRA_NODE_ID_KIND=
-      # text; .kiro/specs/cloud-composite-node-ids/ task 8.4). Here rather
-      # than as another build-and-test leg because only the binaries'
-      # std::string instantiations are new: the library and tests take NodeId
-      # as a template parameter and the full legs already compile them over
-      # textual ids, so building host_binaries alone covers the difference
-      # without a second test suite build. Strict, like ci_full_defconfig
-      # which it extends; it shares that file's vcpkg tree and sccache
-      # objects for everything outside the binaries.
-      - name: Configure (ci_text_node_id_defconfig, strict)
+      # Every cmd/ binary built with numeric node ids (KYTHIRA_NODE_ID_KIND=
+      # numeric; .kiro/specs/cloud-composite-node-ids/ tasks 8.4 and 10.3).
+      # Text is the Kconfig default and what the build-and-test legs build
+      # from ci_full_defconfig; numeric is the kind every cluster created
+      # before that default flipped keeps, so its instantiations must keep
+      # compiling. Here rather than as another build-and-test leg because
+      # only the binaries' std::uint64_t instantiations differ: the library
+      # and tests take NodeId as a template parameter and the full legs
+      # already compile them over numeric ids, so building host_binaries
+      # alone covers the difference without a second test suite build.
+      # Strict, like ci_full_defconfig which it extends; it shares that
+      # file's vcpkg tree and sccache objects for everything outside the
+      # binaries.
+      - name: Configure (ci_numeric_node_id_defconfig, strict)
         run: |
-          cmake -B build-textid -G Ninja \
+          cmake -B build-numericid -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DKYTHIRA_KCONFIG=configs/ci_text_node_id_defconfig \
+            -DKYTHIRA_KCONFIG=configs/ci_numeric_node_id_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
-      # Above all that CONFIG_KYTHIRA_NODE_ID_TEXT=y resolved to y: if it
-      # silently stayed n, the build below would be the numeric one again.
-      - name: Assert the text node id build is configured as this job claims
+      # Above all that CONFIG_KYTHIRA_NODE_ID_NUMERIC=y resolved to y: if it
+      # silently fell back to the text default, the build below would be the
+      # build-and-test legs' one again.
+      - name: Assert the numeric node id build is configured as this job claims
         run: |
           scripts/check-build-config.py \
-            --build-dir build-textid \
-            --defconfig configs/ci_text_node_id_defconfig \
+            --build-dir build-numericid \
+            --defconfig configs/ci_numeric_node_id_defconfig \
             --compiler clang++-18 \
             --expect CMAKE_BUILD_TYPE=Release \
             --expect KYTHIRA_KCONFIG_STRICT=ON
 
-      - name: Build (ci_text_node_id_defconfig, host binaries)
-        run: cmake --build build-textid -j$(nproc) --target host_binaries host_node_id_test
+      - name: Build (ci_numeric_node_id_defconfig, host binaries)
+        run: cmake --build build-numericid -j$(nproc) --target host_binaries host_node_id_test
 
       # The id parsers in the kind the binaries were built with. The test is
       # small and covers both kinds' templates; this run pins the alias.
-      - name: Test (ci_text_node_id_defconfig)
+      - name: Test (ci_numeric_node_id_defconfig)
         run: |
-          ctest --test-dir build-textid --output-on-failure --no-tests=error \
+          ctest --test-dir build-numericid --output-on-failure --no-tests=error \
             -R '^host_node_id_test$'
 
-      - name: Remove the text node id build tree
-        run: rm -rf build-textid
+      - name: Remove the numeric node id build tree
+        run: rm -rf build-numericid
 
       # The script configures its own throwaway build directory against the
       # prefix below (Requirement 6). CXX, the generator and the launcher come
