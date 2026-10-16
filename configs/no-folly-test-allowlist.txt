@@ -154,6 +154,7 @@ promise_example_test examples/ is added only when folly_FOUND (root CMakeLists.t
 protobuf_rpc_integration_test gated on `PROTOBUF_SERIALIZER_FOUND AND TARGET Folly::folly` in tests/CMakeLists.txt
 proxygen_implementation_interop_test the proxygen transport depends on Folly (Kconfig: PROXYGEN_TRANSPORT depends on FOLLY)
 proxygen_negotiation_integration_test the proxygen transport depends on Folly (Kconfig: PROXYGEN_TRANSPORT depends on FOLLY)
+proxygen_textual_node_id_test the proxygen transport depends on Folly (Kconfig: PROXYGEN_TRANSPORT depends on FOLLY)
 proxygen_transport_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 proxygen_transport_test the proxygen transport depends on Folly (Kconfig: PROXYGEN_TRANSPORT depends on FOLLY)
 raft_submit_command_timeout_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly

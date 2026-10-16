@@ -951,12 +951,12 @@ inline auto send_on_session_folly(session_lease lease, const std::string& path,
 // proxygen_client
 // ---------------------------------------------------------------------------
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-proxygen_client<Types>::proxygen_client(
+proxygen_client<Types, NodeId>::proxygen_client(
     folly::IOThreadPoolExecutorBase& io_executor,
-    std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
-    proxygen_client_config config, metrics_type metrics)
+    std::unordered_map<NodeId, std::string> node_id_to_url_map, proxygen_client_config config,
+    metrics_type metrics)
     : _io_executor(io_executor),
       _node_id_to_url(std::move(node_id_to_url_map)),
       _config(std::move(config)),
@@ -969,15 +969,15 @@ proxygen_client<Types>::proxygen_client(
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-proxygen_client<Types>::~proxygen_client() {
+proxygen_client<Types, NodeId>::~proxygen_client() {
     disable_auto_reload();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::validate_certificate_files() const -> void {
+auto proxygen_client<Types, NodeId>::validate_certificate_files() const -> void {
     proxygen_validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
     proxygen_validate_cipher_suites(_config.cipher_suites);
     if (!_config.ca_cert_path.empty()) {
@@ -999,9 +999,9 @@ auto proxygen_client<Types>::validate_certificate_files() const -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::build_ssl_context() -> std::shared_ptr<folly::SSLContext> {
+auto proxygen_client<Types, NodeId>::build_ssl_context() -> std::shared_ptr<folly::SSLContext> {
     auto ctx = std::make_shared<folly::SSLContext>();
     ctx->setVerificationOption(_config.enable_ssl_verification
                                    ? folly::SSLContext::SSLVerifyPeerEnum::VERIFY
@@ -1018,9 +1018,9 @@ auto proxygen_client<Types>::build_ssl_context() -> std::shared_ptr<folly::SSLCo
     return ctx;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::reload_tls_material() -> void {
+auto proxygen_client<Types, NodeId>::reload_tls_material() -> void {
     validate_certificate_files();
     auto new_ctx = build_ssl_context();
 
@@ -1034,9 +1034,10 @@ auto proxygen_client<Types>::reload_tls_material() -> void {
     _ssl_ctx = std::move(new_ctx);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto proxygen_client<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval)
+    -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -1058,18 +1059,18 @@ auto proxygen_client<Types>::enable_auto_reload(std::chrono::seconds poll_interv
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::disable_auto_reload() -> void {
+auto proxygen_client<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::get_or_create_slot(std::uint64_t target)
+auto proxygen_client<Types, NodeId>::get_or_create_slot(const NodeId& target)
     -> proxygen_detail::pooled_connection& {
     std::lock_guard<std::mutex> lock(_mutex);
     auto it = _connections.find(target);
@@ -1110,13 +1111,14 @@ auto proxygen_client<Types>::get_or_create_slot(std::uint64_t target)
     return inserted_it->second;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::resolve_target(std::uint64_t target) const
+auto proxygen_client<Types, NodeId>::resolve_target(const NodeId& target) const
     -> std::tuple<std::vector<folly::SocketAddress>, std::string, bool> {
     auto url_it = _node_id_to_url.find(target);
     if (url_it == _node_id_to_url.end()) {
-        throw std::runtime_error(std::format("No URL mapping found for node {}", target));
+        throw std::runtime_error(std::format("No URL mapping found for node {}",
+                                             node_id_traits<NodeId>::to_text(target)));
     }
     const std::string& url = url_it->second;
     bool is_https = url.starts_with("https://");
@@ -1173,13 +1175,15 @@ auto proxygen_client<Types>::resolve_target(std::uint64_t target) const
     return {std::move(addrs), host, is_https};
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
 template<typename Request, typename Response>
-auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view endpoint,
-                                      const Request& request, std::chrono::milliseconds timeout,
-                                      std::vector<std::string> attempted,
-                                      std::string chosen_media_type) -> future_template<Response> {
+auto proxygen_client<Types, NodeId>::send_rpc(NodeId target, std::string_view endpoint,
+                                              const Request& request,
+                                              std::chrono::milliseconds timeout,
+                                              std::vector<std::string> attempted,
+                                              std::string chosen_media_type)
+    -> future_template<Response> {
     // Chosen here, once, and handed to whichever path runs. On a 415 re-entry
     // the retry below has already chosen, and hands the choice down rather than
     // letting this re-derive it -- it may have read the peer's `Accept-Post`,
@@ -1225,7 +1229,8 @@ auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view end
                             _registry, attempted, client_error.accept_post())) {
                         auto retry_metric = _metrics;
                         retry_metric.set_metric_name("proxygen_http.client.media_type_retry");
-                        retry_metric.add_dimension("target_node_id", std::to_string(target));
+                        retry_metric.add_dimension("target_node_id",
+                                                   node_id_traits<NodeId>::to_text(target));
                         retry_metric.add_dimension("rejected_media_type", content_type);
                         retry_metric.add_dimension("media_type", *next);
                         retry_metric.add_one();
@@ -1248,14 +1253,14 @@ auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view end
         });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
 template<typename Request, typename Response>
-auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
-                                                     std::string_view endpoint,
-                                                     const Request& request,
-                                                     std::chrono::milliseconds timeout,
-                                                     const std::string& content_type)
+auto proxygen_client<Types, NodeId>::send_rpc_generic_bridge(NodeId target,
+                                                             std::string_view endpoint,
+                                                             const Request& request,
+                                                             std::chrono::milliseconds timeout,
+                                                             const std::string& content_type)
     -> future_template<Response> {
     std::string rpc_type = proxygen_rpc_type_name(endpoint);
     kythira::promise_default<Response> promise;
@@ -1281,7 +1286,7 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
         auto metric = _metrics;
         metric.set_metric_name("proxygen_http.client.request.sent");
         metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
         metric.add_dimension("path", "generic_bridge");
         metric.add_dimension("media_type", content_type);
         metric.add_one();
@@ -1356,7 +1361,8 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                         auto latency_metric = _metrics;
                         latency_metric.set_metric_name("proxygen_http.client.request.latency");
                         latency_metric.add_dimension("rpc_type", rpc_type);
-                        latency_metric.add_dimension("target_node_id", std::to_string(target));
+                        latency_metric.add_dimension("target_node_id",
+                                                     node_id_traits<NodeId>::to_text(target));
                         latency_metric.add_dimension("status",
                                                      resp.status_code == 200 ? "success" : "error");
                         latency_metric.add_dimension("path", "generic_bridge");
@@ -1380,7 +1386,7 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                                 error_metric.add_dimension("error_type", "unsupported_media_type");
                                 error_metric.add_dimension("media_type", response_media_type);
                                 error_metric.add_dimension("target_node_id",
-                                                           std::to_string(target));
+                                                           node_id_traits<NodeId>::to_text(target));
                                 error_metric.add_one();
                                 error_metric.emit();
                                 throw kythira::unsupported_media_type_error(response_media_type);
@@ -1413,7 +1419,7 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                         }
                         if (proxygen_is_extension_rpc(rpc_type) &&
                             (resp.status_code == 404 || resp.status_code == 501)) {
-                            throw kythira::rpc_not_implemented_exception(rpc_type, target);
+                            throw kythira::rpc_not_implemented_for(rpc_type, target);
                         }
                         if (resp.status_code >= 400 && resp.status_code < 500) {
                             // Carry `Accept-Post` on the exception: the 415
@@ -1437,7 +1443,8 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                     .thenError([this, target](std::exception_ptr e) -> Response {
                         auto error_metric = _metrics;
                         error_metric.set_metric_name("proxygen_http.client.error");
-                        error_metric.add_dimension("target_node_id", std::to_string(target));
+                        error_metric.add_dimension("target_node_id",
+                                                   node_id_traits<NodeId>::to_text(target));
                         error_metric.add_one();
                         error_metric.emit();
                         std::rethrow_exception(e);
@@ -1464,14 +1471,14 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
 template<typename Request, typename Response>
-auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
-                                                      std::string_view endpoint,
-                                                      const Request& request,
-                                                      std::chrono::milliseconds timeout,
-                                                      const std::string& content_type)
+auto proxygen_client<Types, NodeId>::send_rpc_folly_fast_path(NodeId target,
+                                                              std::string_view endpoint,
+                                                              const Request& request,
+                                                              std::chrono::milliseconds timeout,
+                                                              const std::string& content_type)
     -> kythira::Future<Response> {
     std::string rpc_type = proxygen_rpc_type_name(endpoint);
     // Raw folly::Promise<T>, not kythira::promise_default<T> -- no generic
@@ -1498,7 +1505,7 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
         auto metric = _metrics;
         metric.set_metric_name("proxygen_http.client.request.sent");
         metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("target_node_id", node_id_traits<NodeId>::to_text(target));
         metric.add_dimension("path", "folly_fast_path");
         metric.add_dimension("media_type", content_type);
         metric.add_one();
@@ -1544,7 +1551,8 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                         auto latency_metric = _metrics;
                         latency_metric.set_metric_name("proxygen_http.client.request.latency");
                         latency_metric.add_dimension("rpc_type", rpc_type);
-                        latency_metric.add_dimension("target_node_id", std::to_string(target));
+                        latency_metric.add_dimension("target_node_id",
+                                                     node_id_traits<NodeId>::to_text(target));
                         latency_metric.add_dimension("status",
                                                      resp.status_code == 200 ? "success" : "error");
                         latency_metric.add_dimension("path", "folly_fast_path");
@@ -1568,7 +1576,7 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                                 error_metric.add_dimension("error_type", "unsupported_media_type");
                                 error_metric.add_dimension("media_type", response_media_type);
                                 error_metric.add_dimension("target_node_id",
-                                                           std::to_string(target));
+                                                           node_id_traits<NodeId>::to_text(target));
                                 error_metric.add_one();
                                 error_metric.emit();
                                 throw kythira::unsupported_media_type_error(response_media_type);
@@ -1601,7 +1609,7 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                         }
                         if (proxygen_is_extension_rpc(rpc_type) &&
                             (resp.status_code == 404 || resp.status_code == 501)) {
-                            throw kythira::rpc_not_implemented_exception(rpc_type, target);
+                            throw kythira::rpc_not_implemented_for(rpc_type, target);
                         }
                         if (resp.status_code >= 400 && resp.status_code < 500) {
                             // Carry `Accept-Post` on the exception: the 415
@@ -1625,7 +1633,8 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                     .thenError([this, target](folly::exception_wrapper ew) -> Response {
                         auto error_metric = _metrics;
                         error_metric.set_metric_name("proxygen_http.client.error");
-                        error_metric.add_dimension("target_node_id", std::to_string(target));
+                        error_metric.add_dimension("target_node_id",
+                                                   node_id_traits<NodeId>::to_text(target));
                         error_metric.add_one();
                         error_metric.emit();
                         ew.throw_exception();
@@ -1649,60 +1658,61 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
     return kythira::Future<Response>(std::move(folly_future));
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::send_request_vote(std::uint64_t target,
-                                               const kythira::request_vote_request<>& request,
-                                               std::chrono::milliseconds timeout)
-    -> future_template<kythira::request_vote_response<>> {
-    return send_rpc<kythira::request_vote_request<>, kythira::request_vote_response<>>(
+auto proxygen_client<Types, NodeId>::send_request_vote(
+    const NodeId& target, const kythira::request_vote_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::request_vote_response<>> {
+    return send_rpc<kythira::request_vote_request<NodeId>, kythira::request_vote_response<>>(
         target, proxygen_detail::proxygen_endpoint_request_vote, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::send_append_entries(std::uint64_t target,
-                                                 const kythira::append_entries_request<>& request,
-                                                 std::chrono::milliseconds timeout)
-    -> future_template<kythira::append_entries_response<>> {
-    return send_rpc<kythira::append_entries_request<>, kythira::append_entries_response<>>(
+auto proxygen_client<Types, NodeId>::send_append_entries(
+    const NodeId& target, const kythira::append_entries_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::append_entries_response<>> {
+    return send_rpc<kythira::append_entries_request<NodeId>, kythira::append_entries_response<>>(
         target, proxygen_detail::proxygen_endpoint_append_entries, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::send_install_snapshot(
-    std::uint64_t target, const kythira::install_snapshot_request<>& request,
+auto proxygen_client<Types, NodeId>::send_install_snapshot(
+    const NodeId& target, const kythira::install_snapshot_request<NodeId>& request,
     std::chrono::milliseconds timeout) -> future_template<kythira::install_snapshot_response<>> {
-    return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
+    return send_rpc<kythira::install_snapshot_request<NodeId>,
+                    kythira::install_snapshot_response<>>(
         target, proxygen_detail::proxygen_endpoint_install_snapshot, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::send_fetch_log_entries(
-    std::uint64_t target, const kythira::fetch_log_entries_request<>& request,
-    std::chrono::milliseconds timeout) -> future_template<kythira::fetch_log_entries_response<>> {
-    return send_rpc<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+auto proxygen_client<Types, NodeId>::send_fetch_log_entries(
+    const NodeId& target, const kythira::fetch_log_entries_request<NodeId>& request,
+    std::chrono::milliseconds timeout)
+    -> future_template<kythira::fetch_log_entries_response<NodeId>> {
+    return send_rpc<kythira::fetch_log_entries_request<NodeId>,
+                    kythira::fetch_log_entries_response<NodeId>>(
         target, proxygen_detail::proxygen_endpoint_fetch_log_entries, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::send_request_pre_vote(
-    std::uint64_t target, const kythira::request_pre_vote_request<>& request,
+auto proxygen_client<Types, NodeId>::send_request_pre_vote(
+    const NodeId& target, const kythira::request_pre_vote_request<NodeId>& request,
     std::chrono::milliseconds timeout) -> future_template<kythira::request_pre_vote_response<>> {
-    return send_rpc<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+    return send_rpc<kythira::request_pre_vote_request<NodeId>,
+                    kythira::request_pre_vote_response<>>(
         target, proxygen_detail::proxygen_endpoint_request_pre_vote, request, timeout);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_client<Types>::send_timeout_now(std::uint64_t target,
-                                              const kythira::timeout_now_request<>& request,
-                                              std::chrono::milliseconds timeout)
-    -> future_template<kythira::timeout_now_response<>> {
-    return send_rpc<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+auto proxygen_client<Types, NodeId>::send_timeout_now(
+    const NodeId& target, const kythira::timeout_now_request<NodeId>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::timeout_now_response<>> {
+    return send_rpc<kythira::timeout_now_request<NodeId>, kythira::timeout_now_response<>>(
         target, proxygen_detail::proxygen_endpoint_timeout_now, request, timeout);
 }
 
@@ -1718,9 +1728,9 @@ auto proxygen_client<Types>::send_timeout_now(std::uint64_t target,
 
 namespace proxygen_detail {
 
-template<typename Types> class rpc_request_handler final : public proxygen::RequestHandler {
+template<typename Server> class rpc_request_handler final : public proxygen::RequestHandler {
 public:
-    explicit rpc_request_handler(proxygen_server<Types>* server)
+    explicit rpc_request_handler(Server* server)
         : _server(server), _limit(server->max_request_body_size()) {}
 
     auto onRequest(std::unique_ptr<proxygen::HTTPMessage> headers) noexcept -> void override {
@@ -1831,7 +1841,7 @@ private:
             .sendWithEOM();
     }
 
-    proxygen_server<Types>* _server;
+    Server* _server;
     std::size_t _limit;
     std::size_t _received{0};
     bool _rejected{false};
@@ -1919,9 +1929,9 @@ private:
     Metrics _metrics;
 };
 
-template<typename Types> class rpc_handler_factory final : public proxygen::RequestHandlerFactory {
+template<typename Server> class rpc_handler_factory final : public proxygen::RequestHandlerFactory {
 public:
-    explicit rpc_handler_factory(proxygen_server<Types>* server) : _server(server) {}
+    explicit rpc_handler_factory(Server* server) : _server(server) {}
 
     auto onServerStart(folly::EventBase*) noexcept -> void override {}
     auto onServerStop() noexcept -> void override {}
@@ -1931,11 +1941,11 @@ public:
         // Proxygen owns the handler. An allocation failure here terminates,
         // which is the only sane outcome inside this noexcept callback.
         // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new)
-        return new rpc_request_handler<Types>(_server);
+        return new rpc_request_handler<Server>(_server);
     }
 
 private:
-    proxygen_server<Types>* _server;
+    Server* _server;
 };
 
 }  // namespace proxygen_detail
@@ -1944,9 +1954,9 @@ private:
 // proxygen_server
 // ---------------------------------------------------------------------------
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-proxygen_server<Types>::proxygen_server(
+proxygen_server<Types, NodeId>::proxygen_server(
     std::string bind_address, std::uint16_t bind_port, proxygen_server_config config,
     metrics_type metrics, std::shared_ptr<folly::IOThreadPoolExecutorBase> io_executor)
     : _bind_address(std::move(bind_address)),
@@ -1960,16 +1970,16 @@ proxygen_server<Types>::proxygen_server(
     validate_certificate_files();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-proxygen_server<Types>::~proxygen_server() {
+proxygen_server<Types, NodeId>::~proxygen_server() {
     disable_auto_reload();
     stop();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::validate_certificate_files() const -> void {
+auto proxygen_server<Types, NodeId>::validate_certificate_files() const -> void {
     proxygen_validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
     proxygen_validate_cipher_suites(_config.cipher_suites);
     if (!_config.enable_ssl) {
@@ -1991,9 +2001,9 @@ auto proxygen_server<Types>::validate_certificate_files() const -> void {
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::build_ssl_context_config() -> wangle::SSLContextConfig {
+auto proxygen_server<Types, NodeId>::build_ssl_context_config() -> wangle::SSLContextConfig {
     wangle::SSLContextConfig ssl_config;
     ssl_config.setCertificate(_config.ssl_cert_path, _config.ssl_key_path, "");
     ssl_config.sslCiphers = _config.cipher_suites.empty()
@@ -2024,9 +2034,9 @@ auto proxygen_server<Types>::build_ssl_context_config() -> wangle::SSLContextCon
     return ssl_config;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::reload_tls_material() -> void {
+auto proxygen_server<Types, NodeId>::reload_tls_material() -> void {
     if (!_config.enable_ssl) {
         throw kythira::ssl_configuration_error("SSL is not enabled on this server");
     }
@@ -2096,9 +2106,10 @@ auto proxygen_server<Types>::reload_tls_material() -> void {
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+auto proxygen_server<Types, NodeId>::enable_auto_reload(std::chrono::seconds poll_interval)
+    -> void {
     disable_auto_reload();
     _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
@@ -2120,73 +2131,76 @@ auto proxygen_server<Types>::enable_auto_reload(std::chrono::seconds poll_interv
     });
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::disable_auto_reload() -> void {
+auto proxygen_server<Types, NodeId>::disable_auto_reload() -> void {
     if (_auto_reload_thread.joinable()) {
         _auto_reload_thread.request_stop();
         _auto_reload_thread.join();
     }
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::register_request_vote_handler(
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler)
-    -> void {
+auto proxygen_server<Types, NodeId>::register_request_vote_handler(
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _request_vote_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::register_append_entries_handler(
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+auto proxygen_server<Types, NodeId>::register_append_entries_handler(
+    std::function<
+        kythira::append_entries_response<>(const kythira::append_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _append_entries_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::register_install_snapshot_handler(
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+auto proxygen_server<Types, NodeId>::register_install_snapshot_handler(
+    std::function<
+        kythira::install_snapshot_response<>(const kythira::install_snapshot_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _install_snapshot_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::register_fetch_log_entries_handler(
-    std::function<
-        kythira::fetch_log_entries_response<>(const kythira::fetch_log_entries_request<>&)>
+auto proxygen_server<Types, NodeId>::register_fetch_log_entries_handler(
+    std::function<kythira::fetch_log_entries_response<NodeId>(
+        const kythira::fetch_log_entries_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _fetch_log_entries_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::register_request_pre_vote_handler(
-    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+auto proxygen_server<Types, NodeId>::register_request_pre_vote_handler(
+    std::function<
+        kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<NodeId>&)>
         handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _request_pre_vote_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::register_timeout_now_handler(
-    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<>&)> handler)
-    -> void {
+auto proxygen_server<Types, NodeId>::register_timeout_now_handler(
+    std::function<kythira::timeout_now_response<>(const kythira::timeout_now_request<NodeId>&)>
+        handler) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _timeout_now_handler = std::move(handler);
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::start() -> void {
+auto proxygen_server<Types, NodeId>::start() -> void {
     {
         std::lock_guard<std::mutex> lock(_start_mutex);
         if (_running.load()) {
@@ -2197,9 +2211,10 @@ auto proxygen_server<Types>::start() -> void {
     proxygen::HTTPServerOptions options;
     options.threads = 1;
     options.idleTimeout = _config.request_timeout;
-    options.handlerFactories = proxygen::RequestHandlerChain()
-                                   .addThen<proxygen_detail::rpc_handler_factory<Types>>(this)
-                                   .build();
+    options.handlerFactories =
+        proxygen::RequestHandlerChain()
+            .addThen<proxygen_detail::rpc_handler_factory<proxygen_server>>(this)
+            .build();
 
     // One listener per address the bind address resolves to ("*" is 0.0.0.0
     // and ::; a name is looked up in /etc/hosts only -- see net_bind.hpp).
@@ -2281,9 +2296,9 @@ auto proxygen_server<Types>::start() -> void {
     metric.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::stop() -> void {
+auto proxygen_server<Types, NodeId>::stop() -> void {
     if (!_running.load()) {
         return;
     }
@@ -2315,32 +2330,32 @@ auto proxygen_server<Types>::stop() -> void {
     metric.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::is_running() const -> bool {
+auto proxygen_server<Types, NodeId>::is_running() const -> bool {
     return _running.load();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::note_request_too_large() -> void {
+auto proxygen_server<Types, NodeId>::note_request_too_large() -> void {
     auto metric = _metrics;
     metric.set_metric_name("proxygen_http.server.request_too_large");
     metric.add_one();
     metric.emit();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::register_request() -> std::size_t {
+auto proxygen_server<Types, NodeId>::register_request() -> std::size_t {
     std::lock_guard<std::mutex> lock(_requests_mutex);
     ++_live_requests;
     return _next_request_id++;
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::request_finished(std::size_t /*request_id*/) -> void {
+auto proxygen_server<Types, NodeId>::request_finished(std::size_t /*request_id*/) -> void {
     {
         std::lock_guard<std::mutex> lock(_requests_mutex);
         --_live_requests;
@@ -2349,25 +2364,26 @@ auto proxygen_server<Types>::request_finished(std::size_t /*request_id*/) -> voi
     _drain_cv.notify_all();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::default_media_type() const -> std::string {
+auto proxygen_server<Types, NodeId>::default_media_type() const -> std::string {
     return _registry.default_media_type();
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::accept_post_header() const -> std::string {
+auto proxygen_server<Types, NodeId>::accept_post_header() const -> std::string {
     return format_accept_header(_registry.preferred_media_types());
 }
 
-template<typename Types>
+template<typename Types, typename NodeId>
 requires kythira::proxygen_future_default_transport_types<Types>
-auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector<std::byte>& body,
-                                      const std::string& request_media_type,
-                                      const std::vector<std::string>& accepted,
-                                      std::string& response_body, unsigned& status_code,
-                                      std::string& response_media_type) -> void {
+auto proxygen_server<Types, NodeId>::dispatch(std::string_view target,
+                                              const std::vector<std::byte>& body,
+                                              const std::string& request_media_type,
+                                              const std::vector<std::string>& accepted,
+                                              std::string& response_body, unsigned& status_code,
+                                              std::string& response_media_type) -> void {
     // Error bodies are plain text on every path below; the success path
     // overwrites this with whatever was negotiated.
     response_media_type = "text/plain";
@@ -2455,27 +2471,28 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
     };
 
     if (target == proxygen_detail::proxygen_endpoint_request_vote) {
-        handle
-            .template operator()<kythira::request_vote_request<>, kythira::request_vote_response<>>(
-                _request_vote_handler, "request_vote");
+        handle.template
+        operator()<kythira::request_vote_request<NodeId>, kythira::request_vote_response<>>(
+            _request_vote_handler, "request_vote");
     } else if (target == proxygen_detail::proxygen_endpoint_append_entries) {
         handle.template
-        operator()<kythira::append_entries_request<>, kythira::append_entries_response<>>(
+        operator()<kythira::append_entries_request<NodeId>, kythira::append_entries_response<>>(
             _append_entries_handler, "append_entries");
     } else if (target == proxygen_detail::proxygen_endpoint_install_snapshot) {
         handle.template
-        operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
+        operator()<kythira::install_snapshot_request<NodeId>, kythira::install_snapshot_response<>>(
             _install_snapshot_handler, "install_snapshot");
     } else if (target == proxygen_detail::proxygen_endpoint_fetch_log_entries) {
-        handle.template
-        operator()<kythira::fetch_log_entries_request<>, kythira::fetch_log_entries_response<>>(
+        handle.template operator()<kythira::fetch_log_entries_request<NodeId>,
+                                   kythira::fetch_log_entries_response<NodeId>>(
             _fetch_log_entries_handler, "fetch_log_entries");
     } else if (target == proxygen_detail::proxygen_endpoint_request_pre_vote) {
         handle.template
-        operator()<kythira::request_pre_vote_request<>, kythira::request_pre_vote_response<>>(
+        operator()<kythira::request_pre_vote_request<NodeId>, kythira::request_pre_vote_response<>>(
             _request_pre_vote_handler, "request_pre_vote", true);
     } else if (target == proxygen_detail::proxygen_endpoint_timeout_now) {
-        handle.template operator()<kythira::timeout_now_request<>, kythira::timeout_now_response<>>(
+        handle.template
+        operator()<kythira::timeout_now_request<NodeId>, kythira::timeout_now_response<>>(
             _timeout_now_handler, "timeout_now", true);
     } else {
         status_code = 404;
