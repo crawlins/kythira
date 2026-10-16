@@ -111,8 +111,12 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
             constexpr int num_threads = 4;
             constexpr int operations_per_thread = 100;
 
+            // Boost.Test is not thread-safe: every assertion writes the
+            // framework's shared checkpoint string, so workers only count
+            // and the main thread asserts after join().
             std::atomic<int> success_count{0};
             std::atomic<int> error_count{0};
+            std::atomic<int> not_ready_count{0};
             std::vector<std::thread> threads;
 
             // Create multiple threads that create and use futures
@@ -125,7 +129,9 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
                             auto future = kythira::future_factory_default::makeFuture(value);
 
                             // Verify the future works correctly
-                            BOOST_CHECK(future.isReady());
+                            if (!future.isReady()) {
+                                not_ready_count.fetch_add(1, std::memory_order_relaxed);
+                            }
                             auto result = std::move(future).get();
 
                             if (result == value) {
@@ -148,6 +154,7 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
             // Verify all operations succeeded
             int expected_successes = num_threads * operations_per_thread;
             BOOST_CHECK_EQUAL(success_count.load(), expected_successes);
+            BOOST_CHECK_EQUAL(not_ready_count.load(), 0);
             BOOST_CHECK_EQUAL(error_count.load(), 0);
         }
 

@@ -352,17 +352,22 @@ BOOST_AUTO_TEST_CASE(test_metrics_consistency_concurrent,
         }
     });
 
-    // Thread 2: Read metrics continuously
-    threads.emplace_back([&pool, &stop]() {
+    // Thread 2: Read metrics continuously. Boost.Test is not thread-safe,
+    // so this thread counts broken invariants and the main thread asserts
+    // after join().
+    std::atomic<int> broken_invariants{0};
+    threads.emplace_back([&pool, &stop, &broken_invariants]() {
         while (!stop) {
             auto metrics = pool.get_metrics();
 
             // Verify invariants
-            BOOST_CHECK_EQUAL(metrics.total_size, test_pool_size);
-            BOOST_CHECK_EQUAL(metrics.allocated_size + metrics.free_size, metrics.total_size);
-            BOOST_CHECK_GE(metrics.peak_usage, metrics.allocated_size);
-            BOOST_CHECK_GE(metrics.allocation_count, metrics.deallocation_count);
-            BOOST_CHECK_LE(metrics.fragmentation_ratio, 100);
+            if (metrics.total_size != test_pool_size ||
+                metrics.allocated_size + metrics.free_size != metrics.total_size ||
+                metrics.peak_usage < metrics.allocated_size ||
+                metrics.allocation_count < metrics.deallocation_count ||
+                metrics.fragmentation_ratio > 100) {
+                broken_invariants.fetch_add(1, std::memory_order_relaxed);
+            }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -375,6 +380,7 @@ BOOST_AUTO_TEST_CASE(test_metrics_consistency_concurrent,
     for (auto& thread : threads) {
         thread.join();
     }
+    BOOST_CHECK_EQUAL(broken_invariants.load(), 0);
 }
 
 /**

@@ -116,7 +116,11 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         constexpr int num_threads = 4;
         constexpr int operations_per_thread = 10000;
 
+        // Boost.Test is not thread-safe: every assertion writes the
+        // framework's shared checkpoint string, so workers only count
+        // mismatches and the main thread asserts after join().
         std::atomic<int> total_operations{0};
+        std::atomic<int> mismatches{0};
         std::vector<std::thread> threads;
 
         auto start_time = std::chrono::high_resolution_clock::now();
@@ -127,7 +131,9 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
                     int value = t * operations_per_thread + i;
                     auto future = kythira::future_factory_default::makeFuture(value);
                     auto result = std::move(future).get();
-                    BOOST_CHECK_EQUAL(result, value);
+                    if (result != value) {
+                        mismatches.fetch_add(1, std::memory_order_relaxed);
+                    }
                     total_operations.fetch_add(1, std::memory_order_relaxed);
                 }
             });
@@ -143,6 +149,7 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
 
         int expected_operations = num_threads * operations_per_thread;
         BOOST_CHECK_EQUAL(total_operations.load(), expected_operations);
+        BOOST_CHECK_EQUAL(mismatches.load(), 0);
 
         double ops_per_second =
             (expected_operations * 1000.0) / static_cast<double>(duration.count());

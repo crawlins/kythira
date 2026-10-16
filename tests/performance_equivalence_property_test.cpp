@@ -94,7 +94,11 @@ BOOST_AUTO_TEST_CASE(property_performance_equivalence, *boost::unit_test::timeou
             constexpr int operations_per_thread = 5000;
             constexpr auto max_expected_duration = std::chrono::milliseconds{200};
 
+            // Boost.Test is not thread-safe: every assertion writes the
+            // framework's shared checkpoint string, so workers only count
+            // mismatches and the main thread asserts after join().
             std::atomic<int> completed_operations{0};
+            std::atomic<int> mismatches{0};
             std::vector<std::thread> threads;
 
             auto start_time = std::chrono::high_resolution_clock::now();
@@ -105,7 +109,9 @@ BOOST_AUTO_TEST_CASE(property_performance_equivalence, *boost::unit_test::timeou
                         int value = t * operations_per_thread + i;
                         auto future = kythira::future_factory_default::makeFuture(value);
                         auto result = std::move(future).get();
-                        BOOST_CHECK_EQUAL(result, value);
+                        if (result != value) {
+                            mismatches.fetch_add(1, std::memory_order_relaxed);
+                        }
                         completed_operations.fetch_add(1, std::memory_order_relaxed);
                     }
                 });
@@ -121,6 +127,7 @@ BOOST_AUTO_TEST_CASE(property_performance_equivalence, *boost::unit_test::timeou
 
             int expected_operations = num_threads * operations_per_thread;
             BOOST_CHECK_EQUAL(completed_operations.load(), expected_operations);
+            BOOST_CHECK_EQUAL(mismatches.load(), 0);
 
             BOOST_TEST_MESSAGE("Concurrent operations: "
                                << expected_operations << " operations across " << num_threads
