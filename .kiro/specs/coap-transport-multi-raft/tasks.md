@@ -1,8 +1,8 @@
 # Implementation Plan — CoAP under Multi-Raft
 
-## Status: In progress — tasks 1–6 and 8–14 done; 7 implemented, unverified
+## Status: Complete — 14/14
 
-**Last Updated**: October 2, 2026
+**Last Updated**: October 17, 2026
 
 This plan implements `.kiro/specs/coap-transport-multi-raft/design.md`. Seven
 phases, 14 tasks. Phases 1–2 fix defects that exist today and are independent
@@ -155,7 +155,7 @@ its own review.
     one election timeout without an intervening term bump on a third node.
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6, 2.2_
 
-- [ ] 7. `TimeoutNow` on libnyoci and cantcoap, or a recorded gap
+- [x] 7. `TimeoutNow` on libnyoci and cantcoap, or a recorded gap
   - Both are opt-in backends that own their own reliability and block-wise
     machinery, so this is not one-third of task 6 each.
   - If either does not ship it, design §2's capability table and that
@@ -171,6 +171,20 @@ its own review.
     neither backend. The node-over-CoAP leadership-transfer test exists for
     libcoap only. Tick this once both integration tests have passed on a host
     with IPv6.
+  - **Closed (October 17, 2026).** Both halves of "the same two tests as
+    task 6" now run on both backends in CI's `alt-coap-backends` job, whose
+    runners have IPv6. The transport cases (round trip, CON on the wire,
+    5.01 without a handler) have passed there since PR #463, for example on
+    `main` at f296c5f (job 117288627574). The end-to-end case was missing:
+    `coap_cantcoap_raft_node_test` and `coap_libnyoci_raft_node_test` now run
+    three `node<Types>` over each backend and assert an election, a
+    replicated commit, and a TimeoutNow transfer to the named node in exactly
+    one term bump. The cases are shared
+    (`tests/coap_alternate_raft_node_cases.hpp`), and the cluster fixture
+    moved to `tests/coap_node_cluster_base.hpp` so it can name a backend
+    without including libcoap, whose headers cannot share a translation unit
+    with libnyoci's. Both suites passed 20 of 20 runs locally on the boost
+    future backend (libnyoci built AF_INET-only, as this sandbox has no IPv6).
   - _Requirements: 3.5, 2.2, 2.3_
 
 ---
