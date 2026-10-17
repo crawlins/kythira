@@ -817,19 +817,34 @@ inline auto configure_dtls(nyoci_t instance, const coap_security_config& securit
 /// principle; in practice the kernel does not hand the same ephemeral port out
 /// twice in quick succession, and this only runs when the caller asked for "any
 /// port" in the first place.
+///
+/// IPv6 first, matching libnyoci's default dual-stack listener, then IPv4 for
+/// a host with no IPv6 at all, where libnyoci is built AF_INET and an
+/// AF_INET6 socket cannot even be opened.
 [[nodiscard]] inline auto reserve_ephemeral_port() -> std::uint16_t {
-    const int fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-    if (fd < 0) {
-        throw coap_network_error("failed to open a socket to reserve a DTLS port");
-    }
-    sockaddr_in6 addr{};
-    addr.sin6_family = AF_INET6;
-    addr.sin6_addr = in6addr_any;
     std::uint16_t port = 0;
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+    int fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd >= 0) {
+        sockaddr_in6 addr{};
+        addr.sin6_family = AF_INET6;
+        addr.sin6_addr = in6addr_any;
         socklen_t length = sizeof(addr);
-        if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &length) == 0) {
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+            ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &length) == 0) {
             port = ntohs(addr.sin6_port);
+        }
+    } else {
+        fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (fd < 0) {
+            throw coap_network_error("failed to open a socket to reserve a DTLS port");
+        }
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        socklen_t length = sizeof(addr);
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+            ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &length) == 0) {
+            port = ntohs(addr.sin_port);
         }
     }
     ::close(fd);
