@@ -5,6 +5,42 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 17, 2026)
 
+- **InstallSnapshot now crosses the libnyoci backend whatever its size.**
+  libnyoci has no Block1, so a request that did not fit one datagram was
+  refused with an error, and a snapshot chunk over about 1 KiB could not be
+  sent at all without OSCORE. The libnyoci client now splits such a request
+  into Block1 blocks, one transaction per block, and the libnyoci server
+  reassembles them. The refusal remains only with `enable_block_transfer`
+  off. A response that is itself block-wise is refused rather than combined
+  with Block1; Raft's responses all fit one datagram.
+
+- **libnyoci no longer truncates a peer's 1024-byte blocks.** libnyoci read
+  every datagram, DTLS records included, into a 1032-byte buffer, below
+  RFC 7252's 1152-byte message size, and processed a cut-off datagram as if
+  it were whole. A libcoap or cantcoap client's 1024-byte Block1 block was
+  therefore reassembled wrong (4.08) in the clear, and failed to decrypt
+  (timeout) over DTLS. The overlay port's new patch 0003 raises the buffer
+  to 1288 bytes and drops truncated datagrams.
+
+- **cantcoap and libnyoci OSCORE servers now accept a message split with
+  outer Block1.** libcoap's client fragments a large protected request on
+  the wire rather than inside OSCORE, which RFC 8613 Section 4.1.3.4.2
+  allows. The other two servers tried to verify the first fragment on its
+  own and failed: cantcoap dropped it, and libnyoci answered 5.00. Both now
+  reassemble the outer blocks first and verify the whole message.
+
+- **One Block1 reassembler for all three backends.**
+  `raft/coap_block1_assembly.hpp` holds partial bodies per peer and path,
+  capped at `max_concurrent_sessions` uploads and `max_request_size` bytes.
+  It replaces the libcoap OSCORE server's own map and the libnyoci OSCORE
+  server's single buffer. That single buffer let two peers' uploads
+  interleave.
+
+- **The interop suites now send a 16 KiB InstallSnapshot** between every
+  client and server pair, in the clear, over DTLS-PSK and over OSCORE. The
+  peer answers with a digest of every byte and its position, so a lost or
+  reordered block fails the case. These cases found the three fixes above.
+
 - **A libnyoci OSCORE client no longer sends its Uri-Path in the
   clear.** `nyoci_outbound_set_uri` writes the URI's path as outer
   Uri-Path options, and libnyoci never reads the `NYOCI_MSG_SKIP_PATH`

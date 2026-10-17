@@ -20,6 +20,7 @@
 #include <raft/coap_security.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -104,6 +105,19 @@ inline constexpr const char* psk_identity = "kythira-interop";
     config.mode = kythira::coap_auth_mode::oscore;
     config.credentials = std::move(creds);
     return config;
+}
+
+/// What the peer answers an InstallSnapshot with, and what the client
+/// expects back: depends on every byte and its position, so a block lost,
+/// repeated or reordered on the way in changes it. Not security, but shared
+/// by both halves like everything else here.
+template<typename Bytes>
+[[nodiscard]] inline auto snapshot_digest(const Bytes& data) -> std::uint64_t {
+    std::uint64_t digest = data.size();
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        digest = digest * 31 + std::to_integer<std::uint64_t>(data[i]) + i;
+    }
+    return digest;
 }
 
 /// The server security a peer's command line asks for; throws on anything

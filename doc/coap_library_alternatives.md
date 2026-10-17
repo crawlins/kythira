@@ -123,14 +123,17 @@ So the backend is asymmetric, and the adapter is explicit about it:
   at all, so the adapter slices responses itself — statelessly, serving each
   block straight out of the request's own Block2 option, so there is no
   per-peer transfer state to expire.
-- **Large requests** cannot be sent. The adapter checks
-  `nyoci_outbound_get_space_remaining()` before appending, and rejects the
-  future with an error that names the missing Block1 support rather than
-  truncating the payload or hanging until the timeout.
+- **Large requests** are split by the adapter (since October 17, 2026). When
+  `nyoci_outbound_get_space_remaining()` says the body will not fit, the
+  client sends it as Block1, one transaction per block, and the server
+  reassembles it. Before that the future was rejected with an error naming
+  the missing Block1 support, which is still what happens with block transfer
+  turned off.
 
 That matters most for InstallSnapshot, which is the one Raft RPC with an
-unbounded request body. A deployment that ships large snapshots should use the
-libcoap backend.
+unbounded request body. It also needed libnyoci's receive buffer raised
+(overlay patch 0003): at 1032 bytes it cut the other backends' 1024-byte
+blocks short.
 
 ### 3. The security layer has no transport-neutral seam — so DTLS came from libnyoci
 

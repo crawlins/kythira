@@ -35,8 +35,9 @@ the above by hand. Here the adapter is thin; the *port* is the expensive part.
 
 **Implementation note — the split is not clean in two places.** libnyoci owns
 Block2 on the *client* side only, so the adapter slices block-wise responses on
-the server side itself; and libnyoci has no Block1 at all, so an over-large
-request is refused rather than split. See "Block-wise transfer" below.
+the server side itself; and libnyoci has no Block1 at all, so the adapter
+splits over-large requests and reassembles them itself. See "Block-wise
+transfer" below.
 
 ### Key design decision: security stays in kythira, not libnyoci
 
@@ -143,11 +144,13 @@ libnyoci is asymmetric here, and the adapter's shape follows from that:
   `nyoci_outbound_get_space_remaining()` on the live packet rather than from a
   compile-time constant, so this holds for whatever `NYOCI_MAX_CONTENT_LENGTH`
   the library was built with.
-- **Block1: absent entirely.** `COAP_OPTION_BLOCK1` appears only in libnyoci's
-  option-name and option-type tables. A request that does not fit one datagram
-  cannot be split, so `send_rpc` rejects its future with an error naming the
-  missing support. This bounds InstallSnapshot; large-snapshot deployments
-  should use the libcoap backend.
+- **Block1: absent from libnyoci, so the adapter does it.** `COAP_OPTION_BLOCK1`
+  appears only in libnyoci's option-name and option-type tables. Since
+  October 17, 2026 the resend trampoline switches a request that does not fit
+  one datagram to Block1, one transaction per block, and the server
+  reassembles blocks per peer and path (`raft/coap_block1_assembly.hpp`). With
+  `enable_block_transfer` off the request is still refused with an error
+  naming Block1.
 
 ## Header incompatibility with libcoap
 
