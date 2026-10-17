@@ -47,6 +47,11 @@ vcpkg_from_github(
         # every static consumer that discovers the library through pkg-config
         # fails to link against ~36 undefined SSL_*/EVP_*/HMAC_* symbols.
         0002-declare-the-openssl-dependency-in-libnyoci-pc.patch
+        # A 1032-byte receive buffer, below RFC 7252's 1152-byte message size,
+        # cut every peer's 1024-byte Block1 block short, and truncated
+        # datagrams were processed as whole. Raised to 1280 and dropped
+        # instead, respectively.
+        0003-hold-a-1024-byte-block-and-drop-truncated-datagrams.patch
 )
 
 # libnyoci's release tarballs would normally include a pre-generated
