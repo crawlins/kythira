@@ -5,6 +5,32 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 17, 2026)
 
+- **A libnyoci OSCORE client no longer sends its Uri-Path in the
+  clear.** `nyoci_outbound_set_uri` writes the URI's path as outer
+  Uri-Path options, and libnyoci never reads the `NYOCI_MSG_SKIP_PATH`
+  flag that was meant to stop it. So each protected request carried its
+  path twice: encrypted inside the OSCORE payload, and readable outside
+  it. libnyoci servers ignored the outer copy, so libnyoci nodes worked
+  with each other, but cantcoap answered 4.04 and libcoap 4.01. The
+  client now strips the path from the URI it sets on OSCORE requests.
+
+- **A libcoap OSCORE server now reassembles inner Block1.** RFC 8613
+  lets a client split the plaintext of a protected request into inner
+  blocks, and the libnyoci client does so for anything over 256 bytes.
+  cantcoap and libnyoci servers rebuilt the body; libcoap handed the
+  first block to the handler, which failed to decode a truncated
+  InstallSnapshot. The server now collects the blocks per peer and path,
+  answers 2.31 Continue until the last one arrives, and refuses
+  out-of-order blocks with 4.08 and oversize bodies with 4.13. The number
+  of open assemblies is capped at `max_concurrent_sessions`.
+
+- **The cross-backend interop suites now run over OSCORE and EDHOC.**
+  Every client and server pair runs with a static OSCORE context, and the
+  cantcoap and libnyoci pairs also run with an OSCORE context derived by
+  EDHOC over `/.well-known/edhoc`. libcoap is left out of the EDHOC cases
+  because it runs EDHOC outside CoAP, through `edhoc_transport_factory`.
+  These cases found both fixes above.
+
 - **A libcoap transport given only `security.mode = dtls_psk` (or
   `dtls_pki`, `dtls_rpk`) no longer runs in the clear.** The libcoap
   backend decided between a DTLS and a plaintext endpoint, and between a
@@ -22,8 +48,7 @@ current list of outstanding work, see [TODO.md](TODO.md).
   DTLS server is also checked to refuse a plaintext client, which is the
   case that caught the libcoap downgrade. Separately, the libnyoci DTLS
   server could not start on a host with no IPv6, because it reserved its
-  port on an IPv6 socket; it now falls back to IPv4. EDHOC interop is
-  still open.
+  port on an IPv6 socket; it now falls back to IPv4.
 
 - **The three CoAP backends are now checked against each other on the
   wire.** Each backend had only ever talked to itself, because no two of
