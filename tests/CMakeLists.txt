@@ -6621,6 +6621,31 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(coap_libnyoci_textual_node_id_test PROPERTIES
         TIMEOUT 300 LABELS "coap;libnyoci;integration;composite_node_id")
 
+    # node<Types> over libnyoci: election, replication and TimeoutNow leadership
+    # transfer on three loopback nodes (coap-transport-multi-raft task 7). The
+    # cases are coap_alternate_raft_node_cases.hpp, shared with the other
+    # alternate backend; coap_raft_node_integration_test runs the libcoap ones.
+    # Folly-gated like that test: node<Types>' futures need it here.
+    if(TARGET Folly::folly)
+        add_executable(coap_libnyoci_raft_node_test coap_libnyoci_raft_node_test.cpp)
+        target_link_libraries(coap_libnyoci_raft_node_test PRIVATE
+            ${_kythira_libnyoci}
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+            Folly::folly
+        )
+        if(TARGET OpenSSL::SSL)
+            target_link_libraries(coap_libnyoci_raft_node_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        target_compile_features(coap_libnyoci_raft_node_test PRIVATE cxx_std_23)
+        add_test(NAME coap_libnyoci_raft_node_test COMMAND coap_libnyoci_raft_node_test)
+        set_tests_properties(coap_libnyoci_raft_node_test PROPERTIES
+            TIMEOUT 300 LABELS "coap;libnyoci;integration;raft")
+    else()
+        message(STATUS "coap_libnyoci_raft_node_test: skipped (requires Folly)")
+    endif()
+
     # ── coap-transport-cantcoap spec: the codec-only CoAP backend ────────────────
     # Unconditional, like the libnyoci targets and for the same reason: the adapter
     # keeps its full concept surface with or without cantcoap, so the conformance
@@ -6709,6 +6734,30 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_test(NAME coap_cantcoap_textual_node_id_test COMMAND coap_cantcoap_textual_node_id_test)
     set_tests_properties(coap_cantcoap_textual_node_id_test PROPERTIES
         TIMEOUT 300 LABELS "coap;cantcoap;integration;composite_node_id")
+
+    # node<Types> over cantcoap: election, replication and TimeoutNow leadership
+    # transfer on three loopback nodes (coap-transport-multi-raft task 7). The
+    # cases are coap_alternate_raft_node_cases.hpp, shared with the other
+    # alternate backend; coap_raft_node_integration_test runs the libcoap ones.
+    # Folly-gated like that test: node<Types>' futures need it here.
+    if(TARGET Folly::folly)
+        add_executable(coap_cantcoap_raft_node_test coap_cantcoap_raft_node_test.cpp)
+        target_link_libraries(coap_cantcoap_raft_node_test PRIVATE
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+            Folly::folly
+        )
+        if(TARGET OpenSSL::SSL)
+            target_link_libraries(coap_cantcoap_raft_node_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        target_compile_features(coap_cantcoap_raft_node_test PRIVATE cxx_std_23)
+        add_test(NAME coap_cantcoap_raft_node_test COMMAND coap_cantcoap_raft_node_test)
+        set_tests_properties(coap_cantcoap_raft_node_test PROPERTIES
+            TIMEOUT 300 LABELS "coap;cantcoap;integration;raft")
+    else()
+        message(STATUS "coap_cantcoap_raft_node_test: skipped (requires Folly)")
+    endif()
 
     # Revocation, cn_validator and ACE-OAuth on the two alternate backends,
     # held to the same cases (coap_alternate_security_parity_cases.hpp) so

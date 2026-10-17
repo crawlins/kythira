@@ -39,6 +39,7 @@ chaos_smoke_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TA
 chaos_state_machine_recovery_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 chaos_state_machine_safety_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 coap_block_transfer_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
+coap_cantcoap_raft_node_test uses Folly directly (`folly::Init`)
 coap_certificate_validation_failure_property_test its transport Types bundle names `folly::Executor` as executor_type
 coap_cipher_suite_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 coap_concurrent_processing_property_test its transport Types bundle names `folly::Executor` as executor_type
@@ -55,6 +56,7 @@ coap_fetch_log_entries_test gated on `TARGET Folly::folly` in tests/CMakeLists.t
 coap_final_integration_validation_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 coap_future_resolution_property_test its transport Types bundle names `folly::Executor` as executor_type
 coap_get_joined_multicast_groups_test its transport Types bundle names `folly::Executor` as executor_type
+coap_libnyoci_raft_node_test uses Folly directly (`folly::Init`)
 coap_multicast_delivery_property_test its transport Types bundle names `folly::Executor` as executor_type
 coap_multicast_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 coap_oscore_id_context_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
