@@ -210,7 +210,8 @@ the socket. That principle paid for itself the first time it was tested.
   the CRL check now runs in `check_established_peer()` ahead of the validator,
   and ACE runs in `plan_security()`. Tests:
   `tests/coap_cantcoap_security_parity_test.cpp`.
-- **arm64**, unverified here as for the other backends — no cross toolchain.
+- ~~**arm64**~~: closed October 17, 2026. The `alt-coap-backends` job now
+  also runs on a native arm64 runner and passes every `coap_*` suite there.
 - **Cross-backend interop tests**: plaintext closed October 17, 2026. No two
   CoAP backends can share a translation unit, so `tests/coap_interop_peer.cpp`
   is a server built once per backend and run as a child process, and

@@ -43,10 +43,10 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       `autoreconf -fi && ./configure && make && make install` with the port's
       own flags. Produces `libnyoci.a`, the headers under `include/libnyoci/`,
       and `lib/pkgconfig/libnyoci.pc`.
-    - **arm64 Linux is not verified** — no cross toolchain on the development
-      host. Nothing in the port or the adapter is architecture-specific
-      (libnyoci is portable C; the adapter touches no intrinsics), but this is
-      an untested claim, not a verified one. Verifying it needs an arm64 runner.
+    - Verified on **arm64 Linux** October 17, 2026: the `alt-coap-backends`
+      job's arm64 leg (native `ubuntu-24.04-arm` runner) builds the port with
+      the `arm64-linux` triplet and runs every `coap_*` suite, the libnyoci
+      ones included, with no arm64-specific change.
   - [x] 1.3 Add the patches surfaced by the first real build
     - `0001-drop-CODE_COVERAGE_RULES-substitution.patch`: libnyoci was written
       against a pre-2018 autoconf-archive whose `AX_CODE_COVERAGE` `AC_SUBST`'d
@@ -352,7 +352,8 @@ and a translation unit selects a backend by which header it includes.
 
 ## Follow-ups
 
-- **arm64 port verification** (Task 1.2). Needs an arm64 runner.
+- ~~**arm64 port verification**~~ (Task 1.2): closed October 17, 2026, by
+  the arm64 leg of the `alt-coap-backends` job.
 - ~~**Cross-backend interop test**~~: closed October 17, 2026, for plaintext.
   A libcoap client against a libnyoci server cannot be built in one process,
   so it runs as two: `tests/coap_interop_peer.cpp` is a server on one backend,

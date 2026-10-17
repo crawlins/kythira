@@ -5,6 +5,12 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 17, 2026)
 
+- **cantcoap and libnyoci are now built and tested on arm64.** The
+  Alternate CoAP Backends CI job gained a leg on a native arm64 runner,
+  which builds both overlay ports for `arm64-linux` and runs all 72
+  `coap_*` tests. It passed on its first run, with no arm64-specific fix.
+  The x64 leg is still the required check.
+
 - **InstallSnapshot now crosses the libnyoci backend whatever its size.**
   libnyoci has no Block1, so a request that did not fit one datagram was
   refused with an error, and a snapshot chunk over about 1 KiB could not be
