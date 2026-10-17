@@ -342,10 +342,12 @@ and a translation unit selects a backend by which header it includes.
 ## Follow-ups
 
 - **arm64 port verification** (Task 1.2). Needs an arm64 runner.
-- **Cross-backend interop test**: a libcoap client against a libnyoci server
-  cannot be built in one process. It needs two processes, i.e. the container
-  harness Task 6.4 did not require — and that harness must follow the
-  Docker/rootless-Podman rules in `CLAUDE.md`.
+- ~~**Cross-backend interop test**~~: closed October 17, 2026, for plaintext.
+  A libcoap client against a libnyoci server cannot be built in one process,
+  so it runs as two: `tests/coap_interop_peer.cpp` is a server on one backend,
+  started as a child process over loopback (no container needed), and
+  `tests/coap_{libcoap,cantcoap,libnyoci}_interop_test.cpp` drive all four RPC
+  kinds against each backend's peer. DTLS and EDHOC interop are still open.
 - **Observe at the transport level.** OSCORE now carries notifications
   (`protect_response` with its own Partial IV, `unprotect_notification` with
   the Section 8.4.2 ordering check, verified against Appendix C.8), but neither

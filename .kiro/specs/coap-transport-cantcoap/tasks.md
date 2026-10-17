@@ -211,9 +211,13 @@ the socket. That principle paid for itself the first time it was tested.
   and ACE runs in `plan_security()`. Tests:
   `tests/coap_cantcoap_security_parity_test.cpp`.
 - **arm64**, unverified here as for the other backends — no cross toolchain.
-- **Cross-backend interop tests** still need two processes, since no two CoAP
-  backends can share a translation unit. EDHOC and DTLS are both meant to
-  interoperate with the other backends on the wire; neither is asserted yet.
+- **Cross-backend interop tests**: plaintext closed October 17, 2026. No two
+  CoAP backends can share a translation unit, so `tests/coap_interop_peer.cpp`
+  is a server built once per backend and run as a child process, and
+  `tests/coap_{libcoap,cantcoap,libnyoci}_interop_test.cpp` send all four RPC
+  kinds from each backend's client to each backend's server. EDHOC and DTLS
+  are both meant to interoperate with the other backends on the wire; neither
+  is asserted yet.
 - **CI runs these suites** in the `alt-coap-backends` job, which installs the
   `coap-cantcoap` and `edhoc` features and fails if any `coap_cantcoap_*`
   binary builds as its stub (`scripts/check-coap-alt-backends.sh`). Every other

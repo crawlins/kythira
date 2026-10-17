@@ -5,6 +5,16 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 17, 2026)
 
+- **The three CoAP backends are now checked against each other on the
+  wire.** Each backend had only ever talked to itself, because no two of
+  them can share a translation unit. `coap_interop_peer` is a server built
+  once per backend and started as a child process, and each backend's
+  `coap_*_interop_test` sends RequestVote, AppendEntries, InstallSnapshot
+  and TimeoutNow to every peer that was built. Each reply is computed from
+  the request, so a match shows the body crossed backends intact. All nine
+  client and server pairs pass in the `alt-coap-backends` job. Plaintext
+  only; DTLS and EDHOC interop are still open.
+
 - **Raft now runs end to end over the cantcoap and libnyoci backends in
   CI.** Both alternate CoAP backends shipped TimeoutNow on October 2, but
   only their transport cases ran, and only libcoap had a test that put
