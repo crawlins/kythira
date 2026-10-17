@@ -383,6 +383,31 @@ BOOST_AUTO_TEST_CASE(a_loaded_cluster_splits_provisions_a_container_and_admits_i
         BOOST_CHECK_GE(counter(s, "admission{outcome=completed}"), 1U);
         BOOST_CHECK_GE(counter(s, "shards_moved"), 1U);
 
+        // A move whose source leads its shard hands leadership to the new
+        // voter over TimeoutNow, then removes the source. Before the HTTP
+        // transports had TimeoutNow the host answered `unsupported` and the
+        // controller displaced another voter instead, or, with none to
+        // displace, left the shard one voter over
+        // (.kiro/specs/http-coap-pre-vote-timeout-now/ Requirement 6.5).
+        BOOST_CHECK_EQUAL(counter(s, "operator_skipped{reason=unsupported}"), 0U);
+        BOOST_CHECK_EQUAL(counter(s, "move{outcome=retargeted}"), 0U);
+        for (const auto& v : shards(s)) {
+            BOOST_CHECK_EQUAL(v.as_object().at("voters").as_array().size(), 3U);
+        }
+        // Whether this run took the move-off-leader path at all depends on
+        // where leadership sat, so it is reported rather than asserted.
+        std::size_t transfers = 0;
+        for (int n = 1; n <= 4; ++n) {
+            const auto log = os::real_exec({os::container_runtime(), "logs",
+                                            "kythira-" + c._name + "-" + std::to_string(n)})
+                                 .out;
+            for (auto at = log.find("Leadership transfer requested"); at != std::string::npos;
+                 at = log.find("Leadership transfer requested", at + 1)) {
+                ++transfers;
+            }
+        }
+        BOOST_TEST_MESSAGE("leadership transfers requested: " << transfers);
+
         // 5. The container is the one the intent created, found by the
         //    idempotency key the controller put on it.
         const auto key = std::string(done->at("key").as_string());
