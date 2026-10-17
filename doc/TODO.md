@@ -84,7 +84,7 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
   October 4, 2026 with `ls -d .kiro/specs/*/`; it was 58 on September 10, and
   45 for a month before that while thirteen were added). None has zero
   implementation commits any more: `coap-transport-multi-raft`, the last two
-  this line named, is at 9/14 and `elastic-shard-capacity` at 17/17. (This also said
+  this line named, is at 14/14 and `elastic-shard-capacity` at 17/17. (This also said
   `alibaba-cloud-services` had its vendor-fact spike open; that spec was
   audited task by task and closed on October 2, 2026 — see "Pending
   Specifications".) (This said *three* when it was written on
@@ -211,6 +211,7 @@ are the only place several refutations are written down in one paragraph.
 | `acm-pca-ephemeral-ca` | **7/7** | **Closed October 16, 2026.** Written October 3, 2026. `aws_acm_pca_provider_real_test` creates and deletes its own two ACM Private CAs per run (`ephemeral_acm_pca`, `RealCaFixture`) with `KYTHIRA_ACM_PCA_REAL_TESTS=1`, and Real Cloud Tests runs it plus `scripts/aws-acm-pca-leaks.sh audit` behind `REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED`. Actions and local runs both measured $0.232, the IAM bundle passed `simulate-custom-policy`, and billing confirmed roots are charged as certificates and deleted CAs stop accruing (October 16). The deliberate-leak check passed the same day: a SIGKILL'd run left one tagged CA, `audit` named it, `sweep` deleted it, and the next `audit` was clean. |
 | `tcp-rpc-server-hardening` | **6/6** | **Closed October 16, 2026.** Tasks 1-5, 6.2 and 6.3 landed in PR #423: `MSG_NOSIGNAL` writes, incremental 1 MiB frame reads, and `include/raft/tcp_connection_tracker.hpp` (bounded, deadlined and drained connections) on the TCP, TLS and gossip servers, with all four suites in the ThreadSanitizer job. Task 6.1 closed with a local AddressSanitizer/UBSan run of the four suites and a green Container Scenario Tests run under Docker and rootless Podman ([38937810252](https://github.com/crawlins/kythira/actions/runs/38937810252)). The UBSan run found a real bug in `bounded_resolver.hpp`: a peer learned from an incoming RPC before its name ever resolved was never looked up in DNS, because `now() - time_point::min()` overflowed. Fixed in the same change. |
 | `http-coap-pre-vote-timeout-now` | **9/9** | **Closed October 17, 2026.** RequestPreVote and TimeoutNow on the three HTTP transports, RequestPreVote on the three CoAP backends, and a core `rpc_not_implemented` fallback so elections keep working mid-upgrade landed in PR #460. Task 6.3 closed with the elastic-capacity Docker scenario, which now asserts that a move off a leader transfers leadership instead of being skipped as unsupported or retargeted, and that every shard ends with exactly three voters; it passed under Docker and rootless Podman in Container Scenario Tests run [38996213264](https://github.com/crawlins/kythira/actions/runs/38996213264). |
+| `coap-transport-multi-raft` | **14/14** | **Closed October 17, 2026.** Phases 1-4 and 6 landed in PR #385; tasks 9-11 (per-group OSCORE contexts on the libcoap backend) and 13 (Multi-Raft over CoAP end to end under per-group OSCORE) landed October 15, 2026, from draft PR #453. Task 7 (`TimeoutNow` on libnyoci and cantcoap) closed once both backends passed the same end-to-end check as libcoap: `coap_cantcoap_raft_node_test` and `coap_libnyoci_raft_node_test` run three `node<Types>` over each backend in the `alt-coap-backends` job and assert an election, a replicated commit and a TimeoutNow transfer to the named node in one term bump. |
 
 ### Not Started
 
@@ -275,7 +276,6 @@ nothing and would have been answered with 406.
 | Spec | Tasks | Notes |
 |------|-------|-------|
 | `mold-linker` | 6/8 | Moved from "Not Started" October 15, 2026. CI links with mold 2.30 (Ubuntu package) through `-DKYTHIRA_LINKER=mold`, and every linking job checks `.comment` afterwards (`scripts/check-linker.sh`). Task 1 measured it before adoption: mold could not link the clang++-18 legs at all against GCC-built vcpkg libraries (a VTT/COMDAT mismatch mold reports as an ODR violation), so every clang job now builds its vcpkg ports with clang (Requirement 9) and keys its tree on the compiler. On that basis summed link time fell **27.1%** on the clang++-18 x64 leg and **33.1%** on coverage, short of the 30% gate; Clark waived the gate on October 15 over lld (49.5%) and closing. Merged in PR #545; task 5's arm64-smoke and AWS real-cloud dispatches passed. Open: tasks 6-7, the post-merge confirmation and the two-week soak before the CA Docker builders follow. |
-| `coap-transport-multi-raft` | 13/14 | Moved from "Not Started" October 4, 2026. Phases 1-4 and 6 landed in PR #385; tasks 9-11 (per-group OSCORE contexts on the libcoap backend, recipient-side selection, lifecycle and replay window) and 13 (Multi-Raft over CoAP end to end, split and merge under per-group OSCORE) landed October 15, 2026, from draft PR #453. Open: task 7 (`TimeoutNow` on libnyoci and cantcoap ships on both, but its integration cases now run in CI under the `alt-coap-backends` job, which builds both backends). |
 | `http-server-request-limits` | **8/8** | Complete: one shared `connection_gate` enforcing `max_concurrent_connections` on all three HTTP servers, plus `max_request_body_size` (413) on Proxygen, merged in PR #452. |
 | `coap-client-event-driven-io` | 0/8 | Replace the libcoap client's fixed `coap_io_process(NO_WAIT)` + 5 ms sleep with a readiness wait and wake fd; task 1 is a gate that confirms six claims about libcoap first. Draft PR #392. |
 | `group-scale-up-rollback` | 8/10 | Tasks 1–8 on `main`: the vendor spike, the shared planner, mock servers that model the cloud's choice, and remove-by-id rollback in all five group managers (ESS and OCI instance pool first, then ASG, VMSS and MIG in `794b7e5`). Task 9's real-cloud timeout cases are written (`498333b`) but not yet dispatched, which the task requires before it is ticked; the AWS CI role must be re-provisioned for the new `PutLifecycleHook` and `SetInstanceProtection` grants first. Task 10 (provider READMEs and cross-references from the five provider specs) is open. |
@@ -385,7 +385,8 @@ unverified completion claim.
   a regression, and several are optional by their spec's own account.
   - **The alternate CoAP backends build in CI on x64 only.** The
     `alt-coap-backends` job runs both backends' real suites, which is what
-    `coap-transport-multi-raft` task 7 was waiting on. Still open:
+    `coap-transport-multi-raft` task 7 was waiting on (closed October 17,
+    2026). Still open:
     cross-backend EDHOC/DTLS interop is not asserted and arm64 is
     unverified (`coap-transport-cantcoap` tasks.md ~201–209,
     `coap-transport-libnyoci` tasks.md ~337). Also from

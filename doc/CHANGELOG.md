@@ -5,6 +5,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 17, 2026)
 
+- **Raft now runs end to end over the cantcoap and libnyoci backends in
+  CI.** Both alternate CoAP backends shipped TimeoutNow on October 2, but
+  only their transport cases ran, and only libcoap had a test that put
+  `node<Types>` on top of the transport. `coap_cantcoap_raft_node_test`
+  and `coap_libnyoci_raft_node_test` now run three nodes over each backend
+  and check an election, a replicated commit, and a leadership transfer to
+  a named node in one term bump. The cluster fixture moved to
+  `tests/coap_node_cluster_base.hpp`, which names no backend, since
+  libcoap's and libnyoci's headers cannot share a translation unit. This
+  closes `coap-transport-multi-raft` at 14/14.
+
 - **The elastic-capacity scenario now proves a move off a leader keeps
   three voters.** Before HTTP gained TimeoutNow, moving a replica off a
   shard's leader was skipped as unsupported, and the controller either
