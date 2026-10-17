@@ -3,6 +3,18 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 17, 2026)
+
+- **The elastic-capacity scenario now proves a move off a leader keeps
+  three voters.** Before HTTP gained TimeoutNow, moving a replica off a
+  shard's leader was skipped as unsupported, and the controller either
+  retargeted the move or abandoned it, leaving the shard one voter over.
+  `elastic_capacity_docker_test` now fails if any operator is skipped as
+  unsupported, if any move is retargeted, or if a shard ends with other
+  than three voters, and it reports how many leadership transfers the
+  nodes requested. It passed under Docker and rootless Podman, which
+  closes the last task of `http-coap-pre-vote-timeout-now`.
+
 ### What Changed (October 16, 2026)
 
 - **A peer that speaks before its name resolves is now looked up in DNS.**

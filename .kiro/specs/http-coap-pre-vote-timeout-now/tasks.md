@@ -2,7 +2,8 @@
 
 ## Implementation Status
 
-Implemented on 2026-10-03, except task 6.3 (see below). Where each test ran:
+Implemented on 2026-10-03; task 6.3 closed on 2026-10-17 (see below). Where
+each test ran:
 
 | Test | Where it ran |
 |---|---|
@@ -87,15 +88,20 @@ elections working while a cluster is part-way through an upgrade.
     tests use it)
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
-- [ ] 6. Multi-Raft over HTTP
+- [x] 6. Multi-Raft over HTTP
   - [x] 6.1 Test that `multi_group_network_server` over cpp-httplib registers
     the pre-vote and timeout-now handlers
   - [x] 6.2 Host test: `transfer_leader` and `scatter` end `accepted` over
     cpp-httplib
-  - [ ] 6.3 Re-run the elastic-capacity Docker scenario and confirm the
+  - [x] 6.3 Re-run the elastic-capacity Docker scenario and confirm the
     move-off-leader path no longer leaves a shard one voter over
-    (not run: needs the Docker elastic scenario, which the implementing
-    sandbox cannot host; 6.2 covers the same transfer on the host API)
+    (passed in Container Scenario Tests run
+    [38996213264](https://github.com/crawlins/kythira/actions/runs/38996213264)
+    under Docker and rootless Podman: the scenario now asserts no
+    `operator_skipped{reason=unsupported}`, no `move{outcome=retargeted}`
+    and exactly three voters on every shard after scale-out, and the nodes
+    logged 15 and 3 leadership transfers respectively, so the move-off-leader
+    path was exercised on both runtimes)
   - _Requirements: 2.3, 6.5_
 
 - [x] 7. Documentation
