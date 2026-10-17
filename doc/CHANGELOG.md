@@ -5,6 +5,26 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 17, 2026)
 
+- **A libcoap transport given only `security.mode = dtls_psk` (or
+  `dtls_pki`, `dtls_rpk`) no longer runs in the clear.** The libcoap
+  backend decided between a DTLS and a plaintext endpoint, and between a
+  DTLS and a plaintext client session, from the legacy `enable_dtls` flag
+  alone. A config that set the mode but not the flag loaded its
+  credentials and then served and sent plain CoAP, with no error. Two
+  libcoap nodes configured that way still talked to each other, so no
+  test noticed; cantcoap and libnyoci, which key on the mode, could not
+  reach them. Both libcoap constructors now turn `enable_dtls` on for
+  those modes. Found by the new DTLS interop cases below.
+
+- **The cross-backend interop suites now run over DTLS too.** Each
+  client and server pair runs over DTLS-PSK and over DTLS-PKI, with each
+  side verifying the other's certificate against one CA. Each backend's
+  DTLS server is also checked to refuse a plaintext client, which is the
+  case that caught the libcoap downgrade. Separately, the libnyoci DTLS
+  server could not start on a host with no IPv6, because it reserved its
+  port on an IPv6 socket; it now falls back to IPv4. EDHOC interop is
+  still open.
+
 - **The three CoAP backends are now checked against each other on the
   wire.** Each backend had only ever talked to itself, because no two of
   them can share a translation unit. `coap_interop_peer` is a server built

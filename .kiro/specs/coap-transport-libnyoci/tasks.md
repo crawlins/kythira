@@ -347,7 +347,8 @@ and a translation unit selects a backend by which header it includes.
   so it runs as two: `tests/coap_interop_peer.cpp` is a server on one backend,
   started as a child process over loopback (no container needed), and
   `tests/coap_{libcoap,cantcoap,libnyoci}_interop_test.cpp` drive all four RPC
-  kinds against each backend's peer. DTLS and EDHOC interop are still open.
+  kinds against each backend's peer, in the clear, over DTLS-PSK and over
+  DTLS-PKI. EDHOC interop is still open.
 - **Observe at the transport level.** OSCORE now carries notifications
   (`protect_response` with its own Partial IV, `unprotect_notification` with
   the Section 8.4.2 ordering check, verified against Appendix C.8), but neither
