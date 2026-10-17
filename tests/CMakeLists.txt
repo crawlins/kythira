@@ -6759,6 +6759,92 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
         message(STATUS "coap_cantcoap_raft_node_test: skipped (requires Folly)")
     endif()
 
+    # Cross-backend interop: a client on each backend against a server on every
+    # backend that was built, libcoap, cantcoap and libnyoci alike. No two
+    # backends can share a translation unit, so the server is a separate
+    # process, coap_interop_peer, built once per backend found; each client
+    # test gets one case per peer, located through
+    # KYTHIRA_INTEROP_PEER_PATH_<BACKEND>. The client tests are unconditional
+    # like the integration suites above and collapse to a skipped case without
+    # their own backend; add_dependencies is what makes building a client test
+    # (the alt-coap-backends job builds every coap_* ctest target) build its
+    # peers too.
+    set(_kythira_interop_peers)
+    foreach(_kythira_interop_backend libcoap cantcoap libnyoci)
+        if(_kythira_interop_backend STREQUAL "libcoap")
+            set(_kythira_interop_found ${LIBCOAP_FOUND})
+        elseif(_kythira_interop_backend STREQUAL "cantcoap")
+            set(_kythira_interop_found ${cantcoap_FOUND})
+        else()
+            set(_kythira_interop_found ${LIBNYOCI_FOUND})
+        endif()
+        if(NOT _kythira_interop_found)
+            continue()
+        endif()
+        string(TOUPPER ${_kythira_interop_backend} _kythira_interop_upper)
+        set(_kythira_interop_peer coap_interop_peer_${_kythira_interop_backend})
+        add_executable(${_kythira_interop_peer} coap_interop_peer.cpp)
+        set(_kythira_interop_backend_lib)
+        if(_kythira_interop_backend STREQUAL "libnyoci")
+            set(_kythira_interop_backend_lib ${_kythira_libnyoci})
+        endif()
+        target_link_libraries(${_kythira_interop_peer} PRIVATE
+            ${_kythira_interop_backend_lib}
+            network_simulator
+            boost_json
+        )
+        if(TARGET Folly::folly)
+            target_link_libraries(${_kythira_interop_peer} PRIVATE Folly::folly)
+        endif()
+        if(TARGET OpenSSL::SSL)
+            target_link_libraries(${_kythira_interop_peer} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        target_compile_definitions(${_kythira_interop_peer} PRIVATE
+            KYTHIRA_INTEROP_PEER_${_kythira_interop_upper})
+        target_compile_features(${_kythira_interop_peer} PRIVATE cxx_std_23)
+        list(APPEND _kythira_interop_peers ${_kythira_interop_backend})
+    endforeach()
+
+    foreach(_kythira_interop_backend libcoap cantcoap libnyoci)
+        set(_kythira_interop_test coap_${_kythira_interop_backend}_interop_test)
+        add_executable(${_kythira_interop_test} ${_kythira_interop_test}.cpp)
+        set(_kythira_interop_backend_lib)
+        if(_kythira_interop_backend STREQUAL "libnyoci")
+            set(_kythira_interop_backend_lib ${_kythira_libnyoci})
+        endif()
+        target_link_libraries(${_kythira_interop_test} PRIVATE
+            ${_kythira_interop_backend_lib}
+            network_simulator
+            Boost::unit_test_framework
+            boost_json
+        )
+        if(TARGET Folly::folly)
+            target_link_libraries(${_kythira_interop_test} PRIVATE Folly::folly)
+        endif()
+        if(TARGET OpenSSL::SSL)
+            target_link_libraries(${_kythira_interop_test} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        foreach(_kythira_interop_peer_backend IN LISTS _kythira_interop_peers)
+            string(TOUPPER ${_kythira_interop_peer_backend} _kythira_interop_upper)
+            set(_kythira_interop_peer coap_interop_peer_${_kythira_interop_peer_backend})
+            target_compile_definitions(${_kythira_interop_test} PRIVATE
+                "KYTHIRA_INTEROP_PEER_PATH_${_kythira_interop_upper}=\"$<TARGET_FILE:${_kythira_interop_peer}>\"")
+            add_dependencies(${_kythira_interop_test} ${_kythira_interop_peer})
+        endforeach()
+        target_compile_features(${_kythira_interop_test} PRIVATE cxx_std_23)
+        add_test(NAME ${_kythira_interop_test} COMMAND ${_kythira_interop_test})
+        set_tests_properties(${_kythira_interop_test} PROPERTIES
+            TIMEOUT 300 LABELS "coap;${_kythira_interop_backend};integration;interop")
+    endforeach()
+    unset(_kythira_interop_backend)
+    unset(_kythira_interop_backend_lib)
+    unset(_kythira_interop_found)
+    unset(_kythira_interop_peer)
+    unset(_kythira_interop_peer_backend)
+    unset(_kythira_interop_peers)
+    unset(_kythira_interop_test)
+    unset(_kythira_interop_upper)
+
     # Revocation, cn_validator and ACE-OAuth on the two alternate backends,
     # held to the same cases (coap_alternate_security_parity_cases.hpp) so
     # they behave as libcoap does (coap-alternate-backend-security-parity).
