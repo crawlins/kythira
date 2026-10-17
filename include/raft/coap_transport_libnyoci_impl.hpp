@@ -431,6 +431,17 @@ template<typename Config>
     return (secure ? "coaps://" : "coap://") + endpoint + resource_path;
 }
 
+/// `uri` up to its authority, path and query dropped: "coap://h:p/a/b" ->
+/// "coap://h:p". What an OSCORE request hands nyoci_outbound_set_uri(),
+/// because libnyoci ignores NYOCI_MSG_SKIP_PATH (nyoci-outbound.c never
+/// tests it) and would otherwise write every Uri-Path option in the clear.
+[[nodiscard]] inline auto uri_without_path(const std::string& uri) -> std::string {
+    const auto scheme_end = uri.find("://");
+    const auto authority_start = scheme_end == std::string::npos ? 0 : scheme_end + 3;
+    const auto path_start = uri.find_first_of("/?", authority_start);
+    return path_start == std::string::npos ? uri : uri.substr(0, path_start);
+}
+
 #ifdef LIBNYOCI_AVAILABLE
 
 /// Everything a DTLS-secured nyoci_t needs kept alive for as long as it lives.
@@ -1596,10 +1607,14 @@ private:
         // options here (12, 17) may be written before it despite being lower.
         //
         // Under OSCORE the path is a Class E option and already lives inside
-        // the ciphertext, so SKIP_PATH keeps it off the wire -- emitting it
-        // here would leak exactly what the ciphertext is hiding.
-        status = nyoci_outbound_set_uri(rpc->uri.c_str(),
-                                        rpc->oscore_protected ? NYOCI_MSG_SKIP_PATH : 0);
+        // the ciphertext, so only the authority is handed over -- emitting the
+        // path here would leak exactly what the ciphertext is hiding.
+        // NYOCI_MSG_SKIP_PATH would be the natural flag, but libnyoci never
+        // honours it: passing it once sent every Uri-Path in the clear, which
+        // the other two backends' servers then dispatched on and refused.
+        const std::string set_uri =
+            rpc->oscore_protected ? libnyoci_detail::uri_without_path(rpc->uri) : rpc->uri;
+        status = nyoci_outbound_set_uri(set_uri.c_str(), 0);
         if (status != NYOCI_STATUS_OK) {
             return status;
         }
