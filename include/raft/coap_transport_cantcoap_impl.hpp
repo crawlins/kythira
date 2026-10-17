@@ -984,6 +984,7 @@ private:
         std::vector<std::uint8_t> buffer(cantcoap_max_datagram);
         while (!stop.stop_requested()) {
             start_queued();
+            run_deferred_settlements();
 
             pollfd fds{};
             fds.fd = _socket.fd();
@@ -1009,7 +1010,9 @@ private:
                 reject_failed_handshakes();
             }
             service_timers();
+            run_deferred_settlements();
         }
+        run_deferred_settlements();
         reject_all("cantcoap CoAP client stopped with the request in flight");
     }
 
@@ -1035,10 +1038,7 @@ private:
         try {
             exchange.datagram = build_request(exchange, token);
         } catch (...) {
-            if (!exchange.settled) {
-                exchange.settled = true;
-                exchange.message->reject_callback(std::current_exception());
-            }
+            settle_reject(exchange, std::current_exception());
             return;
         }
         send_to_peer(exchange);
@@ -1309,15 +1309,38 @@ private:
         }
         if (!exchange.settled) {
             exchange.settled = true;
-            exchange.message->resolve_callback(std::move(exchange.accumulated), media_type);
+            _deferred_settlements.emplace_back(
+                [resolve = exchange.message->resolve_callback,
+                 body = std::move(exchange.accumulated),
+                 media_type]() mutable { resolve(std::move(body), media_type); });
         }
         _pending.erase(token);
     }
 
-    static auto settle_reject(pending_exchange& exchange, std::exception_ptr error) -> void {
+    // Every exchange is settled with `_mutex` held, but its callback runs
+    // only once the lock is released (run_deferred_settlements): settling
+    // fulfils the caller's promise, and a future backend that runs
+    // continuations inline -- Folly's, with no executor attached -- then runs
+    // the caller's continuation right here. node<Types> answers a failed
+    // AppendEntries by sending the next one from that continuation, which
+    // re-enters send_rpc() and takes `_mutex` again on this same thread.
+    // Called on the loop thread only, as is every caller of these two.
+    auto settle_reject(pending_exchange& exchange, std::exception_ptr error) -> void {
         if (!exchange.settled) {
             exchange.settled = true;
-            exchange.message->reject_callback(error);
+            _deferred_settlements.emplace_back(
+                [reject = exchange.message->reject_callback, error] { reject(error); });
+        }
+    }
+
+    auto run_deferred_settlements() -> void {
+        std::vector<std::function<void()>> settlements;
+        {
+            const std::lock_guard lock(_mutex);
+            settlements.swap(_deferred_settlements);
+        }
+        for (auto& settle : settlements) {
+            settle();
         }
     }
 
@@ -1418,6 +1441,9 @@ private:
     bool _edhoc_bootstrap{false};
     /// Serialises EDHOC bootstraps, so concurrent first RPCs run one handshake.
     std::mutex _bootstrap_mutex;
+    /// Callbacks of exchanges settled under `_mutex`, run by the loop once it
+    /// is released; see settle_reject(). Guarded by `_mutex`.
+    std::vector<std::function<void()>> _deferred_settlements;
     /// Set in DTLS mode. Touched only on the loop thread (and by the destructor
     /// once the loop has stopped).
     std::unique_ptr<cantcoap_detail::dtls_layer> _dtls;
