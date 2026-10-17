@@ -7,6 +7,7 @@
 #include <raft/composite_node_id.hpp>
 #include <raft/future_default.hpp>
 #include <raft/coap_block_option.hpp>
+#include <raft/coap_block1_assembly.hpp>
 #include <raft/network.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
@@ -885,7 +886,7 @@ private:
     // Inner (protected) Block1 bodies being reassembled, keyed by peer
     // endpoint and Uri-Path; see handle_oscore_request(). Touched only from
     // the I/O thread, which runs every libcoap handler.
-    std::unordered_map<std::string, std::vector<std::byte>> _oscore_block1_assembly;
+    block1_assembly _oscore_block1_assembly;
     address_type _bind_address;
     port_type _bind_port;
     // Set from the real bound address in start() -- see bound_port()'s own
