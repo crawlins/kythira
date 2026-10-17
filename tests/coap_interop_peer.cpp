@@ -113,7 +113,8 @@ auto main(int argc, char** argv) -> int {
         server.register_install_snapshot_handler(
             [](const kythira::install_snapshot_request<>& request) {
                 kythira::install_snapshot_response<> response{};
-                response._term = request.last_included_index() + request.data().size();
+                response._term =
+                    request.last_included_index() + coap_interop::snapshot_digest(request.data());
                 response._group_id = request.group_id();
                 return response;
             });

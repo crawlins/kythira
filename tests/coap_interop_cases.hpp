@@ -7,9 +7,10 @@
 // coap_interop_peer server on each backend that was built, libcoap, cantcoap
 // and libnyoci alike (the client's own backend is the control). Two
 // processes, because no two backends can share a translation unit; see
-// coap_interop_peer.cpp. Each pair runs three times: in the clear, over
-// DTLS-PSK, and over DTLS-PKI with both ends verifying the other's
-// certificate against one CA.
+// coap_interop_peer.cpp. Each pair runs every RPC kind in the clear, over
+// DTLS-PSK, over DTLS-PKI with both ends verifying the other's certificate
+// against one CA, and over OSCORE; and sends a block-wise InstallSnapshot in
+// the clear, over DTLS-PSK and over OSCORE.
 //
 // The includer defines, in namespace coap_interop:
 //
@@ -358,7 +359,7 @@ inline auto run_rpc_kinds_against(const std::string& peer_path, transport_securi
     snapshot._done = true;
     snapshot._group_id = 43;
     const auto installed = client.send_install_snapshot(peer_id, snapshot, timeout).get();
-    BOOST_TEST(installed.term() == 400U);
+    BOOST_TEST(installed.term() == 100U + snapshot_digest(snapshot._data));
     BOOST_TEST(installed.group_id() == 43U);
 
     kythira::timeout_now_request<> transfer{};
@@ -370,6 +371,47 @@ inline auto run_rpc_kinds_against(const std::string& peer_path, transport_securi
     BOOST_TEST(transferred.term() == 42U);
     BOOST_TEST(transferred.success());
     BOOST_TEST(transferred.group_id() == 44U);
+
+    BOOST_TEST(peer.stop() == 0);
+}
+
+/// An InstallSnapshot far larger than one datagram, so it crosses as a
+/// block-wise (Block1, or inner Block1 under OSCORE) upload and the peer has
+/// to reassemble what another backend split.
+inline auto run_large_snapshot_against(const std::string& peer_path, transport_security security)
+    -> void {
+    std::vector<std::string> peer_args;
+    auto config = client_config();
+    if (security == transport_security::psk) {
+        peer_args = {"psk"};
+        config.security = psk_security();
+    } else if (security == transport_security::oscore) {
+        peer_args = {"oscore"};
+        config.security = oscore_security(true);
+    }
+    peer_process peer{peer_path, peer_args};
+    const std::string scheme = security == transport_security::psk ? "coaps" : "coap";
+    backend_client<interop_types> client{
+        {{peer_id, scheme + "://127.0.0.1:" + std::to_string(peer.port())}},
+        std::move(config),
+        kythira::noop_metrics{}};
+
+    kythira::install_snapshot_request<> snapshot{};
+    snapshot._term = 12;
+    snapshot._leader_id = 1;
+    snapshot._last_included_index = 100;
+    snapshot._last_included_term = 11;
+    snapshot._data.resize(16 * 1024);  // about 22 KiB of JSON
+    for (std::size_t i = 0; i < snapshot._data.size(); ++i) {
+        snapshot._data[i] = static_cast<std::byte>(i % 251);
+    }
+    snapshot._done = true;
+    snapshot._group_id = 45;
+    const auto installed =
+        client.send_install_snapshot(peer_id, snapshot, kythira::testing::scaled_deadline(20000))
+            .get();
+    BOOST_TEST(installed.term() == 100U + snapshot_digest(snapshot._data));
+    BOOST_TEST(installed.group_id() == 45U);
 
     BOOST_TEST(peer.stop() == 0);
 }
@@ -407,8 +449,17 @@ inline auto expect_plaintext_refused_by(const std::string& peer_path) -> void {
         coap_interop::run_rpc_kinds_against(PATH,                                             \
                                             coap_interop::transport_security::security_name); \
     }
+#define KYTHIRA_INTEROP_LARGE_CASE(server, security_name, PATH)                                    \
+    BOOST_AUTO_TEST_CASE(a_large_snapshot_against_a_##server##_server_over_##security_name,        \
+                         *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {       \
+        coap_interop::run_large_snapshot_against(PATH,                                             \
+                                                 coap_interop::transport_security::security_name); \
+    }
 #define KYTHIRA_INTEROP_CASES(server, PATH)                                                  \
     KYTHIRA_INTEROP_CASE(server, plaintext, PATH)                                            \
+    KYTHIRA_INTEROP_LARGE_CASE(server, plaintext, PATH)                                      \
+    KYTHIRA_INTEROP_LARGE_CASE(server, psk, PATH)                                            \
+    KYTHIRA_INTEROP_LARGE_CASE(server, oscore, PATH)                                         \
     KYTHIRA_INTEROP_CASE(server, psk, PATH)                                                  \
     KYTHIRA_INTEROP_CASE(server, pki, PATH)                                                  \
     KYTHIRA_INTEROP_CASE(server, oscore, PATH)                                               \
@@ -448,4 +499,5 @@ BOOST_AUTO_TEST_SUITE_END()
 
 #undef KYTHIRA_INTEROP_EDHOC_CASE
 #undef KYTHIRA_INTEROP_CASES
+#undef KYTHIRA_INTEROP_LARGE_CASE
 #undef KYTHIRA_INTEROP_CASE

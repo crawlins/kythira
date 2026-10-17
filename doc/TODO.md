@@ -391,9 +391,11 @@ unverified completion claim.
     OSCORE, and between cantcoap and libnyoci over EDHOC-derived OSCORE
     (`coap_*_interop_test`, October 17, 2026). libcoap runs EDHOC outside
     CoAP, through `edhoc_transport_factory`, so it has no EDHOC peer to
-    interoperate with. Still open: arm64 is unverified (`coap-transport-cantcoap` tasks.md ~201–209,
-    `coap-transport-libnyoci` tasks.md ~337). Also from
-    `coap-transport-libnyoci`, with no PR: Block1 for InstallSnapshot.
+    interoperate with. A 16 KiB InstallSnapshot crosses every pair in the
+    clear, over DTLS-PSK and over OSCORE, now that libnyoci splits and
+    reassembles Block1 (October 17, 2026). Still open: arm64 is unverified
+    (`coap-transport-cantcoap` tasks.md ~201–209,
+    `coap-transport-libnyoci` tasks.md ~337).
   - ~~**Tests that assert nothing.**~~ Done: the six property suites whose
     cases ended in a `BOOST_CHECK(true)` "Placeholder" now drive real nodes
     over the simulator: `raft_add_server_implementation_property_test.cpp`,

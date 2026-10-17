@@ -5,8 +5,8 @@
 The overlay port is pinned and builds; the adapter is written and tested
 against real loopback sockets. `coap_libnyoci_client`/`coap_libnyoci_server`
 satisfy `network_client`/`network_server` and speak the same wire protocol as
-the libcoap backend. Block1 is inherently missing from libnyoci and is
-handled by refusing loudly rather than degrading silently — see Task 3.6.
+the libcoap backend. Block1 is inherently missing from libnyoci, so the
+adapter implements it itself (October 17, 2026; see Task 3.6).
 DTLS-PSK, DTLS-PKI and DTLS-RPK all work over libnyoci's own OpenSSL plugin
 (RPK needs OpenSSL >= 3.2, which the vcpkg baseline provides), and OSCORE,
 including the EDHOC bootstrap where lakers is built, works over the
@@ -123,8 +123,19 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       `nyoci_outbound_get_space_remaining()` (the live packet, not a
       compile-time constant) and rejects the future with an error naming the
       missing Block1 support, rather than truncating the payload or hanging
-      until the timeout. This bounds InstallSnapshot; large-snapshot
-      deployments should use the libcoap backend.
+      until the timeout.
+    - *Superseded October 17, 2026: the adapter now does Block1 itself.* The
+      client splits a request that does not fit one datagram, one
+      transaction per block on the machinery the OSCORE path already used,
+      and the server reassembles outer Block1 per peer and path. The refusal
+      remains only when `enable_block_transfer` is off. Two fixes came with
+      it. The overlay's patch 0003 raises libnyoci's 1032-byte receive buffer,
+      which cut the other backends' 1024-byte blocks short, and drops
+      truncated datagrams instead of processing them. And the server
+      reassembles an OSCORE message that libcoap split with outer Block1
+      before verifying it (RFC 8613 Section 4.1.3.4.2). A response that is
+      itself block-wise is refused rather than combined with Block1; Raft's
+      responses all fit one datagram.
 
 - [x] 4. Server adapter (`coap_libnyoci_server<Types>`)
   - [x] 4.1 Register one inbound handler per RPC path
@@ -370,8 +381,8 @@ and a translation unit selects a backend by which header it includes.
   value that fails.
 - **Outer block options and proxy support.** Only the inner (end-to-end) form
   is emitted; a CoAP proxy in the path would need the outer form too.
-- **Block1**, if InstallSnapshot over libnyoci ever matters: it would have to be
-  implemented in the adapter, since libnyoci has no support to build on.
+- ~~**Block1**~~: closed October 17, 2026; see Task 3.6. A 16 KiB
+  InstallSnapshot crosses every backend pair in `coap_*_interop_test`.
 - **Revocation, `cn_validator` and ACE-OAuth parity with libcoap**: closed by
   `.kiro/specs/coap-alternate-backend-security-parity` (October 3, 2026). Both
   used to be ignored here, and an ACE config crashed construction; the CRL
