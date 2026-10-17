@@ -349,6 +349,17 @@ struct coap_server_config {
     return config;
 }
 
+// True for the security modes that put the channel itself under DTLS. The
+// libcoap backend still keys its endpoints and sessions on the legacy
+// enable_dtls flag, so it raises that flag for these modes itself; without
+// that, a config that set only security.mode = dtls_psk ran in the clear,
+// while cantcoap and libnyoci (which key on the mode) ran DTLS, and the two
+// sides of a cross-backend pair never agreed.
+[[nodiscard]] inline constexpr auto is_dtls_channel_mode(coap_auth_mode mode) -> bool {
+    return mode == coap_auth_mode::dtls_psk || mode == coap_auth_mode::dtls_pki ||
+           mode == coap_auth_mode::dtls_rpk;
+}
+
 // ── legacy field translation (coap-transport-security Requirement 8) ──────
 // Reproduces today's setup_dtls_context() field-inference exactly when
 // security.mode is left at its default (coap_auth_mode::none): cert_file

@@ -493,6 +493,11 @@ coap_client<Types, NodeId>::coap_client(
       _coap_context{nullptr},
       _config{std::move(config)},
       _metrics{std::move(metrics)} {
+    // An explicit DTLS mode is DTLS: every enable_dtls check below, and the
+    // session each coaps:// endpoint gets, must see it (is_dtls_channel_mode).
+    if (is_dtls_channel_mode(_config.security.mode)) {
+        _config.enable_dtls = true;
+    }
     // Reject a registry CoAP cannot faithfully put on the wire before any
     // libcoap resource is allocated: a media type with no Content-Format
     // number, or two that collide on one. Both are configuration mistakes
@@ -957,6 +962,11 @@ coap_server<Types, NodeId>::coap_server(std::string bind_address, std::uint16_t 
       _actual_bound_port{bind_port},
       _config{std::move(config)},
       _metrics{std::move(metrics)} {
+    // As in the client's constructor: an explicit DTLS mode must open a DTLS
+    // endpoint, not the plaintext one enable_dtls == false would bind.
+    if (is_dtls_channel_mode(_config.security.mode)) {
+        _config.enable_dtls = true;
+    }
     // See the client's constructor: a registry CoAP cannot represent is a
     // configuration error, and must fail here rather than on the wire.
     coap_utils::validate_registry_content_formats(_registry);
