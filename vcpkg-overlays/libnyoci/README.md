@@ -68,6 +68,22 @@ that has the archive installed — which this port requires anyway, for
 kythira never builds libnyoci with coverage instrumentation, so dropping the
 lines costs nothing.
 
+`0002-declare-the-openssl-dependency-in-libnyoci-pc.patch` adds the OpenSSL
+flags to `libnyoci.pc`, without which a static consumer cannot link the DTLS
+plugin.
+
+`0003-hold-a-1024-byte-block-and-drop-truncated-datagrams.patch` raises the
+default `NYOCI_MAX_CONTENT_LENGTH` from 1024 to 1280. libnyoci reads every
+datagram, DTLS records included, into a `NYOCI_MAX_PACKET_LENGTH`
+(content + 8) buffer, and 1032 bytes is below RFC 7252's 1152-byte message
+size: a libcoap or cantcoap peer's 1024-byte Block1 block arrived cut short,
+and because `recvmsg()` was never asked about `MSG_TRUNC`, it was processed as
+if whole. The patch also drops a truncated datagram as lost. The default sits
+in the installed `nyoci-defaults.h`, so the library and its consumers agree on
+the size of every struct that embeds a packet buffer. Note that libnyoci builds
+with dependency tracking off: after changing that header, a local rebuild needs
+`make clean`, or objects built against the old size are linked with new ones.
+
 ## Why this port looks different from `ion-c`
 
 `ion-c` and `stdexec` are CMake projects, so their ports use

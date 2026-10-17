@@ -1,0 +1,54 @@
+Hold a 1024-byte block, and drop truncated datagrams
+
+libnyoci sizes its one receive buffer, which DTLS records also pass
+through, as NYOCI_MAX_CONTENT_LENGTH + 8 = 1032 bytes. That is below
+RFC 7252 Section 4.6's 1152-byte message size. A peer sending a
+1024-byte Block1 block, which is libcoap's and cantcoap's default, has
+its datagram cut short. recvmsg() was not asked about MSG_TRUNC, so
+the cut message was processed as if whole: plain CoAP reassembled the
+wrong bytes and answered 4.08, and DTLS failed to decrypt and timed
+out.
+
+Raise the default content length to 1280. That holds a 1024-byte block
+plus its options and, with DTLS record overhead, still fits a 1500-byte
+Ethernet MTU. A datagram larger even than that is now dropped as lost,
+not processed truncated.
+
+The default lives in an installed header (nyoci-defaults.h), so
+libnyoci and its consumers agree on the size of every struct that
+embeds a packet buffer.
+
+diff --git a/src/libnyoci/nyoci-defaults.h b/src/libnyoci/nyoci-defaults.h
+index 91c6ef7..fb0c66a 100644
+--- a/src/libnyoci/nyoci-defaults.h
++++ b/src/libnyoci/nyoci-defaults.h
+@@ -82,7 +82,11 @@
+ #if NYOCI_USE_UIP
+ #define NYOCI_MAX_PACKET_LENGTH ((UIP_BUFSIZE - UIP_LLH_LEN - UIP_IPUDPH_LEN))
+ #else
+-#define NYOCI_MAX_CONTENT_LENGTH     (1024)
++// Kythira: 1024 made the receive buffer 1032 bytes, below RFC 7252
++// Section 4.6's 1152-byte message size, so a peer's 1024-byte Block1 block
++// arrived truncated. 1280 holds a 1024-byte block plus its options, and
++// with DTLS record overhead still fits a 1500-byte Ethernet MTU.
++#define NYOCI_MAX_CONTENT_LENGTH     (1280)
+ #endif
+ #endif
+ 
+diff --git a/src/plat-net/posix/nyoci-plat-net.c b/src/plat-net/posix/nyoci-plat-net.c
+index d9174a3..bae25ae 100644
+--- a/src/plat-net/posix/nyoci-plat-net.c
++++ b/src/plat-net/posix/nyoci-plat-net.c
+@@ -884,6 +884,12 @@ nyoci_plat_process(
+ 
+ 				require_action(packet_len > 0, bail, ret = NYOCI_STATUS_ERRNO);
+ 
++				// Kythira: a datagram larger than the buffer used to be
++				// processed cut short. Drop it instead, as a lost packet.
++				if (msg.msg_flags & MSG_TRUNC) {
++					continue;
++				}
++
+ 				packet[packet_len] = 0;
+ 
+ 				for (
