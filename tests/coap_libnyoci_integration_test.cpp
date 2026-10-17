@@ -178,8 +178,8 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_round_trip,
 
 // ── Requirement 7.3 / 4.5: block-wise transfer end to end ──────────────────
 
-// libnyoci implements Block2 (block-wise *responses*) and nothing else, so
-// this is where block-wise is genuinely exercisable: the server slices, and
+// libnyoci itself implements Block2 (block-wise *responses*) and no Block1.
+// Here the server slices, and
 // libnyoci's own transaction layer drives the follow-up requests whose blocks
 // the adapter reassembles. Forcing a 16-byte block size makes an ordinary Raft
 // response — a couple of hundred bytes of JSON — span a dozen blocks, a far
@@ -220,41 +220,144 @@ BOOST_AUTO_TEST_CASE(test_block_wise_response_reassembly,
     BOOST_TEST(*response.conflict_term() == 7654321U);
 }
 
-// The other half of the block-wise story, and the half that most needs saying
-// out loud: libnyoci has no Block1 at all, so an over-large *request* cannot be
-// split. The adapter must reject it with an error naming the reason, rather
-// than truncating the payload or hanging until the timeout.
-BOOST_AUTO_TEST_CASE(test_oversized_request_is_rejected_with_a_descriptive_error,
-                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
-    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
-    server.register_install_snapshot_handler([](const kythira::install_snapshot_request<>&) {
-        return kythira::install_snapshot_response<>{1};
-    });
-    server.start();
+// The other half of the block-wise story. libnyoci itself has no Block1, so
+// the adapter splits an over-large *request* into blocks and the server
+// reassembles them; before that, a snapshot chunk bigger than one datagram
+// could not be sent at all.
+namespace {
 
-    test_client client{
-        {{peer_node_id, endpoint_for(server.bound_port())}}, client_config(), test_metrics{}};
-
+[[nodiscard]] auto patterned_snapshot(std::size_t size) -> kythira::install_snapshot_request<> {
     kythira::install_snapshot_request<> request{};
     request._term = 1;
     request._leader_id = 1;
     request._last_included_index = 1;
     request._last_included_term = 1;
-    // Far past any packet budget libnyoci can be built with.
-    request._data = std::vector<std::byte>(64 * 1024, std::byte{0x5A});
+    request._data.resize(size);
+    for (std::size_t i = 0; i < size; ++i) {
+        request._data[i] = static_cast<std::byte>(i % 251);  // prime, so blocks differ
+    }
     request._done = true;
+    return request;
+}
+
+[[nodiscard]] auto expected_checksum(const kythira::install_snapshot_request<>& request)
+    -> std::uint64_t {
+    std::uint64_t sum = request.data().size();
+    for (std::size_t i = 0; i < request.data().size(); ++i) {
+        sum = sum * 31 + std::to_integer<std::uint64_t>(request.data()[i]) + i;
+    }
+    return sum;
+}
+
+/// Answers with a checksum of what arrived, so a block dropped, repeated or
+/// reordered on the way in changes the term the client reads back.
+auto register_checksum_handler(test_server& server) -> void {
+    server.register_install_snapshot_handler(
+        [](const kythira::install_snapshot_request<>& request) {
+            return kythira::install_snapshot_response<>{expected_checksum(request)};
+        });
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(test_oversized_request_crosses_in_block1,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    register_checksum_handler(server);
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_config(), test_metrics{}};
+
+    // 16 KiB of data is about 22 KiB of JSON: some twenty 1024-byte blocks.
+    const auto request = patterned_snapshot(16 * 1024);
+    const auto response =
+        client.send_install_snapshot(peer_node_id, request, std::chrono::seconds{30}).get();
+    BOOST_TEST(response.term() == expected_checksum(request));
+
+    // A second upload on the same path starts a fresh assembly.
+    const auto again = patterned_snapshot(5000);
+    BOOST_TEST(
+        client.send_install_snapshot(peer_node_id, again, std::chrono::seconds{30}).get().term() ==
+        expected_checksum(again));
+
+    server.stop();
+}
+
+// A small configured block size walks many more blocks, which is the sharper
+// test of the offset bookkeeping on both sides.
+BOOST_AUTO_TEST_CASE(test_block1_honours_the_configured_block_size,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    register_checksum_handler(server);
+    server.start();
+
+    auto config = client_config();
+    config.max_block_size = 64;
+    test_client client{{{peer_node_id, endpoint_for(server.bound_port())}}, config, test_metrics{}};
+
+    const auto request = patterned_snapshot(3000);
+    const auto response =
+        client.send_install_snapshot(peer_node_id, request, std::chrono::seconds{30}).get();
+    BOOST_TEST(response.term() == expected_checksum(request));
+
+    server.stop();
+}
+
+// Past the server's max_request_size the upload is refused with 4.13 partway
+// through, and the client's future rejects rather than hanging.
+BOOST_AUTO_TEST_CASE(test_block1_past_the_server_limit_is_refused,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    kythira::coap_server_config server_config;
+    server_config.max_request_size = 8 * 1024;
+    test_server server{loopback, ephemeral_port, server_config, test_metrics{}};
+    register_checksum_handler(server);
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_config(), test_metrics{}};
+
+    bool rejected = false;
+    try {
+        (void)client
+            .send_install_snapshot(peer_node_id, patterned_snapshot(32 * 1024),
+                                   std::chrono::seconds{20})
+            .get();
+    } catch (const kythira::coap_client_error& e) {
+        rejected = true;
+        BOOST_TEST(e.response_code() == 0x8D, "expected 4.13, got: " << e.what());
+    }
+    BOOST_TEST(rejected, "an upload past the server's limit must reject its future");
+
+    server.stop();
+}
+
+// With block transfer turned off the request still cannot be split, and the
+// adapter must say so rather than truncating the payload or hanging.
+BOOST_AUTO_TEST_CASE(test_oversized_request_without_block_transfer_is_rejected,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    register_checksum_handler(server);
+    server.start();
+
+    auto config = client_config();
+    config.enable_block_transfer = false;
+    test_client client{{{peer_node_id, endpoint_for(server.bound_port())}}, config, test_metrics{}};
 
     bool rejected = false;
     std::string message;
     try {
-        (void)client.send_install_snapshot(peer_node_id, request, std::chrono::seconds{20}).get();
+        (void)client
+            .send_install_snapshot(peer_node_id, patterned_snapshot(16 * 1024),
+                                   std::chrono::seconds{20})
+            .get();
     } catch (const kythira::coap_transport_error& e) {
         rejected = true;
         message = e.what();
     }
     BOOST_TEST(rejected, "an unsendable request must reject its future, not hang");
     BOOST_TEST(message.find("Block1") != std::string::npos,
-               "the error must name the missing Block1 support, got: " << message);
+               "the error must name Block1, got: " << message);
 
     server.stop();
 }
