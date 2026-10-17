@@ -6937,6 +6937,15 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     set_tests_properties(oscore_transport_neutral_test PROPERTIES
         TIMEOUT 60 LABELS "oscore;security;unit")
 
+    # Server-side Block1 reassembly shared by the CoAP backends. Library
+    # neutral, so it runs in every build.
+    add_executable(coap_block1_assembly_test coap_block1_assembly_test.cpp)
+    target_link_libraries(coap_block1_assembly_test PRIVATE Boost::unit_test_framework)
+    target_compile_features(coap_block1_assembly_test PRIVATE cxx_std_23)
+    add_test(NAME coap_block1_assembly_test COMMAND coap_block1_assembly_test)
+    set_tests_properties(coap_block1_assembly_test PROPERTIES
+        TIMEOUT 60 LABELS "coap;unit")
+
     # The OSCORE state that must outlive a Security Context: the Sender Sequence
     # Number (never reissued across contexts or restarts) and the replay window
     # (moved only by authenticated requests, and not forgotten on restart).

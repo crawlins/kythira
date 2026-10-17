@@ -3885,43 +3885,31 @@ auto coap_server<Types, NodeId>::handle_oscore_request(coap_resource_t* resource
     std::optional<oscore::block_option> continue_block1;
     std::optional<coap_pdu_code_t> block1_error;
     if (const auto block1 = oscore::find_block_option(inner, 27)) {
-        const auto key =
-            coap_detail::session_peer_endpoint(session) + "|" + detail::uri_path_of(inner);
-        auto found = _oscore_block1_assembly.find(key);
-        if (block1->number == 0 && found != _oscore_block1_assembly.end()) {
-            found->second.clear();
-        }
-        if (found == _oscore_block1_assembly.end()) {
-            // Bounded like sessions, so peers cannot pile up half-sent bodies.
-            if (_oscore_block1_assembly.size() >= _config.max_concurrent_sessions) {
-                block1_error = COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE;
-            } else {
-                found = _oscore_block1_assembly.emplace(key, std::vector<std::byte>{}).first;
-            }
-        }
-        if (!block1_error) {
-            auto& assembly = found->second;
-            const auto expected = static_cast<std::size_t>(block1->number) * block1->size();
-            if (expected != assembly.size()) {
+        // Bounded like sessions, so peers cannot pile up half-sent bodies.
+        auto taken = _oscore_block1_assembly.offer(
+            coap_detail::session_peer_endpoint(session) + "|" + detail::uri_path_of(inner),
+            block1->number, block1->more, block1->size(), inner.payload, _config.max_request_size,
+            _config.max_concurrent_sessions);
+        switch (taken.outcome) {
+            case block1_outcome::more:
+                continue_block1 = *block1;
+                break;
+            case block1_outcome::complete:
+                inner.payload = std::move(taken.body);
+                inner.has_payload = !inner.payload.empty();
+                std::erase_if(inner.options, [](const oscore::coap_option& option) {
+                    return option.number == 27;
+                });
+                break;
+            case block1_outcome::incomplete:
                 block1_error = COAP_RESPONSE_CODE_INCOMPLETE;  // RFC 7959 Section 2.9.2
-            } else if (assembly.size() + inner.payload.size() > _config.max_request_size) {
+                break;
+            case block1_outcome::too_large:
                 block1_error = COAP_RESPONSE_CODE_REQUEST_TOO_LARGE;
-            }
-            if (block1_error) {
-                _oscore_block1_assembly.erase(found);
-            } else {
-                assembly.insert(assembly.end(), inner.payload.begin(), inner.payload.end());
-                if (block1->more) {
-                    continue_block1 = *block1;
-                } else {
-                    inner.payload = std::move(assembly);
-                    inner.has_payload = !inner.payload.empty();
-                    _oscore_block1_assembly.erase(found);
-                    std::erase_if(inner.options, [](const oscore::coap_option& option) {
-                        return option.number == 27;
-                    });
-                }
-            }
+                break;
+            case block1_outcome::busy:
+                block1_error = COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE;
+                break;
         }
     }
 
