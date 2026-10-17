@@ -321,7 +321,7 @@ BOOST_AUTO_TEST_CASE(test_sequential_requests_advance_the_partial_iv,
 // request was rejected outright and InstallSnapshot could not cross this
 // backend. Under OSCORE the adapter owns the inner message, so it can fragment
 // end-to-end -- each block separately authenticated, and a 16 KiB snapshot
-// crosses a transport whose datagram buffer is 1033 bytes.
+// crosses a transport whose datagram buffer is about 1 KiB.
 BOOST_AUTO_TEST_CASE(test_large_install_snapshot_over_inner_block1,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     test_server server{loopback, ephemeral_port, server_config(), test_metrics{}};
@@ -336,7 +336,7 @@ BOOST_AUTO_TEST_CASE(test_large_install_snapshot_over_inner_block1,
     test_client client{
         {{peer_node_id, endpoint_for(server.bound_port())}}, client_config(), test_metrics{}};
 
-    // Well past libnyoci's 1033-byte datagram buffer, and past a single
+    // Well past libnyoci's datagram buffer, and past a single
     // 256-byte inner block, so this genuinely walks the Block1 state machine.
     constexpr std::size_t snapshot_size = 16 * 1024;
     std::vector<std::byte> snapshot(snapshot_size);

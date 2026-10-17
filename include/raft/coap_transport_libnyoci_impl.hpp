@@ -70,6 +70,7 @@
 #include <raft/coap_security.hpp>
 #include <raft/coap_ace_oauth.hpp>
 #include <raft/coap_utils.hpp>
+#include <raft/coap_block1_assembly.hpp>
 // The transport-neutral OSCORE implementation (RFC 8613). Deliberately usable
 // from here: it works on CoAP message bytes and needs no CoAP library.
 #include <raft/oscore.hpp>
@@ -159,6 +160,7 @@ namespace libnyoci_detail {
 struct inbound_options {
     std::optional<std::uint16_t> content_format;
     std::vector<std::uint16_t> accepted_formats;
+    std::optional<std::uint32_t> block1;
     std::optional<std::uint32_t> block2;
     /// Present (possibly empty) when the message carries an OSCORE option.
     std::optional<std::vector<std::byte>> oscore;
@@ -186,6 +188,9 @@ struct inbound_options {
                 result.accepted_formats.push_back(static_cast<std::uint16_t>(
                     coap_decode_uint32(value, static_cast<std::uint8_t>(value_len))));
                 break;
+            case COAP_OPTION_BLOCK1:
+                result.block1 = coap_decode_uint32(value, static_cast<std::uint8_t>(value_len));
+                break;
             case COAP_OPTION_BLOCK2:
                 result.block2 = coap_decode_uint32(value, static_cast<std::uint8_t>(value_len));
                 break;
@@ -201,11 +206,13 @@ struct inbound_options {
     return result;
 }
 
-/// Add a Block2 option carrying `num`/`more`/`szx`, encoded the way RFC 7959
-/// wants it: a network-order minimum-length unsigned integer. Adding it as a
-/// raw uint32 would put the value on the wire byte-swapped on a little-endian
-/// host — the same bug the libcoap backend's Content-Format encoding had.
-inline auto add_block2_option(std::uint32_t num, bool more, std::uint8_t szx) -> nyoci_status_t {
+/// Add a Block1 or Block2 option carrying `num`/`more`/`szx`, encoded the way
+/// RFC 7959 wants it: a network-order minimum-length unsigned integer. Adding
+/// it as a raw uint32 would put the value on the wire byte-swapped on a
+/// little-endian host — the same bug the libcoap backend's Content-Format
+/// encoding had.
+inline auto add_block_option(coap_option_key_t key, std::uint32_t num, bool more, std::uint8_t szx)
+    -> nyoci_status_t {
     const std::uint32_t encoded = (num << 4U) | (more ? 0x8U : 0x0U) | (szx & 0x7U);
     std::array<std::uint8_t, 4> bytes{
         static_cast<std::uint8_t>((encoded >> 24U) & 0xFFU),
@@ -217,9 +224,12 @@ inline auto add_block2_option(std::uint32_t num, bool more, std::uint8_t szx) ->
     while (first < 3 && bytes[first] == 0) {
         ++first;
     }
-    return nyoci_outbound_add_option(COAP_OPTION_BLOCK2,
-                                     reinterpret_cast<const char*>(bytes.data() + first),
+    return nyoci_outbound_add_option(key, reinterpret_cast<const char*>(bytes.data() + first),
                                      static_cast<coap_size_t>(bytes.size() - first));
+}
+
+inline auto add_block2_option(std::uint32_t num, bool more, std::uint8_t szx) -> nyoci_status_t {
+    return add_block_option(COAP_OPTION_BLOCK2, num, more, szx);
 }
 
 /// Add a Content-Format option, same minimum-length network-order encoding.
@@ -278,13 +288,14 @@ inline auto add_content_format_option(coap_option_key_t key, std::uint16_t forma
             return std::make_exception_ptr(
                 coap_network_error(context + ": " + nyoci_status_to_cstr(statuscode)));
         case NYOCI_STATUS_MESSAGE_TOO_BIG:
-            // libnyoci implements Block2 (block-wise *responses*) but has no
-            // Block1 at all, so an over-large request cannot be split. Say so
-            // rather than leaving the caller to wonder.
+            // libnyoci itself has no Block1; the adapter splits over-large
+            // requests, but only when block transfer is enabled and a block
+            // fits beside the options. Say which rather than leaving the
+            // caller to wonder.
             return std::make_exception_ptr(coap_transport_error(
                 context +
-                ": request payload exceeds libnyoci's maximum CoAP message size, and libnyoci "
-                "implements no Block1 (block-wise request) support to split it"));
+                ": request payload exceeds libnyoci's maximum CoAP message size, and Block1 "
+                "(block-wise request) splitting is disabled or no block fits"));
         default:
             return std::make_exception_ptr(
                 coap_transport_error(context + ": " + nyoci_status_to_cstr(statuscode)));
@@ -961,8 +972,10 @@ inline auto configure_dtls(nyoci_t instance, const coap_security_config& securit
 ///
 /// Chosen against libnyoci's real constraint rather than RFC 7959's maximum. A
 /// 256-byte block plus inner options, the 8-byte AEAD tag and the outer header
-/// lands around 320 bytes, comfortably inside the 1033-byte datagram buffer
-/// libnyoci reads into. szx=6 (1024 bytes) would not fit once protected.
+/// lands around 320 bytes, comfortably inside the datagram buffer libnyoci
+/// reads into: 1033 bytes upstream, which szx=6 (1024 bytes) would not fit
+/// once protected. The overlay port raises it to 1289 (patch 0003), but a
+/// peer may run an unpatched libnyoci, so the block stays small.
 inline constexpr std::uint8_t oscore_block_szx = 4;
 
 /// Build and protect the next request block of an OSCORE exchange, updating
@@ -1228,8 +1241,7 @@ private:
 
         // Inner block-wise state (RFC 7959 inside RFC 8613). libnyoci has no
         // Block1 at all and its Block2 support is outer-only, so under OSCORE
-        // the adapter runs the whole exchange itself -- which is what finally
-        // lets a large InstallSnapshot cross this backend.
+        // the adapter runs the whole exchange itself.
         //
         // Each block is a separate CoAP transaction under a fresh Partial IV,
         // so the response trampoline cannot simply settle: it flags
@@ -1241,6 +1253,16 @@ private:
         std::uint32_t response_block{0};      //!< next Block2 NUM to ask for
         std::uint8_t block_szx{libnyoci_detail::oscore_block_szx};
         bool continuation_pending{false};
+
+        // Outer Block1 (RFC 7959) for a plaintext or DTLS request too large
+        // for one datagram. libnyoci has none, so the adapter runs it with the
+        // same one-transaction-per-block machinery as the OSCORE path above,
+        // reusing `full_request`, `request_block` and `block_szx`. Chosen in
+        // the resend trampoline, the only place that knows the live space left
+        // in the packet; `preferred_block_szx` is the configured maximum, and
+        // zero block transfer leaves the old "too big" refusal in place.
+        bool outer_block1{false};
+        std::optional<std::uint8_t> preferred_block_szx;
 
         /// Receives the reassembled response body and the media type the peer
         /// declared, exactly like pending_message::resolve_callback.
@@ -1377,6 +1399,13 @@ private:
             rpc->timeout = timeout;
             rpc->confirmable = reliability == coap_message_reliability::always_confirmable ||
                                _config.use_confirmable_messages;
+            if (_config.enable_block_transfer) {
+                // szx caps at 6 (1024 bytes), the largest block RFC 7959 defines.
+                rpc->preferred_block_szx =
+                    kythira::coap_utils::is_valid_block_size(_config.max_block_size)
+                        ? kythira::coap_utils::calculate_block_size_szx(_config.max_block_size)
+                        : std::uint8_t{6};
+            }
             for (const auto& accepted : _registry.preferred_media_types()) {
                 if (const auto format =
                         kythira::coap_utils::media_type_to_coap_content_format(accepted)) {
@@ -1525,7 +1554,8 @@ private:
         }
     }
 
-    /// Start the next transaction of a block-wise OSCORE exchange.
+    /// Start the next transaction of a block-wise exchange, OSCORE or outer
+    /// Block1.
     ///
     /// Deliberately here rather than in the response callback: libnyoci is
     /// still tearing the previous transaction down while that callback runs,
@@ -1540,7 +1570,11 @@ private:
             }
             rpc->continuation_pending = false;
             try {
-                libnyoci_detail::protect_next_request_block(*rpc);
+                if (rpc->oscore_protected) {
+                    libnyoci_detail::protect_next_request_block(*rpc);
+                }
+                // An outer Block1 request needs nothing prepared: the resend
+                // trampoline builds each block from `request_block`.
             } catch (...) {
                 rpc->settled = true;
                 rpc->finished = true;
@@ -1650,12 +1684,54 @@ private:
                 }
             }
         }
-        // libnyoci has no Block1, so an over-large body cannot be split.
         // Checking the real remaining space (rather than a compile-time
         // constant) keeps this correct whatever NYOCI_MAX_CONTENT_LENGTH the
         // library was built with.
-        if (rpc->payload.size() > nyoci_outbound_get_space_remaining()) {
-            return NYOCI_STATUS_MESSAGE_TOO_BIG;
+        if (!rpc->outer_block1 && rpc->payload.size() > nyoci_outbound_get_space_remaining()) {
+            // Too big for one datagram: switch to Block1. The block size is
+            // fixed here, on the first attempt, and kept for the whole
+            // exchange unless the server asks for a smaller one. An EDHOC
+            // message or an OSCORE block is never split this way: the OSCORE
+            // path already sized its inner blocks to fit.
+            constexpr coap_size_t block1_option_reserve = 8;
+            const coap_size_t space = nyoci_outbound_get_space_remaining();
+            if (rpc->raw || rpc->oscore_protected || !rpc->preferred_block_szx ||
+                space <= block1_option_reserve) {
+                return NYOCI_STATUS_MESSAGE_TOO_BIG;
+            }
+            std::uint8_t szx = *rpc->preferred_block_szx;
+            while (kythira::coap_utils::szx_to_block_size(szx) > space - block1_option_reserve) {
+                if (szx == 0) {
+                    return NYOCI_STATUS_MESSAGE_TOO_BIG;
+                }
+                --szx;
+            }
+            rpc->outer_block1 = true;
+            rpc->block_szx = szx;
+            rpc->request_block = 0;
+            rpc->full_request = std::move(rpc->payload);
+            rpc->payload.clear();
+        }
+        if (rpc->outer_block1) {
+            const std::size_t block_size = kythira::coap_utils::szx_to_block_size(rpc->block_szx);
+            const std::size_t offset = static_cast<std::size_t>(rpc->request_block) * block_size;
+            const std::size_t chunk = offset < rpc->full_request.size()
+                                          ? std::min(block_size, rpc->full_request.size() - offset)
+                                          : 0;
+            const bool more = offset + chunk < rpc->full_request.size();
+            // Option 27, after Content-Format (12) and Accept (17).
+            status = libnyoci_detail::add_block_option(COAP_OPTION_BLOCK1, rpc->request_block, more,
+                                                       rpc->block_szx);
+            if (status != NYOCI_STATUS_OK) {
+                return status;
+            }
+            status = nyoci_outbound_append_content(
+                reinterpret_cast<const char*>(rpc->full_request.data() + offset),
+                static_cast<coap_size_t>(chunk));
+            if (status != NYOCI_STATUS_OK) {
+                return status;
+            }
+            return nyoci_outbound_send();
         }
         status = nyoci_outbound_append_content(reinterpret_cast<const char*>(rpc->payload.data()),
                                                static_cast<coap_size_t>(rpc->payload.size()));
@@ -1724,6 +1800,49 @@ private:
             // An OSCORE exchange never uses Block2 (the adapter refuses the
             // option outright), so the whole protected response is here.
             return settle_oscore_response(rpc, options);
+        }
+
+        if (rpc->outer_block1 && !rpc->settled) {
+            const std::size_t block_size = kythira::coap_utils::szx_to_block_size(rpc->block_szx);
+            const std::size_t sent_end =
+                (static_cast<std::size_t>(rpc->request_block) + 1) * block_size;
+            if (sent_end < rpc->full_request.size()) {
+                if (statuscode != COAP_RESULT_231_CONTINUE) {
+                    rpc->settled = true;
+                    rpc->reject_callback(std::make_exception_ptr(coap_protocol_error(
+                        "CoAP request to " + rpc->uri + ": peer answered block " +
+                        std::to_string(rpc->request_block) + " of a block-wise request with " +
+                        coap_code_to_cstr(statuscode) + " instead of 2.31 Continue")));
+                    return NYOCI_STATUS_OK;
+                }
+                // RFC 7959 Section 2.3: the server may ask for smaller blocks
+                // in its 2.31. Both sizes are powers of two, so the bytes sent
+                // so far are a whole number of the smaller blocks.
+                std::uint8_t next_szx = rpc->block_szx;
+                if (options.block1.has_value()) {
+                    next_szx =
+                        std::min(next_szx, static_cast<std::uint8_t>(*options.block1 & 0x7U));
+                }
+                rpc->block_szx = next_szx;
+                rpc->request_block = static_cast<std::uint32_t>(
+                    sent_end / kythira::coap_utils::szx_to_block_size(next_szx));
+                // The next block goes out from start_block_continuations(),
+                // once libnyoci has retired this transaction.
+                rpc->continuation_pending = true;
+                return NYOCI_STATUS_OK;
+            }
+            if (options.block2.has_value() && ((*options.block2 & 0x8U) != 0)) {
+                // libnyoci would re-send the last request block for every
+                // response block, which a server reassembling Block1 cannot
+                // tell from a retransmission. Raft's responses all fit one
+                // datagram, so this is refused rather than half-supported.
+                rpc->settled = true;
+                rpc->reject_callback(std::make_exception_ptr(coap_protocol_error(
+                    "CoAP request to " + rpc->uri +
+                    ": the response to a block-wise request is itself block-wise, which the "
+                    "libnyoci backend does not combine")));
+                return NYOCI_STATUS_OK;
+            }
         }
 
         if (!rpc->response_format.has_value() && options.content_format.has_value()) {
@@ -2146,17 +2265,6 @@ private:
             }
         }
 
-        if (_oscore || _edhoc_bootstrap) {
-            // Everything the dispatch needs -- path, Content-Format, Accept,
-            // body -- is inside the ciphertext, so it has to be recovered
-            // before any of it can be looked at. Before the handshake has run
-            // there is no context, so nothing can be answered.
-            if (!_oscore) {
-                return NYOCI_STATUS_UNAUTHORIZED;
-            }
-            return handle_oscore_request(options);
-        }
-
         std::array<char, 256> path_buffer{};
         nyoci_inbound_get_path(path_buffer.data(), path_buffer.size(),
                                NYOCI_GET_PATH_LEADING_SLASH);
@@ -2171,6 +2279,61 @@ private:
         if (content != nullptr && length > 0) {
             const auto* bytes = reinterpret_cast<const std::byte*>(content);
             body.assign(bytes, bytes + length);
+        }
+
+        if (options.block1.has_value()) {
+            // Outer Block1 (RFC 7959 Section 2.5): collect the body across
+            // requests and go on only once the last block is in. Under OSCORE
+            // this runs before verification, as RFC 8613 Section 4.1.3.4.2
+            // orders it: a client may split the protected message itself, as
+            // libcoap's does, and no single block of it verifies. The key's
+            // path is the outer one, empty under OSCORE.
+            const std::uint32_t block1 = *options.block1;
+            const std::uint32_t number = block1 >> 4U;
+            const bool more = (block1 & 0x8U) != 0;
+            const auto szx = static_cast<std::uint8_t>(block1 & 0x7U);
+            if (szx == 7) {
+                return respond_code(COAP_RESULT_400_BAD_REQUEST);  // reserved (BERT)
+            }
+            auto taken =
+                _outer_block1.offer(remote_key() + "|" + resource_path, number, more,
+                                    kythira::coap_utils::szx_to_block_size(szx), body,
+                                    _config.max_request_size, _config.max_concurrent_sessions);
+            switch (taken.outcome) {
+                case block1_outcome::more: {
+                    // 2.31 Continue echoes the Block1 option it answers.
+                    auto status = nyoci_outbound_begin_response(COAP_RESULT_231_CONTINUE);
+                    if (status != NYOCI_STATUS_OK) {
+                        return status;
+                    }
+                    status =
+                        libnyoci_detail::add_block_option(COAP_OPTION_BLOCK1, number, true, szx);
+                    if (status != NYOCI_STATUS_OK) {
+                        return status;
+                    }
+                    return nyoci_outbound_send();
+                }
+                case block1_outcome::complete:
+                    body = std::move(taken.body);
+                    break;
+                case block1_outcome::incomplete:
+                    return respond_code(COAP_RESULT_408_REQUEST_ENTITY_INCOMPLETE);
+                case block1_outcome::too_large:
+                    return respond_code(COAP_RESULT_413_REQUEST_ENTITY_TOO_LARGE);
+                case block1_outcome::busy:
+                    return respond_code(COAP_RESULT_503_SERVICE_UNAVAILABLE);
+            }
+        }
+
+        if (_oscore || _edhoc_bootstrap) {
+            // Everything the dispatch needs -- path, Content-Format, Accept,
+            // body -- is inside the ciphertext, so it has to be recovered
+            // before any of it can be looked at. Before the handshake has run
+            // there is no context, so nothing can be answered.
+            if (!_oscore) {
+                return NYOCI_STATUS_UNAUTHORIZED;
+            }
+            return handle_oscore_request(options, std::move(body));
         }
 
         // Decode in whatever the peer said it sent; a Content-Format this
@@ -2328,7 +2491,10 @@ private:
     /// and protect the reply. The outer message carries nothing but the OSCORE
     /// option and a ciphertext, so every routing decision below is made on
     /// content that was integrity protected.
-    auto handle_oscore_request(const libnyoci_detail::inbound_options& options) -> nyoci_status_t {
+    /// `ciphertext` is the request payload, already reassembled when the
+    /// client split it with outer Block1.
+    auto handle_oscore_request(const libnyoci_detail::inbound_options& options,
+                               std::vector<std::byte> ciphertext) -> nyoci_status_t {
         if (!options.oscore.has_value()) {
             // An unprotected request to an OSCORE-only server. RFC 8613
             // Section 8.2 asks for 4.01 when no Security Context matches.
@@ -2339,45 +2505,36 @@ private:
             outer.code = static_cast<std::uint8_t>(nyoci_inbound_get_code());
             outer.options.push_back(
                 oscore::coap_option{oscore::coap_option_oscore, *options.oscore});
-            const coap_size_t length = nyoci_inbound_get_content_len();
-            const char* content = nyoci_inbound_get_content_ptr();
-            if (content != nullptr && length > 0) {
-                const auto* bytes = reinterpret_cast<const std::byte*>(content);
-                outer.payload.assign(bytes, bytes + length);
-                outer.has_payload = true;
-            }
+            outer.has_payload = !ciphertext.empty();
+            outer.payload = std::move(ciphertext);
 
             oscore::request_binding binding;
             const auto inner = _oscore->unprotect_request(outer, binding);
             const auto resource_path = libnyoci_detail::path_from_options(inner);
 
             // Inner Block1: accumulate the request body across transactions and
-            // answer 2.31 Continue until the last block arrives. Keyed by path
-            // alone, which is enough here -- this backend runs one OSCORE
-            // Security Context per peer, so there is exactly one client.
+            // answer 2.31 Continue until the last block arrives.
             std::vector<std::byte> request_body = inner.payload;
             if (const auto block1 = oscore::find_block_option(inner, 27)) {
-                if (block1->number == 0) {
-                    _block1_assembly.clear();
+                auto taken =
+                    _inner_block1.offer(remote_key() + "|" + resource_path, block1->number,
+                                        block1->more, block1->size(), inner.payload,
+                                        _config.max_request_size, _config.max_concurrent_sessions);
+                switch (taken.outcome) {
+                    case block1_outcome::more:
+                        return respond_oscore(binding, 0x5F, 0, {}, block1);  // 2.31 Continue
+                    case block1_outcome::complete:
+                        request_body = std::move(taken.body);
+                        break;
+                    case block1_outcome::incomplete:
+                        // Out-of-order or lost block: RFC 7959 Section 2.9.2
+                        // asks for 4.08 Request Entity Incomplete.
+                        return respond_oscore(binding, 0x88, 0, {});
+                    case block1_outcome::too_large:
+                        return respond_oscore(binding, 0x8D, 0, {});  // 4.13
+                    case block1_outcome::busy:
+                        return respond_oscore(binding, 0xA3, 0, {});  // 5.03
                 }
-                const auto expected = static_cast<std::size_t>(block1->number) * block1->size();
-                if (expected != _block1_assembly.size()) {
-                    // Out-of-order or lost block: RFC 7959 Section 2.9.2 asks
-                    // for 4.08 Request Entity Incomplete.
-                    _block1_assembly.clear();
-                    return respond_oscore(binding, 0x88, 0, {});
-                }
-                if (_block1_assembly.size() + inner.payload.size() > _config.max_request_size) {
-                    _block1_assembly.clear();
-                    return respond_oscore(binding, 0x8D, 0, {});  // 4.13 too large
-                }
-                _block1_assembly.insert(_block1_assembly.end(), inner.payload.begin(),
-                                        inner.payload.end());
-                if (block1->more) {
-                    return respond_oscore(binding, 0x5F, 0, {}, block1);  // 2.31 Continue
-                }
-                request_body = std::move(_block1_assembly);
-                _block1_assembly.clear();
             }
 
             // Negotiation, read from the inner (protected) options rather than
@@ -2577,6 +2734,28 @@ private:
         return send_response(encoded, response_media_type, options);
     }
 
+    /// A response with nothing but a code.
+    static auto respond_code(coap_code_t code) -> nyoci_status_t {
+        const auto status = nyoci_outbound_begin_response(code);
+        if (status != NYOCI_STATUS_OK) {
+            return status;
+        }
+        return nyoci_outbound_send();
+    }
+
+    /// The current request's source address and port, as raw bytes: only
+    /// ever compared, never shown.
+    static auto remote_key() -> std::string {
+        const nyoci_sockaddr_t* remote = nyoci_plat_get_remote_sockaddr();
+        if (remote == nullptr) {
+            return {};
+        }
+        std::string key(reinterpret_cast<const char*>(&remote->nyoci_addr),
+                        sizeof(remote->nyoci_addr));
+        key.append(reinterpret_cast<const char*>(&remote->nyoci_port), sizeof(remote->nyoci_port));
+        return key;
+    }
+
     auto respond_not_acceptable() -> nyoci_status_t {
         const auto status = nyoci_outbound_begin_response(COAP_RESULT_406_NOT_ACCEPTABLE);
         if (status != NYOCI_STATUS_OK) {
@@ -2687,9 +2866,11 @@ private:
     /// Non-null exactly when plan_security() chose channel::oscore. Shared
     /// because the request trampoline is static and reaches it through `this`.
     std::shared_ptr<oscore::security_context> _oscore;
-    /// Partial inner-Block1 request body. Touched only from the event thread,
-    /// inside libnyoci's request dispatch, so it needs no lock.
-    std::vector<std::byte> _block1_assembly;
+    /// Partial Block1 request bodies, inner (inside OSCORE) and outer (on the
+    /// wire), keyed by peer address and port plus Uri-Path. Touched only from
+    /// the event thread, inside libnyoci's request dispatch, so no lock.
+    block1_assembly _inner_block1;
+    block1_assembly _outer_block1;
     /// Set when the OSCORE context is to arrive via EDHOC rather than config.
     bool _edhoc_bootstrap{false};
     std::shared_ptr<edhoc_responder_channel> _edhoc_channel;

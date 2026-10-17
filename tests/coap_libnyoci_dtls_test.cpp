@@ -86,7 +86,8 @@ constexpr std::uint16_t ephemeral_port = 0;
 /// **P-256, not RSA-2048, and that is a hard constraint rather than a
 /// preference.** libnyoci reads every inbound datagram into a
 /// `char packet[NYOCI_MAX_PACKET_LENGTH+1]` — 1033 bytes with the library's
-/// default configuration (nyoci-plat-net.c). A DTLS handshake flight carrying
+/// default configuration (nyoci-plat-net.c), 1289 with the overlay port's
+/// patch 0003. A DTLS handshake flight carrying
 /// an RSA-2048 certificate exceeds that and is silently truncated, so the
 /// handshake stalls and the request times out with no diagnostic. An ECDSA
 /// P-256 certificate is a few hundred bytes and fits comfortably. Anyone
