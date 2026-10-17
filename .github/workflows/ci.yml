@@ -1276,9 +1276,23 @@ jobs:
   # only the two overlay ports. The features are NOT added to the build-and-test
   # legs (Requirement 1.6): their feature set, cache key and runtime are
   # unchanged.
+  #
+  # Runs on x64 and on a native arm64 runner, like the build-and-test legs:
+  # neither backend's library or adapter had been built or run on arm64
+  # before. The x64 leg keeps its name because it is a required check; the
+  # arm64 leg is not (yet), so a new arm64-only failure reports without
+  # blocking merges until it has a record on main.
   alt-coap-backends:
-    name: Alternate CoAP Backends (g++-13, x64)
-    runs-on: ubuntu-24.04
+    name: Alternate CoAP Backends (g++-13, ${{ matrix.arch_label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch_label: x64
+          - os: ubuntu-24.04-arm
+            arch_label: arm64
     # Sized like ion-serializer-build, the other job whose vcpkg tree can
     # miss the binary cache and build ports from source. Measured on main:
     # 3.5 min with a warm sccache (run 38031469225), 13.9 min after a change
@@ -1328,9 +1342,15 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
+      # From the runner's architecture, as in build-and-test.
       - name: Resolve vcpkg triplet
         id: triplet
-        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "value=arm64-linux" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+          fi
 
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
       # both read, and installs the pinned sccache. The writer policy -- only a
@@ -1467,7 +1487,7 @@ jobs:
         if: always() && steps.sccache.outputs.launcher == 'sccache'
         run: |
           {
-            echo "### sccache — alt-coap-backends"
+            echo "### sccache — alt-coap-backends (${{ matrix.arch_label }})"
             echo '```'
             sccache --show-stats
             echo '```'
