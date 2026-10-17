@@ -3875,6 +3875,56 @@ auto coap_server<Types, NodeId>::handle_oscore_request(coap_resource_t* resource
         return;
     }
 
+    // Inner Block1 (RFC 8613 Section 4.1.3.4.1, RFC 7959 Section 2.5): a
+    // client may split the plaintext request before protecting it, so each
+    // block is its own OSCORE exchange. The libnyoci backend always does for
+    // large bodies, since its datagram buffer is about 1 KiB. Reassemble here
+    // and dispatch the whole body once, as the alternate backends do; a
+    // client that splits the ciphertext instead (outer Block1, as libcoap's
+    // own client does) is reassembled by libcoap before this point.
+    std::optional<oscore::block_option> continue_block1;
+    std::optional<coap_pdu_code_t> block1_error;
+    if (const auto block1 = oscore::find_block_option(inner, 27)) {
+        const auto key =
+            coap_detail::session_peer_endpoint(session) + "|" + detail::uri_path_of(inner);
+        auto found = _oscore_block1_assembly.find(key);
+        if (block1->number == 0 && found != _oscore_block1_assembly.end()) {
+            found->second.clear();
+        }
+        if (found == _oscore_block1_assembly.end()) {
+            // Bounded like sessions, so peers cannot pile up half-sent bodies.
+            if (_oscore_block1_assembly.size() >= _config.max_concurrent_sessions) {
+                block1_error = COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE;
+            } else {
+                found = _oscore_block1_assembly.emplace(key, std::vector<std::byte>{}).first;
+            }
+        }
+        if (!block1_error) {
+            auto& assembly = found->second;
+            const auto expected = static_cast<std::size_t>(block1->number) * block1->size();
+            if (expected != assembly.size()) {
+                block1_error = COAP_RESPONSE_CODE_INCOMPLETE;  // RFC 7959 Section 2.9.2
+            } else if (assembly.size() + inner.payload.size() > _config.max_request_size) {
+                block1_error = COAP_RESPONSE_CODE_REQUEST_TOO_LARGE;
+            }
+            if (block1_error) {
+                _oscore_block1_assembly.erase(found);
+            } else {
+                assembly.insert(assembly.end(), inner.payload.begin(), inner.payload.end());
+                if (block1->more) {
+                    continue_block1 = *block1;
+                } else {
+                    inner.payload = std::move(assembly);
+                    inner.has_payload = !inner.payload.empty();
+                    _oscore_block1_assembly.erase(found);
+                    std::erase_if(inner.options, [](const oscore::coap_option& option) {
+                        return option.number == 27;
+                    });
+                }
+            }
+        }
+    }
+
     // The decrypted request runs through exactly the path a plaintext one
     // does, as an unprotected PDU that never touches the wire; its answer is
     // collected the same way and encrypted below.
@@ -3903,7 +3953,15 @@ auto coap_server<Types, NodeId>::handle_oscore_request(coap_resource_t* resource
                                                          query, inner_response.get(), handler,
                                                          group, true);
     };
-    if (inner.code != COAP_REQUEST_CODE_POST) {
+    if (block1_error) {
+        coap_pdu_set_code(inner_response.get(), *block1_error);
+    } else if (continue_block1) {
+        // 2.31 Continue, echoing the block just taken (RFC 7959 Section 2.3).
+        coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_CONTINUE);
+        const auto echoed = oscore::encode_block_option(*continue_block1);
+        coap_add_option(inner_response.get(), COAP_OPTION_BLOCK1, echoed.size(),
+                        reinterpret_cast<const uint8_t*>(echoed.data()));
+    } else if (inner.code != COAP_REQUEST_CODE_POST) {
         coap_pdu_set_code(inner_response.get(), COAP_RESPONSE_CODE_NOT_ALLOWED);
     } else if (path == "raft/request_vote") {
         dispatch(_request_vote_handler, std::type_identity<request_vote_request<NodeId>>{},
