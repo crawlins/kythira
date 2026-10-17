@@ -12,7 +12,8 @@
 /// This is that other process. It is built once per backend, chosen by one of
 /// KYTHIRA_INTEROP_PEER_{LIBCOAP,CANTCOAP,LIBNYOCI}, and:
 ///
-///   1. binds a plaintext CoAP server to 127.0.0.1 on an ephemeral port;
+///   1. binds a CoAP server to 127.0.0.1 on an ephemeral port, in the clear
+///      or over DTLS as its command line says (coap_interop_security.hpp);
 ///   2. prints `PORT <n>` on stdout, and nothing else (the transports' own
 ///      logging goes to stdout too, so it is pointed at stderr first);
 ///   3. serves until its stdin reaches end of file, then stops and exits 0.
@@ -39,10 +40,13 @@
 #include <raft/serializer_registry.hpp>
 #include <raft/types.hpp>
 
+#include "coap_interop_security.hpp"
+
 #include <cstdint>
 #include <exception>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -75,7 +79,7 @@ using server_type = kythira::coap_libnyoci_server<peer_types>;
 
 }  // namespace
 
-auto main() -> int {
+auto main(int argc, char** argv) -> int {
     // console_logger writes to stdout, which is the parent's pipe: keep that
     // pipe for the one PORT line and send everything else to stderr, which
     // the test log inherits.
@@ -85,7 +89,10 @@ auto main() -> int {
         return 1;
     }
     try {
-        server_type server{"127.0.0.1", 0, kythira::coap_server_config{}, kythira::noop_metrics{}};
+        kythira::coap_server_config config;
+        config.security =
+            coap_interop::peer_security(std::vector<std::string>(argv + 1, argv + argc));
+        server_type server{"127.0.0.1", 0, std::move(config), kythira::noop_metrics{}};
 
         server.register_request_vote_handler([](const kythira::request_vote_request<>& request) {
             kythira::request_vote_response<> response{};

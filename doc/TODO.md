@@ -386,10 +386,10 @@ unverified completion claim.
   - **The alternate CoAP backends build in CI on x64 only.** The
     `alt-coap-backends` job runs both backends' real suites, which is what
     `coap-transport-multi-raft` task 7 was waiting on (closed October 17,
-    2026), and plaintext cross-backend interop is asserted for every
-    client and server pair (`coap_*_interop_test`, October 17, 2026).
-    Still open: cross-backend EDHOC/DTLS interop is not asserted and arm64
-    is unverified (`coap-transport-cantcoap` tasks.md ~201–209,
+    2026), and cross-backend interop is asserted for every client and
+    server pair in the clear, over DTLS-PSK and over DTLS-PKI
+    (`coap_*_interop_test`, October 17, 2026). Still open: cross-backend
+    EDHOC interop is not asserted and arm64 is unverified (`coap-transport-cantcoap` tasks.md ~201–209,
     `coap-transport-libnyoci` tasks.md ~337). Also from
     `coap-transport-libnyoci`, with no PR: Block1 for InstallSnapshot.
   - ~~**Tests that assert nothing.**~~ Done: the six property suites whose

@@ -215,9 +215,12 @@ the socket. That principle paid for itself the first time it was tested.
   CoAP backends can share a translation unit, so `tests/coap_interop_peer.cpp`
   is a server built once per backend and run as a child process, and
   `tests/coap_{libcoap,cantcoap,libnyoci}_interop_test.cpp` send all four RPC
-  kinds from each backend's client to each backend's server. EDHOC and DTLS
-  are both meant to interoperate with the other backends on the wire; neither
-  is asserted yet.
+  kinds from each backend's client to each backend's server. DTLS closed the
+  same day: every pair also runs over DTLS-PSK and over DTLS-PKI with mutual
+  certificate verification, and each backend's DTLS server is checked to
+  refuse a plaintext client. That found the libcoap backend binding a
+  plaintext endpoint when only `security.mode` asked for DTLS. EDHOC interop
+  is still not asserted.
 - **CI runs these suites** in the `alt-coap-backends` job, which installs the
   `coap-cantcoap` and `edhoc` features and fails if any `coap_cantcoap_*`
   binary builds as its stub (`scripts/check-coap-alt-backends.sh`). Every other
