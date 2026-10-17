@@ -27,6 +27,9 @@ template<typename Types> using backend_client = kythira::coap_cantcoap_client<Ty
 
 }  // namespace coap_interop
 
+// This backend carries EDHOC over /.well-known/edhoc, so it can run the
+// EDHOC cases against the other backend that does.
+#define KYTHIRA_INTEROP_CLIENT_EDHOC_OVER_COAP
 #include "coap_interop_cases.hpp"
 
 #else  // CANTCOAP_AVAILABLE

@@ -387,9 +387,11 @@ unverified completion claim.
     `alt-coap-backends` job runs both backends' real suites, which is what
     `coap-transport-multi-raft` task 7 was waiting on (closed October 17,
     2026), and cross-backend interop is asserted for every client and
-    server pair in the clear, over DTLS-PSK and over DTLS-PKI
-    (`coap_*_interop_test`, October 17, 2026). Still open: cross-backend
-    EDHOC interop is not asserted and arm64 is unverified (`coap-transport-cantcoap` tasks.md ~201–209,
+    server pair in the clear, over DTLS-PSK, over DTLS-PKI and over
+    OSCORE, and between cantcoap and libnyoci over EDHOC-derived OSCORE
+    (`coap_*_interop_test`, October 17, 2026). libcoap runs EDHOC outside
+    CoAP, through `edhoc_transport_factory`, so it has no EDHOC peer to
+    interoperate with. Still open: arm64 is unverified (`coap-transport-cantcoap` tasks.md ~201–209,
     `coap-transport-libnyoci` tasks.md ~337). Also from
     `coap-transport-libnyoci`, with no PR: Block1 for InstallSnapshot.
   - ~~**Tests that assert nothing.**~~ Done: the six property suites whose

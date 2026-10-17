@@ -219,8 +219,9 @@ the socket. That principle paid for itself the first time it was tested.
   same day: every pair also runs over DTLS-PSK and over DTLS-PKI with mutual
   certificate verification, and each backend's DTLS server is checked to
   refuse a plaintext client. That found the libcoap backend binding a
-  plaintext endpoint when only `security.mode` asked for DTLS. EDHOC interop
-  is still not asserted.
+  plaintext endpoint when only `security.mode` asked for DTLS. OSCORE closed
+  the same day for every pair, and EDHOC-derived OSCORE for the cantcoap and
+  libnyoci pairs; libcoap runs EDHOC outside CoAP, so it has no EDHOC peer.
 - **CI runs these suites** in the `alt-coap-backends` job, which installs the
   `coap-cantcoap` and `edhoc` features and fails if any `coap_cantcoap_*`
   binary builds as its stub (`scripts/check-coap-alt-backends.sh`). Every other

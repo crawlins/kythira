@@ -281,7 +281,9 @@ private:
 enum class transport_security {
     plaintext,
     psk,
-    pki
+    pki,
+    oscore,
+    edhoc
 };
 
 /// Every RPC kind the peer serves, each checked against the value the peer
@@ -295,13 +297,21 @@ inline auto run_rpc_kinds_against(const std::string& peer_path, transport_securi
     if (security == transport_security::psk) {
         peer_args = {"psk"};
         config.security = psk_security();
+    } else if (security == transport_security::oscore) {
+        peer_args = {"oscore"};
+        config.security = oscore_security(true);
+    } else if (security == transport_security::edhoc) {
+        peer_args = {"edhoc"};
+        config.security = edhoc_security(true);
     } else if (security == transport_security::pki) {
         pki.emplace();
         peer_args = pki->peer_args();
         config.security = pki->client_security();
     }
     peer_process peer{peer_path, peer_args};
-    const std::string scheme = security == transport_security::plaintext ? "coap" : "coaps";
+    // OSCORE protects the message, not the channel, so it rides plain coap://.
+    const bool dtls = security == transport_security::psk || security == transport_security::pki;
+    const std::string scheme = dtls ? "coaps" : "coap";
     backend_client<interop_types> client{
         {{peer_id, scheme + "://127.0.0.1:" + std::to_string(peer.port())}},
         std::move(config),
@@ -401,10 +411,22 @@ inline auto expect_plaintext_refused_by(const std::string& peer_path) -> void {
     KYTHIRA_INTEROP_CASE(server, plaintext, PATH)                                            \
     KYTHIRA_INTEROP_CASE(server, psk, PATH)                                                  \
     KYTHIRA_INTEROP_CASE(server, pki, PATH)                                                  \
+    KYTHIRA_INTEROP_CASE(server, oscore, PATH)                                               \
     BOOST_AUTO_TEST_CASE(a_##server##_dtls_server_refuses_a_plaintext_client,                \
                          *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) { \
         coap_interop::expect_plaintext_refused_by(PATH);                                     \
     }
+
+// EDHOC over /.well-known/edhoc is how cantcoap and libnyoci derive an OSCORE
+// context. The libcoap backend takes its EDHOC transport out of band
+// (coap_*_config::edhoc_transport_factory) and serves no /.well-known/edhoc,
+// so only pairs of the other two run it; their includers define
+// KYTHIRA_INTEROP_CLIENT_EDHOC_OVER_COAP.
+#if defined(LAKERS_AVAILABLE) && defined(KYTHIRA_INTEROP_CLIENT_EDHOC_OVER_COAP)
+#define KYTHIRA_INTEROP_EDHOC_CASE(server, PATH) KYTHIRA_INTEROP_CASE(server, edhoc, PATH)
+#else
+#define KYTHIRA_INTEROP_EDHOC_CASE(server, PATH)
+#endif
 
 BOOST_AUTO_TEST_SUITE(coap_cross_backend_interop)
 
@@ -414,13 +436,16 @@ KYTHIRA_INTEROP_CASES(libcoap, KYTHIRA_INTEROP_PEER_PATH_LIBCOAP)
 
 #ifdef KYTHIRA_INTEROP_PEER_PATH_CANTCOAP
 KYTHIRA_INTEROP_CASES(cantcoap, KYTHIRA_INTEROP_PEER_PATH_CANTCOAP)
+KYTHIRA_INTEROP_EDHOC_CASE(cantcoap, KYTHIRA_INTEROP_PEER_PATH_CANTCOAP)
 #endif
 
 #ifdef KYTHIRA_INTEROP_PEER_PATH_LIBNYOCI
 KYTHIRA_INTEROP_CASES(libnyoci, KYTHIRA_INTEROP_PEER_PATH_LIBNYOCI)
+KYTHIRA_INTEROP_EDHOC_CASE(libnyoci, KYTHIRA_INTEROP_PEER_PATH_LIBNYOCI)
 #endif
 
 BOOST_AUTO_TEST_SUITE_END()
 
+#undef KYTHIRA_INTEROP_EDHOC_CASE
 #undef KYTHIRA_INTEROP_CASES
 #undef KYTHIRA_INTEROP_CASE

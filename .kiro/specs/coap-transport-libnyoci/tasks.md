@@ -348,7 +348,9 @@ and a translation unit selects a backend by which header it includes.
   started as a child process over loopback (no container needed), and
   `tests/coap_{libcoap,cantcoap,libnyoci}_interop_test.cpp` drive all four RPC
   kinds against each backend's peer, in the clear, over DTLS-PSK and over
-  DTLS-PKI. EDHOC interop is still open.
+  DTLS-PKI and over OSCORE, and against cantcoap over EDHOC-derived OSCORE.
+  That found the libnyoci client sending its Uri-Path outside the OSCORE
+  option, where a peer that only reads the inner path cannot route it.
 - **Observe at the transport level.** OSCORE now carries notifications
   (`protect_response` with its own Partial IV, `unprotect_notification` with
   the Section 8.4.2 ordering check, verified against Appendix C.8), but neither
