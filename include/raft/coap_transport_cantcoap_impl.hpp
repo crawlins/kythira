@@ -69,6 +69,7 @@
 #include <raft/transport_conformance_types.hpp>
 #include <raft/coap_exchange_table.hpp>
 #include <raft/coap_block_option.hpp>
+#include <raft/coap_block1_assembly.hpp>
 #include <raft/coap_cantcoap_dtls.hpp>
 #include <raft/coap_edhoc_bootstrap.hpp>
 #include <raft/coap_exceptions.hpp>
@@ -1644,6 +1645,7 @@ public:
         {
             const std::lock_guard lock(_mutex);
             _block1_assembly.clear();
+            _outer_block1.clear();
             _block2_responses.clear();
             _seen.clear();
         }
@@ -1834,7 +1836,47 @@ private:
 
         if (_reply_context) {
             try {
-                const auto outer = oscore::parse_message(plain);
+                auto outer = oscore::parse_message(plain);
+                if (const auto block1 = oscore::find_block_option(outer, 27)) {
+                    // Outer Block1: the client split the protected message
+                    // itself, as libcoap's does, so no single block of it
+                    // verifies. RFC 8613 Section 4.1.3.4.2 has the receiver
+                    // reassemble first and verify the whole; the outer
+                    // replies until then are unprotected.
+                    block1_result taken;
+                    {
+                        const std::lock_guard lock(_mutex);
+                        taken = _outer_block1.offer(
+                            from.key(), block1->number, block1->more, block1->size(), outer.payload,
+                            _config.max_request_size, _config.max_concurrent_sessions);
+                    }
+                    if (taken.outcome != block1_outcome::complete) {
+                        CoapPDU probe(data, length);
+                        _reply_context = nullptr;
+                        if (taken.outcome == block1_outcome::more) {
+                            block_option echo;
+                            echo.block_number = block1->number;
+                            echo.more_blocks = true;
+                            echo.block_size = static_cast<std::uint32_t>(block1->size());
+                            send_continue(probe, from, binding, echo);
+                        } else {
+                            send_error(probe, from, binding,
+                                       taken.outcome == block1_outcome::incomplete
+                                           ? static_cast<CoapPDU::Code>(0x88)  // 4.08
+                                       : taken.outcome == block1_outcome::too_large
+                                           ? CoapPDU::COAP_REQUEST_ENTITY_TOO_LARGE
+                                           : CoapPDU::COAP_SERVICE_UNAVAILABLE);
+                        }
+                        return;
+                    }
+                    // Block1, Size1 and Request-Tag describe the transfer, not
+                    // the request, and are not covered by the AEAD.
+                    std::erase_if(outer.options, [](const oscore::coap_option& option) {
+                        return option.number == 27 || option.number == 60 || option.number == 292;
+                    });
+                    outer.payload = std::move(taken.body);
+                    outer.has_payload = !outer.payload.empty();
+                }
                 const auto inner = _reply_context->unprotect_request(outer, binding);
                 plain = oscore::serialize_message(inner);
             } catch (const std::exception&) {
@@ -2345,6 +2387,9 @@ private:
     /// sent for each. Guarded by `_mutex`.
     coap_exchange_table _seen;
     std::vector<std::byte> _block1_assembly;
+    /// Outer-Block1 OSCORE messages being reassembled before verification,
+    /// keyed by peer. Guarded by `_mutex`.
+    block1_assembly _outer_block1;
 
     /// A response larger than one block, kept for the Block2 continuations
     /// that ask for the rest of it. Keyed by peer address and token.
