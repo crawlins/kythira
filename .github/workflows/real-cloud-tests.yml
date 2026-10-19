@@ -371,7 +371,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests
@@ -562,7 +562,7 @@ jobs:
       # consistent set. Nothing after this point uses the build cache, so
       # trading Oracle's credentials away here costs nothing.
       - name: Re-configure AWS credentials for the test steps (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests
@@ -740,7 +740,7 @@ jobs:
       # start.
       - name: Re-configure AWS credentials for the ca-cluster-node bundles (OIDC)
         if: ${{ env.BUNDLE_CA_CLUSTER == 'true' || env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ca-cluster
@@ -756,7 +756,7 @@ jobs:
 
       - name: Re-configure AWS credentials for the rpc-tls bundle (OIDC)
         if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-rpc-tls
@@ -794,7 +794,7 @@ jobs:
 
       - name: Re-configure AWS credentials for the chaos-crash bundle (OIDC)
         if: ${{ env.BUNDLE_CHAOS_CRASH == 'true' }}
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-chaos-crash
@@ -846,7 +846,7 @@ jobs:
       # time the suite grew.
       - name: Re-configure AWS credentials for the audit (OIDC)
         if: always()
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-audit
@@ -1178,7 +1178,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-asg
@@ -1350,7 +1350,7 @@ jobs:
         run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
 
       - name: Re-configure AWS credentials for the test step (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-asg
@@ -1377,7 +1377,7 @@ jobs:
       # the `aws` job's audit refresh for the run that proved it.
       - name: Re-configure AWS credentials for the audit (OIDC)
         if: always()
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-asg-audit
@@ -1464,7 +1464,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ec2lo
@@ -1635,7 +1635,7 @@ jobs:
         run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
 
       - name: Re-configure AWS credentials for the test step (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ec2lo
@@ -1663,7 +1663,7 @@ jobs:
       # the `aws` job's audit refresh for the run that proved it.
       - name: Re-configure AWS credentials for the audit (OIDC)
         if: always()
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-real-cloud-tests-ec2lo-audit
@@ -1735,7 +1735,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-ami-build
@@ -1856,7 +1856,7 @@ jobs:
         run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
 
       - name: Re-configure AWS credentials for the AMI build (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-ami-build
@@ -3937,7 +3937,7 @@ jobs:
           exit 1
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
           role-session-name: kythira-ci-monitoring-aws
