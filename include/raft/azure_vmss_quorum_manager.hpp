@@ -236,6 +236,10 @@ public:
 
         Azure::Core::_internal::ClientOptions client_options;
         client_options.Retry.MaxRetries = 3;
+        // ARM throttles with 429 and a Retry-After, which the retry policy
+        // honours, but azure-core-cpp's default StatusCodes leave 429 out,
+        // so a single throttled read used to fail the whole call.
+        client_options.Retry.StatusCodes.insert(Azure::Core::Http::HttpStatusCode::TooManyRequests);
         if (_cfg.azure.transport) {
             client_options.Transport.Transport = _cfg.azure.transport;
         }

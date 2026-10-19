@@ -15,6 +15,13 @@ current list of outstanding work, see [TODO.md](TODO.md).
   sent the deallocate there. The lookup now matches the `kythira:cluster` tag
   too, as the manager's own lookup does.
 
+- **The Azure VM and VMSS quorum managers retry ARM throttling.** ARM answers
+  a throttled request with 429, and azure-core-cpp's retry policy leaves 429
+  out of its default status codes, so one throttled read failed the whole
+  call. An Azure-only Real Cloud Tests run on October 19 failed this way on a
+  scale-set capacity read. Both managers and the real-cloud test's own ARM
+  pipeline now retry 429, honouring Retry-After.
+
 ### What Changed (October 17, 2026)
 
 - **InstallSnapshot now crosses the libnyoci backend whatever its size.**

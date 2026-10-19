@@ -194,6 +194,10 @@ auto random_suffix() -> std::string {
         std::make_unique<Azure::Core::Http::Policies::_internal::BearerTokenAuthenticationPolicy>(
             credential, std::move(token_ctx)));
     Azure::Core::_internal::ClientOptions client_options;
+    // Retry ARM's 429 throttling as the managers do: azure-core-cpp's default
+    // StatusCodes leave it out, and one throttled read failed
+    // vmss_provision_timeout_removes_only_the_fresh_member in run 39294224525.
+    client_options.Retry.StatusCodes.insert(Azure::Core::Http::HttpStatusCode::TooManyRequests);
     return Azure::Core::Http::_internal::HttpPipeline(
         client_options, "kythira-azure-real-test", "1.0.0", std::move(per_retry_policies),
         std::vector<std::unique_ptr<Azure::Core::Http::Policies::HttpPolicy>>{});
