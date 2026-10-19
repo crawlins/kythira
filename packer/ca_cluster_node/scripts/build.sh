@@ -12,10 +12,12 @@ TEMPLATE_DIR="${REPO_ROOT}/packer/ca_cluster_node"
 ARCH=""
 REGION="${AWS_REGION:-us-east-1}"
 SKIP_BINARY_BUILD=0
+WITH_CHAOS_NODE=0
 
 usage() {
     cat <<'EOF'
 Usage: build.sh --arch amd64|arm64 [--region REGION] [--skip-binary-build]
+                [--with-chaos-node]
 
 Builds a golden ca_cluster_node AMI: extracts the binary from
 docker/ca_cluster_node/Dockerfile's builder stage (unless
@@ -27,6 +29,9 @@ resulting AMI ID as the last line of stdout on success.
   --skip-binary-build     Reuse an already-extracted binary at
                           build/packer-artifacts/ca_cluster_node-{arch}
                           instead of rebuilding it
+  --with-chaos-node       Also install chaos_node (a test AMI, tagged
+                          kythira:chaos-node=true), from
+                          build/packer-artifacts/chaos_node-{arch}
 EOF
 }
 
@@ -35,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --arch) ARCH="$2"; shift 2 ;;
         --region) REGION="$2"; shift 2 ;;
         --skip-binary-build) SKIP_BINARY_BUILD=1; shift ;;
+        --with-chaos-node) WITH_CHAOS_NODE=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -47,13 +53,21 @@ if [[ "$ARCH" != "amd64" && "$ARCH" != "arm64" ]]; then
 fi
 
 BINARY_PATH="${REPO_ROOT}/build/packer-artifacts/ca_cluster_node-${ARCH}"
+CHAOS_PATH=""
+EXTRACT_ARGS=(--arch "${ARCH}" --out "${BINARY_PATH}")
+if [[ "${WITH_CHAOS_NODE}" -eq 1 ]]; then
+    CHAOS_PATH="${REPO_ROOT}/build/packer-artifacts/chaos_node-${ARCH}"
+    EXTRACT_ARGS+=(--chaos-node-out "${CHAOS_PATH}")
+fi
 if [[ "${SKIP_BINARY_BUILD}" -eq 0 ]]; then
-    "${TEMPLATE_DIR}/scripts/extract-binary.sh" --arch "${ARCH}" --out "${BINARY_PATH}"
+    "${TEMPLATE_DIR}/scripts/extract-binary.sh" "${EXTRACT_ARGS[@]}"
 fi
-if [[ ! -s "${BINARY_PATH}" ]]; then
-    echo "ERROR: no binary at ${BINARY_PATH} (run extract-binary.sh first, or drop --skip-binary-build)" >&2
-    exit 1
-fi
+for b in "${BINARY_PATH}" ${CHAOS_PATH:+"${CHAOS_PATH}"}; do
+    if [[ ! -s "${b}" ]]; then
+        echo "ERROR: no binary at ${b} (run extract-binary.sh first, or drop --skip-binary-build)" >&2
+        exit 1
+    fi
+done
 
 echo "[build] checking AWS credentials"
 if ! aws sts get-caller-identity --region "${REGION}" >/dev/null; then
@@ -66,6 +80,7 @@ PACKER_VARS=(
     -var "arch=${ARCH}"
     -var "region=${REGION}"
     -var "binary_path=${BINARY_PATH}"
+    -var "chaos_node_binary_path=${CHAOS_PATH}"
     -var "git_sha=${GIT_SHA}"
 )
 

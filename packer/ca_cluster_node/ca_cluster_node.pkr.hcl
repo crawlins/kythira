@@ -24,6 +24,9 @@ locals {
     "kythira:git-sha"   = var.git_sha
     "kythira:arch"      = var.arch
     "kythira:built-by"  = "packer"
+    # Whether /usr/local/bin/chaos_node is installed, so the chaos_node
+    # real-EC2 test can pick an AMI that has it.
+    "kythira:chaos-node" = var.chaos_node_binary_path != "" ? "true" : "false"
   }
 }
 
@@ -84,10 +87,18 @@ build {
 
   # Requirement 5 — exactly three inputs cross into the builder instance:
   # the compiled binary, the unmodified systemd unit, and the provisioning
-  # script itself. None of the three references or contains a secret.
+  # script itself, plus chaos_node on a test AMI. None of them references
+  # or contains a secret.
   provisioner "file" {
     source      = var.binary_path
     destination = "/tmp/ca_cluster_node"
+  }
+
+  # A provisioner cannot be skipped on a variable, so without chaos_node an
+  # empty marker crosses instead and provision.sh installs nothing.
+  provisioner "file" {
+    source      = var.chaos_node_binary_path != "" ? var.chaos_node_binary_path : "${path.root}/scripts/no-chaos-node"
+    destination = "/tmp/chaos_node"
   }
 
   provisioner "file" {

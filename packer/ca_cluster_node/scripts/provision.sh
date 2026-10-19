@@ -18,6 +18,15 @@ echo "[provision] installing ca_cluster_node binary"
 install -m 0755 -o root -g root /tmp/ca_cluster_node /usr/local/bin/ca_cluster_node
 rm -f /tmp/ca_cluster_node
 
+# chaos_node, on a test AMI only (build.sh --with-chaos-node); otherwise an
+# empty marker. No unit: the test starts it, and a Restart= policy would hide
+# the process kill it injects.
+if [[ -s /tmp/chaos_node ]]; then
+    echo "[provision] installing chaos_node binary"
+    install -m 0755 -o root -g root /tmp/chaos_node /usr/local/bin/chaos_node
+fi
+rm -f /tmp/chaos_node
+
 echo "[provision] creating ca-cluster-node system user"
 if ! id -u ca-cluster-node >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin ca-cluster-node
