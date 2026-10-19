@@ -18,25 +18,39 @@
 #
 # .kiro/specs/ci-real-cloud-tests/ Requirement 3 / design.md Component 3.
 #
+# --leader creates a second, separate role and profile instead
+# (kythira-aws-chaos-node-role / -profile) for
+# tests/aws_chaos_node_crash_real_ec2_test.cpp. There the Raft leader on an
+# instance owns aws_ec2_quorum_manager, so the instance itself launches,
+# tags and terminates EC2 instances. Those rights are kept off the plain
+# node role above, which every other real-EC2 test launches with.
+#
 # Usage:
 #   scripts/ci-cloud-credentials/aws/provision-quorum-test-node-role.sh \
-#       [--role-name NAME] [--profile-name NAME] [--dry-run]
+#       [--leader] [--role-name NAME] [--profile-name NAME] [--dry-run]
 set -euo pipefail
 
 ROLE_NAME="kythira-aws-quorum-test-node-role"
 PROFILE_NAME="kythira-aws-quorum-test-node-profile"
 POLICY_NAME="kythira-aws-quorum-test-node-policy"
 DRY_RUN=0
+LEADER=0
+ROLE_NAME_SET=0
+PROFILE_NAME_SET=0
 
 usage() {
     cat <<'EOF'
-Usage: provision-quorum-test-node-role.sh [OPTIONS]
+Usage: provision-quorum-test-node-role.sh [--leader] [OPTIONS]
 
 Creates the static IAM role + instance profile that
 tests/aws_quorum_manager_real_ec2_test.cpp's launched EC2 instances use.
 Safe to re-run: every step checks for existence first.
 
 Options:
+  --leader              Create the chaos_node leader role instead
+                        (kythira-aws-chaos-node-role / -profile), whose
+                        instances may launch, tag and terminate instances
+                        carrying kythira:managed-by=ec2_quorum_manager
   --role-name NAME      IAM role name (default: kythira-aws-quorum-test-node-role)
   --profile-name NAME   Instance profile name (default: kythira-aws-quorum-test-node-profile)
   --dry-run             Print the AWS CLI calls that would run without executing them
@@ -46,13 +60,20 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --role-name) ROLE_NAME="$2"; shift 2 ;;
-        --profile-name) PROFILE_NAME="$2"; shift 2 ;;
+        --leader) LEADER=1; shift ;;
+        --role-name) ROLE_NAME="$2"; ROLE_NAME_SET=1; shift 2 ;;
+        --profile-name) PROFILE_NAME="$2"; PROFILE_NAME_SET=1; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
+
+if [[ "${LEADER}" == "1" ]]; then
+    [[ "${ROLE_NAME_SET}" == "1" ]] || ROLE_NAME="kythira-aws-chaos-node-role"
+    [[ "${PROFILE_NAME_SET}" == "1" ]] || PROFILE_NAME="kythira-aws-chaos-node-profile"
+    POLICY_NAME="kythira-aws-chaos-node-policy"
+fi
 
 run() {
     if [[ "${DRY_RUN}" == "1" ]]; then
@@ -96,6 +117,68 @@ INLINE_POLICY='{
         }
     ]
 }'
+
+if [[ "${LEADER}" == "1" ]]; then
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    # What aws_ec2_quorum_manager calls from the leader: RunInstances,
+    # CreateTags at launch, DescribeInstances, DescribeInstanceStatus and
+    # TerminateInstances. The instance it launches must carry
+    # kythira:managed-by=ec2_quorum_manager (the manager always sets it),
+    # and only an instance carrying it can be terminated, the same scoping
+    # the CI role's bundles use. PassRole lets a replacement launch with
+    # this same profile, so a replacement that becomes leader can heal too.
+    INLINE_POLICY='{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Describe",
+            "Effect": "Allow",
+            "Action": ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus", "sts:GetCallerIdentity"],
+            "Resource": "*"
+        },
+        {
+            "Sid": "LaunchManagedInstances",
+            "Effect": "Allow",
+            "Action": "ec2:RunInstances",
+            "Resource": "arn:aws:ec2:*:*:instance/*",
+            "Condition": {"StringEquals": {"aws:RequestTag/kythira:managed-by": "ec2_quorum_manager"}}
+        },
+        {
+            "Sid": "LaunchSupportingResources",
+            "Effect": "Allow",
+            "Action": "ec2:RunInstances",
+            "Resource": [
+                "arn:aws:ec2:*:*:network-interface/*",
+                "arn:aws:ec2:*:*:volume/*",
+                "arn:aws:ec2:*:*:subnet/*",
+                "arn:aws:ec2:*:*:security-group/*",
+                "arn:aws:ec2:*:*:key-pair/*",
+                "arn:aws:ec2:*::image/*"
+            ]
+        },
+        {
+            "Sid": "TagAtLaunchOnly",
+            "Effect": "Allow",
+            "Action": "ec2:CreateTags",
+            "Resource": "*",
+            "Condition": {"StringEquals": {"ec2:CreateAction": "RunInstances"}}
+        },
+        {
+            "Sid": "TerminateManagedInstances",
+            "Effect": "Allow",
+            "Action": "ec2:TerminateInstances",
+            "Resource": "arn:aws:ec2:*:*:instance/*",
+            "Condition": {"StringEquals": {"aws:ResourceTag/kythira:managed-by": "ec2_quorum_manager"}}
+        },
+        {
+            "Sid": "PassOwnRole",
+            "Effect": "Allow",
+            "Action": "iam:PassRole",
+            "Resource": "arn:aws:iam::'"${ACCOUNT_ID}"':role/'"${ROLE_NAME}"'"
+        }
+    ]
+}'
+fi
 
 echo "[step] Ensure IAM role: ${ROLE_NAME}"
 if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
