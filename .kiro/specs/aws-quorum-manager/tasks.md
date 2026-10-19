@@ -577,6 +577,20 @@ Reference implementations to study before starting:
     `assess_quorum` still reports the node live, then verify the leader's
     AZ1 replacement, removal and termination.
   - Real-cloud runs follow the project's real-cloud cost rules.
+  - Written October 19, 2026; not yet run against real EC2. The leader is
+    `chaos_node` with `QUORUM_MANAGER=aws` (`cmd/chaos_node/aws_quorum.hpp`)
+    and `QUORUM_PEER_DEAD_AFTER_MS`. The test is
+    `tests/aws_chaos_node_crash_real_ec2_test.cpp`, its own file rather than
+    a case in `aws_quorum_manager_real_ec2_test.cpp`, because that suite's
+    nodes run no kythira and cannot be reached over SSH. It needs three
+    things before its first run:
+    - an AMI from `packer/ca_cluster_node/scripts/build.sh --with-chaos-node`
+      (CI's `ami-build` now passes it; tagged `kythira:chaos-node=true`);
+    - the leader role from `provision-quorum-test-node-role.sh --leader`,
+      whose instances may launch, tag and terminate managed instances;
+    - the repository variable `REAL_CLOUD_TESTS_AWS_CHAOS_CRASH_ENABLED`.
+    `process_crash_via_ssh_kill` in the older suite still stops the
+    instance; it stays as instance-state coverage.
 
 ## Notes
 
