@@ -3535,7 +3535,7 @@ jobs:
 
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@1f0c5cde4bc74cd7e1254d0cb4de8d49e9068c7d # v4.0.0
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       # Uploaded unconditionally: on main it is what `docs-deploy` publishes, and
       # on a PR it gives the reviewer a downloadable copy of the rendered docs.
