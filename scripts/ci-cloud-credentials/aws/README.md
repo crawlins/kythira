@@ -40,6 +40,22 @@ expects. Run with `--dry-run` first if you want to see the exact AWS CLI
 calls without making them. Safe to re-run — every step checks for existing
 state first.
 
+For the chaos_node crash test (`aws_chaos_node_crash_real_ec2_test`,
+repository variable `REAL_CLOUD_TESTS_AWS_CHAOS_CRASH_ENABLED`), also run it
+with `--leader`:
+
+```sh
+scripts/ci-cloud-credentials/aws/provision-quorum-test-node-role.sh --leader
+```
+
+That creates a separate `kythira-aws-chaos-node-role` and
+`kythira-aws-chaos-node-profile`. In that test the Raft leader on an
+instance owns `aws_ec2_quorum_manager`, so this role may run, tag (at launch
+only) and terminate instances carrying `kythira:managed-by=ec2_quorum_manager`,
+and pass itself to the replacements it launches. The plain node role above
+keeps only `sts:GetCallerIdentity`. The CI role's `ec2-quorum-manager` bundle
+may pass either role (`kythira-aws-*-node-role`).
+
 ### 2. Provision the CI identity
 
 ```sh
@@ -378,6 +394,12 @@ aws iam remove-role-from-instance-profile --instance-profile-name kythira-aws-qu
 aws iam delete-instance-profile --instance-profile-name kythira-aws-quorum-test-node-profile
 aws iam delete-role-policy --role-name kythira-aws-quorum-test-node-role --policy-name kythira-aws-quorum-test-node-policy
 aws iam delete-role --role-name kythira-aws-quorum-test-node-role
+
+# chaos_node leader role (only if you ran --leader)
+aws iam remove-role-from-instance-profile --instance-profile-name kythira-aws-chaos-node-profile --role-name kythira-aws-chaos-node-role
+aws iam delete-instance-profile --instance-profile-name kythira-aws-chaos-node-profile
+aws iam delete-role-policy --role-name kythira-aws-chaos-node-role --policy-name kythira-aws-chaos-node-policy
+aws iam delete-role --role-name kythira-aws-chaos-node-role
 ```
 
 Then unset the repository variables with `gh variable delete` (or just set

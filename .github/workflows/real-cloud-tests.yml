@@ -315,6 +315,12 @@ jobs:
       BUNDLE_EC2_QUORUM: ${{ (github.event.inputs.aws_bundle_ec2_quorum == 'true') || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED == 'true') }}
       BUNDLE_CA_CLUSTER: ${{ (github.event.inputs.aws_bundle_ca_cluster == 'true') || (github.event.inputs.aws_bundle_ca_cluster == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED == 'true') }}
       BUNDLE_CA_CLUSTER_RPC_TLS: ${{ (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == 'true') || (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED == 'true') }}
+      # aws-quorum-manager task 8: a chaos_node killed on a running instance
+      # is replaced by the Raft leader's own aws_ec2_quorum_manager. Variable
+      # only: this workflow is at GitHub's 25-input workflow_dispatch cap.
+      # Needs an AMI from `ami-build` with chaos_node (kythira:chaos-node=true)
+      # and the leader role from provision-quorum-test-node-role.sh --leader.
+      BUNDLE_CHAOS_CRASH: ${{ vars.REAL_CLOUD_TESTS_AWS_CHAOS_CRASH_ENABLED == 'true' }}
       # .kiro/specs/cloud-object-persistence/ task 17. Unlike the three
       # bundles above this one launches nothing — it writes, reads and
       # deletes objects under a single prefix of an existing bucket — so it
@@ -347,9 +353,9 @@ jobs:
       # the script at all. See this job's sibling guard in the azure job for
       # the real occurrence that motivated adding these.
       - name: Fail closed if no test bundle is enabled
-        if: ${{ env.BUNDLE_EC2_QUORUM != 'true' && env.BUNDLE_CA_CLUSTER != 'true' && env.BUNDLE_CA_CLUSTER_RPC_TLS != 'true' && env.BUNDLE_OBJECT_PERSISTENCE != 'true' && env.BUNDLE_ACM_PCA != 'true' }}
+        if: ${{ env.BUNDLE_EC2_QUORUM != 'true' && env.BUNDLE_CA_CLUSTER != 'true' && env.BUNDLE_CA_CLUSTER_RPC_TLS != 'true' && env.BUNDLE_CHAOS_CRASH != 'true' && env.BUNDLE_OBJECT_PERSISTENCE != 'true' && env.BUNDLE_ACM_PCA != 'true' }}
         run: |
-          echo "::error::The AWS job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set one or more of REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED / REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED / REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED, or pass the aws_bundle_* workflow_dispatch inputs." >&2
+          echo "::error::The AWS job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set one or more of REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED / REAL_CLOUD_TESTS_AWS_CHAOS_CRASH_ENABLED / REAL_CLOUD_TESTS_AWS_OBJECT_PERSISTENCE_ENABLED / REAL_CLOUD_TESTS_AWS_ACM_PCA_ENABLED, or pass the aws_bundle_* workflow_dispatch inputs." >&2
           exit 1
 
       # The bucket is an operator-owned prerequisite — the engine reads and
@@ -763,6 +769,45 @@ jobs:
         run: |
           scripts/run-real-cloud-suite.sh 'real-ec2' '^ca_cluster_node_rpc_tls_real_ec2_test$' \
             "Check AWS_CI_ROLE_ARN's ca-cluster-node policy and that the resolved AMI has /usr/local/bin/ca_cluster_node installed."
+
+      # The newest ca_cluster_node AMI that also carries chaos_node; an
+      # older AMI from before --with-chaos-node has no kythira:chaos-node tag.
+      - name: Resolve chaos_node AMI ID
+        if: ${{ env.BUNDLE_CHAOS_CRASH == 'true' }}
+        id: resolve-chaos-ami
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            ARCH=arm64
+          else
+            ARCH=amd64
+          fi
+          AMI_ID=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=tag:kythira:component,Values=ca-cluster-node" "Name=tag:kythira:arch,Values=${ARCH}" "Name=tag:kythira:chaos-node,Values=true" \
+            --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+            --output text)
+          if [ -z "${AMI_ID}" ] || [ "${AMI_ID}" = "None" ]; then
+            echo "::error::No ca-cluster-node AMI tagged kythira:chaos-node=true for ${ARCH}. Run the ami-build bundle once first." >&2
+            exit 1
+          fi
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Re-configure AWS credentials for the chaos-crash bundle (OIDC)
+        if: ${{ env.BUNDLE_CHAOS_CRASH == 'true' }}
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests-chaos-crash
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      - name: Run chaos-crash bundle
+        if: ${{ env.BUNDLE_CHAOS_CRASH == 'true' }}
+        env:
+          KYTHIRA_EC2_TEST_AMI: ${{ steps.resolve-chaos-ami.outputs.ami_id }}
+          KYTHIRA_TEST_IAM_INSTANCE_PROFILE: kythira-aws-chaos-node-profile
+        run: |
+          scripts/run-real-cloud-suite.sh 'real-ec2' '^aws_chaos_node_crash_real_ec2_test$' \
+            "Check AWS_CI_ROLE_ARN's ca-cluster-node and ec2-quorum-manager policies, that kythira-aws-chaos-node-profile exists (provision-quorum-test-node-role.sh --leader), and that the AMI has /usr/local/bin/chaos_node."
 
       # Post-run audit. Nothing else in this job verifies that teardown
       # actually happened: the tests tear down their own resources, and a
@@ -1819,9 +1864,12 @@ jobs:
 
       - name: Build AMI
         run: |
+          # --with-chaos-node: every CI AMI is a test AMI, and the
+          # chaos-crash bundle needs chaos_node on it.
           packer/ca_cluster_node/scripts/build.sh \
             --arch ${{ matrix.arch }} \
-            --region ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+            --region ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }} \
+            --with-chaos-node
 
       - name: Upload manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

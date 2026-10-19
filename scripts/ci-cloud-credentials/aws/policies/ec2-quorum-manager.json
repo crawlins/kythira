@@ -114,6 +114,6 @@
     "Sid": "Ec2QuorumManagerPassRole",
     "Effect": "Allow",
     "Action": "iam:PassRole",
-    "Resource": "arn:aws:iam::{{ACCOUNT_ID}}:role/kythira-aws-quorum-test-node-role"
+    "Resource": "arn:aws:iam::{{ACCOUNT_ID}}:role/kythira-aws-*-node-role"
   }
 ]
