@@ -5,6 +5,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 19, 2026)
 
+- **chaos_node's leader can own an EC2 quorum manager.** With
+  `QUORUM_MANAGER=aws` the Raft leader launches, admits and terminates EC2
+  instances itself, the way `QUORUM_MANAGER=docker` manages containers, and
+  `QUORUM_PEER_DEAD_AFTER_MS` sets how long a silent voter may stay before
+  the leader replaces it. A new real-EC2 test,
+  `aws_chaos_node_crash_real_ec2_test`, kills the process on a running
+  instance and checks that the leader, not the instance state, notices and
+  heals the cluster (aws-quorum-manager task 8). It has not run against EC2
+  yet: it needs an AMI built with `--with-chaos-node`, a new leader IAM role
+  and a repository variable.
+
 - **The Azure VMSS real-cloud cases find their own member again.** The
   scheduled Real Cloud Tests run on October 19 failed
   `vmss_assess_detects_not_running` with "external VMSS deallocate ... failed
