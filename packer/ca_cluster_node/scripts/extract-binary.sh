@@ -14,14 +14,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 ARCH=""
 OUT=""
+CHAOS_OUT=""
 
 usage() {
     cat <<'EOF'
-Usage: extract-binary.sh --arch amd64|arm64 [--out PATH]
+Usage: extract-binary.sh --arch amd64|arm64 [--out PATH] [--chaos-node-out PATH]
 
 Builds docker/ca_cluster_node/Dockerfile's "builder" stage for the given
 architecture and copies the compiled ca_cluster_node binary to PATH
 (default: build/packer-artifacts/ca_cluster_node-{arch}).
+
+--chaos-node-out also builds chaos_node in the same tree and copies it to
+PATH, for a test AMI (build.sh --with-chaos-node).
 
 Honors $KYTHIRA_CONTAINER_RUNTIME (default "docker"), per this project's
 CLAUDE.md container-runtime-compatibility steering.
@@ -32,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
+        --chaos-node-out) CHAOS_OUT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -46,11 +51,17 @@ fi
 
 DOCKER_PLATFORM="linux/${ARCH}"
 IMAGE_TAG="kythira-ca-cluster-node-builder:${ARCH}"
+EXTRA_TARGETS=""
+if [[ -n "${CHAOS_OUT}" ]]; then
+    EXTRA_TARGETS="chaos_node"
+    IMAGE_TAG="kythira-ca-cluster-node-builder:${ARCH}-chaos"
+fi
 CONTAINER_NAME="kythira-ca-cluster-node-extract-${ARCH}"
 
 echo "[extract-binary] building ${IMAGE_TAG} (--platform ${DOCKER_PLATFORM})"
 "${RUNTIME}" build --platform "${DOCKER_PLATFORM}" \
     -f "${REPO_ROOT}/docker/ca_cluster_node/Dockerfile" \
+    --build-arg "EXTRA_TARGETS=${EXTRA_TARGETS}" \
     --target builder -t "${IMAGE_TAG}" "${REPO_ROOT}"
 
 echo "[extract-binary] extracting binary to ${OUT}"
@@ -58,10 +69,18 @@ mkdir -p "$(dirname "${OUT}")"
 "${RUNTIME}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 "${RUNTIME}" create --name "${CONTAINER_NAME}" "${IMAGE_TAG}" >/dev/null
 "${RUNTIME}" cp "${CONTAINER_NAME}:/src/build/ca_cluster_node" "${OUT}"
+if [[ -n "${CHAOS_OUT}" ]]; then
+    mkdir -p "$(dirname "${CHAOS_OUT}")"
+    "${RUNTIME}" cp "${CONTAINER_NAME}:/src/build/chaos_node" "${CHAOS_OUT}"
+fi
 "${RUNTIME}" rm "${CONTAINER_NAME}" >/dev/null
 
 if [[ ! -s "${OUT}" ]]; then
     echo "ERROR: extracted binary is missing or empty: ${OUT}" >&2
+    exit 1
+fi
+if [[ -n "${CHAOS_OUT}" && ! -s "${CHAOS_OUT}" ]]; then
+    echo "ERROR: extracted chaos_node is missing or empty: ${CHAOS_OUT}" >&2
     exit 1
 fi
 

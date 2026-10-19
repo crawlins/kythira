@@ -22,6 +22,12 @@ variable "binary_path" {
   description = "Local path to the extract-binary.sh output for this arch."
 }
 
+variable "chaos_node_binary_path" {
+  type        = string
+  default     = ""
+  description = "Local path to a chaos_node binary to install as well (build.sh --with-chaos-node), for a test AMI. Empty installs none."
+}
+
 variable "git_sha" {
   type        = string
   description = "Full commit SHA the binary was built from (used in tags and the AMI name)."

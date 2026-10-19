@@ -22,6 +22,12 @@ COPY . .
 # clusters running so far all use NODE_ID=1..3, and a cluster cannot change
 # id kind in place. Build a text image deliberately, by changing this pin
 # and rolling out a new cluster, not by accident.
+#
+# EXTRA_TARGETS builds more binaries from the same tree; the runtime stage
+# below still copies only ca_cluster_node. extract-binary.sh sets it to
+# chaos_node for the test AMI (--chaos-node-out), which runs the leader-owned
+# EC2 quorum manager in tests/aws_chaos_node_crash_real_ec2_test.cpp.
+ARG EXTRA_TARGETS=""
 RUN case "$(uname -m)" in \
         aarch64) TRIPLET=arm64-linux ;; \
         *)       TRIPLET=x64-linux ;; \
@@ -30,7 +36,7 @@ RUN case "$(uname -m)" in \
         -DCMAKE_BUILD_TYPE=Release \
         -DKYTHIRA_NODE_ID_KIND=numeric \
         -DCMAKE_PREFIX_PATH=/src/vcpkg_installed/$TRIPLET && \
-    cmake --build build --target ca_cluster_node
+    cmake --build build --target ca_cluster_node ${EXTRA_TARGETS}
 
 # Stage 2 — runtime
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
