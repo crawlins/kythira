@@ -1,10 +1,10 @@
 # Implementation Plan — mold Linker Adoption
 
-## Status: 6/8 tasks complete
+## Status: 7/8 tasks complete
 
-**Last Updated**: October 16, 2026 (task 1 measured; gate waived by the
-maintainer; tasks 2-5 and 8 done and merged in PR #545; tasks 6-7 follow
-the merge).
+**Last Updated**: October 19, 2026 (task 1 measured; gate waived by the
+maintainer; tasks 2-5 and 8 merged in PR #545; task 6 confirmed on `main`;
+task 7, the soak, runs to November 2).
 
 ## Overview
 
@@ -187,13 +187,38 @@ Reference material to read before starting:
     every clang job's `.comment` check names mold.
   - _Requirements: 9.1-9.5, 3.2_
 
-- [ ] 6. Post-merge confirmation
+- [x] 6. Post-merge confirmation
   - On the first two `main` runs after tasks 4-5 merge, read the clang++-18
     x64 Build step duration and summed link time and record them next to task
     1's numbers, as confirmation or a discrepancy to chase.
   - Check the first scheduled run of each `real-cloud-tests.yml` and
     `perf-cloud.yml` job passed its `.comment` assertion.
   - Informational only; no timing assertion is added to CI.
+  - Result (October 19, 2026):
+    - The first two `main` CI runs after the merge both passed, with every
+      mold `.comment` check green. Run 38852155786 (76aa5c4) built the
+      clang++-18 x64 leg in 81 min 13 s; that is the one-off cold build of
+      the clang-built vcpkg tree and the first compile of every TU under
+      it, which `main` also wrote to the OCI caches. Run 38879356313
+      (2d9fbcd) built it warm in 3 min 23 s, against task 1's 185 s warm
+      mold build. Summed link time can't be read from `main` runs: they
+      don't keep `.ninja_log`, so build wall time is the record.
+    - The first scheduled `real-cloud-tests.yml` run after the merge (run
+      39251337229) passed the mold check in all six linking jobs (AWS x64
+      and arm64, Azure, GCP, OCI, Alibaba). Its one failure, Azure's
+      `vmss_assess_detects_not_running`, was a test-fixture lookup bug
+      fixed in PR #579, not a linker fault.
+    - `perf-cloud.yml` has no schedule (dispatch-only, by its
+      Requirement 18.2), so this task's premise was wrong for it; its mold
+      check runs on its next dispatch.
+    - The scheduled `container-tests.yml` run (39269715269) passed the mold
+      check on the Podman leg; the Docker leg failed in its chaos
+      scenarios before reaching the check, with the same binaries the
+      Podman leg ran cleanly, so not a linker fault either.
+    - Cold `-j3` against `-j$(nproc)` on the Full suite leg with mold
+      (throwaway PR #564, run 38879512477): boost 108 → 99 min, stdexec
+      156 → 180 min with 15 GiB of swap, so `-j3` stays; mold's smaller
+      link RSS doesn't relieve the compile memory that binds this leg.
   - _Requirements: 1.3, 5.3_
 
 - [ ] 7. Soak and Docker follow-up decision
