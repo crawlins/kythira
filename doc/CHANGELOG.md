@@ -3,6 +3,18 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 19, 2026)
+
+- **The Azure VMSS real-cloud cases find their own member again.** The
+  scheduled Real Cloud Tests run on October 19 failed
+  `vmss_assess_detects_not_running` with "external VMSS deallocate ... failed
+  (400)". Every case runs under a fresh cluster name and a numeric-mode
+  manager allocates node ids per cluster, so consecutive cases both use node
+  id 1, and the test looked a member up by its node id tag alone. It found
+  the previous case's member, which was still listed while being deleted, and
+  sent the deallocate there. The lookup now matches the `kythira:cluster` tag
+  too, as the manager's own lookup does.
+
 ### What Changed (October 17, 2026)
 
 - **InstallSnapshot now crosses the libnyoci backend whatever its size.**

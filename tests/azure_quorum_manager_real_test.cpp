@@ -911,9 +911,19 @@ void external_arm_post_action(const kythira::azure_client_config& azure, const s
 }
 
 /// Scans `scale_set_name`'s instance list for the one tagged
-/// `kythira:node-id = node_id`, returning its VMSS-local instance ID.
-/// Duplicates `azure_vmss_quorum_manager::find_instance`'s tag-scan (private,
-/// not reusable from here) scoped to a single already-known scale set.
+/// `kythira:node-id = node_id` and `kythira:cluster = cluster_name`, returning
+/// its VMSS-local instance ID. Duplicates
+/// `azure_vmss_quorum_manager::find_instance`'s tag-scan (private, not
+/// reusable from here) scoped to a single already-known scale set.
+///
+/// The cluster tag is not optional. Each case's fixture draws a fresh
+/// `cluster_name`, and a numeric-mode manager only counts its own cluster's
+/// tags when it picks the next id, so consecutive cases both hand out node
+/// id 1. The resource group's VM list can still show the previous case's
+/// member after its `decommission_node` returns, and a node-id-only match
+/// found that member first: run 39251337229 sent the external deallocate in
+/// `vmss_assess_detects_not_running` to the previous case's dying member,
+/// and ARM refused it with a 400.
 ///
 /// Reads the resource group's VM list rather than the scale set's own instance
 /// list: under Flexible orchestration a scale-set member is an ordinary
@@ -923,7 +933,8 @@ void external_arm_post_action(const kythira::azure_client_config& azure, const s
 /// `properties.virtualMachineScaleSet.id` back-reference, and the returned id
 /// is the VM's name, which is what `instanceIds` takes under Flexible.
 [[nodiscard]] auto find_vmss_instance_id(const kythira::azure_client_config& azure,
-                                         const std::string& scale_set_name, std::uint64_t node_id)
+                                         const std::string& scale_set_name,
+                                         const std::string& cluster_name, std::uint64_t node_id)
     -> std::optional<std::string> {
     auto pipeline = make_test_arm_pipeline(azure);
     Azure::Core::Url url(arm_base_url(azure) +
@@ -953,7 +964,9 @@ void external_arm_post_action(const kythira::azure_client_config& azure, const s
         }
         const auto& tags = vm.at("tags");
         if (tags.is_object() && tags.as_object().contains("kythira:node-id") &&
-            std::string(tags.at("kythira:node-id").as_string()) == target) {
+            tags.as_object().contains("kythira:cluster") &&
+            std::string(tags.at("kythira:node-id").as_string()) == target &&
+            std::string(tags.at("kythira:cluster").as_string()) == cluster_name) {
             return std::string(vm.at("name").as_string());
         }
     }
@@ -1559,7 +1572,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_assess_detects_not_running, AzureIntegrationFixture
         {.label = "VMSS instance", .hourly_rate = vmss_instance_hourly_rate()});
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
 
-    auto instance_id = find_vmss_instance_id(azure, *scale_set, peer.node_id);
+    auto instance_id = find_vmss_instance_id(azure, *scale_set, cluster_name, peer.node_id);
     BOOST_REQUIRE(instance_id.has_value());
     external_vmss_deallocate(azure, *scale_set, *instance_id);
     BOOST_REQUIRE_MESSAGE(wait_until_not_running(azure, *instance_id, std::chrono::seconds{300}),
@@ -1591,14 +1604,14 @@ BOOST_FIXTURE_TEST_CASE(vmss_decommission_removes_instance, AzureIntegrationFixt
     cost.resources.push_back(
         {.label = "VMSS instance", .hourly_rate = vmss_instance_hourly_rate()});
 
-    BOOST_REQUIRE(find_vmss_instance_id(azure, *scale_set, peer.node_id).has_value());
+    BOOST_REQUIRE(find_vmss_instance_id(azure, *scale_set, cluster_name, peer.node_id).has_value());
 
     std::move(mgr.decommission_node(peer.node_id)).get();
 
     // decommission_node's own 30s poll (design.md's decommission_node
     // sequence) already waits for the instance to disappear from the scale
     // set's list before returning, so no additional wait is needed here.
-    BOOST_CHECK(!find_vmss_instance_id(azure, *scale_set, peer.node_id).has_value());
+    BOOST_CHECK(!find_vmss_instance_id(azure, *scale_set, cluster_name, peer.node_id).has_value());
 
     for (auto& r : cost.resources) {
         r.finalize();
@@ -1643,7 +1656,7 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_timeout_removes_only_the_fresh_member,
     auto voter = std::move(voter_mgr.provision_node("1", std::nullopt)).get();
     cost.resources.push_back(
         {.label = "VMSS instance (voter)", .hourly_rate = vmss_instance_hourly_rate()});
-    auto voter_name = find_vmss_instance_id(azure, *scale_set, voter.node_id);
+    auto voter_name = find_vmss_instance_id(azure, *scale_set, cluster_name, voter.node_id);
     BOOST_REQUIRE(voter_name.has_value());
     BOOST_REQUIRE_EQUAL(vmss_capacity(azure, *scale_set).value_or(-1), 1);
 
@@ -1704,8 +1717,9 @@ BOOST_FIXTURE_TEST_CASE(vmss_provision_timeout_removes_only_the_fresh_member,
     BOOST_CHECK_MESSAGE(!removed_state || *removed_state == "Deleting",
                         "removed member " << *removed << " is " << removed_state.value_or("gone")
                                           << ", neither gone nor Deleting");
-    BOOST_CHECK_MESSAGE(find_vmss_instance_id(azure, *scale_set, voter.node_id) == voter_name,
-                        "the rollback removed voter " << *voter_name);
+    BOOST_CHECK_MESSAGE(
+        find_vmss_instance_id(azure, *scale_set, cluster_name, voter.node_id) == voter_name,
+        "the rollback removed voter " << *voter_name);
 
     // Then wait out the unwind, so the next case starts from the voter alone.
     // Not asserted: how long ARM takes is not the manager's to control, and
