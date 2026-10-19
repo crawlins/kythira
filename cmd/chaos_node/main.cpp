@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Clark Rawlins
 // SPDX-License-Identifier: Apache-2.0
 
+#include "aws_quorum.hpp"
 #include "config.hpp"
 #include "http_control.hpp"
 
@@ -34,6 +35,10 @@
 #endif
 
 #include <folly/init/Init.h>
+
+#ifdef KYTHIRA_HAS_AWS_SDK
+#include <aws/core/Aws.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -103,6 +108,13 @@ auto join_seeds(const chaos_node::node_config& cfg) -> seed_list {
 struct tcp_raft_types_with_docker_qm : tcp_raft_types_joinable {
     using quorum_manager_type = kythira::docker_quorum_manager<node_id_type, std::string>;
 };
+
+#ifdef KYTHIRA_HAS_AWS_SDK
+// QUORUM_MANAGER=aws: the leader provisions and terminates EC2 instances.
+struct tcp_raft_types_with_aws_qm : tcp_raft_types_joinable {
+    using quorum_manager_type = kythira::aws_ec2_quorum_manager<node_id_type, std::string>;
+};
+#endif
 
 // Inherits all type aliases from tcp_raft_types; swaps logger_type/
 // metrics_type to the OTLP implementations (.kiro/specs/otlp-telemetry-backend/,
@@ -280,6 +292,9 @@ int main(int argc, char** argv) {
     raft_cfg._heartbeat_interval = cfg.heartbeat_interval;
     if (cfg.quorum_check_interval) {
         raft_cfg._quorum_check_interval = *cfg.quorum_check_interval;
+    }
+    if (cfg.quorum_peer_dead_after) {
+        raft_cfg._quorum_peer_dead_after = *cfg.quorum_peer_dead_after;
     }
     if (cfg.rpc_timeout) {
         raft_cfg._rpc_timeout = *cfg.rpc_timeout;
@@ -603,6 +618,50 @@ int main(int argc, char** argv) {
         };
 
         return run_node<tcp_raft_types_with_docker_qm>(cfg, std::move(ncfg));
+    }
+
+    if (qm_env != nullptr && std::string{qm_env} == "aws") {
+#ifdef KYTHIRA_HAS_AWS_SDK
+        chaos_node::aws_quorum_settings aws;
+        try {
+            aws = chaos_node::aws_quorum_from_env(cfg);
+        } catch (const std::exception& e) {
+            std::cerr << e.what() << "\n";
+            return 1;
+        }
+        // The SDK must be up before the manager builds its EC2 client, and
+        // stay up until the node has stopped using it.
+        Aws::SDKOptions sdk_options;
+        Aws::InitAPI(sdk_options);
+        struct sdk_shutdown {
+            Aws::SDKOptions& options;
+            ~sdk_shutdown() { Aws::ShutdownAPI(options); }
+        } shutdown_sdk{sdk_options};
+
+        std::cerr << "[info] quorum manager: aws (cluster=" << aws.manager.cluster_name
+                  << " groups=" << aws.manager.topology.groups.size() << ")\n";
+
+        kythira::node_config<tcp_raft_types_with_aws_qm> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(client),
+            .network_server = std::move(server),
+            .persistence = std::move(persistence),
+            .logger = kythira::console_logger{},
+            .metrics = kythira::noop_metrics{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
+            .config = raft_cfg,
+            .self_address = cfg.self_address,
+            .peer_discovery =
+                kythira::seed_peer_discovery<node_id_type, std::string>{join_seeds(cfg)},
+            .quorum_manager = tcp_raft_types_with_aws_qm::quorum_manager_type{aws.manager},
+            .initial_placement = std::move(aws.placement),
+        };
+
+        return run_node<tcp_raft_types_with_aws_qm>(cfg, std::move(ncfg));
+#else
+        std::cerr << "chaos_node: QUORUM_MANAGER=aws needs a build with the AWS SDK\n";
+        return 1;
+#endif
     }
 
     // Default path — no quorum manager (no_op fallback via detection trait).

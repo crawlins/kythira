@@ -40,6 +40,11 @@ struct node_config {
     std::chrono::milliseconds election_timeout_max{300};
     std::chrono::milliseconds heartbeat_interval{50};
     std::optional<std::chrono::milliseconds> quorum_check_interval;  ///< QUORUM_CHECK_INTERVAL_MS
+    // How long the leader waits for any RPC response from a voter before
+    // counting it unreachable, whatever its VM or container reports
+    // (quorum-management Req 13.7). Unset keeps raft_configuration's 30 s;
+    // 0 disables the check.
+    std::optional<std::chrono::milliseconds> quorum_peer_dead_after;  ///< QUORUM_PEER_DEAD_AFTER_MS
     // Per-RPC deadline. Unset keeps raft_configuration's 100ms, which a
     // handshake per call (the TLS transport reconnects for every RPC) can
     // exceed on a busy runner.
@@ -167,6 +172,13 @@ struct node_config {
 
         if (std::string qci = get_opt("QUORUM_CHECK_INTERVAL_MS", ""); !qci.empty()) {
             cfg.quorum_check_interval = std::chrono::milliseconds(std::stoll(qci));
+        }
+        if (std::string dead = get_opt("QUORUM_PEER_DEAD_AFTER_MS", ""); !dead.empty()) {
+            cfg.quorum_peer_dead_after = std::chrono::milliseconds(std::stoll(dead));
+            if (cfg.quorum_peer_dead_after->count() < 0) {
+                throw std::invalid_argument(
+                    "chaos_node: QUORUM_PEER_DEAD_AFTER_MS must not be negative, got: " + dead);
+            }
         }
         if (std::string rt = get_opt("RPC_TIMEOUT_MS", ""); !rt.empty()) {
             cfg.rpc_timeout = std::chrono::milliseconds(std::stoll(rt));
