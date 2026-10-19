@@ -5628,6 +5628,44 @@ set_tests_properties(ca_cluster_node_real_ec2_test PROPERTIES
 )
 endif()  # TARGET certificate_authority
 
+# Real-EC2 coverage for leader-driven liveness (aws-quorum-manager task 8):
+# a chaos_node process killed on a still-running instance is detected by the
+# Raft leader (quorum_peer_dead_after), which replaces, removes and
+# terminates it — see the file header. Needs an AMI with chaos_node built
+# with the AWS SDK and numeric node ids, and KYTHIRA_TEST_IAM_INSTANCE_PROFILE
+# naming a profile with EC2 rights.
+add_executable(aws_chaos_node_crash_real_ec2_test aws_chaos_node_crash_real_ec2_test.cpp)
+target_compile_definitions(aws_chaos_node_crash_real_ec2_test PRIVATE
+    KYTHIRA_AWS_REAL_EC2_TESTS
+    LIBSSH2_FOUND
+)
+target_link_libraries(aws_chaos_node_crash_real_ec2_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    ${LIBSSH2_LIBRARIES}
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_chaos_node_crash_real_ec2_test PRIVATE Folly::folly)
+endif()
+target_include_directories(aws_chaos_node_crash_real_ec2_test PRIVATE
+    ${LIBSSH2_INCLUDE_DIRS}
+)
+target_compile_features(aws_chaos_node_crash_real_ec2_test PRIVATE cxx_std_23)
+add_test(NAME aws_chaos_node_crash_real_ec2_test COMMAND aws_chaos_node_crash_real_ec2_test)
+set_tests_properties(aws_chaos_node_crash_real_ec2_test PROPERTIES
+    # Matches the single case's own boost::unit_test::timeout(3900), which
+    # already includes fixture setup and teardown: the sum of the case's
+    # bounded waits (launches, election, the 25-minute heal deadline,
+    # catch-up, and teardown's terminate sweep, VPC wait and deletes). A
+    # healthy run takes roughly fifteen minutes.
+    TIMEOUT 3900
+    LABELS "integration;raft;quorum;aws;real-ec2;slow;chaos_node"
+    # PreflightSkipFixture exits 77 before any case runs when
+    # KYTHIRA_EC2_TEST_AMI or KYTHIRA_TEST_IAM_INSTANCE_PROFILE is unset, so
+    # ctest reports "Not Run" rather than "Failed".
+    SKIP_RETURN_CODE 77
+)
+
 # Real-EC2 coverage for the RPC-TLS-enabled 3-AZ ca_cluster_node deployment
 # (ca-cluster-rpc-mtls-real-aws spec) — see file header for what this
 # verifies beyond ca_cluster_node_real_ec2_test.cpp's plain-TCP coverage.
