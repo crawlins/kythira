@@ -111,7 +111,9 @@
 /// `save_hard_state` (`.kiro/specs/batched-durable-writes/`) trims that: it
 /// writes only the slots that changed, so granting a vote at a term already on
 /// the store is one PUT rather than two. A candidate still pays two — the term
-/// and the vote are separate objects, and they are written term first.
+/// and the vote are separate objects, and they are written term first — and so
+/// does a follower that learns the term from the RequestVote it grants, which
+/// `node` stores once rather than first on stepping down.
 ///
 /// Append throughput is the other cost. With only `append_log_entry`, a
 /// follower can take at most about one entry per store round trip.

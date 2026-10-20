@@ -1234,7 +1234,17 @@ private:
     auto send_heartbeats() -> void;
 
     // State transitions
-    auto become_follower(term_id_type new_term) -> void;
+    /// Whether become_follower() stores a newer term itself or leaves that to
+    /// its caller, which then owes the write before it answers.
+    enum class step_down_write {
+        now,
+        deferred
+    };
+    /// @return whether the step-down moved to a newer term. With
+    ///         `step_down_write::deferred` that term is in memory only and the
+    ///         caller must persist it before replying.
+    auto become_follower(term_id_type new_term, step_down_write write = step_down_write::now)
+        -> bool;
     auto become_candidate() -> void;
     auto start_election() -> void;
     // Optional (`.kiro/specs/raft-pre-vote/`): called from
@@ -5525,13 +5535,19 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
     }
 
     // Rule 2: If request term > current term, update current term and become follower (§5.1)
+    //
+    // The new term is stored once, on whichever path below answers: with the
+    // vote when it is granted, alone when it is refused. Storing it here as
+    // well put a second sequential write on every election a follower takes
+    // part in (.kiro/specs/object-store-batched-layout/, Requirement 1).
+    bool term_unstored = false;
     if (request.term() > _current_term) {
         _logger.info("Discovered higher term in RequestVote, becoming follower",
                      {{"node_id", node_id_to_string(_node_id)},
                       {"old_term", std::to_string(_current_term)},
                       {"new_term", std::to_string(request.term())}});
 
-        become_follower(request.term());
+        term_unstored = become_follower(request.term(), step_down_write::deferred);
     }
 
     // Rule 3: Check if we've already voted for another candidate in this term
@@ -5548,6 +5564,11 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
         _metrics.add_one();
         _metrics.emit();
 
+        // Unreachable after a step-down, which clears the vote; kept so that
+        // no refusal can answer from a term storage does not hold.
+        if (term_unstored) {
+            persist_term_locked();
+        }
         return request_vote_response_type{_current_term, false};
     }
 
@@ -5583,6 +5604,9 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
         _metrics.add_one();
         _metrics.emit();
 
+        if (term_unstored) {
+            persist_term_locked();
+        }
         return request_vote_response_type{_current_term, false};
     }
 
@@ -6516,7 +6540,7 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
 
 template<raft_types Types>
 
-auto node<Types>::become_follower(term_id_type new_term) -> void {
+auto node<Types>::become_follower(term_id_type new_term, step_down_write write) -> bool {
     auto old_state = _state;
     auto old_term = _current_term;
 
@@ -6555,10 +6579,17 @@ auto node<Types>::become_follower(term_id_type new_term) -> void {
     // Stepping down within the same term keeps the vote: a candidate that
     // hears from its term's leader has voted for itself in that term, and
     // forgetting it would let it vote a second time in the term.
-    if (new_term > _current_term) {
+    //
+    // handle_request_vote() defers the write: it is about to store the term
+    // again, with or without a vote, and two writes there cost an object
+    // store a sequential PUT on the election path for nothing.
+    const bool term_moved = new_term > _current_term;
+    if (term_moved) {
         _current_term = new_term;
         _voted_for = std::nullopt;
-        persist_term_locked();
+        if (write == step_down_write::now) {
+            persist_term_locked();
+        }
     }
 
     // Stop quorum assessment loop if we were leader (Req 13.2)
@@ -6569,6 +6600,7 @@ auto node<Types>::become_follower(term_id_type new_term) -> void {
     // Reset election timer
     reset_election_timer();
     randomize_election_timeout();
+    return term_moved;
 }
 
 template<raft_types Types>

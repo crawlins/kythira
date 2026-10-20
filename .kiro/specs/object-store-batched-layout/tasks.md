@@ -7,7 +7,7 @@ election-latency half (Parts 1-2 of the design); tasks 6-8 the segmented log
 existing conformance suite unmodified at default options (design Property 1)
 before and after.
 
-- [ ] 1. `node`: one hard-state write per RequestVote
+- [x] 1. `node`: one hard-state write per RequestVote
   - Split `become_follower()` (`include/raft/raft.hpp:6519`) into
     `step_down_locked(new_term) -> bool` plus the persist; the ten other
     callers keep `become_follower()` and its behaviour
@@ -22,6 +22,9 @@ before and after.
     `a_refused_vote_from_a_newer_term_stores_the_term` and
     `a_follower_that_moves_terms_does_not_keep_its_previous_vote` stay green
   - Without the extension: grant is `save_current_term` then `save_voted_for`
+  - Done October 20, 2026. `become_follower()` took a defaulted
+    `step_down_write` argument rather than splitting out `step_down_locked`:
+    the same behaviour with one function, and the other callers unchanged
   - `doc/cloud_object_persistence.md`: correct the sizing rule — five PUTs in
     the common case before this task, four after — and the engine header's
     "The honest cost" paragraph (`object_store_persistence.hpp:92-124`)

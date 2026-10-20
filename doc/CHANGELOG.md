@@ -3,6 +3,18 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 20, 2026)
+
+- **A follower that grants a vote in a newer term stores it once.** Stepping
+  down to the RequestVote's term used to store the term and "no vote", and
+  the grant then stored the vote: three sequential object-store PUTs on the
+  follower's side of an election, five in all rather than the four the
+  sizing rule assumed. `handle_request_vote` now stores the new term once,
+  with the vote when it grants and alone when it refuses, which makes
+  `4 × p99(PUT)` true. Without `save_hard_state` the grant is the term then
+  the vote, two writes where it was three. Planned with the rest of open
+  item 15 in `.kiro/specs/object-store-batched-layout/`.
+
 ### What Changed (October 19, 2026)
 
 - **chaos_node's leader can own an EC2 quorum manager.** With
