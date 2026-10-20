@@ -181,6 +181,61 @@ struct md5_versioned_mock_object_store_harness {
     auto wrong_version_for_next_puts(int n) const -> void { store.wrong_version_for_next_puts(n); }
 };
 
+/// The in-memory harness with `hard_state_layout::combined`
+/// (`.kiro/specs/object-store-batched-layout/` task 3). Only construction
+/// differs, and the suite reads the layout from `default_options()` for the few
+/// cases whose expectation depends on it — the exact key set and the body of
+/// `<prefix>/term`.
+struct combined_mock_object_store_harness : mock_object_store_harness {
+    [[nodiscard]] static auto default_options() -> kythira::object_persistence_options {
+        kythira::object_persistence_options opts;
+        opts.hard_state = kythira::hard_state_layout::combined;
+        return opts;
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name), default_options()};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{store, bucket(), prefix(), opts};
+    }
+};
+
+/// …and fenced, which is where the combined record has to remain the single
+/// compare-and-swap chokepoint.
+struct combined_fenced_mock_object_store_harness : fenced_mock_object_store_harness {
+    [[nodiscard]] static auto default_options() -> kythira::object_persistence_options {
+        return combined_mock_object_store_harness::default_options();
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        kythira::object_persistence_options opts = default_options();
+        opts.owner_id = owner_id();
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        opts.owner_id = owner_id();
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine_as(std::string owner,
+                                      std::optional<std::uint64_t> takeover_epoch) const
+        -> engine_t {
+        kythira::object_persistence_options opts = default_options();
+        opts.owner_id = std::move(owner);
+        opts.takeover_epoch = takeover_epoch;
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+};
+
 using engine_t = mock_object_store_harness::engine_t;
 using fenced_engine_t = fenced_mock_object_store_harness::engine_t;
 using log_entry_t = kythira::log_entry<>;
@@ -222,6 +277,16 @@ KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(fenced_mock_object_store_harness, fence
 KYTHIRA_OBJECT_STORE_CONFORMANCE(md5_versioned_mock_object_store_harness, md5_mock_object_store)
 KYTHIRA_OBJECT_STORE_CONFORMANCE_CHECKSUM(md5_versioned_mock_object_store_harness,
                                           md5_mock_object_store)
+
+// …and over the combined hard state (`.kiro/specs/object-store-batched-layout/`
+// task 3), unfenced and fenced. The same cases, with the layout-dependent
+// expectations read from the harness, are the evidence that one PUT per
+// hard-state write changed nothing else the engine promises.
+KYTHIRA_OBJECT_STORE_CONFORMANCE(combined_mock_object_store_harness, combined_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(combined_fenced_mock_object_store_harness,
+                                 combined_fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(combined_fenced_mock_object_store_harness,
+                                         combined_fenced_mock_object_store)
 
 // ── Concepts ─────────────────────────────────────────────────────────────────
 
@@ -388,6 +453,7 @@ BOOST_AUTO_TEST_CASE(the_default_options_are_the_shipped_behaviour) {
     const kythira::object_persistence_options opts;
     BOOST_TEST(opts.write_retries == 1U);
     BOOST_TEST(opts.snapshot_retention == 1U);
+    BOOST_TEST((opts.hard_state == kythira::hard_state_layout::separate));
 }
 
 // With retries disabled the first failure is the last word, and the message
