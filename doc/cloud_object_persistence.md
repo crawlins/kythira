@@ -214,6 +214,13 @@ follower already at the candidate's term pays one PUT rather than two. The
 common case, a follower learning the term from the RequestVote itself, still
 changes both, so the rule above stands.
 
+Until October 20, 2026 that common case cost the follower **three** PUTs, so
+an election was five: stepping down to the new term stored the term and "no
+vote" before the grant stored the vote. `handle_request_vote` now stores the
+new term once, with the vote when it grants and alone when it refuses
+(`.kiro/specs/object-store-batched-layout/`, task 1). Size clusters running
+older builds with `5 × p99(PUT)`.
+
 | p99(PUT) | Floor on `election_timeout_min` | Verdict |
 |---|---|---|
 | ~3 s (the cross-ocean figure measured before the real tier existed) | **≥ 12 s** | Consistent with the 9.6 s the Alibaba real tier observed for the term+vote case alone. Usable only for clusters that tolerate a 12 s+ leaderless window |

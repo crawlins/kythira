@@ -21,6 +21,9 @@
 //     answers, which used to happen only when the log changed or it voted.
 //  5. A candidate that steps down to its own term's leader keeps its vote for
 //     itself, so it cannot vote a second time in that term.
+//  6. A RequestVote from a newer term is answered after exactly one store of
+//     the term (with the vote when granted): one write with save_hard_state,
+//     term then vote without it.
 //
 // Engine-level behaviour of the two calls is in
 // batched_durable_writes_unit_test.cpp.
@@ -554,7 +557,63 @@ BOOST_AUTO_TEST_CASE(a_refused_vote_from_a_newer_term_stores_the_term,
     BOOST_TEST_INFO_SCOPE("node 3: " << join(rec.ops));
     BOOST_TEST(rec.state.load_current_term() == newer);
     BOOST_TEST(!rec.state.load_voted_for().has_value());
-    BOOST_TEST(count_prefix(rec.ops, "hard:" + std::to_string(newer) + ":none") == 1U);
+    BOOST_TEST(rec.ops == std::vector<std::string>{"hard:" + std::to_string(newer) + ":none"});
+}
+
+// Node 3 voted for itself in term 1 and grants a RequestVote from a newer
+// term. Stepping down to that term and granting used to be two writes, the
+// step-down's "no vote" and then the vote, each a sequential PUT on an object
+// store's election path. Now the term and the vote are stored together, once.
+BOOST_AUTO_TEST_CASE(a_vote_granted_in_a_newer_term_is_one_write, *boost::unit_test::timeout(30)) {
+    cluster<true> c{{}, std::optional<std::uint64_t>{3}};
+    auto client = c.client_to(3);
+    constexpr std::uint64_t newer = k_seed_term + 3;
+
+    const auto response =
+        client
+            .send_request_vote(3,
+                               kythira::request_vote_request<>{._term = newer,
+                                                               ._candidate_id = 2,
+                                                               ._last_log_index = k_snapshot_index,
+                                                               ._last_log_term = k_seed_term},
+                               k_rpc_wait)
+            .get();
+    BOOST_TEST(response.vote_granted());
+    BOOST_TEST(response.term() == newer);
+
+    auto& rec = *c.records[2];
+    const std::lock_guard lock(rec.mu);
+    BOOST_TEST_INFO_SCOPE("node 3: " << join(rec.ops));
+    BOOST_TEST(rec.state.load_current_term() == newer);
+    BOOST_TEST((rec.state.load_voted_for() == std::optional<std::uint64_t>{2}));
+    BOOST_TEST(rec.ops == std::vector<std::string>{"hard:" + std::to_string(newer) + ":2"});
+}
+
+// The same grant on an engine without save_hard_state: the term, then the
+// vote, and nothing else. The step-down used to store the term a first time.
+BOOST_AUTO_TEST_CASE(without_save_hard_state_a_newer_term_grant_is_two_writes,
+                     *boost::unit_test::timeout(30)) {
+    cluster<false> c{{}, std::optional<std::uint64_t>{3}};
+    auto client = c.client_to(3);
+    constexpr std::uint64_t newer = k_seed_term + 3;
+
+    const auto response =
+        client
+            .send_request_vote(3,
+                               kythira::request_vote_request<>{._term = newer,
+                                                               ._candidate_id = 2,
+                                                               ._last_log_index = k_snapshot_index,
+                                                               ._last_log_term = k_seed_term},
+                               k_rpc_wait)
+            .get();
+    BOOST_TEST(response.vote_granted());
+
+    auto& rec = *c.records[2];
+    const std::lock_guard lock(rec.mu);
+    BOOST_TEST_INFO_SCOPE("node 3: " << join(rec.ops));
+    BOOST_TEST(rec.state.load_current_term() == newer);
+    BOOST_TEST((rec.state.load_voted_for() == std::optional<std::uint64_t>{2}));
+    BOOST_TEST(rec.ops == (std::vector<std::string>{"term:" + std::to_string(newer), "vote:2"}));
 }
 
 // The same for an AppendEntries from a newer term that brings nothing node 3
