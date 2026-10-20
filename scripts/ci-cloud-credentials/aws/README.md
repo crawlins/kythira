@@ -126,8 +126,11 @@ It creates or updates:
 
 - `kythira-ci-real-cloud-tests-boundary`, set as the CI role's permissions
   boundary. It allows everything except `iam:*`, `organizations:*` and
-  `account:*`, plus `iam:PassRole` on the quorum-test node role. Whatever
-  inline policy is applied, the CI role cannot gain IAM rights.
+  `account:*`, plus `iam:PassRole` on the test node roles
+  (`role/kythira-aws-*-node-role`: the quorum-test node role and the
+  `--leader` chaos-node role). Whatever inline policy is applied, the CI
+  role cannot gain IAM rights. A boundary change is not something the
+  reprovision workflow can apply: after one lands, re-run this script.
 - `kythira-ci-role-updater`, an OIDC role trusted only by jobs in the
   `ci-role-admin` environment. It may read and replace the CI role's inline
   policy, and it is explicitly denied changing the role's boundary, trust
