@@ -18,8 +18,10 @@
 ///   * the engine's `parse_unsigned` (`<prefix>/term`, `<prefix>/voted_for`)
 ///     and `json_to_entry` (`<prefix>/log/<index>`), with the strict base64
 ///     decoder `json_to_entry` calls;
-///   * the backup tool's `parse_u64` (`create` reading `term`) and the parse
-///     half of `check_entry_term` (`verify` reading a log entry's term).
+///   * the backup tool's `parse_u64` (`create` reading `term`), the parse
+///     half of `check_entry_term` (`verify` reading a log entry's term), and
+///     `verify`'s manifest version gate (added with batched-layout task 5,
+///     copied from the same commit).
 ///
 /// **Copied verbatim from commit 92a1825e5a7456014afead0941684b153d16fca1**
 /// (`include/raft/object_store_persistence.hpp` and
@@ -153,6 +155,21 @@ inline auto check_entry_term_parse(const std::string& body) -> std::uint64_t {
     return entry_term;
 }
 
+/// `object_store_backup_detail::k_manifest_format_version`.
+inline constexpr int k_manifest_format_version = 1;
+
+/// The version gate at the top of `object_store_backup::verify`, over the
+/// field as `parse_manifest` reads it. The older tool reports
+/// `manifest_version` for any other value and stops, and its `restore_clone`
+/// and `restore_seed` run that `verify` first and abort on it.
+inline auto manifest_version_gate(const std::string& manifest_body) -> bool {
+    const auto parsed = boost::json::parse(manifest_body);
+    const auto& obj = parsed.as_object();
+    const auto format_version =
+        static_cast<int>(obj.at("format_version").to_number<std::int64_t>());
+    return format_version == k_manifest_format_version;
+}
+
 // ── Verdicts, for the cases ──────────────────────────────────────────────────
 
 /// Whether an older engine refuses `body` at `<prefix>/term`.
@@ -170,6 +187,16 @@ inline auto check_entry_term_parse(const std::string& body) -> std::uint64_t {
     try {
         static_cast<void>(parse_u64(body, "term"));
         return false;
+    } catch (const std::exception&) {
+        return true;
+    }
+}
+
+/// Whether an older backup tool's `verify` — and so its restores — refuses a
+/// backup whose `manifest.json` is `manifest_body`.
+[[nodiscard]] inline auto backup_refuses_manifest(const std::string& manifest_body) -> bool {
+    try {
+        return !manifest_version_gate(manifest_body);
     } catch (const std::exception&) {
         return true;
     }

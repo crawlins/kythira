@@ -144,7 +144,7 @@ before and after.
     yet
   - _Requirements: 3.2-3.4, 3.6, 4.2, 4.4, 4.5, 15.3_
 
-- [ ] 5. Backup and restore understand the combined hard state
+- [x] 5. Backup and restore understand the combined hard state
   - `interpret_metadata` (`object_store_backup.hpp:730`): combined `term` →
     `current_term` and `voted_for` (`null` → `"none"`); `retired` ignored;
     resolved after the loop
@@ -154,6 +154,32 @@ before and after.
     `object_store_backup_cli_unit_test.cpp`: create → verify → restore-clone →
     a `combined` engine reads back; `restore_seed` into a target a `combined`
     engine then migrates; the older tool's `parse_u64` (legacy reader) refuses
+  - Done October 20, 2026. The codec is shared: the `NodeId`-independent half
+    (`parse_combined_hard_state`, the record's shape and its `term`) and
+    `k_retired_vote` moved into `object_store_persistence_detail`; the
+    engine's `json_to_hard_state` narrows `voted_for` to its `NodeId` as
+    before, with the same messages, and the backup tool renders it. One
+    parser for the shape, so neither side accepts a record the other refuses.
+    `interpret_metadata` only notes `term` and `voted_for`; the new
+    `resolve_hard_state` reads them after the loop. Departures: `retired` is
+    ignored only beside a combined `term`. Beside a decimal or absent one it
+    throws and no manifest is written, as the engine refuses that pair — on a
+    live source it is a migration landing between the two reads, and the
+    message says to take the backup again. A legacy vote beside a combined
+    `term` (retirement pending) is ignored whatever it holds. The backup tool
+    is generic over the store, not `NodeId`, so a combined vote may be a
+    string or an unsigned integer (rendered in decimal), and anything else
+    (bool, negative, float) is corruption. `verify` accepts versions 1 and 2,
+    and its `manifest_version` message now lists both. It does not re-derive
+    the version from the copied `term`, so a hand-edited manifest claiming 1
+    over a combined copy is not caught — a residual. Whether an older tool
+    refuses a version 2 manifest is now tested: `legacy_layout_reader.hpp`
+    gained `verify`'s version gate, copied from 92a1825 like the rest (no
+    existing rule changed), and the runbook names the message. The engine
+    round trip runs fenced and unfenced, over a fresh and a migrated source;
+    the CLI cases use the string-`NodeId` engine. The October 20 CHANGELOG
+    bullet for task 4, which said the tool could not read an upgraded bucket
+    yet, was corrected as well as a bullet added
   - _Requirements: 12.1, 12.3, 12.4, 12.5_
 
 - [ ] 6. Chain-walk recovery and stray hygiene, layout-neutral

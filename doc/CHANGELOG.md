@@ -26,8 +26,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
   leaves state that this build reads as the old pair or the new one. An
   older binary reads the old pair or refuses to start with `corrupt object
   <prefix>/term`. The runbook in `doc/cloud_object_persistence.md` says why
-  that refusal is the rollback guard and not damage. `raft_object_backup`
-  cannot read an upgraded bucket yet, so take a backup before switching.
+  that refusal is the rollback guard and not damage. Take a backup before
+  switching: it is the way back to an older binary.
+
+- **`raft_object_backup` backs up, verifies and restores an upgraded
+  bucket.** `create` reads the term and the vote from the combined
+  `<prefix>/term` record and ignores the `retired` vote slot beside it. The
+  manifest then says `format_version` 2. A bucket on the default layout still
+  gets `format_version` 1 and the same manifest, byte for byte, as before. An
+  older copy of the tool refuses an upgraded bucket at `create`, and refuses a
+  version 2 backup at `verify` and so at both restores, without writing
+  anything; back up and restore an upgraded bucket with this build's tool or a
+  later one. No flag changed. The engine and the tool now share one parser
+  for the record (object-store-batched-layout task 5).
 
 ### What Changed (October 19, 2026)
 

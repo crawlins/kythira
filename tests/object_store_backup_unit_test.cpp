@@ -6,6 +6,7 @@
 
 #include <raft/object_store_backup.hpp>
 
+#include "legacy_layout_reader.hpp"
 #include "mock_object_store.hpp"
 
 // Unit coverage for `object_store_backup` (cloud-object-persistence
@@ -32,8 +33,11 @@
 #include <boost/json.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -983,6 +987,389 @@ BOOST_AUTO_TEST_CASE(a_failing_verify_aborts_the_seed_before_anything_is_written
         std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"alpha"}),
         std::runtime_error);
     BOOST_TEST(relative_keys(store, "fresh/alpha").empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── The combined hard state (object-store-batched-layout Requirement 12) ─────
+
+namespace {
+
+namespace legacy = kythira::legacy_layout;
+
+using engine_t = object_store_persistence_engine<mock_object_store>;
+using fenced_engine_t = fenced_object_store_persistence_engine<mock_object_store>;
+using engine_entry_t = log_entry<std::uint64_t, std::uint64_t>;
+
+auto separate_layout() -> object_persistence_options {
+    return {};
+}
+
+auto combined_layout() -> object_persistence_options {
+    object_persistence_options opts;
+    opts.hard_state = hard_state_layout::combined;
+    return opts;
+}
+
+auto fenced_layout(object_persistence_options opts) -> object_persistence_options {
+    opts.owner_id = "node-a";
+    return opts;
+}
+
+auto engine_entry(std::uint64_t term, std::uint64_t index) -> engine_entry_t {
+    return engine_entry_t{term, index, std::vector<std::byte>{std::byte{0x2a}}};
+}
+
+/// A snapshot the default `std::uint64_t` engine can load: its node ids are
+/// JSON numbers, which `restore_seed` keeps.
+auto numeric_snapshot_json(std::uint64_t last_index, std::uint64_t last_term) -> std::string {
+    return R"({"last_included_index":)" + std::to_string(last_index) + R"(,"last_included_term":)" +
+           std::to_string(last_term) + R"(,"state":"","nodes":[1,2,3],"is_joint_consensus":false})";
+}
+
+auto manifest_body(const mock_object_store& store, const std::string& backup_id) -> std::string {
+    return store.body(std::string(k_dest_prefix) + "/" + backup_id + "/manifest.json");
+}
+
+/// `mock_object_store` listing in reverse order — `voted_for` before `term` —
+/// so a case can show the hard state does not depend on the order a store
+/// lists keys in. Every other call forwards.
+struct reverse_listing_store {
+    mock_object_store inner;
+
+    [[nodiscard]] auto put_object(const std::string& bucket, const std::string& key,
+                                  std::string_view bytes) const -> put_result {
+        return inner.put_object(bucket, key, bytes);
+    }
+    [[nodiscard]] auto get_object(const std::string& bucket, const std::string& key) const
+        -> std::optional<get_result> {
+        return inner.get_object(bucket, key);
+    }
+    auto delete_object(const std::string& bucket, const std::string& key) const -> void {
+        inner.delete_object(bucket, key);
+    }
+    [[nodiscard]] auto list_keys(const std::string& bucket, const std::string& prefix) const
+        -> std::vector<std::string> {
+        auto keys = inner.list_keys(bucket, prefix);
+        std::reverse(keys.begin(), keys.end());
+        return keys;
+    }
+    [[nodiscard]] static auto provider_name() -> std::string_view { return "mock"; }
+};
+
+/// `create` must throw naming every one of `needles`, and write no manifest.
+auto create_refuses_naming(const mock_object_store& store, const std::vector<std::string>& needles)
+    -> void {
+    const object_store_backup<mock_object_store> backup{store};
+    try {
+        std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+        BOOST_ERROR("expected create to refuse");
+    } catch (const std::runtime_error& err) {
+        const std::string what = err.what();
+        for (const auto& needle : needles) {
+            BOOST_TEST(what.find(needle) != std::string::npos, "\"" << needle << "\" in " << what);
+        }
+    }
+    BOOST_TEST(!store.has(std::string(k_dest_prefix) + "/b1/manifest.json"));
+}
+
+/// create → verify → restore-clone → a `combined` engine reads back, for a
+/// prefix written by `Engine` — fresh under `combined`, or written under
+/// `separate` first and then migrated, so the source holds `retired`.
+template<typename Engine>
+auto clone_round_trip(const object_persistence_options& separate_opts,
+                      const object_persistence_options& combined_opts, bool migrate) -> void {
+    const mock_object_store store;
+    {
+        Engine writer{store, k_bucket, k_source_prefix, migrate ? separate_opts : combined_opts};
+        writer.save_hard_state(4, 1);
+        writer.append_log_entries(
+            std::vector<engine_entry_t>{engine_entry(4, 1), engine_entry(4, 2)});
+    }
+    {
+        Engine writer{store, k_bucket, k_source_prefix, combined_opts};
+        writer.save_hard_state(6, 3);
+        writer.append_log_entry(engine_entry(6, 3));
+    }
+    BOOST_TEST(store.body(std::string(k_source_prefix) + "/term") == R"({"term":6,"voted_for":3})");
+    BOOST_TEST(store.has(std::string(k_source_prefix) + "/voted_for") == migrate);
+
+    const object_store_backup<mock_object_store> backup{store};
+    const auto manifest =
+        backup.create(source_ref(), dest_ref(), {.backup_id = "b1", .source_quiesced = true});
+    BOOST_TEST(manifest.format_version == 2);
+    BOOST_TEST((manifest.current_term == std::optional<std::uint64_t>{6}));
+    BOOST_TEST((manifest.voted_for == std::optional<std::string>{"3"}));
+    BOOST_TEST((manifest.first_log_index == std::optional<std::uint64_t>{1}));
+    BOOST_TEST((manifest.last_log_index == std::optional<std::uint64_t>{3}));
+
+    const auto report = backup.verify(dest_ref(), "b1");
+    BOOST_TEST(report.ok);
+    for (const auto& problem : report.problems) {
+        BOOST_ERROR(problem.kind + " on " + problem.subject + ": " + problem.detail);
+    }
+
+    std::ignore = backup.restore_clone(dest_ref(), "b1", target_ref("node-1-restored"));
+
+    {
+        Engine reader{store, k_bucket, "node-1-restored", combined_opts};
+        BOOST_TEST(reader.load_current_term() == 6U);
+        BOOST_TEST((reader.load_voted_for() == std::optional<std::uint64_t>{3}));
+        BOOST_TEST(reader.get_last_log_index() == 3U);
+        BOOST_TEST(reader.get_log_entry(2).value().term() == 4U);
+        BOOST_TEST(reader.get_log_entry(3).value().term() == 6U);
+        BOOST_TEST(!reader.vote_slot_retirement_pending());
+    }
+
+    // The clone is still the upgraded layout: the rollback guard came with it.
+    try {
+        Engine downgraded{store, k_bucket, "node-1-restored", separate_opts};
+        BOOST_ERROR("a separate engine read a restored combined prefix");
+    } catch (const std::runtime_error& err) {
+        BOOST_TEST(std::string(err.what()).find("downgrade is not supported") != std::string::npos);
+    }
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(object_store_backup_combined_hard_state)
+
+// Requirement 12.3, "a default bucket's backup is unchanged": pinned as bytes
+// against what the tool wrote before it knew the combined record existed
+// (commit cd81d40), with only the clock spliced in.
+BOOST_AUTO_TEST_CASE(a_default_buckets_manifest_is_byte_identical_to_before) {
+    const mock_object_store store;
+    seed_source(store);
+    const object_store_backup<mock_object_store> backup{store};
+
+    const auto manifest =
+        backup.create(source_ref(), dest_ref(), {.backup_id = "b1", .source_quiesced = true});
+
+    const std::string expected =
+        R"({"format_version":1,"provider":"mock","source_bucket":"kythira-bucket",)"
+        R"("source_prefix":"node-1","backup_id":"b1","created_at":")" +
+        manifest.created_at +
+        R"(","source_quiesced":true,"current_term":5,"voted_for":"n2","first_log_index":4,)"
+        R"("last_log_index":6,"snapshot_last_included_index":3,"snapshot_last_included_term":4,)"
+        R"("configuration_nodes":["n1","n2","n3"],"configuration_is_joint":false,)"
+        R"("configuration_old_nodes":[],"objects":[)"
+        R"({"key":"log/00000000000000000004","size":42,"md5":"4c319ff3fc704422fdeb7b1ca8e20628"},)"
+        R"({"key":"log/00000000000000000005","size":42,"md5":"921f4feac15a371fcafd555274575325"},)"
+        R"({"key":"log/00000000000000000006","size":42,"md5":"5bae93346c9de2242bf11020598b285a"},)"
+        R"({"key":"snapshot","size":111,"md5":"b5a2be27c7256f21cd62df790fee3891"},)"
+        R"({"key":"term","size":1,"md5":"e4da3b7fbbce2345d7772b0674a318d5"},)"
+        R"({"key":"voted_for","size":2,"md5":"a6bbc91ae73dd21c0533f735470a9cd0"}]})";
+    BOOST_TEST(manifest_body(store, "b1") == expected);
+    BOOST_TEST(manifest.format_version == 1);
+    BOOST_TEST(!legacy::backup_refuses_manifest(manifest_body(store, "b1")));
+}
+
+// Requirement 12.1: a migrated prefix — combined `term`, retired vote slot.
+BOOST_AUTO_TEST_CASE(a_combined_term_supplies_the_term_and_vote_and_retired_is_ignored) {
+    const mock_object_store store;
+    seed_source(store);
+    const std::string p = std::string(k_source_prefix) + "/";
+    store.seed(p + "term", R"({"term":7,"voted_for":"n3"})");
+    store.seed(p + "voted_for", "retired");
+    for (std::uint64_t i = 4; i <= 6; ++i) {
+        store.seed(p + log_key(i), entry_json(7, i));
+    }
+    const object_store_backup<mock_object_store> backup{store};
+
+    const auto manifest = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+
+    BOOST_TEST(manifest.format_version == 2);
+    BOOST_TEST((manifest.current_term == std::optional<std::uint64_t>{7}));
+    BOOST_TEST((manifest.voted_for == std::optional<std::string>{"n3"}));
+    // `retired` is still copied — byte for byte is the restore's whole claim.
+    BOOST_TEST(manifest.objects.size() == 6U);
+    BOOST_TEST(store.body(std::string(k_dest_prefix) + "/b1/objects/voted_for") == "retired");
+    BOOST_TEST(manifest_body(store, "b1").find(R"("format_version":2)") != std::string::npos);
+
+    const auto report = backup.verify(dest_ref(), "b1");
+    BOOST_TEST(report.ok);
+    BOOST_TEST(report.manifest.format_version == 2);
+}
+
+// `null` is "voted for nobody", which the legacy layout spells `none` — the
+// manifest uses that one spelling for both. An integer id, the default
+// `NodeId`, renders as its decimal across the whole range.
+BOOST_AUTO_TEST_CASE(a_null_vote_is_recorded_as_none_and_an_integer_vote_as_its_decimal) {
+    {
+        const mock_object_store store;
+        store.seed(std::string(k_source_prefix) + "/term", R"({"term":3,"voted_for":null})");
+        const object_store_backup<mock_object_store> backup{store};
+        const auto manifest = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+        BOOST_TEST((manifest.current_term == std::optional<std::uint64_t>{3}));
+        BOOST_TEST((manifest.voted_for == std::optional<std::string>{"none"}));
+        BOOST_TEST(manifest.format_version == 2);
+    }
+    {
+        const mock_object_store store;
+        store.seed(std::string(k_source_prefix) + "/term",
+                   R"({"term":18446744073709551615,"voted_for":18446744073709551614})");
+        const object_store_backup<mock_object_store> backup{store};
+        const auto manifest = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+        BOOST_TEST(
+            (manifest.current_term == std::optional<std::uint64_t>{18446744073709551615ULL}));
+        BOOST_TEST((manifest.voted_for == std::optional<std::string>{"18446744073709551614"}));
+    }
+}
+
+// Design Part 2's "retirement pending" row: a crash between m1 and m2 leaves a
+// legacy vote beside the combined record, and it is not state, whatever it
+// holds.
+BOOST_AUTO_TEST_CASE(a_legacy_vote_beside_a_combined_term_is_not_read) {
+    for (const std::string vote : {"n1", "none", "", "not even a node id"}) {
+        BOOST_TEST_CONTEXT("voted_for = \"" << vote << "\"") {
+            const mock_object_store store;
+            store.seed(std::string(k_source_prefix) + "/term", R"({"term":9,"voted_for":"n2"})");
+            store.seed(std::string(k_source_prefix) + "/voted_for", vote);
+            const object_store_backup<mock_object_store> backup{store};
+            const auto manifest = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+            BOOST_TEST((manifest.current_term == std::optional<std::uint64_t>{9}));
+            BOOST_TEST((manifest.voted_for == std::optional<std::string>{"n2"}));
+        }
+    }
+}
+
+// "Resolved after the loop": listed `voted_for` first, the same prefixes read
+// the same, both migrated and with a retirement pending.
+BOOST_AUTO_TEST_CASE(the_hard_state_does_not_depend_on_listing_order) {
+    for (const std::string vote : {"retired", "n1"}) {
+        BOOST_TEST_CONTEXT("voted_for = \"" << vote << "\"") {
+            const reverse_listing_store store;
+            store.inner.seed(std::string(k_source_prefix) + "/term",
+                             R"({"term":9,"voted_for":"n2"})");
+            store.inner.seed(std::string(k_source_prefix) + "/voted_for", vote);
+            const object_store_backup<reverse_listing_store> backup{store};
+            const auto manifest = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+            BOOST_TEST((manifest.current_term == std::optional<std::uint64_t>{9}));
+            BOOST_TEST((manifest.voted_for == std::optional<std::string>{"n2"}));
+            BOOST_TEST(manifest.format_version == 2);
+        }
+    }
+}
+
+// `retired` is written only after the combined record, so beside a decimal or
+// absent `term` it is corruption, as the engine reads it — or, on a live
+// source, a migration that landed between the two reads. Either way the copy
+// holds no state the node ever held, and no manifest is written.
+BOOST_AUTO_TEST_CASE(retired_beside_a_decimal_or_absent_term_refuses_the_backup) {
+    {
+        const mock_object_store store;
+        seed_source(store);
+        store.seed(std::string(k_source_prefix) + "/voted_for", "retired");
+        create_refuses_naming(store, {"node-1/voted_for", "is a decimal", "take the backup again"});
+    }
+    {
+        const mock_object_store store;
+        store.seed(std::string(k_source_prefix) + "/voted_for", "retired");
+        create_refuses_naming(store, {"node-1/voted_for", "is absent"});
+    }
+}
+
+// The engine's own codec, so the same strictness: a record the engine would
+// refuse is not one a manifest may summarise.
+BOOST_AUTO_TEST_CASE(a_malformed_combined_record_refuses_the_backup) {
+    for (const std::string& body : {
+             std::string(R"({"term":7})"),
+             std::string(R"({"voted_for":null,"term":7})"),
+             std::string(R"({"term":7,"voted_for":null,"extra":1})"),
+             std::string(R"({"term":"7","voted_for":null})"),
+             std::string(R"({"term":7.0,"voted_for":null})"),
+             std::string(R"({"term":-1,"voted_for":null})"),
+             std::string(R"({"term":7,"voted_for":true})"),
+             std::string(R"({"term":7,"voted_for":-2})"),
+             std::string(R"({"term":7,"voted_for":2.5})"),
+             std::string(R"({"term":7,"voted_for":null)"),
+             std::string("{"),
+         }) {
+        BOOST_TEST_CONTEXT(body) {
+            const mock_object_store store;
+            store.seed(std::string(k_source_prefix) + "/term", body);
+            create_refuses_naming(store, {"corrupt object node-1/term"});
+        }
+    }
+}
+
+// Requirement 12.3's other half, through the frozen older tool: the combined
+// `term` an engine writes is refused by its `parse_u64`, so its `create` writes
+// no manifest, and a format_version 2 manifest is refused by its `verify`, so
+// it never restores a backup this tool took of an upgraded prefix.
+BOOST_AUTO_TEST_CASE(the_older_tool_refuses_both_the_record_and_the_manifest) {
+    const mock_object_store store;
+    {
+        engine_t eng{store, k_bucket, k_source_prefix, combined_layout()};
+        eng.save_hard_state(4, 2);
+    }
+    const std::string term_body = store.body(std::string(k_source_prefix) + "/term");
+    BOOST_TEST(legacy::backup_refuses_term(term_body));
+    BOOST_TEST(legacy::engine_refuses_term(term_body));
+
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+    BOOST_TEST(legacy::backup_refuses_manifest(manifest_body(store, "b1")));
+}
+
+BOOST_AUTO_TEST_CASE(create_verify_restore_clone_then_a_combined_engine_reads_back) {
+    for (const bool migrate : {false, true}) {
+        BOOST_TEST_CONTEXT((migrate ? "migrated" : "fresh") << " prefix, unfenced") {
+            clone_round_trip<engine_t>(separate_layout(), combined_layout(), migrate);
+        }
+        BOOST_TEST_CONTEXT((migrate ? "migrated" : "fresh") << " prefix, fenced") {
+            clone_round_trip<fenced_engine_t>(fenced_layout(separate_layout()),
+                                              fenced_layout(combined_layout()), migrate);
+        }
+    }
+}
+
+// Requirement 12.4: `restore_seed` writes a decimal `term` whatever the backup
+// held, and a `combined` engine over it is a legacy prefix that its first
+// hard-state write migrates — one PUT, as there is no vote slot to retire.
+BOOST_AUTO_TEST_CASE(restore_seed_writes_a_legacy_term_that_a_combined_engine_migrates) {
+    const mock_object_store store;
+    const std::string p = std::string(k_source_prefix) + "/";
+    store.seed(p + "term", R"({"term":5,"voted_for":2})");
+    store.seed(p + "voted_for", "retired");
+    store.seed(p + "snapshot", numeric_snapshot_json(3, 4));
+    for (std::uint64_t i = 4; i <= 6; ++i) {
+        store.seed(p + log_key(i), entry_json(5, i));
+    }
+    const object_store_backup<mock_object_store> backup{store};
+    const auto manifest = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+    BOOST_TEST(manifest.format_version == 2);
+
+    std::ignore = backup.restore_seed(dest_ref(), "b1", target_ref("fresh"), {"7", "8"});
+    BOOST_TEST(store.body("fresh/7/term") == "4");
+    BOOST_TEST(!store.has("fresh/7/voted_for"));
+
+    {
+        engine_t eng{store, k_bucket, "fresh/7", combined_layout()};
+        BOOST_TEST(eng.load_current_term() == 4U);
+        BOOST_TEST(!eng.load_voted_for().has_value());
+        BOOST_TEST(!eng.vote_slot_retirement_pending());
+        BOOST_TEST(eng.load_snapshot().value().last_included_index() == 3U);
+
+        store.clear_requests();
+        eng.save_hard_state(5, 7);
+        BOOST_TEST(store.request_log() == std::vector<std::string>{"PUT fresh/7/term"},
+                   boost::test_tools::per_element());
+    }
+    BOOST_TEST(store.body("fresh/7/term") == R"({"term":5,"voted_for":7})");
+    BOOST_TEST(!store.has("fresh/7/voted_for"));
+    BOOST_TEST(legacy::engine_refuses_term(store.body("fresh/7/term")));
+    BOOST_TEST(legacy::backup_refuses_term(store.body("fresh/7/term")));
+
+    {
+        engine_t reader{store, k_bucket, "fresh/7", combined_layout()};
+        BOOST_TEST(reader.load_current_term() == 5U);
+        BOOST_TEST((reader.load_voted_for() == std::optional<std::uint64_t>{7}));
+    }
+
+    // The node it did not touch is still a legacy prefix a default engine reads.
+    engine_t untouched{store, k_bucket, "fresh/8", separate_layout()};
+    BOOST_TEST(untouched.load_current_term() == 4U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

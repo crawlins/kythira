@@ -73,6 +73,16 @@
 /// than no backup, because its whole purpose is to be the thing you trust in a
 /// recovery window.
 ///
+/// Both hard-state layouts are read (`.kiro/specs/object-store-batched-layout/`
+/// Requirement 12). A `term` whose first byte is `{` is the combined record,
+/// parsed by the engine's own `parse_combined_hard_state`, and supplies both
+/// `current_term` and `voted_for`; the `voted_for` object beside it is then not
+/// state, whether it holds `retired` or a legacy vote a crash left behind. Which
+/// of those applies depends on both objects, so they are resolved after the
+/// listing loop rather than in listing order. A backup holding a combined record
+/// gets `format_version` 2, which an older tool's `verify` (and so its restores)
+/// refuses; one without gets 1 and a manifest byte-identical to before.
+///
 /// ## Write it to a different bucket
 ///
 /// Requirement 10.5, and the reasoning is Requirement 8.6's: a backup in the
@@ -221,7 +231,14 @@ struct verification_report {
 
 namespace object_store_backup_detail {
 
+/// A copy whose `term` is a bare decimal, or absent: every key and body an
+/// older tool reads. Such a manifest is byte-identical to one written before the
+/// combined hard state existed.
 inline constexpr int k_manifest_format_version = 1;
+/// A copy holding a combined `term` (`hard_state_layout::combined`). An older
+/// tool's `verify` refuses it as an unrecognised version, and its restores run
+/// that `verify` first, so it never restores a layout it cannot read.
+inline constexpr int k_manifest_format_version_combined = 2;
 inline constexpr const char* k_manifest_name = "manifest.json";
 inline constexpr const char* k_objects_dir = "objects/";
 
@@ -317,6 +334,7 @@ public:
 
         const std::string source_root = src.prefix + "/";
         const std::string backup_root = backup_prefix(dst, backup_id);
+        hard_state_slots hard_state;
 
         // The listing is taken once, and everything below is relative to it.
         // Objects that appear after it are simply not in this backup — which is
@@ -342,7 +360,7 @@ public:
                 continue;
             }
 
-            interpret_metadata(relative, got->body, key, manifest);
+            interpret_metadata(relative, got->body, key, manifest, hard_state);
 
             const std::string destination = backup_root + detail::k_objects_dir + relative;
             _store.put_object(dst.bucket, destination, got->body);
@@ -351,6 +369,8 @@ public:
                 backup_object_entry{relative, static_cast<std::uint64_t>(got->body.size()),
                                     object_store_persistence_detail::md5_hex(got->body)});
         }
+
+        resolve_hard_state(hard_state, manifest);
 
         // Written last, and that ordering is the whole commit protocol — see the
         // file comment. Everything above can be re-run; nothing above is visible
@@ -406,12 +426,15 @@ public:
         verification_report report;
         report.manifest = parse_manifest(got->body, manifest_key);
 
-        if (report.manifest.format_version != detail::k_manifest_format_version) {
+        if (report.manifest.format_version != detail::k_manifest_format_version &&
+            report.manifest.format_version != detail::k_manifest_format_version_combined) {
             report.problems.push_back(verification_problem{
                 "manifest_version", manifest_key,
                 "manifest format version " + std::to_string(report.manifest.format_version) +
-                    " is not the " + std::to_string(detail::k_manifest_format_version) +
-                    " this build understands — refusing to interpret it rather than guessing"});
+                    " is not one this build understands (" +
+                    std::to_string(detail::k_manifest_format_version) + " or " +
+                    std::to_string(detail::k_manifest_format_version_combined) +
+                    ") — refusing to interpret it rather than guessing"});
             report.ok = false;
             return report;
         }
@@ -724,23 +747,31 @@ private:
         return dst.prefix + "/" + backup_id + "/";
     }
 
+    /// `term` and `voted_for` as copied, held until the listing loop ends:
+    /// whether `voted_for` is state depends on what `term` holds, and the
+    /// listing order is not something to depend on.
+    struct hard_state_slots {
+        std::optional<std::string> term_body;
+        std::string term_key;
+        std::optional<std::string> vote_body;
+        std::string vote_key;
+    };
+
     /// Reads what the manifest reports about the node's state out of the object
     /// currently being copied. Called with the object's key relative to the
-    /// source prefix, so the layout knowledge is all in one place.
+    /// source prefix, so the layout knowledge is all in one place. `term` and
+    /// `voted_for` are only noted here; `resolve_hard_state` reads them.
     static auto interpret_metadata(const std::string& relative, const std::string& body,
-                                   const std::string& key, backup_manifest& manifest) -> void {
-        namespace detail = object_store_backup_detail;
-
+                                   const std::string& key, backup_manifest& manifest,
+                                   hard_state_slots& hard_state) -> void {
         if (relative == "term") {
-            manifest.current_term = detail::parse_u64(body, key);
+            hard_state.term_body = body;
+            hard_state.term_key = key;
             return;
         }
         if (relative == "voted_for") {
-            // `"none"` is the engine's sentinel for "voted for nobody", and it
-            // is an object that exists — recording it as absent would lose the
-            // distinction between "never voted" and "explicitly voted for
-            // nobody in this term".
-            manifest.voted_for = body;
+            hard_state.vote_body = body;
+            hard_state.vote_key = key;
             return;
         }
         if (relative == "snapshot") {
@@ -756,6 +787,81 @@ private:
         // and contributes nothing to the manifest's interpretation. Copying an
         // object this file does not understand is correct: a backup that
         // silently dropped keys would restore an incomplete prefix.
+    }
+
+    /// The manifest's `current_term`, `voted_for` and `format_version`, by the
+    /// engine's load precedence (`.kiro/specs/object-store-batched-layout/`
+    /// design Part 2):
+    ///
+    ///   * a combined `term` is the pair — `null` becomes `"none"`, the legacy
+    ///     sentinel's manifest value — and the vote slot beside it is ignored,
+    ///     whatever it holds;
+    ///   * otherwise the legacy pair exactly as before: `parse_u64` for `term`,
+    ///     `voted_for` verbatim;
+    ///   * `retired` beside anything but a combined `term` throws, as the
+    ///     engine refuses it. It is written only after the combined record, so
+    ///     on a live source it means a migration landed between the two reads,
+    ///     and the copy holds no state the node ever held.
+    static auto resolve_hard_state(const hard_state_slots& hard_state, backup_manifest& manifest)
+        -> void {
+        namespace detail = object_store_backup_detail;
+        namespace engine_detail = object_store_persistence_detail;
+
+        if (hard_state.term_body && hard_state.term_body->starts_with('{')) {
+            engine_detail::combined_hard_state_record record;
+            try {
+                record = engine_detail::parse_combined_hard_state(*hard_state.term_body);
+            } catch (const std::exception& err) {
+                throw std::runtime_error("object_store_backup: corrupt object " +
+                                         hard_state.term_key +
+                                         ": not a combined hard-state record: " + err.what());
+            }
+            manifest.current_term = record.term;
+            manifest.voted_for = render_combined_vote(record.voted_for, hard_state.term_key);
+            manifest.format_version = detail::k_manifest_format_version_combined;
+            return;
+        }
+
+        if (hard_state.vote_body && *hard_state.vote_body == engine_detail::k_retired_vote) {
+            throw std::runtime_error(
+                "object_store_backup: corrupt object " + hard_state.vote_key + ": \"" +
+                std::string(engine_detail::k_retired_vote) +
+                "\" is written only after term holds a combined hard-state record, but the"
+                " copied term " +
+                (hard_state.term_body ? "is a decimal" : "is absent") +
+                ". On a live source that is a migration landing between the two reads — take the"
+                " backup again");
+        }
+        if (hard_state.term_body) {
+            manifest.current_term = detail::parse_u64(*hard_state.term_body, hard_state.term_key);
+        }
+        if (hard_state.vote_body) {
+            // `"none"` is the engine's sentinel for "voted for nobody", and it
+            // is an object that exists — recording it as absent would lose the
+            // distinction between "never voted" and "explicitly voted for
+            // nobody in this term".
+            manifest.voted_for = *hard_state.vote_body;
+        }
+    }
+
+    /// A combined record's `voted_for` for the manifest: `"none"` for `null`,
+    /// else the node id in display form. Generic over the store and not over
+    /// `NodeId`, so either id type is accepted — but only those: a vote the
+    /// engine could not load at either instantiation is corruption.
+    [[nodiscard]] static auto render_combined_vote(const boost::json::value& vote,
+                                                   const std::string& key) -> std::string {
+        if (vote.is_null()) {
+            return "none";
+        }
+        if (vote.is_string()) {
+            return std::string(vote.as_string());
+        }
+        if (vote.is_uint64() || (vote.is_int64() && vote.as_int64() >= 0)) {
+            return std::to_string(vote.to_number<std::uint64_t>());
+        }
+        throw std::runtime_error("object_store_backup: corrupt object " + key +
+                                 ": the combined hard-state record's voted_for is neither null,"
+                                 " a string nor an unsigned integer");
     }
 
     static auto interpret_snapshot(const std::string& body, const std::string& key,
