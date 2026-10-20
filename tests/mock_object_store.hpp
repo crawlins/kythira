@@ -97,6 +97,12 @@ struct mock_object_store_state {
     /// carries no such promise.
     int wrong_version_for_next_puts{0};
 
+    /// Apply this many further PUTs (conditional or not) and then throw as if
+    /// the response had been lost on the way back — the request landed, the
+    /// caller cannot know it did. The case the crash tables call "landed,
+    /// response lost".
+    int lose_next_put_responses{0};
+
     /// Called with the key **before** each GET is served, while the store's
     /// mutex is NOT held, so the callback may write to the store.
     ///
@@ -168,7 +174,7 @@ public:
         if (!_state->fail_puts_for_key.empty() && _state->fail_puts_for_key == key) {
             throw std::runtime_error("mock_object_store: injected PUT failure for " + key);
         }
-        return {store_locked(key, std::string(bytes))};
+        return {store_then_maybe_lose_response_locked(key, bytes)};
     }
 
     [[nodiscard]] auto get_object(const std::string& bucket, const std::string& key) const
@@ -257,7 +263,7 @@ public:
             // (S3's 409), and the engine must not latch on it.
             throw std::runtime_error("mock_object_store: injected PUT failure for " + key);
         }
-        return {store_locked(key, std::string(bytes))};
+        return {store_then_maybe_lose_response_locked(key, bytes)};
     }
 
     auto delete_object_if(const std::string& bucket, const std::string& key,
@@ -372,6 +378,13 @@ public:
         _state->wrong_version_for_next_puts = n;
     }
 
+    /// Apply the next `n` PUTs and then throw an ordinary failure, as if each
+    /// response had been lost after the service stored the object.
+    auto lose_next_put_responses(int n) const -> void {
+        const std::lock_guard lock(_state->mu);
+        _state->lose_next_put_responses = n;
+    }
+
     /// Serve `n` more requests, then fail every one after them without logging
     /// or applying it — a process that dies after its n-th request. `0` crashes
     /// on the very next request. Seeding and inspection bypass it, as they
@@ -410,6 +423,19 @@ private:
             throw std::runtime_error("mock_object_store: crashed before " + request);
         }
         ++_state->requests_before_crash;
+    }
+
+    /// Callers hold `_state->mu`. Store, then honour `lose_next_put_responses`.
+    [[nodiscard]] auto store_then_maybe_lose_response_locked(const std::string& key,
+                                                             std::string_view bytes) const
+        -> object_version {
+        object_version version = store_locked(key, std::string(bytes));
+        if (_state->lose_next_put_responses > 0) {
+            --_state->lose_next_put_responses;
+            throw std::runtime_error("mock_object_store: injected lost response for PUT " + key +
+                                     " (the object was stored)");
+        }
+        return version;
     }
 
     /// `put_delay`, with the mutex released, counted in `puts_in_flight`.
