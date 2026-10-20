@@ -15,9 +15,10 @@
 //   1. launch three instances, one per AZ, through this test's own
 //      aws_ec2_quorum_manager<std::uint64_t> (numeric ids 1..3, kythira:*
 //      tags under the same cluster name the nodes are given);
-//   2. start chaos_node on each over SSH with QUORUM_MANAGER=aws and
-//      QUORUM_PEER_DEAD_AFTER_MS=30000, so whichever node wins the election
-//      owns a manager that can launch and terminate instances;
+//   2. once cloud-init has finished on all three, start chaos_node on each
+//      over SSH with QUORUM_MANAGER=aws and QUORUM_PEER_DEAD_AFTER_MS=30000,
+//      so whichever node wins the election owns a manager that can launch
+//      and terminate instances;
 //   3. SIGKILL chaos_node on one follower; its instance keeps running;
 //   4. check that the test's manager still reports all three nodes live:
 //      instance state alone does not see the crash;
@@ -841,14 +842,38 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
     BOOST_REQUIRE_EQUAL(nodes.size(), 3u);
 
     // ── Step 2: chaos_node with QUORUM_MANAGER=aws on each ──────────────
+    // Every node finishes booting before any chaos_node starts. Booting and
+    // starting them one at a time lets the first two form a quorum while the
+    // third is still in cloud-init, and their leader, after
+    // QUORUM_PEER_DEAD_AFTER_MS of silence from it, replaces and terminates
+    // that voter: the behaviour under test, set off by the setup. Run
+    // 39465316239 failed in this step with "ssh_execute: could not connect
+    // to <ip>:22 in time" after an earlier SSH had succeeded, which is what
+    // that would look like (inferred; the log could not show which node).
+    // The starts below are seconds apart, well inside 30 s. A failed SSH
+    // reports the instance's state, so a terminated node is told apart from
+    // one whose sshd never came up.
+    auto on_node = [&](std::size_t i, const std::string& cmd, std::chrono::seconds timeout) {
+        try {
+            ssh_execute(public_ips[i], private_key_pem, cmd, timeout);
+        } catch (const std::runtime_error& e) {
+            auto view = instance(instance_ids[i]);
+            throw std::runtime_error(std::string{e.what()} + " (node " +
+                                     std::to_string(nodes[i].node_id) + ", " + instance_ids[i] +
+                                     " is " + (view ? view->state : "not found") + ")");
+        }
+    };
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         // SSH can answer before cloud-init has finished.
-        ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
-                    std::chrono::minutes(3));
-        ssh_execute(public_ips[i], private_key_pem,
-                    start_node_command(
-                        node_environment(nodes[i], nodes, *this, ami, cfg.instance_type, profile)),
-                    std::chrono::minutes(1));
+        on_node(i, "sudo cloud-init status --wait", std::chrono::minutes(3));
+    }
+    std::cerr << "[" << LOG_TAG << "] cloud-init finished on all " << nodes.size()
+              << " nodes; starting chaos_node\n";
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        on_node(i,
+                start_node_command(
+                    node_environment(nodes[i], nodes, *this, ami, cfg.instance_type, profile)),
+                std::chrono::minutes(1));
     }
 
     auto leader = find_leader(public_ips, private_key_pem, {}, std::chrono::minutes(3));
