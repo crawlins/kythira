@@ -731,6 +731,44 @@ namespace object_store_persistence_detail {
     return out;
 }
 
+/// The vote slot's body once a migrated prefix has retired it
+/// (`hard_state_layout::combined`). Never read as a vote: the engine's load
+/// path checks for it before parsing one, and `object_store_backup` ignores it.
+inline constexpr std::string_view k_retired_vote = "retired";
+
+/// A combined `<prefix>/term` record with its `voted_for` still JSON.
+struct combined_hard_state_record {
+    std::uint64_t term{0};
+    /// `null`, or a node id in whichever JSON type the writer's `NodeId` uses.
+    boost::json::value voted_for;
+};
+
+/// The half of the combined hard-state codec that does not depend on `NodeId`:
+/// exactly `term` then `voted_for`, `term` an unsigned JSON integer read through
+/// `to_number<std::uint64_t>` so the whole `TermId` range round-trips. Anything
+/// else — a missing or extra member, a float, a string term — throws.
+///
+/// Shared by the engine, which narrows `voted_for` to its own `NodeId`, and by
+/// `object_store_backup`, which is generic over the store rather than `NodeId`
+/// and so renders it. One parser for the record's shape means the backup tool
+/// cannot accept a record the engine refuses, or the other way round.
+[[nodiscard]] inline auto parse_combined_hard_state(std::string_view s)
+    -> combined_hard_state_record {
+    const boost::json::value parsed = boost::json::parse(s);
+    const boost::json::object& obj = parsed.as_object();
+    if (obj.size() != 2 || obj.begin()->key() != "term" ||
+        std::next(obj.begin())->key() != "voted_for") {
+        throw std::runtime_error(
+            "a combined hard-state record holds exactly \"term\" then \"voted_for\"");
+    }
+    const boost::json::value& term = obj.begin()->value();
+    if (!term.is_int64() && !term.is_uint64()) {
+        throw std::runtime_error("the combined hard-state record's term is not an integer");
+    }
+    return combined_hard_state_record{term.to_number<std::uint64_t>(),
+                                      std::next(obj.begin())->value()};
+}
+
 }  // namespace object_store_persistence_detail
 
 /// @brief Raft persistent state stored as individual objects in a key-object
@@ -2154,7 +2192,8 @@ private:
 
     /// The vote slot's body once a migrated prefix has retired it. Never read
     /// as a vote: the load path checks for it before parsing one.
-    static constexpr std::string_view k_retired_vote = "retired";
+    static constexpr std::string_view k_retired_vote =
+        object_store_persistence_detail::k_retired_vote;
 
     /// `{"term":<uint64>,"voted_for":<NodeId>|null}`, members in that order.
     static auto hard_state_to_json(TermId term, const std::optional<NodeId>& vote) -> std::string {
@@ -2170,28 +2209,18 @@ private:
         return boost::json::serialize(obj);
     }
 
-    /// Strict, deliberately: exactly `term` then `voted_for`, `term` an
-    /// unsigned JSON integer read through `to_number<std::uint64_t>` so the
-    /// whole `TermId` range round-trips, `voted_for` `null` or the `NodeId`'s
-    /// own JSON type. Anything else — a missing or extra member, a float, a
-    /// string term — throws, which is what makes this binary refuse a *future*
-    /// format the way older binaries refuse this one.
+    /// Strict, deliberately: the record's shape through the shared
+    /// `object_store_persistence_detail::parse_combined_hard_state`, then
+    /// `voted_for` `null` or the `NodeId`'s own JSON type. Anything else — a
+    /// missing or extra member, a float, a string term — throws, which is what
+    /// makes this binary refuse a *future* format the way older binaries
+    /// refuse this one.
     static auto json_to_hard_state(const std::string& s)
         -> std::pair<TermId, std::optional<NodeId>> {
-        const boost::json::value parsed = boost::json::parse(s);
-        const boost::json::object& obj = parsed.as_object();
-        if (obj.size() != 2 || obj.begin()->key() != "term" ||
-            std::next(obj.begin())->key() != "voted_for") {
-            throw std::runtime_error(
-                "a combined hard-state record holds exactly \"term\" then \"voted_for\"");
-        }
-        const boost::json::value& term = obj.begin()->value();
-        if (!term.is_int64() && !term.is_uint64()) {
-            throw std::runtime_error("the combined hard-state record's term is not an integer");
-        }
+        const auto record = object_store_persistence_detail::parse_combined_hard_state(s);
         std::pair<TermId, std::optional<NodeId>> out;
-        out.first = static_cast<TermId>(term.to_number<std::uint64_t>());
-        const boost::json::value& vote = std::next(obj.begin())->value();
+        out.first = static_cast<TermId>(record.term);
+        const boost::json::value& vote = record.voted_for;
         if (vote.is_null()) {
             return out;
         }

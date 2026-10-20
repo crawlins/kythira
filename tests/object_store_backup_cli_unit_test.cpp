@@ -6,6 +6,7 @@
 
 #include <raft/object_store_backup_cli.hpp>
 
+#include "legacy_layout_reader.hpp"
 #include "mock_object_store.hpp"
 
 // Unit coverage for the logic behind `cmd/raft_object_backup`
@@ -25,6 +26,7 @@
 // built binary, not from a unit test that would have to fake the build
 // configuration to say anything.
 
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -397,6 +399,111 @@ BOOST_AUTO_TEST_CASE(a_snapshotless_backup_is_refused_with_exit_two) {
                         k_bucket, "--target-prefix", "fresh", "--nodes", "alpha"});
     BOOST_TEST(seeded.exit_code == 2);
     BOOST_TEST(seeded.err.find("no snapshot") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── The combined hard state (object-store-batched-layout Requirement 12) ─────
+//
+// Requirement 12.5: none of it needs a new flag, so these drive the same argv
+// an operator types today, against a prefix a string-`NodeId` engine wrote
+// under `hard_state_layout::combined`.
+
+namespace {
+
+namespace legacy = kythira::legacy_layout;
+
+using text_engine_t = object_store_persistence_engine<mock_object_store, std::string>;
+using engine_entry_t = log_entry<std::uint64_t, std::uint64_t>;
+
+auto combined_layout() -> object_persistence_options {
+    object_persistence_options opts;
+    opts.hard_state = hard_state_layout::combined;
+    return opts;
+}
+
+auto create_b1(const mock_object_store& store) -> cli_run {
+    return run_cli(store, {"raft_object_backup", "create", "--dest-bucket", k_bucket,
+                           "--dest-prefix", "backups", "--source-bucket", k_bucket,
+                           "--source-prefix", "node-1", "--backup-id", "b1", "--quiesced"});
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(backup_cli_combined_hard_state)
+
+BOOST_AUTO_TEST_CASE(create_verify_restore_clone_of_an_upgraded_prefix_reads_back) {
+    const mock_object_store store;
+    {
+        // Written legacy first and then migrated, so the source holds both the
+        // combined record and `retired`.
+        text_engine_t legacy_writer{store, k_bucket, "node-1", {}};
+        legacy_writer.save_hard_state(4, std::string("n1"));
+        legacy_writer.append_log_entry(engine_entry_t{4, 1, {}});
+    }
+    {
+        text_engine_t writer{store, k_bucket, "node-1", combined_layout()};
+        writer.save_hard_state(6, std::string("n2"));
+        writer.append_log_entry(engine_entry_t{6, 2, {}});
+    }
+    BOOST_TEST(store.body("node-1/voted_for") == "retired");
+
+    const auto created = create_b1(store);
+    BOOST_TEST(created.exit_code == 0, created.err);
+    BOOST_TEST(created.out.find("created b1") != std::string::npos);
+    // An older tool cannot verify, and so cannot restore, what this one took.
+    BOOST_TEST(legacy::backup_refuses_manifest(store.body("backups/b1/manifest.json")));
+
+    const auto verified = run_cli(store, {"raft_object_backup", "verify", "--dest-bucket", k_bucket,
+                                          "--dest-prefix", "backups", "--backup-id", "b1"});
+    BOOST_TEST(verified.exit_code == 0, verified.out);
+    BOOST_TEST(verified.out.find("no problems") != std::string::npos);
+
+    const auto restored =
+        run_cli(store, {"raft_object_backup", "restore-clone", "--dest-bucket", k_bucket,
+                        "--dest-prefix", "backups", "--backup-id", "b1", "--target-bucket",
+                        k_bucket, "--target-prefix", "node-1-restored"});
+    BOOST_TEST(restored.exit_code == 0, restored.err);
+    BOOST_TEST(store.body("node-1-restored/term") == store.body("node-1/term"));
+    BOOST_TEST(store.body("node-1-restored/voted_for") == "retired");
+
+    text_engine_t reader{store, k_bucket, "node-1-restored", combined_layout()};
+    BOOST_TEST(reader.load_current_term() == 6U);
+    BOOST_TEST(reader.load_voted_for().value_or("") == "n2");
+    BOOST_TEST(reader.get_last_log_index() == 2U);
+    BOOST_TEST(!reader.vote_slot_retirement_pending());
+}
+
+BOOST_AUTO_TEST_CASE(restore_seed_from_an_upgraded_prefix_then_a_combined_engine_migrates) {
+    const mock_object_store store;
+    store.seed("node-1/term", R"({"term":5,"voted_for":"n2"})");
+    store.seed("node-1/voted_for", "retired");
+    store.seed("node-1/snapshot", snapshot_json(3, 4));
+    for (std::uint64_t i = 4; i <= 6; ++i) {
+        store.seed("node-1/" + log_key(i), entry_json(5, i));
+    }
+    BOOST_TEST(create_b1(store).exit_code == 0);
+
+    const auto seeded =
+        run_cli(store, {"raft_object_backup", "restore-seed", "--dest-bucket", k_bucket,
+                        "--dest-prefix", "backups", "--backup-id", "b1", "--target-bucket",
+                        k_bucket, "--target-prefix", "fresh", "--nodes", "alpha,beta"});
+    BOOST_TEST(seeded.exit_code == 0, seeded.err);
+    BOOST_TEST(store.body("fresh/alpha/term") == "4");
+
+    {
+        text_engine_t eng{store, k_bucket, "fresh/alpha", combined_layout()};
+        BOOST_TEST(eng.load_current_term() == 4U);
+        BOOST_TEST(!eng.load_voted_for().has_value());
+        eng.save_hard_state(5, std::string("alpha"));
+    }
+    BOOST_TEST(store.body("fresh/alpha/term") == R"({"term":5,"voted_for":"alpha"})");
+    BOOST_TEST(legacy::backup_refuses_term(store.body("fresh/alpha/term")));
+
+    text_engine_t reader{store, k_bucket, "fresh/alpha", combined_layout()};
+    BOOST_TEST(reader.load_current_term() == 5U);
+    BOOST_TEST(reader.load_voted_for().value_or("") == "alpha");
+    BOOST_TEST(reader.load_snapshot().value().last_included_index() == 3U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

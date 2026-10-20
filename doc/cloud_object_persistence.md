@@ -393,12 +393,35 @@ before the upgrade, or stay on this build with `combined` set. A build of this
 engine configured `separate` refuses the same prefix, with a message saying
 that an in-place downgrade is not supported.
 
-**Take a backup before switching a prefix to `combined`.** `raft_object_backup`
-does not read the combined record yet: its `create` parses `<prefix>/term` the
-same strict way and refuses an upgraded prefix with `corrupt object
-<prefix>/term`. Teaching it the record is the next step of
-`.kiro/specs/object-store-batched-layout/` (task 5). Until then, the backup
-taken before the switch is the only one that exists.
+**Take a backup before switching a prefix to `combined`; it is the way back to
+an older binary.** After the switch, back the prefix up with the
+`raft_object_backup` from this build or a later one. It reads the combined
+record: `create` takes the term and the vote from `<prefix>/term` (`null`
+appears in the manifest as `"none"`, as the legacy sentinel does), ignores the
+`retired` vote slot or any vote a crash left beside the record, and writes
+`format_version` 2 in the manifest. A prefix still on the default layout gets
+`format_version` 1 and the same manifest, byte for byte, that the older tool
+writes. No new flag is involved.
+
+An older `raft_object_backup` refuses an upgraded prefix, loudly at every step:
+
+- its `create` parses `<prefix>/term` as a bare decimal, fails with `corrupt
+  object <prefix>/term`, and writes no manifest;
+- its `verify` of a `format_version` 2 backup reports `manifest_version` ("is
+  not the 1 this build understands") and checks nothing else;
+- its `restore-clone` and `restore-seed` run that `verify` first and abort
+  before writing anything.
+
+So verify and restore a backup of an upgraded prefix with this build or later
+as well. A clone restore copies the bytes, so the restored prefix is still
+upgraded and needs an engine configured `combined`. A seed restore writes a
+decimal `term` and no vote, which an engine at either setting starts from; a
+`combined` engine migrates it on its first hard-state write.
+
+If `create` on a running node fails with `"retired" is written only after term
+holds a combined hard-state record`, the node migrated between the tool reading
+`term` and reading `voted_for`. The copy would hold no state the node ever had,
+so no manifest is written. Take the backup again.
 
 ## Fencing
 
@@ -959,6 +982,7 @@ raft_object_backup restore-clone --provider s3 \
 | `target prefix … already holds N object(s) — refusing to restore into it without force` | The target is not empty | Confirm you have the right target. If you do, re-run with `force`, which **deletes** the target's engine-owned keys first |
 | `corrupt object …/owner: owner record has no epoch` | The backed-up owner object is malformed | The restored node could not fence a returning original. Investigate before starting anything |
 | `… vanished from the backup during the restore — the target prefix … is now partially written` | The backup was mutated mid-restore | **Do not start the target.** Clear it and restore again from an intact backup |
+| `… manifest_version on …/manifest.json: manifest format version 2 is not the 1 this build understands` | An older `raft_object_backup` against a backup of a prefix upgraded to the [combined hard state](#combined-hard-state-and-upgrading-a-bucket-in-place); nothing was written | Use the tool from the build that took the backup, or a later one |
 
 `force` deletes the target's **engine-owned** keys — `term`, `voted_for`,
 `snapshot`, `owner`, `log/*`, `snapshots/*` — and nothing else. Objects under
