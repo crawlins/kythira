@@ -759,6 +759,18 @@ set_tests_properties(batched_durable_writes_unit_test PROPERTIES
     LABELS "unit;persistence;object-store"
 )
 
+# .kiro/specs/object-store-batched-layout/: crash injection, the frozen legacy
+# reader, and the combined hard state's requests, codec and refusals. Like the
+# two suites above it names no provider, so it is registered unconditionally.
+add_raft_completion_test(object_store_batched_layout_unit_test
+    object_store_batched_layout_unit_test.cpp)
+target_include_directories(object_store_batched_layout_unit_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_store_batched_layout_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store"
+)
+
 # object_store_backup unit test (cloud object persistence, task 12)
 #
 # Unconditional for the same reason the suite above is: `object_store_backup.hpp`

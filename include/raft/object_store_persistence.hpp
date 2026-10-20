@@ -28,6 +28,10 @@
 ///     <prefix>/snapshots/<20-digit index>  retained predecessors, only when
 ///                                          `snapshot_retention > 1`
 ///
+/// That is the default, `hard_state_layout::separate`. Under
+/// `hard_state_layout::combined` `<prefix>/term` holds both values as one JSON
+/// record and `<prefix>/voted_for` is never written (see `hard_state_layout`).
+///
 /// The log-entry and snapshot records use **the same one-line JSON codec
 /// `file_persistence_engine` writes** (`{term, index, command, type}` with the
 /// command base64-encoded, and `{last_included_index, last_included_term,
@@ -355,6 +359,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -431,6 +436,34 @@ private:
     object_version _expected;
 };
 
+/// @brief Where `currentTerm` and `votedFor` live on the bucket
+///        (`.kiro/specs/object-store-batched-layout/`, Requirement 2).
+///
+/// A runtime option rather than a template argument like `fencing_mode`: the
+/// rule that made fencing a template argument — a capability the store may lack
+/// must be a compile error — does not apply, because both layouts use only
+/// `put_object` / `put_object_if`, which every shipped client has.
+enum class hard_state_layout : std::uint8_t {
+    /// The shipped format: `<prefix>/term` holds the decimal term and
+    /// `<prefix>/voted_for` the decimal vote or `none`, written by two ordered
+    /// PUTs, term first.
+    separate,
+    /// Both in one object, `<prefix>/term` ←
+    /// `{"term":<uint64>,"voted_for":<NodeId>|null}`: every hard-state write is
+    /// one PUT, atomic because every one of these stores writes a whole object
+    /// atomically per key, and still the single compare-and-swap chokepoint
+    /// under fencing. The body lives in the key an older binary already reads
+    /// and is not a bare decimal, so an older binary — engine or backup tool —
+    /// refuses the prefix rather than reading a stale pair from it.
+    ///
+    /// This build accepts it only on a prefix that holds no legacy hard state:
+    /// construction over a decimal `<prefix>/term` or a legacy
+    /// `<prefix>/voted_for` throws, because the in-place migration is not
+    /// implemented yet and a half-migrated bucket is the one state this layout
+    /// must never leave behind.
+    combined
+};
+
 /// @brief Engine-level options. Every default preserves the shipped engine's
 ///        behaviour exactly, so an operator who upgrades and changes nothing
 ///        sees a bucket with exactly the keys it had before.
@@ -504,6 +537,14 @@ struct object_persistence_options {
     /// bytes — only how many wait on the network together changes. `0` is
     /// rejected at construction rather than read as "unlimited".
     std::size_t append_concurrency{8};
+
+    /// `separate` — the shipped format, to the byte and the request — or
+    /// `combined`, which makes every hard-state write one PUT. See
+    /// `hard_state_layout`. An engine configured `separate` refuses a prefix
+    /// whose `<prefix>/term` holds a combined record: an in-place downgrade is
+    /// not supported, and reading the stale vote slot beside it would be the
+    /// silent rollback the combined layout exists to prevent.
+    hard_state_layout hard_state{hard_state_layout::separate};
 };
 
 namespace object_store_persistence_detail {
@@ -870,10 +911,16 @@ public:
 
     // ── currentTerm ──────────────────────────────────────────────────────────
 
+    /// Under `hard_state_layout::combined`, one PUT of `{term, the mirror's
+    /// vote}` to `<prefix>/term`.
     auto save_current_term(TermId term) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
-        put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
+        if (combined_hard_state()) {
+            put_single_slot(term_key(), hard_state_to_json(term, _voted_for));
+        } else {
+            put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
+        }
         _current_term = term;
     }
 
@@ -884,10 +931,16 @@ public:
 
     // ── votedFor ─────────────────────────────────────────────────────────────
 
+    /// Under `hard_state_layout::combined`, one PUT of `{the mirror's term,
+    /// node}` to `<prefix>/term`, and nothing to `<prefix>/voted_for`.
     auto save_voted_for(NodeId node) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
-        put_single_slot(voted_for_key(), render_vote(node));
+        if (combined_hard_state()) {
+            put_single_slot(term_key(), hard_state_to_json(_current_term, node));
+        } else {
+            put_single_slot(voted_for_key(), render_vote(node));
+        }
         _voted_for = std::move(node);
     }
 
@@ -909,9 +962,23 @@ public:
     ///
     /// Under `compare_and_swap` both stay the CAS chokepoint they are in the
     /// single-value methods: this is the same `put_single_slot`.
+    ///
+    /// Under `hard_state_layout::combined` it is **one** PUT of both values to
+    /// `<prefix>/term`, or none when neither changed. There is no intermediate
+    /// state for a crash to leave: the store writes the object whole, so a
+    /// reader sees the old pair or the new one.
     auto save_hard_state(TermId term, std::optional<NodeId> vote) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
+        if (combined_hard_state()) {
+            if (term == _current_term && vote == _voted_for) {
+                return;
+            }
+            put_single_slot(term_key(), hard_state_to_json(term, vote));
+            _current_term = term;
+            _voted_for = std::move(vote);
+            return;
+        }
         if (term != _current_term) {
             put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
             _current_term = term;
@@ -1186,6 +1253,10 @@ private:
         std::string key;
         std::string detail;
     };
+
+    [[nodiscard]] auto combined_hard_state() const -> bool {
+        return _opts.hard_state == hard_state_layout::combined;
+    }
 
     [[nodiscard]] static auto render_vote(const NodeId& node) -> std::string {
         if constexpr (std::is_same_v<NodeId, std::string>) {
@@ -1561,6 +1632,7 @@ private:
         const std::string owner = owner_key();
         const std::string log_pfx = log_prefix();
         const std::string snaps_pfx = snapshots_prefix();
+        hard_state_slots slots;
 
         for (const auto& key : list_keys(_prefix + "/")) {
             // A key that vanished between the List and the GET is a
@@ -1572,7 +1644,7 @@ private:
                 auto got = get_object(key);
                 if (got) {
                     remember_version(key, got->version);
-                    _current_term = static_cast<TermId>(parse_unsigned(got->body, key));
+                    load_term_object(got->body, key, slots);
                 }
             } else if (key == vote) {
                 auto got = get_object(key);
@@ -1582,13 +1654,7 @@ private:
                     // engine's first vote must be an If-Match and not a
                     // create-only.
                     remember_version(key, got->version);
-                    if (got->body != "none" && !got->body.empty()) {
-                        if constexpr (std::is_same_v<NodeId, std::string>) {
-                            _voted_for = got->body;
-                        } else {
-                            _voted_for = static_cast<NodeId>(parse_unsigned(got->body, key));
-                        }
-                    }
+                    load_vote_object(got->body, key, slots);
                 }
             } else if (key == snap) {
                 auto got = get_object(key);
@@ -1653,7 +1719,118 @@ private:
             // engine's state, so it is neither read nor written — only keys
             // this format defines are parsed, and those must parse.
         }
+        resolve_hard_state(slots);
         keep_contiguous_log();
+    }
+
+    /// What the load path found in `<prefix>/term` and `<prefix>/voted_for`,
+    /// held until the listing loop ends so that how the two are read together
+    /// does not depend on the order the store lists them in.
+    struct hard_state_slots {
+        /// A decimal `<prefix>/term`, parsed.
+        std::optional<TermId> legacy_term;
+        /// A combined `<prefix>/term`, parsed.
+        std::optional<std::pair<TermId, std::optional<NodeId>>> combined;
+        /// `<prefix>/voted_for` holds a legacy value — a vote, `none`, or
+        /// empty — and this is what it says.
+        bool legacy_vote_present{false};
+        std::optional<NodeId> legacy_vote;
+        /// `<prefix>/voted_for` holds `retired`.
+        bool vote_retired{false};
+    };
+
+    /// Parse `<prefix>/term`, by its first byte: `{` is the combined record,
+    /// anything else goes to `parse_unsigned` exactly as it always has. A
+    /// `separate` engine refuses a combined record here, whatever the vote slot
+    /// says, so the refusal cannot depend on listing order either.
+    auto load_term_object(const std::string& body, const std::string& key,
+                          hard_state_slots& slots) const -> void {
+        if (!body.starts_with('{')) {
+            slots.legacy_term = static_cast<TermId>(parse_unsigned(body, key));
+            return;
+        }
+        if (!combined_hard_state()) {
+            throw std::runtime_error(
+                "object_store_persistence_engine: " + key +
+                " holds a combined hard-state record, but this engine is configured "
+                "hard_state_layout::separate. An in-place downgrade is not supported: set "
+                "hard_state_layout::combined, or restore this prefix from a backup taken before "
+                "it was upgraded — reading the legacy vote slot beside this record would serve a "
+                "stale vote");
+        }
+        slots.combined = wrap_parse<std::pair<TermId, std::optional<NodeId>>>(
+            key, [&body] { return json_to_hard_state(body); });
+    }
+
+    /// Parse `<prefix>/voted_for`. The `retired` marker is noted rather than
+    /// parsed: it is valid only beside a combined `<prefix>/term`, which
+    /// `resolve_hard_state` checks once both slots have been read.
+    static auto load_vote_object(const std::string& body, const std::string& key,
+                                 hard_state_slots& slots) -> void {
+        if (body == k_retired_vote) {
+            slots.vote_retired = true;
+            return;
+        }
+        slots.legacy_vote_present = true;
+        if (body != "none" && !body.empty()) {
+            if constexpr (std::is_same_v<NodeId, std::string>) {
+                slots.legacy_vote = body;
+            } else {
+                slots.legacy_vote = static_cast<NodeId>(parse_unsigned(body, key));
+            }
+        }
+    }
+
+    /// The load precedence of `.kiro/specs/object-store-batched-layout/`
+    /// design Part 2, after the listing loop:
+    ///
+    ///   * `retired` beside anything but a combined `term` is corruption —
+    ///     it is written only after the combined record;
+    ///   * `separate`: the legacy pair, exactly as today (a combined `term`
+    ///     was already refused by `load_term_object`);
+    ///   * `combined`: the combined record, or the empty state on a prefix that
+    ///     holds no hard state. A legacy `term` or a legacy vote slot is a
+    ///     legacy prefix, and the migration that would move it in place is not
+    ///     implemented in this build, so construction refuses it rather than
+    ///     risk leaving a half-migrated bucket.
+    auto resolve_hard_state(const hard_state_slots& slots) -> void {
+        if (slots.vote_retired && !slots.combined) {
+            throw std::runtime_error("object_store_persistence_engine: corrupt object " +
+                                     voted_for_key() + ": \"retired\" is written only after " +
+                                     term_key() + " holds a combined hard-state record, but " +
+                                     term_key() +
+                                     (slots.legacy_term ? " holds a decimal term" : " is absent"));
+        }
+        if (!combined_hard_state()) {
+            if (slots.legacy_term) {
+                _current_term = *slots.legacy_term;
+            }
+            _voted_for = slots.legacy_vote;
+            return;
+        }
+        if (slots.combined) {
+            if (slots.legacy_vote_present) {
+                throw std::runtime_error(
+                    "object_store_persistence_engine: " + voted_for_key() +
+                    " still holds a legacy vote beside the combined hard-state record in " +
+                    term_key() +
+                    " — an in-place migration whose retirement of the vote slot is pending, and "
+                    "completing it is not supported by this build (migration not yet supported)");
+            }
+            _current_term = slots.combined->first;
+            _voted_for = slots.combined->second;
+            return;
+        }
+        if (slots.legacy_term || slots.legacy_vote_present) {
+            const std::string key = slots.legacy_term ? term_key() : voted_for_key();
+            throw std::runtime_error(
+                "object_store_persistence_engine: " + key +
+                " holds legacy hard state and this engine is configured "
+                "hard_state_layout::combined, but migrating a legacy prefix in place is not "
+                "supported by this build (migration not yet supported) — set "
+                "hard_state_layout::separate for this prefix, or use the combined layout on a "
+                "prefix that holds no hard state yet");
+        }
     }
 
     /// Keep the contiguous run of log objects that starts at the lowest index,
@@ -1793,6 +1970,14 @@ private:
     /// Strict decimal parse: the *whole* body must be digits. `std::stoull`
     /// would happily read "12" out of "12garbage"; a persistence engine that
     /// does that turns a truncated upload into a plausible-looking term.
+    ///
+    /// **Keep it strict for a second reason.** Every binary that has shipped
+    /// refuses a combined `<prefix>/term` because this parse refuses anything
+    /// but digits; that refusal is the whole rollback guard of the combined
+    /// hard state (`.kiro/specs/object-store-batched-layout/` design Property
+    /// 3). A "lenient" version — leading digits, or skipping a `{` — would turn
+    /// that refusal into a silent stale read for every binary built after it.
+    /// `tests/legacy_layout_reader.hpp` freezes the rule as shipped.
     static auto parse_unsigned(std::string_view body, const std::string& key)
         -> unsigned long long {
         // Tolerate a single trailing newline: an operator repairing state with
@@ -1831,6 +2016,67 @@ private:
             return digits;
         }
         return std::string(k_index_digits - digits.size(), '0') + digits;
+    }
+
+    // ── Combined hard state (hard_state_layout::combined) ─────────────────────
+
+    /// The vote slot's body once a migrated prefix has retired it. Never read
+    /// as a vote: the load path checks for it before parsing one.
+    static constexpr std::string_view k_retired_vote = "retired";
+
+    /// `{"term":<uint64>,"voted_for":<NodeId>|null}`, members in that order.
+    static auto hard_state_to_json(TermId term, const std::optional<NodeId>& vote) -> std::string {
+        boost::json::object obj;
+        obj["term"] = static_cast<std::uint64_t>(term);
+        if (!vote) {
+            obj["voted_for"] = nullptr;
+        } else if constexpr (std::is_same_v<NodeId, std::string>) {
+            obj["voted_for"] = boost::json::string(*vote);
+        } else {
+            obj["voted_for"] = static_cast<std::uint64_t>(*vote);
+        }
+        return boost::json::serialize(obj);
+    }
+
+    /// Strict, deliberately: exactly `term` then `voted_for`, `term` an
+    /// unsigned JSON integer read through `to_number<std::uint64_t>` so the
+    /// whole `TermId` range round-trips, `voted_for` `null` or the `NodeId`'s
+    /// own JSON type. Anything else — a missing or extra member, a float, a
+    /// string term — throws, which is what makes this binary refuse a *future*
+    /// format the way older binaries refuse this one.
+    static auto json_to_hard_state(const std::string& s)
+        -> std::pair<TermId, std::optional<NodeId>> {
+        const boost::json::value parsed = boost::json::parse(s);
+        const boost::json::object& obj = parsed.as_object();
+        if (obj.size() != 2 || obj.begin()->key() != "term" ||
+            std::next(obj.begin())->key() != "voted_for") {
+            throw std::runtime_error(
+                "a combined hard-state record holds exactly \"term\" then \"voted_for\"");
+        }
+        const boost::json::value& term = obj.begin()->value();
+        if (!term.is_int64() && !term.is_uint64()) {
+            throw std::runtime_error("the combined hard-state record's term is not an integer");
+        }
+        std::pair<TermId, std::optional<NodeId>> out;
+        out.first = static_cast<TermId>(term.to_number<std::uint64_t>());
+        const boost::json::value& vote = std::next(obj.begin())->value();
+        if (vote.is_null()) {
+            return out;
+        }
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            if (!vote.is_string()) {
+                throw std::runtime_error(
+                    "the combined hard-state record's voted_for is neither null nor a string");
+            }
+            out.second = std::string(vote.as_string());
+        } else {
+            if (!vote.is_int64() && !vote.is_uint64()) {
+                throw std::runtime_error(
+                    "the combined hard-state record's voted_for is neither null nor an integer");
+            }
+            out.second = vote.to_number<NodeId>();
+        }
+        return out;
     }
 
     // ── Serialisation — byte-identical to file_persistence_engine's codec ────

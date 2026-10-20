@@ -30,7 +30,7 @@ before and after.
     "The honest cost" paragraph (`object_store_persistence.hpp:92-124`)
   - _Requirements: 1.1-1.6, 14.1, 15.6_
 
-- [ ] 2. Test infrastructure, no behaviour change
+- [x] 2. Test infrastructure, no behaviour change
   - `tests/mock_object_store.hpp`: `crash_after_requests(n)` — every request
     after the n-th throws and changes nothing; cleared for the fresh engine
   - `tests/legacy_layout_reader.hpp`: today's `parse_unsigned`,
@@ -43,9 +43,27 @@ before and after.
     215, 222`) are unchanged in result
   - A crash-injection oracle helper: given an operation and the pre-/post-call
     model, the set of legal loaded states
+  - Done October 20, 2026. `crash_after_requests(n)` counts every request
+    kind (conditional ones included) and a refused request is neither logged
+    nor applied; the test disarms it with a new `clear_crash()` before the
+    fresh engine, and `crashed()` reports whether it fired. The legacy reader
+    copies the bodies verbatim from 92a1825 but not the wrappers: static
+    members became free functions over the `std::uint64_t` instantiation,
+    `base64_to_bytes` came along because `json_to_entry` calls it, and only
+    the parse half of `check_entry_term` is kept, throwing instead of pushing
+    into a `verification_report`. `default_options()` is detected on the
+    harness like `fenced` (absent = `{}`), so no existing harness changed; the
+    layout-dependent cases turned out to be the key set and the `term` /
+    `voted_for` body assertions (no request count differs under `combined`),
+    plus `the_none_sentinel_loads_as_no_vote`, which seeds a combined `null`
+    under `combined`. The oracle (`tests/object_store_crash_oracle.hpp`) works
+    on observable state (term, vote, log) for five operation kinds; the
+    every-n driver lives in the new `tests/object_store_batched_layout_unit_test.cpp`,
+    which also pins today's engine under it (hard state, batched append,
+    truncation, compaction)
   - _Requirements: 15.1, 15.2, 15.5_
 
-- [ ] 3. Combined hard state, fresh prefixes
+- [x] 3. Combined hard state, fresh prefixes
   - `hard_state_layout { separate, combined }` on `object_persistence_options`
   - Combined codec (exactly `term`, `voted_for`; `to_number<uint64_t>`; JSON
     string or number for `NodeId`; strict)
@@ -62,6 +80,25 @@ before and after.
     mock; request-log case (one PUT to `term`, none to `voted_for`); every
     malformed body; the legacy reader rejects every body written; crash
     injection at n = 0, 1 for each of the three methods
+  - Done October 20, 2026. Departures: the downgrade message does not name
+    `raft_object_backup relayout`, which does not exist (task 11 is
+    optional) — it says to set `combined` or restore from a pre-upgrade
+    backup, and task 11 should add the verb if it lands. Skip-if-unchanged
+    applies to `save_hard_state` only; `save_current_term` / `save_voted_for`
+    always PUT, as they do under `separate` and as the design's write path
+    reads. Besides a decimal `term`, a legacy vote slot with no `term`, and a
+    combined `term` beside a legacy vote slot (the design's "retirement
+    pending" row, which only task 4 code can produce), are refused as
+    "migration not yet supported" too. `retired` beside an absent `term` (not
+    in the design's table) is corruption like `retired` beside a decimal one,
+    at both settings — so a string-`NodeId` `separate` engine no longer reads
+    a vote slot holding `retired` as a node id. The codec also refuses a
+    float-typed term or vote (`1.0`), which `to_number` alone would accept;
+    Boost 1.83 keeps the last of duplicate members, so a record with `term`
+    twice is not detected — a residual. A `separate` engine refuses a
+    combined `term` as soon as it parses it, since that refusal does not
+    depend on the vote slot; the rest resolves after the listing loop. Every
+    refusal is a `std::runtime_error`
   - _Requirements: 2.1-2.6, 3.1, 3.5, 4.1, 4.3, 15.3, 15.5_
 
 - [ ] 4. Combined hard state, in-place migration

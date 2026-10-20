@@ -109,6 +109,14 @@ struct mock_object_store_state {
     /// test a different thing — a source that was never consistent, rather than
     /// one that stopped being consistent midway.
     std::function<void(const std::string& key)> on_get;
+
+    /// Crash injection (`.kiro/specs/object-store-batched-layout/` Requirement
+    /// 15.2): once armed, the first `crash_after` further requests are served
+    /// and every request after them throws **before** it is logged or applied,
+    /// so nothing a "crashed" process sends reaches the bucket. Unset is
+    /// disarmed. `requests_before_crash` counts what was served since arming.
+    std::optional<std::size_t> crash_after;
+    std::size_t requests_before_crash{0};
 };
 
 /// @brief A copyable handle onto an in-memory bucket, satisfying both store
@@ -150,6 +158,7 @@ public:
                                   std::string_view bytes) const -> put_result {
         hold_put();
         const std::lock_guard lock(_state->mu);
+        crash_if_due_locked("PUT " + key);
         _state->requests.push_back("PUT " + key);
         require_bucket(bucket);
         if (_state->fail_next_puts > 0) {
@@ -176,6 +185,7 @@ public:
             hook(key);
         }
         const std::lock_guard lock(_state->mu);
+        crash_if_due_locked("GET " + key);
         _state->requests.push_back("GET " + key);
         require_bucket(bucket);
         if (_state->fail_next_gets > 0) {
@@ -191,6 +201,7 @@ public:
 
     auto delete_object(const std::string& bucket, const std::string& key) const -> void {
         const std::lock_guard lock(_state->mu);
+        crash_if_due_locked("DELETE " + key);
         _state->requests.push_back("DELETE " + key);
         require_bucket(bucket);
         if (_state->fail_next_deletes > 0) {
@@ -204,6 +215,7 @@ public:
     [[nodiscard]] auto list_keys(const std::string& bucket, const std::string& prefix) const
         -> std::vector<std::string> {
         const std::lock_guard lock(_state->mu);
+        crash_if_due_locked("LIST " + prefix);
         _state->requests.push_back("LIST " + prefix);
         require_bucket(bucket);
         if (_state->fail_next_lists > 0) {
@@ -228,6 +240,7 @@ public:
         -> put_result {
         hold_put();
         const std::lock_guard lock(_state->mu);
+        crash_if_due_locked("PUT " + key);
         _state->requests.push_back("PUT " + key);
         require_bucket(bucket);
         // The precondition is checked first, exactly as a service does: a request
@@ -250,6 +263,7 @@ public:
     auto delete_object_if(const std::string& bucket, const std::string& key,
                           const precondition& pre) const -> void {
         const std::lock_guard lock(_state->mu);
+        crash_if_due_locked("DELETE " + key);
         _state->requests.push_back("DELETE " + key);
         require_bucket(bucket);
         check_precondition_locked(key, pre);
@@ -358,7 +372,46 @@ public:
         _state->wrong_version_for_next_puts = n;
     }
 
+    /// Serve `n` more requests, then fail every one after them without logging
+    /// or applying it — a process that dies after its n-th request. `0` crashes
+    /// on the very next request. Seeding and inspection bypass it, as they
+    /// bypass the request log.
+    auto crash_after_requests(std::size_t n) const -> void {
+        const std::lock_guard lock(_state->mu);
+        _state->crash_after = n;
+        _state->requests_before_crash = 0;
+    }
+
+    /// Disarm crash injection, so a fresh engine — the restarted process — can
+    /// load what the crashed one left behind.
+    auto clear_crash() const -> void {
+        const std::lock_guard lock(_state->mu);
+        _state->crash_after.reset();
+        _state->requests_before_crash = 0;
+    }
+
+    /// Whether an armed crash has fired: at least one request was refused.
+    [[nodiscard]] auto crashed() const -> bool {
+        const std::lock_guard lock(_state->mu);
+        return _state->crash_after && _state->requests_before_crash > *_state->crash_after;
+    }
+
 private:
+    /// Callers hold `_state->mu`. Throws for every request past the armed
+    /// count, before the request is logged or touches an object.
+    auto crash_if_due_locked(const std::string& request) const -> void {
+        if (!_state->crash_after) {
+            return;
+        }
+        if (_state->requests_before_crash >= *_state->crash_after) {
+            // Saturating, so `crashed()` can tell "served exactly n" from
+            // "refused one" without the counter wrapping on a long loop.
+            _state->requests_before_crash = *_state->crash_after + 1;
+            throw std::runtime_error("mock_object_store: crashed before " + request);
+        }
+        ++_state->requests_before_crash;
+    }
+
     /// `put_delay`, with the mutex released, counted in `puts_in_flight`.
     auto hold_put() const -> void {
         std::chrono::milliseconds delay{0};
