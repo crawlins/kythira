@@ -820,6 +820,17 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
     cfg.provision_timeout = std::chrono::seconds{180};
     manager_t mgr{cfg};
 
+    // Progress lines carry seconds since this point: ctest relays the test's
+    // output in bursts, so the job log's own timestamps cannot order them.
+    const auto test_start = std::chrono::steady_clock::now();
+    auto elapsed = [&] {
+        return "+" +
+               std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+                                  std::chrono::steady_clock::now() - test_start)
+                                  .count()) +
+               "s";
+    };
+
     // ── Step 1: three instances, one per AZ ─────────────────────────────
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::vector<node_launch> nodes;
@@ -838,6 +849,8 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
         nodes.push_back({.node_id = peer.node_id, .az = az, .private_ip = view->private_ip});
         public_ips.push_back(view->public_ip);
         instance_ids.push_back(*ec2_id);
+        std::cerr << "[" << LOG_TAG << "] " << elapsed() << " launched node " << peer.node_id
+                  << " (" << *ec2_id << ", " << az << ", " << view->public_ip << ")\n";
     }
     BOOST_REQUIRE_EQUAL(nodes.size(), 3u);
 
@@ -852,11 +865,16 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
     // that would look like (inferred; the log could not show which node).
     // The starts below are seconds apart, well inside 30 s. A failed SSH
     // reports the instance's state, so a terminated node is told apart from
-    // one whose sshd never came up.
+    // one whose sshd never came up, and dumps every reachable node's log:
+    // run 39490951619 showed node 3 terminated during the starts, and only
+    // the leader's log can say why.
     auto on_node = [&](std::size_t i, const std::string& cmd, std::chrono::seconds timeout) {
         try {
             ssh_execute(public_ips[i], private_key_pem, cmd, timeout);
         } catch (const std::runtime_error& e) {
+            std::cerr << "[" << LOG_TAG << "] " << elapsed() << " SSH to node " << nodes[i].node_id
+                      << " failed; dumping node logs\n";
+            dump_node_logs(public_ips, private_key_pem);
             auto view = instance(instance_ids[i]);
             throw std::runtime_error(std::string{e.what()} + " (node " +
                                      std::to_string(nodes[i].node_id) + ", " + instance_ids[i] +
@@ -867,13 +885,15 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
         // SSH can answer before cloud-init has finished.
         on_node(i, "sudo cloud-init status --wait", std::chrono::minutes(3));
     }
-    std::cerr << "[" << LOG_TAG << "] cloud-init finished on all " << nodes.size()
-              << " nodes; starting chaos_node\n";
+    std::cerr << "[" << LOG_TAG << "] " << elapsed() << " cloud-init finished on all "
+              << nodes.size() << " nodes; starting chaos_node\n";
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         on_node(i,
                 start_node_command(
                     node_environment(nodes[i], nodes, *this, ami, cfg.instance_type, profile)),
                 std::chrono::minutes(1));
+        std::cerr << "[" << LOG_TAG << "] " << elapsed() << " started chaos_node on node "
+                  << nodes[i].node_id << " (" << instance_ids[i] << ")\n";
     }
 
     auto leader = find_leader(public_ips, private_key_pem, {}, std::chrono::minutes(3));
