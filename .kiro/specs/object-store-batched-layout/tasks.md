@@ -101,7 +101,7 @@ before and after.
     refusal is a `std::runtime_error`
   - _Requirements: 2.1-2.6, 3.1, 3.5, 4.1, 4.3, 15.3, 15.5_
 
-- [ ] 4. Combined hard state, in-place migration
+- [x] 4. Combined hard state, in-place migration
   - First hard-state write on a legacy prefix: m1 (`term` ← combined, `If-Match`
     the legacy version under fencing) then m2 (`voted_for` ← `retired`,
     `If-Match` under fencing)
@@ -115,6 +115,33 @@ before and after.
     a migration on a prefix with no `voted_for` sends no m2
   - Docs: the runbook paragraph that an older binary's
     `corrupt object <prefix>/term` on an upgraded bucket is the rollback guard
+  - Done October 20, 2026. Task 3's "migration not yet supported" refusals
+    are gone; what stays refused is `separate` over a combined `term`,
+    `retired` beside a decimal or absent `term`, a malformed record, and an
+    unparseable legacy vote beside a legacy or absent `term`. Departures:
+    a refused precondition on the retirement completed at fenced construction
+    fails construction with `persistence_fenced_error`, as a refused owner
+    claim does, since there is no engine yet to latch. A retry ahead of the
+    next hard-state write that fails transiently again does not fail that
+    write (the design does not say): the record is correct without it, so
+    it stays pending and is tried again. A refused retry latches before the
+    write is sent. Retries run only on hard-state writes, not log writes.
+    Beside a combined `term`, a vote slot
+    that does not parse is now ignored and retired (Requirement 3.1, "whatever
+    it holds") where task 3 refused it, so the legacy vote is parsed after the
+    listing loop. A legacy prefix with a vote slot and no `term` gets a
+    create-only m1 under fencing, there being no legacy version to match.
+    `save_hard_state` of the pair already loaded sends nothing and so does
+    not migrate. Two accessors not in the design,
+    `vote_slot_retirement_pending()` and `last_vote_slot_retirement_error()`,
+    report a pending retirement like `last_prune_error()`; the mock gained
+    `lose_next_put_responses(n)` to test the "m1 landed, response lost" row.
+    The migration is covered in `object_store_batched_layout_unit_test.cpp`,
+    fenced and unfenced, not by a new conformance case. The runbook also says
+    to take a backup *before* switching. Until task 5 this build's
+    `raft_object_backup` refuses an upgraded prefix too, so the design's
+    "back up an upgraded bucket with the upgraded tool" cannot be followed
+    yet
   - _Requirements: 3.2-3.4, 3.6, 4.2, 4.4, 4.5, 15.3_
 
 - [ ] 5. Backup and restore understand the combined hard state

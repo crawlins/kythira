@@ -254,6 +254,18 @@
 /// a diverging committed log or a double vote that does not pass through one of
 /// those two single-slot objects.
 ///
+/// Under `hard_state_layout::combined` the chokepoint is one object: a second
+/// writer cannot change this node's term or vote without writing
+/// `<prefix>/term`. The vote slot then matters only as somewhere a
+/// *pre-migration* writer can still write, and the migration's retirement of it
+/// — `If-Match` its loaded version — is what detects that writer: one that
+/// writes the slot before the retirement makes the retirement refused and the
+/// migrating engine latches; one that writes it after is refused itself. **The
+/// residual is the window between the two migration PUTs**: while a transient
+/// failure keeps the retirement pending, a stale writer's same-term vote goes
+/// undetected. Fenced construction completes a pending retirement, which bounds
+/// that window to one process lifetime.
+///
 /// That argument covers safety and **not corruption**, and the difference is
 /// why log-entry PUTs are create-only. A stale leader appends without ever
 /// changing its term — it will never gather a quorum again, but nothing makes
@@ -456,11 +468,19 @@ enum class hard_state_layout : std::uint8_t {
     /// and is not a bare decimal, so an older binary — engine or backup tool —
     /// refuses the prefix rather than reading a stale pair from it.
     ///
-    /// This build accepts it only on a prefix that holds no legacy hard state:
-    /// construction over a decimal `<prefix>/term` or a legacy
-    /// `<prefix>/voted_for` throws, because the in-place migration is not
-    /// implemented yet and a half-migrated bucket is the one state this layout
-    /// must never leave behind.
+    /// A prefix written by the `separate` layout is migrated **in place and
+    /// lazily**: construction loads the legacy pair and writes nothing for it,
+    /// and the first hard-state write is (m1) a PUT of the combined record to
+    /// `<prefix>/term` — `If-Match` the legacy object's version under fencing,
+    /// and the commit point — then (m2) a PUT of `retired` to
+    /// `<prefix>/voted_for`, `If-Match` its loaded version under fencing, if
+    /// that object exists. m2 runs after the commit point, so a transient
+    /// failure of it does not fail the call: it is retried before the next
+    /// hard-state write, and under `compare_and_swap` at the next construction
+    /// too. A crash at any boundary leaves either the legacy pair, which every
+    /// binary reads, or a combined `<prefix>/term`, which this binary reads as
+    /// the new pair and every older one refuses — never an older pair than one
+    /// this node acknowledged.
     combined
 };
 
@@ -818,6 +838,16 @@ public:
             // After the load, so a corrupt prefix fails construction without
             // this engine having first written its name into it.
             claim_ownership();
+            // A migration whose m2 a previous process did not finish: completed
+            // now rather than at the first hard-state write, which bounds the
+            // window in which a pre-migration writer's vote goes undetected to
+            // one process lifetime. Fenced construction already writes the
+            // owner object, so this adds no new kind of startup write; a
+            // refused precondition fails construction like a refused owner
+            // claim, and a transient failure stays pending.
+            if (_term_holds_combined) {
+                retire_vote_slot_if_pending();
+            }
         }
     }
 
@@ -838,7 +868,10 @@ public:
           _versions(std::move(other._versions)),
           _owner_seen(std::move(other._owner_seen)),
           _owner_epoch(other._owner_epoch),
-          _fenced(std::move(other._fenced)) {}
+          _fenced(std::move(other._fenced)),
+          _term_holds_combined(other._term_holds_combined),
+          _vote_slot_to_retire(std::move(other._vote_slot_to_retire)),
+          _last_retirement_error(std::move(other._last_retirement_error)) {}
 
     auto operator=(object_store_persistence_engine&&) -> object_store_persistence_engine& = delete;
     object_store_persistence_engine(const object_store_persistence_engine&) = delete;
@@ -917,10 +950,10 @@ public:
         std::lock_guard lock(_mu);
         throw_if_fenced();
         if (combined_hard_state()) {
-            put_single_slot(term_key(), hard_state_to_json(term, _voted_for));
-        } else {
-            put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
+            put_combined_hard_state(term, _voted_for);
+            return;
         }
+        put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
         _current_term = term;
     }
 
@@ -937,10 +970,10 @@ public:
         std::lock_guard lock(_mu);
         throw_if_fenced();
         if (combined_hard_state()) {
-            put_single_slot(term_key(), hard_state_to_json(_current_term, node));
-        } else {
-            put_single_slot(voted_for_key(), render_vote(node));
+            put_combined_hard_state(_current_term, std::move(node));
+            return;
         }
+        put_single_slot(voted_for_key(), render_vote(node));
         _voted_for = std::move(node);
     }
 
@@ -974,9 +1007,7 @@ public:
             if (term == _current_term && vote == _voted_for) {
                 return;
             }
-            put_single_slot(term_key(), hard_state_to_json(term, vote));
-            _current_term = term;
-            _voted_for = std::move(vote);
+            put_combined_hard_state(term, std::move(vote));
             return;
         }
         if (term != _current_term) {
@@ -1236,6 +1267,32 @@ public:
         return _last_prune_error;
     }
 
+    /// @brief Whether `<prefix>/voted_for` still holds a legacy value that this
+    ///        engine owes a `retired` overwrite (hard_state_layout::combined).
+    ///
+    /// True from load until m2 lands on a legacy prefix that has a vote slot,
+    /// and after a migrating write whose m2 failed transiently — the case
+    /// `last_vote_slot_retirement_error()` explains. The state is safe either
+    /// way: beside a combined `<prefix>/term` the vote slot is never read. What
+    /// a pending retirement costs is detection, under `compare_and_swap`: a
+    /// pre-migration writer that writes only the vote slot is not refused until
+    /// the retirement lands.
+    [[nodiscard]] auto vote_slot_retirement_pending() const -> bool {
+        std::lock_guard lock(_mu);
+        return _vote_slot_to_retire.has_value();
+    }
+
+    /// @brief Why the last attempt to retire `<prefix>/voted_for` failed, if
+    ///        it did. Cleared when a retirement lands.
+    ///
+    /// The retirement runs after the migration's commit point and cannot fail
+    /// the call that committed it, so — like `last_prune_error()` — this is
+    /// where its failure becomes visible rather than silent.
+    [[nodiscard]] auto last_vote_slot_retirement_error() const -> std::optional<std::string> {
+        std::lock_guard lock(_mu);
+        return _last_retirement_error;
+    }
+
 private:
     // ── Batched log writes ───────────────────────────────────────────────────
 
@@ -1256,6 +1313,81 @@ private:
 
     [[nodiscard]] auto combined_hard_state() const -> bool {
         return _opts.hard_state == hard_state_layout::combined;
+    }
+
+    /// Every combined hard-state write: one PUT of `(term, vote)` to
+    /// `<prefix>/term`, and the in-place migration when that object does not
+    /// yet hold a combined record. Callers hold `_mu`.
+    ///
+    /// On a legacy prefix this PUT is m1: `put_single_slot` predicates it on
+    /// the legacy `<prefix>/term`'s loaded version under `compare_and_swap`
+    /// (create-only when there was none), which is exactly the migration's
+    /// precondition — no create-only against an object that exists, and no
+    /// unconditional overwrite of a second writer's term. It is the commit
+    /// point, so the mirror moves as soon as it is acknowledged, and m2
+    /// follows.
+    ///
+    /// **m1 strictly before m2.** Retiring the vote slot first would leave,
+    /// after a crash between the two, a decimal `<prefix>/term` beside a vote
+    /// slot that no longer holds the vote — an older binary would read "no
+    /// vote" for a term this node voted in. So a retirement owed by a legacy
+    /// prefix waits for m1, and only a retirement left pending *after* m1 is
+    /// retried ahead of the next PUT.
+    auto put_combined_hard_state(TermId term, std::optional<NodeId> vote) -> void {
+        const bool migrating = !_term_holds_combined;
+        if (!migrating) {
+            retire_vote_slot_if_pending();
+        }
+        put_single_slot(term_key(), hard_state_to_json(term, vote));
+        _current_term = term;
+        _voted_for = std::move(vote);
+        _term_holds_combined = true;
+        if (migrating) {
+            retire_vote_slot_if_pending();
+        }
+    }
+
+    /// m2: PUT `retired` to `<prefix>/voted_for`, `If-Match` the version it was
+    /// loaded at under `compare_and_swap`. Called only once `<prefix>/term`
+    /// holds a combined record. Callers hold `_mu`.
+    ///
+    /// Retire rather than delete: the slot has to change *version*, so that a
+    /// pre-migration writer still running against the prefix is refused at its
+    /// next conditional write to it — and `If-Match` against an existing
+    /// object's stale version is the cell every fencing provider has been
+    /// verified on, where `If-Match` against a missing key is not.
+    ///
+    /// A refused precondition latches and throws: another writer has written
+    /// the vote slot since this engine loaded it. Any other failure is
+    /// recorded and leaves the retirement pending — the call that reached here
+    /// has already committed, so failing it would report a durable write as
+    /// lost. Under `compare_and_swap` a retirement whose response was lost
+    /// after it landed is refused at its retry and latches, which is the
+    /// header's lost-response residual applied to this one write.
+    auto retire_vote_slot_if_pending() -> void {
+        if (!_vote_slot_to_retire) {
+            return;
+        }
+        const std::string key = voted_for_key();
+        try {
+            if constexpr (Fencing == fencing_mode::compare_and_swap) {
+                _versions[key] = conditional_put(key, k_retired_vote,
+                                                 precondition{if_version{*_vote_slot_to_retire}});
+            } else {
+                put_object(key, k_retired_vote);
+            }
+        } catch (const persistence_fenced_error&) {
+            throw;
+        } catch (const std::exception& e) {
+            _last_retirement_error = "object_store_persistence_engine: retiring " + key +
+                                     " failed after " + term_key() +
+                                     " was committed; it is retried before the next hard-state "
+                                     "write: " +
+                                     e.what();
+            return;
+        }
+        _vote_slot_to_retire.reset();
+        _last_retirement_error.reset();
     }
 
     [[nodiscard]] static auto render_vote(const NodeId& node) -> std::string {
@@ -1654,7 +1786,7 @@ private:
                     // engine's first vote must be an If-Match and not a
                     // create-only.
                     remember_version(key, got->version);
-                    load_vote_object(got->body, key, slots);
+                    load_vote_object(got->body, slots);
                 }
             } else if (key == snap) {
                 auto got = get_object(key);
@@ -1732,9 +1864,9 @@ private:
         /// A combined `<prefix>/term`, parsed.
         std::optional<std::pair<TermId, std::optional<NodeId>>> combined;
         /// `<prefix>/voted_for` holds a legacy value — a vote, `none`, or
-        /// empty — and this is what it says.
-        bool legacy_vote_present{false};
-        std::optional<NodeId> legacy_vote;
+        /// empty — unparsed: beside a combined `<prefix>/term` it is not state
+        /// and is not read, whatever it holds (Requirement 3.1).
+        std::optional<std::string> legacy_vote_body;
         /// `<prefix>/voted_for` holds `retired`.
         bool vote_retired{false};
     };
@@ -1762,22 +1894,29 @@ private:
             key, [&body] { return json_to_hard_state(body); });
     }
 
-    /// Parse `<prefix>/voted_for`. The `retired` marker is noted rather than
-    /// parsed: it is valid only beside a combined `<prefix>/term`, which
-    /// `resolve_hard_state` checks once both slots have been read.
-    static auto load_vote_object(const std::string& body, const std::string& key,
-                                 hard_state_slots& slots) -> void {
+    /// Note `<prefix>/voted_for` for `resolve_hard_state`. Nothing is parsed
+    /// here: the `retired` marker is valid only beside a combined
+    /// `<prefix>/term`, and a legacy value is read only beside a legacy one,
+    /// and which of those it is cannot be known until both slots are read.
+    static auto load_vote_object(const std::string& body, hard_state_slots& slots) -> void {
         if (body == k_retired_vote) {
             slots.vote_retired = true;
             return;
         }
-        slots.legacy_vote_present = true;
-        if (body != "none" && !body.empty()) {
-            if constexpr (std::is_same_v<NodeId, std::string>) {
-                slots.legacy_vote = body;
-            } else {
-                slots.legacy_vote = static_cast<NodeId>(parse_unsigned(body, key));
-            }
+        slots.legacy_vote_body = body;
+    }
+
+    /// A legacy vote slot's value: a node id, or no vote for `none` (or an
+    /// empty body), exactly as the load path has always read it.
+    static auto parse_legacy_vote(const std::string& body, const std::string& key)
+        -> std::optional<NodeId> {
+        if (body == "none" || body.empty()) {
+            return std::nullopt;
+        }
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            return body;
+        } else {
+            return static_cast<NodeId>(parse_unsigned(body, key));
         }
     }
 
@@ -1786,13 +1925,14 @@ private:
     ///
     ///   * `retired` beside anything but a combined `term` is corruption —
     ///     it is written only after the combined record;
-    ///   * `separate`: the legacy pair, exactly as today (a combined `term`
-    ///     was already refused by `load_term_object`);
-    ///   * `combined`: the combined record, or the empty state on a prefix that
-    ///     holds no hard state. A legacy `term` or a legacy vote slot is a
-    ///     legacy prefix, and the migration that would move it in place is not
-    ///     implemented in this build, so construction refuses it rather than
-    ///     risk leaving a half-migrated bucket.
+    ///   * a combined `term` (reachable only under `combined`: a `separate`
+    ///     engine refused it in `load_term_object`) is the pair, and a legacy
+    ///     vote slot beside it is ignored and owed a retirement — the state a
+    ///     crash between m1 and m2 leaves;
+    ///   * otherwise the legacy pair, exactly as today. Under `combined` that
+    ///     is a legacy prefix: nothing is written for it here, its first
+    ///     hard-state write migrates it, and a vote slot it holds is retired
+    ///     after that write's commit point.
     auto resolve_hard_state(const hard_state_slots& slots) -> void {
         if (slots.vote_retired && !slots.combined) {
             throw std::runtime_error("object_store_persistence_engine: corrupt object " +
@@ -1801,36 +1941,28 @@ private:
                                      term_key() +
                                      (slots.legacy_term ? " holds a decimal term" : " is absent"));
         }
-        if (!combined_hard_state()) {
+        if (slots.combined) {
+            _current_term = slots.combined->first;
+            _voted_for = slots.combined->second;
+            _term_holds_combined = true;
+        } else {
             if (slots.legacy_term) {
                 _current_term = *slots.legacy_term;
             }
-            _voted_for = slots.legacy_vote;
-            return;
-        }
-        if (slots.combined) {
-            if (slots.legacy_vote_present) {
-                throw std::runtime_error(
-                    "object_store_persistence_engine: " + voted_for_key() +
-                    " still holds a legacy vote beside the combined hard-state record in " +
-                    term_key() +
-                    " — an in-place migration whose retirement of the vote slot is pending, and "
-                    "completing it is not supported by this build (migration not yet supported)");
+            if (slots.legacy_vote_body) {
+                _voted_for = parse_legacy_vote(*slots.legacy_vote_body, voted_for_key());
             }
-            _current_term = slots.combined->first;
-            _voted_for = slots.combined->second;
-            return;
         }
-        if (slots.legacy_term || slots.legacy_vote_present) {
-            const std::string key = slots.legacy_term ? term_key() : voted_for_key();
-            throw std::runtime_error(
-                "object_store_persistence_engine: " + key +
-                " holds legacy hard state and this engine is configured "
-                "hard_state_layout::combined, but migrating a legacy prefix in place is not "
-                "supported by this build (migration not yet supported) — set "
-                "hard_state_layout::separate for this prefix, or use the combined layout on a "
-                "prefix that holds no hard state yet");
+        if (combined_hard_state() && slots.legacy_vote_body) {
+            _vote_slot_to_retire = tracked_version(voted_for_key());
         }
+    }
+
+    /// The version the load path remembered for `key`; empty under
+    /// `fencing_mode::none`, which tracks none.
+    [[nodiscard]] auto tracked_version(const std::string& key) const -> object_version {
+        auto it = _versions.find(key);
+        return it == _versions.end() ? object_version{} : it->second;
     }
 
     /// Keep the contiguous run of log objects that starts at the lowest index,
@@ -2280,6 +2412,24 @@ private:
     /// not clearable at runtime, because a node that has provably lost its state
     /// cannot safely rejoin consensus by being asked nicely.
     std::optional<persistence_fenced_error> _fenced;
+
+    // ── Migration to the combined hard state (hard_state_layout::combined) ────
+
+    /// Whether `<prefix>/term` holds a combined record: loaded as one, or
+    /// written by this engine. While false, the next hard-state write is the
+    /// migration's m1 (or, on a prefix with no hard state, the record's
+    /// creation). Never set under `separate`.
+    bool _term_holds_combined{false};
+
+    /// A pending retirement of `<prefix>/voted_for` — m2 — with the version it
+    /// was loaded at (empty under `fencing_mode::none`). Set by the load path
+    /// on a `combined` engine whenever the vote slot holds a legacy value;
+    /// sent only once `_term_holds_combined`.
+    std::optional<object_version> _vote_slot_to_retire;
+
+    /// Why the last retirement attempt failed; see
+    /// `last_vote_slot_retirement_error()`.
+    std::optional<std::string> _last_retirement_error;
 };
 
 /// @brief `object_store_persistence_engine` with second-writer detection on.

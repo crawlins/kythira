@@ -361,6 +361,45 @@ the same bucket, owned by the same engine, and a takeover or a `--force`
 restore can remove them. If you need a copy that survives losing the prefix,
 use [backup](#backup-and-restore), which writes somewhere else on purpose.
 
+### Combined hard state, and upgrading a bucket in place
+
+`object_persistence_options::hard_state = hard_state_layout::combined` stores
+the term and the vote together in `<prefix>/term` as
+`{"term":42,"voted_for":7}` (`null` for no vote), so every hard-state write is
+one PUT instead of up to two. The default, `separate`, is the layout above.
+
+Setting `combined` on a prefix a default engine wrote migrates it in place,
+lazily. Startup writes nothing for it (under fencing, nothing but the owner
+object, as always). The first hard-state write then PUTs the combined record
+to `<prefix>/term`, which is the commit point, and after it PUTs `retired` to
+`<prefix>/voted_for` if that object exists. Under `compare_and_swap` both are
+`If-Match` the versions the engine loaded, so a duplicate still running the
+old layout is refused at its next write to either. A transient failure of the
+second PUT does not fail the call: it is retried before the next hard-state
+write, and by a fenced engine when it next starts.
+`vote_slot_retirement_pending()` and `last_vote_slot_retirement_error()`
+report it until then. Nothing else is needed, and nodes can be switched one at
+a time: nothing on the wire changes.
+
+**Runbook: an older binary that says `corrupt object <prefix>/term` on an
+upgraded bucket is the rollback guard working, not damage.** Once a node has
+written a combined record it may have acknowledged a vote that exists only
+there. Every earlier engine and backup tool parses `<prefix>/term` as a bare
+decimal and refuses the JSON record instead of falling back to the stale
+`voted_for` beside it. Reading that stale vote is how a rolled-back node would
+vote twice in one term. Do not "repair" the object by writing a decimal into
+it. To go back to an older binary, restore the prefix from a backup taken
+before the upgrade, or stay on this build with `combined` set. A build of this
+engine configured `separate` refuses the same prefix, with a message saying
+that an in-place downgrade is not supported.
+
+**Take a backup before switching a prefix to `combined`.** `raft_object_backup`
+does not read the combined record yet: its `create` parses `<prefix>/term` the
+same strict way and refuses an upgraded prefix with `corrupt object
+<prefix>/term`. Teaching it the record is the next step of
+`.kiro/specs/object-store-batched-layout/` (task 5). Until then, the backup
+taken before the switch is the only one that exists.
+
 ## Fencing
 
 Two modes, on `object_persistence_options`:

@@ -15,6 +15,20 @@ current list of outstanding work, see [TODO.md](TODO.md).
   the vote, two writes where it was three. Planned with the rest of open
   item 15 in `.kiro/specs/object-store-batched-layout/`.
 
+- **The object-store engine can store the term and the vote in one object,
+  and moves an existing bucket to that layout in place.** With
+  `hard_state_layout::combined`, `<prefix>/term` holds
+  `{"term":…,"voted_for":…}` and every hard-state write is one PUT. On a
+  bucket a default engine wrote, the first hard-state write PUTs that record
+  over the decimal `term`, then marks `voted_for` as `retired`. Under
+  fencing both PUTs are conditional on the versions the engine loaded, so a
+  duplicate node still on the old layout is caught. A crash at any point
+  leaves state that this build reads as the old pair or the new one. An
+  older binary reads the old pair or refuses to start with `corrupt object
+  <prefix>/term`. The runbook in `doc/cloud_object_persistence.md` says why
+  that refusal is the rollback guard and not damage. `raft_object_backup`
+  cannot read an upgraded bucket yet, so take a backup before switching.
+
 ### What Changed (October 19, 2026)
 
 - **chaos_node's leader can own an EC2 quorum manager.** With
