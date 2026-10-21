@@ -6,7 +6,7 @@ write path a flush calls). Clark chose on October 21, 2026 to build it as part
 of open-tasks item 15, before that spec's real-cloud task 10, so the real-cloud
 runs measure it.
 
-- [ ] 1. `durability_class::synchronous`, and the object-store engine as a
+- [x] 1. `durability_class::synchronous`, and the object-store engine as a
   barriered engine with write-behind off
   - `include/raft/persistence.hpp`: the enumerator, `to_string`, and
     `describes_durable_storage` accepting it
@@ -17,6 +17,19 @@ runs measure it.
     `barriered_persistence_engine`; `node`'s request log and lock behaviour on
     the mock are unchanged (`raft_batched_durable_writes_test` unmodified)
   - _Requirements: 1.1-1.4, 2.1-2.4_
+  - Done October 21, 2026. Departures:
+    - `raft.hpp` changes in one place (Requirement 7.1 as amended, and the
+      design's "The one `node` change"). Without it, a follower's run on a
+      synchronous engine was one PUT per entry.
+      `raft_batched_durable_writes_test` gains a synchronous barriered
+      recording engine. Its case fails with 6 per-entry appends and no run
+      when the change is reverted.
+    - The `write_behind` option arrives with task 2, not here. An option
+      that is accepted but ignored would let a configuration claim
+      write-behind it does not get.
+    - `durable_through()` advances on every append, plain, sequenced or
+      bulk, and a failed append assigns no sequence. The tests are in the
+      new `object_store_group_commit_unit_test.cpp`.
 
 - [ ] 2. Write-behind: staging, the flush, failure handling
   - Staging, the single-flight flush with sample-before / publish-after,

@@ -771,6 +771,20 @@ set_tests_properties(object_store_batched_layout_unit_test PROPERTIES
     LABELS "unit;persistence;object-store"
 )
 
+# object_store_group_commit unit test (.kiro/specs/object-store-group-commit/)
+#
+# The object-store engine as a barriered_persistence_engine: with write-behind
+# off it answers durability_class::synchronous and sends exactly the requests
+# it sent before. Mock store only, so registered unconditionally.
+add_raft_completion_test(object_store_group_commit_unit_test
+    object_store_group_commit_unit_test.cpp)
+target_include_directories(object_store_group_commit_unit_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_store_group_commit_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store"
+)
+
 # object_store_backup unit test (cloud object persistence, task 12)
 #
 # Unconditional for the same reason the suite above is: `object_store_backup.hpp`

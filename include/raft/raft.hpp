@@ -1332,6 +1332,16 @@ private:
     /// interleaving window in every existing test to buy nothing.
     [[nodiscard]] auto barrier_can_block() const -> bool;
 
+    /// @brief Whether `append_log_entries` alone makes a run durable, so a
+    ///        bulk-append engine can take it as one call: the engine is not
+    ///        barriered, or it answers `durability_class::synchronous`.
+    ///
+    /// Without the second case an engine that gains the barrier extension but
+    /// never blocks — the object store without write-behind — would lose its
+    /// batched run and pay one durable write per entry
+    /// (`.kiro/specs/object-store-group-commit/` Requirement 1.2).
+    [[nodiscard]] auto run_is_one_durable_write() const -> bool;
+
     /// @brief Take the barrier `pending` owes. Takes no lock and needs none.
     ///
     /// @return `false` if the barrier failed. The caller must not advertise
@@ -1393,7 +1403,10 @@ private:
     ///        run, and record what they owe a barrier in `pending`.
     ///
     /// One `append_log_entries` call on a `bulk_append_persistence_engine`
-    /// that is not barriered, `persist_append` per entry otherwise. The bulk
+    /// whose appends are durable when they return — one that is not
+    /// barriered, or one that answers `durability_class::synchronous`
+    /// (`run_is_one_durable_write`) — and `persist_append` per entry
+    /// otherwise, so that a barriered engine's barrier covers the run. The bulk
     /// call is made **before** the entries join `_log`, and it leaves none of
     /// them in the engine if it throws, so a failure leaves this node's log
     /// and its engine agreeing and the leader's retry sends the same run
@@ -7344,6 +7357,14 @@ auto node<Types>::persist_append(const log_entry_type& entry, pending_barrier& p
     }
 }
 
+template<raft_types Types> auto node<Types>::run_is_one_durable_write() const -> bool {
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        return _persistence.durability() == kythira::durability_class::synchronous;
+    } else {
+        return true;
+    }
+}
+
 template<raft_types Types> auto node<Types>::barrier_can_block() const -> bool {
     if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
         return _persistence.durability() == kythira::durability_class::barrier;
@@ -7413,19 +7434,27 @@ auto node<Types>::persist_and_append_run(std::span<const log_entry_type> entries
     if (entries.empty()) {
         return;
     }
-    if constexpr (!kythira::barriered_persistence_engine<persistence_engine_type> &&
-                  kythira::bulk_append_persistence_engine<persistence_engine_type>) {
-        _persistence.append_log_entries(entries);
-        for (const auto& entry : entries) {
-            append_log_entry(entry);
+    if constexpr (kythira::bulk_append_persistence_engine<persistence_engine_type>) {
+        if (run_is_one_durable_write()) {
+            _persistence.append_log_entries(entries);
+            for (const auto& entry : entries) {
+                append_log_entry(entry);
+            }
+            // No barrier to wait for, as in persist_append()'s non-barriered
+            // arm: the run is as durable as it will ever be once the call
+            // returns. A synchronous engine's barrier is a no-op, so the
+            // sequence pending carries does not matter, but it is a true one.
+            if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+                pending._seq = std::max(pending._seq, _persistence.durable_through());
+            }
+            if (!pending._any || entries.back().index() > pending._index) {
+                pending._index = entries.back().index();
+            }
+            pending._any = true;
+            return;
         }
-        // No barrier to wait for, as in persist_append()'s non-barriered arm:
-        // the run is as durable as it will ever be once the call returns.
-        if (!pending._any || entries.back().index() > pending._index) {
-            pending._index = entries.back().index();
-        }
-        pending._any = true;
-    } else {
+    }
+    {
         for (const auto& entry : entries) {
             append_log_entry(entry);
             persist_append(entry, pending);

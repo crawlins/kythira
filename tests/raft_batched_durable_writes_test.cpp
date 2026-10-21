@@ -24,6 +24,10 @@
 //  6. A RequestVote from a newer term is answered after exactly one store of
 //     the term (with the vote when granted): one write with save_hard_state,
 //     term then vote without it.
+//  7. Property 1 holds for an engine that does have a barrier but answers
+//     `durability_class::synchronous` — the object store without write-behind
+//     (`.kiro/specs/object-store-group-commit/` Requirement 1.2): its runs
+//     still arrive in one call.
 //
 // Engine-level behaviour of the two calls is in
 // batched_durable_writes_unit_test.cpp.
@@ -92,10 +96,12 @@ struct write_record {
 };
 
 /// A persistence engine that records its writes and keeps its state in a
-/// memory engine. It has **no barrier**, so `node` takes the path a cloud
-/// object store takes. `Extended` adds `append_log_entries` and
-/// `save_hard_state`; without it the engine has only the base concept.
-template<bool Extended> class recording_engine {
+/// memory engine. It has **no barrier** unless `Synchronous`, so `node` takes
+/// the path a cloud object store took before it had one. `Extended` adds
+/// `append_log_entries` and `save_hard_state`; without it the engine has only
+/// the base concept. `Synchronous` adds the barrier extension answering
+/// `durability_class::synchronous`, as the object-store engine now does.
+template<bool Extended, bool Synchronous = false> class recording_engine {
 public:
     using log_entry_t = ::log_entry_t;
     using snapshot_t = ::snapshot_t;
@@ -171,8 +177,31 @@ public:
         _r->state.save_hard_state(term, vote);
     }
 
+    auto append_log_entry_sequenced(const log_entry_t& entry) -> kythira::write_sequence
+    requires Synchronous
+    {
+        const std::lock_guard lock(_r->mu);
+        _r->note("append:" + std::to_string(entry.index()));
+        _r->state.append_log_entry(entry);
+        return ++_seq;
+    }
+    auto barrier_through(kythira::write_sequence /*seq*/) -> void
+    requires Synchronous
+    {}
+    [[nodiscard]] auto durable_through() const -> kythira::write_sequence
+    requires Synchronous
+    {
+        return _seq;
+    }
+    [[nodiscard]] static auto durability() -> kythira::durability_class
+    requires Synchronous
+    {
+        return kythira::durability_class::synchronous;
+    }
+
 private:
     std::shared_ptr<write_record> _r;
+    kythira::write_sequence _seq{0};
 };
 
 static_assert(!kythira::barriered_persistence_engine<recording_engine<true>>);
@@ -180,6 +209,8 @@ static_assert(kythira::bulk_append_persistence_engine<recording_engine<true>>);
 static_assert(kythira::hard_state_persistence_engine<recording_engine<true>>);
 static_assert(!kythira::bulk_append_persistence_engine<recording_engine<false>>);
 static_assert(!kythira::hard_state_persistence_engine<recording_engine<false>>);
+static_assert(kythira::barriered_persistence_engine<recording_engine<true, true>>);
+static_assert(kythira::bulk_append_persistence_engine<recording_engine<true, true>>);
 
 template<typename NodeId, typename Address> class preset_peer_discovery {
 public:
@@ -195,7 +226,7 @@ public:
     }
 };
 
-template<bool Extended> struct test_types {
+template<bool Extended, bool Synchronous = false> struct test_types {
     using future_type = kythira::future_default<std::vector<std::byte>>;
     using promise_type = kythira::promise_default<std::vector<std::byte>>;
     using try_type = kythira::try_default<std::vector<std::byte>>;
@@ -215,7 +246,7 @@ template<bool Extended> struct test_types {
         kythira::simulator_network_server<raft_network_types, serializer_type,
                                           serialized_data_type>;
 
-    using persistence_engine_type = recording_engine<Extended>;
+    using persistence_engine_type = recording_engine<Extended, Synchronous>;
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
@@ -301,8 +332,8 @@ auto seed(write_record& record, std::uint64_t id, std::optional<std::uint64_t> v
     }
 }
 
-template<bool Extended> struct cluster {
-    using types = test_types<Extended>;
+template<bool Extended, bool Synchronous = false> struct cluster {
+    using types = test_types<Extended, Synchronous>;
     using node_t = kythira::node<types>;
     using sim_t = network_simulator::NetworkSimulator<typename types::raft_network_types>;
 
@@ -334,7 +365,7 @@ template<bool Extended> struct cluster {
                     typename types::network_client_type{net, typename types::serializer_type{}},
                 .network_server =
                     typename types::network_server_type{net, typename types::serializer_type{}},
-                .persistence = recording_engine<Extended>{record},
+                .persistence = recording_engine<Extended, Synchronous>{record},
                 .logger = kythira::console_logger{kythira::log_level::info},
                 .metrics = typename types::metrics_type{},
                 .membership = typename types::membership_manager_type{},
@@ -431,9 +462,8 @@ auto join(const std::vector<std::string>& ops) -> std::string {
 
 BOOST_AUTO_TEST_SUITE(raft_batched_durable_writes)
 
-BOOST_AUTO_TEST_CASE(a_follower_takes_an_append_entries_run_in_one_call,
-                     *boost::unit_test::timeout(30)) {
-    cluster<true> c{{1, 2, 3}};
+template<bool Synchronous> auto a_follower_takes_its_run_in_one_call() -> void {
+    cluster<true, Synchronous> c{{1, 2, 3}};
     BOOST_REQUIRE(
         wait_until([&] { return c.leader().is_leader(); }, std::chrono::milliseconds{4000}));
     BOOST_REQUIRE(c.pump_until([&] { return c.caught_up(2) && c.caught_up(3); },
@@ -454,6 +484,19 @@ BOOST_AUTO_TEST_CASE(a_follower_takes_an_append_entries_run_in_one_call,
         BOOST_TEST(count_prefix(ops, "vote:") == 0U);
         BOOST_TEST(count_prefix(ops, "hard:") >= 1U);
     }
+}
+
+BOOST_AUTO_TEST_CASE(a_follower_takes_an_append_entries_run_in_one_call,
+                     *boost::unit_test::timeout(30)) {
+    a_follower_takes_its_run_in_one_call<false>();
+}
+
+// Property 7: an engine with a barrier that never blocks keeps Property 1.
+// Taking the barriered path entry by entry would turn one write per run back
+// into one per entry, a request each on an object store.
+BOOST_AUTO_TEST_CASE(a_synchronous_barriered_follower_still_takes_its_run_in_one_call,
+                     *boost::unit_test::timeout(30)) {
+    a_follower_takes_its_run_in_one_call<true>();
 }
 
 BOOST_AUTO_TEST_CASE(without_save_hard_state_a_vote_is_written_after_its_term,

@@ -30,6 +30,23 @@ the only readers of the enum are `barrier_can_block`, which needs no change,
 `describes_durable_storage`, which gains one comparison, and
 `switchable_persistence`, which forwards whatever it is given.
 
+## The one `node` change
+
+`persist_and_append_run` (`raft.hpp`) writes a follower's run, and it used
+`append_log_entries` only when the engine was **not** barriered. Every other
+engine got `persist_append` per entry, so that a real barrier covers the run.
+For an engine that answers `synchronous`, that per-entry path is N
+synchronous PUTs, where `append_log_entries` would send one PUT per segment
+or `append_concurrency` PUTs in flight. So the bulk arm's condition becomes
+`run_is_one_durable_write()`: the engine is not barriered, **or** it answers
+`synchronous`. A run then goes through one bulk call. The barrier it owes is
+a no-op and is still taken where it always was, under `_mutex`, because
+`barrier_can_block()` is false. Nothing else in `node` reads the new value.
+The file engine (barriered and bulk) answers `barrier` or `buffered`, never
+`synchronous`, so its path is unchanged. With `write_behind` on, the engine
+answers `barrier` and the run goes entry by entry into the staging queue,
+which is what lets one flush carry it.
+
 ## Engine state
 
 ```cpp

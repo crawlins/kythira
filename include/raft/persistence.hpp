@@ -34,9 +34,10 @@ using write_sequence = std::uint64_t;
 ///
 /// Requirement 5.4 of `.kiro/specs/durable-append-barrier/`: an engine that
 /// cannot take a barrier must be *detectable*, so that a configuration using
-/// one is refused the word durable rather than assumed optimistic. The three
-/// values are exactly the three the benchmark's durability axis reports, and
-/// two of them are not durable.
+/// one is refused the word durable rather than assumed optimistic. The first
+/// three values are the three the benchmark's durability axis reports, and two
+/// of them are not durable. `synchronous` is durable and never blocks
+/// (`.kiro/specs/object-store-group-commit/` Requirement 2).
 enum class durability_class : std::uint8_t {
     /// Nothing survives the process. `memory_persistence_engine`.
     none = 0,
@@ -46,6 +47,13 @@ enum class durability_class : std::uint8_t {
     buffered = 1,
     /// Every advertised append is covered by a barrier before it is advertised.
     barrier = 2,
+    /// Every append is durable when it returns, so a barrier has nothing to
+    /// wait for and never blocks. Durable, like `barrier`; but `node` keeps its
+    /// lock across the barrier, as for an engine with no barrier at all,
+    /// because releasing it would open an interleaving window for nothing. The
+    /// object-store engine without write-behind: each append is a PUT the
+    /// store acknowledged before the call returns.
+    synchronous = 3,
 };
 
 [[nodiscard]] inline auto to_string(durability_class c) -> std::string_view {
@@ -56,6 +64,8 @@ enum class durability_class : std::uint8_t {
             return "buffered";
         case durability_class::barrier:
             return "barrier";
+        case durability_class::synchronous:
+            return "synchronous";
     }
     return "unknown";
 }
@@ -97,10 +107,13 @@ concept barriered_persistence_engine =
 ///
 /// Requirement 5.4: the answer for an engine that does not implement the
 /// extension is **no**, not "probably". A missing barrier is not an omission
-/// to be read charitably — it is the defect this spec exists to remove.
+/// to be read charitably — it is the defect this spec exists to remove. An
+/// engine that answers `synchronous` is durable without a barrier to wait for.
 template<typename P> [[nodiscard]] auto describes_durable_storage(P& engine) -> bool {
     if constexpr (barriered_persistence_engine<P>) {
-        return engine.durability() == durability_class::barrier;
+        const auto durability = engine.durability();
+        return durability == durability_class::barrier ||
+               durability == durability_class::synchronous;
     } else {
         (void)engine;
         return false;

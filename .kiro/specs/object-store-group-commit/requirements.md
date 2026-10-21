@@ -25,8 +25,8 @@ So this spec is an **engine** change: the object-store engine becomes a
 barriered engine whose append *stages* an entry and whose barrier *flushes*
 every staged entry as one `append_log_entries` run. Under the segmented log
 (`log_layout::segmented`) that run is one PUT per segment. Under `per_entry` it
-is up to `append_concurrency` PUTs in flight. No `node` code changes, and the
-concepts change by one enumerator.
+is up to `append_concurrency` PUTs in flight. `node` changes in one place
+(Requirement 7.1), and the concepts change by one enumerator.
 
 **Scope**: `object_store_persistence_engine`'s append, barrier, truncation and
 compaction paths; one `durability_class` value and the two places that read
@@ -133,7 +133,15 @@ the barrier already allows; any change to the on-bucket format.
 
 ### Requirement 7: What `node` sees
 
-1. NO code in `raft.hpp` SHALL change.
+1. THE only change in `raft.hpp` SHALL be that `persist_and_append_run` hands
+   a run to `append_log_entries` as one call for a bulk-append engine that
+   answers `synchronous`, as it already does for one with no barrier.
+   *Amended October 21, 2026, during task 1:* this said no code in `raft.hpp`
+   would change, but `persist_and_append_run` used the bulk call only for an
+   engine that is not barriered. Once the object-store engine became
+   barriered, a follower's run went through `persist_append` one entry at a
+   time, a synchronous PUT each. That lost both `append_concurrency` and the
+   segmented layout's one PUT per segment, and broke Requirement 1.2.
 2. A leader with `write_behind` and N concurrent `submit_command` callers SHALL
    make fewer than N PUTs per N commands once N > 1, measured by the mock's
    request log.
