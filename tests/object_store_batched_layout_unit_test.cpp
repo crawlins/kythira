@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1394,6 +1395,136 @@ BOOST_AUTO_TEST_CASE(a_string_node_id_prefix_migrates) {
     BOOST_TEST(store.body(k_vote) == "retired");
     text_engine_t reader{store, k_bucket, k_prefix, combined()};
     BOOST_TEST(reader.load_voted_for().value() == "node-b");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Chain-walk recovery and stray hygiene (task 6) ──────────────────────────
+//
+// Layout-neutral: every object is still a singleton, so the walk must load
+// exactly what the contiguous-run rule it replaced loaded. What changes is
+// compaction, which now deletes strays before it deletes anything else.
+
+namespace {
+
+auto log_object_key(std::uint64_t index) -> std::string {
+    std::string digits = std::to_string(index);
+    return k_prefix + "/log/" + std::string(20 - digits.size(), '0') + digits;
+}
+
+auto loaded_indices(const std::vector<log_entry_t>& entries) -> std::vector<std::uint64_t> {
+    std::vector<std::uint64_t> out;
+    for (const auto& entry : entries) {
+        out.push_back(entry.index());
+    }
+    return out;
+}
+
+/// Entries 1..5 on the chain, and one stray at 7 past a gap at 6 — what a
+/// crash part-way through a two-entry `append_log_entries` of 6..7 leaves.
+template<typename Engine>
+auto seed_chain_and_stray(store_t& store, const kythira::object_persistence_options& opts) -> void {
+    Engine writer{store, k_bucket, k_prefix, opts};
+    for (std::uint64_t i = 1; i <= 5; ++i) {
+        writer.append_log_entry(make_entry(1, i));
+    }
+    // A non-extending single append is written as asked: the store now holds
+    // an object the chain cannot reach.
+    writer.append_log_entry(make_entry(1, 7));
+}
+
+template<typename Engine> auto a_compaction_deletes_a_stray_before_anything_else() -> void {
+    const auto opts = std::is_same_v<Engine, fenced_engine_t> ? fenced(separate()) : separate();
+    store_t store;
+    seed_chain_and_stray<Engine>(store, opts);
+
+    Engine eng{store, k_bucket, k_prefix, opts};
+    BOOST_TEST((eng.stray_log_indices() == std::vector<std::uint64_t>{7}));
+    BOOST_TEST(eng.get_last_log_index() == 5U);
+
+    store.clear_requests();
+    eng.delete_log_entries_before(6);
+    const auto requests = store.request_log();
+    BOOST_REQUIRE(!requests.empty());
+    BOOST_TEST(requests.front() == "DELETE " + log_object_key(7));
+    BOOST_TEST(requests.size() == 6U);
+    BOOST_TEST(eng.stray_log_indices().empty());
+
+    // Without the stray's DELETE, entry 7 would now be the lowest log object
+    // and this reload would start the log there.
+    Engine reloaded{store, k_bucket, k_prefix, opts};
+    BOOST_TEST(reloaded.get_last_log_index() == 0U);
+    BOOST_TEST(reloaded.get_log_entries(1, 100).empty());
+    BOOST_TEST(reloaded.stray_log_indices().empty());
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(chain_walk_recovery)
+
+BOOST_AUTO_TEST_CASE(the_walk_keeps_the_chain_from_the_lowest_object_and_strays_the_rest) {
+    store_t store;
+    {
+        engine_t writer{store, k_bucket, k_prefix, separate()};
+        for (const std::uint64_t i : {4, 5, 6, 8, 9, 11}) {
+            writer.append_log_entry(make_entry(1, i));
+        }
+    }
+    engine_t eng{store, k_bucket, k_prefix, separate()};
+    BOOST_TEST(
+        (loaded_indices(eng.get_log_entries(0, 100)) == std::vector<std::uint64_t>{4, 5, 6}));
+    BOOST_TEST((eng.stray_log_indices() == std::vector<std::uint64_t>{8, 9, 11}));
+}
+
+BOOST_AUTO_TEST_CASE(a_compaction_deletes_a_stray_that_would_become_the_chain_start) {
+    a_compaction_deletes_a_stray_before_anything_else<engine_t>();
+}
+
+BOOST_AUTO_TEST_CASE(a_fenced_compaction_deletes_a_stray_that_would_become_the_chain_start) {
+    a_compaction_deletes_a_stray_before_anything_else<fenced_engine_t>();
+}
+
+// No stray, no change: a compaction over a clean store sends exactly the
+// DELETEs it always did, lowest first.
+BOOST_AUTO_TEST_CASE(a_compaction_with_no_stray_sends_only_its_deletes) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, separate()};
+    for (std::uint64_t i = 1; i <= 5; ++i) {
+        eng.append_log_entry(make_entry(1, i));
+    }
+    store.clear_requests();
+    eng.delete_log_entries_before(4);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(1),
+                                                                "DELETE " + log_object_key(2),
+                                                                "DELETE " + log_object_key(3)}));
+}
+
+// The keep-set is the objects the run writes. Under `none` a stray the run
+// overwrites is not deleted first; one it does not is.
+BOOST_AUTO_TEST_CASE(a_batched_append_spares_only_the_strays_it_overwrites) {
+    store_t store;
+    {
+        engine_t writer{store, k_bucket, k_prefix, separate()};
+        for (std::uint64_t i = 1; i <= 3; ++i) {
+            writer.append_log_entry(make_entry(1, i));
+        }
+        writer.append_log_entry(make_entry(1, 5));
+        writer.append_log_entry(make_entry(1, 9));
+    }
+    kythira::object_persistence_options opts = separate();
+    opts.append_concurrency = 1;
+    engine_t eng{store, k_bucket, k_prefix, opts};
+    BOOST_TEST((eng.stray_log_indices() == std::vector<std::uint64_t>{5, 9}));
+    store.clear_requests();
+    eng.append_log_entries(make_run(2, 4, 3));
+    BOOST_TEST((store.request_log() ==
+                std::vector<std::string>{"DELETE " + log_object_key(9), "PUT " + log_object_key(4),
+                                         "PUT " + log_object_key(5), "PUT " + log_object_key(6)}));
+    BOOST_TEST(eng.stray_log_indices().empty());
+    engine_t reloaded{store, k_bucket, k_prefix, opts};
+    BOOST_TEST((loaded_indices(reloaded.get_log_entries(0, 100)) ==
+                std::vector<std::uint64_t>{1, 2, 3, 4, 5, 6}));
+    BOOST_TEST(reloaded.get_log_entry(5).value().term() == 2U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
