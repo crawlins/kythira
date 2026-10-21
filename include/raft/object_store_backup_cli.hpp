@@ -357,17 +357,27 @@ auto run_backup_cli(Store store, const backup_cli_args& args, std::ostream& out,
             }
             case backup_verb::verify: {
                 const auto report = backup.verify(dst, args.backup_id);
+                const auto print = [&out](const verification_problem& item) {
+                    out << "  " << item.kind << "  " << item.subject << "\n"
+                        << "      " << item.detail << "\n";
+                };
                 if (report.ok) {
                     out << "verified " << report.manifest.backup_id << " — no problems\n";
-                    return detail::k_exit_ok;
+                } else {
+                    out << "verified " << report.manifest.backup_id << " — "
+                        << report.problems.size() << " problem(s)\n";
+                    for (const auto& problem : report.problems) {
+                        print(problem);
+                    }
                 }
-                out << "verified " << report.manifest.backup_id << " — " << report.problems.size()
-                    << " problem(s)\n";
-                for (const auto& problem : report.problems) {
-                    out << "  " << problem.kind << "  " << problem.subject << "\n"
-                        << "      " << problem.detail << "\n";
+                // Notes do not change the exit status: they are not problems.
+                if (!report.notes.empty()) {
+                    out << report.notes.size() << " note(s)\n";
+                    for (const auto& note : report.notes) {
+                        print(note);
+                    }
                 }
-                return detail::k_exit_verify_problems;
+                return report.ok ? detail::k_exit_ok : detail::k_exit_verify_problems;
             }
             case backup_verb::restore_clone: {
                 const backup_source target{args.target_bucket, args.target_prefix};

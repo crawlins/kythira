@@ -507,3 +507,37 @@ BOOST_AUTO_TEST_CASE(restore_seed_from_an_upgraded_prefix_then_a_combined_engine
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ── Notes (`.kiro/specs/object-store-batched-layout/` task 8) ───────────────
+
+BOOST_AUTO_TEST_SUITE(backup_cli_notes)
+
+// A stray left by a torn compaction is printed, and does not turn a clean
+// verify into exit 3: a script gating a restore on verify must still restore.
+BOOST_AUTO_TEST_CASE(a_stray_is_printed_as_a_note_and_verify_still_exits_zero) {
+    const mock_object_store store;
+    object_persistence_options opts;
+    opts.log = log_layout::segmented;
+    opts.append_concurrency = 1;
+    {
+        text_engine_t writer{store, k_bucket, "node-1", opts};
+        writer.save_hard_state(4, std::string("n1"));
+        std::vector<engine_entry_t> run;
+        for (std::uint64_t i = 1; i <= 6; ++i) {
+            run.push_back(engine_entry_t{4, i, {}});
+        }
+        writer.append_log_entries(run);
+        store.fail_next_deletes(1);
+        BOOST_CHECK_THROW(writer.delete_log_entries_before(3), std::runtime_error);
+    }
+    BOOST_TEST(create_b1(store).exit_code == 0);
+
+    const auto verified = run_cli(store, {"raft_object_backup", "verify", "--dest-bucket", k_bucket,
+                                          "--dest-prefix", "backups", "--backup-id", "b1"});
+    BOOST_TEST(verified.exit_code == 0, verified.out);
+    BOOST_TEST(verified.out.find("no problems") != std::string::npos);
+    BOOST_TEST(verified.out.find("1 note(s)") != std::string::npos);
+    BOOST_TEST(verified.out.find("stray_object  " + log_key(3)) != std::string::npos);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
