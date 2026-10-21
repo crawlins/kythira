@@ -81,7 +81,11 @@ Three findings shaped the requirements below; each is argued in the design.
 - **Leader group commit** — coalescing concurrent `submit_command` calls into
   one `append_log_entries`. It is the change that would lift the cluster's
   append ceiling (finding 2), and it is a `node` concurrency change affecting
-  every engine, so it gets its own spec.
+  every engine, so it gets its own spec. (Scoped October 21, 2026, design
+  open question 1: `node` already coalesces through the durability barrier;
+  the gap is that the object-store engine is not a
+  `barriered_persistence_engine`, so the fix is engine-local. It still gets
+  its own spec, written after task 7.)
 - Persisting in parallel with sending (a candidate sending RequestVote while its
   own hard-state PUT is in flight; Ongaro §10.2.1's leader-side equivalent).
 - Merging small existing objects into larger ones (a background compactor).
