@@ -5,6 +5,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 21, 2026)
 
+- **The object-store engine is a barriered engine and calls itself durable.**
+  It now provides `append_log_entry_sequenced`, `barrier_through`,
+  `durable_through` and `durability()`, and answers a new
+  `durability_class::synchronous`: every append is durable when it returns,
+  and a barrier never blocks. `describes_durable_storage` accepts it, so an
+  object-store configuration is no longer reported as not durable. `node`
+  keeps its lock across the barrier as before, and still hands a follower's
+  run to `append_log_entries` as one call. That took one change in
+  `persist_and_append_run`, which used the bulk call only for engines without
+  a barrier. The requests sent are unchanged. This is the base for opt-in
+  write-behind group commit. Planned in
+  `.kiro/specs/object-store-group-commit/` task 1.
+
 - **`doc/cloud_object_persistence.md` covers the new layouts.** A layout
   options table for `hard_state` and `log`, the transitions between them, the
   election rule for each (`4 ×` and, combined, `2 × p99(PUT)`, worked against

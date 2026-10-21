@@ -1030,6 +1030,7 @@ public:
           _bucket(std::move(other._bucket)),
           _prefix(std::move(other._prefix)),
           _opts(other._opts),
+          _write_seq(other._write_seq),
           _current_term(other._current_term),
           _voted_for(std::move(other._voted_for)),
           _log(std::move(other._log)),
@@ -1204,6 +1205,42 @@ public:
     /// while the mirror believed it was the log.
     auto append_log_entry(const log_entry_t& entry) -> void {
         std::lock_guard lock(_mu);
+        append_log_entry_locked(entry);
+    }
+
+    // ── barriered_persistence_engine (include/raft/persistence.hpp) ─────────
+    //
+    // `.kiro/specs/object-store-group-commit/` task 1. Every append is a PUT
+    // the store acknowledged before the call returns, so a barrier has nothing
+    // to wait for and the engine answers `durability_class::synchronous`:
+    // durable, and never blocking, so `node` keeps its lock exactly as it did
+    // when this engine had no barrier, and still hands a follower's run to
+    // `append_log_entries` as one call. The requests are unchanged.
+
+    /// @brief `append_log_entry`, returning the sequence assigned to it under
+    ///        the same lock that wrote it.
+    auto append_log_entry_sequenced(const log_entry_t& entry) -> write_sequence {
+        std::lock_guard lock(_mu);
+        append_log_entry_locked(entry);
+        return _write_seq;
+    }
+
+    /// @brief Returns at once: every append through @p seq is already on the
+    ///        store.
+    auto barrier_through(write_sequence /*seq*/) -> void {}
+
+    /// @brief The last sequence assigned, which is also the last one durable.
+    [[nodiscard]] auto durable_through() const -> write_sequence {
+        std::lock_guard lock(_mu);
+        return _write_seq;
+    }
+
+    [[nodiscard]] static auto durability() -> durability_class {
+        return durability_class::synchronous;
+    }
+
+private:
+    auto append_log_entry_locked(const log_entry_t& entry) -> void {
         throw_if_fenced();
         if (!_segments.empty() && object_of(entry.index()).second != entry.index()) {
             throw std::invalid_argument(
@@ -1227,8 +1264,10 @@ public:
             put_object(key, body);
         }
         _log[entry.index()] = entry;
+        ++_write_seq;
     }
 
+public:
     /// @brief `bulk_append_persistence_engine` (include/raft/persistence.hpp):
     ///        one PUT per entry, up to `append_concurrency` of them in flight.
     ///
@@ -1358,6 +1397,7 @@ public:
         for (const auto& entry : entries) {
             _log[entry.index()] = entry;
         }
+        _write_seq += entries.size();
         for (std::size_t i = 0; i < chunks.size(); ++i) {
             const auto& [begin, end] = chunks[i];
             if (end - begin > 1) {
@@ -2860,6 +2900,9 @@ private:
     object_persistence_options _opts;
 
     mutable std::mutex _mu;
+    /// One per entry appended, by any append call; the barrier concept's
+    /// sequence. Every one is durable when it is assigned.
+    write_sequence _write_seq{0};
     TermId _current_term{0};
     std::optional<NodeId> _voted_for;
     /// Ordered, not hashed: `get_log_entries`, `truncate_log`,
@@ -2999,6 +3042,19 @@ static_assert(
                        std::uint64_t, std::uint64_t, std::uint64_t, log_entry<>, snapshot<>>,
     "a fenced object_store_persistence_engine must satisfy the persistence_engine "
     "concept too");
+
+/// …and the barrier extension, so `node` takes its barriered path for this
+/// engine and a group-scoped wrapper forwards it
+/// (`.kiro/specs/object-store-group-commit/` Requirement 1.3).
+static_assert(
+    barriered_persistence_engine<
+        object_store_persistence_engine<object_store_persistence_detail::concept_check_store>>,
+    "object_store_persistence_engine must satisfy barriered_persistence_engine");
+static_assert(
+    bulk_append_persistence_engine<
+        object_store_persistence_engine<object_store_persistence_detail::concept_check_store>>,
+    "object_store_persistence_engine must keep bulk_append_persistence_engine, "
+    "which node uses for a synchronous engine's follower runs");
 
 namespace object_store_persistence_detail {
 
