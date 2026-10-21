@@ -395,7 +395,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <condition_variable>
 #include <ctime>
+#include <deque>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -631,6 +633,18 @@ struct object_persistence_options {
     /// `log_layout::per_entry`. An entry whose own record is larger is written
     /// as a singleton, bounded by `max_object_bytes` alone.
     std::size_t max_segment_bytes{1024U * 1024U};
+
+    /// Leader group commit (`.kiro/specs/object-store-group-commit/`). Off —
+    /// the default — every append is a PUT acknowledged before the call
+    /// returns and the engine answers `durability_class::synchronous`, so
+    /// `node` keeps its lock and its requests exactly as before. On, an append
+    /// *stages* the entry with no request and `barrier_through` flushes every
+    /// staged entry as one run (one PUT per segment under `segmented`, up to
+    /// `append_concurrency` single-entry PUTs under `per_entry`); the engine
+    /// answers `durability_class::barrier`, so `node` waits for that flush with
+    /// its lock released and concurrent commands share it. Accepted under
+    /// either log layout and either fencing mode.
+    bool write_behind{false};
 };
 
 namespace object_store_persistence_detail {
@@ -1029,8 +1043,13 @@ public:
         : _store(std::move(other._store)),
           _bucket(std::move(other._bucket)),
           _prefix(std::move(other._prefix)),
-          _opts(other._opts),
+          _opts(std::move(other._opts)),
           _write_seq(other._write_seq),
+          _durable_seq(other._durable_seq),
+          _staged(std::move(other._staged)),
+          _discarded(std::move(other._discarded)),
+          _flushes_issued(other._flushes_issued),
+          _last_failed_flush(std::move(other._last_failed_flush)),
           _current_term(other._current_term),
           _voted_for(std::move(other._voted_for)),
           _log(std::move(other._log)),
@@ -1204,42 +1223,311 @@ public:
     /// request: a singleton there would sit inside the segment, off the chain,
     /// while the mirror believed it was the log.
     auto append_log_entry(const log_entry_t& entry) -> void {
-        std::lock_guard lock(_mu);
+        std::unique_lock lock(_mu);
+        if (_opts.write_behind) {
+            // Requirement 3.2: a caller that does not know about the barrier
+            // still gets a durable append — and, like any failed append, a
+            // throw leaves it out of the log. The staged entry (and anything
+            // staged above it since) is dropped, as a truncation would drop
+            // it; an object the flush sent for it is already a stray.
+            const write_sequence seq = stage_locked(entry);
+            try {
+                barrier_through_locked(lock, seq);
+            } catch (...) {
+                wait_for_no_flush(lock);
+                if (seq <= _durable_seq && !_discarded.contains(seq)) {
+                    // Another caller's retry flushed it while this one was
+                    // unwinding: it is durable after all.
+                    return;
+                }
+                while (!_staged.empty() && _staged.back().entry.index() >= entry.index()) {
+                    discard_staged(_staged.back());
+                    _staged.pop_back();
+                }
+                throw;
+            }
+            return;
+        }
         append_log_entry_locked(entry);
     }
 
     // ── barriered_persistence_engine (include/raft/persistence.hpp) ─────────
     //
-    // `.kiro/specs/object-store-group-commit/` task 1. Every append is a PUT
-    // the store acknowledged before the call returns, so a barrier has nothing
-    // to wait for and the engine answers `durability_class::synchronous`:
-    // durable, and never blocking, so `node` keeps its lock exactly as it did
-    // when this engine had no barrier, and still hands a follower's run to
-    // `append_log_entries` as one call. The requests are unchanged.
+    // `.kiro/specs/object-store-group-commit/`. With `write_behind` off every
+    // append is a PUT the store acknowledged before the call returns, so a
+    // barrier has nothing to wait for and the engine answers
+    // `durability_class::synchronous`: durable and never blocking, so `node`
+    // keeps its lock exactly as it did when this engine had no barrier, and
+    // still hands a follower's run to `append_log_entries` as one call. The
+    // requests are unchanged.
+    //
+    // With `write_behind` on, an append stages and `barrier_through` flushes,
+    // and the engine answers `durability_class::barrier`. The flush follows
+    // the barrier ordering rule: the highest sequence it claims is sampled
+    // before its first request and published after its last acknowledgement.
+    // It releases `_mu` across the requests, so appends keep staging while it
+    // runs and the next flush carries all of them.
 
-    /// @brief `append_log_entry`, returning the sequence assigned to it under
-    ///        the same lock that wrote it.
+    /// @brief Append @p entry and return its sequence: a PUT when
+    ///        `write_behind` is off, staged with no request when it is on.
     auto append_log_entry_sequenced(const log_entry_t& entry) -> write_sequence {
         std::lock_guard lock(_mu);
+        if (_opts.write_behind) {
+            return stage_locked(entry);
+        }
         append_log_entry_locked(entry);
         return _write_seq;
     }
 
-    /// @brief Returns at once: every append through @p seq is already on the
-    ///        store.
-    auto barrier_through(write_sequence /*seq*/) -> void {}
-
-    /// @brief The last sequence assigned, which is also the last one durable.
-    [[nodiscard]] auto durable_through() const -> write_sequence {
-        std::lock_guard lock(_mu);
-        return _write_seq;
+    /// @brief Return once every append through @p seq is on the store.
+    ///
+    /// With `write_behind` off that is already so. With it on, wait for a
+    /// flush in flight, then flush everything still staged if @p seq is not
+    /// yet covered; a flush that fails throws to every caller it was to
+    /// cover. Throws without waiting for a sequence whose entry a truncation
+    /// or compaction dropped before it was flushed.
+    auto barrier_through(write_sequence seq) -> void {
+        if (!_opts.write_behind) {
+            return;
+        }
+        std::unique_lock lock(_mu);
+        barrier_through_locked(lock, seq);
     }
 
-    [[nodiscard]] static auto durability() -> durability_class {
-        return durability_class::synchronous;
+    /// @brief The highest sequence known to be on the store.
+    [[nodiscard]] auto durable_through() const -> write_sequence {
+        std::lock_guard lock(_mu);
+        return _durable_seq;
+    }
+
+    [[nodiscard]] auto durability() const -> durability_class {
+        return _opts.write_behind ? durability_class::barrier : durability_class::synchronous;
+    }
+
+    /// @brief Flushes started so far; how a test sees N barriers share one.
+    [[nodiscard]] auto flushes_issued() const -> std::uint64_t {
+        std::lock_guard lock(_mu);
+        return _flushes_issued;
+    }
+
+    /// @brief Entries staged and not yet flushed.
+    [[nodiscard]] auto staged_entry_count() const -> std::size_t {
+        std::lock_guard lock(_mu);
+        return _staged.size();
     }
 
 private:
+    // ── Write-behind ─────────────────────────────────────────────────────────
+
+    /// One staged entry: in `_log` already, and on the store not yet.
+    struct staged_entry {
+        log_entry_t entry;
+        write_sequence seq{0};
+    };
+
+    /// The last failed flush: its number, the highest sequence it claimed, and
+    /// why. A barrier that waited on that flush and whose sequence it covered
+    /// throws this, rather than starting a retry of its own (Requirement 5.1).
+    struct failed_flush {
+        std::uint64_t number{0};
+        write_sequence through{0};
+        std::string what;
+    };
+
+    /// Requirement 3.1: validate, mirror and stage, with no request. The entry
+    /// must continue the log, because a flush writes the staged queue as one
+    /// run above everything flushed; `node` only ever appends at the last
+    /// index + 1. Its own record must fit `max_object_bytes`, the one size
+    /// check that cannot wait for the flush.
+    auto stage_locked(const log_entry_t& entry) -> write_sequence {
+        throw_if_fenced();
+        if (!_log.empty() && entry.index() != _log.rbegin()->first + 1) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: under write_behind an append must continue the "
+                "log at its last index + 1 (got " +
+                std::to_string(static_cast<unsigned long long>(entry.index())) + " after " +
+                std::to_string(static_cast<unsigned long long>(_log.rbegin()->first)) + ")");
+        }
+        const std::string key = log_key(entry.index());
+        check_object_size(key, entry_to_json(entry));
+        _log[entry.index()] = entry;
+        _staged.push_back(staged_entry{entry, ++_write_seq});
+        return _write_seq;
+    }
+
+    /// Drop a staged entry from the mirror and remember that its sequence will
+    /// never be published.
+    auto discard_staged(const staged_entry& staged) -> void {
+        _log.erase(staged.entry.index());
+        _discarded.insert(staged.seq);
+    }
+
+    auto wait_for_no_flush(std::unique_lock<std::mutex>& lock) -> void {
+        _flush_cv.wait(lock, [this] { return !_flush_running; });
+    }
+
+    auto barrier_through_locked(std::unique_lock<std::mutex>& lock, write_sequence seq) -> void {
+        if (seq > _write_seq) {
+            throw std::invalid_argument("object_store_persistence_engine: barrier_through(" +
+                                        std::to_string(seq) +
+                                        ") names a sequence this engine never assigned (last " +
+                                        std::to_string(_write_seq) + ")");
+        }
+        for (;;) {
+            if (_discarded.contains(seq)) {
+                throw std::runtime_error(
+                    "object_store_persistence_engine: sequence " + std::to_string(seq) +
+                    " can never be made durable: its entry was truncated or compacted away "
+                    "before it was flushed");
+            }
+            if (seq <= _durable_seq) {
+                return;
+            }
+            throw_if_fenced();
+            if (_flush_running) {
+                const std::uint64_t awaited = _flushes_issued;
+                wait_for_no_flush(lock);
+                if (_last_failed_flush && _last_failed_flush->number == awaited &&
+                    seq <= _last_failed_flush->through && seq > _durable_seq) {
+                    throw_if_fenced();
+                    throw std::runtime_error(_last_failed_flush->what);
+                }
+                continue;
+            }
+            // Not durable, not discarded, and no flush running: it is staged.
+            if (_staged.empty()) {
+                throw std::logic_error("object_store_persistence_engine: sequence " +
+                                       std::to_string(seq) +
+                                       " is neither durable, discarded nor staged");
+            }
+            flush_locked(lock);
+        }
+    }
+
+    /// Flush until nothing is staged.
+    auto drain_locked(std::unique_lock<std::mutex>& lock) -> void {
+        for (;;) {
+            wait_for_no_flush(lock);
+            throw_if_fenced();
+            if (_staged.empty()) {
+                return;
+            }
+            flush_locked(lock);
+        }
+    }
+
+    /// One flush: every staged entry as one run, `_mu` released across the
+    /// requests. Publishes the run's acknowledged prefix of objects; records
+    /// every other object it sent as a stray and leaves those entries staged,
+    /// so the next barrier deletes the strays and retries them (Requirement
+    /// 5.2). Throws if any object failed, latching on a refused precondition.
+    auto flush_locked(std::unique_lock<std::mutex>& lock) -> void {
+        std::vector<log_entry_t> run;
+        std::vector<write_sequence> seqs;
+        run.reserve(_staged.size());
+        seqs.reserve(_staged.size());
+        for (const auto& staged : _staged) {
+            run.push_back(staged.entry);
+            seqs.push_back(staged.seq);
+        }
+
+        std::vector<std::string> records;
+        records.reserve(run.size());
+        for (const auto& entry : run) {
+            records.push_back(entry_to_json(entry));
+        }
+        std::vector<std::pair<std::size_t, std::size_t>> chunks;
+        if (segmented_log()) {
+            chunks = chunk_run(run.front().index(), records);
+        } else {
+            chunks.reserve(run.size());
+            for (std::size_t i = 0; i < run.size(); ++i) {
+                chunks.emplace_back(i, i + 1);
+            }
+        }
+        std::vector<std::string> keys;
+        std::vector<std::string> bodies;
+        std::set<LogIndex> written;
+        keys.reserve(chunks.size());
+        bodies.reserve(chunks.size());
+        for (const auto& [begin, end] : chunks) {
+            keys.push_back(log_key(run[begin].index()));
+            bodies.push_back(
+                log_object_body(run[begin].index(),
+                                std::span<const std::string>(records).subspan(begin, end - begin)));
+            written.insert(run[begin].index());
+        }
+        // Under `_mu`, before any PUT, as every log write does (stray invariant
+        // I1): at most one DELETE per earlier failure.
+        clear_strays(written);
+
+        // Sampled here, before the first request (the barrier ordering rule).
+        const write_sequence sampled = seqs.back();
+        const std::uint64_t number = ++_flushes_issued;
+        _flush_running = true;
+        const std::size_t workers =
+            concurrent_key_object_store<Store> ? _opts.append_concurrency : 1;
+        std::vector<put_outcome> outcomes;
+        lock.unlock();
+        try {
+            outcomes = put_log_objects(keys, bodies, workers);
+        } catch (...) {
+            lock.lock();
+            _flush_running = false;
+            _flush_cv.notify_all();
+            throw;
+        }
+        lock.lock();
+        _flush_running = false;
+
+        // The acknowledged prefix of objects, published after the last of
+        // them was acknowledged.
+        std::size_t acknowledged = 0;
+        while (acknowledged < outcomes.size() && outcomes[acknowledged].state == put_state::ok) {
+            ++acknowledged;
+        }
+        for (std::size_t i = 0; i < acknowledged; ++i) {
+            const auto& [begin, end] = chunks[i];
+            if (end - begin > 1) {
+                _segments[run[begin].index()] =
+                    segment_meta{run[end - 1].index(), std::move(outcomes[i].version)};
+            }
+            for (std::size_t k = begin; k < end; ++k) {
+                _staged.pop_front();
+            }
+            _durable_seq = std::max(_durable_seq, seqs[end - 1]);
+        }
+        if (acknowledged == outcomes.size()) {
+            _flush_cv.notify_all();
+            return;
+        }
+
+        const put_outcome* failure = nullptr;
+        for (std::size_t i = acknowledged; i < outcomes.size(); ++i) {
+            if (outcomes[i].state != put_state::not_sent) {
+                _strays.insert(run[chunks[i].first].index());
+            }
+            if (failure == nullptr && outcomes[i].state != put_state::ok &&
+                outcomes[i].state != put_state::not_sent) {
+                failure = &outcomes[i];
+            }
+        }
+        const std::string what =
+            "object_store_persistence_engine: flush of " + std::to_string(run.size()) +
+            " staged log entries failed after " + std::to_string(acknowledged) + " of " +
+            std::to_string(outcomes.size()) +
+            " objects; the rest stay staged and are retried by the next barrier" +
+            (failure != nullptr ? ": " + failure->detail : std::string());
+        _last_failed_flush = failed_flush{number, sampled, what};
+        _flush_cv.notify_all();
+        for (std::size_t i = acknowledged; i < outcomes.size(); ++i) {
+            if (outcomes[i].state == put_state::precondition_failed) {
+                latch(outcomes[i].key, {}, outcomes[i].detail);
+            }
+        }
+        throw std::runtime_error(what);
+    }
+
     auto append_log_entry_locked(const log_entry_t& entry) -> void {
         throw_if_fenced();
         if (!_segments.empty() && object_of(entry.index()).second != entry.index()) {
@@ -1265,6 +1553,7 @@ private:
         }
         _log[entry.index()] = entry;
         ++_write_seq;
+        _durable_seq = _write_seq;
     }
 
 public:
@@ -1308,7 +1597,14 @@ public:
         if (entries.empty()) {
             return;
         }
-        std::lock_guard lock(_mu);
+        std::unique_lock lock(_mu);
+        if (_opts.write_behind) {
+            // Everything staged goes first, so the run below continues a log
+            // that is all on the store and keeps the all-or-nothing contract
+            // exactly as it is without write-behind. `node` does not call this
+            // under write-behind; its runs stage entry by entry.
+            drain_locked(lock);
+        }
         throw_if_fenced();
 
         const bool extends = extends_log(entries);
@@ -1398,6 +1694,7 @@ public:
             _log[entry.index()] = entry;
         }
         _write_seq += entries.size();
+        _durable_seq = _write_seq;
         for (std::size_t i = 0; i < chunks.size(); ++i) {
             const auto& [begin, end] = chunks[i];
             if (end - begin > 1) {
@@ -1463,9 +1760,23 @@ public:
     /// point: every earlier request leaves a chain that is a prefix of the
     /// pre-call log no shorter than the post-call one (Requirement 7).
     auto truncate_log(LogIndex index) -> void {
-        std::lock_guard lock(_mu);
+        std::unique_lock lock(_mu);
+        wait_for_no_flush(lock);
         throw_if_fenced();
+        // Staged entries are the top of the log and on no object, so the ones
+        // at or above `index` are dropped without a request (Requirement 6.2).
+        while (!_staged.empty() && _staged.back().entry.index() >= index) {
+            discard_staged(_staged.back());
+            _staged.pop_back();
+        }
+        // Before anything else, as always. Under write-behind this includes
+        // objects a failed flush sent for entries just dropped.
         clear_strays({});
+        if (!_staged.empty()) {
+            // Every flushed entry is below the remaining staged ones, which
+            // are below `index`: nothing else on the store is affected.
+            return;
+        }
         while (!_log.empty() && object_of(_log.rbegin()->first).first >= index) {
             const LogIndex first = object_of(_log.rbegin()->first).first;
             delete_object(log_key(first));
@@ -1510,8 +1821,16 @@ public:
     /// point — is acknowledged. A crash before it reads the pre-compaction
     /// suffix, with the new object off the chain (Requirement 8).
     auto delete_log_entries_before(LogIndex index) -> void {
-        std::lock_guard lock(_mu);
+        std::unique_lock lock(_mu);
+        wait_for_no_flush(lock);
         throw_if_fenced();
+        // Requirement 6.3. Staged entries are above every flushed one, so a
+        // staged entry below `index` means every flushed object ends below it
+        // too, and the loop below deletes them all.
+        while (!_staged.empty() && _staged.front().entry.index() < index) {
+            discard_staged(_staged.front());
+            _staged.pop_front();
+        }
         clear_strays({});
         while (!_log.empty()) {
             const auto [first, last] = object_of(_log.begin()->first);
@@ -2901,8 +3220,29 @@ private:
 
     mutable std::mutex _mu;
     /// One per entry appended, by any append call; the barrier concept's
-    /// sequence. Every one is durable when it is assigned.
+    /// sequence, assigned under `_mu` in index order.
     write_sequence _write_seq{0};
+    /// The last sequence a flush published. Equal to `_write_seq` whenever
+    /// `write_behind` is off.
+    write_sequence _durable_seq{0};
+
+    /// Entries staged under `write_behind`, in index (and so sequence) order,
+    /// always the top of `_log`. Empty when `write_behind` is off.
+    std::deque<staged_entry> _staged;
+    /// Sequences whose entry a truncation or compaction dropped before any
+    /// flush wrote it. `barrier_through` of one throws rather than reporting
+    /// it durable because a later sequence was (Requirement 5.4). Bounded by
+    /// the staged entries ever discarded, which only a conflicting follower
+    /// truncation produces.
+    std::set<write_sequence> _discarded;
+    /// At most one flush runs at a time; it releases `_mu` across its
+    /// requests, and everyone else who needs the log to be still waits on
+    /// `_flush_cv` until it is done.
+    bool _flush_running{false};
+    std::condition_variable _flush_cv;
+    std::uint64_t _flushes_issued{0};
+    /// The last failed flush (see `failed_flush`).
+    std::optional<failed_flush> _last_failed_flush;
     TermId _current_term{0};
     std::optional<NodeId> _voted_for;
     /// Ordered, not hashed: `get_log_entries`, `truncate_log`,

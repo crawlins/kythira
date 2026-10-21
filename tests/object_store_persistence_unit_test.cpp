@@ -299,6 +299,70 @@ using both_layouts_harness =
 using both_layouts_fenced_harness =
     segmented_fenced_mock_object_store_harness<kythira::hard_state_layout::combined>;
 
+/// Write-behind group commit (`.kiro/specs/object-store-group-commit/` task
+/// 2) over each log layout, unfenced and fenced. Every conformance case
+/// appends through `append_log_entry` or `append_log_entries`, which under
+/// write-behind stage and then flush before they return, so the suite runs
+/// the staging, flush and drain paths with the same expectations.
+template<kythira::log_layout Log>
+struct write_behind_mock_object_store_harness : mock_object_store_harness {
+    [[nodiscard]] static auto default_options() -> kythira::object_persistence_options {
+        kythira::object_persistence_options opts;
+        opts.log = Log;
+        opts.write_behind = true;
+        return opts;
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name), default_options()};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{store, bucket(), prefix(), opts};
+    }
+};
+
+template<kythira::log_layout Log>
+struct write_behind_fenced_mock_object_store_harness : fenced_mock_object_store_harness {
+    [[nodiscard]] static auto default_options() -> kythira::object_persistence_options {
+        return write_behind_mock_object_store_harness<Log>::default_options();
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        kythira::object_persistence_options opts = default_options();
+        opts.owner_id = owner_id();
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        opts.owner_id = owner_id();
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine_as(std::string owner,
+                                      std::optional<std::uint64_t> takeover_epoch) const
+        -> engine_t {
+        kythira::object_persistence_options opts = default_options();
+        opts.owner_id = std::move(owner);
+        opts.takeover_epoch = takeover_epoch;
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+};
+
+using write_behind_harness = write_behind_mock_object_store_harness<kythira::log_layout::per_entry>;
+using write_behind_fenced_harness =
+    write_behind_fenced_mock_object_store_harness<kythira::log_layout::per_entry>;
+using write_behind_segmented_harness =
+    write_behind_mock_object_store_harness<kythira::log_layout::segmented>;
+using write_behind_segmented_fenced_harness =
+    write_behind_fenced_mock_object_store_harness<kythira::log_layout::segmented>;
+
 using engine_t = mock_object_store_harness::engine_t;
 using fenced_engine_t = fenced_mock_object_store_harness::engine_t;
 using log_entry_t = kythira::log_entry<>;
@@ -365,6 +429,19 @@ KYTHIRA_OBJECT_STORE_CONFORMANCE(both_layouts_harness, both_layouts_mock_object_
 KYTHIRA_OBJECT_STORE_CONFORMANCE(both_layouts_fenced_harness, both_layouts_fenced_mock_object_store)
 KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(both_layouts_fenced_harness,
                                          both_layouts_fenced_mock_object_store)
+
+// …and with write-behind group commit on (`.kiro/specs/object-store-group-commit/`
+// task 2, Requirement 8.1), over both log layouts, unfenced and fenced.
+KYTHIRA_OBJECT_STORE_CONFORMANCE(write_behind_harness, write_behind_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(write_behind_fenced_harness, write_behind_fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(write_behind_fenced_harness,
+                                         write_behind_fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(write_behind_segmented_harness,
+                                 write_behind_segmented_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(write_behind_segmented_fenced_harness,
+                                 write_behind_segmented_fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(write_behind_segmented_fenced_harness,
+                                         write_behind_segmented_fenced_mock_object_store)
 
 // ── Concepts ─────────────────────────────────────────────────────────────────
 
