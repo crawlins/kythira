@@ -28,6 +28,16 @@
 //     `durability_class::synchronous` — the object store without write-behind
 //     (`.kiro/specs/object-store-group-commit/` Requirement 1.2): its runs
 //     still arrive in one call.
+//  8. On an engine whose barrier can block (`durability_class::barrier`,
+//     the object store with write-behind), a follower answers success only
+//     for entries a barrier has covered. Entries an earlier AppendEntries
+//     appended but did not make durable (its barrier failed, or is still
+//     running on a transport that serves RPCs concurrently) are covered by
+//     a barrier the later one takes, not answered for at once.
+//  9. An append the engine refuses leaves the entry out of the follower's
+//     log as well, so the leader's retry stores it rather than finding it
+//     "already held" and being answered success for an entry the store
+//     never received.
 //
 // Engine-level behaviour of the two calls is in
 // batched_durable_writes_unit_test.cpp.
@@ -52,6 +62,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -87,6 +98,11 @@ struct write_record {
     std::vector<std::string> ops;
     memory_engine_t state;
 
+    // Property 8/9 faults: how many sequenced appends, and how many barriers
+    // of a `Blocking` engine, throw before doing anything.
+    std::size_t refuse_appends = 0;
+    std::size_t refuse_barriers = 0;
+
     auto note(std::string op) -> void { ops.push_back(std::move(op)); }
 
     [[nodiscard]] auto snapshot_ops() -> std::vector<std::string> {
@@ -101,7 +117,10 @@ struct write_record {
 /// `append_log_entries` and `save_hard_state`; without it the engine has only
 /// the base concept. `Synchronous` adds the barrier extension answering
 /// `durability_class::synchronous`, as the object-store engine now does.
-template<bool Extended, bool Synchronous = false> class recording_engine {
+/// `Blocking` (with `Synchronous`) answers `durability_class::barrier`
+/// instead, as the object store with write-behind does, and records each
+/// barrier it is asked for.
+template<bool Extended, bool Synchronous = false, bool Blocking = false> class recording_engine {
 public:
     using log_entry_t = ::log_entry_t;
     using snapshot_t = ::snapshot_t;
@@ -181,13 +200,28 @@ public:
     requires Synchronous
     {
         const std::lock_guard lock(_r->mu);
+        if (_r->refuse_appends > 0) {
+            --_r->refuse_appends;
+            _r->note("refused:" + std::to_string(entry.index()));
+            throw std::runtime_error("recording_engine: append refused");
+        }
         _r->note("append:" + std::to_string(entry.index()));
         _r->state.append_log_entry(entry);
         return ++_seq;
     }
-    auto barrier_through(kythira::write_sequence /*seq*/) -> void
+    auto barrier_through(kythira::write_sequence seq) -> void
     requires Synchronous
-    {}
+    {
+        if constexpr (Blocking) {
+            const std::lock_guard lock(_r->mu);
+            if (_r->refuse_barriers > 0) {
+                --_r->refuse_barriers;
+                _r->note("barrier_failed:" + std::to_string(seq));
+                throw std::runtime_error("recording_engine: barrier failed");
+            }
+            _r->note("barrier:" + std::to_string(seq));
+        }
+    }
     [[nodiscard]] auto durable_through() const -> kythira::write_sequence
     requires Synchronous
     {
@@ -196,7 +230,8 @@ public:
     [[nodiscard]] static auto durability() -> kythira::durability_class
     requires Synchronous
     {
-        return kythira::durability_class::synchronous;
+        return Blocking ? kythira::durability_class::barrier
+                        : kythira::durability_class::synchronous;
     }
 
 private:
@@ -211,6 +246,7 @@ static_assert(!kythira::bulk_append_persistence_engine<recording_engine<false>>)
 static_assert(!kythira::hard_state_persistence_engine<recording_engine<false>>);
 static_assert(kythira::barriered_persistence_engine<recording_engine<true, true>>);
 static_assert(kythira::bulk_append_persistence_engine<recording_engine<true, true>>);
+static_assert(kythira::barriered_persistence_engine<recording_engine<true, true, true>>);
 
 template<typename NodeId, typename Address> class preset_peer_discovery {
 public:
@@ -226,7 +262,7 @@ public:
     }
 };
 
-template<bool Extended, bool Synchronous = false> struct test_types {
+template<bool Extended, bool Synchronous = false, bool Blocking = false> struct test_types {
     using future_type = kythira::future_default<std::vector<std::byte>>;
     using promise_type = kythira::promise_default<std::vector<std::byte>>;
     using try_type = kythira::try_default<std::vector<std::byte>>;
@@ -246,7 +282,7 @@ template<bool Extended, bool Synchronous = false> struct test_types {
         kythira::simulator_network_server<raft_network_types, serializer_type,
                                           serialized_data_type>;
 
-    using persistence_engine_type = recording_engine<Extended, Synchronous>;
+    using persistence_engine_type = recording_engine<Extended, Synchronous, Blocking>;
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
@@ -332,8 +368,8 @@ auto seed(write_record& record, std::uint64_t id, std::optional<std::uint64_t> v
     }
 }
 
-template<bool Extended, bool Synchronous = false> struct cluster {
-    using types = test_types<Extended, Synchronous>;
+template<bool Extended, bool Synchronous = false, bool Blocking = false> struct cluster {
+    using types = test_types<Extended, Synchronous, Blocking>;
     using node_t = kythira::node<types>;
     using sim_t = network_simulator::NetworkSimulator<typename types::raft_network_types>;
 
@@ -365,7 +401,7 @@ template<bool Extended, bool Synchronous = false> struct cluster {
                     typename types::network_client_type{net, typename types::serializer_type{}},
                 .network_server =
                     typename types::network_server_type{net, typename types::serializer_type{}},
-                .persistence = recording_engine<Extended, Synchronous>{record},
+                .persistence = recording_engine<Extended, Synchronous, Blocking>{record},
                 .logger = kythira::console_logger{kythira::log_level::info},
                 .metrics = typename types::metrics_type{},
                 .membership = typename types::membership_manager_type{},
@@ -429,11 +465,12 @@ template<bool Extended, bool Synchronous = false> struct cluster {
     }
 
     /// A client on a simulator node of the test's own, wired only to `id`,
-    /// for sending that member RPCs by hand.
-    auto client_to(std::uint64_t id) -> typename types::network_client_type {
-        auto net = sim.create_node("9");
-        sim.add_edge("9", std::to_string(id), network_simulator::NetworkEdge{});
-        sim.add_edge(std::to_string(id), "9", network_simulator::NetworkEdge{});
+    /// for sending that member RPCs by hand. Each client needs its own `name`.
+    auto client_to(std::uint64_t id, const std::string& name = "9") ->
+        typename types::network_client_type {
+        auto net = sim.create_node(name);
+        sim.add_edge(name, std::to_string(id), network_simulator::NetworkEdge{});
+        sim.add_edge(std::to_string(id), name, network_simulator::NetworkEdge{});
         return typename types::network_client_type{net, typename types::serializer_type{}};
     }
 
@@ -775,6 +812,101 @@ BOOST_AUTO_TEST_CASE(a_candidate_that_steps_down_in_its_term_keeps_its_vote,
     }
     node1.stop();
     node2.stop();
+}
+
+// Property 8. Node 3 stores entry 11 but its barrier fails, so it answers
+// failure and keeps the entry in its log, not yet held. The leader's next
+// heartbeat names entry 11 and appends nothing. It used to be answered
+// success with no barrier at all, and the leader counted node 3 as holding
+// an entry its store had never made durable. Now it takes the barrier the
+// first one failed to, and answers once that succeeds.
+//
+// The simulator serves one RPC at a time, so this is the failed-barrier half;
+// the same check covers a duplicate that overtakes a barrier still running on
+// a transport that serves RPCs concurrently.
+BOOST_AUTO_TEST_CASE(a_heartbeat_after_a_failed_barrier_takes_it_again,
+                     *boost::unit_test::timeout(30)) {
+    cluster<true, true, true> c{{}};
+    auto& rec = *c.records[2];
+    auto client = c.client_to(3);
+    constexpr std::uint64_t term = k_seed_term + 1;
+    constexpr std::uint64_t index = k_snapshot_index + 1;
+
+    {
+        const std::lock_guard lock(rec.mu);
+        rec.refuse_barriers = 1;
+    }
+    const auto carrying =
+        client
+            .send_append_entries(
+                3,
+                kythira::append_entries_request<>{
+                    ._term = term,
+                    ._leader_id = 1,
+                    ._prev_log_index = k_snapshot_index,
+                    ._prev_log_term = k_seed_term,
+                    ._entries = {log_entry_t{term, index, sm_t::make_put_command("k", "v")}},
+                    ._leader_commit = k_snapshot_index},
+                k_rpc_wait)
+            .get();
+    BOOST_TEST(!carrying.success());
+
+    const auto heartbeat = client
+                               .send_append_entries(3,
+                                                    kythira::append_entries_request<>{
+                                                        ._term = term,
+                                                        ._leader_id = 1,
+                                                        ._prev_log_index = index,
+                                                        ._prev_log_term = term,
+                                                        ._entries = {},
+                                                        ._leader_commit = k_snapshot_index},
+                                                    k_rpc_wait)
+                               .get();
+    BOOST_TEST(heartbeat.success());
+
+    const auto ops = rec.snapshot_ops();
+    BOOST_TEST_INFO_SCOPE("node 3: " << join(ops));
+    BOOST_TEST(count_prefix(ops, "append:") == 1U);
+    BOOST_TEST(count_prefix(ops, "barrier_failed:") == 1U);
+    BOOST_TEST(count_prefix(ops, "barrier:") == 1U);
+}
+
+// Property 9. Node 3's engine refuses the first append of entry 11. The entry
+// used to be put in the log before it was stored, so it stayed there; the
+// leader's retry then found it "already held", appended nothing, and was
+// answered success while the store had no entry 11.
+BOOST_AUTO_TEST_CASE(a_refused_append_is_stored_by_the_retry, *boost::unit_test::timeout(30)) {
+    cluster<true, true, true> c{{}};
+    auto& rec = *c.records[2];
+    auto client = c.client_to(3);
+    constexpr std::uint64_t term = k_seed_term + 1;
+    constexpr std::uint64_t index = k_snapshot_index + 1;
+    const kythira::append_entries_request<> request{
+        ._term = term,
+        ._leader_id = 1,
+        ._prev_log_index = k_snapshot_index,
+        ._prev_log_term = k_seed_term,
+        ._entries = {log_entry_t{term, index, sm_t::make_put_command("k", "v")}},
+        ._leader_commit = k_snapshot_index};
+
+    {
+        const std::lock_guard lock(rec.mu);
+        rec.refuse_appends = 1;
+    }
+    // The refusal reaches the leader as a failed response or as no response.
+    try {
+        BOOST_TEST(!client.send_append_entries(3, request, std::chrono::milliseconds{500})
+                        .get()
+                        .success());
+    } catch (const std::exception&) {
+    }
+
+    BOOST_TEST(client.send_append_entries(3, request, k_rpc_wait).get().success());
+
+    const std::lock_guard lock(rec.mu);
+    BOOST_TEST_INFO_SCOPE("node 3: " << join(rec.ops));
+    BOOST_TEST(count_prefix(rec.ops, "refused:") == 1U);
+    BOOST_TEST(rec.state.get_last_log_index() == index);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
