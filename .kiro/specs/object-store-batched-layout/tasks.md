@@ -185,7 +185,7 @@ before and after.
     yet, was corrected as well as a bullet added
   - _Requirements: 12.1, 12.3, 12.4, 12.5_
 
-- [ ] 6. Chain-walk recovery and stray hygiene, layout-neutral
+- [x] 6. Chain-walk recovery and stray hygiene, layout-neutral
   - Replace `keep_contiguous_log()` (`object_store_persistence.hpp:1669`) with
     the chain walk; on singletons it must produce the same log and strays
   - `delete_log_entries_before` calls `clear_strays({})` first (it does not
@@ -196,6 +196,17 @@ before and after.
   - Tests: existing conformance and batched-durable-writes suites unmodified; a
     case seeding a stray that a compaction without `clear_strays` would have made
     the chain's start
+  - Done October 21, 2026. The load path collects log objects by key (first
+    index → entries) and `walk_log_chain` replaces `keep_contiguous_log`; an
+    object is read only by its first index and entry count, so task 7 feeds
+    segments into the same map. The keep-set is computed per object written
+    (one per entry until task 7) and `clear_strays`' contract now says keys.
+    The compaction case is a real latent bug on today's layout, not only a
+    segmented-log precondition: a stray past a gap survived a compaction
+    that deleted everything below it, and the next load started the log at
+    the stray. The new cases (`chain_walk_recovery` in
+    `object_store_batched_layout_unit_test.cpp`) fail against the previous
+    engine on exactly that
   - _Requirements: 9.1, 9.2, 6.5, 11.1_
 
 - [ ] 7. Segmented log

@@ -1102,7 +1102,8 @@ public:
     /// that a restart would then read back as part of it; and it is what keeps
     /// a create-only re-PUT of the same index from being refused as a second
     /// writer. A crash before that cleanup is covered by the load path, which
-    /// keeps only the contiguous run of log objects (see `load_all`).
+    /// keeps only the chain of log objects from the lowest one
+    /// (`walk_log_chain`).
     ///
     /// A refused precondition latches, exactly as in `append_log_entry`, and
     /// nothing is cleaned up after it: a latched engine does not write.
@@ -1130,11 +1131,15 @@ public:
             check_object_size(keys.back(), bodies.back());
         }
 
-        std::set<LogIndex> covered;
+        // The keep-set is the objects this run writes, by key (each key's
+        // first index), not the entry indices it covers: a stray is spared only
+        // when the PUT will overwrite that very object. One object per entry
+        // here, so the two sets are equal.
+        std::set<LogIndex> written;
         for (const auto& entry : entries) {
-            covered.insert(entry.index());
+            written.insert(entry.index());
         }
-        clear_strays(covered);
+        clear_strays(written);
 
         const bool extends = extends_log(entries);
         const std::size_t workers =
@@ -1234,9 +1239,15 @@ public:
 
     /// @brief Delete every entry with index &lt; `index` (compaction after a
     ///        snapshot), with the same delete-then-forget ordering.
+    ///
+    /// Strays go first, as on every other log mutation. Without that a stray
+    /// left past a gap becomes the lowest log object once the entries below it
+    /// are deleted, and the next load would start the log there, at entries
+    /// this node never acknowledged. No request changes unless a stray exists.
     auto delete_log_entries_before(LogIndex index) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
+        clear_strays({});
         auto it = _log.begin();
         while (it != _log.end() && it->first < index) {
             delete_object(log_key(it->first));
@@ -1522,8 +1533,9 @@ private:
     /// log write that asked: writing on top of an undeleted stray is exactly what
     /// strays are tracked to prevent. Callers hold `_mu`.
     ///
-    /// `keep` is the run about to be written. Under `fencing_mode::none` those
-    /// indices are overwritten by the PUT anyway, so deleting them first would
+    /// `keep` is the first indices of the objects about to be written — their
+    /// keys, not the entry indices they cover. Under `fencing_mode::none` those
+    /// objects are overwritten by the PUT anyway, so deleting them first would
     /// be a wasted request; under `compare_and_swap` the PUT is create-only and
     /// would be refused by its own stray, so nothing is kept.
     auto clear_strays(const std::set<LogIndex>& keep) -> void {
@@ -1803,6 +1815,7 @@ private:
         const std::string log_pfx = log_prefix();
         const std::string snaps_pfx = snapshots_prefix();
         hard_state_slots slots;
+        log_objects objects;
 
         for (const auto& key : list_keys(_prefix + "/")) {
             // A key that vanished between the List and the GET is a
@@ -1882,7 +1895,7 @@ private:
                         " but its key names index " +
                         std::to_string(static_cast<unsigned long long>(index)));
                 }
-                _log[index] = std::move(entry);
+                objects[index].push_back(std::move(entry));
             }
             // Any other key under the prefix belongs to something else (an
             // operator's note, a future format's object). It is not this
@@ -1890,7 +1903,7 @@ private:
             // this format defines are parsed, and those must parse.
         }
         resolve_hard_state(slots);
-        keep_contiguous_log();
+        walk_log_chain(std::move(objects));
     }
 
     /// What the load path found in `<prefix>/term` and `<prefix>/voted_for`,
@@ -2003,31 +2016,46 @@ private:
         return it == _versions.end() ? object_version{} : it->second;
     }
 
-    /// Keep the contiguous run of log objects that starts at the lowest index,
-    /// and record everything above the first gap as a stray.
+    /// The log objects the load path found, by key: each one's first index and
+    /// the entries it holds, in index order. Every object is a singleton today;
+    /// the walk below reads an object only by its first and last index, so it
+    /// is the same walk whatever an object holds.
+    using log_objects = std::map<LogIndex, std::vector<log_entry_t>>;
+
+    /// Recover the log as the **chain** of objects from the lowest first index:
+    /// start at the lowest object, take it, continue at the object whose first
+    /// index is its last + 1, and stop at the first position nothing starts
+    /// at. Everything not on the chain is recorded as a stray.
     ///
     /// A gap is what a crash leaves part-way through a concurrent
     /// `append_log_entries` (any subset of the run may have landed) or part-way
     /// through a truncation written before truncations went highest-first. In
-    /// both cases the objects above the gap are entries this node never
+    /// both cases the objects past the gap are entries this node never
     /// acknowledged or was in the middle of removing, so dropping them is safe,
     /// and loading them is not: `node` keeps its log as a vector and indexes it
     /// by position, so a hole silently shifts every entry above it. They are
     /// not deleted here — construction writes nothing — but before the next
     /// log write, like any other stray.
-    auto keep_contiguous_log() -> void {
-        if (_log.empty()) {
+    ///
+    /// Over singletons this is exactly the contiguous run from the lowest
+    /// index, which is what the load path kept before the walk replaced it
+    /// (`.kiro/specs/object-store-batched-layout/` task 6); the walk is the
+    /// form that stays correct once an object can hold more than one entry and
+    /// another object can begin inside it.
+    auto walk_log_chain(log_objects objects) -> void {
+        if (objects.empty()) {
             return;
         }
-        auto it = _log.begin();
-        LogIndex expected = it->first;
-        while (it != _log.end() && it->first == expected) {
-            ++it;
-            ++expected;
-        }
-        while (it != _log.end()) {
-            _strays.insert(it->first);
-            it = _log.erase(it);
+        LogIndex next = objects.begin()->first;
+        for (auto& [first, entries] : objects) {
+            if (first != next) {
+                _strays.insert(first);
+                continue;
+            }
+            for (auto& entry : entries) {
+                _log[entry.index()] = std::move(entry);
+            }
+            next = first + static_cast<LogIndex>(entries.size());
         }
     }
 
@@ -2419,7 +2447,8 @@ private:
 
     /// Log indices that may have an object on the store and are not in `_log`:
     /// sent by a failed `append_log_entries`, or found past a gap at load.
-    /// Deleted before the next log write or truncation (`clear_strays`).
+    /// Deleted before the next log write, truncation or compaction
+    /// (`clear_strays`).
     std::set<LogIndex> _strays;
 
     // ── Fencing (Requirement 9), all inert under `fencing_mode::none` ─────────

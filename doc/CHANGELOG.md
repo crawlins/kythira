@@ -5,6 +5,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 21, 2026)
 
+- **An object-store compaction no longer leaves a stray log object to become
+  the start of the log.** A crash part-way through a batched append can leave
+  an object past a gap in the log; the engine records it as a stray and
+  deletes it before its next append or truncation, but compaction skipped
+  that step. A compaction that then deleted every entry below the stray left
+  it as the lowest log object, and the next restart loaded the log from it:
+  entries this node never acknowledged. `delete_log_entries_before` now
+  deletes strays first, which adds requests only when a stray exists.
+  Recovery is now a walk along the chain of log objects from the lowest one,
+  which over today's one-object-per-entry layout loads exactly what the old
+  contiguous-run rule loaded, and is the form the segmented log
+  (`.kiro/specs/object-store-batched-layout/` task 7) needs.
+
 - **Leader group commit for the object store is scoped.** `node` already
   coalesces concurrent `submit_command` calls through the durability
   barrier; the object-store engine pays one PUT per command because it is
