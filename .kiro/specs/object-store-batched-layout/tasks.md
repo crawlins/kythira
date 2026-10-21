@@ -317,6 +317,10 @@ before and after.
     hard-state writes at 1100 ms
   - Record results beside the existing latency tables and revisit the
     `max_segment_bytes` default against the measured segment PUT p99
+  - A leader's commit rate with `write_behind` on beside the synchronous
+    one, with concurrent submitters, recording `B` (commands per leader log
+    PUT) and `p50(flush)` (`.kiro/specs/object-store-group-commit/`
+    Requirement 8.6)
   - Not checked off against the mock tier
   - _Requirements: 16.1-16.4, 13.3_
 
