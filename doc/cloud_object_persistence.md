@@ -312,18 +312,61 @@ network. No provider in this table is fast enough to change the conclusion —
 even the best row is two orders of magnitude below a local NVMe WAL — but a
 badly placed node gives up another order of magnitude on top.
 
-**The ceiling is the leader's, and neither layout moves it.** A leader's
-`submit_command` makes one PUT per command while it holds `node`'s mutex, so a
-cluster commits at most about `1 / p50(PUT)` entries a second under
-`log_layout::per_entry` and `log_layout::segmented` alike. Leader group commit
-(`.kiro/specs/object-store-group-commit/`) is the change that lifts it.
-What the segmented log changes instead is the follower and recovery side:
+**By default the ceiling is the leader's, and neither layout moves it.** A
+leader's `submit_command` makes one PUT per command while it holds `node`'s
+mutex, so a cluster commits at most about `1 / p50(PUT)` entries a second under
+`log_layout::per_entry` and `log_layout::segmented` alike. The opt-in
+write-behind group commit below is what lifts it. What the segmented log
+changes instead is the follower and recovery side:
 
 | | `per_entry` | `segmented` (defaults) |
 |---|---|---|
 | Follower requests per AppendEntries run of N | N | ⌈N / 100⌉, fewer if 1 MiB fills first |
 | Follower catch-up, N = 10,000 on S3 (p50 ≈ 67 ms) | 10,000 PUTs, ≈ 1,250 rounds at concurrency 8, ≈ 84 s | 100 PUTs, ≈ 13 rounds, ≈ 1 s **plus the not-yet-measured cost of a 100-entry body** |
 | Recovery GETs for a log of N | N | about N / B, B the entries per segment |
+
+#### Write-behind group commit
+
+`object_persistence_options::write_behind = true`
+(`.kiro/specs/object-store-group-commit/`) makes an append *stage* the entry
+with no request, and makes the durability barrier `node` already waits on
+*flush* everything staged as one run. The engine then answers
+`durability_class::barrier`, so `node` releases its mutex while it waits, and
+commands that arrive during one flush are carried together by the next. At most
+one flush is in flight per engine. With it on, a leader's ceiling is about
+
+```
+commit rate  ≈  B / p50(flush)
+```
+
+where `B` is the entries per flush, which is roughly the commands that arrive
+during one flush. Under `segmented` a flush of up to `max_segment_entries`
+entries is one PUT, so `p50(flush)` is about the p50 of a segment PUT. Under
+`per_entry` it is about `⌈B / append_concurrency⌉` round trips of single-entry
+PUTs. `B` is a property of the workload, not of the engine: one client issuing
+commands one at a time gets `B = 1` and today's ceiling. Measure it as the
+leader's commands divided by its log PUTs, or by `flushes_issued()`. On the
+mock store with every PUT held for 60 ms, 24 concurrent commands cost the
+leader 2 PUTs (`raft_object_store_group_commit_test`). That number comes from
+the mock, not from a provider. The real-cloud run is
+`.kiro/specs/object-store-batched-layout/` task 10.
+
+**The default is unchanged.** With `write_behind` off, every append is a PUT
+acknowledged before the call returns. The engine answers
+`durability_class::synchronous` (durable, and a barrier never blocks), and
+`node` keeps its lock and sends exactly the requests it sent before. What
+changes when you switch it on:
+
+- A failed flush publishes the prefix of the run the store acknowledged. The
+  rest stays staged and is retried at the next barrier, after any objects the
+  failed flush sent are deleted. Every caller the flush was to cover gets the
+  error. A refused precondition under `compare_and_swap` latches, as always.
+- A truncation or compaction waits for a running flush. Staged entries it
+  removes are dropped without a request, and a barrier on one of them throws,
+  which is how a follower's truncated batch is refused.
+- Nothing staged is on the store, so a crash loses only entries no caller was
+  told were durable. That is the barrier contract the file engine meets with
+  `fsync`.
 
 **GCS additionally rate-limits mutations of a single object to roughly 1/s**,
 per object. S3 took the identical pattern unthrottled. The engine's `term`,
@@ -371,7 +414,8 @@ the bill at B = 2, approaching two thirds, the whole follower share, as B
 grows. Its
 large savings are on catch-up and recovery, which are not steady-state costs.
 The leader's PUT per entry is the floor, about $13/month per entry/s per
-cluster, until leader group commit lands. The combined hard state's effect on
+cluster, unless `write_behind` is on. With it on, the leader pays one PUT per
+flush, so the floor divides by the leader's `B`. The combined hard state's effect on
 cost is negligible: one fewer PUT per election per node.
 
 Storage itself is negligible for the workloads this engine suits. The
@@ -650,6 +694,7 @@ provider:
 | `write_retries` | **1** | PUT-only, and **unconditional-PUT-only**. A conditional write is never retried: a retry cannot distinguish "my write landed and the response was lost" from "I lost the race" |
 | `max_segment_entries` | **100** | Entries per segment under `log_layout::segmented`; at least 2, since one entry is always a singleton. A non-default value under `per_entry` is refused rather than ignored |
 | `max_segment_bytes` | **1 MiB** | Body size per segment under `log_layout::segmented`, at most `max_object_bytes`. Reasoned, not yet measured: segment-sized PUT latency has not been run on any provider (`.kiro/specs/object-store-batched-layout/` task 10) |
+| `write_behind` | **off** | Leader group commit, opt-in (see [Write-behind group commit](#write-behind-group-commit)). Off, every append is a PUT before the call returns, as it always was. On, appends stage and the durability barrier flushes them as one run. Accepted with either log layout and either fencing mode |
 | `append_concurrency` | **8** | Log PUTs `append_log_entries` keeps in flight for one AppendEntries. Used only on a store that declares `supports_concurrent_requests` (all five shipped clients do); any other store gets one at a time. Still one PUT per entry: the request count and the keys are the same at every setting. `0` is rejected |
 
 ## Per-provider configuration
@@ -892,11 +937,11 @@ The two limits this section used to list are closed as opt-in layouts
 run of entries in one object, and `hard_state_layout::combined` writes the term
 and vote as one. What remains:
 
-- **The leader still writes one PUT per client command**, under `node`'s
-  mutex, so the cluster's commit rate is unchanged at about `1 / p50(PUT)`.
-  Leader group commit (`.kiro/specs/object-store-group-commit/`) stages
-  appends and flushes everything staged as one run at the durability barrier
-  `node` already waits on.
+- **Write-behind is opt-in and measured only on the mock.** By default the
+  leader still writes one PUT per client command under `node`'s mutex, and
+  the cluster's commit rate stays at about `1 / p50(PUT)`. With
+  `write_behind` it is about `B / p50(flush)`. The real-cloud measurement of
+  both is `.kiro/specs/object-store-batched-layout/` task 10.
 - **Segment-sized PUT latency is unmeasured** on every provider, so the 1 MiB
   `max_segment_bytes` default is reasoned rather than measured until the real
   tier records it (`.kiro/specs/object-store-batched-layout/` task 10).

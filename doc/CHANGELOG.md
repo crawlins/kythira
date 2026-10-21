@@ -5,6 +5,20 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 21, 2026)
 
+- **Object-store write-behind group commit.** A new opt-in
+  `write_behind` option stages each append and writes the staged entries
+  at the durability barrier, as one run, so one flush carries every command
+  that arrived while the previous one was in flight. Under
+  `log_layout::segmented` that is one PUT per segment. With 24 concurrent
+  commands over a 60 ms mock PUT, the leader sent 2 log PUTs instead of 24,
+  and no command completed before a majority held it. The flush releases
+  the engine lock across its requests. On failure it publishes the
+  acknowledged prefix, records the rest as strays and fails every waiter it
+  covered. Truncation and compaction wait for a running flush and drop
+  staged entries, whose waiters then fail. The default is unchanged.
+  `doc/cloud_object_persistence.md` gives the ceiling as `B / p50(flush)`.
+  Planned in `.kiro/specs/object-store-group-commit/` tasks 2-4.
+
 - **The object-store engine is a barriered engine and calls itself durable.**
   It now provides `append_log_entry_sequenced`, `barrier_through`,
   `durable_through` and `durability()`, and answers a new

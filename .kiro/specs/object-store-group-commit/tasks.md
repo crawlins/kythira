@@ -31,7 +31,7 @@ runs measure it.
       bulk, and a failed append assigns no sequence. The tests are in the
       new `object_store_group_commit_unit_test.cpp`.
 
-- [ ] 2. Write-behind: staging, the flush, failure handling
+- [x] 2. Write-behind: staging, the flush, failure handling
   - Staging, the single-flight flush with sample-before / publish-after,
     `_mu` released across the requests, `flushes_issued()`
   - Failure: acknowledged prefix published, remainder strayed and kept staged,
@@ -42,17 +42,43 @@ runs measure it.
     flush failure; truncation of staged entries fails their waiter; crash
     injection at every request of a flush while appends stage
   - _Requirements: 3.1-3.4, 4.1-4.5, 5.1-5.4, 6.1-6.4, 8.1-8.3_
+  - Done October 21, 2026, in the same PR as tasks 1, 3 and 4. Departures:
+    - A waiter whose sequence a failed flush covered throws that flush's
+      message instead of starting another flush. A retry would PUT
+      create-only keys the failed flush may have landed, and its own object
+      would refuse it.
+    - A plain `append_log_entry` under write-behind stages, then barriers.
+      If the barrier throws, the entry and anything staged above it are
+      discarded, so a failed plain append leaves the mirror as it found it
+      (the conformance suite's failure cases require this).
+    - `append_log_entries` drains the stage, then keeps the synchronous
+      all-or-nothing path. A bulk run is already one flush.
+    - `staged_entry_count()` joins `flushes_issued()` as a test observer.
+    - Tests are in `object_store_group_commit_unit_test.cpp` (suite
+      `object_store_group_commit_write_behind`) and four new conformance
+      instantiations (per-entry and segmented, unfenced and fenced).
+      Disabling the failed-flush check or the discarded-sequence check fails
+      them.
 
-- [ ] 3. Raft-level coalescing
+- [x] 3. Raft-level coalescing
   - A three-node cluster on write-behind mock engines with concurrent
     `submit_command` callers: fewer PUTs than commands on the leader, every
     command committed, no entry counted before its barrier (a recording engine
     asserting `durable_through` at the point `node` counts)
   - _Requirements: 7.1-7.3, 8.4_
+  - Done October 21, 2026, in `tests/raft_object_store_group_commit_test.cpp`.
+    24 concurrent commands over a 60 ms PUT cost the leader 2 log PUTs. On
+    every completion the test checks that a majority holds that many entries
+    durably, rather than recording `durable_through` inside `node`. The
+    check is the same claim seen from outside, and it needs no hook. The
+    third node is isolated so the majority must include the leader. With
+    `barrier_through` returning while a flush runs, the test fails.
 
-- [ ] 4. Operating envelope
+- [x] 4. Operating envelope
   - `doc/cloud_object_persistence.md`: the write-behind ceiling and how `B` is
     measured; the default unchanged
   - Add the write-behind commit-rate measurement to
     object-store-batched-layout task 10
   - _Requirements: 8.5, 8.6_
+  - Done October 21, 2026. The measured ceiling waits for
+    object-store-batched-layout task 10.
