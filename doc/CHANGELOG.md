@@ -5,6 +5,15 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 21, 2026)
 
+- **`doc/cloud_object_persistence.md` covers the new layouts.** A layout
+  options table for `hard_state` and `log`, the transitions between them, the
+  election rule for each (`4 ×` and, combined, `2 × p99(PUT)`, worked against
+  the measured p99s, with GCS held at about a second), throughput restated as
+  leader-bound under either layout with what the segmented log changes
+  instead, a per-cluster cost table by entries per AppendEntries, and the two
+  segment limits. "Future work" now names leader group commit as what remains.
+  Planned in `.kiro/specs/object-store-batched-layout/` task 9.
+
 - **The object-store engine can store a batched append as one object.** With
   `log_layout::segmented`, an AppendEntries run that continues the log is
   written as segments, `<prefix>/log/<first index>` holding

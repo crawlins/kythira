@@ -23,7 +23,8 @@
 ///
 ///     <prefix>/term                        decimal text, e.g. "42"
 ///     <prefix>/voted_for                   decimal text or the literal "none"
-///     <prefix>/log/<20-digit index>        one JSON record per log entry
+///     <prefix>/log/<20-digit index>        one JSON record per log entry, or
+///                                          a segment of them (see below)
 ///     <prefix>/snapshot                    one JSON record, single slot
 ///     <prefix>/snapshots/<20-digit index>  retained predecessors, only when
 ///                                          `snapshot_retention > 1`
@@ -31,6 +32,10 @@
 /// That is the default, `hard_state_layout::separate`. Under
 /// `hard_state_layout::combined` `<prefix>/term` holds both values as one JSON
 /// record and `<prefix>/voted_for` is never written (see `hard_state_layout`).
+/// Under `log_layout::segmented` a run of appended entries may share one log
+/// object, `{"first_index":f,"last_index":l,"entries":[…]}` at
+/// `<prefix>/log/<f>`, each element exactly the record a per-entry object
+/// holds (see `log_layout`). The two knobs are independent.
 ///
 /// The log-entry and snapshot records use **the same one-line JSON codec
 /// `file_persistence_engine` writes** (`{term, index, command, type}` with the
@@ -55,6 +60,16 @@
 ///                                   → a bounded batch of DELETEs, one per
 ///                                     affected entry and no others,
 ///   * recovery                      → one List plus one GET per live object.
+///
+/// `log_layout::segmented` keeps every one of those properties for a
+/// *segment*, a bounded run of entries (`max_segment_entries`,
+/// `max_segment_bytes`) that one `append_log_entries` call wrote together. A
+/// run then costs one PUT per segment rather than per entry, and recovery one
+/// GET per segment. A truncation or compaction rewrites at most the one
+/// segment it cuts, never the log, so the full re-upload this layout exists to
+/// avoid is still impossible. Objects are keyed by their first index, so
+/// listing order is still log order, and a bucket of per-entry objects is
+/// already a valid segmented log.
 ///
 /// ### Why 20 zero-padded digits
 ///
@@ -104,6 +119,11 @@
 ///
 ///     election_timeout_min  ≥  4 × p99(PUT) + rpc_rtt + margin
 ///
+/// Under `hard_state_layout::combined` the term and vote are one object, so
+/// each side pays one PUT and the rule becomes `2 × p99(PUT)`. On GCS keep the
+/// floor at about one second regardless: that service throttles mutations of a
+/// single object to about one per second, and `<prefix>/term` is one object.
+///
 /// and the same quantity as a floor on the randomized election-timeout *range
 /// width*, or nodes re-time-out inside each other's elections and livelock.
 /// Size from the measured figure, not from an estimate: the real tier records
@@ -124,10 +144,15 @@
 /// `append_log_entries` sends the entries of one AppendEntries concurrently
 /// (`object_persistence_options::append_concurrency`, on stores that declare
 /// `concurrent_key_object_store`), so a run of N entries costs about
-/// N / `append_concurrency` round trips of wall time. It is still one PUT per
-/// entry, synchronous before the call returns: no write coalescing into shared
-/// objects, no write-behind, no relaxed-durability mode. A leader's own
-/// appends are one per client command and are not batched.
+/// N / `append_concurrency` round trips of wall time. Under
+/// `log_layout::segmented` the run is one PUT per segment instead, so a
+/// follower's catch-up and a restart's recovery cost about N / B requests
+/// rather than N, where B is the entries a segment holds. Either way the
+/// write is synchronous before the call returns: no write-behind and no
+/// relaxed-durability mode. A leader's own appends are one per client
+/// command, so a cluster still commits at most about `1 / p50(PUT)` entries a
+/// second under either layout; `.kiro/specs/object-store-group-commit/` is
+/// the change that lifts that.
 ///
 /// ## Read path: an in-memory mirror
 ///

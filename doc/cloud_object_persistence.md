@@ -221,6 +221,34 @@ new term once, with the vote when it grants and alone when it refuses
 (`.kiro/specs/object-store-batched-layout/`, task 1). Size clusters running
 older builds with `5 × p99(PUT)`.
 
+With `hard_state_layout::combined` (see
+[Combined hard state](#combined-hard-state-and-upgrading-a-bucket-in-place))
+the term and the vote are one object, so each side writes once:
+
+```
+election_timeout_min  ≥  2 × p99(PUT) + rpc_rtt + margin      (combined)
+```
+
+The three rules side by side, worked against the CI-runner p99s below:
+
+| p99(PUT) | Older builds (5×) | `separate`, this build (4×) | `combined` (2×) |
+|---|---|---|---|
+| 30.4 ms Azure Blob, in-provider | 152 ms | 122 ms | **61 ms** |
+| 81.3 ms S3 `us-east-1` | 407 ms | 325 ms | **163 ms** |
+| 153.2 ms GCS `us-central1` | 766 ms | 613 ms | **306 ms**, but keep ≥ ~1 s (below) |
+| 1140.5 ms OSS, cross-ocean | 5.70 s | 4.56 s | **2.28 s** |
+
+All are plus `rpc_rtt` and margin, and the randomized range width must be at
+least the same quantity. Pre-vote adds one RPC round trip and no PUT.
+
+**On GCS, keep `election_timeout_min` at about one second or more under either
+layout.** GCS throttles mutations of one object to about one per second. The
+combined record is one object, written once per election and once per term
+change per node, which is no more often than `<prefix>/term` is written under
+`separate`, so the limit binds no harder than it did. It does bind below the
+2× figure: a node that campaigns faster than once a second can be answered
+`429` on its own `term` object.
+
 | p99(PUT) | Floor on `election_timeout_min` | Verdict |
 |---|---|---|
 | ~3 s (the cross-ocean figure measured before the real tier existed) | **≥ 12 s** | Consistent with the 9.6 s the Alibaba real tier observed for the term+vote case alone. Usable only for clusters that tolerate a 12 s+ leaderless window |
@@ -284,6 +312,19 @@ network. No provider in this table is fast enough to change the conclusion —
 even the best row is two orders of magnitude below a local NVMe WAL — but a
 badly placed node gives up another order of magnitude on top.
 
+**The ceiling is the leader's, and neither layout moves it.** A leader's
+`submit_command` makes one PUT per command while it holds `node`'s mutex, so a
+cluster commits at most about `1 / p50(PUT)` entries a second under
+`log_layout::per_entry` and `log_layout::segmented` alike. Leader group commit
+(`.kiro/specs/object-store-group-commit/`) is the change that lifts it.
+What the segmented log changes instead is the follower and recovery side:
+
+| | `per_entry` | `segmented` (defaults) |
+|---|---|---|
+| Follower requests per AppendEntries run of N | N | ⌈N / 100⌉, fewer if 1 MiB fills first |
+| Follower catch-up, N = 10,000 on S3 (p50 ≈ 67 ms) | 10,000 PUTs, ≈ 1,250 rounds at concurrency 8, ≈ 84 s | 100 PUTs, ≈ 13 rounds, ≈ 1 s **plus the not-yet-measured cost of a 100-entry body** |
+| Recovery GETs for a log of N | N | about N / B, B the entries per segment |
+
 **GCS additionally rate-limits mutations of a single object to roughly 1/s**,
 per object. S3 took the identical pattern unthrottled. The engine's `term`,
 `voted_for`, `snapshot` and `owner` keys are single-slot objects, so on GCS
@@ -312,6 +353,27 @@ Stated as a conclusion rather than left as an exercise: **sustained
 high-append-rate workloads are financially prohibitive in this engine, not
 merely slow.**
 
+Per **three-node cluster** and by log layout, at ~$0.005 per 1,000 PUTs (S3,
+Azure Blob, GCS, OCI). `B` is the entries carried by an AppendEntries that
+carries any. The leader writes one PUT per entry under either layout; each
+follower writes one per entry under `per_entry` and one per AppendEntries under
+`segmented`:
+
+| Sustained rate | `per_entry` (3 PUTs/entry) | `segmented`, B = 1 | B = 2 | B = 10 | B → ∞ |
+|---|---|---|---|---|---|
+| 1 entry/s | ~$39/month | ~$39 | ~$26 | ~$16 | ~$13 |
+| 10 entries/s | ~$389/month | ~$389 | ~$259 | ~$156 | ~$130 |
+
+The honest reading: **at steady state with one client command in flight, B is
+about 1 and the segmented layout saves almost nothing.** When AppendEntries
+batch (a burst, a slow follower, many concurrent clients) it saves a third of
+the bill at B = 2, approaching two thirds, the whole follower share, as B
+grows. Its
+large savings are on catch-up and recovery, which are not steady-state costs.
+The leader's PUT per entry is the floor, about $13/month per entry/s per
+cluster, until leader group commit lands. The combined hard state's effect on
+cost is negligible: one fewer PUT per election per node.
+
 Storage itself is negligible for the workloads this engine suits. The
 recurring cost of a CI or small production deployment is the *bucket*, not the
 objects in it.
@@ -331,13 +393,14 @@ Everything one engine instance owns lives under one `prefix` in one bucket:
 
 Three properties of this layout carry weight:
 
-1. **One object per log entry.** The file engine keeps its whole log in one
-   file and rewrites it on truncation — correct for a filesystem, catastrophic
-   in an object store, where the same idiom is a full re-upload of the entire
-   log for an O(1) logical change. One object per entry makes
+1. **One object per log entry, by default.** The file engine keeps its whole
+   log in one file and rewrites it on truncation — correct for a filesystem,
+   catastrophic in an object store, where the same idiom is a full re-upload
+   of the entire log for an O(1) logical change. One object per entry makes
    `append_log_entry` exactly one PUT, `truncate_log` and
    `delete_log_entries_before` bounded batches of DELETEs touching only
-   affected entries, and recovery one LIST plus one GET per live object.
+   affected entries, and recovery one LIST plus one GET per live object. The
+   opt-in segmented log (below) keeps all of that for bounded runs of entries.
 2. **20 zero-padded digits.** `2^64 - 1` is 20 digits, so padding every index
    to exactly 20 makes lexicographic listing order identical to numeric index
    order for every representable `LogIndex`. Without it `log/10` sorts before
@@ -347,6 +410,52 @@ Three properties of this layout carry weight:
 3. **The same JSON codec `file_persistence_engine` writes**, so records stay
    byte-comparable and a bucket can be diffed against a data directory during
    a migration.
+
+### Layout options
+
+Two independent options choose how the hard state and the log are stored. The
+defaults are the layout above, byte for byte and request for request.
+
+| Option | Default | Alternative | What the alternative changes |
+|---|---|---|---|
+| `hard_state` | `separate`: `term` and `voted_for` are two objects, written term first | `combined`: `{"term":42,"voted_for":7}` in `<prefix>/term` | One PUT per hard-state write instead of up to two; election rule `2 × p99(PUT)` |
+| `log` | `per_entry`: `log/<index>` holds one entry | `segmented`: `log/<first>` may hold `{"first_index":f,"last_index":l,"entries":[…]}` | One PUT per segment of an AppendEntries run instead of one per entry; one GET per segment at recovery |
+
+Under `segmented`, `max_segment_entries` (default 100, at least 2) and
+`max_segment_bytes` (default 1 MiB, at most `max_object_bytes`) bound a
+segment. An entry larger than `max_segment_bytes` is written alone. Each
+element of `entries` is exactly the record a per-entry object holds.
+
+- **Append.** A run that continues the log is cut greedily into segments, and
+  each segment is one PUT, up to `append_concurrency` in flight. A run that
+  does not start at the last index + 1 is refused before any request.
+- **Truncation** deletes the objects at or above the cut, highest first, then
+  rewrites the segment that straddles the cut in place, keeping its entries
+  below it (`If-Match` under fencing). That rewrite is the commit point.
+- **Compaction** deletes the objects wholly below the cut, lowest first, then
+  writes the straddling segment's surviving part under its own key and deletes
+  the segment. That DELETE is the commit point.
+- **Recovery** walks the chain from the lowest log object: each next object
+  starts one past the previous one's end. An object off the chain is a
+  *stray*, left by a crash part-way through one of the operations above. It is
+  ignored on load and deleted before the next log write.
+
+Each node's layout is its own, and nothing on the wire changes, so a rolling
+upgrade can switch nodes one at a time.
+
+| From → to | In place? | How |
+|---|---|---|
+| `separate` → `combined` | yes | lazily, at the first hard-state write (see below) |
+| `combined` → `separate` | **refused** at construction | restore from a backup taken before the upgrade |
+| `per_entry` → `segmented` | yes | nothing to do: per-entry objects are already a valid segmented log |
+| `segmented` → `per_entry` | **refused** while any segment exists | restore from a backup taken before the upgrade, or wait until compaction has removed every segment |
+| any upgraded prefix → an older binary | **refused** by the older binary | its strict parse of `term` and `log/<index>` |
+
+**Fencing under `segmented` detects slightly less.** A stale appender whose
+object starts strictly inside one of the owner's segments is not refused by
+the create-only PUT, because the key is new. The owner's next load discards it
+as a stray instead of loading it. The other stale-appender cases are refused as
+before. Details: `.kiro/specs/object-store-batched-layout/` design, Part 3.
 
 ### Snapshot retention
 
@@ -539,6 +648,8 @@ provider:
 |---|---|---|
 | `max_object_bytes` | **64 MiB** | Deliberately far below every provider's documented single-request limit (the smallest is 5 GB). The binding constraint is this engine's *shape*, not the service's: one retry, no multipart, no resumption, no progress reporting, and the mutex held for the whole round trip. The cap turns "this deployment has outgrown a single-PUT persistence engine" into a loud error at the first snapshot that reaches it. Configurable upward by an operator who has measured their own case; `0` is rejected |
 | `write_retries` | **1** | PUT-only, and **unconditional-PUT-only**. A conditional write is never retried: a retry cannot distinguish "my write landed and the response was lost" from "I lost the race" |
+| `max_segment_entries` | **100** | Entries per segment under `log_layout::segmented`; at least 2, since one entry is always a singleton. A non-default value under `per_entry` is refused rather than ignored |
+| `max_segment_bytes` | **1 MiB** | Body size per segment under `log_layout::segmented`, at most `max_object_bytes`. Reasoned, not yet measured: segment-sized PUT latency has not been run on any provider (`.kiro/specs/object-store-batched-layout/` task 10) |
 | `append_concurrency` | **8** | Log PUTs `append_log_entries` keeps in flight for one AppendEntries. Used only on a store that declares `supports_concurrent_requests` (all five shipped clients do); any other store gets one at a time. Still one PUT per entry: the request count and the keys are the same at every setting. `0` is rejected |
 
 ## Per-provider configuration
@@ -776,18 +887,23 @@ service, and **neither was catchable locally**:
 
 ## Future work
 
-`append_log_entries` and `save_hard_state` landed as optional extensions to
-`kythira::persistence_engine` (`.kiro/specs/batched-durable-writes/`). Two
-limits remain:
+The two limits this section used to list are closed as opt-in layouts
+(`.kiro/specs/object-store-batched-layout/`): `log_layout::segmented` carries a
+run of entries in one object, and `hard_state_layout::combined` writes the term
+and vote as one. What remains:
 
-- **One request per entry.** `append_log_entries` overlaps the PUTs of one
-  AppendEntries but still sends one per entry. Carrying many entries in one
-  object would cut request charges as well as latency, and is a layout change.
-- **Term and vote are still two ordered PUTs.** They must be ordered because
-  `<prefix>/voted_for` does not record which term it belongs to. A vote record
-  that carries its term would let the load path reconcile the two and the
-  writes go out together, halving the dominant term in the election-timeout
-  sizing rule.
+- **The leader still writes one PUT per client command**, under `node`'s
+  mutex, so the cluster's commit rate is unchanged at about `1 / p50(PUT)`.
+  Leader group commit (`.kiro/specs/object-store-group-commit/`) stages
+  appends and flushes everything staged as one run at the durability barrier
+  `node` already waits on.
+- **Segment-sized PUT latency is unmeasured** on every provider, so the 1 MiB
+  `max_segment_bytes` default is reasoned rather than measured until the real
+  tier records it (`.kiro/specs/object-store-batched-layout/` task 10).
+- **No in-place downgrade.** A prefix with a combined `term` or a segment is
+  refused by an older binary and by a build configured for the older layout.
+  The way back is a backup taken before the upgrade. An offline
+  `raft_object_backup relayout` verb is specified but optional (task 11).
 
 ## Backup and restore
 

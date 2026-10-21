@@ -286,7 +286,7 @@ before and after.
     `term_regression`, not one per entry. `raft_object_backup verify` prints
     notes after the problems and keeps exit 0 when there are only notes.
 
-- [ ] 9. Operating envelope and documentation
+- [x] 9. Operating envelope and documentation
   - `doc/cloud_object_persistence.md`: layout table for both knobs; the three
     election rules worked against the measured p99s; throughput stated as
     leader-bound and unchanged, with what the segmented log changes instead;
@@ -298,6 +298,13 @@ before and after.
   - `doc/TODO.md`: close open-tasks item 15 to the extent landed, with the
     residual gaps from the design copied rather than summarised away
   - _Requirements: 14.1-14.4_
+  - Done October 21, 2026. The design's reading of its cost table said the
+    segmented log saves "up to a third of the bill"; the table shows a third at
+    B = 2 and two thirds as B grows, so the design is corrected and the
+    operator documentation states the latter. Departure: the transitions table names a pre-upgrade
+    backup as the way back, since `relayout` (task 11) is optional and not
+    built. Open-tasks item 15 is not closed: task 10 needs a live run, and the
+    row in `doc/TODO.md` says so.
 
 - [ ] 10. Real-cloud verification — needs Clark's go
   - New cases in `tests/object_persistence_real_cases.hpp`: migration read-back,
