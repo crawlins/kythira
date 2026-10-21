@@ -1039,6 +1039,19 @@ add_raft_completion_test(raft_snapshot_boundary_replication_test raft_snapshot_b
 # stored after a term change.
 add_raft_completion_test(raft_batched_durable_writes_test raft_batched_durable_writes_test.cpp)
 
+# Leader group commit over the object store, at the raft level
+# (.kiro/specs/object-store-group-commit/ task 3): a three-node cluster on
+# write-behind object-store engines over the mock store. Concurrent commands
+# share flushes, and none is counted before a majority holds it durably.
+add_raft_completion_test(raft_object_store_group_commit_test
+    raft_object_store_group_commit_test.cpp)
+target_include_directories(raft_object_store_group_commit_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(raft_object_store_group_commit_test PROPERTIES
+    TIMEOUT 180
+    LABELS "persistence;object-store"
+)
+
 # Multi-Raft sharding — .kiro/specs/multi-raft/
 # Phases 1-3 are strictly additive: these targets exercise the sharding value
 # types, the routing table and its tiling invariant, and the typed errors,
