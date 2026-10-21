@@ -568,7 +568,7 @@ Reference implementations to study before starting:
     but is not registered in CTest; all other tests pass without modification
   - _Requirements: 16.8–16.11, 16.15–16.21, 17.4–17.7, 18.10, 19.6–19.7_
 
-- [ ] 8. Real-EC2 `process_crash_triggers_replacement` (Req 19.7, 16.19j-k)
+- [x] 8. Real-EC2 `process_crash_triggers_replacement` (Req 19.7, 16.19j-k)
   - Replace the heartbeat-tag cases in task 7 (`heartbeat_timeout_triggers_replacement`
     and the quarantine waits on `heartbeat_timeout`) with leader-driven
     checks: run a kythira cluster whose leader owns the manager with
@@ -579,7 +579,11 @@ Reference implementations to study before starting:
     voter's group has no live member, so the leader heals it as a lost
     group (Req 9.2) and places the replacement in a surviving AZ, not AZ1.
   - Real-cloud runs follow the project's real-cloud cost rules.
-  - Written October 19, 2026; not yet run against real EC2. The leader is
+  - Passed against real EC2 on x64 and arm64 on October 21, 2026 (Real
+    Cloud Tests run 39586759184, about $0.002 of EC2 time per
+    architecture). The leader launched the replacement in a surviving AZ,
+    terminated the killed node, and the replacement caught up.
+  - Written October 19, 2026. The leader is
     `chaos_node` with `QUORUM_MANAGER=aws` (`cmd/chaos_node/aws_quorum.hpp`)
     and `QUORUM_PEER_DEAD_AFTER_MS`. The test is
     `tests/aws_chaos_node_crash_real_ec2_test.cpp`, its own file rather than
