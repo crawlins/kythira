@@ -690,9 +690,10 @@ Per **three-node cluster**, ~$0.005 per 1,000 PUTs (S3 / Azure / GCS / OCI),
 | 10 entries/s | ~$389/month | ~$389 | ~$259 | ~$156 | ~$130 |
 
 The honest reading: **at steady state with one client command in flight, B is
-about 1 and the segmented layout saves almost nothing.** It saves up to a third
-of the bill when AppendEntries batch (a burst, a slow follower, many concurrent
-clients queuing on the leader's mutex), and its large savings are on catch-up
+about 1 and the segmented layout saves almost nothing.** It saves a third of
+the bill at B = 2, approaching two thirds as B grows, when AppendEntries batch
+(a burst, a slow follower, many concurrent clients queuing on the leader's
+mutex), and its large savings are on catch-up
 and recovery, which are not steady-state costs. The leader's PUT per entry
 remains the floor — about $13/month per entry/s per cluster — until leader group
 commit exists. The 100 entries/s row the current document carries stays
