@@ -198,7 +198,9 @@ BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 // Copied from ca_cluster_node_real_ec2_test.cpp: runs `cmd` on `public_ip`
 // as "ubuntu" with the fixture's key pair and returns stdout, retrying the
-// TCP connect while a fresh instance's sshd comes up.
+// TCP connect while a fresh instance's sshd comes up. Failures throw
+// std::runtime_error rather than BOOST_REQUIRE, since step 2 runs it on
+// worker threads and Boost.Test assertions are not thread-safe.
 auto ssh_execute(const std::string& public_ip, const std::string& private_key_pem,
                  const std::string& cmd, std::chrono::seconds connect_timeout) -> std::string {
     auto deadline = std::chrono::steady_clock::now() + connect_timeout;
@@ -221,16 +223,34 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
     }
 
     LIBSSH2_SESSION* session = libssh2_session_init();
-    BOOST_REQUIRE(session != nullptr);
-    BOOST_REQUIRE_GE(libssh2_session_handshake(session, sock), 0);
+    auto fail = [&](const std::string& what) {
+        if (session != nullptr) {
+            libssh2_session_free(session);
+        }
+        ::close(sock);
+        throw std::runtime_error("ssh_execute: " + what + " on " + public_ip);
+    };
+    if (session == nullptr) {
+        fail("libssh2_session_init failed");
+    }
+    if (libssh2_session_handshake(session, sock) < 0) {
+        fail("SSH handshake failed");
+    }
 
     int rc = libssh2_userauth_publickey_frommemory(
         session, "ubuntu", 6, nullptr, 0, private_key_pem.data(), private_key_pem.size(), nullptr);
-    BOOST_REQUIRE_MESSAGE(rc == 0, "SSH auth failed, rc=" + std::to_string(rc));
+    if (rc != 0) {
+        fail("SSH auth failed, rc=" + std::to_string(rc));
+    }
 
     LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
-    BOOST_REQUIRE(channel != nullptr);
-    BOOST_REQUIRE_GE(libssh2_channel_exec(channel, cmd.c_str()), 0);
+    if (channel == nullptr) {
+        fail("could not open an SSH channel");
+    }
+    if (libssh2_channel_exec(channel, cmd.c_str()) < 0) {
+        libssh2_channel_free(channel);
+        fail("could not exec the command");
+    }
 
     std::string output;
     char buf[4096];
@@ -269,6 +289,10 @@ struct instance_view {
     std::string state;
     std::string public_ip;
     std::string private_ip;
+    // StateTransitionReason, then StateReason's message: "User initiated"
+    // means a TerminateInstances call, "Client.InstanceInitiatedShutdown"
+    // the guest itself.
+    std::string state_reason;
 };
 
 auto describe(Aws::EC2::EC2Client& ec2, const std::vector<Aws::EC2::Model::Filter>& filters)
@@ -281,6 +305,9 @@ auto describe(Aws::EC2::EC2Client& ec2, const std::vector<Aws::EC2::Model::Filte
     for (;;) {
         auto res = ec2.DescribeInstances(req);
         if (!res.IsSuccess()) {
+            std::cerr << "[" << LOG_TAG
+                      << "] DescribeInstances failed: " << res.GetError().GetExceptionName() << ": "
+                      << res.GetError().GetMessage() << "\n";
             return std::nullopt;
         }
         for (const auto& r : res.GetResult().GetReservations()) {
@@ -293,6 +320,8 @@ auto describe(Aws::EC2::EC2Client& ec2, const std::vector<Aws::EC2::Model::Filte
                             inst.GetState().GetName())),
                     .public_ip = std::string(inst.GetPublicIpAddress()),
                     .private_ip = std::string(inst.GetPrivateIpAddress()),
+                    .state_reason = std::string(inst.GetStateTransitionReason()) + " / " +
+                                    std::string(inst.GetStateReason().GetMessage()),
                 });
             }
         }
@@ -738,13 +767,19 @@ auto start_node_command(const std::vector<std::pair<std::string, std::string>>& 
     // Defensive: should the AMI ever ship an enabled chaos_node unit, its
     // Restart= policy would bring the killed process straight back and the
     // test would prove nothing.
-    cmd << "sudo systemctl disable --now chaos_node.service >/dev/null 2>&1; "
+    // The date lines come back as the command's output, so the test log
+    // shows which part of a slow start was slow (run 39514236538 took about
+    // 270 s per node here).
+    cmd << "date +'begin %T.%N'; "
+        << "sudo systemctl disable --now chaos_node.service >/dev/null 2>&1; "
+        << "date +'systemctl %T.%N'; "
         << "sudo mkdir -p /var/lib/chaos_node && "
         << "sudo env";
     for (const auto& [k, v] : environment) {
         cmd << " " << k << "='" << v << "'";
     }
     cmd << " setsid nohup /usr/local/bin/chaos_node > /tmp/chaos_node.log 2>&1 < /dev/null &\n"
+        << "date +'launched %T.%N'\n"
         << "disown\n";
     return cmd.str();
 }
@@ -863,37 +898,85 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
     // 39465316239 failed in this step with "ssh_execute: could not connect
     // to <ip>:22 in time" after an earlier SSH had succeeded, which is what
     // that would look like (inferred; the log could not show which node).
-    // The starts below are seconds apart, well inside 30 s. A failed SSH
-    // reports the instance's state, so a terminated node is told apart from
-    // one whose sshd never came up, and dumps every reachable node's log:
-    // run 39490951619 showed node 3 terminated during the starts, and only
-    // the leader's log can say why.
-    auto on_node = [&](std::size_t i, const std::string& cmd, std::chrono::seconds timeout) {
-        try {
-            ssh_execute(public_ips[i], private_key_pem, cmd, timeout);
-        } catch (const std::runtime_error& e) {
-            std::cerr << "[" << LOG_TAG << "] " << elapsed() << " SSH to node " << nodes[i].node_id
-                      << " failed; dumping node logs\n";
-            dump_node_logs(public_ips, private_key_pem);
-            auto view = instance(instance_ids[i]);
-            throw std::runtime_error(std::string{e.what()} + " (node " +
-                                     std::to_string(nodes[i].node_id) + ", " + instance_ids[i] +
-                                     " is " + (view ? view->state : "not found") + ")");
+    // Run 39514236538 then showed each SSH start taking about 270 s, so
+    // starting the nodes one after another still left node 3 down long
+    // enough for nodes 1 and 2 to replace it (the leader's log had
+    // AppendEntries only to nodes 2 and 4). The starts therefore run
+    // concurrently, one std::thread each, so however long one takes the three
+    // chaos_node processes come up together. A failed SSH reports the
+    // instance's state, so a terminated node is told apart from one whose
+    // sshd never came up, and dumps every reachable node's log.
+    auto report_failure = [&](std::size_t i, const std::runtime_error& e) {
+        std::cerr << "[" << LOG_TAG << "] " << elapsed() << " SSH to node " << nodes[i].node_id
+                  << " failed; dumping node logs\n";
+        dump_node_logs(public_ips, private_key_pem);
+        // A fourth cluster-tagged instance means a chaos_node leader
+        // provisioned a replacement; none means something else
+        // terminated the node.
+        if (auto all = describe(*ec2, {make_filter("tag:kythira:cluster", {cluster_name})})) {
+            for (const auto& v : *all) {
+                std::cerr << "[" << LOG_TAG << "]   cluster instance " << v.instance_id << " in "
+                          << v.subnet_id << ": " << v.state << " (" << v.state_reason << ")\n";
+            }
         }
+        auto view = instance(instance_ids[i]);
+        throw std::runtime_error(std::string{e.what()} + " (node " +
+                                 std::to_string(nodes[i].node_id) + ", " + instance_ids[i] +
+                                 " is " + (view ? view->state : "not found") + ")");
     };
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         // SSH can answer before cloud-init has finished.
-        on_node(i, "sudo cloud-init status --wait", std::chrono::minutes(3));
+        try {
+            ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
+                        std::chrono::minutes(3));
+        } catch (const std::runtime_error& e) {
+            report_failure(i, e);
+        }
     }
     std::cerr << "[" << LOG_TAG << "] " << elapsed() << " cloud-init finished on all "
               << nodes.size() << " nodes; starting chaos_node\n";
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-        on_node(i,
-                start_node_command(
-                    node_environment(nodes[i], nodes, *this, ami, cfg.instance_type, profile)),
-                std::chrono::minutes(1));
-        std::cerr << "[" << LOG_TAG << "] " << elapsed() << " started chaos_node on node "
-                  << nodes[i].node_id << " (" << instance_ids[i] << ")\n";
+    {
+        // libssh2_session_init() initialises the library lazily, which is
+        // not thread-safe, so do it once here before the threads start.
+        libssh2_init(0);
+        std::vector<std::string> commands;
+        for (const auto& n : nodes) {
+            commands.push_back(start_node_command(
+                node_environment(n, nodes, *this, ami, cfg.instance_type, profile)));
+        }
+        // Each thread writes only its own slot; all are joined before any
+        // failure is reported, so no thread is still running when the
+        // dump does.
+        std::vector<std::string> outputs(nodes.size());
+        std::vector<std::optional<std::runtime_error>> errors(nodes.size());
+        std::vector<std::thread> starts;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            starts.emplace_back([&, i] {
+                try {
+                    outputs[i] = ssh_execute(public_ips[i], private_key_pem, commands[i],
+                                             std::chrono::minutes(1));
+                } catch (const std::runtime_error& e) {
+                    errors[i].emplace(e);
+                }
+            });
+        }
+        for (auto& t : starts) {
+            t.join();
+        }
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (errors[i]) {
+                report_failure(i, *errors[i]);
+            }
+        }
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            std::istringstream lines(outputs[i]);
+            std::string stamps;
+            for (std::string line; std::getline(lines, line);) {
+                stamps += (stamps.empty() ? "" : ", ") + line;
+            }
+            std::cerr << "[" << LOG_TAG << "] " << elapsed() << " started chaos_node on node "
+                      << nodes[i].node_id << " (" << instance_ids[i] << "; " << stamps << ")\n";
+        }
     }
 
     auto leader = find_leader(public_ips, private_key_pem, {}, std::chrono::minutes(3));
