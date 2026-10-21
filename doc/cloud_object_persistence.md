@@ -910,6 +910,19 @@ Every problem carries a machine-readable `kind` (`missing_object`,
 because "this backup is bad" is not actionable and "log index 42 is missing
 between the copied entries at 41 and 43" is.
 
+A prefix on `log_layout::segmented` is read by the same rules. Its log objects
+are judged by the engine's chain rule: from the lowest object, each next object
+must start one past where the previous one ends. An object that starts *inside*
+that range is reported as a **note** of kind `stray_object`, not as a problem,
+and it does not change `ok` or `verify`'s exit status. The usual source is a
+compaction that crashed between writing its new first segment and deleting the
+segment it was cut from. The restored engine skips such an object and deletes it
+before its first log write. An object that starts *past* the chain's end is
+still a `log_gap`. Every entry inside a segment gets the `term_regression`
+check, with at most one problem per segment. A segment also makes the manifest
+`format_version` 2, so an older tool refuses the backup, as it does for a
+combined `term`.
+
 `verify` reports **every** problem it finds. Restore aborts on the **first**.
 That difference is intentional: `verify` is a diagnostic run by a human who
 wants the whole picture, and restore is a gate.

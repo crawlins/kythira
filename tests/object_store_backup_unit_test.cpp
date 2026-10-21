@@ -1373,3 +1373,199 @@ BOOST_AUTO_TEST_CASE(restore_seed_writes_a_legacy_term_that_a_combined_engine_mi
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ── Segmented log (`.kiro/specs/object-store-batched-layout/` task 8) ───────
+
+namespace {
+
+auto segmented_layout() -> object_persistence_options {
+    object_persistence_options opts;
+    opts.log = log_layout::segmented;
+    // One request at a time, so the request log below is deterministic.
+    opts.append_concurrency = 1;
+    return opts;
+}
+
+auto engine_run(std::uint64_t term, std::uint64_t first, std::uint64_t last)
+    -> std::vector<engine_entry_t> {
+    std::vector<engine_entry_t> run;
+    for (std::uint64_t i = first; i <= last; ++i) {
+        run.push_back(engine_entry(term, i));
+    }
+    return run;
+}
+
+auto source_key(std::uint64_t index) -> std::string {
+    return std::string(k_source_prefix) + "/" + log_key(index);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(object_store_backup_segmented_log)
+
+// Requirement 12.1 and 12.3: the key names only a segment's first index, so
+// `last_log_index` has to come from the body, and a segment makes the copy
+// one an older tool must refuse.
+BOOST_AUTO_TEST_CASE(a_segment_supplies_the_last_index_and_makes_the_manifest_version_2) {
+    const mock_object_store store;
+    {
+        engine_t writer{store, k_bucket, k_source_prefix, segmented_layout()};
+        writer.save_hard_state(4, 1);
+        writer.append_log_entries(engine_run(4, 1, 5));
+    }
+    BOOST_REQUIRE(store.has(source_key(1)));
+    BOOST_REQUIRE(!store.has(source_key(2)));
+
+    const object_store_backup<mock_object_store> backup{store};
+    const auto manifest =
+        backup.create(source_ref(), dest_ref(), {.backup_id = "b1", .source_quiesced = true});
+    BOOST_TEST(manifest.format_version == 2);
+    BOOST_TEST((manifest.first_log_index == std::optional<std::uint64_t>{1}));
+    BOOST_TEST((manifest.last_log_index == std::optional<std::uint64_t>{5}));
+
+    const auto report = backup.verify(dest_ref(), "b1");
+    BOOST_TEST(report.ok);
+    BOOST_TEST(report.problems.empty());
+    BOOST_TEST(report.notes.empty());
+
+    // The older tool: its verify reads the segment as an unreadable entry, and
+    // its version gate refuses the manifest, so its restore aborts either way.
+    BOOST_TEST(legacy::backup_refuses_log_object(store.body(source_key(1))));
+    BOOST_TEST(legacy::backup_refuses_manifest(manifest_body(store, "b1")));
+}
+
+// Requirement 12.2's "report strays without failing on them", for the state
+// that motivates it: a compaction whose suffix PUT landed and whose straddler
+// DELETE did not. The restored engine must skip the stray, then delete it
+// before its first log write.
+template<typename Engine>
+auto a_torn_compaction_round_trips(object_persistence_options opts) -> void {
+    const mock_object_store store;
+    {
+        Engine writer{store, k_bucket, k_source_prefix, opts};
+        writer.save_hard_state(4, 1);
+        writer.append_log_entries(engine_run(4, 1, 6));
+        store.fail_next_deletes(1);
+        BOOST_CHECK_THROW(writer.delete_log_entries_before(3), std::runtime_error);
+    }
+    BOOST_REQUIRE(store.has(source_key(1)));
+    BOOST_REQUIRE(store.has(source_key(3)));
+
+    const object_store_backup<mock_object_store> backup{store};
+    const auto manifest =
+        backup.create(source_ref(), dest_ref(), {.backup_id = "b1", .source_quiesced = true});
+    BOOST_TEST((manifest.last_log_index == std::optional<std::uint64_t>{6}));
+
+    const auto report = backup.verify(dest_ref(), "b1");
+    BOOST_TEST(report.ok);
+    for (const auto& problem : report.problems) {
+        BOOST_ERROR(problem.kind + " on " + problem.subject + ": " + problem.detail);
+    }
+    BOOST_REQUIRE(report.notes.size() == 1U);
+    BOOST_TEST(report.notes.front().kind == "stray_object");
+    BOOST_TEST(report.notes.front().subject == log_key(3));
+
+    std::ignore = backup.restore_clone(dest_ref(), "b1", target_ref("node-1-restored"));
+
+    Engine restored{store, k_bucket, "node-1-restored", opts};
+    BOOST_TEST(restored.get_log_entry(1).has_value());
+    BOOST_TEST(restored.get_last_log_index() == 6U);
+    BOOST_TEST((restored.stray_log_indices() == std::vector<std::uint64_t>{3}));
+    store.clear_requests();
+    restored.append_log_entry(engine_entry(4, 7));
+    const auto requests = store.request_log();
+    BOOST_REQUIRE(!requests.empty());
+    BOOST_TEST(requests.front() == "DELETE node-1-restored/" + log_key(3));
+    BOOST_TEST(!store.has("node-1-restored/" + log_key(3)));
+}
+
+BOOST_AUTO_TEST_CASE(a_torn_compaction_verifies_with_one_note_and_restores_clean) {
+    BOOST_TEST_CONTEXT("unfenced") {
+        a_torn_compaction_round_trips<engine_t>(segmented_layout());
+    }
+    BOOST_TEST_CONTEXT("fenced") {
+        a_torn_compaction_round_trips<fenced_engine_t>(fenced_layout(segmented_layout()));
+    }
+}
+
+// Requirement 12.2's per-entry term check reaches inside a segment, and a
+// segment from a later term is one smear, not one per entry.
+BOOST_AUTO_TEST_CASE(a_later_term_inside_a_segment_is_one_term_regression) {
+    const mock_object_store store;
+    {
+        engine_t writer{store, k_bucket, k_source_prefix, segmented_layout()};
+        writer.save_hard_state(4, 1);
+        writer.append_log_entries(std::vector<engine_entry_t>{
+            engine_entry(4, 1), engine_entry(4, 2), engine_entry(4, 3)});
+    }
+    // The node advances while the copy runs: an entry the manifest's term
+    // never saw, in the middle of the segment.
+    std::string body = store.body(source_key(1));
+    const auto at = body.find(R"({"term":4,"index":2)");
+    BOOST_REQUIRE(at != std::string::npos);
+    body.replace(at, std::string_view(R"({"term":4)").size(), R"({"term":7)");
+    store.seed(source_key(1), body);
+    store.seed(std::string(k_source_prefix) + "/" + log_key(4), entry_json(9, 4));
+
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+    const auto report = backup.verify(dest_ref(), "b1");
+    BOOST_TEST(!report.ok);
+    const auto regressions = problems_of_kind(report, "term_regression");
+    BOOST_REQUIRE(regressions.size() == 2U);
+    BOOST_TEST(regressions[0].subject.find(log_key(1)) != std::string::npos);
+    BOOST_TEST(regressions[1].subject.find(log_key(4)) != std::string::npos);
+}
+
+// Requirement 12.1's "an unparseable body throws so no manifest is written",
+// for a torn upload and for a shape the engine's parser refuses.
+BOOST_AUTO_TEST_CASE(an_unparseable_segment_refuses_the_backup) {
+    {
+        const mock_object_store store;
+        store.seed(std::string(k_source_prefix) + "/term", "4");
+        store.seed(source_key(1),
+                   R"({"first_index":1,"last_index":3,"entries":[)" + entry_json(4, 1) + ",");
+        create_refuses_naming(store, {"corrupt object", source_key(1), "not a log segment"});
+    }
+    {
+        const mock_object_store store;
+        store.seed(std::string(k_source_prefix) + "/term", "4");
+        store.seed(source_key(1), R"({"first_index":1,"last_index":3,"entries":[)" +
+                                      entry_json(4, 1) + "," + entry_json(4, 2) + "]}");
+        create_refuses_naming(store, {"corrupt object", source_key(1), "holds 2 entries"});
+    }
+    {
+        const mock_object_store store;
+        store.seed(std::string(k_source_prefix) + "/term", "4");
+        // The key names 2, the body 1.
+        store.seed(source_key(2), R"({"first_index":1,"last_index":2,"entries":[)" +
+                                      entry_json(4, 1) + "," + entry_json(4, 2) + "]}");
+        create_refuses_naming(store, {"corrupt object", source_key(2), "its key names index 2"});
+    }
+}
+
+// The chain rule is the engine's, but a hole past the chain's end is still a
+// problem, as it has always been on a singleton log: the engine would drop
+// everything above it, and a backup is checked in order to be trusted.
+BOOST_AUTO_TEST_CASE(a_gap_after_a_segment_is_still_a_log_gap) {
+    const mock_object_store store;
+    {
+        engine_t writer{store, k_bucket, k_source_prefix, segmented_layout()};
+        writer.save_hard_state(4, 1);
+        writer.append_log_entries(engine_run(4, 1, 3));
+    }
+    store.seed(source_key(5), entry_json(4, 5));
+
+    const object_store_backup<mock_object_store> backup{store};
+    std::ignore = backup.create(source_ref(), dest_ref(), {.backup_id = "b1"});
+    const auto report = backup.verify(dest_ref(), "b1");
+    BOOST_TEST(!report.ok);
+    const auto gaps = problems_of_kind(report, "log_gap");
+    BOOST_REQUIRE(gaps.size() == 1U);
+    BOOST_TEST(
+        gaps.front().detail.find("log index 4 is missing between the copied entries at 3 and 5") !=
+        std::string::npos);
+    BOOST_TEST(report.notes.empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()

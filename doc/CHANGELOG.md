@@ -17,9 +17,20 @@ current list of outstanding work, see [TODO.md](TODO.md).
   then deletes the segment, which is the commit point. A bucket of
   one-object-per-entry logs is already a valid segmented log, so switching on
   needs no migration; switching back is refused while any segment exists, and
-  so is every older binary, whose entry parser needs a top-level `term`. The
-  backup tool does not read segments yet (task 8). Planned in
-  `.kiro/specs/object-store-batched-layout/` task 7.
+  so is every older binary, whose entry parser needs a top-level `term`.
+  Planned in `.kiro/specs/object-store-batched-layout/` task 7.
+
+- **`raft_object_backup` reads segmented logs.** `create` takes a segment's
+  last index from its body, refuses a segment it cannot parse (no manifest is
+  written), and marks a backup holding a segment `format_version` 2, so an
+  older tool refuses it rather than misreading it. `verify` checks the term of
+  every entry inside a segment and judges contiguity by the engine's chain
+  rule. A log object that starts inside the range the chain already covers,
+  which is what a crash in the middle of a compaction leaves behind, is now a
+  `stray_object` **note**: `verify` still passes, prints it, and the restored
+  engine deletes it before its first log write. A hole past the end of the
+  chain is still a `log_gap` problem. Planned in
+  `.kiro/specs/object-store-batched-layout/` task 8.
 
 - **An object-store compaction no longer leaves a stray log object to become
   the start of the log.** A crash part-way through a batched append can leave

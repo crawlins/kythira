@@ -260,7 +260,7 @@ before and after.
   - _Requirements: 5.1-5.6, 6.1-6.4, 7.1-7.4, 8.1-8.4, 9.3, 10.1-10.3,
     11.2-11.5, 13.1, 13.2, 15.1, 15.3, 15.4, 15.5_
 
-- [ ] 8. Backup and restore understand segments
+- [x] 8. Backup and restore understand segments
   - `create`: `last_log_index` from a segment's body; unparseable segment
     throws, no manifest
   - `verify`: per-entry term check inside segments; contiguity by the chain
@@ -272,6 +272,19 @@ before and after.
     the older tool's `check_entry_term` (legacy reader) reports the segment
     unreadable, so its restore aborts
   - _Requirements: 12.1-12.5_
+  - Done October 21, 2026. The segment shape check moved out of the engine
+    into `object_store_persistence_detail::parse_segment`, which both the
+    engine and the backup tool call, so neither accepts a segment the other
+    refuses. Departures: only an object that starts *inside* the chain's range
+    is a `stray_object` note; one that starts past the chain's end stays a
+    `log_gap` problem, as on a singleton log, because the engine would drop
+    everything above it and the backup has no way to tell a crash's leftover
+    from a lost entry. `create` tells a torn segment from a torn singleton by
+    its opening `{"first_index"` (the engine writes that member first and the
+    parser requires it there); a non-JSON singleton is still left to
+    `verify`, as before. A segment from a later term is one
+    `term_regression`, not one per entry. `raft_object_backup verify` prints
+    notes after the problems and keeps exit 0 when there are only notes.
 
 - [ ] 9. Operating envelope and documentation
   - `doc/cloud_object_persistence.md`: layout table for both knobs; the three
