@@ -191,4 +191,39 @@ BOOST_FIXTURE_TEST_CASE(shared_list_after_write, RealOssFixture, *boost::unit_te
                                                 cfg.oss_bucket, prefix + "/law", "oss");
 }
 
+// object-store-batched-layout task 10. The fenced segment case and the retired
+// vote slot's negative control are absent for the reason the fencing case is.
+
+BOOST_FIXTURE_TEST_CASE(shared_layout_migration_read_back, RealOssFixture,
+                        *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_layout_migration_read_back(alibaba_oss_client{cfg.client_config()},
+                                                          cfg.oss_bucket, prefix + "/migrate");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_segment_truncate_compact, RealOssFixture,
+                        *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_segment_truncate_compact<
+        kythira::object_real::engine_for<alibaba_oss_client>>(
+        alibaba_oss_client{cfg.client_config()}, cfg.oss_bucket, prefix + "/segment",
+        kythira::object_real::batched_options());
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_batched_latency, RealOssFixture, *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_batched_latency(alibaba_oss_client{cfg.client_config()},
+                                               cfg.oss_bucket, prefix + "/batched-latency", "oss");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_batched_backup_verify_restore, RealOssFixture,
+                        *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_batched_backup_verify_restore(
+        alibaba_oss_client{cfg.client_config()}, cfg.oss_bucket, prefix + "/batched-src",
+        prefix + "/batched-backups", prefix + "/batched-restored");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_write_behind_commit_rate, RealOssFixture,
+                        *boost::unit_test::timeout(900)) {
+    kythira::object_real::case_write_behind_commit_rate(
+        alibaba_oss_client{cfg.client_config()}, cfg.oss_bucket, prefix + "/commit-rate", "oss");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

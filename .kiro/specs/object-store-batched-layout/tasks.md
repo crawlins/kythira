@@ -323,6 +323,12 @@ before and after.
     Requirement 8.6)
   - Not checked off against the mock tier
   - _Requirements: 16.1-16.4, 13.3_
+  - Cases written October 21, 2026: `object_persistence_real_cases.hpp`
+    cases 6-11, wired into all five provider suites (Alibaba without the
+    fenced segment case and the vote-slot control, which cannot compile for
+    it). `object_persistence_real_cases_mock_test` runs them on the mock so
+    they are known right before a paid run; that does not tick this task.
+    Clark chose to run S3 first and decide on the other four after.
 
 - [ ] 11. (Optional, pending open question 2) `raft_object_backup relayout`
   - Offline, against a stopped node's prefix: combined → separate (PUT

@@ -785,6 +785,18 @@ set_tests_properties(object_store_group_commit_unit_test PROPERTIES
     LABELS "unit;persistence;object-store"
 )
 
+# The shared real-tier cases (object_persistence_real_cases.hpp) run against
+# the mock store, so they are known right before a paid run and keep compiling
+# where no provider suite is built. Not a substitute for a live run.
+add_raft_completion_test(object_persistence_real_cases_mock_test
+    object_persistence_real_cases_mock_test.cpp)
+target_include_directories(object_persistence_real_cases_mock_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_persistence_real_cases_mock_test PROPERTIES
+    TIMEOUT 300
+    LABELS "unit;persistence;object-store"
+)
+
 # object_store_backup unit test (cloud object persistence, task 12)
 #
 # Unconditional for the same reason the suite above is: `object_store_backup.hpp`
