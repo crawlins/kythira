@@ -575,7 +575,9 @@ Reference implementations to study before starting:
     `quorum_peer_dead_after = 30s`, kill the process over SSH (the current
     `process_crash_via_ssh_kill` calls `StopInstances` instead), verify
     `assess_quorum` still reports the node live, then verify the leader's
-    AZ1 replacement, removal and termination.
+    replacement, removal and termination. With one voter per AZ the dead
+    voter's group has no live member, so the leader heals it as a lost
+    group (Req 9.2) and places the replacement in a surviving AZ, not AZ1.
   - Real-cloud runs follow the project's real-cloud cost rules.
   - Written October 19, 2026; not yet run against real EC2. The leader is
     `chaos_node` with `QUORUM_MANAGER=aws` (`cmd/chaos_node/aws_quorum.hpp`)
