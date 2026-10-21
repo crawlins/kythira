@@ -912,6 +912,50 @@ case does (Finding 19).
    is near zero (the cost table, `B ≈ 1`). Ship Parts 1-2 now and the segmented
    log after (as tasks are ordered), or hold tasks 6-9 until a group-commit spec
    exists so the two are measured together?
+
+   **Scoped October 21, 2026; tasks 6-9 proceed in order.** Reading `node`
+   again, leader group commit is not the `node` concurrency change this
+   design assumed under *Out of scope*. `node` already coalesces concurrent
+   `submit_command` calls, through the durability barrier
+   (`.kiro/specs/durable-append-barrier/`): `submit_command` writes its entry
+   with `append_log_entry_sequenced` under `_mutex`, releases `_mutex`, and
+   waits in `settle_barrier` → `barrier_through(seq)` before it replicates or
+   counts itself (`raft.hpp`, Step 3 of `submit_command`); the follower path
+   does the same before it answers AppendEntries. The file engine turns that
+   into one `fsync` per batch of waiters. The object-store engine is simply not
+   a `barriered_persistence_engine`, so `persist_append` takes its non-barriered
+   arm, and that arm is one synchronous PUT under both `_mutex` and the
+   engine's `_mu`. That, and not `node`, is the ceiling finding 2 describes.
+
+   So group commit for the object store is **engine-local**: a write-behind
+   barrier. `append_log_entry_sequenced` stages the entry in the engine's
+   mirror and returns a sequence without a request; `barrier_through(seq)`
+   flushes every staged entry through `seq` as one `append_log_entries` run —
+   under `log_layout::segmented` that is Part 3's chunked segment write, under
+   `per_entry` it is `append_concurrency` parallel PUTs, which already lifts the
+   ceiling from `1 / p50(PUT)` towards `B / p50(PUT)` without a format change.
+   A crash loses only staged entries, which no caller has advertised, so it is
+   the barrier contract the file engine already meets. No `node` change, no
+   concept change; `durability()` answers `barrier`.
+
+   What it needs that this spec does not provide, and so its own spec:
+   the flush must release `_mu` across the requests (today every PUT is made
+   under `_mu`) while keeping the barrier's sample-before / publish-after rule;
+   truncation and compaction must drop or drain staged entries in an order the
+   crash tables still hold for; a failed flush must leave the staged run
+   retryable or latch under fencing, and must not be confused with a
+   stale-appender collision; `describes_durable_storage()` turns `true` for
+   object-store configurations; and `barrier_can_block()` turns `true`, so `node` starts releasing `_mutex` around the barrier on
+   the object-store paths — a new interleaving window those tests have never
+   run under.
+
+   It depends on this spec rather than the other way round: the flush is an
+   `append_log_entries` run, and Part 3 is what makes a run one request. The
+   segmented log is therefore not wasted without group commit — it is the write
+   path group commit will call — and holding tasks 6-9 would only delay both.
+   Tasks 6-9 proceed as ordered; leader group commit for the object store is
+   its own spec, written after task 7 so it is designed against the real
+   segment write path.
 2. **Downgrade.** Is the optional offline `relayout` verb wanted, or is
    "forward-only, restore from a pre-upgrade backup" an acceptable policy?
 3. **Real-cloud runs** (Requirement 16) need approval; they reuse the existing

@@ -3,6 +3,16 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 21, 2026)
+
+- **Leader group commit for the object store is scoped.** `node` already
+  coalesces concurrent `submit_command` calls through the durability
+  barrier; the object-store engine pays one PUT per command because it is
+  not a `barriered_persistence_engine`. The fix is engine-local (stage at
+  append, flush the staged run at the barrier) and builds on the segmented
+  log's write path; the batched-layout spec's open question 1 now records
+  this, and the segmented-log tasks proceed.
+
 ### What Changed (October 20, 2026)
 
 - **A follower that grants a vote in a newer term stores it once.** Stepping

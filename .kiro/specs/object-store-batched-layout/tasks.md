@@ -3,7 +3,10 @@
 Each task is one independently mergeable PR: it builds, its tests pass, and the
 tree is safe to ship with any later task not yet merged. Tasks 1-5 deliver the
 election-latency half (Parts 1-2 of the design); tasks 6-8 the segmented log
-(Part 3), whose timing depends on open question 1. Every task runs the
+(Part 3), whose timing depended on open question 1 — scoped October 21, 2026
+(design, open question 1): leader group commit is an engine-local write-behind
+barrier that calls Part 3's segment write, so tasks 6-9 proceed in order and
+group commit gets its own spec after task 7. Every task runs the
 existing conformance suite unmodified at default options (design Property 1)
 before and after.
 
