@@ -71,4 +71,44 @@ BOOST_FIXTURE_TEST_CASE(list_after_write, RealBlobFixture, *boost::unit_test::ti
     obj::case_list_after_write(client(), bucket, prefix + "/law", k_provider);
 }
 
+// ── object-store-batched-layout task 10 ─────────────────────────────────────
+
+BOOST_FIXTURE_TEST_CASE(layout_migration_read_back, RealBlobFixture,
+                        *boost::unit_test::timeout(600)) {
+    obj::case_layout_migration_read_back(client(), bucket, prefix + "/migrate");
+}
+
+BOOST_FIXTURE_TEST_CASE(segment_truncate_compact, RealBlobFixture,
+                        *boost::unit_test::timeout(600)) {
+    obj::case_segment_truncate_compact<obj::engine_for<decltype(client())>>(
+        client(), bucket, prefix + "/segment", obj::batched_options());
+}
+
+BOOST_FIXTURE_TEST_CASE(fenced_segment_truncate_compact, RealBlobFixture,
+                        *boost::unit_test::timeout(600)) {
+    obj::case_segment_truncate_compact<obj::fenced_engine_for<decltype(client())>>(
+        client(), bucket, prefix + "/segment-fenced", obj::batched_options("node-1"));
+}
+
+BOOST_FIXTURE_TEST_CASE(retired_vote_slot_with_negative_control, RealBlobFixture,
+                        *boost::unit_test::timeout(600)) {
+    obj::case_retired_vote_slot_with_negative_control(client(), bucket, prefix + "/retired");
+}
+
+BOOST_FIXTURE_TEST_CASE(batched_latency, RealBlobFixture, *boost::unit_test::timeout(900)) {
+    obj::case_batched_latency(client(), bucket, prefix + "/batched-latency", k_provider);
+}
+
+BOOST_FIXTURE_TEST_CASE(batched_backup_verify_restore, RealBlobFixture,
+                        *boost::unit_test::timeout(900)) {
+    obj::case_batched_backup_verify_restore(client(), bucket, prefix + "/batched-src",
+                                            prefix + "/batched-backups",
+                                            prefix + "/batched-restored");
+}
+
+BOOST_FIXTURE_TEST_CASE(write_behind_commit_rate, RealBlobFixture,
+                        *boost::unit_test::timeout(900)) {
+    obj::case_write_behind_commit_rate(client(), bucket, prefix + "/commit-rate", k_provider);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
