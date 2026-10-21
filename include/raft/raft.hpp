@@ -802,6 +802,17 @@ private:
     // unconditional again and nothing about those configurations changes.
     log_index_type _durable_log_index{0};
 
+    // The sequence a barriered engine gave each entry this node appended that
+    // is not yet known durable (index above `_durable_log_index`). A follower
+    // that answers success for entries it already held, appended by an
+    // earlier AppendEntries whose barrier has not finished, takes a barrier
+    // through the highest of their sequences instead of answering at once:
+    // the leader counts that answer, so it must not run ahead of the bytes
+    // (`cover_held_entries_locked`). Per index, not one high-water mark,
+    // because a truncation discards the sequences above it and a barrier on
+    // a discarded sequence can never succeed.
+    std::map<log_index_type, kythira::write_sequence> _undurable_seqs;
+
     // Index of highest log entry applied to state machine (initialized to 0, increases
     // monotonically)
     log_index_type _last_applied;
@@ -1351,6 +1362,18 @@ private:
     /// @brief Record that everything through `pending` is durable.
     ///        `_mutex` must be held.
     auto mark_durable_locked(const pending_barrier& pending) -> void;
+
+    /// @brief Make `pending` cover every entry through `last_new_index`.
+    ///        `_mutex` must be held.
+    ///
+    /// A successful AppendEntries response tells the leader this node holds
+    /// everything through `prev_log_index + entries.size()`. When some of
+    /// those entries were already in the log, this RPC appended nothing for
+    /// them and `pending` is empty, but they may still be waiting for the
+    /// barrier an earlier RPC is taking with `_mutex` released (a duplicate,
+    /// or a heartbeat, overtaking it). Without this the duplicate answered
+    /// first and the leader counted entries this node did not yet hold.
+    auto cover_held_entries_locked(pending_barrier& pending, log_index_type last_new_index) -> void;
 
     /// @brief `take_barrier` then `mark_durable_locked`, acquiring `_mutex`
     ///        for the second half.
@@ -5841,11 +5864,28 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // append_entries_with_consistency_check() (.kiro/specs/peer2peer-log-replication/,
     // Requirement 6.1) so the peer-to-peer fetch path shares this exact logic.
     pending_barrier pending;
-    auto response = append_entries_with_consistency_check(
-        request.prev_log_index(), request.prev_log_term(), request.entries(), pending);
+    append_entries_response_type response;
+    try {
+        response = append_entries_with_consistency_check(
+            request.prev_log_index(), request.prev_log_term(), request.entries(), pending);
+    } catch (const std::exception& e) {
+        // A refused write. The entries stored before it are in the log and
+        // await a barrier the leader's retry takes (cover_held_entries_locked);
+        // the refused one and those after it are in neither. Answered as a
+        // failure, and logged: a transport that drops a throwing handler's
+        // request (the simulator does) would otherwise hide it entirely.
+        _logger.error("AppendEntries could not store its entries",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"prev_log_index", std::to_string(request.prev_log_index())},
+                       {"entries", std::to_string(request.entries().size())},
+                       {"error", e.what()}});
+        return append_entries_response_type{_current_term, false, std::nullopt, std::nullopt};
+    }
     if (!response.success()) {
         return response;
     }
+    cover_held_entries_locked(
+        pending, request.prev_log_index() + static_cast<log_index_type>(request.entries().size()));
 
     // Requirement 1.2: the barrier is taken **before** this returns success.
     // Returning success is the follower's promise to the leader that it holds
@@ -6049,6 +6089,10 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
                 if (_durable_log_index >= entry_index) {
                     _durable_log_index = entry_index - 1;
                 }
+                // Their sequences are discarded with them; a barrier on one
+                // could never succeed.
+                _undurable_seqs.erase(_undurable_seqs.lower_bound(entry_index),
+                                      _undurable_seqs.end());
                 break;
             }
         }
@@ -6328,6 +6372,10 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // being credited with the snapshot's.
     _durable_log_index =
         std::max(request.last_included_index(), std::min(_durable_log_index, get_last_log_index()));
+    // Sequences of entries the snapshot covers or the truncation removed are
+    // discarded by the engine; none may be barriered on again.
+    _undurable_seqs.erase(_undurable_seqs.upper_bound(get_last_log_index()), _undurable_seqs.end());
+    _undurable_seqs.erase(_undurable_seqs.begin(), _undurable_seqs.upper_bound(_durable_log_index));
 
     // Clean up snapshot buffer. Copied out first: `complete_snapshot_data` is a
     // reference INTO it, and the metric below still reads the size.
@@ -7340,6 +7388,7 @@ auto node<Types>::persist_append(const log_entry_type& entry, pending_barrier& p
         // needs to barrier a whole AppendEntries batch at once, because
         // sequences are monotonic per engine.
         const auto seq = _persistence.append_log_entry_sequenced(entry);
+        _undurable_seqs[entry.index()] = seq;
         if (!pending._any || seq > pending._seq) {
             pending._seq = seq;
             pending._index = entry.index();
@@ -7403,6 +7452,28 @@ auto node<Types>::mark_durable_locked(const pending_barrier& pending) -> void {
     if (pending._any && pending._index > _durable_log_index) {
         _durable_log_index = pending._index;
     }
+    _undurable_seqs.erase(_undurable_seqs.begin(), _undurable_seqs.upper_bound(_durable_log_index));
+}
+
+template<raft_types Types>
+auto node<Types>::cover_held_entries_locked(pending_barrier& pending, log_index_type last_new_index)
+    -> void {
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        if (last_new_index <= _durable_log_index) {
+            return;
+        }
+        // Entries at or below `last_new_index` still waiting on a barrier.
+        // Sequences are monotonic in index order within one log, so the last
+        // one at or below `last_new_index` is the highest that matters.
+        auto it = _undurable_seqs.upper_bound(last_new_index);
+        if (it == _undurable_seqs.begin()) {
+            return;
+        }
+        --it;
+        pending._seq = std::max(pending._seq, it->second);
+        pending._index = std::max(pending._index, last_new_index);
+        pending._any = true;
+    }
 }
 
 template<raft_types Types>
@@ -7456,8 +7527,12 @@ auto node<Types>::persist_and_append_run(std::span<const log_entry_type> entries
     }
     {
         for (const auto& entry : entries) {
-            append_log_entry(entry);
+            // Store first: if the append throws, the entry is not in `_log`
+            // either. The other order left it there, and the leader's retry
+            // then found it "already held" and was answered success for an
+            // entry the store never received.
             persist_append(entry, pending);
+            append_log_entry(entry);
         }
     }
 }
@@ -8429,6 +8504,12 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
                             consistency_response = this->append_entries_with_consistency_check(
                                 from_index - 1, response.prev_log_term(), response.entries(),
                                 pending);
+                            if (consistency_response.success()) {
+                                this->cover_held_entries_locked(
+                                    pending,
+                                    from_index - 1 +
+                                        static_cast<log_index_type>(response.entries().size()));
+                            }
                             new_last_index = this->get_last_log_index();
                         }
 
@@ -9259,6 +9340,10 @@ auto node<Types>::compact_log() -> void {
 
     // Delete entries from persistence
     _persistence.delete_log_entries_before(last_included_index + 1);
+    // An engine discards the sequences of entries it compacts away unflushed;
+    // the snapshot covers them, so no barrier may name one again.
+    _undurable_seqs.erase(_undurable_seqs.begin(),
+                          _undurable_seqs.upper_bound(last_included_index));
 
     auto new_log_size = _log.size();
     auto entries_removed = old_log_size - new_log_size;

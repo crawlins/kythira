@@ -5,6 +5,21 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 21, 2026)
 
+- **A follower no longer acknowledges entries its store does not hold.**
+  Two paths in `node` answered an AppendEntries with success for an entry
+  that no barrier had covered, and the leader counted it toward a commit.
+  A follower put each entry in its in-memory log before storing it, so an
+  append the engine refused left the entry there, and the leader's retry
+  found it "already held" and was answered success. It now stores first.
+  And entries an earlier AppendEntries appended but did not make durable,
+  because its barrier failed or was still running with the lock released,
+  were answered for by the next one without a barrier. The node now keeps
+  the sequence of each entry not yet durable, and an AppendEntries, or a
+  peer-to-peer catch-up, that answers for such entries takes a barrier
+  through them first. A refused write is logged and answered as a failure
+  rather than thrown into the transport. CI found it on #598: a follower
+  over a write-behind object store acked entry 11 and never stored it.
+
 - **Object-store write-behind group commit.** A new opt-in
   `write_behind` option stages each append and writes the staged entries
   at the durability barrier, as one run, so one flush carries every command
