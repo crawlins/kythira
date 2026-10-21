@@ -7,8 +7,11 @@
 // instance that is still `running` looks perfectly healthy to it. Catching
 // that case is the Raft leader's job (quorum_peer_dead_after, Req 13.7):
 // once a voter has been silent that long the leader provisions a
-// replacement in the voter's group, admits it through ClusterJoin as a
-// learner, promotes it, removes the dead voter and terminates its instance.
+// replacement, admits it through ClusterJoin as a learner, promotes it,
+// removes the dead voter and terminates its instance. With one voter per
+// AZ, the silent voter's group has no live member left, which the leader
+// cannot tell apart from losing the AZ, so heal_lost_groups() places the
+// replacement in a surviving group (Req 9.2), not the voter's own.
 // quorum_leader_integration_test.cpp's crashed_process_on_running_vm_is_
 // replaced models this in process; this test runs it on real instances:
 //
@@ -22,8 +25,8 @@
 //   3. SIGKILL chaos_node on one follower; its instance keeps running;
 //   4. check that the test's manager still reports all three nodes live:
 //      instance state alone does not see the crash;
-//   5. wait for the leader to act: a new cluster-tagged instance in the
-//      killed node's subnet reaches `running`, the killed instance is
+//   5. wait for the leader to act: a new cluster-tagged instance in one of
+//      the other two subnets reaches `running`, the killed instance is
 //      terminated, the leader still answers /status, and the replacement's
 //      chaos_node (started by the user data the leader's manager rendered)
 //      catches up to the leader's commit index.
@@ -1089,9 +1092,19 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
 
     // ── Step 5: the leader replaces, removes and terminates ────────────
     // A replacement is any cluster-tagged instance that is not one of the
-    // three bootstrap nodes. Only the victim's group has a deficit, so it
-    // must land in the victim's subnet.
+    // three bootstrap nodes. The victim was its group's only voter, so the
+    // leader treats that group as lost and provisions into a surviving one
+    // (see the file header): the replacement must land in another of the
+    // cluster's subnets. Run 39563651006 asserted the victim's own subnet
+    // and failed on exactly this, with the rest of the heal passing.
     const std::set<std::string> bootstrap(instance_ids.begin(), instance_ids.end());
+    std::map<std::string, std::string> az_by_subnet;
+    for (const auto& [az, subnet] : subnet_by_az) {
+        az_by_subnet.emplace(subnet, az);
+    }
+    auto in_surviving_group = [&](const std::string& subnet) {
+        return subnet != victim_subnet && az_by_subnet.contains(subnet);
+    };
     std::optional<instance_view> replacement;
     bool victim_gone = false;
     bool replacement_tracked = false;
@@ -1108,16 +1121,17 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
                     continue;
                 }
                 if (i.state == "pending" || i.state == "running") {
-                    BOOST_TEST(i.subnet_id == victim_subnet,
-                               "replacement " << i.instance_id << " launched in " << i.subnet_id
-                                              << ", not the killed node's " << victim_subnet);
                     found = i;
                 }
             }
             if (found) {
                 replacement = found;
                 if (!replacement_tracked) {
-                    track_instance("replacement (" + nodes[victim].az + ")", cfg.instance_type);
+                    auto az = az_by_subnet.find(found->subnet_id);
+                    track_instance("replacement (" +
+                                       (az != az_by_subnet.end() ? az->second : found->subnet_id) +
+                                       ")",
+                                   cfg.instance_type);
                     replacement_tracked = true;
                     std::cerr << "[" << LOG_TAG << "] leader launched replacement "
                               << found->instance_id << "\n";
@@ -1147,7 +1161,10 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
                                                                << replacement->state);
     BOOST_REQUIRE_MESSAGE(
         victim_gone, "the killed node's instance " << victim_instance << " was never terminated");
-    BOOST_TEST(replacement->subnet_id == victim_subnet);
+    BOOST_TEST(in_surviving_group(replacement->subnet_id),
+               "replacement " << replacement->instance_id << " launched in "
+                              << replacement->subnet_id
+                              << ", which is the killed node's subnet or not the cluster's");
 
     // The replacement carries a fresh numeric id from the leader's manager.
     auto replacement_id = mgr.node_id_of_instance(replacement->instance_id);
