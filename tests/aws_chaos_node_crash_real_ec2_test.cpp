@@ -108,11 +108,13 @@
 #include "ordered_global_fixtures.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -201,8 +203,16 @@ BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 // TCP connect while a fresh instance's sshd comes up. Failures throw
 // std::runtime_error rather than BOOST_REQUIRE, since step 2 runs it on
 // worker threads and Boost.Test assertions are not thread-safe.
+//
+// Every libssh2 call after the connect is bounded by `exec_timeout`. Run
+// 39537006735 hung in step 2 for over an hour in a blocking read, until
+// ctest killed the process before teardown and leaked the cluster. When
+// the read times out, the output so far is returned with *timed_out set
+// if the caller passed it, and thrown otherwise.
 auto ssh_execute(const std::string& public_ip, const std::string& private_key_pem,
-                 const std::string& cmd, std::chrono::seconds connect_timeout) -> std::string {
+                 const std::string& cmd, std::chrono::seconds connect_timeout,
+                 std::chrono::seconds exec_timeout = std::chrono::minutes(5),
+                 bool* timed_out = nullptr) -> std::string {
     auto deadline = std::chrono::steady_clock::now() + connect_timeout;
     int sock = -1;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -233,6 +243,9 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
     if (session == nullptr) {
         fail("libssh2_session_init failed");
     }
+    libssh2_session_set_timeout(
+        session, static_cast<long>(
+                     std::chrono::duration_cast<std::chrono::milliseconds>(exec_timeout).count()));
     if (libssh2_session_handshake(session, sock) < 0) {
         fail("SSH handshake failed");
     }
@@ -262,6 +275,15 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
     libssh2_session_disconnect(session, "bye");
     libssh2_session_free(session);
     ::close(sock);
+    if (nread == LIBSSH2_ERROR_TIMEOUT) {
+        if (timed_out != nullptr) {
+            *timed_out = true;
+            return output;
+        }
+        throw std::runtime_error("ssh_execute: command on " + public_ip + " still running after " +
+                                 std::to_string(exec_timeout.count()) +
+                                 "s; output so far: " + output);
+    }
     return output;
 }
 
@@ -354,6 +376,37 @@ struct chaos_crash_network_fixture : kythira::testing::aws_real_ec2::signal_clea
     kythira::testing::aws_real_ec2::TestCostReport cost_report{
         std::string(boost::unit_test::framework::current_test_case().p_name)};
     bool torn_down_ = false;
+
+    // A Boost timeout siglongjmps out of the case without running this
+    // fixture's destructor, and a ctest TIMEOUT kills with SIGKILL, so
+    // neither tears anything down: run 39537006735 hung, hit both at
+    // 3900 s and leaked its VPC and three instances. The watchdog fires
+    // first, at the case's budget less teardown's 13 minutes, tears down
+    // from its own thread and exits the process.
+    static constexpr std::chrono::seconds WATCHDOG_AFTER{3900 - 13 * 60};
+    std::mutex watchdog_mu_;
+    std::condition_variable watchdog_cv_;
+    bool watchdog_stop_ = false;
+    std::thread watchdog_;
+
+    void start_watchdog() {
+        watchdog_ = std::thread([this] {
+            std::unique_lock lk(watchdog_mu_);
+            if (watchdog_cv_.wait_for(lk, WATCHDOG_AFTER, [this] { return watchdog_stop_; })) {
+                return;
+            }
+            lk.unlock();
+            std::cerr << "[" << LOG_TAG << "] watchdog: still running after "
+                      << WATCHDOG_AFTER.count()
+                      << "s; tearing down before the Boost and ctest timeouts\n"
+                      << std::flush;
+            if (auto* f = kythira::testing::aws_real_ec2::g_active_aws_fixture.exchange(
+                    nullptr, std::memory_order_acq_rel)) {
+                f->teardown();
+            }
+            std::_Exit(EXIT_FAILURE);
+        });
+    }
 
     void track_instance(const std::string& label, const std::string& instance_type) {
         cost_report.resources.push_back(
@@ -486,9 +539,22 @@ struct chaos_crash_network_fixture : kythira::testing::aws_real_ec2::signal_clea
             teardown();
             throw;
         }
+        // Only once nothing can throw: a constructor that throws never
+        // runs the destructor that joins this thread.
+        start_watchdog();
     }
 
-    ~chaos_crash_network_fixture() { teardown(); }
+    ~chaos_crash_network_fixture() {
+        {
+            std::lock_guard lk(watchdog_mu_);
+            watchdog_stop_ = true;
+        }
+        watchdog_cv_.notify_all();
+        if (watchdog_.joinable()) {
+            watchdog_.join();
+        }
+        teardown();
+    }
 
     // Terminates every instance in the VPC or tagged with this run's
     // cluster that is not already terminated or shutting down, and repeats
@@ -953,8 +1019,23 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             starts.emplace_back([&, i] {
                 try {
-                    outputs[i] = ssh_execute(public_ips[i], private_key_pem, commands[i],
-                                             std::chrono::minutes(1));
+                    // The command only launches chaos_node in the
+                    // background, so two minutes is generous. A timeout
+                    // after the "launched" stamp means chaos_node is up
+                    // and only the SSH channel failed to close, which is
+                    // a pass; one before it is a failed start.
+                    bool timed_out = false;
+                    outputs[i] =
+                        ssh_execute(public_ips[i], private_key_pem, commands[i],
+                                    std::chrono::minutes(1), std::chrono::minutes(2), &timed_out);
+                    if (timed_out) {
+                        if (outputs[i].find("launched ") == std::string::npos) {
+                            throw std::runtime_error(
+                                "ssh_execute: chaos_node start on " + public_ips[i] +
+                                " did not finish in 120s; output so far: " + outputs[i]);
+                        }
+                        outputs[i] += "(SSH channel still open after 120s; closed it)\n";
+                    }
                 } catch (const std::runtime_error& e) {
                     errors[i].emplace(e);
                 }
