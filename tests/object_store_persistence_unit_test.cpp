@@ -236,6 +236,69 @@ struct combined_fenced_mock_object_store_harness : fenced_mock_object_store_harn
     }
 };
 
+/// The segmented log (task 7), alone and with the combined hard state, each
+/// unfenced and fenced.
+template<kythira::hard_state_layout HardState>
+struct segmented_mock_object_store_harness : mock_object_store_harness {
+    [[nodiscard]] static auto default_options() -> kythira::object_persistence_options {
+        kythira::object_persistence_options opts;
+        opts.hard_state = HardState;
+        opts.log = kythira::log_layout::segmented;
+        return opts;
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name), default_options()};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{store, bucket(), prefix(), opts};
+    }
+};
+
+template<kythira::hard_state_layout HardState>
+struct segmented_fenced_mock_object_store_harness : fenced_mock_object_store_harness {
+    [[nodiscard]] static auto default_options() -> kythira::object_persistence_options {
+        return segmented_mock_object_store_harness<HardState>::default_options();
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        kythira::object_persistence_options opts = default_options();
+        opts.owner_id = owner_id();
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        opts.owner_id = owner_id();
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine_as(std::string owner,
+                                      std::optional<std::uint64_t> takeover_epoch) const
+        -> engine_t {
+        kythira::object_persistence_options opts = default_options();
+        opts.owner_id = std::move(owner);
+        opts.takeover_epoch = takeover_epoch;
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+};
+
+// The macros paste the harness into identifiers, so each instantiation needs a
+// plain name.
+using segmented_harness = segmented_mock_object_store_harness<kythira::hard_state_layout::separate>;
+using segmented_fenced_harness =
+    segmented_fenced_mock_object_store_harness<kythira::hard_state_layout::separate>;
+using both_layouts_harness =
+    segmented_mock_object_store_harness<kythira::hard_state_layout::combined>;
+using both_layouts_fenced_harness =
+    segmented_fenced_mock_object_store_harness<kythira::hard_state_layout::combined>;
+
 using engine_t = mock_object_store_harness::engine_t;
 using fenced_engine_t = fenced_mock_object_store_harness::engine_t;
 using log_entry_t = kythira::log_entry<>;
@@ -287,6 +350,21 @@ KYTHIRA_OBJECT_STORE_CONFORMANCE(combined_fenced_mock_object_store_harness,
                                  combined_fenced_mock_object_store)
 KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(combined_fenced_mock_object_store_harness,
                                          combined_fenced_mock_object_store)
+
+// …and over the segmented log (task 7), alone and with the combined hard state.
+// The conformance cases append one entry at a time, which is a singleton under
+// either layout, so these runs are mostly the evidence that `segmented` changes
+// nothing a singleton writer sees; the batched-run case reads its object and
+// request counts from the harness, and the segment-specific behaviour lives in
+// object_store_batched_layout_unit_test.cpp.
+KYTHIRA_OBJECT_STORE_CONFORMANCE(segmented_harness, segmented_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(segmented_fenced_harness, segmented_fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(segmented_fenced_harness,
+                                         segmented_fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(both_layouts_harness, both_layouts_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(both_layouts_fenced_harness, both_layouts_fenced_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(both_layouts_fenced_harness,
+                                         both_layouts_fenced_mock_object_store)
 
 // ── Concepts ─────────────────────────────────────────────────────────────────
 

@@ -13,10 +13,14 @@
 #include <raft/types.hpp>
 
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <limits>
+#include <map>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -113,6 +117,8 @@ auto construction_fails_naming(const store_t& store,
 /// every n from 0 until the operation completes uninterrupted, and check each
 /// outcome against the oracle. `setup` brings a fresh store to the pre-call
 /// state; `op` is the interrupted call; `next` is "its next mutation".
+/// `seed`, when given, writes objects straight into each fresh store before
+/// the engine is built — how a case puts a stray on the store.
 ///
 /// Returns the operation's request count — the n at which it first completed —
 /// so a case can pin it.
@@ -120,13 +126,17 @@ template<typename Engine>
 auto crash_at_every_request(const kythira::object_persistence_options& opts, oracle::operation kind,
                             const std::function<void(Engine&)>& setup,
                             const std::function<void(Engine&)>& op,
-                            const std::function<void(Engine&)>& next) -> std::size_t {
+                            const std::function<void(Engine&)>& next,
+                            const std::function<void(store_t&)>& seed = {}) -> std::size_t {
     // The uninterrupted run, for `post` and the request count.
     model_t pre;
     model_t post;
     std::size_t requests = 0;
     {
         store_t store;
+        if (seed) {
+            seed(store);
+        }
         Engine eng{store, k_bucket, k_prefix, opts};
         setup(eng);
         pre = oracle::capture(eng);
@@ -140,6 +150,9 @@ auto crash_at_every_request(const kythira::object_persistence_options& opts, ora
     for (std::size_t n = 0; n <= requests; ++n) {
         BOOST_TEST_CONTEXT("crash after request " << n << " of " << requests) {
             store_t store;
+            if (seed) {
+                seed(store);
+            }
             {
                 Engine eng{store, k_bucket, k_prefix, opts};
                 setup(eng);
@@ -1525,6 +1538,765 @@ BOOST_AUTO_TEST_CASE(a_batched_append_spares_only_the_strays_it_overwrites) {
     BOOST_TEST((loaded_indices(reloaded.get_log_entries(0, 100)) ==
                 std::vector<std::uint64_t>{1, 2, 3, 4, 5, 6}));
     BOOST_TEST(reloaded.get_log_entry(5).value().term() == 2U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── The segmented log (task 7) ──────────────────────────────────────────────
+
+namespace {
+
+auto seg(std::size_t max_entries = 100, std::size_t max_bytes = 1024U * 1024U)
+    -> kythira::object_persistence_options {
+    kythira::object_persistence_options opts;
+    opts.log = kythira::log_layout::segmented;
+    opts.max_segment_entries = max_entries;
+    opts.max_segment_bytes = max_bytes;
+    // One request at a time, so request logs and crash points are
+    // deterministic.
+    opts.append_concurrency = 1;
+    return opts;
+}
+
+/// The body a per-entry engine writes for `entry`: the reference every
+/// element of a segment must equal byte for byte.
+auto singleton_body(const log_entry_t& entry) -> std::string {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, separate()};
+    eng.append_log_entry(entry);
+    return store.body(log_object_key(entry.index()));
+}
+
+auto segment_body(const std::vector<log_entry_t>& entries) -> std::string {
+    std::string body = "{\"first_index\":" + std::to_string(entries.front().index()) +
+                       ",\"last_index\":" + std::to_string(entries.back().index()) +
+                       ",\"entries\":[";
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        body += (i > 0 ? "," : "") + singleton_body(entries[i]);
+    }
+    return body + "]}";
+}
+
+auto log_keys(const store_t& store) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    for (const auto& key : store.keys()) {
+        if (key.starts_with(k_prefix + "/log/")) {
+            out.push_back(key);
+        }
+    }
+    return out;
+}
+
+auto keys_at(std::initializer_list<std::uint64_t> indices) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    for (const auto i : indices) {
+        out.push_back(log_object_key(i));
+    }
+    return out;
+}
+
+template<typename Engine>
+auto make_segmented_engine(store_t& store, kythira::object_persistence_options opts) -> Engine {
+    if constexpr (std::is_same_v<Engine, fenced_engine_t>) {
+        opts.owner_id = k_owner_id;
+    }
+    return Engine{store, k_bucket, k_prefix, opts};
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(segmented_log_options)
+
+BOOST_AUTO_TEST_CASE(segment_bounds_are_validated_at_construction) {
+    store_t store;
+    BOOST_CHECK_THROW((engine_t{store, k_bucket, k_prefix, seg(1)}), std::invalid_argument);
+    BOOST_CHECK_THROW((engine_t{store, k_bucket, k_prefix, seg(100, 0)}), std::invalid_argument);
+    kythira::object_persistence_options too_big = seg(100, 2048);
+    too_big.max_object_bytes = 1024;
+    BOOST_CHECK_THROW((engine_t{store, k_bucket, k_prefix, too_big}), std::invalid_argument);
+    BOOST_CHECK_NO_THROW((engine_t{store, k_bucket, k_prefix, seg(2, 1)}));
+}
+
+BOOST_AUTO_TEST_CASE(segment_bounds_under_per_entry_are_refused_not_ignored) {
+    store_t store;
+    kythira::object_persistence_options opts;
+    opts.max_segment_entries = 10;
+    BOOST_CHECK_THROW((engine_t{store, k_bucket, k_prefix, opts}), std::invalid_argument);
+    opts = {};
+    opts.max_segment_bytes = 4096;
+    BOOST_CHECK_THROW((engine_t{store, k_bucket, k_prefix, opts}), std::invalid_argument);
+    BOOST_CHECK_NO_THROW((engine_t{store, k_bucket, k_prefix, {}}));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(segmented_append)
+
+BOOST_AUTO_TEST_CASE(an_extending_run_is_one_put_of_one_segment) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    const auto run = make_run(1, 1, 5);
+    store.clear_requests();
+    eng.append_log_entries(run);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"PUT " + log_object_key(1)}));
+    BOOST_TEST(store.body(log_object_key(1)) == segment_body(run));
+    BOOST_TEST(eng.get_last_log_index() == 5U);
+}
+
+// Requirement 5.3 and the design's codec section: each element is today's
+// record, byte for byte, so a segmented bucket diffs entry for entry.
+BOOST_AUTO_TEST_CASE(each_segment_element_is_byte_identical_to_the_singleton_body) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    auto run = make_run(7, 1, 3);
+    run[1]._type = kythira::entry_type::configuration;
+    eng.append_log_entries(run);
+    const auto parsed = boost::json::parse(store.body(log_object_key(1)));
+    const auto& elements = parsed.as_object().at("entries").as_array();
+    BOOST_REQUIRE(elements.size() == 3U);
+    for (std::size_t i = 0; i < 3; ++i) {
+        BOOST_TEST(boost::json::serialize(elements[i]) == singleton_body(run[i]));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_run_is_chunked_greedily_by_entry_count) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg(3)};
+    eng.append_log_entries(make_run(1, 1, 7));
+    BOOST_TEST((log_keys(store) == keys_at({1, 4, 7})));
+    // The last chunk holds one entry, so it is a singleton.
+    BOOST_TEST(store.body(log_object_key(7)) == singleton_body(make_entry(1, 7)));
+    engine_t reloaded{store, k_bucket, k_prefix, seg(3)};
+    BOOST_TEST((loaded_indices(reloaded.get_log_entries(0, 100)) ==
+                std::vector<std::uint64_t>{1, 2, 3, 4, 5, 6, 7}));
+}
+
+BOOST_AUTO_TEST_CASE(a_run_is_chunked_by_body_size_and_an_oversized_entry_is_a_singleton) {
+    // Each record here is under 100 bytes; a 2-entry segment of them is over
+    // 150 bytes, so with a 150-byte bound every chunk is one entry.
+    const std::size_t record = singleton_body(make_entry(1, 1)).size();
+    BOOST_REQUIRE(record < 100U);
+    {
+        store_t store;
+        engine_t eng{store, k_bucket, k_prefix, seg(100, 2 * record)};
+        eng.append_log_entries(make_run(1, 1, 3));
+        BOOST_TEST((log_keys(store) == keys_at({1, 2, 3})));
+    }
+    {
+        // Room for exactly two records plus the segment's own framing.
+        const std::size_t two = segment_body(make_run(1, 1, 2)).size();
+        store_t store;
+        engine_t eng{store, k_bucket, k_prefix, seg(100, two)};
+        eng.append_log_entries(make_run(1, 1, 5));
+        BOOST_TEST((log_keys(store) == keys_at({1, 3, 5})));
+    }
+    {
+        // An entry larger than the bound is written alone, between segments.
+        store_t store;
+        const std::size_t bound = 4 * record;
+        engine_t eng{store, k_bucket, k_prefix, seg(100, bound)};
+        auto run = make_run(1, 1, 5);
+        run[2]._command = std::vector<std::byte>(bound, std::byte{0x41});
+        eng.append_log_entries(run);
+        BOOST_TEST((log_keys(store) == keys_at({1, 3, 4})));
+        BOOST_TEST(store.body(log_object_key(3)).size() > bound);
+        engine_t reloaded{store, k_bucket, k_prefix, seg(100, bound)};
+        BOOST_TEST(reloaded.get_log_entry(3).value().command().size() == bound);
+        BOOST_TEST(reloaded.get_last_log_index() == 5U);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(an_entry_over_max_object_bytes_fails_the_run_before_any_request) {
+    store_t store;
+    kythira::object_persistence_options opts = seg(100, 512);
+    opts.max_object_bytes = 1024;
+    engine_t eng{store, k_bucket, k_prefix, opts};
+    auto run = make_run(1, 1, 3);
+    run[1]._command = std::vector<std::byte>(2048, std::byte{0x41});
+    store.clear_requests();
+    BOOST_CHECK_THROW(eng.append_log_entries(run), std::runtime_error);
+    BOOST_TEST(store.request_log().empty());
+    BOOST_TEST(eng.get_last_log_index() == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(a_non_extending_run_is_refused_before_any_request) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    eng.append_log_entries(make_run(1, 1, 4));
+    store.clear_requests();
+    // Overlapping, past a gap, and not consecutive.
+    BOOST_CHECK_THROW(eng.append_log_entries(make_run(2, 3, 3)), std::invalid_argument);
+    BOOST_CHECK_THROW(eng.append_log_entries(make_run(2, 6, 3)), std::invalid_argument);
+    const std::vector<log_entry_t> holey{make_entry(2, 5), make_entry(2, 7)};
+    BOOST_CHECK_THROW(eng.append_log_entries(holey), std::invalid_argument);
+    BOOST_TEST(store.request_log().empty());
+    BOOST_CHECK_NO_THROW(eng.append_log_entries(make_run(2, 5, 2)));
+}
+
+BOOST_AUTO_TEST_CASE(a_single_append_inside_a_segment_is_refused_and_beside_one_is_a_singleton) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    eng.append_log_entries(make_run(1, 1, 4));
+    store.clear_requests();
+    BOOST_CHECK_THROW(eng.append_log_entry(make_entry(2, 1)), std::invalid_argument);
+    BOOST_CHECK_THROW(eng.append_log_entry(make_entry(2, 3)), std::invalid_argument);
+    BOOST_TEST(store.request_log().empty());
+    eng.append_log_entry(make_entry(1, 5));
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"PUT " + log_object_key(5)}));
+    BOOST_TEST(store.body(log_object_key(5)) == singleton_body(make_entry(1, 5)));
+}
+
+// Requirement 6.4: a failed run records every object it sent as a stray, by
+// key, and the next write deletes them.
+BOOST_AUTO_TEST_CASE(a_failed_run_records_each_sent_object_as_a_stray_by_key) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg(3)};
+    store.fail_puts_for_key(log_object_key(4));
+    BOOST_CHECK_THROW(eng.append_log_entries(make_run(1, 1, 7)), std::runtime_error);
+    store.fail_puts_for_key("");
+    BOOST_TEST((eng.stray_log_indices() == std::vector<std::uint64_t>{1, 4}));
+    BOOST_TEST(eng.get_last_log_index() == 0U);
+    store.clear_requests();
+    eng.append_log_entries(make_run(1, 1, 2));
+    // log/1 is overwritten by the run, so only log/4 is deleted first.
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(4),
+                                                                "PUT " + log_object_key(1)}));
+    engine_t reloaded{store, k_bucket, k_prefix, seg(3)};
+    BOOST_TEST(
+        (loaded_indices(reloaded.get_log_entries(0, 100)) == std::vector<std::uint64_t>{1, 2}));
+    BOOST_TEST(reloaded.stray_log_indices().empty());
+}
+
+// The design's keep-set trap: a stray singleton at 18 inside a run 16..25 is
+// not overwritten by the run's one object at 16, so it must be deleted.
+BOOST_AUTO_TEST_CASE(a_stray_inside_a_runs_segment_is_deleted_not_kept) {
+    store_t store;
+    {
+        engine_t writer{store, k_bucket, k_prefix, separate()};
+        writer.append_log_entries(make_run(1, 1, 15));
+        writer.append_log_entry(make_entry(1, 18));
+    }
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    BOOST_TEST((eng.stray_log_indices() == std::vector<std::uint64_t>{18}));
+    store.clear_requests();
+    eng.append_log_entries(make_run(2, 16, 10));
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(18),
+                                                                "PUT " + log_object_key(16)}));
+    BOOST_TEST(!store.has(log_object_key(18)));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(segmented_truncation_and_compaction)
+
+BOOST_AUTO_TEST_CASE(truncation_inside_a_segment_overwrites_it_in_place) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    const auto run = make_run(1, 1, 5);
+    eng.append_log_entries(run);
+    store.clear_requests();
+    eng.truncate_log(4);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"PUT " + log_object_key(1)}));
+    BOOST_TEST(store.body(log_object_key(1)) ==
+               segment_body(std::vector<log_entry_t>(run.begin(), run.begin() + 3)));
+    // Down to one entry: a singleton.
+    store.clear_requests();
+    eng.truncate_log(2);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"PUT " + log_object_key(1)}));
+    BOOST_TEST(store.body(log_object_key(1)) == singleton_body(run[0]));
+    // And the singleton can now be truncated away like any other.
+    eng.append_log_entries(make_run(2, 2, 3));
+    engine_t reloaded{store, k_bucket, k_prefix, seg()};
+    BOOST_TEST((loaded_indices(reloaded.get_log_entries(0, 100)) ==
+                std::vector<std::uint64_t>{1, 2, 3, 4}));
+    BOOST_TEST(reloaded.get_log_entry(2).value().term() == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(truncation_deletes_whole_objects_highest_first_then_rewrites_the_straddler) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg(3)};
+    eng.append_log_entries(make_run(1, 1, 9));  // [1..3] [4..6] [7..9]
+    store.clear_requests();
+    eng.truncate_log(5);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(7),
+                                                                "PUT " + log_object_key(4)}));
+    BOOST_TEST(store.body(log_object_key(4)) == singleton_body(make_entry(1, 4)));
+    store.clear_requests();
+    eng.truncate_log(4);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(4)}));
+    store.clear_requests();
+    eng.truncate_log(1);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(1)}));
+    BOOST_TEST(log_keys(store).empty());
+}
+
+BOOST_AUTO_TEST_CASE(a_fenced_truncation_overwrite_is_if_match_and_a_stale_version_latches) {
+    store_t store;
+    fenced_engine_t eng = make_segmented_engine<fenced_engine_t>(store, seg());
+    eng.append_log_entries(make_run(1, 1, 5));
+    // Someone rewrites the segment behind this engine's back.
+    store.seed(log_object_key(1), segment_body(make_run(9, 1, 5)));
+    BOOST_CHECK_THROW(eng.truncate_log(3), kythira::persistence_fenced_error);
+    BOOST_TEST(eng.is_fenced());
+}
+
+BOOST_AUTO_TEST_CASE(a_fenced_truncation_overwrite_succeeds_against_its_own_version) {
+    store_t store;
+    fenced_engine_t eng = make_segmented_engine<fenced_engine_t>(store, seg());
+    eng.append_log_entries(make_run(1, 1, 6));
+    eng.truncate_log(5);
+    eng.truncate_log(4);  // the version from the first overwrite is the one tracked
+    BOOST_TEST(!eng.is_fenced());
+    // A restart learns the version from its GET.
+    fenced_engine_t restarted = make_segmented_engine<fenced_engine_t>(store, seg());
+    BOOST_CHECK_NO_THROW(restarted.truncate_log(3));
+    BOOST_TEST(restarted.get_last_log_index() == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(compaction_deletes_lowest_first_then_splits_the_straddler) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg(3)};
+    eng.append_log_entries(make_run(1, 1, 9));  // [1..3] [4..6] [7..9]
+    store.clear_requests();
+    eng.delete_log_entries_before(5);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(1),
+                                                                "PUT " + log_object_key(5),
+                                                                "DELETE " + log_object_key(4)}));
+    BOOST_TEST(store.body(log_object_key(5)) == segment_body(make_run(1, 5, 2)));
+    BOOST_TEST(eng.stray_log_indices().empty());
+    // Leaving one entry of a segment: a singleton.
+    store.clear_requests();
+    eng.delete_log_entries_before(9);
+    BOOST_TEST((store.request_log() == std::vector<std::string>{"DELETE " + log_object_key(5),
+                                                                "PUT " + log_object_key(9),
+                                                                "DELETE " + log_object_key(7)}));
+    BOOST_TEST(store.body(log_object_key(9)) == singleton_body(make_entry(1, 9)));
+    engine_t reloaded{store, k_bucket, k_prefix, seg(3)};
+    BOOST_TEST((loaded_indices(reloaded.get_log_entries(0, 100)) == std::vector<std::uint64_t>{9}));
+}
+
+BOOST_AUTO_TEST_CASE(a_failed_straddler_delete_leaves_the_new_object_a_stray) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    eng.append_log_entries(make_run(1, 1, 6));
+    store.fail_next_deletes(1);
+    BOOST_CHECK_THROW(eng.delete_log_entries_before(3), std::runtime_error);
+    BOOST_TEST((eng.stray_log_indices() == std::vector<std::uint64_t>{3}));
+    BOOST_TEST(eng.get_log_entry(1).has_value());
+    // A restart reads the pre-compaction suffix and the new object as a stray.
+    engine_t restarted{store, k_bucket, k_prefix, seg()};
+    BOOST_TEST((loaded_indices(restarted.get_log_entries(0, 100)) ==
+                std::vector<std::uint64_t>{1, 2, 3, 4, 5, 6}));
+    BOOST_TEST((restarted.stray_log_indices() == std::vector<std::uint64_t>{3}));
+    // The retry deletes the stray first and completes.
+    restarted.delete_log_entries_before(3);
+    engine_t again{store, k_bucket, k_prefix, seg()};
+    BOOST_TEST(
+        (loaded_indices(again.get_log_entries(0, 100)) == std::vector<std::uint64_t>{3, 4, 5, 6}));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(segmented_load)
+
+BOOST_AUTO_TEST_CASE(a_segmented_engine_loads_a_singleton_prefix_and_writes_nothing) {
+    store_t store;
+    {
+        engine_t writer{store, k_bucket, k_prefix, separate()};
+        writer.append_log_entries(make_run(1, 1, 4));
+    }
+    store.clear_requests();
+    engine_t eng{store, k_bucket, k_prefix, seg()};
+    BOOST_TEST(eng.get_last_log_index() == 4U);
+    for (const auto& request : store.request_log()) {
+        BOOST_TEST(!request.starts_with("PUT"));
+        BOOST_TEST(!request.starts_with("DELETE"));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_per_entry_engine_refuses_a_segment_with_the_downgrade_message) {
+    store_t store;
+    {
+        engine_t writer{store, k_bucket, k_prefix, seg()};
+        writer.append_log_entries(make_run(1, 1, 4));
+    }
+    construction_fails_naming<engine_t>(
+        store, separate(), {log_object_key(1), "log_layout::per_entry", "not supported"});
+}
+
+BOOST_AUTO_TEST_CASE(every_malformed_segment_fails_construction_naming_the_key) {
+    const std::string entry1 = singleton_body(make_entry(1, 1));
+    const std::string entry2 = singleton_body(make_entry(1, 2));
+    const std::string entry3 = singleton_body(make_entry(1, 3));
+    const std::vector<std::string> bodies = {
+        // first_index disagrees with the key
+        "{\"first_index\":2,\"last_index\":3,\"entries\":[" + entry2 + "," + entry3 + "]}",
+        // one entry
+        "{\"first_index\":1,\"last_index\":1,\"entries\":[" + entry1 + "]}",
+        // last below first
+        "{\"first_index\":1,\"last_index\":0,\"entries\":[]}",
+        // count disagrees with the range
+        "{\"first_index\":1,\"last_index\":3,\"entries\":[" + entry1 + "," + entry2 + "]}",
+        // an element out of place
+        "{\"first_index\":1,\"last_index\":2,\"entries\":[" + entry1 + "," + entry3 + "]}",
+        // an extra member, and members out of order
+        "{\"first_index\":1,\"last_index\":2,\"entries\":[" + entry1 + "," + entry2 + "],\"x\":1}",
+        "{\"last_index\":2,\"first_index\":1,\"entries\":[" + entry1 + "," + entry2 + "]}",
+        // mistyped
+        "{\"first_index\":\"1\",\"last_index\":2,\"entries\":[" + entry1 + "," + entry2 + "]}",
+        "{\"first_index\":-1,\"last_index\":2,\"entries\":[" + entry1 + "," + entry2 + "]}",
+        "{\"first_index\":1,\"last_index\":2,\"entries\":{}}",
+        "{\"first_index\":1,\"last_index\":2,\"entries\":[" + entry1 + ",7]}",
+    };
+    for (const auto& body : bodies) {
+        BOOST_TEST_CONTEXT(body) {
+            store_t store;
+            store.seed(log_object_key(1), body);
+            construction_fails_naming<engine_t>(store, seg(), {log_object_key(1)});
+        }
+    }
+}
+
+// Requirement 15.5: every segment body is refused by the frozen legacy rules —
+// the older engine's entry parser and the older backup tool's term check.
+BOOST_AUTO_TEST_CASE(the_legacy_reader_rejects_every_segment_body) {
+    store_t store;
+    engine_t eng{store, k_bucket, k_prefix, seg(3)};
+    eng.append_log_entries(make_run(1, 1, 8));
+    eng.truncate_log(6);
+    eng.delete_log_entries_before(2);
+    std::size_t segments = 0;
+    for (const auto& key : log_keys(store)) {
+        const std::string body = store.body(key);
+        if (!body.starts_with("{\"first_index\"")) {
+            continue;
+        }
+        ++segments;
+        BOOST_TEST_CONTEXT(key) {
+            BOOST_CHECK_THROW(legacy::json_to_entry(body), std::exception);
+            BOOST_CHECK_THROW(legacy::check_entry_term_parse(body), std::exception);
+        }
+    }
+    BOOST_TEST(segments >= 2U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── The segmented log under crash injection (Requirement 15.3) ──────────────
+//
+// Every n for a multi-chunk append, a truncation across a segment, a
+// compaction across a segment, and a write that first clears a stray, each
+// unfenced and fenced. The oracle's states are the design's tables: a prefix
+// of the run, a prefix of the pre-call log no shorter than the result, a
+// suffix no shorter than the result.
+
+namespace {
+
+template<typename Engine> auto segmented_crash_cases() -> void {
+    const auto opts = std::is_same_v<Engine, fenced_engine_t> ? fenced(seg(3)) : seg(3);
+    const auto nine = [](Engine& e) { e.append_log_entries(make_run(1, 1, 9)); };
+    const auto grow = [](Engine& e) {
+        const auto last = e.get_last_log_index();
+        e.append_log_entries(make_run(3, last + 1, 4));
+    };
+
+    BOOST_TEST_CONTEXT("multi-chunk append") {
+        const std::size_t requests = crash_at_every_request<Engine>(
+            opts, oracle::operation::extend_log,
+            [](Engine& e) { e.append_log_entries(make_run(1, 1, 2)); },
+            [](Engine& e) { e.append_log_entries(make_run(2, 3, 8)); }, grow);
+        BOOST_TEST(requests == 3U);  // [3..5] [6..8] [9..10]
+    }
+    BOOST_TEST_CONTEXT("truncation across a segment") {
+        const std::size_t requests = crash_at_every_request<Engine>(
+            opts, oracle::operation::truncate_log, nine, [](Engine& e) { e.truncate_log(5); },
+            grow);
+        BOOST_TEST(requests == 2U);  // DELETE [7..9], PUT [4]
+    }
+    BOOST_TEST_CONTEXT("truncation across two segments") {
+        const std::size_t requests = crash_at_every_request<Engine>(
+            opts, oracle::operation::truncate_log, nine, [](Engine& e) { e.truncate_log(3); },
+            grow);
+        BOOST_TEST(requests == 3U);  // DELETE [7..9], DELETE [4..6], PUT [1..2]
+    }
+    BOOST_TEST_CONTEXT("compaction across a segment") {
+        const std::size_t requests = crash_at_every_request<Engine>(
+            opts, oracle::operation::compact_log, nine,
+            [](Engine& e) { e.delete_log_entries_before(5); }, grow);
+        BOOST_TEST(requests == 3U);  // DELETE [1..3], PUT [5..6], DELETE [4..6]
+    }
+    BOOST_TEST_CONTEXT("an append that first clears a stray") {
+        // Chain [1..4]; a stray segment [7..8] past a gap. Deleting it before
+        // the run lands is what keeps a crash from reading 1..8.
+        const auto stray = [](store_t& store) {
+            store.seed(log_object_key(1), segment_body(make_run(1, 1, 3)));
+            store.seed(log_object_key(4), singleton_body(make_entry(1, 4)));
+            store.seed(log_object_key(7), segment_body(make_run(9, 7, 2)));
+        };
+        const std::size_t requests = crash_at_every_request<Engine>(
+            opts, oracle::operation::extend_log, [](Engine&) {},
+            [](Engine& e) { e.append_log_entries(make_run(2, 5, 2)); }, grow, stray);
+        BOOST_TEST(requests == 2U);  // DELETE [7..8], PUT [5..6]
+    }
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(segmented_crash_injection)
+
+BOOST_AUTO_TEST_CASE(every_segmented_operation_at_every_request_reads_a_legal_log) {
+    segmented_crash_cases<engine_t>();
+}
+
+BOOST_AUTO_TEST_CASE(every_fenced_segmented_operation_at_every_request_reads_a_legal_log) {
+    segmented_crash_cases<fenced_engine_t>();
+}
+
+// The same append at 8 in flight: any subset of the chunks may land, and
+// recovery keeps the chain, which is a prefix of the run.
+BOOST_AUTO_TEST_CASE(a_concurrent_multi_chunk_append_at_every_request_reads_a_prefix) {
+    kythira::object_persistence_options opts = seg(2);
+    opts.append_concurrency = 8;
+    crash_at_every_request<engine_t>(
+        opts, oracle::operation::extend_log, [](engine_t&) {},
+        [](engine_t& e) { e.append_log_entries(make_run(1, 1, 11)); },
+        [](engine_t& e) { e.append_log_entries(make_run(2, e.get_last_log_index() + 1, 2)); });
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Stale appenders under fencing (design, Fencing table) ───────────────────
+//
+// The owner took the prefix over from a writer that is still running. What
+// that stale writer's log PUT does depends on where it starts.
+
+BOOST_AUTO_TEST_SUITE(segmented_stale_appender)
+
+namespace {
+
+auto as_owner(std::string owner, std::optional<std::uint64_t> epoch = std::nullopt)
+    -> kythira::object_persistence_options {
+    kythira::object_persistence_options opts = seg();
+    opts.owner_id = std::move(owner);
+    opts.takeover_epoch = epoch;
+    return opts;
+}
+
+}  // namespace
+
+// Row 1: at the first index of one of the owner's objects — the same key, a
+// create-only collision, detected.
+BOOST_AUTO_TEST_CASE(a_stale_object_at_an_owner_objects_first_index_is_detected) {
+    store_t store;
+    fenced_engine_t stale{store, k_bucket, k_prefix, as_owner("node-b")};
+    fenced_engine_t owner{store, k_bucket, k_prefix, as_owner("node-a", 2)};
+    owner.append_log_entries(make_run(2, 1, 5));
+    BOOST_CHECK_THROW(stale.append_log_entries(make_run(1, 1, 3)),
+                      kythira::persistence_fenced_error);
+    BOOST_TEST(stale.is_fenced());
+    BOOST_TEST(!owner.is_fenced());
+}
+
+// Row 2: strictly inside one of the owner's segments — a different key, so no
+// collision; at the next load it begins inside a chain object and is a stray.
+// Discarded, not detected: the stated residual.
+BOOST_AUTO_TEST_CASE(a_stale_object_inside_an_owner_segment_is_discarded_at_load) {
+    store_t store;
+    fenced_engine_t stale{store, k_bucket, k_prefix, as_owner("node-b")};
+    for (std::uint64_t i = 1; i <= 3; ++i) {
+        stale.append_log_entry(make_entry(1, i));
+    }
+    {
+        fenced_engine_t owner{store, k_bucket, k_prefix, as_owner("node-a", 2)};
+        owner.truncate_log(3);
+        owner.append_log_entries(make_run(2, 3, 5));  // segment [3..7]
+    }
+    BOOST_CHECK_NO_THROW(stale.append_log_entries(make_run(1, 4, 2)));  // log/4: no collision
+    BOOST_TEST(!stale.is_fenced());
+
+    fenced_engine_t owner{store, k_bucket, k_prefix, as_owner("node-a")};
+    BOOST_TEST((loaded_indices(owner.get_log_entries(0, 100)) ==
+                std::vector<std::uint64_t>{1, 2, 3, 4, 5, 6, 7}));
+    for (std::uint64_t i = 3; i <= 7; ++i) {
+        BOOST_TEST(owner.get_log_entry(i).value().term() == 2U);
+    }
+    BOOST_TEST((owner.stray_log_indices() == std::vector<std::uint64_t>{4}));
+}
+
+// Row 3: at the owner's last + 1, before the owner writes there — loaded at
+// a restart until the owner's own write collides with it, which latches the
+// owner. The same as the legacy layout.
+BOOST_AUTO_TEST_CASE(a_stale_object_past_the_owners_log_is_detected_at_the_owners_write) {
+    store_t store;
+    fenced_engine_t stale{store, k_bucket, k_prefix, as_owner("node-b")};
+    stale.append_log_entries(make_run(1, 1, 5));
+    fenced_engine_t owner{store, k_bucket, k_prefix, as_owner("node-a", 2)};
+    BOOST_CHECK_NO_THROW(stale.append_log_entries(make_run(1, 6, 2)));
+    {
+        fenced_engine_t restarted_view{store, k_bucket, k_prefix, as_owner("node-c", 9)};
+        BOOST_TEST(restarted_view.get_last_log_index() == 7U);
+    }
+    BOOST_CHECK_THROW(owner.append_log_entries(make_run(2, 6, 3)),
+                      kythira::persistence_fenced_error);
+    BOOST_TEST(owner.is_fenced());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Model-based property case (Requirement 15.4) ─────────────────────────────
+//
+// Random sequences of append runs, single appends, truncations, compactions,
+// hard-state writes and restarts, with crashes at random request boundaries,
+// against a reference model, for every layout pair. After an uninterrupted
+// call the mirror must equal the model; after a crash a fresh engine must load
+// one of the states the oracle allows, which becomes the model; and every
+// restart must read back exactly the model.
+
+namespace {
+
+template<typename Engine>
+auto run_model_based_sequence(kythira::object_persistence_options opts, unsigned seed) -> void {
+    if constexpr (std::is_same_v<Engine, fenced_engine_t>) {
+        opts.owner_id = k_owner_id;
+    }
+    const bool combined_layout = opts.hard_state == kythira::hard_state_layout::combined;
+    std::mt19937 rng(seed);
+    const auto pick = [&rng](std::uint64_t lo, std::uint64_t hi) {
+        return std::uniform_int_distribution<std::uint64_t>(lo, hi)(rng);
+    };
+
+    store_t store;
+    std::optional<Engine> eng;
+    eng.emplace(store, k_bucket, k_prefix, opts);
+    model_t model;
+    std::uint64_t next_index = 1;  // where an empty log continues
+    std::uint64_t term = 1;
+
+    for (int step = 0; step < 150; ++step) {
+        const std::uint64_t first = model.log.empty() ? next_index : model.log.begin()->first;
+        const std::uint64_t last = model.log.empty() ? next_index - 1 : model.log.rbegin()->first;
+        const auto choice = pick(0, 9);
+        oracle::operation kind = oracle::operation::extend_log;
+        std::function<void(Engine&)> op;
+        model_t post = model;
+
+        if (choice <= 3) {
+            const std::uint64_t count = pick(1, 9);
+            auto run = make_run(term, last + 1, count);
+            for (const auto& e : run) {
+                post.log[e.index()] = oracle::entry_fact{e.term(), e.command(), 0};
+            }
+            op = [run](Engine& e) { e.append_log_entries(run); };
+        } else if (choice == 4) {
+            const auto entry = make_entry(term, last + 1);
+            post.log[entry.index()] = oracle::entry_fact{entry.term(), entry.command(), 0};
+            op = [entry](Engine& e) { e.append_log_entry(entry); };
+        } else if (choice == 5 && !model.log.empty()) {
+            kind = oracle::operation::truncate_log;
+            const std::uint64_t at = pick(first, last);
+            post.log.erase(post.log.lower_bound(at), post.log.end());
+            op = [at](Engine& e) { e.truncate_log(at); };
+        } else if (choice == 6 && !model.log.empty()) {
+            kind = oracle::operation::compact_log;
+            const std::uint64_t before = pick(first, last + 1);
+            post.log.erase(post.log.begin(), post.log.lower_bound(before));
+            op = [before](Engine& e) { e.delete_log_entries_before(before); };
+        } else if (choice == 7) {
+            kind = combined_layout ? oracle::operation::atomic_hard_state
+                                   : oracle::operation::term_then_vote;
+            ++term;
+            post.term = term;
+            post.vote = pick(0, 1) == 0 ? std::nullopt : std::optional<std::uint64_t>{pick(1, 3)};
+            op = [t = term, v = post.vote](Engine& e) { e.save_hard_state(t, v); };
+        } else {
+            eng.reset();
+            eng.emplace(store, k_bucket, k_prefix, opts);
+            BOOST_TEST((oracle::capture(*eng) == model),
+                       "step " << step << ": restart read "
+                               << oracle::describe(oracle::capture(*eng)) << ", expected "
+                               << oracle::describe(model));
+            continue;
+        }
+
+        const bool crash = pick(0, 3) == 0;
+        if (crash) {
+            store.crash_after_requests(static_cast<std::size_t>(pick(0, 3)));
+        }
+        bool threw = false;
+        try {
+            op(*eng);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        const bool crashed = store.crashed();
+        store.clear_crash();
+        if (!threw) {
+            BOOST_TEST((oracle::capture(*eng) == post),
+                       "step " << step << ": mirror " << oracle::describe(oracle::capture(*eng))
+                               << ", expected " << oracle::describe(post));
+            model = post;
+        } else {
+            BOOST_REQUIRE_MESSAGE(crashed, "step " << step << ": threw without a crash");
+            eng.reset();
+            eng.emplace(store, k_bucket, k_prefix, opts);
+            const model_t loaded = oracle::capture(*eng);
+            BOOST_TEST(oracle::is_legal(loaded, oracle::legal_loaded_states(kind, model, post)),
+                       "step " << step << ": loaded " << oracle::describe(loaded));
+            model = loaded;
+        }
+        if (model.log.empty()) {
+            // An empty log continues where the call left it: after the
+            // compacted or appended range, never below it.
+            next_index =
+                std::max(next_index, post.log.empty() ? last + 1 : post.log.rbegin()->first + 1);
+            if (kind == oracle::operation::truncate_log) {
+                next_index = first;
+            }
+        } else {
+            next_index = model.log.rbegin()->first + 1;
+        }
+    }
+    eng.reset();
+    Engine final_load{store, k_bucket, k_prefix, opts};
+    BOOST_TEST((oracle::capture(final_load) == model));
+}
+
+template<typename Engine> auto model_based_over_every_layout() -> void {
+    const std::vector<std::pair<kythira::hard_state_layout, bool>> layouts = {
+        {kythira::hard_state_layout::separate, false},
+        {kythira::hard_state_layout::separate, true},
+        {kythira::hard_state_layout::combined, false},
+        {kythira::hard_state_layout::combined, true},
+    };
+    unsigned seed_base = 1;
+    if (const char* env = std::getenv("KYTHIRA_BATCHED_LAYOUT_SEED")) {
+        seed_base = static_cast<unsigned>(std::strtoul(env, nullptr, 10));
+    }
+    for (const auto& [hard_state, segmented_layout] : layouts) {
+        for (unsigned seed = seed_base; seed < seed_base + 4; ++seed) {
+            BOOST_TEST_CONTEXT("seed " << seed << ", combined "
+                                       << (hard_state == kythira::hard_state_layout::combined)
+                                       << ", segmented " << segmented_layout) {
+                kythira::object_persistence_options opts =
+                    segmented_layout ? seg(4) : kythira::object_persistence_options{};
+                opts.append_concurrency = 1;
+                opts.hard_state = hard_state;
+                run_model_based_sequence<Engine>(opts, seed);
+            }
+        }
+    }
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(model_based)
+
+BOOST_AUTO_TEST_CASE(random_sequences_with_random_crashes_match_the_model) {
+    model_based_over_every_layout<engine_t>();
+}
+
+BOOST_AUTO_TEST_CASE(random_fenced_sequences_with_random_crashes_match_the_model) {
+    model_based_over_every_layout<fenced_engine_t>();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

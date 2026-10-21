@@ -239,6 +239,10 @@ template<typename Harness> struct cases {
                ",\"voted_for\":" + (vote ? std::to_string(*vote) : std::string("null")) + "}";
     }
 
+    /// Whether an extending batched append is written as segments
+    /// (`log_layout::segmented`) rather than one object per entry.
+    static auto log_segmented() -> bool { return default_options().log == log_layout::segmented; }
+
     static auto options_with_retention(std::size_t n) -> object_persistence_options {
         object_persistence_options opts = default_options();
         opts.snapshot_retention = n;
@@ -248,6 +252,11 @@ template<typename Harness> struct cases {
     static auto options_with_max_bytes(std::size_t n) -> object_persistence_options {
         object_persistence_options opts = default_options();
         opts.max_object_bytes = n;
+        // A segment may not be larger than any PUT, which construction
+        // enforces, so a segmented harness lowers its segment bound with the cap.
+        if (log_segmented()) {
+            opts.max_segment_bytes = std::min(opts.max_segment_bytes, n);
+        }
         return opts;
     }
 
@@ -639,6 +648,50 @@ template<typename Harness> struct cases {
         BOOST_TEST(!eng2.get_log_entry(2).has_value());
         BOOST_TEST(eng2.get_log_entry(3).has_value());
         BOOST_TEST(eng2.get_last_log_index() == 4U);
+    }
+
+    /// A batched run through truncation, compaction and a reload, with the
+    /// objects and requests each layout owes: one per entry under `per_entry`,
+    /// one segment per run under `segmented`, rewritten in place by the
+    /// truncation and split by the compaction.
+    static auto a_batched_run_survives_truncation_compaction_and_reload() -> void {
+        Harness h;
+        std::vector<log_entry_t> run;
+        for (std::uint64_t i = 1; i <= 10; ++i) {
+            run.push_back(make_entry(1 + (i / 4), i));
+        }
+        {
+            engine_t eng = h.make_engine();
+            h.clear_requests();
+            eng.append_log_entries(run);
+            BOOST_TEST(h.count_requests("PUT") == (log_segmented() ? 1U : 10U));
+            BOOST_TEST(h.has(padded(h, 1)));
+            BOOST_TEST(h.has(padded(h, 2)) == !log_segmented());
+
+            h.clear_requests();
+            eng.truncate_log(8);
+            BOOST_TEST(h.count_requests("PUT") == (log_segmented() ? 1U : 0U));
+            BOOST_TEST(h.count_requests("DELETE") == (log_segmented() ? 0U : 3U));
+
+            h.clear_requests();
+            eng.delete_log_entries_before(3);
+            BOOST_TEST(h.count_requests("PUT") == (log_segmented() ? 1U : 0U));
+            BOOST_TEST(h.count_requests("DELETE") == (log_segmented() ? 1U : 2U));
+            BOOST_TEST(!h.has(padded(h, 1)));
+            BOOST_TEST(h.has(padded(h, 3)));
+            BOOST_TEST(h.has(padded(h, 4)) == !log_segmented());
+            BOOST_TEST(eng.get_last_log_index() == 7U);
+        }
+        engine_t eng2 = h.make_engine();
+        BOOST_TEST(!eng2.get_log_entry(2).has_value());
+        BOOST_TEST(!eng2.get_log_entry(8).has_value());
+        for (std::uint64_t i = 3; i <= 7; ++i) {
+            const auto got = eng2.get_log_entry(i);
+            BOOST_REQUIRE(got.has_value());
+            BOOST_TEST(got->term() == run[i - 1].term());
+            BOOST_TEST((got->command() == run[i - 1].command()));
+        }
+        BOOST_TEST(eng2.get_last_log_index() == 7U);
     }
 
     /// Property 9: the engine deletes only what it can prove it wrote. An
@@ -1588,6 +1641,7 @@ template<typename Harness> struct cases {
     KYTHIRA_OSC_CASE(harness_type, delete_log_entries_before_removes_only_older_entries)          \
     KYTHIRA_OSC_CASE(harness_type, delete_before_survives_reload)                                 \
     KYTHIRA_OSC_CASE(harness_type, a_foreign_object_survives_truncation_and_compaction)           \
+    KYTHIRA_OSC_CASE(harness_type, a_batched_run_survives_truncation_compaction_and_reload)       \
     KYTHIRA_OSC_CASE(harness_type, snapshot_round_trip)                                           \
     KYTHIRA_OSC_CASE(harness_type, snapshot_survives_reload)                                      \
     KYTHIRA_OSC_CASE(harness_type, snapshot_overwrites_the_single_slot)                           \

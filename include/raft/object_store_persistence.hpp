@@ -484,6 +484,31 @@ enum class hard_state_layout : std::uint8_t {
     combined
 };
 
+/// @brief How log entries are grouped into objects
+///        (`.kiro/specs/object-store-batched-layout/`, Requirement 5).
+///
+/// A runtime option for the same reason as `hard_state_layout`: both layouts
+/// use only operations every shipped client has.
+enum class log_layout : std::uint8_t {
+    /// The shipped format: one object per entry, `<prefix>/log/<index>` holding
+    /// that entry's record.
+    per_entry,
+    /// An extending `append_log_entries` run is written as **segments**: objects
+    /// keyed by their first index, `<prefix>/log/<first>` ←
+    /// `{"first_index":f,"last_index":l,"entries":[<record f>,…,<record l>]}`,
+    /// each element byte-identical to a singleton's body, each segment at most
+    /// `max_segment_entries` entries and `max_segment_bytes` of body. A chunk of
+    /// one entry is a singleton, and every other write (`append_log_entry`, a
+    /// truncation or compaction that leaves one entry of a segment) is too.
+    ///
+    /// A prefix of singletons is a valid segmented log, so enabling this needs
+    /// no migration. Going back does: an engine configured `per_entry` refuses a
+    /// prefix holding any segment, and so does every older binary, whose entry
+    /// parser requires a top-level `term` — so a rollback onto a segmented
+    /// bucket is refused rather than served a short log.
+    segmented
+};
+
 /// @brief Engine-level options. Every default preserves the shipped engine's
 ///        behaviour exactly, so an operator who upgrades and changes nothing
 ///        sees a bucket with exactly the keys it had before.
@@ -565,6 +590,22 @@ struct object_persistence_options {
     /// not supported, and reading the stale vote slot beside it would be the
     /// silent rollback the combined layout exists to prevent.
     hard_state_layout hard_state{hard_state_layout::separate};
+
+    /// `per_entry` — the shipped format — or `segmented`. See `log_layout`.
+    log_layout log{log_layout::per_entry};
+
+    /// The most entries one segment holds. The default, 100, is `node`'s
+    /// default `max_entries_per_append`, so a full AppendEntries is one segment.
+    /// Must be at least 2 (one entry is always a singleton), and is rejected at
+    /// any value but the default under `log_layout::per_entry`.
+    std::size_t max_segment_entries{100};
+
+    /// The largest segment body. It bounds the in-place rewrite a truncation
+    /// pays and the GET recovery pays per object. Must be at least 1 and at most
+    /// `max_object_bytes`, and is rejected at any value but the default under
+    /// `log_layout::per_entry`. An entry whose own record is larger is written
+    /// as a singleton, bounded by `max_object_bytes` alone.
+    std::size_t max_segment_bytes{1024U * 1024U};
 };
 
 namespace object_store_persistence_detail {
@@ -769,6 +810,73 @@ struct combined_hard_state_record {
                                       std::next(obj.begin())->value()};
 }
 
+/// A log segment's range, as `parse_segment` checked it.
+struct segment_range {
+    std::uint64_t first{0};
+    std::uint64_t last{0};
+};
+
+/// Whether a parsed `<prefix>/log/<index>` body is a segment rather than a
+/// singleton record (`log_layout::segmented`): an object with a `first_index`
+/// member. A singleton has none — it is one entry's record — and nothing else
+/// is either.
+[[nodiscard]] inline auto is_segment(const boost::json::value& parsed) -> bool {
+    const boost::json::object* obj = parsed.if_object();
+    return obj != nullptr && obj->contains("first_index");
+}
+
+/// The half of the segment codec that does not depend on the entry type:
+/// exactly `first_index`, `last_index`, `entries`, in that order;
+/// `first_index` equal to the key's index; at least two entries; as many
+/// elements as the range names, each an object carrying its own `index` in
+/// order. Shared by the engine, which then decodes each element, and by
+/// `object_store_backup`, which reads each element's term — one parser for
+/// the shape, so neither accepts a segment the other refuses. Strict for the
+/// reason the combined record is: it makes this binary refuse a *future*
+/// shape the way older binaries refuse this one.
+[[nodiscard]] inline auto parse_segment(const boost::json::object& obj, std::uint64_t key_index)
+    -> segment_range {
+    if (obj.size() != 3 || obj.begin()->key() != "first_index" ||
+        std::next(obj.begin())->key() != "last_index" ||
+        std::next(obj.begin(), 2)->key() != "entries") {
+        throw std::runtime_error(
+            "a log segment holds exactly \"first_index\", \"last_index\" then \"entries\"");
+    }
+    const auto as_index = [](const boost::json::value& v, const char* what) {
+        if (!v.is_uint64() && (!v.is_int64() || v.as_int64() < 0)) {
+            throw std::runtime_error(std::string("the segment's ") + what +
+                                     " is not an unsigned integer");
+        }
+        return v.to_number<std::uint64_t>();
+    };
+    const segment_range range{as_index(obj.at("first_index"), "first_index"),
+                              as_index(obj.at("last_index"), "last_index")};
+    if (range.first != key_index) {
+        throw std::runtime_error("segment starts at index " + std::to_string(range.first) +
+                                 " but its key names index " + std::to_string(key_index));
+    }
+    if (range.last <= range.first) {
+        throw std::runtime_error(
+            "a segment's last_index must exceed its first_index — one entry "
+            "is always a singleton");
+    }
+    const boost::json::array& elements = obj.at("entries").as_array();
+    if (elements.empty() || elements.size() - 1 != range.last - range.first) {
+        throw std::runtime_error("segment [" + std::to_string(range.first) + ".." +
+                                 std::to_string(range.last) + "] holds " +
+                                 std::to_string(elements.size()) + " entries");
+    }
+    for (std::size_t k = 0; k < elements.size(); ++k) {
+        const auto index = elements[k].as_object().at("index").to_number<std::uint64_t>();
+        if (index != range.first + k) {
+            throw std::runtime_error("segment element " + std::to_string(k) + " carries index " +
+                                     std::to_string(index) + ", expected " +
+                                     std::to_string(range.first + k));
+        }
+    }
+    return range;
+}
+
 }  // namespace object_store_persistence_detail
 
 /// @brief Raft persistent state stored as individual objects in a key-object
@@ -853,6 +961,7 @@ public:
                 "object_store_persistence_engine: max_object_bytes must be at least 1 — 0 would "
                 "refuse every write, including the empty one");
         }
+        validate_log_layout_options();
         if constexpr (Fencing == fencing_mode::compare_and_swap) {
             if (_opts.owner_id.empty()) {
                 throw std::invalid_argument(
@@ -903,6 +1012,7 @@ public:
           _retained(std::move(other._retained)),
           _last_prune_error(std::move(other._last_prune_error)),
           _strays(std::move(other._strays)),
+          _segments(std::move(other._segments)),
           _versions(std::move(other._versions)),
           _owner_seen(std::move(other._owner_seen)),
           _owner_epoch(other._owner_epoch),
@@ -1062,9 +1172,20 @@ public:
 
     /// @brief One PUT — **create-only** under `compare_and_swap`, which is what
     ///        catches a stale leader that appends without ever changing its term.
+    ///
+    /// Under `log_layout::segmented` it is still one singleton, and an index a
+    /// segment covers is refused with `std::invalid_argument` before any
+    /// request: a singleton there would sit inside the segment, off the chain,
+    /// while the mirror believed it was the log.
     auto append_log_entry(const log_entry_t& entry) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
+        if (!_segments.empty() && object_of(entry.index()).second != entry.index()) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: append_log_entry at index " +
+                std::to_string(static_cast<unsigned long long>(entry.index())) +
+                ", which a segment holds — truncate the log first");
+        }
         clear_strays({});
         const std::string key = log_key(entry.index());
         const std::string body = entry_to_json(entry);
@@ -1112,6 +1233,13 @@ public:
     /// above the last index — is written one entry at a time on this thread,
     /// with the mirror again updated only after the last PUT. `node` never
     /// sends one.
+    ///
+    /// Under `log_layout::segmented` the run is split greedily into segments
+    /// (`max_segment_entries`, `max_segment_bytes`), one PUT each, the same
+    /// workers and the same all-or-nothing contract per run; a failure records
+    /// every object it sent as a stray by its key. A run that does not continue
+    /// the log at its last index + 1 is refused with `std::invalid_argument`
+    /// before any request.
     auto append_log_entries(std::span<const log_entry_t> entries) -> void {
         if (entries.empty()) {
             return;
@@ -1119,13 +1247,42 @@ public:
         std::lock_guard lock(_mu);
         throw_if_fenced();
 
+        const bool extends = extends_log(entries);
+        if (segmented_log() &&
+            !(extends && (_log.empty() || entries.front().index() == _log.rbegin()->first + 1))) {
+            // Before any request (Requirement 6.3 and the design's append path):
+            // a run that does not continue the log would put singletons inside
+            // or beside segments the mirror holds. `node` never sends one.
+            throw std::invalid_argument(
+                "object_store_persistence_engine: under log_layout::segmented a batched append "
+                "must continue the log at its last index + 1");
+        }
+
+        std::vector<std::string> records;
+        records.reserve(entries.size());
+        for (const auto& entry : entries) {
+            records.push_back(entry_to_json(entry));
+        }
+        // One object per entry, or under `segmented` the run's chunks.
+        std::vector<std::pair<std::size_t, std::size_t>> chunks;
+        if (segmented_log()) {
+            chunks = chunk_run(entries.front().index(), records);
+        } else {
+            chunks.reserve(entries.size());
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                chunks.emplace_back(i, i + 1);
+            }
+        }
+
         std::vector<std::string> keys;
         std::vector<std::string> bodies;
-        keys.reserve(entries.size());
-        bodies.reserve(entries.size());
-        for (const auto& entry : entries) {
-            keys.push_back(log_key(entry.index()));
-            bodies.push_back(entry_to_json(entry));
+        keys.reserve(chunks.size());
+        bodies.reserve(chunks.size());
+        for (const auto& [begin, end] : chunks) {
+            keys.push_back(log_key(entries[begin].index()));
+            bodies.push_back(
+                log_object_body(entries[begin].index(),
+                                std::span<const std::string>(records).subspan(begin, end - begin)));
             // Before anything is sent, so an oversized entry fails the run
             // without leaving the rest of it behind.
             check_object_size(keys.back(), bodies.back());
@@ -1133,15 +1290,13 @@ public:
 
         // The keep-set is the objects this run writes, by key (each key's
         // first index), not the entry indices it covers: a stray is spared only
-        // when the PUT will overwrite that very object. One object per entry
-        // here, so the two sets are equal.
+        // when the PUT will overwrite that very object (Requirement 6.5).
         std::set<LogIndex> written;
-        for (const auto& entry : entries) {
-            written.insert(entry.index());
+        for (const auto& chunk : chunks) {
+            written.insert(entries[chunk.first].index());
         }
         clear_strays(written);
 
-        const bool extends = extends_log(entries);
         const std::size_t workers =
             extends && concurrent_key_object_store<Store> ? _opts.append_concurrency : 1;
         auto outcomes = put_log_objects(keys, bodies, workers);
@@ -1162,20 +1317,28 @@ public:
                 // would remove an entry the mirror says is there. Only a run
                 // that does not extend the log can reach one, and it is left
                 // as a failed `append_log_entry` would leave it.
-                if (outcomes[i].state != put_state::not_sent &&
-                    !_log.contains(entries[i].index())) {
-                    _strays.insert(entries[i].index());
+                const LogIndex first = entries[chunks[i].first].index();
+                if (outcomes[i].state != put_state::not_sent && !_log.contains(first)) {
+                    _strays.insert(first);
                     ++sent;
                 }
             }
             throw std::runtime_error(
                 "object_store_persistence_engine: append of " + std::to_string(entries.size()) +
                 " log entries failed (" + std::to_string(sent) +
-                " sent, none recorded in the log; they are deleted before the next log write): " +
+                " objects sent, none recorded in the log; they are deleted before the next log "
+                "write): " +
                 first_failure->detail);
         }
         for (const auto& entry : entries) {
             _log[entry.index()] = entry;
+        }
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            const auto& [begin, end] = chunks[i];
+            if (end - begin > 1) {
+                _segments[entries[begin].index()] =
+                    segment_meta{entries[end - 1].index(), std::move(outcomes[i].version)};
+            }
         }
     }
 
@@ -1226,14 +1389,44 @@ public:
     /// keeps only the contiguous run, and deleting from the bottom up would hand
     /// it a hole with the entries this call meant to remove sitting above it.
     /// Strays go first of all, for the same reason.
+    ///
+    /// Under `log_layout::segmented` the unit is the object: every object
+    /// starting at or above `index` is deleted, highest first, and then a
+    /// segment straddling `index` is overwritten **in place** with its entries
+    /// below `index` (a singleton when one remains) — `If-Match` its version
+    /// under `compare_and_swap`. That overwrite is the straddler's commit
+    /// point: every earlier request leaves a chain that is a prefix of the
+    /// pre-call log no shorter than the post-call one (Requirement 7).
     auto truncate_log(LogIndex index) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
         clear_strays({});
-        while (!_log.empty() && _log.rbegin()->first >= index) {
-            const LogIndex last = _log.rbegin()->first;
-            delete_object(log_key(last));
-            _log.erase(last);
+        while (!_log.empty() && object_of(_log.rbegin()->first).first >= index) {
+            const LogIndex first = object_of(_log.rbegin()->first).first;
+            delete_object(log_key(first));
+            _log.erase(_log.lower_bound(first), _log.end());
+            _segments.erase(first);
+        }
+        if (_log.empty() || _log.rbegin()->first < index) {
+            return;
+        }
+        // A segment [first..last] with first < index <= last.
+        const LogIndex first = object_of(index).first;
+        const std::string key = log_key(first);
+        const auto records = log_records(first, index - 1);
+        const std::string body = log_object_body(first, records);
+        object_version version;
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            version =
+                conditional_put(key, body, precondition{if_version{_segments.at(first).version}});
+        } else {
+            put_object(key, body);
+        }
+        _log.erase(_log.lower_bound(index), _log.end());
+        if (records.size() > 1) {
+            _segments[first] = segment_meta{index - 1, std::move(version)};
+        } else {
+            _segments.erase(first);
         }
     }
 
@@ -1244,14 +1437,49 @@ public:
     /// left past a gap becomes the lowest log object once the entries below it
     /// are deleted, and the next load would start the log there, at entries
     /// this node never acknowledged. No request changes unless a stray exists.
+    ///
+    /// Under `log_layout::segmented` every object ending below `index` is
+    /// deleted, lowest first; then a segment `S` straddling `index` is split:
+    /// its entries from `index` up are PUT to `log/<index>` (create-only under
+    /// `compare_and_swap`), which is a stray until `S`'s DELETE — the commit
+    /// point — is acknowledged. A crash before it reads the pre-compaction
+    /// suffix, with the new object off the chain (Requirement 8).
     auto delete_log_entries_before(LogIndex index) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
         clear_strays({});
-        auto it = _log.begin();
-        while (it != _log.end() && it->first < index) {
-            delete_object(log_key(it->first));
-            it = _log.erase(it);
+        while (!_log.empty()) {
+            const auto [first, last] = object_of(_log.begin()->first);
+            if (last >= index) {
+                break;
+            }
+            delete_object(log_key(first));
+            _log.erase(_log.begin(), _log.upper_bound(last));
+            _segments.erase(first);
+        }
+        if (_log.empty() || _log.begin()->first >= index) {
+            return;
+        }
+        // A segment [first..last] with first < index <= last.
+        const auto [first, last] = object_of(_log.begin()->first);
+        const auto records = log_records(index, last);
+        const std::string key = log_key(index);
+        const std::string body = log_object_body(index, records);
+        // A stray from before its PUT is sent: if the PUT fails it may still
+        // have landed, and until the straddler's DELETE it is off the chain.
+        _strays.insert(index);
+        object_version version;
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            version = conditional_put(key, body, precondition{if_absent{}});
+        } else {
+            put_object(key, body);
+        }
+        delete_object(log_key(first));
+        _strays.erase(index);
+        _log.erase(_log.begin(), _log.lower_bound(index));
+        _segments.erase(first);
+        if (records.size() > 1) {
+            _segments[index] = segment_meta{last, std::move(version)};
         }
     }
 
@@ -1358,10 +1586,131 @@ private:
         put_state state{put_state::not_sent};
         std::string key;
         std::string detail;
+        /// The version the store returned, under `compare_and_swap` only: what
+        /// a segment's later in-place overwrite is predicated on.
+        object_version version;
     };
 
     [[nodiscard]] auto combined_hard_state() const -> bool {
         return _opts.hard_state == hard_state_layout::combined;
+    }
+
+    [[nodiscard]] auto segmented_log() const -> bool { return _opts.log == log_layout::segmented; }
+
+    /// Requirement 5.6, at construction. Under `per_entry` a non-default bound
+    /// is refused rather than ignored, the rule `owner_id` follows on an
+    /// unfenced engine.
+    auto validate_log_layout_options() const -> void {
+        const object_persistence_options defaults;
+        if (!segmented_log()) {
+            if (_opts.max_segment_entries != defaults.max_segment_entries ||
+                _opts.max_segment_bytes != defaults.max_segment_bytes) {
+                throw std::invalid_argument(
+                    "object_store_persistence_engine: max_segment_entries / max_segment_bytes are "
+                    "set but the log layout is log_layout::per_entry, which writes no segment — "
+                    "set log_layout::segmented rather than leaving them ignored");
+            }
+            return;
+        }
+        if (_opts.max_segment_entries < 2) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: max_segment_entries must be at least 2 — one "
+                "entry is always written as a singleton");
+        }
+        if (_opts.max_segment_bytes == 0) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: max_segment_bytes must be at least 1");
+        }
+        if (_opts.max_segment_bytes > _opts.max_object_bytes) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: max_segment_bytes must not exceed "
+                "max_object_bytes, which bounds every PUT");
+        }
+    }
+
+    /// The first and last index of the log object holding `index`, which the
+    /// log holds: the segment covering it, or the singleton at it. Callers hold
+    /// `_mu`.
+    [[nodiscard]] auto object_of(LogIndex index) const -> std::pair<LogIndex, LogIndex> {
+        auto it = _segments.upper_bound(index);
+        if (it != _segments.begin()) {
+            --it;
+            if (index <= it->second.last) {
+                return {it->first, it->second.last};
+            }
+        }
+        return {index, index};
+    }
+
+    /// The body of a log object holding `records` — already-encoded entries,
+    /// first index `first` — as a singleton when there is one record and as a
+    /// segment otherwise. Each element of a segment's `entries` is the record
+    /// itself, so it is byte-identical to the singleton body for that entry.
+    [[nodiscard]] static auto log_object_body(LogIndex first, std::span<const std::string> records)
+        -> std::string {
+        if (records.size() == 1) {
+            return records.front();
+        }
+        const auto last = first + static_cast<LogIndex>(records.size() - 1);
+        std::string body =
+            "{\"first_index\":" + std::to_string(static_cast<unsigned long long>(first)) +
+            ",\"last_index\":" + std::to_string(static_cast<unsigned long long>(last)) +
+            ",\"entries\":[";
+        for (std::size_t i = 0; i < records.size(); ++i) {
+            if (i > 0) {
+                body += ',';
+            }
+            body += records[i];
+        }
+        body += "]}";
+        return body;
+    }
+
+    /// The bodies of the entries of the log from `from` to `to`, inclusive.
+    /// Callers hold `_mu`.
+    [[nodiscard]] auto log_records(LogIndex from, LogIndex to) const -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (auto it = _log.lower_bound(from); it != _log.end() && it->first <= to; ++it) {
+            out.push_back(entry_to_json(it->second));
+        }
+        return out;
+    }
+
+    /// Split an extending run's encoded `records` greedily into chunks, as
+    /// `[begin, end)` positions: at most `max_segment_entries` records and
+    /// `max_segment_bytes` of segment body each. A record larger than
+    /// `max_segment_bytes` is a chunk of its own (a singleton, bounded by
+    /// `max_object_bytes` alone), and so is any record no neighbour fits beside.
+    [[nodiscard]] auto chunk_run(LogIndex first, const std::vector<std::string>& records) const
+        -> std::vector<std::pair<std::size_t, std::size_t>> {
+        const auto digits = [](std::size_t value) {
+            return std::to_string(static_cast<unsigned long long>(value)).size();
+        };
+        // `{"first_index":` `,"last_index":` `,"entries":[` `]}`
+        constexpr std::size_t k_segment_overhead = 15 + 14 + 12 + 2;
+        std::vector<std::pair<std::size_t, std::size_t>> chunks;
+        std::size_t begin = 0;
+        while (begin < records.size()) {
+            std::size_t end = begin + 1;
+            std::size_t sum = records[begin].size();
+            if (sum <= _opts.max_segment_bytes) {
+                const std::size_t first_digits = digits(static_cast<std::size_t>(first) + begin);
+                while (end < records.size() && end - begin < _opts.max_segment_entries) {
+                    const std::size_t grown = sum + records[end].size();
+                    const std::size_t body = k_segment_overhead + first_digits +
+                                             digits(static_cast<std::size_t>(first) + end) + grown +
+                                             (end - begin);
+                    if (body > _opts.max_segment_bytes) {
+                        break;
+                    }
+                    sum = grown;
+                    ++end;
+                }
+            }
+            chunks.emplace_back(begin, end);
+            begin = end;
+        }
+        return chunks;
     }
 
     /// Every combined hard-state write: one PUT of `(term, vote)` to
@@ -1480,6 +1829,7 @@ private:
                     return out;
                 }
                 verify_returned_digest(key, body, version);
+                out.version = std::move(version);
             } else {
                 put_with_retry(key, body);
             }
@@ -1881,21 +2231,7 @@ private:
                 if (!got) {
                     continue;
                 }
-                auto entry =
-                    wrap_parse<log_entry_t>(key, [&got] { return json_to_entry(got->body); });
-                if (entry.index() != index) {
-                    // The key *is* the index; a record that disagrees with its
-                    // own key means the log's ordering guarantee no longer
-                    // holds, which is exactly the silent-loss case this engine
-                    // exists to prevent.
-                    throw std::runtime_error(
-                        "object_store_persistence_engine: corrupt object " + key +
-                        ": record carries index " +
-                        std::to_string(static_cast<unsigned long long>(entry.index())) +
-                        " but its key names index " +
-                        std::to_string(static_cast<unsigned long long>(index)));
-                }
-                objects[index].push_back(std::move(entry));
+                objects[index] = load_log_object(got->body, key, index, std::move(got->version));
             }
             // Any other key under the prefix belongs to something else (an
             // operator's note, a future format's object). It is not this
@@ -2020,7 +2356,55 @@ private:
     /// the entries it holds, in index order. Every object is a singleton today;
     /// the walk below reads an object only by its first and last index, so it
     /// is the same walk whatever an object holds.
-    using log_objects = std::map<LogIndex, std::vector<log_entry_t>>;
+    struct loaded_log_object {
+        std::vector<log_entry_t> entries;
+        /// As read; kept for a segment under `compare_and_swap` only.
+        object_version version;
+    };
+    using log_objects = std::map<LogIndex, loaded_log_object>;
+
+    /// Parse one `<prefix>/log/<index>` body: a singleton, or under
+    /// `log_layout::segmented` a segment. A segment under `per_entry` is the
+    /// downgrade refusal, not corruption — the bucket is fine, the setting is
+    /// older than it (Requirement 11.3).
+    auto load_log_object(const std::string& body, const std::string& key, LogIndex index,
+                         object_version version) const -> loaded_log_object {
+        const auto parsed =
+            wrap_parse<boost::json::value>(key, [&body] { return boost::json::parse(body); });
+        loaded_log_object out;
+        const boost::json::object* obj = parsed.if_object();
+        if (object_store_persistence_detail::is_segment(parsed)) {
+            if (!segmented_log()) {
+                throw std::runtime_error(
+                    "object_store_persistence_engine: " + key +
+                    " holds a log segment, but this engine is configured log_layout::per_entry. "
+                    "An in-place downgrade is not supported: set log_layout::segmented, or "
+                    "restore this prefix from a backup taken before it was upgraded — skipping "
+                    "the segment would load a log missing the entries it holds");
+            }
+            out.entries = wrap_parse<std::vector<log_entry_t>>(
+                key, [obj, index] { return object_to_segment(*obj, index); });
+            if constexpr (Fencing == fencing_mode::compare_and_swap) {
+                out.version = std::move(version);
+            }
+            return out;
+        }
+        auto entry =
+            wrap_parse<log_entry_t>(key, [&parsed] { return object_to_entry(parsed.as_object()); });
+        if (entry.index() != index) {
+            // The key *is* the index; a record that disagrees with its own key
+            // means the log's ordering guarantee no longer holds, which is
+            // exactly the silent-loss case this engine exists to prevent.
+            throw std::runtime_error(
+                "object_store_persistence_engine: corrupt object " + key +
+                ": record carries index " +
+                std::to_string(static_cast<unsigned long long>(entry.index())) +
+                " but its key names index " +
+                std::to_string(static_cast<unsigned long long>(index)));
+        }
+        out.entries.push_back(std::move(entry));
+        return out;
+    }
 
     /// Recover the log as the **chain** of objects from the lowest first index:
     /// start at the lowest object, take it, continue at the object whose first
@@ -2047,15 +2431,19 @@ private:
             return;
         }
         LogIndex next = objects.begin()->first;
-        for (auto& [first, entries] : objects) {
+        for (auto& [first, object] : objects) {
             if (first != next) {
                 _strays.insert(first);
                 continue;
             }
-            for (auto& entry : entries) {
+            const std::size_t count = object.entries.size();
+            for (auto& entry : object.entries) {
                 _log[entry.index()] = std::move(entry);
             }
-            next = first + static_cast<LogIndex>(entries.size());
+            next = first + static_cast<LogIndex>(count);
+            if (count > 1) {
+                _segments[first] = segment_meta{next - 1, std::move(object.version)};
+            }
         }
     }
 
@@ -2280,7 +2668,10 @@ private:
     }
 
     static auto json_to_entry(const std::string& s) -> log_entry_t {
-        auto obj = boost::json::parse(s).as_object();
+        return object_to_entry(boost::json::parse(s).as_object());
+    }
+
+    static auto object_to_entry(const boost::json::object& obj) -> log_entry_t {
         log_entry_t e;
         e._term = static_cast<TermId>(obj.at("term").as_int64());
         e._index = static_cast<LogIndex>(obj.at("index").as_int64());
@@ -2288,6 +2679,21 @@ private:
         e._type = obj.contains("type") ? static_cast<entry_type>(obj.at("type").as_int64())
                                        : entry_type::normal;
         return e;
+    }
+
+    /// A segment record (Requirement 5.5): the shape by the shared
+    /// `parse_segment`, then each element decoded as a singleton's record is.
+    static auto object_to_segment(const boost::json::object& obj, LogIndex key_index)
+        -> std::vector<log_entry_t> {
+        (void)object_store_persistence_detail::parse_segment(obj,
+                                                             static_cast<std::uint64_t>(key_index));
+        const boost::json::array& elements = obj.at("entries").as_array();
+        std::vector<log_entry_t> out;
+        out.reserve(elements.size());
+        for (const auto& element : elements) {
+            out.push_back(object_to_entry(element.as_object()));
+        }
+        return out;
     }
 
     static auto snapshot_to_json(const snapshot_t& snap) -> std::string {
@@ -2450,6 +2856,21 @@ private:
     /// Deleted before the next log write, truncation or compaction
     /// (`clear_strays`).
     std::set<LogIndex> _strays;
+
+    /// What a segment on the chain covers, and — under `compare_and_swap` only —
+    /// the version it was last written or read at, which truncation's in-place
+    /// overwrite is `If-Match`ed on.
+    struct segment_meta {
+        LogIndex last{0};
+        object_version version;
+    };
+
+    /// The segments on the chain, by first index (`log_layout::segmented`). A
+    /// log index no segment covers is a singleton, so singletons need no entry
+    /// here, and under `per_entry` this stays empty: the default engine's
+    /// memory is unchanged. No version is kept for a singleton, which is never
+    /// conditionally rewritten (Requirement 10.2).
+    std::map<LogIndex, segment_meta> _segments;
 
     // ── Fencing (Requirement 9), all inert under `fencing_mode::none` ─────────
 
