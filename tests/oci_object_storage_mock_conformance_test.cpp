@@ -163,6 +163,38 @@ struct oci_mock_harness {
 
 KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(oci_mock_harness, oci_object_storage_client)
 
+namespace {
+
+/// The same mock with both batched layouts on
+/// (`.kiro/specs/object-store-batched-layout/` task 7). The mock verifies every
+/// request's signature over the bytes that arrived, so a segment-sized body
+/// that the client signed wrongly fails here, not only against a real bucket.
+struct oci_mock_both_layouts_harness : oci_mock_harness {
+    [[nodiscard]] static auto default_options() -> object_persistence_options {
+        object_persistence_options opts;
+        opts.hard_state = hard_state_layout::combined;
+        opts.log = log_layout::segmented;
+        return opts;
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t {
+        return engine_t{client(), bucket(), prefix(), default_options()};
+    }
+    [[nodiscard]] auto make_engine(const std::string& b, const std::string& p) const -> engine_t {
+        return engine_t{client(), b, p, default_options()};
+    }
+    [[nodiscard]] auto make_engine(object_persistence_options opts) const -> engine_t {
+        return engine_t{client(), bucket(), prefix(), std::move(opts)};
+    }
+};
+
+using oci_object_storage_client_both_layouts = oci_object_storage_client;
+
+}  // namespace
+
+KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(oci_mock_both_layouts_harness,
+                                              oci_object_storage_client_both_layouts)
+
 // ── Credentials from the environment (object-backup-oci-oss-credentials 6.2) ──
 //
 // `raft_object_backup` builds its config with `oci_object_storage_config_from_env`.

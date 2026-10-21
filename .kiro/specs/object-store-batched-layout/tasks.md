@@ -209,7 +209,7 @@ before and after.
     engine on exactly that
   - _Requirements: 9.1, 9.2, 6.5, 11.1_
 
-- [ ] 7. Segmented log
+- [x] 7. Segmented log
   - `log_layout { per_entry, segmented }`, `max_segment_entries` (100),
     `max_segment_bytes` (1 MiB), validated at construction; non-default bounds
     under `per_entry` rejected
@@ -233,6 +233,30 @@ before and after.
     random crashes; the stale-appender table's three rows under fencing;
     the legacy reader rejects every segment body; a segment body element is
     byte-identical to `entry_to_json`
+  - Done October 21, 2026. Departures: the mirror is `_segments` (first
+    index → last index, plus the version under fencing) and holds segments
+    only — an index no segment covers is a singleton, so `per_entry` keeps it
+    empty without a branch. `append_log_entry` at an index a segment covers is
+    refused with `std::invalid_argument` too (the design names only the batched
+    path); a singleton beside a segment is unchanged. The batched refusal is
+    "not consecutive, or not starting at last + 1", so a run past a gap is
+    refused as well as an overlapping one. Compaction records its new object
+    as a stray *before* the PUT, since a failed PUT may still have landed.
+    Under `per_entry` the request sequence is unchanged; the batched
+    append's failure message now counts objects rather than entries. The
+    conformance suite gained one case for every harness,
+    `a_batched_run_survives_truncation_compaction_and_reload`, which reads its
+    object and request counts from the layout, and `options_with_max_bytes`
+    lowers `max_segment_bytes` with the cap, which construction requires. The
+    instantiations are segmented and segmented + combined over the mock and
+    fenced mock, and segmented + combined over the Alibaba and OCI mock
+    servers (not segmented alone there). The model-based case runs 150 random
+    steps per seed (4 seeds, `KYTHIRA_BATCHED_LAYOUT_SEED` for soak runs) over
+    the four layout pairs, unfenced and fenced, with a crash at a random request
+    on a quarter of the steps; random completion order is covered by the
+    8-worker crash case, not by the model run. A mutation that deletes the
+    compaction's straddler before writing its suffix fails the crash, model and
+    targeted cases
   - _Requirements: 5.1-5.6, 6.1-6.4, 7.1-7.4, 8.1-8.4, 9.3, 10.1-10.3,
     11.2-11.5, 13.1, 13.2, 15.1, 15.3, 15.4, 15.5_
 

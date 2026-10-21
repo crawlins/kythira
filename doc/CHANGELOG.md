@@ -5,6 +5,22 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 21, 2026)
 
+- **The object-store engine can store a batched append as one object.** With
+  `log_layout::segmented`, an AppendEntries run that continues the log is
+  written as segments, `<prefix>/log/<first index>` holding
+  `{"first_index":…,"last_index":…,"entries":[…]}`, at most
+  `max_segment_entries` (100) entries and `max_segment_bytes` (1 MiB) each, so
+  a follower pays one PUT per run instead of one per entry and recovery one GET
+  per segment. Each element of `entries` is exactly the record a per-entry
+  bucket holds. Truncation overwrites a segment it cuts in place (`If-Match`
+  under fencing); compaction writes the surviving part under its own key and
+  then deletes the segment, which is the commit point. A bucket of
+  one-object-per-entry logs is already a valid segmented log, so switching on
+  needs no migration; switching back is refused while any segment exists, and
+  so is every older binary, whose entry parser needs a top-level `term`. The
+  backup tool does not read segments yet (task 8). Planned in
+  `.kiro/specs/object-store-batched-layout/` task 7.
+
 - **An object-store compaction no longer leaves a stray log object to become
   the start of the log.** A crash part-way through a batched append can leave
   an object past a gap in the log; the engine records it as a stray and
