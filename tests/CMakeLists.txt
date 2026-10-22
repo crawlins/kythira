@@ -5633,8 +5633,9 @@ set_tests_properties(aws_quorum_manager_real_ec2_test PROPERTIES
     # the whole binary. 10800s (180 min) comfortably exceeds the sum of
     # every case's own worst-case timeout plus fixture setup/teardown
     # overhead, and matches real-cloud-tests.yml's own job-level
-    # timeout-minutes: 180.
-    TIMEOUT 10800
+    # timeout-minutes: 180. Raised by 1500s (one case's bound) for
+    # numeric_id_claim_skips_an_id_another_launch_holds.
+    TIMEOUT 12300
     LABELS "integration;raft;quorum;aws;real-ec2;slow"
     # PreflightSkipFixture (a BOOST_GLOBAL_FIXTURE, registered first) exits
     # with this code before any Boost.Test case runs if
@@ -6287,7 +6288,9 @@ if(KYTHIRA_AZURE_REAL_TESTS)
         # but cannot cover SIGKILL. One slow case can now fail alone instead of
         # taking the whole binary, and the leak needs a case to outrun its own
         # bound rather than merely to be slow.
-        TIMEOUT 13800
+        #
+        # 14400: 13800 plus the 600s bound of numeric_id_claim_skips_a_taken_name.
+        TIMEOUT 14400
         LABELS "integration;azure;real-azure;slow"
     )
 endif()
