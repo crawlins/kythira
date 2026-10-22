@@ -3,6 +3,18 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 22, 2026)
+
+- **The batched object layouts and write-behind are measured on all five
+  providers.** `.kiro/specs/object-store-batched-layout/` task 10 ran the
+  six new real-tier cases on S3 (x64 and arm64), Azure Blob, GCS, OCI and
+  Alibaba OSS, and every case passed. A 100-entry segment costs about one
+  PUT. A ~0.88 MiB segment is at most 721 ms p99 in-region, so the 1 MiB
+  `max_segment_bytes` default stands, provided the AppendEntries RPC timeout
+  stays above it. With 16 submitters, write-behind raised the commit rate
+  2.2-4.5x (`B` 2.5-4), roughly tripled the median commit latency and cut
+  the p99 2-4.5x. The tables are in `doc/cloud_object_persistence.md`.
+
 ### What Changed (October 21, 2026)
 
 - **A node started from a snapshot keeps the snapshot's configuration.**

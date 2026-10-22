@@ -306,7 +306,7 @@ before and after.
     built. Open-tasks item 15 is not closed: task 10 needs a live run, and the
     row in `doc/TODO.md` says so.
 
-- [ ] 10. Real-cloud verification — needs Clark's go
+- [x] 10. Real-cloud verification — needs Clark's go
   - New cases in `tests/object_persistence_real_cases.hpp`: migration read-back,
     truncation and compaction across a real segment, the live negative control
     on the retired vote slot (four fencing providers), p50/p99 of a combined
@@ -329,6 +329,15 @@ before and after.
     it). `object_persistence_real_cases_mock_test` runs them on the mock so
     they are known right before a paid run; that does not tick this task.
     Clark chose to run S3 first and decide on the other four after.
+  - Done October 22, 2026, on `main` at 747227c: S3 x64 and arm64 in run
+    39727417123, Azure Blob, GCS, OCI and Alibaba OSS in run 39776156973.
+    Every case passed on every provider. Results are recorded in
+    `doc/cloud_object_persistence.md` beside the existing latency tables. A
+    100-entry segment costs about one PUT; a ~0.88 MiB segment is at most
+    721 ms p99 in-region, so the 1 MiB `max_segment_bytes` default stands,
+    with the AppendEntries RPC timeout to be kept above it. Write-behind
+    raised the commit rate 2.2-4.5x with `B` between 2.5 and 4 at 16
+    submitters, and roughly tripled the median commit latency.
 
 - [ ] 11. (Optional, pending open question 2) `raft_object_backup relayout`
   - Offline, against a stopped node's prefix: combined → separate (PUT
