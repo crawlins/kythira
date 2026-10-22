@@ -1957,6 +1957,69 @@ BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_te
     restore_az3_nacl();
 }
 
+// The live half of the numeric-mode id claim (#543), whose collision branch
+// was otherwise only mock-tested. Another launch already holds node id 1's
+// ClientToken, with different parameters, the way a deposed leader's
+// provision would. EC2 must refuse the manager's launch of id 1 with
+// IdempotentParameterMismatch, and the manager must move on to id 2 without
+// touching the holder.
+//
+// The holder carries the cluster tag, so teardown terminates it, but no
+// kythira:node-id tag, so the manager's allocator still offers id 1 first.
+BOOST_AUTO_TEST_CASE(numeric_id_claim_skips_an_id_another_launch_holds,
+                     *boost::unit_test::timeout(1500)) {
+    using manager = kythira::aws_ec2_quorum_manager<std::uint64_t>;
+
+    Aws::EC2::Model::RunInstancesRequest holder_req;
+    holder_req.SetImageId(ami_id);
+    holder_req.SetInstanceType(
+        Aws::EC2::Model::InstanceTypeMapper::GetInstanceTypeForName(instance_type));
+    holder_req.SetMinCount(1);
+    holder_req.SetMaxCount(1);
+    // Another subnet than the manager's AZ1 launch, so the two requests differ.
+    holder_req.SetSubnetId(subnet_az2_id);
+    holder_req.AddSecurityGroupIds(cluster_sg_id);
+    holder_req.SetClientToken(manager::launch_client_token(uuid, 1));
+    {
+        Aws::EC2::Model::TagSpecification tag_spec;
+        tag_spec.SetResourceType(Aws::EC2::Model::ResourceType::instance);
+        tag_spec.AddTags(make_tag("Name", uuid + "-id-claim-holder"));
+        tag_spec.AddTags(make_tag("kythira:cluster", uuid));
+        tag_spec.AddTags(make_tag("kythira:managed-by", "aws_quorum_manager_real_ec2_test"));
+        tag_spec.AddTags(make_tag("kythira:role", "id-claim-holder"));
+        holder_req.AddTagSpecifications(tag_spec);
+    }
+    auto holder_out = ec2->RunInstances(holder_req);
+    BOOST_REQUIRE_MESSAGE(
+        holder_out.IsSuccess(),
+        "holder RunInstances: " + std::string(holder_out.GetError().GetMessage()));
+    const std::string holder_id(holder_out.GetResult().GetInstances()[0].GetInstanceId());
+    track_instances(1);
+
+    manager mgr{mgr_cfg};
+    auto peer = mgr.provision_node("AZ1", std::nullopt).get();
+    track_instances(1);
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+    BOOST_CHECK_NE(mgr.instance_id_of(peer.node_id).value_or(""), holder_id);
+
+    // The holder is still what its own launch made: not terminated, not
+    // re-tagged as a member.
+    Aws::EC2::Model::DescribeInstancesRequest describe;
+    describe.AddInstanceIds(holder_id);
+    auto described = ec2->DescribeInstances(describe);
+    BOOST_REQUIRE_MESSAGE(
+        described.IsSuccess(),
+        "DescribeInstances (holder): " + std::string(described.GetError().GetMessage()));
+    const auto& reservations = described.GetResult().GetReservations();
+    BOOST_REQUIRE(!reservations.empty() && !reservations[0].GetInstances().empty());
+    const auto& holder = reservations[0].GetInstances()[0];
+    const auto state = holder.GetState().GetName();
+    BOOST_CHECK(state == Aws::EC2::Model::InstanceStateName::pending ||
+                state == Aws::EC2::Model::InstanceStateName::running);
+    BOOST_CHECK_EQUAL(find_tag_val(holder.GetTags(), "kythira:node-id"), "");
+    BOOST_CHECK_EQUAL(find_tag_val(holder.GetTags(), "kythira:role"), "id-claim-holder");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 }  // namespace
