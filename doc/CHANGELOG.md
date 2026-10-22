@@ -5,6 +5,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 21, 2026)
 
+- **A node started from a snapshot keeps the snapshot's configuration.**
+  When an AppendEntries changed a follower's log and the log held no
+  configuration entry, the follower fell back to the configuration set at
+  construction. A node that started from a snapshot had none, and the
+  member was never initialised, so it was left with no members, and in a
+  Release build `_is_joint_consensus` could read true and throw
+  `bad_optional_access` from the append. The fallback is now the latest
+  snapshot's configuration (at start-up, snapshot install and compaction),
+  and the member is value-initialised. The stdexec full suite found it once
+  the append's exceptions were logged rather than swallowed.
+
 - **A follower no longer acknowledges entries its store does not hold.**
   Two paths in `node` answered an AppendEntries with success for an entry
   that no barrier had covered, and the leader counted it toward a commit.

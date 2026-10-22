@@ -38,6 +38,9 @@
 //     log as well, so the leader's retry stores it rather than finding it
 //     "already held" and being answered success for an entry the store
 //     never received.
+// 10. A follower that started from a snapshot keeps the snapshot's
+//     configuration when an AppendEntries changes its log and the log holds
+//     no configuration entry.
 //
 // Engine-level behaviour of the two calls is in
 // batched_durable_writes_unit_test.cpp.
@@ -907,6 +910,35 @@ BOOST_AUTO_TEST_CASE(a_refused_append_is_stored_by_the_retry, *boost::unit_test:
     BOOST_TEST_INFO_SCOPE("node 3: " << join(rec.ops));
     BOOST_TEST(count_prefix(rec.ops, "refused:") == 1U);
     BOOST_TEST(rec.state.get_last_log_index() == index);
+}
+
+// Property 10. Every node starts from a snapshot naming {1, 2, 3} and has no
+// configuration entry in its log. Appending entry 11 rescans the log for one
+// and, finding none, used to fall back to the configuration set at
+// construction: none here, read uninitialised. Node 3 then had no members,
+// and in a Release build `_is_joint_consensus` could read true and throw
+// bad_optional_access out of the append.
+BOOST_AUTO_TEST_CASE(an_append_keeps_the_snapshot_configuration, *boost::unit_test::timeout(30)) {
+    cluster<true> c{{}};
+    auto client = c.client_to(3);
+    constexpr std::uint64_t term = k_seed_term + 1;
+    BOOST_REQUIRE(c.nodes[2]->get_cluster_size() == 3U);
+
+    const auto response =
+        client
+            .send_append_entries(3,
+                                 kythira::append_entries_request<>{
+                                     ._term = term,
+                                     ._leader_id = 1,
+                                     ._prev_log_index = k_snapshot_index,
+                                     ._prev_log_term = k_seed_term,
+                                     ._entries = {log_entry_t{term, k_snapshot_index + 1,
+                                                              sm_t::make_put_command("k", "v")}},
+                                     ._leader_commit = k_snapshot_index},
+                                 k_rpc_wait)
+            .get();
+    BOOST_TEST(response.success());
+    BOOST_TEST(c.nodes[2]->get_cluster_size() == 3U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
