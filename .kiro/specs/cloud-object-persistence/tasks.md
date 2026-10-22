@@ -1386,6 +1386,10 @@ Reference implementations to study before starting, in this order:
       `.kiro/specs/object-backup-oci-oss-credentials/`: both arms now read
       `KYTHIRA_OCI_*` / `KYTHIRA_ALIBABA_*`, and every arm exits 2 on a
       construction failure.
+      **Follow-up (October 22, 2026):** the S3 arm cannot reach an
+      S3-compatible service (LocalStack, MinIO): it has no `--region` or
+      `--endpoint`, and the linked SDK ignores `AWS_ENDPOINT_URL`. Specified
+      under `.kiro/specs/object-backup-s3-endpoint/`.
       - _Requirements: 10.6, 16.4_
 
 - [~] 15. **Per-provider emulator / mock tiers** — **every sub-item is
