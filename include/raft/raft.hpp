@@ -960,8 +960,11 @@ private:
     // Current cluster configuration
     cluster_configuration_type _configuration;
 
-    // Bootstrap configuration: the initial configuration set at node construction, used as the
-    // fallback when log truncation removes all configuration entries from the in-memory log.
+    // The configuration in force below the in-memory log: the one set at construction, or the
+    // latest snapshot's once there is one. It is the fallback when the log holds no
+    // configuration entry (append_entries_with_consistency_check's rescan). Value-initialised:
+    // `_is_joint_consensus` has no default, and a node that started from a snapshot used to
+    // read it uninitialised and throw bad_optional_access from cluster_members().
     cluster_configuration_type _boot_configuration;
 
     // Election timeout (randomized between min and max)
@@ -1735,6 +1738,7 @@ node<Types>::node(node_config<Types> cfg)
       _config{cfg.config},
       _node_id{cfg.node_id},
       _configuration{},
+      _boot_configuration{},
       _election_timeout{cfg.config.election_timeout_min()},
       _heartbeat_interval{cfg.config.heartbeat_interval()},
       _last_heartbeat{std::chrono::steady_clock::now()},
@@ -5351,6 +5355,7 @@ auto node<Types>::initialize_from_storage() -> void {
         _snapshot_index = snap.last_included_index();
         _snapshot_term = snap.last_included_term();
         _configuration = snap.configuration();
+        _boot_configuration = _configuration;
 
         _logger.info("Restored from snapshot",
                      {{"node_id", node_id_to_string(_node_id)},
@@ -9295,6 +9300,9 @@ auto node<Types>::compact_log() -> void {
     if (last_included_index >= _snapshot_index) {
         _snapshot_index = last_included_index;
         _snapshot_term = snap.last_included_term();
+        // Compaction may remove the log's configuration entries; the snapshot
+        // carries the configuration they set.
+        _boot_configuration = snap.configuration();
     }
 
     _logger.info("Compacting log", {{"node_id", node_id_to_string(_node_id)},
@@ -9384,6 +9392,7 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
 
         // Restore cluster configuration from the snapshot
         _configuration = snap.configuration();
+        _boot_configuration = _configuration;
         _awaiting_admission = false;
         sync_peer2peer_membership();
 
