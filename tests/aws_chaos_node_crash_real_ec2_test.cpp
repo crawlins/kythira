@@ -839,10 +839,20 @@ auto start_node_command(const std::vector<std::pair<std::string, std::string>>& 
     // The date lines come back as the command's output, so the test log
     // shows which part of a slow start was slow (run 39514236538 took about
     // 270 s per node here).
+    //
+    // The mkdir is its own statement, never `mkdir && sudo env ... &`. A
+    // trailing `&` backgrounds the whole AND-list in a forked subshell, and
+    // the redirects bind only to its last command, so that subshell keeps
+    // the SSH channel's stdout and stderr open for as long as chaos_node
+    // runs. sshd then never sends EOF: every start printed its "launched"
+    // stamp within a second and then held the channel until the read
+    // timeout (run 39563651006). Reproduced against a local sshd, where
+    // `true && sleep 1000 >/dev/null 2>&1 </dev/null &` hangs the same way
+    // and this command, with the mkdir split out, closes at once.
     cmd << "date +'begin %T.%N'; "
         << "sudo systemctl disable --now chaos_node.service >/dev/null 2>&1; "
         << "date +'systemctl %T.%N'; "
-        << "sudo mkdir -p /var/lib/chaos_node && "
+        << "sudo mkdir -p /var/lib/chaos_node || exit 1\n"
         << "sudo env";
     for (const auto& [k, v] : environment) {
         cmd << " " << k << "='" << v << "'";
@@ -1023,10 +1033,13 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
             starts.emplace_back([&, i] {
                 try {
                     // The command only launches chaos_node in the
-                    // background, so two minutes is generous. A timeout
-                    // after the "launched" stamp means chaos_node is up
-                    // and only the SSH channel failed to close, which is
-                    // a pass; one before it is a failed start.
+                    // background, so two minutes is generous, and the
+                    // channel now closes as soon as the shell exits (see
+                    // start_node_command). A timeout after the "launched"
+                    // stamp still means chaos_node is up and only the
+                    // channel failed to close, so it stays a pass rather
+                    // than failing a billable run; one before it is a
+                    // failed start.
                     bool timed_out = false;
                     outputs[i] =
                         ssh_execute(public_ips[i], private_key_pem, commands[i],
