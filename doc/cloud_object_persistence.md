@@ -193,6 +193,39 @@ Size your own deployment against a measurement taken from where your nodes
 actually run. The CI-runner table carries the suite's p99s (worst-of-run, as
 above), and the sizing rule below is worked from those rather than from p50.
 
+*Batched layouts and write-behind, from GitHub-hosted CI runners* (October
+22, 2026, runs
+[39727417123](https://github.com/crawlins/kythira/actions/runs/39727417123)
+for S3 and
+[39776156973](https://github.com/crawlins/kythira/actions/runs/39776156973)
+for the rest, `.kiro/specs/object-store-batched-layout/` task 10). Every
+provider passed all 12 cases, Alibaba its 12 without the two fencing ones.
+p50 / p99 in ms, 8 samples for the combined write and 10 for each segment:
+
+| Provider | single `append_log_entry` | `save_hard_state` (combined) | 100-entry segment | ~0.88 MiB segment |
+|---|---|---|---|---|
+| S3 (x64) | 161 / 179 | 179 / 202 | 175 / 186 | 230 / 700 |
+| S3 (arm64) | 35 / 42 | 35 / 57 | 40 / 44 | 89 / 313 |
+| GCS | 139 / 155 | 144 / 153 | 139 / 150 | 494 / 515 |
+| Azure Blob | 246 / 294 | 251 / 277 | 311 / 327 | 589 / 648 |
+| OCI Object Storage | 288 / 357 | 292 / 328 | 345 / 355 | 662 / 721 |
+| Alibaba OSS | 939 / 1083 **(distance)** | 949 / 1084 | 908 / 921 | 1982 / 2028 |
+
+- **A 100-entry segment costs about one PUT.** With small entries the body
+  is a few KiB, and the request, not the bytes, is the price. That is the
+  whole case for `log_layout::segmented`: a follower run of 100 is one
+  round trip instead of 100.
+- **A segment near `max_segment_bytes` costs 1.4-3.6 single PUTs at p50**
+  and at most 721 ms at p99 in-region (2 s for Alibaba across the ocean).
+  The 1 MiB default stands. What it does demand is that the RPC timeout a
+  leader gives an AppendEntries exceeds the follower's segment PUT p99, or a
+  full segment times out on every retry. Lower `max_segment_bytes` instead
+  if your timeout cannot grow.
+- **The S3 rows disagree with August's: 2.4x slower on x64 and 1.7x faster
+  on arm64.** Neither moved the bucket; the runners did. It is the
+  measurement-position trap again, and it is why each run records its own
+  position.
+
 ### Election-timeout sizing
 
 A candidate persists an incremented term and then a self-vote before sending
@@ -322,7 +355,7 @@ changes instead is the follower and recovery side:
 | | `per_entry` | `segmented` (defaults) |
 |---|---|---|
 | Follower requests per AppendEntries run of N | N | ⌈N / 100⌉, fewer if 1 MiB fills first |
-| Follower catch-up, N = 10,000 on S3 (p50 ≈ 67 ms) | 10,000 PUTs, ≈ 1,250 rounds at concurrency 8, ≈ 84 s | 100 PUTs, ≈ 13 rounds, ≈ 1 s **plus the not-yet-measured cost of a 100-entry body** |
+| Follower catch-up, N = 10,000 on S3 (p50 ≈ 67 ms) | 10,000 PUTs, ≈ 1,250 rounds at concurrency 8, ≈ 84 s | 100 PUTs, ≈ 13 rounds, ≈ 1 s (a 100-entry segment measured at about one PUT, October 22, 2026) |
 | Recovery GETs for a log of N | N | about N / B, B the entries per segment |
 
 #### Write-behind group commit
@@ -347,9 +380,33 @@ PUTs. `B` is a property of the workload, not of the engine: one client issuing
 commands one at a time gets `B = 1` and today's ceiling. Measure it as the
 leader's commands divided by its log PUTs, or by `flushes_issued()`. On the
 mock store with every PUT held for 60 ms, 24 concurrent commands cost the
-leader 2 PUTs (`raft_object_store_group_commit_test`). That number comes from
-the mock, not from a provider. The real-cloud run is
-`.kiro/specs/object-store-batched-layout/` task 10.
+leader 2 PUTs (`raft_object_store_group_commit_test`).
+
+**Measured on every provider** (October 22, 2026, the runs above): 16
+submitters each appending through one leader-style mutex, 64 commands, with
+`log_layout::segmented`. `B` is commands per log PUT:
+
+| Provider | synchronous commits/s | write-behind commits/s | gain | `B` | mean flush |
+|---|---|---|---|---|---|
+| S3 (x64) | 6.4 | 24.1 | 3.8x | 4.0 | 166 ms |
+| S3 (arm64) | 30.1 | 65.0 | 2.2x | 2.5 | 38 ms |
+| GCS | 6.0 | 18.4 | 3.1x | 3.4 | 183 ms |
+| Azure Blob | 2.9 | 13.3 | 4.5x | 3.4 | 253 ms |
+| OCI Object Storage | 3.3 | 9.1 | 2.7x | 2.8 | 305 ms |
+| Alibaba OSS | 1.1 | 3.0 | 2.9x | 2.9 | 959 ms |
+
+`B / mean flush` reproduces each write-behind rate, so the formula above is
+the right one to size with. `B` stayed between 2.5 and 4 although 16
+callers were waiting: a flush takes whatever is staged when it starts, and
+callers released by one flush stage their next command during the following
+flush, not the current one. More concurrent clients raise `B`; a faster
+store lowers it, which is why the slowest-PUT rows gain the most.
+
+**Latency moves the other way at the median.** The commit p50 rose about
+3x (S3 x64 157 → 500 ms, OCI 303 → 909 ms), because a command now waits for
+a flush to start and then for it to finish. The p99 fell 2-4.5x (S3 x64 10.0 →
+2.7 s, OCI 19.2 → 7.0 s). The synchronous p50 flatters: an unfair mutex
+lets most commands through after one PUT while a few wait for the whole run.
 
 **The default is unchanged.** With `write_behind` off, every append is a PUT
 acknowledged before the call returns. The engine answers
@@ -693,7 +750,7 @@ provider:
 | `max_object_bytes` | **64 MiB** | Deliberately far below every provider's documented single-request limit (the smallest is 5 GB). The binding constraint is this engine's *shape*, not the service's: one retry, no multipart, no resumption, no progress reporting, and the mutex held for the whole round trip. The cap turns "this deployment has outgrown a single-PUT persistence engine" into a loud error at the first snapshot that reaches it. Configurable upward by an operator who has measured their own case; `0` is rejected |
 | `write_retries` | **1** | PUT-only, and **unconditional-PUT-only**. A conditional write is never retried: a retry cannot distinguish "my write landed and the response was lost" from "I lost the race" |
 | `max_segment_entries` | **100** | Entries per segment under `log_layout::segmented`; at least 2, since one entry is always a singleton. A non-default value under `per_entry` is refused rather than ignored |
-| `max_segment_bytes` | **1 MiB** | Body size per segment under `log_layout::segmented`, at most `max_object_bytes`. Reasoned, not yet measured: segment-sized PUT latency has not been run on any provider (`.kiro/specs/object-store-batched-layout/` task 10) |
+| `max_segment_bytes` | **1 MiB** | Body size per segment under `log_layout::segmented`, at most `max_object_bytes`. Measured October 22, 2026 on all five providers: a ~0.88 MiB segment is at most 721 ms p99 in-region, 2 s on Alibaba from the US. Keep the AppendEntries RPC timeout above that, or lower this |
 | `write_behind` | **off** | Leader group commit, opt-in (see [Write-behind group commit](#write-behind-group-commit)). Off, every append is a PUT before the call returns, as it always was. On, appends stage and the durability barrier flushes them as one run. Accepted with either log layout and either fencing mode |
 | `append_concurrency` | **8** | Log PUTs `append_log_entries` keeps in flight for one AppendEntries. Used only on a store that declares `supports_concurrent_requests` (all five shipped clients do); any other store gets one at a time. Still one PUT per entry: the request count and the keys are the same at every setting. `0` is rejected |
 
@@ -937,14 +994,12 @@ The two limits this section used to list are closed as opt-in layouts
 run of entries in one object, and `hard_state_layout::combined` writes the term
 and vote as one. What remains:
 
-- **Write-behind is opt-in and measured only on the mock.** By default the
-  leader still writes one PUT per client command under `node`'s mutex, and
-  the cluster's commit rate stays at about `1 / p50(PUT)`. With
-  `write_behind` it is about `B / p50(flush)`. The real-cloud measurement of
-  both is `.kiro/specs/object-store-batched-layout/` task 10.
-- **Segment-sized PUT latency is unmeasured** on every provider, so the 1 MiB
-  `max_segment_bytes` default is reasoned rather than measured until the real
-  tier records it (`.kiro/specs/object-store-batched-layout/` task 10).
+- **Write-behind is opt-in.** By default the leader still writes one PUT per
+  client command under `node`'s mutex, and the cluster's commit rate stays at
+  about `1 / p50(PUT)`. With `write_behind` it is about `B / p50(flush)`,
+  measured at 2.2-4.5x on the five providers with 16 submitters. Whether it
+  becomes the default is open: it trades a higher median commit latency for
+  throughput and a lower tail.
 - **No in-place downgrade.** A prefix with a combined `term` or a segment is
   refused by an older binary and by a build configured for the older layout.
   The way back is a backup taken before the upgrade. An offline
