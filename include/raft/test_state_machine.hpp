@@ -11,6 +11,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,7 +28,12 @@ public:
     enum class command_type : std::uint8_t {
         get = 0,
         put = 1,
-        del = 2
+        del = 2,
+        // [key_length][key][expected_present:1][expected_length][expected]
+        // [value_length][value]. Writes value only when the key's current
+        // value equals expected, or, with expected_present 0, when the key is
+        // absent. Returns one byte: 1 if it applied, 0 if not.
+        cas = 3
     };
 
     test_key_value_state_machine() = default;
@@ -107,6 +113,43 @@ public:
             case command_type::del: {
                 _store.erase(key);
                 return {};  // DEL returns empty
+            }
+
+            case command_type::cas: {
+                auto read_string = [&](const char* what) -> std::string {
+                    if (offset + sizeof(std::uint32_t) > command.size()) {
+                        throw std::invalid_argument(std::string("Invalid CAS command: missing ") +
+                                                    what + " length");
+                    }
+                    std::uint32_t length{};
+                    std::memcpy(&length, &command[offset], sizeof(std::uint32_t));
+                    offset += sizeof(std::uint32_t);
+                    if (offset + length > command.size()) {
+                        throw std::invalid_argument(std::string("Invalid CAS command: ") + what +
+                                                    " length exceeds command size");
+                    }
+                    std::string out(reinterpret_cast<const char*>(&command[offset]),  // NOLINT
+                                    length);
+                    offset += length;
+                    return out;
+                };
+                if (offset + 1 > command.size()) {
+                    throw std::invalid_argument("Invalid CAS command: missing expected flag");
+                }
+                const bool expected_present = command[offset] != std::byte{0};
+                offset += 1;
+                std::string expected = read_string("expected");
+                std::string value = read_string("value");
+
+                auto it = _store.find(key);
+                const bool matches = expected_present
+                                         ? (it != _store.end() && it->second == expected)
+                                         : it == _store.end();
+                if (!matches) {
+                    return {std::byte{0}};
+                }
+                _store[key] = std::move(value);
+                return {std::byte{1}};
             }
 
             default:
@@ -270,6 +313,26 @@ public:
         offset += sizeof(std::uint32_t);
         std::memcpy(command.data() + offset, key.data(), key.size());
 
+        return command;
+    }
+
+    // Helper to create CAS command; std::nullopt expects the key to be absent
+    static auto make_cas_command(const std::string& key, const std::optional<std::string>& expected,
+                                 const std::string& value) -> std::vector<std::byte> {
+        std::vector<std::byte> command;
+        command.push_back(static_cast<std::byte>(command_type::cas));
+        auto append_string = [&command](const std::string& text) {
+            auto length = static_cast<std::uint32_t>(text.size());
+            std::size_t offset = command.size();
+            command.resize(command.size() + sizeof(std::uint32_t) + text.size());
+            std::memcpy(command.data() + offset, &length, sizeof(std::uint32_t));
+            offset += sizeof(std::uint32_t);
+            std::memcpy(command.data() + offset, text.data(), text.size());
+        };
+        append_string(key);
+        command.push_back(expected.has_value() ? std::byte{1} : std::byte{0});
+        append_string(expected.value_or(std::string{}));
+        append_string(value);
         return command;
     }
 

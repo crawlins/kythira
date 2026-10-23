@@ -953,6 +953,18 @@ add_raft_completion_test(tcp_cluster_join_test tcp_cluster_join_test.cpp)
 add_raft_completion_test(chaos_node_config_unit_test chaos_node_config_unit_test.cpp)
 target_include_directories(chaos_node_config_unit_test PRIVATE
                            "${CMAKE_SOURCE_DIR}/cmd/chaos_node")
+# chaos_node's HTTP control plane (cairn-chaos-testing tasks 2.1-2.6): the
+# codec, the state machine's cas, and every route against a one-node cluster.
+if(httplib_FOUND)
+    add_raft_completion_test(chaos_node_control_test chaos_node_control_test.cpp)
+    target_include_directories(chaos_node_control_test PRIVATE
+                               "${CMAKE_SOURCE_DIR}/cmd/chaos_node")
+    target_link_libraries(chaos_node_control_test PRIVATE
+        httplib::httplib kythira_host_node_id)
+    set_tests_properties(chaos_node_control_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;chaos")
+endif()
 add_raft_completion_test(tcp_connection_tracker_unit_test tcp_connection_tracker_unit_test.cpp)
 add_raft_completion_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
 add_raft_completion_test(raft_majority_commit_index_advancement_property_test raft_majority_commit_index_advancement_property_test.cpp)
