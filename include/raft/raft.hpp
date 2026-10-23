@@ -37,6 +37,7 @@
 #include <set>
 #include <limits>
 #include <chrono>
+#include <deque>
 #include <random>
 #include <mutex>
 #include <atomic>
@@ -632,6 +633,41 @@ public:
     /// (`.kiro/specs/elastic-shard-capacity/` Requirement 10.2), rather than
     /// the membership it was created with.
     [[nodiscard]] auto current_membership() const -> membership_view;
+
+    /// @brief Where this replica's log starts and ends.
+    struct log_bounds_view {
+        log_index_type last_log_index{0};
+        term_id_type last_log_term{0};
+        /// The last index covered by the latest snapshot; 0 before the first.
+        log_index_type snapshot_index{0};
+    };
+
+    /// @brief The log's bounds, taken together under the node's lock.
+    ///
+    /// Taken together so that a reader comparing them (an index below
+    /// `snapshot_index` is compacted, one above `last_log_index` is not yet
+    /// written) never mixes values from either side of a compaction.
+    [[nodiscard]] auto log_bounds() const -> log_bounds_view;
+
+    /// @brief One term this node won, and when (steady clock).
+    struct leadership_record {
+        term_id_type term{0};
+        std::chrono::steady_clock::time_point at{};
+    };
+
+    /// The most `leadership_history()` keeps; older terms are dropped first.
+    static constexpr std::size_t leadership_history_capacity = 1024;
+
+    /// @brief The terms this node became leader in since it was constructed,
+    ///        oldest first, bounded to `leadership_history_capacity`.
+    ///
+    /// Recorded in `become_leader()` itself rather than sampled from
+    /// `get_state()`: two leaders in one term that never overlap a sample are
+    /// invisible to a sampler, while a per-node record of every term won makes
+    /// "at most one leader per term" an exact check over a whole run
+    /// (`.kiro/specs/cairn-chaos-testing/` design §1.1). Held in memory only,
+    /// so it is lost on restart.
+    [[nodiscard]] auto leadership_history() const -> std::vector<leadership_record>;
     /// @}
 
     /// @name Leadership transfer (Ongaro's dissertation §3.10)
@@ -1077,6 +1113,9 @@ private:
 
     // Last known leader (populated from incoming AppendEntries)
     std::optional<node_id_type> _known_leader;
+
+    // Terms this node won, appended by become_leader(); see leadership_history().
+    std::deque<leadership_record> _leadership_history;
 
     // Set when a leader accepted this node's ClusterJoin; cleared once the
     // node applies a configuration replicated from the cluster.  Until then
@@ -3074,6 +3113,19 @@ template<raft_types Types>
 auto node<Types>::set_campaign_requires_log_entries(bool required) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     _campaign_requires_log_entries = required;
+}
+
+template<raft_types Types> auto node<Types>::log_bounds() const -> log_bounds_view {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return log_bounds_view{.last_log_index = get_last_log_index(),
+                           .last_log_term = get_last_log_term(),
+                           .snapshot_index = _snapshot_index};
+}
+
+template<raft_types Types>
+auto node<Types>::leadership_history() const -> std::vector<leadership_record> {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return {_leadership_history.begin(), _leadership_history.end()};
 }
 
 template<raft_types Types> auto node<Types>::current_membership() const -> membership_view {
@@ -7288,6 +7340,11 @@ auto node<Types>::become_leader() -> void {
                                              {"term", std::to_string(_current_term)}});
 
     _state = kythira::server_state::leader;
+    if (_leadership_history.size() == leadership_history_capacity) {
+        _leadership_history.pop_front();
+    }
+    _leadership_history.push_back(
+        leadership_record{.term = _current_term, .at = std::chrono::steady_clock::now()});
 
     // Raft §5.4.2: advance_commit_index() only ever counts an entry toward commit_index
     // directly if entry.term() == _current_term (never a prior term's entry, even once a

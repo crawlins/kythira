@@ -116,4 +116,93 @@ BOOST_AUTO_TEST_CASE(parse_log_entry_non_200_throws_runtime_error) {
     BOOST_CHECK_THROW(docker_chaos::parse_log_entry(r), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(parse_log_entry_404_names_the_reason) {
+    docker_chaos::HttpResult r{404, R"({"error":"compacted"})"};
+    try {
+        (void)docker_chaos::parse_log_entry(r);
+        BOOST_FAIL("expected out_of_range");
+    } catch (const std::out_of_range& e) {
+        BOOST_TEST(std::string(e.what()).find("compacted") != std::string::npos);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(parse_log_range_extracts_entries) {
+    docker_chaos::HttpResult r{
+        200, R"({"from":1,"to":2,"snapshot_index":0,"last_log_index":2,"entries":[)"
+             R"({"index":1,"term":1,"type":"no_op","command_b64":""},)"
+             R"({"index":2,"term":1,"type":"normal","command_b64":"AQ=="}]})"};
+    auto obj = docker_chaos::parse_log_range(r);
+    BOOST_TEST(obj["entries"].as_array().size() == 2U);
+    BOOST_TEST(obj["entries"].as_array()[1].as_object().at("type").as_string() == "normal");
+}
+
+BOOST_AUTO_TEST_CASE(parse_log_range_400_throws) {
+    docker_chaos::HttpResult r{400, R"({"error":"bad_range","detail":"missing from"})"};
+    BOOST_CHECK_THROW(docker_chaos::parse_log_range(r), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(parse_elections_extracts_terms) {
+    docker_chaos::HttpResult r{200, R"({"node_id":2,"elections":[{"term":3,"at_ms":10},)"
+                                    R"({"term":5,"at_ms":99}]})"};
+    auto obj = docker_chaos::parse_elections(r);
+    auto& list = obj["elections"].as_array();
+    BOOST_REQUIRE(list.size() == 2U);
+    BOOST_TEST(list[0].as_object().at("term").as_int64() == 3);
+    BOOST_TEST(list[1].as_object().at("term").as_int64() == 5);
+}
+
+BOOST_AUTO_TEST_CASE(parse_elections_non_200_throws) {
+    BOOST_CHECK_THROW(docker_chaos::parse_elections({0, "connection failed"}), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(parse_kv_read_found_and_absent) {
+    auto found = docker_chaos::parse_kv_read(
+        {200, R"({"key":"k","mode":"local","found":true,"value":"v","commit_index":4,)"
+              R"("last_applied":4})"});
+    BOOST_TEST(found["value"].as_string() == "v");
+    auto absent = docker_chaos::parse_kv_read(
+        {200, R"({"key":"k","mode":"linearizable","found":false,"value":null,)"
+              R"("commit_index":4,"last_applied":4})"});
+    BOOST_TEST(absent["value"].is_null());
+    BOOST_CHECK_THROW(docker_chaos::parse_kv_read({503, R"({"error":"read_failed"})"}),
+                      std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(parse_membership_response_keeps_refusals) {
+    auto ok =
+        docker_chaos::parse_membership_response({200, R"({"success":true,"commit_index":9})"});
+    BOOST_TEST(ok["success"].as_bool());
+    BOOST_TEST(ok["http_status"].as_int64() == 200);
+    auto busy = docker_chaos::parse_membership_response(
+        {409, R"({"error":"change_in_progress","detail":"x"})"});
+    BOOST_TEST(busy["error"].as_string() == "change_in_progress");
+    BOOST_TEST(busy["http_status"].as_int64() == 409);
+    BOOST_CHECK_THROW(docker_chaos::parse_membership_response({0, ""}), std::runtime_error);
+}
+
+// The CAS body is built with boost::json, so a key or value with a quote in it
+// still reaches chaos_node as the same string.
+BOOST_AUTO_TEST_CASE(submit_cas_body_round_trips) {
+    std::string posted_url;
+    std::string posted_body;
+    docker_chaos::ChaosNode node(
+        1, [](const std::vector<std::string>&) { return docker_chaos::os::CmdResult{}; },
+        [](const std::string&) { return docker_chaos::HttpResult{200, "{}"}; },
+        [&](const std::string& url, const std::string& body) {
+            posted_url = url;
+            posted_body = body;
+            return docker_chaos::HttpResult{200, R"({"success":true,"applied":false})"};
+        });
+    auto reply = node.submit_cas("k\"1", std::nullopt, "v");
+    BOOST_TEST(!reply["applied"].as_bool());
+    BOOST_TEST(posted_url.find("/command") != std::string::npos);
+    auto body = boost::json::parse(posted_body).as_object();
+    BOOST_TEST(body.at("op").as_string() == "cas");
+    BOOST_TEST(body.at("key").as_string() == "k\"1");
+    BOOST_TEST(body.at("expected").is_null());
+
+    (void)node.submit_cas("k", std::string("old"), "new");
+    BOOST_TEST(boost::json::parse(posted_body).as_object().at("expected").as_string() == "old");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

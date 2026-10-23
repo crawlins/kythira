@@ -1,6 +1,6 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: Not started (0/14 tasks)
+## Status: In progress (0/14 tasks; task 2 sub-tasks 2.1-2.6 done)
 
 **Last Updated**: October 21, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
@@ -34,19 +34,34 @@ compatibility").
         the next person.
 
 - [ ] **2. chaos_node control-plane endpoints.** (Requirement 1, design §1.)
-  - [ ] 2.1 Replace the `GET /log/<i>` stub; add the `GET /log?from=&to=`
+  - [x] 2.1 Replace the `GET /log/<i>` stub; add the `GET /log?from=&to=`
         range form.
-  - [ ] 2.2 Extend `GET /status` with `leader_id`, `last_log_index`,
+  - [x] 2.2 Extend `GET /status` with `leader_id`, `last_log_index`,
         `last_log_term`, `snapshot_index` and `config`.
-  - [ ] 2.3 Add the `GET /elections` ring buffer.
-  - [ ] 2.4 Add `GET /kv/<k>?mode=linearizable|local`.
-  - [ ] 2.5 Add `command_type::cas` to `test_key_value_state_machine` and
+  - [x] 2.3 Add the `GET /elections` ring buffer.
+  - [x] 2.4 Add `GET /kv/<k>?mode=linearizable|local`.
+  - [x] 2.5 Add `command_type::cas` to `test_key_value_state_machine` and
         `"op":"cas"` to `POST /command`. Leave the existing put/get/del
         encodings untouched, and add a unit case pinning their bytes.
-  - [ ] 2.6 Add `POST /membership/add` and `/remove`.
+  - [x] 2.6 Add `POST /membership/add` and `/remove`.
   - [ ] 2.7 Extend the `parse_*` helpers in `harness.hpp` and their unit
         cases in `fault_control_unit_test.cpp`. Every existing
         `tests/docker_chaos/` scenario still passes.
+        Helpers and unit cases done; open until a Container Scenario Tests
+        run passes on the new image.
+  - Notes (October 23, 2026): `GET /status`'s `leader_id` is the node
+    itself on a leader, `known_leader()` elsewhere, and `null` before any
+    leader is known. `/elections` is backed by `node::leadership_history()`,
+    recorded in `become_leader()`, with `at_ms` from the process's steady
+    clock. CAS is `command_type::cas = 3` with an expected-present byte so
+    "key must be absent" is expressible; it returns one byte, 1 if it
+    applied. Membership takes `{"node_id":…}` only: the leader reaches the
+    new node through the RPC client's peer resolver
+    (`PEER_ADDRESS_TEMPLATE`), as a JOIN=1 node is reached today. The new
+    routes build JSON with `boost::json` (`cmd/chaos_node/control_codec.hpp`)
+    because their keys, values and ids are caller-chosen strings. Covered by
+    `tests/chaos_node_control_test.cpp`, which serves every route from a
+    one-node cluster on loopback.
 
 - [ ] **3. Harness gaps.** (Requirement 2, design §2.1.)
   - [ ] 3.1 A node-table constructor for `ChaosCluster`. The 3-node default

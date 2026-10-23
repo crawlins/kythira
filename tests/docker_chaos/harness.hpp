@@ -14,6 +14,7 @@
 #include <functional>
 #include <map>
 #include <sstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -131,12 +132,51 @@ inline boost::json::object parse_command_response(const HttpResult& r) {
 
 inline boost::json::object parse_log_entry(const HttpResult& r) {
     if (r.status == 404) {
-        throw std::out_of_range("log index out of range");
+        // The body says why: "compacted", "beyond_end" or "missing".
+        throw std::out_of_range("log index out of range: " + r.body);
     }
     if (r.status != 200) {
         throw std::runtime_error("GET /log returned HTTP " + std::to_string(r.status));
     }
     return boost::json::parse(r.body).as_object();
+}
+
+namespace detail {
+inline boost::json::object parse_200(const HttpResult& r, const char* what) {
+    if (r.status != 200) {
+        throw std::runtime_error(std::string(what) + " returned HTTP " + std::to_string(r.status) +
+                                 ": " + r.body);
+    }
+    return boost::json::parse(r.body).as_object();
+}
+}  // namespace detail
+
+// GET /log?from=&to= → {from,to,snapshot_index,last_log_index,entries[]}
+inline boost::json::object parse_log_range(const HttpResult& r) {
+    return detail::parse_200(r, "GET /log?from=&to=");
+}
+
+// GET /elections → {node_id,elections[{term,at_ms}]}
+inline boost::json::object parse_elections(const HttpResult& r) {
+    return detail::parse_200(r, "GET /elections");
+}
+
+// GET /kv/<key> → {key,mode,found,value,commit_index,last_applied}
+inline boost::json::object parse_kv_read(const HttpResult& r) {
+    return detail::parse_200(r, "GET /kv");
+}
+
+// POST /membership/{add,remove} → {success,commit_index} or {error,detail}.
+// Like parse_command_response, a refusal is returned rather than thrown: 409
+// (another change pending) and 503 are outcomes a scenario asserts on.
+inline boost::json::object parse_membership_response(const HttpResult& r) {
+    if (r.body.empty()) {
+        throw std::runtime_error("POST /membership: empty response, HTTP " +
+                                 std::to_string(r.status));
+    }
+    auto obj = boost::json::parse(r.body).as_object();
+    obj["http_status"] = r.status;
+    return obj;
 }
 
 // ── ChaosNode ─────────────────────────────────────────────────────────────────
@@ -205,6 +245,40 @@ public:
 
     boost::json::object log_entry(int index) {
         return parse_log_entry(_http_get(http_url("/log/" + std::to_string(index))));
+    }
+
+    // POST /command {"op":"cas"}; std::nullopt expects the key to be absent.
+    // The reply's "applied" says whether the swap happened.
+    boost::json::object submit_cas(const std::string& key,
+                                   const std::optional<std::string>& expected,
+                                   const std::string& value) {
+        boost::json::object body{{"op", "cas"}, {"key", key}, {"value", value}};
+        body["expected"] = expected ? boost::json::value(*expected) : boost::json::value(nullptr);
+        return parse_command_response(
+            _http_post(http_url("/command"), boost::json::serialize(body)));
+    }
+
+    boost::json::object log_range(std::uint64_t from, std::uint64_t to) {
+        return parse_log_range(
+            _http_get(http_url("/log?from=" + std::to_string(from) + "&to=" + std::to_string(to))));
+    }
+
+    boost::json::object elections() { return parse_elections(_http_get(http_url("/elections"))); }
+
+    // mode is "linearizable" or "local". The key is sent as-is, so keep
+    // chaos keys to URL-safe characters.
+    boost::json::object kv_read(const std::string& key, const std::string& mode = "linearizable") {
+        return parse_kv_read(_http_get(http_url("/kv/" + key + "?mode=" + mode)));
+    }
+
+    boost::json::object membership_add(int node_id) {
+        return parse_membership_response(_http_post(
+            http_url("/membership/add"), R"({"node_id":)" + std::to_string(node_id) + "}"));
+    }
+
+    boost::json::object membership_remove(int node_id) {
+        return parse_membership_response(_http_post(
+            http_url("/membership/remove"), R"({"node_id":)" + std::to_string(node_id) + "}"));
     }
 
     std::string container_ip() {
