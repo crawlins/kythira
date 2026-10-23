@@ -5,6 +5,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (October 23, 2026)
 
+- **`multi_raft_node` can keep its log in S3.** `--persistence s3`
+  (`.kiro/specs/multi-raft-node-s3-persistence/`) gives every group an object
+  engine over `aws_s3_client` under `<prefix>/nodes/<node-id>/groups/<g>`,
+  with `--s3-*` flags for the bucket, prefix, region, endpoint, fencing,
+  layouts and group commit. A host started under a node id another live
+  process holds is refused at startup; a restart is not. Tests run three
+  hosts against a new stateful S3 mock (full restart, duplicate host, and
+  group commit: B = 4.3 with write-behind against 1.0 without, a leader
+  SIGKILL and a failed flush losing no acknowledged write), and CI runs the
+  restart cycle against LocalStack.
+
 - **`raft_object_backup --provider s3` works, and can reach LocalStack and
   MinIO.** The S3 arm never called `Aws::InitAPI`, so every `--provider s3`
   run died by SIGSEGV in the SDK's config lookup before sending a request;
