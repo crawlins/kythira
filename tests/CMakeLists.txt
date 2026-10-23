@@ -1588,6 +1588,29 @@ if(httplib_FOUND)
     set_tests_properties(multi_raft_driver_agreement_test PROPERTIES TIMEOUT 600)
 endif()
 
+# multi_raft_node's --persistence s3 options: the --s3-* parser, validation,
+# help text and engine preflight (.kiro/specs/multi-raft-node-s3-persistence/
+# task 2). Compiles the binary's config.cpp itself, which names no SDK, so it
+# runs in every build; only the help text's availability line depends on the
+# arm, and the test is told which way it went.
+if(httplib_FOUND)
+    add_raft_completion_test(multi_raft_node_s3_options_test multi_raft_node_s3_options_test.cpp)
+    target_sources(multi_raft_node_s3_options_test PRIVATE
+        "${CMAKE_SOURCE_DIR}/cmd/multi_raft_node/config.cpp")
+    target_include_directories(multi_raft_node_s3_options_test PRIVATE
+        "${CMAKE_SOURCE_DIR}/cmd/multi_raft_node")
+    target_link_libraries(multi_raft_node_s3_options_test PRIVATE
+        kythira_host_node_id httplib::httplib)
+    if(AWSSDK_FOUND AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE)
+        target_compile_definitions(multi_raft_node_s3_options_test PRIVATE
+            KYTHIRA_NODE_HAS_S3_PERSISTENCE)
+    endif()
+    set_tests_properties(multi_raft_node_s3_options_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;multi-raft;object-store;cli;aws"
+    )
+endif()
+
 add_test(NAME multi_raft_regression_tier
     COMMAND multi_raft_http_benchmark_test
             --run_test=multi_raft_http_benchmark/ci_regression_tier)

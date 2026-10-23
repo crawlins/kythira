@@ -147,6 +147,8 @@ migration_guide_example_test examples/ is added only when folly_FOUND (root CMak
 minimal_network_test uses Folly directly (`folly::Init`)
 missing_wrapper_functionality_unit_test uses Folly directly (`folly::init`, `folly::exception_wrapper`, `folly::Unit`)
 multi_raft_coap_test uses Folly directly (`folly::Init`)
+multi_raft_node_s3_process_test registered by cmd/multi_raft_node, which its CMakeLists.txt skips without folly_FOUND; it runs the multi_raft_node binary
+multi_raft_node_s3_store_test registered by cmd/multi_raft_node, which its CMakeLists.txt skips without folly_FOUND; it compiles that directory's s3_store.cpp
 multi_serializer_interop_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 multi_serializer_negotiation_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 negotiation_failure_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly

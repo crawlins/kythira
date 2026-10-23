@@ -16,6 +16,7 @@
 /// makes every comparison between two rows a comparison of two binaries.
 
 #include <raft/host_node_id.hpp>
+#include <raft/object_persistence_options.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -74,6 +75,60 @@ enum class persistence_mode : std::uint8_t {
     memory = 0,
     file_buffered = 1,
     file_barrier = 2,
+    /// Object-store engines over `aws_s3_client`, one per group
+    /// (`.kiro/specs/multi-raft-node-s3-persistence/`). Accepted by the parser
+    /// in every build; `main` refuses it when the arm is not compiled in.
+    s3 = 3,
+};
+
+/// `--s3-fencing`: which instantiation of the object engine a group gets.
+enum class s3_fencing : std::uint8_t {
+    none = 0,
+    cas = 1,
+};
+
+/// @brief Below this, `--election-timeout-min` under `--persistence s3` draws
+///        a warning (Requirement 8).
+///
+/// Measured S3 PUT p50 from GitHub runners is roughly 35 ms (arm64) to 160 ms
+/// (x64), with a longer p99 (object-store-batched-layout task 10, run
+/// 39727417123). A vote must be persisted before it is granted, so the default
+/// 150 ms minimum is about one round trip. A warning rather than a refusal:
+/// against a loopback LocalStack or MinIO a round trip is a millisecond and
+/// the short default is legitimate.
+inline constexpr std::chrono::milliseconds k_s3_min_election_timeout{1000};
+
+/// Everything `--persistence s3` takes. SDK-free, so the parser and its unit
+/// test build with every cloud gate off.
+struct s3_persistence_options {
+    /// The struct's defaults, except `hard_state = combined`: a new mode has
+    /// no `separate` buckets to stay compatible with, and `combined` makes
+    /// every term-and-vote write on the election path one PUT.
+    [[nodiscard]] static auto default_engine_options() -> kythira::object_persistence_options {
+        kythira::object_persistence_options engine;
+        engine.hard_state = kythira::hard_state_layout::combined;
+        return engine;
+    }
+
+    std::string bucket;
+    /// Trailing `/` stripped. The host appends `/nodes/<node>` itself.
+    std::string prefix;
+    /// Empty: the SDK region chain.
+    std::string region;
+    /// Empty: AWS. Otherwise validated and normalised by
+    /// `validate_s3_endpoint()`.
+    std::string endpoint;
+    std::chrono::milliseconds timeout{30000};
+    s3_fencing fencing{s3_fencing::cas};
+    /// The engine's own options. `hard_state` defaults to `combined` here
+    /// (Requirement 5.2); every other field keeps the struct's default.
+    kythira::object_persistence_options engine{default_engine_options()};
+    /// Every `--s3-*` flag given, in order, so a flag under another
+    /// persistence mode can be named rather than ignored (Requirement 3.5).
+    std::vector<std::string> flags_seen;
+    /// Non-fatal notes from validation (endpoint, ignored variables,
+    /// election timeout), printed by `main` on stderr.
+    std::vector<std::string> warnings;
 };
 
 /// Where the capacity plane's shared token comes from when no
@@ -145,6 +200,8 @@ struct node_options {
     wire_serializer _serializer{wire_serializer::json};
     persistence_mode _persistence{persistence_mode::memory};
     std::filesystem::path _data_dir{};
+    /// `--s3-*`; read only under `persistence_mode::s3`.
+    s3_persistence_options _s3{};
 
     std::size_t _executor_stripes{4};
 

@@ -585,6 +585,19 @@ jobs:
           scripts/backup-s3-localstack-cycle.sh \
             build/cmd/raft_object_backup/raft_object_backup http://localhost:4567
 
+      # multi_raft_node --persistence s3 against the same LocalStack
+      # (.kiro/specs/multi-raft-node-s3-persistence/ task 9): three hosts
+      # write, stop, restart and read every key back, once with group commit
+      # off and once on. The process test does this against the in-process
+      # mock; this is the check that a real implementation agrees with it on
+      # conditional writes and listings. Runs only if the step above found
+      # LocalStack healthy, so it never skips on an unhealthy service: that
+      # step has already failed the job.
+      - name: Run multi_raft_node's S3 cycle against LocalStack
+        if: matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
+        run: |
+          scripts/multi-raft-node-s3-localstack-cycle.sh build/multi_raft_node http://localhost:4567
+
       - name: Stop LocalStack S3
         if: always() && matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
         run: docker stop localstack-s3 || true

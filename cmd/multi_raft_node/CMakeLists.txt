@@ -95,21 +95,62 @@ else()
                    "(requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
 
-# The EC2 tag-scan discovery back-end, when the SDK is present
-# (.kiro/specs/multi-machine-placement/ task 8). OPTIONAL on purpose, and
-# guarded exactly as aws_ec2_quorum_manager is: a host built without the SDK
-# keeps every measured code path it has today and refuses only `--discovery
-# ec2-tag`, which no measured row uses. Requirement 3.4 makes the static list
-# the default for a row, so the SDK is never in a measured window's way.
-if(TARGET AWS::aws-sdk-cpp-ec2 OR AWSSDK_FOUND)
-    find_package(AWSSDK QUIET COMPONENTS core ec2)
-    if(AWSSDK_FOUND)
-        target_compile_definitions(multi_raft_node PRIVATE KYTHIRA_HAS_AWS_SDK)
-        target_link_libraries(multi_raft_node PRIVATE ${AWSSDK_LINK_LIBRARIES})
-        message(STATUS "multi_raft_node: EC2 tag-scan discovery enabled")
+# The AWS SDK, for two optional features that share one SDK lifetime in
+# main.cpp (.kiro/specs/multi-raft-node-s3-persistence/ Requirement 6):
+#
+#   * EC2 tag-scan discovery (.kiro/specs/multi-machine-placement/ task 8),
+#     whenever the SDK is found. A host built without the SDK keeps every
+#     measured code path and refuses only `--discovery ec2-tag`, which no
+#     measured row uses (Requirement 3.4 makes the static list the default).
+#   * `--persistence s3`, when the SDK is found AND CONFIG_AWS_S3_PERSISTENCE
+#     is on, the same two conditions raft_object_backup's S3 provider and the
+#     aws_s3_client tests use. Without them the parser still accepts `s3` and
+#     main refuses it naming the Kconfig switch (Requirement 7.2).
+#
+# ONE find_package with ONE component list built from what is enabled. Two
+# calls would not add up: AWSSDKConfig.cmake resets AWSSDK_LINK_LIBRARIES to
+# describe the latest request, so a second, narrower call would silently drop
+# the first one's libraries. In practice the call is a no-op, because the
+# top-level AWS_SDK block already found core, ec2, autoscaling, iam, s3 and sts
+# and the config file short-circuits once AWSSDK_FOUND is true; the list
+# states what this target needs, and the check below confirms the s3 library
+# really is in the variable rather than assuming it.
+set(_KYTHIRA_NODE_HAS_S3 FALSE)
+if(AWSSDK_FOUND)
+    set(_KYTHIRA_NODE_AWS_COMPONENTS core ec2)
+    if(_KYTHIRA_GATE_AWS_S3_PERSISTENCE)
+        list(APPEND _KYTHIRA_NODE_AWS_COMPONENTS s3)
+    endif()
+    find_package(AWSSDK QUIET COMPONENTS ${_KYTHIRA_NODE_AWS_COMPONENTS})
+endif()
+if(AWSSDK_FOUND)
+    target_compile_definitions(multi_raft_node PRIVATE KYTHIRA_HAS_AWS_SDK)
+    target_link_libraries(multi_raft_node PRIVATE ${AWSSDK_LINK_LIBRARIES})
+    message(STATUS "multi_raft_node: EC2 tag-scan discovery enabled")
+    if(_KYTHIRA_GATE_AWS_S3_PERSISTENCE)
+        list(FIND AWSSDK_LINK_LIBRARIES aws-cpp-sdk-s3 _KYTHIRA_NODE_S3_LIB)
+        if(_KYTHIRA_NODE_S3_LIB EQUAL -1)
+            message(FATAL_ERROR
+                "multi_raft_node: CONFIG_AWS_S3_PERSISTENCE=y but AWSSDK_LINK_LIBRARIES "
+                "(${AWSSDK_LINK_LIBRARIES}) does not name aws-cpp-sdk-s3")
+        endif()
+        # The engines over aws_s3_client are compiled in this one translation
+        # unit and reached through an interface (switchable_persistence.hpp's
+        # s3_group_store), so no run_*.cpp parses an SDK header. The macro is
+        # target-wide because config.cpp's help text and main.cpp's refusal
+        # both read it, and it costs the heavy units nothing: they test it
+        # nowhere.
+        target_sources(multi_raft_node PRIVATE s3_store.cpp)
+        set(_KYTHIRA_NODE_HAS_S3 TRUE)
+        target_compile_definitions(multi_raft_node PRIVATE KYTHIRA_NODE_HAS_S3_PERSISTENCE)
+        message(STATUS "multi_raft_node: --persistence s3 enabled")
+    else()
+        message(STATUS "multi_raft_node: --persistence s3 unavailable "
+                       "(CONFIG_AWS_S3_PERSISTENCE=n)")
     endif()
 else()
-    message(STATUS "multi_raft_node: no AWS SDK — --discovery ec2-tag unavailable")
+    message(STATUS "multi_raft_node: no AWS SDK — --discovery ec2-tag and --persistence s3 "
+                   "unavailable")
 endif()
 
 # The split alone is not the whole fix. Each run_*.cpp still measures
@@ -126,3 +167,73 @@ set_target_properties(multi_raft_node PROPERTIES
     JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+
+# ── --persistence s3 tests (.kiro/specs/multi-raft-node-s3-persistence/) ─────
+# Here rather than in tests/ because they need this target's sources, its
+# compile definitions and the built binary. The options unit test, which needs
+# none of those, is in tests/CMakeLists.txt and runs in every build.
+#
+# Requirement 10.6: the store, process and write-behind tests need no cloud
+# account and are registered only with the arm; the unavailable-arm test only
+# without it.
+if(TARGET Boost::unit_test_framework)
+    if(_KYTHIRA_NODE_HAS_S3)
+        # The S3 arm through the real aws_s3_client against the stateful mock:
+        # fencing, the durability class, staging and the barrier (tasks 6.2/6.3).
+        add_executable(multi_raft_node_s3_store_test
+            "${CMAKE_SOURCE_DIR}/tests/multi_raft_node_s3_store_test.cpp"
+            config.cpp
+            s3_store.cpp)
+        target_include_directories(multi_raft_node_s3_store_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/include"
+            "${CMAKE_SOURCE_DIR}/cmd/multi_raft_node"
+            "${CMAKE_SOURCE_DIR}/tests")
+        target_compile_definitions(multi_raft_node_s3_store_test PRIVATE
+            KYTHIRA_HAS_AWS_SDK KYTHIRA_NODE_HAS_S3_PERSISTENCE)
+        target_link_libraries(multi_raft_node_s3_store_test PRIVATE
+            Boost::unit_test_framework network_simulator boost_json httplib::httplib
+            kythira_host_node_id ${AWSSDK_LINK_LIBRARIES})
+        target_compile_features(multi_raft_node_s3_store_test PRIVATE cxx_std_23)
+        add_test(NAME multi_raft_node_s3_store_test COMMAND multi_raft_node_s3_store_test)
+        set_tests_properties(multi_raft_node_s3_store_test PROPERTIES
+            TIMEOUT 120
+            LABELS "unit;multi-raft;object-store;aws")
+
+        # Three hosts on the mock: restart, duplicate host, and group commit
+        # batching, crash and failed-flush cases (tasks 7.1 and 8).
+        add_executable(multi_raft_node_s3_process_test
+            "${CMAKE_SOURCE_DIR}/tests/multi_raft_node_s3_process_test.cpp")
+        target_include_directories(multi_raft_node_s3_process_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/include"
+            "${CMAKE_SOURCE_DIR}/cmd/multi_raft_bench_common"
+            "${CMAKE_SOURCE_DIR}/tests")
+        target_compile_definitions(multi_raft_node_s3_process_test PRIVATE
+            MULTI_RAFT_NODE_PATH="$<TARGET_FILE:multi_raft_node>")
+        # network_simulator for Folly's include flags and definitions:
+        # multi_raft_kv_workload.hpp, for the command encoders, reaches
+        # future.hpp, and glog refuses to be included without them.
+        target_link_libraries(multi_raft_node_s3_process_test PRIVATE
+            Boost::unit_test_framework network_simulator boost_json httplib::httplib
+            kythira_host_node_id)
+        target_compile_features(multi_raft_node_s3_process_test PRIVATE cxx_std_23)
+        add_dependencies(multi_raft_node_s3_process_test multi_raft_node)
+        add_test(NAME multi_raft_node_s3_process_test COMMAND multi_raft_node_s3_process_test)
+        set_tests_properties(multi_raft_node_s3_process_test PROPERTIES
+            TIMEOUT 900
+            LABELS "integration;multi-raft;object-store;aws")
+    else()
+        add_executable(multi_raft_node_s3_unavailable_test
+            "${CMAKE_SOURCE_DIR}/tests/multi_raft_node_s3_unavailable_test.cpp")
+        target_compile_definitions(multi_raft_node_s3_unavailable_test PRIVATE
+            MULTI_RAFT_NODE_PATH="$<TARGET_FILE:multi_raft_node>")
+        target_link_libraries(multi_raft_node_s3_unavailable_test PRIVATE
+            Boost::unit_test_framework)
+        target_compile_features(multi_raft_node_s3_unavailable_test PRIVATE cxx_std_23)
+        add_dependencies(multi_raft_node_s3_unavailable_test multi_raft_node)
+        add_test(NAME multi_raft_node_s3_unavailable_test
+            COMMAND multi_raft_node_s3_unavailable_test)
+        set_tests_properties(multi_raft_node_s3_unavailable_test PROPERTIES
+            TIMEOUT 60
+            LABELS "unit;multi-raft;cli")
+    endif()
+endif()
