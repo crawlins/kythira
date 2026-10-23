@@ -220,6 +220,7 @@ are the only place several refutations are written down in one paragraph.
 | `aws-asg-real-cloud-tests` | 0/12 | Written October 5, 2026 (`c18f9c1`). Real-cloud validation for `aws_asg_quorum_manager`: two throwaway-API-call probes first (ELB health-check type without a load balancer; egress without a public IP), an `asg-quorum-manager` IAM bundle, then a VPC/ASG fixture whose teardown lands before any case does. `tests/aws_asg_quorum_manager_real_test.cpp` does not exist yet. |
 | `disk-backed-build-cache` | 0/13 | Written October 15, 2026. Values move from RAM to a per-node, content-addressed chunk store, with the index in RAM, binary file-backed Raft state and snapshots that carry only the index (replicas fetch missing chunks from peers). Adds an HTTP front end with GET, HEAD, PUT and a WebDAV subset, so that sccache (WebDAV) and vcpkg (`http` binary source) can both use one self-hosted cluster of minimal containers. Gated on task 1, which records both clients' real HTTP behaviour and the OCI bucket's object sizes before the WebDAV subset is coded. Task 11 builds the full tree through sccache's WebDAV backend, cold then warm on two configurations, and holds it to the OCI cache's measured hit rates and Build times. |
 | `cairn-chaos-testing` | 0/14 | Written October 21, 2026, from Clark's Cairn × Kythira design doc. On-demand, AI-driven exploratory fault injection: Cairn v0.2.1, run unmodified, drives the `tests/docker_chaos/` cluster through a typed tool server, and every confirmed violation becomes an LLM-free replay plus a draft `ChaosCluster` test. M0 (tasks 1-8) needs no LLM and closes harness gaps found while writing the spec: `GET /log/<i>` is a 404 stub, `/status` lacks `leader_id` and membership, there are no read, CAS or membership endpoints, and `assert_no_split_brain()` only samples. No open PR. |
+| `multi-raft-transactions` | 0/17 | Written October 23, 2026, at Clark's request. Opt-in atomic multi-key writes across shards with the isolation level chosen per transaction: a `transactional_state_machine` wrapper (lock table and Percolator-style primary-key transaction records inside the state machine, so snapshots and split/absorb carry them) and a stateless coordinator. Tier 1 (tasks 1-9) is read committed, with or without waiting on locks, and needs no clocks. Tier 2 (10-15) adds a Raft-replicated timestamp oracle and a multi-version Redis KV for snapshot isolation. Tier 3 (16-17) is serializable. Unwrapped hosts, including the build cache gateway, are unchanged. |
 
 This table was **empty on October 4, 2026, which undercounted it**: the
 re-check that emptied it moved the two stale rows out but did not add the
@@ -422,8 +423,9 @@ unverified completion claim.
     name) are never replicated to. The `mtls-node1`/`mtls-node2` services in
     `docker/ca-provisioning-compose.yml` stay illustrative.
   - **Deliberately deferred multi-raft features** (`multi-raft` tasks.md
-    ~758, design Phase 9): cross-shard transactions, TiKV-style buckets as a
-    load signal, and cross-group message batching. Optional.
+    ~758, design Phase 9): TiKV-style buckets as a load signal and
+    cross-group message batching. Optional. Cross-shard transactions now
+    have their own spec, `multi-raft-transactions` (October 23, 2026).
   - **NodeId tag-scan race, pool managers only** (`alibaba-cloud-services`
     tasks.md ~302 and its sibling cloud specs): a deposed leader finishing a
     provision and its successor can pick the same numeric id. Leader-side
