@@ -3,14 +3,17 @@
 
 /// @file azure_key_vault_ca_provider_real_test.cpp
 /// @brief Real-Azure integration tests for `azure_key_vault_ca_provider`.
-///        Signs against a real, pre-provisioned Key Vault RSA key.
+///        Signs against real, pre-provisioned Key Vault keys: the RSA key
+///        (RS256 and PS256) and, when configured, a P-256 key (ES256) and a
+///        P-384 key (ES384).
 ///
 /// Unlike `azure_quorum_manager_real_test.cpp`'s fixture, this file creates or
 /// deletes no Key Vault resources at all (design.md's "Integration test
 /// fixture" section: Key Vault's soft-delete-by-default and optional
 /// purge-protection make automated per-run vault lifecycle management
-/// unsuitable) — operators pre-provision one vault + RSA key and supply its
-/// coordinates via env vars, reused across every run.
+/// unsuitable) — operators pre-provision one vault, its keys and their CA
+/// certificates, and supply the coordinates via env vars, reused across every
+/// run. scripts/ci-cloud-credentials/azure/README.md has the commands.
 ///
 /// Compiled only when `KYTHIRA_AZURE_REAL_TESTS` is defined; only registered
 /// as a CTest case when the CMake option of the same name is `ON` (see
@@ -77,10 +80,15 @@ auto env_opt(const char* name) -> std::optional<std::string> {
 /// the same "skip the whole suite gracefully" spirit as
 /// AzureIntegrationFixture's credential preflight, just per-case here since
 /// this file has no shared fixture object.
-auto make_real_config() -> std::optional<raft::testing::azure_key_vault_ca_provider_config> {
+///
+/// @p key_env and @p cert_env name the key and the CA certificate file for
+/// one key; the vault URL is shared.
+auto make_real_config(const char* key_env, const char* cert_env,
+                      raft::testing::azure_key_vault_signing_algorithm algorithm)
+    -> std::optional<raft::testing::azure_key_vault_ca_provider_config> {
     auto vault_url = env_opt("AZURE_TEST_KEY_VAULT_URL");
-    auto key_name = env_opt("AZURE_TEST_KEY_VAULT_KEY_NAME");
-    auto ca_cert_pem_path = env_opt("AZURE_TEST_KEY_VAULT_CA_CERT_FILE");
+    auto key_name = env_opt(key_env);
+    auto ca_cert_pem_path = env_opt(cert_env);
     if (!vault_url || !key_name || !ca_cert_pem_path) {
         return std::nullopt;
     }
@@ -104,23 +112,23 @@ auto make_real_config() -> std::optional<raft::testing::azure_key_vault_ca_provi
     cfg.vault_url = *vault_url;
     cfg.key_name = *key_name;
     cfg.ca_certificate_pem = pem;
+    cfg.signing_algorithm = algorithm;
     return cfg;
 }
 
-}  // namespace
+/// The RSA key every run has had since the bundle existed.
+auto make_rsa_config(raft::testing::azure_key_vault_signing_algorithm algorithm) {
+    return make_real_config("AZURE_TEST_KEY_VAULT_KEY_NAME", "AZURE_TEST_KEY_VAULT_CA_CERT_FILE",
+                            algorithm);
+}
 
-BOOST_AUTO_TEST_SUITE(azure_key_vault_ca_provider_real)
-
-BOOST_AUTO_TEST_CASE(sign_csr_against_real_vault, *boost::unit_test::timeout(600)) {
-    auto cfg = make_real_config();
-    if (!cfg) {
-        BOOST_TEST_MESSAGE(
-            "Skipping: AZURE_TEST_KEY_VAULT_URL/AZURE_TEST_KEY_VAULT_KEY_NAME/"
-            "AZURE_TEST_KEY_VAULT_CA_CERT_FILE not fully set");
-        return;
-    }
-
-    raft::testing::azure_key_vault_ca_provider provider{*cfg};
+/// Signs a fresh CSR through the vault and checks the issued leaf: it carries
+/// @p expected_signature_nid as its signature algorithm and verifies against
+/// the CA certificate's public key, so a signature made with the wrong key,
+/// hash or padding fails here rather than only at a peer's handshake.
+auto sign_and_verify(const raft::testing::azure_key_vault_ca_provider_config& cfg,
+                     int expected_signature_nid) -> void {
+    raft::testing::azure_key_vault_ca_provider provider{cfg};
 
     auto csr = raft::testing::generate_key_and_csr(
         {.subject = {.common_name = "leaf.example.com"}, .dns_names = {"leaf.example.com"}});
@@ -136,9 +144,10 @@ BOOST_AUTO_TEST_CASE(sign_csr_against_real_vault, *boost::unit_test::timeout(600
     X509* leaf = PEM_read_bio_X509(leaf_bio, nullptr, nullptr, nullptr);
     BIO_free(leaf_bio);
     BOOST_REQUIRE(leaf != nullptr);
+    BOOST_CHECK_EQUAL(X509_get_signature_nid(leaf), expected_signature_nid);
 
-    BIO* ca_bio = BIO_new_mem_buf(cfg->ca_certificate_pem.data(),
-                                  static_cast<int>(cfg->ca_certificate_pem.size()));
+    BIO* ca_bio = BIO_new_mem_buf(cfg.ca_certificate_pem.data(),
+                                  static_cast<int>(cfg.ca_certificate_pem.size()));
     X509* ca_cert = PEM_read_bio_X509(ca_bio, nullptr, nullptr, nullptr);
     BIO_free(ca_bio);
     BOOST_REQUIRE(ca_cert != nullptr);
@@ -151,6 +160,66 @@ BOOST_AUTO_TEST_CASE(sign_csr_against_real_vault, *boost::unit_test::timeout(600
     X509_free(leaf);
 
     BOOST_CHECK_EQUAL(verify_result, 1);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(azure_key_vault_ca_provider_real)
+
+using raft::testing::azure_key_vault_signing_algorithm;
+
+BOOST_AUTO_TEST_CASE(sign_csr_against_real_vault, *boost::unit_test::timeout(600)) {
+    auto cfg = make_rsa_config(azure_key_vault_signing_algorithm::rs256);
+    if (!cfg) {
+        BOOST_TEST_MESSAGE(
+            "Skipping: AZURE_TEST_KEY_VAULT_URL/AZURE_TEST_KEY_VAULT_KEY_NAME/"
+            "AZURE_TEST_KEY_VAULT_CA_CERT_FILE not fully set");
+        return;
+    }
+    sign_and_verify(*cfg, NID_sha256WithRSAEncryption);
+}
+
+// RSA-PSS over the same RSA key: Key Vault computes the padding with MGF1-SHA-256
+// and a 32-byte salt, and the leaf's AlgorithmIdentifier must say exactly that
+// for X509_verify to accept it.
+BOOST_AUTO_TEST_CASE(sign_csr_ps256_against_real_vault, *boost::unit_test::timeout(600)) {
+    auto cfg = make_rsa_config(azure_key_vault_signing_algorithm::ps256);
+    if (!cfg) {
+        BOOST_TEST_MESSAGE(
+            "Skipping: AZURE_TEST_KEY_VAULT_URL/AZURE_TEST_KEY_VAULT_KEY_NAME/"
+            "AZURE_TEST_KEY_VAULT_CA_CERT_FILE not fully set");
+        return;
+    }
+    sign_and_verify(*cfg, NID_rsassaPss);
+}
+
+// ECDSA: Key Vault returns r||s, and sign_csr re-encodes it as the DER
+// ECDSA-Sig-Value a certificate carries. Each ES algorithm is tied to one
+// curve, so each needs its own key.
+BOOST_AUTO_TEST_CASE(sign_csr_es256_against_real_vault, *boost::unit_test::timeout(600)) {
+    auto cfg = make_real_config("AZURE_TEST_KEY_VAULT_EC256_KEY_NAME",
+                                "AZURE_TEST_KEY_VAULT_EC256_CA_CERT_FILE",
+                                azure_key_vault_signing_algorithm::es256);
+    if (!cfg) {
+        BOOST_TEST_MESSAGE(
+            "Skipping: AZURE_TEST_KEY_VAULT_URL/AZURE_TEST_KEY_VAULT_EC256_KEY_NAME/"
+            "AZURE_TEST_KEY_VAULT_EC256_CA_CERT_FILE not fully set");
+        return;
+    }
+    sign_and_verify(*cfg, NID_ecdsa_with_SHA256);
+}
+
+BOOST_AUTO_TEST_CASE(sign_csr_es384_against_real_vault, *boost::unit_test::timeout(600)) {
+    auto cfg = make_real_config("AZURE_TEST_KEY_VAULT_EC384_KEY_NAME",
+                                "AZURE_TEST_KEY_VAULT_EC384_CA_CERT_FILE",
+                                azure_key_vault_signing_algorithm::es384);
+    if (!cfg) {
+        BOOST_TEST_MESSAGE(
+            "Skipping: AZURE_TEST_KEY_VAULT_URL/AZURE_TEST_KEY_VAULT_EC384_KEY_NAME/"
+            "AZURE_TEST_KEY_VAULT_EC384_CA_CERT_FILE not fully set");
+        return;
+    }
+    sign_and_verify(*cfg, NID_ecdsa_with_SHA384);
 }
 
 #ifdef FIU_ENABLE
