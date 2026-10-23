@@ -1959,10 +1959,10 @@ BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_te
 
 // The live half of the numeric-mode id claim (#543), whose collision branch
 // was otherwise only mock-tested. Another launch already holds node id 1's
-// ClientToken, with different parameters, the way a deposed leader's
-// provision would. EC2 must refuse the manager's launch of id 1 with
-// IdempotentParameterMismatch, and the manager must move on to id 2 without
-// touching the holder.
+// ClientToken in another AZ's subnet, the way a deposed leader's provision
+// would. EC2 dedupes a token only within one AZ, so it would launch a second
+// id 1 here (run 39871773330 did); the manager must find the holder by its
+// token, move on to id 2, and leave the holder alone.
 //
 // The holder carries the cluster tag, so teardown terminates it, but no
 // kythira:node-id tag, so the manager's allocator still offers id 1 first.

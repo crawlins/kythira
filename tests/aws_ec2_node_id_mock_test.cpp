@@ -33,11 +33,13 @@
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "ordered_global_fixtures.hpp"
@@ -103,6 +105,8 @@ struct fake_instance {
     std::string user_data{};  // decoded
     std::string asg{};        // owning group, if launched by one
     bool protected_from_scale_in{false};
+    std::string subnet{};        // SubnetId it was launched into
+    std::string client_token{};  // RunInstances ClientToken it was launched with
 };
 
 /// Query-protocol params: `Name=value&...` from the form body.
@@ -162,11 +166,14 @@ struct fake_aws {
     std::map<std::string, fake_instance> instances;  // ordered: stable pages
     std::map<std::string, int> asg_desired;          // group name -> desired capacity
     std::vector<std::map<std::string, std::string>> run_requests;
-    struct token_record {
-        std::string instance_id;
-        std::string subnet;
-    };
-    std::map<std::string, token_record> client_tokens;  // RunInstances ClientToken
+    // RunInstances ClientToken claims, keyed by token and Availability Zone:
+    // a launch that names a subnet gets zonal idempotency, so EC2 only
+    // dedupes a token within the subnet's AZ. Every subnet here is in its
+    // own AZ except subnet-1b, which shares subnet-1's.
+    std::map<std::pair<std::string, std::string>, std::string> client_tokens;  // -> instance id
+    // Runs inside RunInstances once a new instance exists, before the reply:
+    // stands in for another leader's launch landing in the same moment.
+    std::function<void()> after_launch;
     std::vector<std::string> actions;
     std::size_t page_size{2};
     int ip_counter{10};
@@ -213,6 +220,29 @@ struct fake_aws {
     auto set_state(const std::string& id, const std::string& state) -> void {
         std::lock_guard lock(mu);
         instances.at(id).state = state;
+    }
+
+    static auto az_of(const std::string& subnet) -> std::string {
+        return subnet == "subnet-1b" ? "subnet-1" : subnet;
+    }
+
+    /// An instance that another launch made with @p token, in `inst.subnet`.
+    auto hold(const std::string& token, fake_instance inst) -> void {
+        std::lock_guard lock(mu);
+        hold_locked(token, std::move(inst));
+    }
+
+    /// hold() for an after_launch hook, which already runs under `mu`. The
+    /// holder gets the cluster tag of ec2_config(), as a manager's launch
+    /// would, but no kythira:node-id unless `inst` brings one.
+    auto hold_locked(const std::string& token, fake_instance inst) -> void {
+        inst.tags.try_emplace("kythira:cluster", "ids");
+        if (inst.private_ip.empty()) {
+            inst.private_ip = "10.0.0." + std::to_string(ip_counter++);
+        }
+        inst.client_token = token;
+        client_tokens[{token, az_of(inst.subnet)}] = inst.id;
+        instances[inst.id] = std::move(inst);
     }
 
     auto count(const std::string& action) -> std::size_t {
@@ -284,7 +314,8 @@ private:
         std::string x = "<item><instanceId>" + inst.id + "</instanceId><instanceState><code>" +
                         std::to_string(state_code(inst.state)) + "</code><name>" + inst.state +
                         "</name></instanceState><privateIpAddress>" + inst.private_ip +
-                        "</privateIpAddress><tagSet>";
+                        "</privateIpAddress><subnetId>" + inst.subnet + "</subnetId><clientToken>" +
+                        inst.client_token + "</clientToken><tagSet>";
         for (const auto& [k, v] : inst.tags) {
             x +=
                 "<item><key>" + xml_escape(k) + "</key><value>" + xml_escape(v) + "</value></item>";
@@ -335,16 +366,19 @@ private:
         const auto& action = p["Action"];
         if (action == "RunInstances") {
             run_requests.push_back(p);
-            // EC2's ClientToken idempotency: a repeated token returns the
-            // first launch's instance when the parameters match, and fails
+            // EC2's ClientToken idempotency, per AZ: a repeated token returns
+            // the first launch's instance when the parameters match, and fails
             // when they differ or that instance has terminated.
-            if (auto tok = p.find("ClientToken"); tok != p.end()) {
-                if (auto seen = client_tokens.find(tok->second); seen != client_tokens.end()) {
-                    const auto& first = instances.at(seen->second.instance_id);
+            const auto subnet = p["SubnetId"];
+            const auto tok = p.find("ClientToken");
+            if (tok != p.end()) {
+                if (auto seen = client_tokens.find({tok->second, az_of(subnet)});
+                    seen != client_tokens.end()) {
+                    const auto& first = instances.at(seen->second);
                     std::string code;
                     if (first.state == "terminated") {
                         code = "IdempotentInstanceTerminated";
-                    } else if (seen->second.subnet != p["SubnetId"]) {
+                    } else if (first.subnet != subnet) {
                         code = "IdempotentParameterMismatch";
                     }
                     if (!code.empty()) {
@@ -362,8 +396,10 @@ private:
                 }
             }
             auto& inst = launch("");
-            if (auto tok = p.find("ClientToken"); tok != p.end()) {
-                client_tokens[tok->second] = {.instance_id = inst.id, .subnet = p["SubnetId"]};
+            inst.subnet = subnet;
+            if (tok != p.end()) {
+                inst.client_token = tok->second;
+                client_tokens[{tok->second, az_of(subnet)}] = inst.id;
             }
             for (int t = 1;; ++t) {
                 auto k = p.find("TagSpecification.1.Tag." + std::to_string(t) + ".Key");
@@ -377,9 +413,14 @@ private:
                 inst.user_data.assign(reinterpret_cast<const char*>(bytes.GetUnderlyingData()),
                                       bytes.GetLength());
             }
-            ec2_reply(res, action,
-                      "<reservationId>r-1</reservationId><instancesSet>" + instance_xml(inst) +
-                          "</instancesSet>");
+            const std::string reply = instance_xml(inst);
+            if (after_launch) {
+                // Runs under `mu`: the hook uses hold_locked(), not hold().
+                std::exchange(after_launch, nullptr)();
+            }
+            ec2_reply(
+                res, action,
+                "<reservationId>r-1</reservationId><instancesSet>" + reply + "</instancesSet>");
         } else if (action == "DescribeInstances") {
             std::vector<const fake_instance*> hits;
             for (const auto& [id, inst] : instances) {
@@ -791,31 +832,84 @@ BOOST_AUTO_TEST_CASE(numeric_launch_carries_a_token_derived_from_cluster_and_id)
     BOOST_CHECK_LE(numeric_ec2::launch_client_token(std::string(300, 'c'), 1).size(), 64u);
 }
 
-// The other leader launched id 1 into another subnet; its instance is not
-// listed yet (no tags visible), so this manager picks 1 too. EC2 refuses the
-// reused token and the manager moves on to 2.
+// The other leader launched id 1 into another subnet of the same AZ; its
+// instance is not listed yet (no tags visible), so this manager picks 1 too.
+// EC2 refuses the reused token and the manager moves on to 2.
 BOOST_AUTO_TEST_CASE(an_id_launched_elsewhere_with_other_parameters_is_skipped) {
     fake_aws fake;
-    fake.add_instance({.id = "i-0aaaaaaaaaaaaaaa1"});
-    fake.client_tokens[numeric_ec2::launch_client_token("ids", 1)] = {
-        .instance_id = "i-0aaaaaaaaaaaaaaa1", .subnet = "subnet-2"};
+    fake.hold(numeric_ec2::launch_client_token("ids", 1),
+              {.id = "i-0aaaaaaaaaaaaaaa1", .subnet = "subnet-1b"});
     fake.next_ids.push_back("i-f0123456789abcdef");
     numeric_ec2 mgr{ec2_config(fake)};
 
     auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
     BOOST_CHECK_EQUAL(peer.node_id, 2u);
-    BOOST_CHECK_EQUAL(fake.count("RunInstances"), 2u);
     BOOST_CHECK_EQUAL(fake.get("i-0aaaaaaaaaaaaaaa1").state, "running");
     BOOST_CHECK_EQUAL(fake.get("i-f0123456789abcdef").tags["kythira:node-id"], "2");
+}
+
+// The same, with the other launch in another AZ: EC2 dedupes a token only
+// within one AZ and would launch a second id 1 (run 39871773330 did, live).
+// The manager finds the holder by its token first and never sends the launch.
+BOOST_AUTO_TEST_CASE(an_id_launched_in_another_az_is_skipped) {
+    fake_aws fake;
+    fake.hold(numeric_ec2::launch_client_token("ids", 1),
+              {.id = "i-0aaaaaaaaaaaaaaa1", .subnet = "subnet-2"});
+    fake.next_ids.push_back("i-f0123456789abcdef");
+    numeric_ec2 mgr{ec2_config(fake)};
+
+    auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+    BOOST_REQUIRE_EQUAL(fake.run_requests.size(), 1u);
+    BOOST_CHECK_EQUAL(fake.run_requests[0]["ClientToken"],
+                      numeric_ec2::launch_client_token("ids", 2));
+    BOOST_CHECK_EQUAL(fake.get("i-0aaaaaaaaaaaaaaa1").state, "running");
+    BOOST_CHECK_EQUAL(fake.get("i-f0123456789abcdef").tags["kythira:node-id"], "2");
+}
+
+// Two leaders pass the token check together and launch id 1 in different
+// AZs; both zonal claims succeed. The lower instance id keeps the id, so this
+// manager, whose instance sorts higher, terminates its own and takes 2.
+BOOST_AUTO_TEST_CASE(a_concurrent_launch_in_another_az_with_a_lower_instance_wins) {
+    fake_aws fake;
+    fake.next_ids = {"i-f0123456789abcdef", "i-f0123456789abcde2"};
+    fake.after_launch = [&fake] {
+        fake.hold_locked(numeric_ec2::launch_client_token("ids", 1),
+                         {.id = "i-0aaaaaaaaaaaaaaa1", .subnet = "subnet-2"});
+    };
+    numeric_ec2 mgr{ec2_config(fake)};
+
+    auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+    BOOST_CHECK_EQUAL(fake.get("i-f0123456789abcdef").state, "terminated");
+    BOOST_CHECK_EQUAL(fake.get("i-0aaaaaaaaaaaaaaa1").state, "running");
+    BOOST_CHECK_EQUAL(fake.get("i-f0123456789abcde2").tags["kythira:node-id"], "2");
+}
+
+// The mirror image: the concurrent launch's instance sorts higher, so this
+// manager keeps id 1 and leaves the other launch for its own leader to undo.
+BOOST_AUTO_TEST_CASE(a_concurrent_launch_in_another_az_with_a_higher_instance_loses) {
+    fake_aws fake;
+    fake.next_ids.push_back("i-0aaaaaaaaaaaaaaa1");
+    fake.after_launch = [&fake] {
+        fake.hold_locked(numeric_ec2::launch_client_token("ids", 1),
+                         {.id = "i-f0123456789abcdef", .subnet = "subnet-2"});
+    };
+    numeric_ec2 mgr{ec2_config(fake)};
+
+    auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
+    BOOST_CHECK_EQUAL(peer.node_id, 1u);
+    BOOST_CHECK_EQUAL(fake.count("RunInstances"), 1u);
+    BOOST_CHECK_EQUAL(fake.count("TerminateInstances"), 0u);
+    BOOST_CHECK_EQUAL(fake.get("i-0aaaaaaaaaaaaaaa1").state, "running");
 }
 
 // Same parameters: EC2 hands back the other launch's instance, so the two
 // leaders hold one node 1 between them rather than two.
 BOOST_AUTO_TEST_CASE(an_id_launched_elsewhere_with_the_same_parameters_is_one_node) {
     fake_aws fake;
-    fake.add_instance({.id = "i-0aaaaaaaaaaaaaaa1"});
-    fake.client_tokens[numeric_ec2::launch_client_token("ids", 1)] = {
-        .instance_id = "i-0aaaaaaaaaaaaaaa1", .subnet = "subnet-1"};
+    fake.hold(numeric_ec2::launch_client_token("ids", 1),
+              {.id = "i-0aaaaaaaaaaaaaaa1", .subnet = "subnet-1"});
     numeric_ec2 mgr{ec2_config(fake)};
 
     auto peer = std::move(mgr.provision_node("AZ1", std::nullopt)).get();
@@ -826,9 +920,8 @@ BOOST_AUTO_TEST_CASE(an_id_launched_elsewhere_with_the_same_parameters_is_one_no
 
 BOOST_AUTO_TEST_CASE(an_id_whose_launch_has_terminated_is_skipped) {
     fake_aws fake;
-    fake.add_instance({.id = "i-0aaaaaaaaaaaaaaa1", .state = "terminated"});
-    fake.client_tokens[numeric_ec2::launch_client_token("ids", 1)] = {
-        .instance_id = "i-0aaaaaaaaaaaaaaa1", .subnet = "subnet-1"};
+    fake.hold(numeric_ec2::launch_client_token("ids", 1),
+              {.id = "i-0aaaaaaaaaaaaaaa1", .state = "terminated", .subnet = "subnet-1"});
     fake.next_ids.push_back("i-f0123456789abcdef");
     numeric_ec2 mgr{ec2_config(fake)};
 
@@ -838,14 +931,12 @@ BOOST_AUTO_TEST_CASE(an_id_whose_launch_has_terminated_is_skipped) {
 BOOST_AUTO_TEST_CASE(numeric_mode_gives_up_after_repeated_collisions) {
     fake_aws fake;
     for (std::uint64_t id = 1; id <= numeric_ec2::max_id_claim_attempts; ++id) {
-        const auto inst = "i-0aaaaaaaaaaaaaaa" + std::to_string(id);
-        fake.add_instance({.id = inst});
-        fake.client_tokens[numeric_ec2::launch_client_token("ids", id)] = {.instance_id = inst,
-                                                                           .subnet = "subnet-2"};
+        fake.hold(numeric_ec2::launch_client_token("ids", id),
+                  {.id = "i-0aaaaaaaaaaaaaaa" + std::to_string(id), .subnet = "subnet-1b"});
     }
     numeric_ec2 mgr{ec2_config(fake)};
     BOOST_CHECK_THROW(std::move(mgr.provision_node("AZ1", std::nullopt)).get(), std::exception);
-    BOOST_CHECK_EQUAL(fake.count("RunInstances"), numeric_ec2::max_id_claim_attempts);
+    BOOST_CHECK_EQUAL(fake.count("RunInstances"), 0u);
 }
 
 BOOST_AUTO_TEST_CASE(numeric_mode_refuses_to_wrap_a_narrow_id) {

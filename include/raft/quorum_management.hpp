@@ -174,7 +174,10 @@ struct desired_topology {
 /// the id at create time where the platform can arbitrate: the Docker and Azure
 /// VM managers create under a name that embeds the id and that the platform
 /// refuses to reuse, and the EC2 manager launches with a ClientToken derived
-/// from the cluster and the id. A refused claim moves on to the next id, and
+/// from the cluster and the id. EC2 dedupes that token only within one
+/// Availability Zone, so the EC2 manager also looks the token up across the
+/// region before and after its launch (see `aws_ec2_quorum_manager`). A
+/// refused claim moves on to the next id, and
 /// the resource that holds the claimed name is never modified or deleted. The
 /// pool-based managers (ASG, VMSS, OCI instance pool, Alibaba ESS) tag an
 /// instance the pool launched and have no such arbiter, so a short window
