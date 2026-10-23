@@ -78,6 +78,7 @@
 #include <arpa/inet.h>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -1170,28 +1171,72 @@ struct RealEc2Fixture : signal_cleanup_target {
 
     // Executes a command over SSH through the bastion using libssh2.
     // The private key is held in the ssh_private_key_pem string — never in a file.
+    //
+    // The TCP connect, SSH handshake and key auth are retried together for
+    // up to three minutes. The fixture only waits for the bastion to reach
+    // `running`, which comes before sshd is serving: early in boot a connect
+    // is refused, or is accepted and then dropped when cloud-init restarts
+    // sshd with fresh host keys (and auth can fail until cloud-init has
+    // installed the key for ec2-user). Either way the handshake failed with
+    // LIBSSH2_ERROR_SOCKET_RECV (-43), which failed process_crash_via_ssh_kill
+    // on 2026-10-03 and twice on 2026-10-23 (runs 39871773330, 39952064272).
+    // The connect's result used to be ignored, so a refused connect also
+    // surfaced as -43 from the handshake. Every libssh2 call is bounded by a
+    // session timeout, so a stalled bastion cannot hang the case.
     auto ssh_execute(const std::string& target_private_ip, const std::string& cmd) -> std::string {
-        // Connect TCP to bastion.
-        struct addrinfo hints{}, *res{};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        int rc = getaddrinfo(bastion_public_ip.c_str(), "22", &hints, &res);
-        if (rc != 0) {
-            throw std::runtime_error("getaddrinfo failed: " + std::string(gai_strerror(rc)));
+        constexpr auto handshake_budget = std::chrono::minutes{3};
+        constexpr long session_timeout_ms = 5L * 60 * 1000;
+        const auto deadline = std::chrono::steady_clock::now() + handshake_budget;
+        int sock = -1;
+        LIBSSH2_SESSION* session = nullptr;
+        std::string last_failure;
+        int attempts = 0;
+        while (true) {
+            ++attempts;
+            struct addrinfo hints{}, *res{};
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            int rc = getaddrinfo(bastion_public_ip.c_str(), "22", &hints, &res);
+            if (rc != 0) {
+                throw std::runtime_error("getaddrinfo failed: " + std::string(gai_strerror(rc)));
+            }
+            sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+            rc = ::connect(sock, res->ai_addr, res->ai_addrlen);
+            const int connect_errno = errno;
+            freeaddrinfo(res);
+            if (rc == 0) {
+                session = libssh2_session_init();
+                BOOST_REQUIRE(session != nullptr);
+                libssh2_session_set_timeout(session, session_timeout_ms);
+                rc = libssh2_session_handshake(session, sock);
+                if (rc >= 0) {
+                    rc = libssh2_userauth_publickey_frommemory(session, "ec2-user", 8, nullptr, 0,
+                                                               ssh_private_key_pem.c_str(),
+                                                               ssh_private_key_pem.size(), nullptr);
+                    if (rc == 0) {
+                        break;
+                    }
+                    last_failure = "SSH auth failed, rc=" + std::to_string(rc);
+                } else {
+                    last_failure = "SSH handshake failed, rc=" + std::to_string(rc);
+                }
+                libssh2_session_free(session);
+                session = nullptr;
+            } else {
+                last_failure = std::string("connect failed: ") + std::strerror(connect_errno);
+            }
+            close(sock);
+            sock = -1;
+            BOOST_REQUIRE_MESSAGE(std::chrono::steady_clock::now() < deadline,
+                                  "bastion " + bastion_public_ip + ":22 not serving SSH after " +
+                                      std::to_string(attempts) +
+                                      " attempts; last: " + last_failure);
+            std::this_thread::sleep_for(std::chrono::seconds{5});
         }
-        int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-        (void)::connect(sock, res->ai_addr, res->ai_addrlen);
-        freeaddrinfo(res);
-
-        LIBSSH2_SESSION* session = libssh2_session_init();
-        BOOST_REQUIRE(session != nullptr);
-        BOOST_REQUIRE_GE(libssh2_session_handshake(session, sock), 0);
-
-        // Authenticate with in-memory PEM.
-        rc = libssh2_userauth_publickey_frommemory(session, "ec2-user", 8, nullptr, 0,
-                                                   ssh_private_key_pem.c_str(),
-                                                   ssh_private_key_pem.size(), nullptr);
-        BOOST_REQUIRE_MESSAGE(rc == 0, "SSH auth failed, rc=" + std::to_string(rc));
+        if (attempts > 1) {
+            BOOST_TEST_MESSAGE("bastion SSH up after "
+                               << attempts << " attempts; last failure: " << last_failure);
+        }
 
         // Build SSH command: either direct (on bastion) or proxied to private host.
         std::string full_cmd = cmd;
