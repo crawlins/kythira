@@ -33,6 +33,8 @@
 
 #ifdef KYTHIRA_BACKUP_PROVIDER_S3
 #include <raft/aws_s3_client.hpp>
+
+#include <aws/core/Aws.h>
 #endif
 #ifdef KYTHIRA_BACKUP_PROVIDER_AZURE
 #include <raft/azure_blob_client.hpp>
@@ -212,6 +214,18 @@ auto report(const kythira::env_config_result<Config>& result, std::string_view p
 auto run_for_provider(const kythira::backup_cli_args& args) -> int {
 #ifdef KYTHIRA_BACKUP_PROVIDER_S3
     if (args.provider == "s3") {
+        // aws_s3_client leaves Aws::InitAPI to its caller. Without it the
+        // first SDK call (the client config's profile lookup) dereferences an
+        // uninitialised config cache and the process dies by SIGSEGV, which
+        // is what `--provider s3` did on every run until a process test first
+        // exercised it. The client is destroyed inside run_with_client, so the
+        // guard shuts the SDK down after it.
+        Aws::SDKOptions sdk_options;
+        Aws::InitAPI(sdk_options);
+        struct sdk_guard {
+            Aws::SDKOptions& options;
+            ~sdk_guard() { Aws::ShutdownAPI(options); }
+        } guard{sdk_options};
         return run_with_client<kythira::aws_s3_client>(kythira::aws_client_config{}, "Amazon S3",
                                                        {}, args);
     }
