@@ -100,6 +100,14 @@ The script prints the exact `gh variable set` commands to run — set
   variables) and a repository secret holding the CA certificate PEM,
   written to a file the workflow points
   `AZURE_TEST_KEY_VAULT_CA_CERT_FILE` at — `key-vault` bundle.
+- `AZURE_TEST_KEY_VAULT_EC256_KEY_NAME` / `AZURE_TEST_KEY_VAULT_EC384_KEY_NAME`
+  (repository variables) and the secrets
+  `AZURE_TEST_KEY_VAULT_EC256_CA_CERT_PEM` /
+  `AZURE_TEST_KEY_VAULT_EC384_CA_CERT_PEM` — the P-256 and P-384 keys behind
+  the `key-vault` bundle's ES256/ES384 cases, which skip without them.
+  `provision-key-vault-ec-keys.sh` creates both keys with self-signed
+  certificates in the vault `AZURE_TEST_KEY_VAULT_URL` names and writes all
+  four settings; it is safe to re-run.
 
 ## Token scopes and the five-minute client assertion
 
