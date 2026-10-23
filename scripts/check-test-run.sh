@@ -417,6 +417,29 @@ if [[ -n "$RETRY_RESCUED" ]]; then
         printf '%s\n' "${ALLOWED_LINES[@]}"
     fi
 
+    # One annotation per test, naming it. Annotations are readable through
+    # the check-runs API, unlike the raw log and the job summary, so a survey
+    # of which tests flake across many runs needs no log download. GitHub
+    # keeps at most 10 warnings and 10 notices per step; past that, the log
+    # and summary below still list every test.
+    annotate() {
+        local level="$1" title="$2" l="$3" name status secs
+        name="$(printf '%s\n' "$l" | sed -E 's/^ *([0-9]+\/[0-9]+ +)?Test +#[0-9]+: +([^ ]+).*/\2/')"
+        status="$(printf '%s\n' "$l" | sed -nE 's/.*\*\*\*([A-Za-z ]+[A-Za-z]).*/\1/p')"
+        secs="$(printf '%s\n' "$l" | sed -nE 's/.* ([0-9.]+) sec.*/\1/p')"
+        echo "::${level} title=${title}::${name} failed its first attempt (${status:-?}, ${secs:-?} s) and passed on retry"
+    }
+    if [[ "$N_UNALLOWED" -gt 0 ]]; then
+        for l in "${UNALLOWED_LINES[@]}"; do
+            annotate warning "Passed only on retry" "$l"
+        done
+    fi
+    if [[ "$N_ALLOWED" -gt 0 ]]; then
+        for l in "${ALLOWED_LINES[@]}"; do
+            annotate notice "Passed only on retry (allowlisted)" "$l"
+        done
+    fi
+
     # Surface in the job summary too, so it survives log rotation and is
     # visible without opening the raw log -- which is how these went unnoticed.
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
