@@ -136,8 +136,17 @@ docker exec "${AGENT_CONTAINER}" bash -c '
     dnf -y -q install java-11-openjdk unzip
     mkdir /tmp/omagent && cd /tmp/omagent
     unzip -q /bootstrap/omagent.zip
-    # The ZIP unpacks to a versioned directory containing installer.sh.
-    cd oracle.mgmt_agent*
+    # Find installer.sh rather than assume a layout: the comment here used
+    # to say the ZIP unpacks to a versioned oracle.mgmt_agent* directory,
+    # but the first live run (39979774036) found no such directory, so
+    # the installer sits at the top level or one directory down.
+    installer=$(find . -maxdepth 2 -name installer.sh -print -quit)
+    if [[ -z "${installer}" ]]; then
+        echo "installer.sh not found in the agent ZIP; it holds:" >&2
+        find . -maxdepth 2 | head -40 >&2
+        exit 1
+    fi
+    cd "$(dirname "${installer}")"
     bash installer.sh /bootstrap/input.rsp
     mkdir -p /opt/oracle/mgmt_agent/agent_inst/discovery/PrometheusEmitter
     cp /bootstrap/kythira.properties \

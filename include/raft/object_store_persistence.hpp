@@ -23,10 +23,19 @@
 ///
 ///     <prefix>/term                        decimal text, e.g. "42"
 ///     <prefix>/voted_for                   decimal text or the literal "none"
-///     <prefix>/log/<20-digit index>        one JSON record per log entry
+///     <prefix>/log/<20-digit index>        one JSON record per log entry, or
+///                                          a segment of them (see below)
 ///     <prefix>/snapshot                    one JSON record, single slot
 ///     <prefix>/snapshots/<20-digit index>  retained predecessors, only when
 ///                                          `snapshot_retention > 1`
+///
+/// That is the default, `hard_state_layout::separate`. Under
+/// `hard_state_layout::combined` `<prefix>/term` holds both values as one JSON
+/// record and `<prefix>/voted_for` is never written (see `hard_state_layout`).
+/// Under `log_layout::segmented` a run of appended entries may share one log
+/// object, `{"first_index":f,"last_index":l,"entries":[…]}` at
+/// `<prefix>/log/<f>`, each element exactly the record a per-entry object
+/// holds (see `log_layout`). The two knobs are independent.
 ///
 /// The log-entry and snapshot records use **the same one-line JSON codec
 /// `file_persistence_engine` writes** (`{term, index, command, type}` with the
@@ -51,6 +60,16 @@
 ///                                   → a bounded batch of DELETEs, one per
 ///                                     affected entry and no others,
 ///   * recovery                      → one List plus one GET per live object.
+///
+/// `log_layout::segmented` keeps every one of those properties for a
+/// *segment*, a bounded run of entries (`max_segment_entries`,
+/// `max_segment_bytes`) that one `append_log_entries` call wrote together. A
+/// run then costs one PUT per segment rather than per entry, and recovery one
+/// GET per segment. A truncation or compaction rewrites at most the one
+/// segment it cuts, never the log, so the full re-upload this layout exists to
+/// avoid is still impossible. Objects are keyed by their first index, so
+/// listing order is still log order, and a bucket of per-entry objects is
+/// already a valid segmented log.
 ///
 /// ### Why 20 zero-padded digits
 ///
@@ -100,6 +119,11 @@
 ///
 ///     election_timeout_min  ≥  4 × p99(PUT) + rpc_rtt + margin
 ///
+/// Under `hard_state_layout::combined` the term and vote are one object, so
+/// each side pays one PUT and the rule becomes `2 × p99(PUT)`. On GCS keep the
+/// floor at about one second regardless: that service throttles mutations of a
+/// single object to about one per second, and `<prefix>/term` is one object.
+///
 /// and the same quantity as a floor on the randomized election-timeout *range
 /// width*, or nodes re-time-out inside each other's elections and livelock.
 /// Size from the measured figure, not from an estimate: the real tier records
@@ -111,17 +135,24 @@
 /// `save_hard_state` (`.kiro/specs/batched-durable-writes/`) trims that: it
 /// writes only the slots that changed, so granting a vote at a term already on
 /// the store is one PUT rather than two. A candidate still pays two — the term
-/// and the vote are separate objects, and they are written term first.
+/// and the vote are separate objects, and they are written term first — and so
+/// does a follower that learns the term from the RequestVote it grants, which
+/// `node` stores once rather than first on stepping down.
 ///
 /// Append throughput is the other cost. With only `append_log_entry`, a
 /// follower can take at most about one entry per store round trip.
 /// `append_log_entries` sends the entries of one AppendEntries concurrently
 /// (`object_persistence_options::append_concurrency`, on stores that declare
 /// `concurrent_key_object_store`), so a run of N entries costs about
-/// N / `append_concurrency` round trips of wall time. It is still one PUT per
-/// entry, synchronous before the call returns: no write coalescing into shared
-/// objects, no write-behind, no relaxed-durability mode. A leader's own
-/// appends are one per client command and are not batched.
+/// N / `append_concurrency` round trips of wall time. Under
+/// `log_layout::segmented` the run is one PUT per segment instead, so a
+/// follower's catch-up and a restart's recovery cost about N / B requests
+/// rather than N, where B is the entries a segment holds. Either way the
+/// write is synchronous before the call returns: no write-behind and no
+/// relaxed-durability mode. A leader's own appends are one per client
+/// command, so a cluster still commits at most about `1 / p50(PUT)` entries a
+/// second under either layout; `.kiro/specs/object-store-group-commit/` is
+/// the change that lifts that.
 ///
 /// ## Read path: an in-memory mirror
 ///
@@ -248,6 +279,18 @@
 /// a diverging committed log or a double vote that does not pass through one of
 /// those two single-slot objects.
 ///
+/// Under `hard_state_layout::combined` the chokepoint is one object: a second
+/// writer cannot change this node's term or vote without writing
+/// `<prefix>/term`. The vote slot then matters only as somewhere a
+/// *pre-migration* writer can still write, and the migration's retirement of it
+/// — `If-Match` its loaded version — is what detects that writer: one that
+/// writes the slot before the retirement makes the retirement refused and the
+/// migrating engine latches; one that writes it after is refused itself. **The
+/// residual is the window between the two migration PUTs**: while a transient
+/// failure keeps the retirement pending, a stale writer's same-term vote goes
+/// undetected. Fenced construction completes a pending retirement, which bounds
+/// that window to one process lifetime.
+///
 /// That argument covers safety and **not corruption**, and the difference is
 /// why log-entry PUTs are create-only. A stale leader appends without ever
 /// changing its term — it will never gather a quorum again, but nothing makes
@@ -352,7 +395,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <condition_variable>
 #include <ctime>
+#include <deque>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -429,6 +475,67 @@ private:
     object_version _expected;
 };
 
+/// @brief Where `currentTerm` and `votedFor` live on the bucket
+///        (`.kiro/specs/object-store-batched-layout/`, Requirement 2).
+///
+/// A runtime option rather than a template argument like `fencing_mode`: the
+/// rule that made fencing a template argument — a capability the store may lack
+/// must be a compile error — does not apply, because both layouts use only
+/// `put_object` / `put_object_if`, which every shipped client has.
+enum class hard_state_layout : std::uint8_t {
+    /// The shipped format: `<prefix>/term` holds the decimal term and
+    /// `<prefix>/voted_for` the decimal vote or `none`, written by two ordered
+    /// PUTs, term first.
+    separate,
+    /// Both in one object, `<prefix>/term` ←
+    /// `{"term":<uint64>,"voted_for":<NodeId>|null}`: every hard-state write is
+    /// one PUT, atomic because every one of these stores writes a whole object
+    /// atomically per key, and still the single compare-and-swap chokepoint
+    /// under fencing. The body lives in the key an older binary already reads
+    /// and is not a bare decimal, so an older binary — engine or backup tool —
+    /// refuses the prefix rather than reading a stale pair from it.
+    ///
+    /// A prefix written by the `separate` layout is migrated **in place and
+    /// lazily**: construction loads the legacy pair and writes nothing for it,
+    /// and the first hard-state write is (m1) a PUT of the combined record to
+    /// `<prefix>/term` — `If-Match` the legacy object's version under fencing,
+    /// and the commit point — then (m2) a PUT of `retired` to
+    /// `<prefix>/voted_for`, `If-Match` its loaded version under fencing, if
+    /// that object exists. m2 runs after the commit point, so a transient
+    /// failure of it does not fail the call: it is retried before the next
+    /// hard-state write, and under `compare_and_swap` at the next construction
+    /// too. A crash at any boundary leaves either the legacy pair, which every
+    /// binary reads, or a combined `<prefix>/term`, which this binary reads as
+    /// the new pair and every older one refuses — never an older pair than one
+    /// this node acknowledged.
+    combined
+};
+
+/// @brief How log entries are grouped into objects
+///        (`.kiro/specs/object-store-batched-layout/`, Requirement 5).
+///
+/// A runtime option for the same reason as `hard_state_layout`: both layouts
+/// use only operations every shipped client has.
+enum class log_layout : std::uint8_t {
+    /// The shipped format: one object per entry, `<prefix>/log/<index>` holding
+    /// that entry's record.
+    per_entry,
+    /// An extending `append_log_entries` run is written as **segments**: objects
+    /// keyed by their first index, `<prefix>/log/<first>` ←
+    /// `{"first_index":f,"last_index":l,"entries":[<record f>,…,<record l>]}`,
+    /// each element byte-identical to a singleton's body, each segment at most
+    /// `max_segment_entries` entries and `max_segment_bytes` of body. A chunk of
+    /// one entry is a singleton, and every other write (`append_log_entry`, a
+    /// truncation or compaction that leaves one entry of a segment) is too.
+    ///
+    /// A prefix of singletons is a valid segmented log, so enabling this needs
+    /// no migration. Going back does: an engine configured `per_entry` refuses a
+    /// prefix holding any segment, and so does every older binary, whose entry
+    /// parser requires a top-level `term` — so a rollback onto a segmented
+    /// bucket is refused rather than served a short log.
+    segmented
+};
+
 /// @brief Engine-level options. Every default preserves the shipped engine's
 ///        behaviour exactly, so an operator who upgrades and changes nothing
 ///        sees a bucket with exactly the keys it had before.
@@ -502,6 +609,42 @@ struct object_persistence_options {
     /// bytes — only how many wait on the network together changes. `0` is
     /// rejected at construction rather than read as "unlimited".
     std::size_t append_concurrency{8};
+
+    /// `separate` — the shipped format, to the byte and the request — or
+    /// `combined`, which makes every hard-state write one PUT. See
+    /// `hard_state_layout`. An engine configured `separate` refuses a prefix
+    /// whose `<prefix>/term` holds a combined record: an in-place downgrade is
+    /// not supported, and reading the stale vote slot beside it would be the
+    /// silent rollback the combined layout exists to prevent.
+    hard_state_layout hard_state{hard_state_layout::separate};
+
+    /// `per_entry` — the shipped format — or `segmented`. See `log_layout`.
+    log_layout log{log_layout::per_entry};
+
+    /// The most entries one segment holds. The default, 100, is `node`'s
+    /// default `max_entries_per_append`, so a full AppendEntries is one segment.
+    /// Must be at least 2 (one entry is always a singleton), and is rejected at
+    /// any value but the default under `log_layout::per_entry`.
+    std::size_t max_segment_entries{100};
+
+    /// The largest segment body. It bounds the in-place rewrite a truncation
+    /// pays and the GET recovery pays per object. Must be at least 1 and at most
+    /// `max_object_bytes`, and is rejected at any value but the default under
+    /// `log_layout::per_entry`. An entry whose own record is larger is written
+    /// as a singleton, bounded by `max_object_bytes` alone.
+    std::size_t max_segment_bytes{1024U * 1024U};
+
+    /// Leader group commit (`.kiro/specs/object-store-group-commit/`). Off —
+    /// the default — every append is a PUT acknowledged before the call
+    /// returns and the engine answers `durability_class::synchronous`, so
+    /// `node` keeps its lock and its requests exactly as before. On, an append
+    /// *stages* the entry with no request and `barrier_through` flushes every
+    /// staged entry as one run (one PUT per segment under `segmented`, up to
+    /// `append_concurrency` single-entry PUTs under `per_entry`); the engine
+    /// answers `durability_class::barrier`, so `node` waits for that flush with
+    /// its lock released and concurrent commands share it. Accepted under
+    /// either log layout and either fencing mode.
+    bool write_behind{false};
 };
 
 namespace object_store_persistence_detail {
@@ -668,6 +811,111 @@ namespace object_store_persistence_detail {
     return out;
 }
 
+/// The vote slot's body once a migrated prefix has retired it
+/// (`hard_state_layout::combined`). Never read as a vote: the engine's load
+/// path checks for it before parsing one, and `object_store_backup` ignores it.
+inline constexpr std::string_view k_retired_vote = "retired";
+
+/// A combined `<prefix>/term` record with its `voted_for` still JSON.
+struct combined_hard_state_record {
+    std::uint64_t term{0};
+    /// `null`, or a node id in whichever JSON type the writer's `NodeId` uses.
+    boost::json::value voted_for;
+};
+
+/// The half of the combined hard-state codec that does not depend on `NodeId`:
+/// exactly `term` then `voted_for`, `term` an unsigned JSON integer read through
+/// `to_number<std::uint64_t>` so the whole `TermId` range round-trips. Anything
+/// else — a missing or extra member, a float, a string term — throws.
+///
+/// Shared by the engine, which narrows `voted_for` to its own `NodeId`, and by
+/// `object_store_backup`, which is generic over the store rather than `NodeId`
+/// and so renders it. One parser for the record's shape means the backup tool
+/// cannot accept a record the engine refuses, or the other way round.
+[[nodiscard]] inline auto parse_combined_hard_state(std::string_view s)
+    -> combined_hard_state_record {
+    const boost::json::value parsed = boost::json::parse(s);
+    const boost::json::object& obj = parsed.as_object();
+    if (obj.size() != 2 || obj.begin()->key() != "term" ||
+        std::next(obj.begin())->key() != "voted_for") {
+        throw std::runtime_error(
+            "a combined hard-state record holds exactly \"term\" then \"voted_for\"");
+    }
+    const boost::json::value& term = obj.begin()->value();
+    if (!term.is_int64() && !term.is_uint64()) {
+        throw std::runtime_error("the combined hard-state record's term is not an integer");
+    }
+    return combined_hard_state_record{term.to_number<std::uint64_t>(),
+                                      std::next(obj.begin())->value()};
+}
+
+/// A log segment's range, as `parse_segment` checked it.
+struct segment_range {
+    std::uint64_t first{0};
+    std::uint64_t last{0};
+};
+
+/// Whether a parsed `<prefix>/log/<index>` body is a segment rather than a
+/// singleton record (`log_layout::segmented`): an object with a `first_index`
+/// member. A singleton has none — it is one entry's record — and nothing else
+/// is either.
+[[nodiscard]] inline auto is_segment(const boost::json::value& parsed) -> bool {
+    const boost::json::object* obj = parsed.if_object();
+    return obj != nullptr && obj->contains("first_index");
+}
+
+/// The half of the segment codec that does not depend on the entry type:
+/// exactly `first_index`, `last_index`, `entries`, in that order;
+/// `first_index` equal to the key's index; at least two entries; as many
+/// elements as the range names, each an object carrying its own `index` in
+/// order. Shared by the engine, which then decodes each element, and by
+/// `object_store_backup`, which reads each element's term — one parser for
+/// the shape, so neither accepts a segment the other refuses. Strict for the
+/// reason the combined record is: it makes this binary refuse a *future*
+/// shape the way older binaries refuse this one.
+[[nodiscard]] inline auto parse_segment(const boost::json::object& obj, std::uint64_t key_index)
+    -> segment_range {
+    if (obj.size() != 3 || obj.begin()->key() != "first_index" ||
+        std::next(obj.begin())->key() != "last_index" ||
+        std::next(obj.begin(), 2)->key() != "entries") {
+        throw std::runtime_error(
+            "a log segment holds exactly \"first_index\", \"last_index\" then \"entries\"");
+    }
+    const auto as_index = [](const boost::json::value& v, const char* what) {
+        if (!v.is_uint64() && (!v.is_int64() || v.as_int64() < 0)) {
+            throw std::runtime_error(std::string("the segment's ") + what +
+                                     " is not an unsigned integer");
+        }
+        return v.to_number<std::uint64_t>();
+    };
+    const segment_range range{as_index(obj.at("first_index"), "first_index"),
+                              as_index(obj.at("last_index"), "last_index")};
+    if (range.first != key_index) {
+        throw std::runtime_error("segment starts at index " + std::to_string(range.first) +
+                                 " but its key names index " + std::to_string(key_index));
+    }
+    if (range.last <= range.first) {
+        throw std::runtime_error(
+            "a segment's last_index must exceed its first_index — one entry "
+            "is always a singleton");
+    }
+    const boost::json::array& elements = obj.at("entries").as_array();
+    if (elements.empty() || elements.size() - 1 != range.last - range.first) {
+        throw std::runtime_error("segment [" + std::to_string(range.first) + ".." +
+                                 std::to_string(range.last) + "] holds " +
+                                 std::to_string(elements.size()) + " entries");
+    }
+    for (std::size_t k = 0; k < elements.size(); ++k) {
+        const auto index = elements[k].as_object().at("index").to_number<std::uint64_t>();
+        if (index != range.first + k) {
+            throw std::runtime_error("segment element " + std::to_string(k) + " carries index " +
+                                     std::to_string(index) + ", expected " +
+                                     std::to_string(range.first + k));
+        }
+    }
+    return range;
+}
+
 }  // namespace object_store_persistence_detail
 
 /// @brief Raft persistent state stored as individual objects in a key-object
@@ -752,6 +1000,7 @@ public:
                 "object_store_persistence_engine: max_object_bytes must be at least 1 — 0 would "
                 "refuse every write, including the empty one");
         }
+        validate_log_layout_options();
         if constexpr (Fencing == fencing_mode::compare_and_swap) {
             if (_opts.owner_id.empty()) {
                 throw std::invalid_argument(
@@ -775,6 +1024,16 @@ public:
             // After the load, so a corrupt prefix fails construction without
             // this engine having first written its name into it.
             claim_ownership();
+            // A migration whose m2 a previous process did not finish: completed
+            // now rather than at the first hard-state write, which bounds the
+            // window in which a pre-migration writer's vote goes undetected to
+            // one process lifetime. Fenced construction already writes the
+            // owner object, so this adds no new kind of startup write; a
+            // refused precondition fails construction like a refused owner
+            // claim, and a transient failure stays pending.
+            if (_term_holds_combined) {
+                retire_vote_slot_if_pending();
+            }
         }
     }
 
@@ -784,7 +1043,13 @@ public:
         : _store(std::move(other._store)),
           _bucket(std::move(other._bucket)),
           _prefix(std::move(other._prefix)),
-          _opts(other._opts),
+          _opts(std::move(other._opts)),
+          _write_seq(other._write_seq),
+          _durable_seq(other._durable_seq),
+          _staged(std::move(other._staged)),
+          _discarded(std::move(other._discarded)),
+          _flushes_issued(other._flushes_issued),
+          _last_failed_flush(std::move(other._last_failed_flush)),
           _current_term(other._current_term),
           _voted_for(std::move(other._voted_for)),
           _log(std::move(other._log)),
@@ -792,10 +1057,14 @@ public:
           _retained(std::move(other._retained)),
           _last_prune_error(std::move(other._last_prune_error)),
           _strays(std::move(other._strays)),
+          _segments(std::move(other._segments)),
           _versions(std::move(other._versions)),
           _owner_seen(std::move(other._owner_seen)),
           _owner_epoch(other._owner_epoch),
-          _fenced(std::move(other._fenced)) {}
+          _fenced(std::move(other._fenced)),
+          _term_holds_combined(other._term_holds_combined),
+          _vote_slot_to_retire(std::move(other._vote_slot_to_retire)),
+          _last_retirement_error(std::move(other._last_retirement_error)) {}
 
     auto operator=(object_store_persistence_engine&&) -> object_store_persistence_engine& = delete;
     object_store_persistence_engine(const object_store_persistence_engine&) = delete;
@@ -868,9 +1137,15 @@ public:
 
     // ── currentTerm ──────────────────────────────────────────────────────────
 
+    /// Under `hard_state_layout::combined`, one PUT of `{term, the mirror's
+    /// vote}` to `<prefix>/term`.
     auto save_current_term(TermId term) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
+        if (combined_hard_state()) {
+            put_combined_hard_state(term, _voted_for);
+            return;
+        }
         put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
         _current_term = term;
     }
@@ -882,9 +1157,15 @@ public:
 
     // ── votedFor ─────────────────────────────────────────────────────────────
 
+    /// Under `hard_state_layout::combined`, one PUT of `{the mirror's term,
+    /// node}` to `<prefix>/term`, and nothing to `<prefix>/voted_for`.
     auto save_voted_for(NodeId node) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
+        if (combined_hard_state()) {
+            put_combined_hard_state(_current_term, std::move(node));
+            return;
+        }
         put_single_slot(voted_for_key(), render_vote(node));
         _voted_for = std::move(node);
     }
@@ -907,9 +1188,21 @@ public:
     ///
     /// Under `compare_and_swap` both stay the CAS chokepoint they are in the
     /// single-value methods: this is the same `put_single_slot`.
+    ///
+    /// Under `hard_state_layout::combined` it is **one** PUT of both values to
+    /// `<prefix>/term`, or none when neither changed. There is no intermediate
+    /// state for a crash to leave: the store writes the object whole, so a
+    /// reader sees the old pair or the new one.
     auto save_hard_state(TermId term, std::optional<NodeId> vote) -> void {
         std::lock_guard lock(_mu);
         throw_if_fenced();
+        if (combined_hard_state()) {
+            if (term == _current_term && vote == _voted_for) {
+                return;
+            }
+            put_combined_hard_state(term, std::move(vote));
+            return;
+        }
         if (term != _current_term) {
             put_single_slot(term_key(), std::to_string(static_cast<unsigned long long>(term)));
             _current_term = term;
@@ -924,9 +1217,325 @@ public:
 
     /// @brief One PUT — **create-only** under `compare_and_swap`, which is what
     ///        catches a stale leader that appends without ever changing its term.
+    ///
+    /// Under `log_layout::segmented` it is still one singleton, and an index a
+    /// segment covers is refused with `std::invalid_argument` before any
+    /// request: a singleton there would sit inside the segment, off the chain,
+    /// while the mirror believed it was the log.
     auto append_log_entry(const log_entry_t& entry) -> void {
+        std::unique_lock lock(_mu);
+        if (_opts.write_behind) {
+            // Requirement 3.2: a caller that does not know about the barrier
+            // still gets a durable append — and, like any failed append, a
+            // throw leaves it out of the log. The staged entry (and anything
+            // staged above it since) is dropped, as a truncation would drop
+            // it; an object the flush sent for it is already a stray.
+            const write_sequence seq = stage_locked(entry);
+            try {
+                barrier_through_locked(lock, seq);
+            } catch (...) {
+                wait_for_no_flush(lock);
+                if (seq <= _durable_seq && !_discarded.contains(seq)) {
+                    // Another caller's retry flushed it while this one was
+                    // unwinding: it is durable after all.
+                    return;
+                }
+                while (!_staged.empty() && _staged.back().entry.index() >= entry.index()) {
+                    discard_staged(_staged.back());
+                    _staged.pop_back();
+                }
+                throw;
+            }
+            return;
+        }
+        append_log_entry_locked(entry);
+    }
+
+    // ── barriered_persistence_engine (include/raft/persistence.hpp) ─────────
+    //
+    // `.kiro/specs/object-store-group-commit/`. With `write_behind` off every
+    // append is a PUT the store acknowledged before the call returns, so a
+    // barrier has nothing to wait for and the engine answers
+    // `durability_class::synchronous`: durable and never blocking, so `node`
+    // keeps its lock exactly as it did when this engine had no barrier, and
+    // still hands a follower's run to `append_log_entries` as one call. The
+    // requests are unchanged.
+    //
+    // With `write_behind` on, an append stages and `barrier_through` flushes,
+    // and the engine answers `durability_class::barrier`. The flush follows
+    // the barrier ordering rule: the highest sequence it claims is sampled
+    // before its first request and published after its last acknowledgement.
+    // It releases `_mu` across the requests, so appends keep staging while it
+    // runs and the next flush carries all of them.
+
+    /// @brief Append @p entry and return its sequence: a PUT when
+    ///        `write_behind` is off, staged with no request when it is on.
+    auto append_log_entry_sequenced(const log_entry_t& entry) -> write_sequence {
         std::lock_guard lock(_mu);
+        if (_opts.write_behind) {
+            return stage_locked(entry);
+        }
+        append_log_entry_locked(entry);
+        return _write_seq;
+    }
+
+    /// @brief Return once every append through @p seq is on the store.
+    ///
+    /// With `write_behind` off that is already so. With it on, wait for a
+    /// flush in flight, then flush everything still staged if @p seq is not
+    /// yet covered; a flush that fails throws to every caller it was to
+    /// cover. Throws without waiting for a sequence whose entry a truncation
+    /// or compaction dropped before it was flushed.
+    auto barrier_through(write_sequence seq) -> void {
+        if (!_opts.write_behind) {
+            return;
+        }
+        std::unique_lock lock(_mu);
+        barrier_through_locked(lock, seq);
+    }
+
+    /// @brief The highest sequence known to be on the store.
+    [[nodiscard]] auto durable_through() const -> write_sequence {
+        std::lock_guard lock(_mu);
+        return _durable_seq;
+    }
+
+    [[nodiscard]] auto durability() const -> durability_class {
+        return _opts.write_behind ? durability_class::barrier : durability_class::synchronous;
+    }
+
+    /// @brief Flushes started so far; how a test sees N barriers share one.
+    [[nodiscard]] auto flushes_issued() const -> std::uint64_t {
+        std::lock_guard lock(_mu);
+        return _flushes_issued;
+    }
+
+    /// @brief Entries staged and not yet flushed.
+    [[nodiscard]] auto staged_entry_count() const -> std::size_t {
+        std::lock_guard lock(_mu);
+        return _staged.size();
+    }
+
+private:
+    // ── Write-behind ─────────────────────────────────────────────────────────
+
+    /// One staged entry: in `_log` already, and on the store not yet.
+    struct staged_entry {
+        log_entry_t entry;
+        write_sequence seq{0};
+    };
+
+    /// The last failed flush: its number, the highest sequence it claimed, and
+    /// why. A barrier that waited on that flush and whose sequence it covered
+    /// throws this, rather than starting a retry of its own (Requirement 5.1).
+    struct failed_flush {
+        std::uint64_t number{0};
+        write_sequence through{0};
+        std::string what;
+    };
+
+    /// Requirement 3.1: validate, mirror and stage, with no request. The entry
+    /// must continue the log, because a flush writes the staged queue as one
+    /// run above everything flushed; `node` only ever appends at the last
+    /// index + 1. Its own record must fit `max_object_bytes`, the one size
+    /// check that cannot wait for the flush.
+    auto stage_locked(const log_entry_t& entry) -> write_sequence {
         throw_if_fenced();
+        if (!_log.empty() && entry.index() != _log.rbegin()->first + 1) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: under write_behind an append must continue the "
+                "log at its last index + 1 (got " +
+                std::to_string(static_cast<unsigned long long>(entry.index())) + " after " +
+                std::to_string(static_cast<unsigned long long>(_log.rbegin()->first)) + ")");
+        }
+        const std::string key = log_key(entry.index());
+        check_object_size(key, entry_to_json(entry));
+        _log[entry.index()] = entry;
+        _staged.push_back(staged_entry{entry, ++_write_seq});
+        return _write_seq;
+    }
+
+    /// Drop a staged entry from the mirror and remember that its sequence will
+    /// never be published.
+    auto discard_staged(const staged_entry& staged) -> void {
+        _log.erase(staged.entry.index());
+        _discarded.insert(staged.seq);
+    }
+
+    auto wait_for_no_flush(std::unique_lock<std::mutex>& lock) -> void {
+        _flush_cv.wait(lock, [this] { return !_flush_running; });
+    }
+
+    auto barrier_through_locked(std::unique_lock<std::mutex>& lock, write_sequence seq) -> void {
+        if (seq > _write_seq) {
+            throw std::invalid_argument("object_store_persistence_engine: barrier_through(" +
+                                        std::to_string(seq) +
+                                        ") names a sequence this engine never assigned (last " +
+                                        std::to_string(_write_seq) + ")");
+        }
+        for (;;) {
+            if (_discarded.contains(seq)) {
+                throw std::runtime_error(
+                    "object_store_persistence_engine: sequence " + std::to_string(seq) +
+                    " can never be made durable: its entry was truncated or compacted away "
+                    "before it was flushed");
+            }
+            if (seq <= _durable_seq) {
+                return;
+            }
+            throw_if_fenced();
+            if (_flush_running) {
+                const std::uint64_t awaited = _flushes_issued;
+                wait_for_no_flush(lock);
+                if (_last_failed_flush && _last_failed_flush->number == awaited &&
+                    seq <= _last_failed_flush->through && seq > _durable_seq) {
+                    throw_if_fenced();
+                    throw std::runtime_error(_last_failed_flush->what);
+                }
+                continue;
+            }
+            // Not durable, not discarded, and no flush running: it is staged.
+            if (_staged.empty()) {
+                throw std::logic_error("object_store_persistence_engine: sequence " +
+                                       std::to_string(seq) +
+                                       " is neither durable, discarded nor staged");
+            }
+            flush_locked(lock);
+        }
+    }
+
+    /// Flush until nothing is staged.
+    auto drain_locked(std::unique_lock<std::mutex>& lock) -> void {
+        for (;;) {
+            wait_for_no_flush(lock);
+            throw_if_fenced();
+            if (_staged.empty()) {
+                return;
+            }
+            flush_locked(lock);
+        }
+    }
+
+    /// One flush: every staged entry as one run, `_mu` released across the
+    /// requests. Publishes the run's acknowledged prefix of objects; records
+    /// every other object it sent as a stray and leaves those entries staged,
+    /// so the next barrier deletes the strays and retries them (Requirement
+    /// 5.2). Throws if any object failed, latching on a refused precondition.
+    auto flush_locked(std::unique_lock<std::mutex>& lock) -> void {
+        std::vector<log_entry_t> run;
+        std::vector<write_sequence> seqs;
+        run.reserve(_staged.size());
+        seqs.reserve(_staged.size());
+        for (const auto& staged : _staged) {
+            run.push_back(staged.entry);
+            seqs.push_back(staged.seq);
+        }
+
+        std::vector<std::string> records;
+        records.reserve(run.size());
+        for (const auto& entry : run) {
+            records.push_back(entry_to_json(entry));
+        }
+        std::vector<std::pair<std::size_t, std::size_t>> chunks;
+        if (segmented_log()) {
+            chunks = chunk_run(run.front().index(), records);
+        } else {
+            chunks.reserve(run.size());
+            for (std::size_t i = 0; i < run.size(); ++i) {
+                chunks.emplace_back(i, i + 1);
+            }
+        }
+        std::vector<std::string> keys;
+        std::vector<std::string> bodies;
+        std::set<LogIndex> written;
+        keys.reserve(chunks.size());
+        bodies.reserve(chunks.size());
+        for (const auto& [begin, end] : chunks) {
+            keys.push_back(log_key(run[begin].index()));
+            bodies.push_back(
+                log_object_body(run[begin].index(),
+                                std::span<const std::string>(records).subspan(begin, end - begin)));
+            written.insert(run[begin].index());
+        }
+        // Under `_mu`, before any PUT, as every log write does (stray invariant
+        // I1): at most one DELETE per earlier failure.
+        clear_strays(written);
+
+        // Sampled here, before the first request (the barrier ordering rule).
+        const write_sequence sampled = seqs.back();
+        const std::uint64_t number = ++_flushes_issued;
+        _flush_running = true;
+        const std::size_t workers =
+            concurrent_key_object_store<Store> ? _opts.append_concurrency : 1;
+        std::vector<put_outcome> outcomes;
+        lock.unlock();
+        try {
+            outcomes = put_log_objects(keys, bodies, workers);
+        } catch (...) {
+            lock.lock();
+            _flush_running = false;
+            _flush_cv.notify_all();
+            throw;
+        }
+        lock.lock();
+        _flush_running = false;
+
+        // The acknowledged prefix of objects, published after the last of
+        // them was acknowledged.
+        std::size_t acknowledged = 0;
+        while (acknowledged < outcomes.size() && outcomes[acknowledged].state == put_state::ok) {
+            ++acknowledged;
+        }
+        for (std::size_t i = 0; i < acknowledged; ++i) {
+            const auto& [begin, end] = chunks[i];
+            if (end - begin > 1) {
+                _segments[run[begin].index()] =
+                    segment_meta{run[end - 1].index(), std::move(outcomes[i].version)};
+            }
+            for (std::size_t k = begin; k < end; ++k) {
+                _staged.pop_front();
+            }
+            _durable_seq = std::max(_durable_seq, seqs[end - 1]);
+        }
+        if (acknowledged == outcomes.size()) {
+            _flush_cv.notify_all();
+            return;
+        }
+
+        const put_outcome* failure = nullptr;
+        for (std::size_t i = acknowledged; i < outcomes.size(); ++i) {
+            if (outcomes[i].state != put_state::not_sent) {
+                _strays.insert(run[chunks[i].first].index());
+            }
+            if (failure == nullptr && outcomes[i].state != put_state::ok &&
+                outcomes[i].state != put_state::not_sent) {
+                failure = &outcomes[i];
+            }
+        }
+        const std::string what =
+            "object_store_persistence_engine: flush of " + std::to_string(run.size()) +
+            " staged log entries failed after " + std::to_string(acknowledged) + " of " +
+            std::to_string(outcomes.size()) +
+            " objects; the rest stay staged and are retried by the next barrier" +
+            (failure != nullptr ? ": " + failure->detail : std::string());
+        _last_failed_flush = failed_flush{number, sampled, what};
+        _flush_cv.notify_all();
+        for (std::size_t i = acknowledged; i < outcomes.size(); ++i) {
+            if (outcomes[i].state == put_state::precondition_failed) {
+                latch(outcomes[i].key, {}, outcomes[i].detail);
+            }
+        }
+        throw std::runtime_error(what);
+    }
+
+    auto append_log_entry_locked(const log_entry_t& entry) -> void {
+        throw_if_fenced();
+        if (!_segments.empty() && object_of(entry.index()).second != entry.index()) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: append_log_entry at index " +
+                std::to_string(static_cast<unsigned long long>(entry.index())) +
+                ", which a segment holds — truncate the log first");
+        }
         clear_strays({});
         const std::string key = log_key(entry.index());
         const std::string body = entry_to_json(entry);
@@ -943,8 +1552,11 @@ public:
             put_object(key, body);
         }
         _log[entry.index()] = entry;
+        ++_write_seq;
+        _durable_seq = _write_seq;
     }
 
+public:
     /// @brief `bulk_append_persistence_engine` (include/raft/persistence.hpp):
     ///        one PUT per entry, up to `append_concurrency` of them in flight.
     ///
@@ -964,7 +1576,8 @@ public:
     /// that a restart would then read back as part of it; and it is what keeps
     /// a create-only re-PUT of the same index from being refused as a second
     /// writer. A crash before that cleanup is covered by the load path, which
-    /// keeps only the contiguous run of log objects (see `load_all`).
+    /// keeps only the chain of log objects from the lowest one
+    /// (`walk_log_chain`).
     ///
     /// A refused precondition latches, exactly as in `append_log_entry`, and
     /// nothing is cleaned up after it: a latched engine does not write.
@@ -973,32 +1586,77 @@ public:
     /// above the last index — is written one entry at a time on this thread,
     /// with the mirror again updated only after the last PUT. `node` never
     /// sends one.
+    ///
+    /// Under `log_layout::segmented` the run is split greedily into segments
+    /// (`max_segment_entries`, `max_segment_bytes`), one PUT each, the same
+    /// workers and the same all-or-nothing contract per run; a failure records
+    /// every object it sent as a stray by its key. A run that does not continue
+    /// the log at its last index + 1 is refused with `std::invalid_argument`
+    /// before any request.
     auto append_log_entries(std::span<const log_entry_t> entries) -> void {
         if (entries.empty()) {
             return;
         }
-        std::lock_guard lock(_mu);
+        std::unique_lock lock(_mu);
+        if (_opts.write_behind) {
+            // Everything staged goes first, so the run below continues a log
+            // that is all on the store and keeps the all-or-nothing contract
+            // exactly as it is without write-behind. `node` does not call this
+            // under write-behind; its runs stage entry by entry.
+            drain_locked(lock);
+        }
         throw_if_fenced();
+
+        const bool extends = extends_log(entries);
+        if (segmented_log() &&
+            !(extends && (_log.empty() || entries.front().index() == _log.rbegin()->first + 1))) {
+            // Before any request (Requirement 6.3 and the design's append path):
+            // a run that does not continue the log would put singletons inside
+            // or beside segments the mirror holds. `node` never sends one.
+            throw std::invalid_argument(
+                "object_store_persistence_engine: under log_layout::segmented a batched append "
+                "must continue the log at its last index + 1");
+        }
+
+        std::vector<std::string> records;
+        records.reserve(entries.size());
+        for (const auto& entry : entries) {
+            records.push_back(entry_to_json(entry));
+        }
+        // One object per entry, or under `segmented` the run's chunks.
+        std::vector<std::pair<std::size_t, std::size_t>> chunks;
+        if (segmented_log()) {
+            chunks = chunk_run(entries.front().index(), records);
+        } else {
+            chunks.reserve(entries.size());
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                chunks.emplace_back(i, i + 1);
+            }
+        }
 
         std::vector<std::string> keys;
         std::vector<std::string> bodies;
-        keys.reserve(entries.size());
-        bodies.reserve(entries.size());
-        for (const auto& entry : entries) {
-            keys.push_back(log_key(entry.index()));
-            bodies.push_back(entry_to_json(entry));
+        keys.reserve(chunks.size());
+        bodies.reserve(chunks.size());
+        for (const auto& [begin, end] : chunks) {
+            keys.push_back(log_key(entries[begin].index()));
+            bodies.push_back(
+                log_object_body(entries[begin].index(),
+                                std::span<const std::string>(records).subspan(begin, end - begin)));
             // Before anything is sent, so an oversized entry fails the run
             // without leaving the rest of it behind.
             check_object_size(keys.back(), bodies.back());
         }
 
-        std::set<LogIndex> covered;
-        for (const auto& entry : entries) {
-            covered.insert(entry.index());
+        // The keep-set is the objects this run writes, by key (each key's
+        // first index), not the entry indices it covers: a stray is spared only
+        // when the PUT will overwrite that very object (Requirement 6.5).
+        std::set<LogIndex> written;
+        for (const auto& chunk : chunks) {
+            written.insert(entries[chunk.first].index());
         }
-        clear_strays(covered);
+        clear_strays(written);
 
-        const bool extends = extends_log(entries);
         const std::size_t workers =
             extends && concurrent_key_object_store<Store> ? _opts.append_concurrency : 1;
         auto outcomes = put_log_objects(keys, bodies, workers);
@@ -1019,20 +1677,30 @@ public:
                 // would remove an entry the mirror says is there. Only a run
                 // that does not extend the log can reach one, and it is left
                 // as a failed `append_log_entry` would leave it.
-                if (outcomes[i].state != put_state::not_sent &&
-                    !_log.contains(entries[i].index())) {
-                    _strays.insert(entries[i].index());
+                const LogIndex first = entries[chunks[i].first].index();
+                if (outcomes[i].state != put_state::not_sent && !_log.contains(first)) {
+                    _strays.insert(first);
                     ++sent;
                 }
             }
             throw std::runtime_error(
                 "object_store_persistence_engine: append of " + std::to_string(entries.size()) +
                 " log entries failed (" + std::to_string(sent) +
-                " sent, none recorded in the log; they are deleted before the next log write): " +
+                " objects sent, none recorded in the log; they are deleted before the next log "
+                "write): " +
                 first_failure->detail);
         }
         for (const auto& entry : entries) {
             _log[entry.index()] = entry;
+        }
+        _write_seq += entries.size();
+        _durable_seq = _write_seq;
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            const auto& [begin, end] = chunks[i];
+            if (end - begin > 1) {
+                _segments[entries[begin].index()] =
+                    segment_meta{entries[end - 1].index(), std::move(outcomes[i].version)};
+            }
         }
     }
 
@@ -1083,26 +1751,119 @@ public:
     /// keeps only the contiguous run, and deleting from the bottom up would hand
     /// it a hole with the entries this call meant to remove sitting above it.
     /// Strays go first of all, for the same reason.
+    ///
+    /// Under `log_layout::segmented` the unit is the object: every object
+    /// starting at or above `index` is deleted, highest first, and then a
+    /// segment straddling `index` is overwritten **in place** with its entries
+    /// below `index` (a singleton when one remains) — `If-Match` its version
+    /// under `compare_and_swap`. That overwrite is the straddler's commit
+    /// point: every earlier request leaves a chain that is a prefix of the
+    /// pre-call log no shorter than the post-call one (Requirement 7).
     auto truncate_log(LogIndex index) -> void {
-        std::lock_guard lock(_mu);
+        std::unique_lock lock(_mu);
+        wait_for_no_flush(lock);
         throw_if_fenced();
+        // Staged entries are the top of the log and on no object, so the ones
+        // at or above `index` are dropped without a request (Requirement 6.2).
+        while (!_staged.empty() && _staged.back().entry.index() >= index) {
+            discard_staged(_staged.back());
+            _staged.pop_back();
+        }
+        // Before anything else, as always. Under write-behind this includes
+        // objects a failed flush sent for entries just dropped.
         clear_strays({});
-        while (!_log.empty() && _log.rbegin()->first >= index) {
-            const LogIndex last = _log.rbegin()->first;
-            delete_object(log_key(last));
-            _log.erase(last);
+        if (!_staged.empty()) {
+            // Every flushed entry is below the remaining staged ones, which
+            // are below `index`: nothing else on the store is affected.
+            return;
+        }
+        while (!_log.empty() && object_of(_log.rbegin()->first).first >= index) {
+            const LogIndex first = object_of(_log.rbegin()->first).first;
+            delete_object(log_key(first));
+            _log.erase(_log.lower_bound(first), _log.end());
+            _segments.erase(first);
+        }
+        if (_log.empty() || _log.rbegin()->first < index) {
+            return;
+        }
+        // A segment [first..last] with first < index <= last.
+        const LogIndex first = object_of(index).first;
+        const std::string key = log_key(first);
+        const auto records = log_records(first, index - 1);
+        const std::string body = log_object_body(first, records);
+        object_version version;
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            version =
+                conditional_put(key, body, precondition{if_version{_segments.at(first).version}});
+        } else {
+            put_object(key, body);
+        }
+        _log.erase(_log.lower_bound(index), _log.end());
+        if (records.size() > 1) {
+            _segments[first] = segment_meta{index - 1, std::move(version)};
+        } else {
+            _segments.erase(first);
         }
     }
 
     /// @brief Delete every entry with index &lt; `index` (compaction after a
     ///        snapshot), with the same delete-then-forget ordering.
+    ///
+    /// Strays go first, as on every other log mutation. Without that a stray
+    /// left past a gap becomes the lowest log object once the entries below it
+    /// are deleted, and the next load would start the log there, at entries
+    /// this node never acknowledged. No request changes unless a stray exists.
+    ///
+    /// Under `log_layout::segmented` every object ending below `index` is
+    /// deleted, lowest first; then a segment `S` straddling `index` is split:
+    /// its entries from `index` up are PUT to `log/<index>` (create-only under
+    /// `compare_and_swap`), which is a stray until `S`'s DELETE — the commit
+    /// point — is acknowledged. A crash before it reads the pre-compaction
+    /// suffix, with the new object off the chain (Requirement 8).
     auto delete_log_entries_before(LogIndex index) -> void {
-        std::lock_guard lock(_mu);
+        std::unique_lock lock(_mu);
+        wait_for_no_flush(lock);
         throw_if_fenced();
-        auto it = _log.begin();
-        while (it != _log.end() && it->first < index) {
-            delete_object(log_key(it->first));
-            it = _log.erase(it);
+        // Requirement 6.3. Staged entries are above every flushed one, so a
+        // staged entry below `index` means every flushed object ends below it
+        // too, and the loop below deletes them all.
+        while (!_staged.empty() && _staged.front().entry.index() < index) {
+            discard_staged(_staged.front());
+            _staged.pop_front();
+        }
+        clear_strays({});
+        while (!_log.empty()) {
+            const auto [first, last] = object_of(_log.begin()->first);
+            if (last >= index) {
+                break;
+            }
+            delete_object(log_key(first));
+            _log.erase(_log.begin(), _log.upper_bound(last));
+            _segments.erase(first);
+        }
+        if (_log.empty() || _log.begin()->first >= index) {
+            return;
+        }
+        // A segment [first..last] with first < index <= last.
+        const auto [first, last] = object_of(_log.begin()->first);
+        const auto records = log_records(index, last);
+        const std::string key = log_key(index);
+        const std::string body = log_object_body(index, records);
+        // A stray from before its PUT is sent: if the PUT fails it may still
+        // have landed, and until the straddler's DELETE it is off the chain.
+        _strays.insert(index);
+        object_version version;
+        if constexpr (Fencing == fencing_mode::compare_and_swap) {
+            version = conditional_put(key, body, precondition{if_absent{}});
+        } else {
+            put_object(key, body);
+        }
+        delete_object(log_key(first));
+        _strays.erase(index);
+        _log.erase(_log.begin(), _log.lower_bound(index));
+        _segments.erase(first);
+        if (records.size() > 1) {
+            _segments[index] = segment_meta{last, std::move(version)};
         }
     }
 
@@ -1167,6 +1928,32 @@ public:
         return _last_prune_error;
     }
 
+    /// @brief Whether `<prefix>/voted_for` still holds a legacy value that this
+    ///        engine owes a `retired` overwrite (hard_state_layout::combined).
+    ///
+    /// True from load until m2 lands on a legacy prefix that has a vote slot,
+    /// and after a migrating write whose m2 failed transiently — the case
+    /// `last_vote_slot_retirement_error()` explains. The state is safe either
+    /// way: beside a combined `<prefix>/term` the vote slot is never read. What
+    /// a pending retirement costs is detection, under `compare_and_swap`: a
+    /// pre-migration writer that writes only the vote slot is not refused until
+    /// the retirement lands.
+    [[nodiscard]] auto vote_slot_retirement_pending() const -> bool {
+        std::lock_guard lock(_mu);
+        return _vote_slot_to_retire.has_value();
+    }
+
+    /// @brief Why the last attempt to retire `<prefix>/voted_for` failed, if
+    ///        it did. Cleared when a retirement lands.
+    ///
+    /// The retirement runs after the migration's commit point and cannot fail
+    /// the call that committed it, so — like `last_prune_error()` — this is
+    /// where its failure becomes visible rather than silent.
+    [[nodiscard]] auto last_vote_slot_retirement_error() const -> std::optional<std::string> {
+        std::lock_guard lock(_mu);
+        return _last_retirement_error;
+    }
+
 private:
     // ── Batched log writes ───────────────────────────────────────────────────
 
@@ -1183,7 +1970,207 @@ private:
         put_state state{put_state::not_sent};
         std::string key;
         std::string detail;
+        /// The version the store returned, under `compare_and_swap` only: what
+        /// a segment's later in-place overwrite is predicated on.
+        object_version version;
     };
+
+    [[nodiscard]] auto combined_hard_state() const -> bool {
+        return _opts.hard_state == hard_state_layout::combined;
+    }
+
+    [[nodiscard]] auto segmented_log() const -> bool { return _opts.log == log_layout::segmented; }
+
+    /// Requirement 5.6, at construction. Under `per_entry` a non-default bound
+    /// is refused rather than ignored, the rule `owner_id` follows on an
+    /// unfenced engine.
+    auto validate_log_layout_options() const -> void {
+        const object_persistence_options defaults;
+        if (!segmented_log()) {
+            if (_opts.max_segment_entries != defaults.max_segment_entries ||
+                _opts.max_segment_bytes != defaults.max_segment_bytes) {
+                throw std::invalid_argument(
+                    "object_store_persistence_engine: max_segment_entries / max_segment_bytes are "
+                    "set but the log layout is log_layout::per_entry, which writes no segment — "
+                    "set log_layout::segmented rather than leaving them ignored");
+            }
+            return;
+        }
+        if (_opts.max_segment_entries < 2) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: max_segment_entries must be at least 2 — one "
+                "entry is always written as a singleton");
+        }
+        if (_opts.max_segment_bytes == 0) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: max_segment_bytes must be at least 1");
+        }
+        if (_opts.max_segment_bytes > _opts.max_object_bytes) {
+            throw std::invalid_argument(
+                "object_store_persistence_engine: max_segment_bytes must not exceed "
+                "max_object_bytes, which bounds every PUT");
+        }
+    }
+
+    /// The first and last index of the log object holding `index`, which the
+    /// log holds: the segment covering it, or the singleton at it. Callers hold
+    /// `_mu`.
+    [[nodiscard]] auto object_of(LogIndex index) const -> std::pair<LogIndex, LogIndex> {
+        auto it = _segments.upper_bound(index);
+        if (it != _segments.begin()) {
+            --it;
+            if (index <= it->second.last) {
+                return {it->first, it->second.last};
+            }
+        }
+        return {index, index};
+    }
+
+    /// The body of a log object holding `records` — already-encoded entries,
+    /// first index `first` — as a singleton when there is one record and as a
+    /// segment otherwise. Each element of a segment's `entries` is the record
+    /// itself, so it is byte-identical to the singleton body for that entry.
+    [[nodiscard]] static auto log_object_body(LogIndex first, std::span<const std::string> records)
+        -> std::string {
+        if (records.size() == 1) {
+            return records.front();
+        }
+        const auto last = first + static_cast<LogIndex>(records.size() - 1);
+        std::string body =
+            "{\"first_index\":" + std::to_string(static_cast<unsigned long long>(first)) +
+            ",\"last_index\":" + std::to_string(static_cast<unsigned long long>(last)) +
+            ",\"entries\":[";
+        for (std::size_t i = 0; i < records.size(); ++i) {
+            if (i > 0) {
+                body += ',';
+            }
+            body += records[i];
+        }
+        body += "]}";
+        return body;
+    }
+
+    /// The bodies of the entries of the log from `from` to `to`, inclusive.
+    /// Callers hold `_mu`.
+    [[nodiscard]] auto log_records(LogIndex from, LogIndex to) const -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (auto it = _log.lower_bound(from); it != _log.end() && it->first <= to; ++it) {
+            out.push_back(entry_to_json(it->second));
+        }
+        return out;
+    }
+
+    /// Split an extending run's encoded `records` greedily into chunks, as
+    /// `[begin, end)` positions: at most `max_segment_entries` records and
+    /// `max_segment_bytes` of segment body each. A record larger than
+    /// `max_segment_bytes` is a chunk of its own (a singleton, bounded by
+    /// `max_object_bytes` alone), and so is any record no neighbour fits beside.
+    [[nodiscard]] auto chunk_run(LogIndex first, const std::vector<std::string>& records) const
+        -> std::vector<std::pair<std::size_t, std::size_t>> {
+        const auto digits = [](std::size_t value) {
+            return std::to_string(static_cast<unsigned long long>(value)).size();
+        };
+        // `{"first_index":` `,"last_index":` `,"entries":[` `]}`
+        constexpr std::size_t k_segment_overhead = 15 + 14 + 12 + 2;
+        std::vector<std::pair<std::size_t, std::size_t>> chunks;
+        std::size_t begin = 0;
+        while (begin < records.size()) {
+            std::size_t end = begin + 1;
+            std::size_t sum = records[begin].size();
+            if (sum <= _opts.max_segment_bytes) {
+                const std::size_t first_digits = digits(static_cast<std::size_t>(first) + begin);
+                while (end < records.size() && end - begin < _opts.max_segment_entries) {
+                    const std::size_t grown = sum + records[end].size();
+                    const std::size_t body = k_segment_overhead + first_digits +
+                                             digits(static_cast<std::size_t>(first) + end) + grown +
+                                             (end - begin);
+                    if (body > _opts.max_segment_bytes) {
+                        break;
+                    }
+                    sum = grown;
+                    ++end;
+                }
+            }
+            chunks.emplace_back(begin, end);
+            begin = end;
+        }
+        return chunks;
+    }
+
+    /// Every combined hard-state write: one PUT of `(term, vote)` to
+    /// `<prefix>/term`, and the in-place migration when that object does not
+    /// yet hold a combined record. Callers hold `_mu`.
+    ///
+    /// On a legacy prefix this PUT is m1: `put_single_slot` predicates it on
+    /// the legacy `<prefix>/term`'s loaded version under `compare_and_swap`
+    /// (create-only when there was none), which is exactly the migration's
+    /// precondition — no create-only against an object that exists, and no
+    /// unconditional overwrite of a second writer's term. It is the commit
+    /// point, so the mirror moves as soon as it is acknowledged, and m2
+    /// follows.
+    ///
+    /// **m1 strictly before m2.** Retiring the vote slot first would leave,
+    /// after a crash between the two, a decimal `<prefix>/term` beside a vote
+    /// slot that no longer holds the vote — an older binary would read "no
+    /// vote" for a term this node voted in. So a retirement owed by a legacy
+    /// prefix waits for m1, and only a retirement left pending *after* m1 is
+    /// retried ahead of the next PUT.
+    auto put_combined_hard_state(TermId term, std::optional<NodeId> vote) -> void {
+        const bool migrating = !_term_holds_combined;
+        if (!migrating) {
+            retire_vote_slot_if_pending();
+        }
+        put_single_slot(term_key(), hard_state_to_json(term, vote));
+        _current_term = term;
+        _voted_for = std::move(vote);
+        _term_holds_combined = true;
+        if (migrating) {
+            retire_vote_slot_if_pending();
+        }
+    }
+
+    /// m2: PUT `retired` to `<prefix>/voted_for`, `If-Match` the version it was
+    /// loaded at under `compare_and_swap`. Called only once `<prefix>/term`
+    /// holds a combined record. Callers hold `_mu`.
+    ///
+    /// Retire rather than delete: the slot has to change *version*, so that a
+    /// pre-migration writer still running against the prefix is refused at its
+    /// next conditional write to it — and `If-Match` against an existing
+    /// object's stale version is the cell every fencing provider has been
+    /// verified on, where `If-Match` against a missing key is not.
+    ///
+    /// A refused precondition latches and throws: another writer has written
+    /// the vote slot since this engine loaded it. Any other failure is
+    /// recorded and leaves the retirement pending — the call that reached here
+    /// has already committed, so failing it would report a durable write as
+    /// lost. Under `compare_and_swap` a retirement whose response was lost
+    /// after it landed is refused at its retry and latches, which is the
+    /// header's lost-response residual applied to this one write.
+    auto retire_vote_slot_if_pending() -> void {
+        if (!_vote_slot_to_retire) {
+            return;
+        }
+        const std::string key = voted_for_key();
+        try {
+            if constexpr (Fencing == fencing_mode::compare_and_swap) {
+                _versions[key] = conditional_put(key, k_retired_vote,
+                                                 precondition{if_version{*_vote_slot_to_retire}});
+            } else {
+                put_object(key, k_retired_vote);
+            }
+        } catch (const persistence_fenced_error&) {
+            throw;
+        } catch (const std::exception& e) {
+            _last_retirement_error = "object_store_persistence_engine: retiring " + key +
+                                     " failed after " + term_key() +
+                                     " was committed; it is retried before the next hard-state "
+                                     "write: " +
+                                     e.what();
+            return;
+        }
+        _vote_slot_to_retire.reset();
+        _last_retirement_error.reset();
+    }
 
     [[nodiscard]] static auto render_vote(const NodeId& node) -> std::string {
         if constexpr (std::is_same_v<NodeId, std::string>) {
@@ -1226,6 +2213,7 @@ private:
                     return out;
                 }
                 verify_returned_digest(key, body, version);
+                out.version = std::move(version);
             } else {
                 put_with_retry(key, body);
             }
@@ -1279,8 +2267,9 @@ private:
     /// log write that asked: writing on top of an undeleted stray is exactly what
     /// strays are tracked to prevent. Callers hold `_mu`.
     ///
-    /// `keep` is the run about to be written. Under `fencing_mode::none` those
-    /// indices are overwritten by the PUT anyway, so deleting them first would
+    /// `keep` is the first indices of the objects about to be written — their
+    /// keys, not the entry indices they cover. Under `fencing_mode::none` those
+    /// objects are overwritten by the PUT anyway, so deleting them first would
     /// be a wasted request; under `compare_and_swap` the PUT is create-only and
     /// would be refused by its own stray, so nothing is kept.
     auto clear_strays(const std::set<LogIndex>& keep) -> void {
@@ -1559,6 +2548,8 @@ private:
         const std::string owner = owner_key();
         const std::string log_pfx = log_prefix();
         const std::string snaps_pfx = snapshots_prefix();
+        hard_state_slots slots;
+        log_objects objects;
 
         for (const auto& key : list_keys(_prefix + "/")) {
             // A key that vanished between the List and the GET is a
@@ -1570,7 +2561,7 @@ private:
                 auto got = get_object(key);
                 if (got) {
                     remember_version(key, got->version);
-                    _current_term = static_cast<TermId>(parse_unsigned(got->body, key));
+                    load_term_object(got->body, key, slots);
                 }
             } else if (key == vote) {
                 auto got = get_object(key);
@@ -1580,13 +2571,7 @@ private:
                     // engine's first vote must be an If-Match and not a
                     // create-only.
                     remember_version(key, got->version);
-                    if (got->body != "none" && !got->body.empty()) {
-                        if constexpr (std::is_same_v<NodeId, std::string>) {
-                            _voted_for = got->body;
-                        } else {
-                            _voted_for = static_cast<NodeId>(parse_unsigned(got->body, key));
-                        }
-                    }
+                    load_vote_object(got->body, slots);
                 }
             } else if (key == snap) {
                 auto got = get_object(key);
@@ -1630,55 +2615,219 @@ private:
                 if (!got) {
                     continue;
                 }
-                auto entry =
-                    wrap_parse<log_entry_t>(key, [&got] { return json_to_entry(got->body); });
-                if (entry.index() != index) {
-                    // The key *is* the index; a record that disagrees with its
-                    // own key means the log's ordering guarantee no longer
-                    // holds, which is exactly the silent-loss case this engine
-                    // exists to prevent.
-                    throw std::runtime_error(
-                        "object_store_persistence_engine: corrupt object " + key +
-                        ": record carries index " +
-                        std::to_string(static_cast<unsigned long long>(entry.index())) +
-                        " but its key names index " +
-                        std::to_string(static_cast<unsigned long long>(index)));
-                }
-                _log[index] = std::move(entry);
+                objects[index] = load_log_object(got->body, key, index, std::move(got->version));
             }
             // Any other key under the prefix belongs to something else (an
             // operator's note, a future format's object). It is not this
             // engine's state, so it is neither read nor written — only keys
             // this format defines are parsed, and those must parse.
         }
-        keep_contiguous_log();
+        resolve_hard_state(slots);
+        walk_log_chain(std::move(objects));
     }
 
-    /// Keep the contiguous run of log objects that starts at the lowest index,
-    /// and record everything above the first gap as a stray.
+    /// What the load path found in `<prefix>/term` and `<prefix>/voted_for`,
+    /// held until the listing loop ends so that how the two are read together
+    /// does not depend on the order the store lists them in.
+    struct hard_state_slots {
+        /// A decimal `<prefix>/term`, parsed.
+        std::optional<TermId> legacy_term;
+        /// A combined `<prefix>/term`, parsed.
+        std::optional<std::pair<TermId, std::optional<NodeId>>> combined;
+        /// `<prefix>/voted_for` holds a legacy value — a vote, `none`, or
+        /// empty — unparsed: beside a combined `<prefix>/term` it is not state
+        /// and is not read, whatever it holds (Requirement 3.1).
+        std::optional<std::string> legacy_vote_body;
+        /// `<prefix>/voted_for` holds `retired`.
+        bool vote_retired{false};
+    };
+
+    /// Parse `<prefix>/term`, by its first byte: `{` is the combined record,
+    /// anything else goes to `parse_unsigned` exactly as it always has. A
+    /// `separate` engine refuses a combined record here, whatever the vote slot
+    /// says, so the refusal cannot depend on listing order either.
+    auto load_term_object(const std::string& body, const std::string& key,
+                          hard_state_slots& slots) const -> void {
+        if (!body.starts_with('{')) {
+            slots.legacy_term = static_cast<TermId>(parse_unsigned(body, key));
+            return;
+        }
+        if (!combined_hard_state()) {
+            throw std::runtime_error(
+                "object_store_persistence_engine: " + key +
+                " holds a combined hard-state record, but this engine is configured "
+                "hard_state_layout::separate. An in-place downgrade is not supported: set "
+                "hard_state_layout::combined, or restore this prefix from a backup taken before "
+                "it was upgraded — reading the legacy vote slot beside this record would serve a "
+                "stale vote");
+        }
+        slots.combined = wrap_parse<std::pair<TermId, std::optional<NodeId>>>(
+            key, [&body] { return json_to_hard_state(body); });
+    }
+
+    /// Note `<prefix>/voted_for` for `resolve_hard_state`. Nothing is parsed
+    /// here: the `retired` marker is valid only beside a combined
+    /// `<prefix>/term`, and a legacy value is read only beside a legacy one,
+    /// and which of those it is cannot be known until both slots are read.
+    static auto load_vote_object(const std::string& body, hard_state_slots& slots) -> void {
+        if (body == k_retired_vote) {
+            slots.vote_retired = true;
+            return;
+        }
+        slots.legacy_vote_body = body;
+    }
+
+    /// A legacy vote slot's value: a node id, or no vote for `none` (or an
+    /// empty body), exactly as the load path has always read it.
+    static auto parse_legacy_vote(const std::string& body, const std::string& key)
+        -> std::optional<NodeId> {
+        if (body == "none" || body.empty()) {
+            return std::nullopt;
+        }
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            return body;
+        } else {
+            return static_cast<NodeId>(parse_unsigned(body, key));
+        }
+    }
+
+    /// The load precedence of `.kiro/specs/object-store-batched-layout/`
+    /// design Part 2, after the listing loop:
+    ///
+    ///   * `retired` beside anything but a combined `term` is corruption —
+    ///     it is written only after the combined record;
+    ///   * a combined `term` (reachable only under `combined`: a `separate`
+    ///     engine refused it in `load_term_object`) is the pair, and a legacy
+    ///     vote slot beside it is ignored and owed a retirement — the state a
+    ///     crash between m1 and m2 leaves;
+    ///   * otherwise the legacy pair, exactly as today. Under `combined` that
+    ///     is a legacy prefix: nothing is written for it here, its first
+    ///     hard-state write migrates it, and a vote slot it holds is retired
+    ///     after that write's commit point.
+    auto resolve_hard_state(const hard_state_slots& slots) -> void {
+        if (slots.vote_retired && !slots.combined) {
+            throw std::runtime_error("object_store_persistence_engine: corrupt object " +
+                                     voted_for_key() + ": \"retired\" is written only after " +
+                                     term_key() + " holds a combined hard-state record, but " +
+                                     term_key() +
+                                     (slots.legacy_term ? " holds a decimal term" : " is absent"));
+        }
+        if (slots.combined) {
+            _current_term = slots.combined->first;
+            _voted_for = slots.combined->second;
+            _term_holds_combined = true;
+        } else {
+            if (slots.legacy_term) {
+                _current_term = *slots.legacy_term;
+            }
+            if (slots.legacy_vote_body) {
+                _voted_for = parse_legacy_vote(*slots.legacy_vote_body, voted_for_key());
+            }
+        }
+        if (combined_hard_state() && slots.legacy_vote_body) {
+            _vote_slot_to_retire = tracked_version(voted_for_key());
+        }
+    }
+
+    /// The version the load path remembered for `key`; empty under
+    /// `fencing_mode::none`, which tracks none.
+    [[nodiscard]] auto tracked_version(const std::string& key) const -> object_version {
+        auto it = _versions.find(key);
+        return it == _versions.end() ? object_version{} : it->second;
+    }
+
+    /// The log objects the load path found, by key: each one's first index and
+    /// the entries it holds, in index order. Every object is a singleton today;
+    /// the walk below reads an object only by its first and last index, so it
+    /// is the same walk whatever an object holds.
+    struct loaded_log_object {
+        std::vector<log_entry_t> entries;
+        /// As read; kept for a segment under `compare_and_swap` only.
+        object_version version;
+    };
+    using log_objects = std::map<LogIndex, loaded_log_object>;
+
+    /// Parse one `<prefix>/log/<index>` body: a singleton, or under
+    /// `log_layout::segmented` a segment. A segment under `per_entry` is the
+    /// downgrade refusal, not corruption — the bucket is fine, the setting is
+    /// older than it (Requirement 11.3).
+    auto load_log_object(const std::string& body, const std::string& key, LogIndex index,
+                         object_version version) const -> loaded_log_object {
+        const auto parsed =
+            wrap_parse<boost::json::value>(key, [&body] { return boost::json::parse(body); });
+        loaded_log_object out;
+        const boost::json::object* obj = parsed.if_object();
+        if (object_store_persistence_detail::is_segment(parsed)) {
+            if (!segmented_log()) {
+                throw std::runtime_error(
+                    "object_store_persistence_engine: " + key +
+                    " holds a log segment, but this engine is configured log_layout::per_entry. "
+                    "An in-place downgrade is not supported: set log_layout::segmented, or "
+                    "restore this prefix from a backup taken before it was upgraded — skipping "
+                    "the segment would load a log missing the entries it holds");
+            }
+            out.entries = wrap_parse<std::vector<log_entry_t>>(
+                key, [obj, index] { return object_to_segment(*obj, index); });
+            if constexpr (Fencing == fencing_mode::compare_and_swap) {
+                out.version = std::move(version);
+            }
+            return out;
+        }
+        auto entry =
+            wrap_parse<log_entry_t>(key, [&parsed] { return object_to_entry(parsed.as_object()); });
+        if (entry.index() != index) {
+            // The key *is* the index; a record that disagrees with its own key
+            // means the log's ordering guarantee no longer holds, which is
+            // exactly the silent-loss case this engine exists to prevent.
+            throw std::runtime_error(
+                "object_store_persistence_engine: corrupt object " + key +
+                ": record carries index " +
+                std::to_string(static_cast<unsigned long long>(entry.index())) +
+                " but its key names index " +
+                std::to_string(static_cast<unsigned long long>(index)));
+        }
+        out.entries.push_back(std::move(entry));
+        return out;
+    }
+
+    /// Recover the log as the **chain** of objects from the lowest first index:
+    /// start at the lowest object, take it, continue at the object whose first
+    /// index is its last + 1, and stop at the first position nothing starts
+    /// at. Everything not on the chain is recorded as a stray.
     ///
     /// A gap is what a crash leaves part-way through a concurrent
     /// `append_log_entries` (any subset of the run may have landed) or part-way
     /// through a truncation written before truncations went highest-first. In
-    /// both cases the objects above the gap are entries this node never
+    /// both cases the objects past the gap are entries this node never
     /// acknowledged or was in the middle of removing, so dropping them is safe,
     /// and loading them is not: `node` keeps its log as a vector and indexes it
     /// by position, so a hole silently shifts every entry above it. They are
     /// not deleted here — construction writes nothing — but before the next
     /// log write, like any other stray.
-    auto keep_contiguous_log() -> void {
-        if (_log.empty()) {
+    ///
+    /// Over singletons this is exactly the contiguous run from the lowest
+    /// index, which is what the load path kept before the walk replaced it
+    /// (`.kiro/specs/object-store-batched-layout/` task 6); the walk is the
+    /// form that stays correct once an object can hold more than one entry and
+    /// another object can begin inside it.
+    auto walk_log_chain(log_objects objects) -> void {
+        if (objects.empty()) {
             return;
         }
-        auto it = _log.begin();
-        LogIndex expected = it->first;
-        while (it != _log.end() && it->first == expected) {
-            ++it;
-            ++expected;
-        }
-        while (it != _log.end()) {
-            _strays.insert(it->first);
-            it = _log.erase(it);
+        LogIndex next = objects.begin()->first;
+        for (auto& [first, object] : objects) {
+            if (first != next) {
+                _strays.insert(first);
+                continue;
+            }
+            const std::size_t count = object.entries.size();
+            for (auto& entry : object.entries) {
+                _log[entry.index()] = std::move(entry);
+            }
+            next = first + static_cast<LogIndex>(count);
+            if (count > 1) {
+                _segments[first] = segment_meta{next - 1, std::move(object.version)};
+            }
         }
     }
 
@@ -1791,6 +2940,14 @@ private:
     /// Strict decimal parse: the *whole* body must be digits. `std::stoull`
     /// would happily read "12" out of "12garbage"; a persistence engine that
     /// does that turns a truncated upload into a plausible-looking term.
+    ///
+    /// **Keep it strict for a second reason.** Every binary that has shipped
+    /// refuses a combined `<prefix>/term` because this parse refuses anything
+    /// but digits; that refusal is the whole rollback guard of the combined
+    /// hard state (`.kiro/specs/object-store-batched-layout/` design Property
+    /// 3). A "lenient" version — leading digits, or skipping a `{` — would turn
+    /// that refusal into a silent stale read for every binary built after it.
+    /// `tests/legacy_layout_reader.hpp` freezes the rule as shipped.
     static auto parse_unsigned(std::string_view body, const std::string& key)
         -> unsigned long long {
         // Tolerate a single trailing newline: an operator repairing state with
@@ -1831,6 +2988,58 @@ private:
         return std::string(k_index_digits - digits.size(), '0') + digits;
     }
 
+    // ── Combined hard state (hard_state_layout::combined) ─────────────────────
+
+    /// The vote slot's body once a migrated prefix has retired it. Never read
+    /// as a vote: the load path checks for it before parsing one.
+    static constexpr std::string_view k_retired_vote =
+        object_store_persistence_detail::k_retired_vote;
+
+    /// `{"term":<uint64>,"voted_for":<NodeId>|null}`, members in that order.
+    static auto hard_state_to_json(TermId term, const std::optional<NodeId>& vote) -> std::string {
+        boost::json::object obj;
+        obj["term"] = static_cast<std::uint64_t>(term);
+        if (!vote) {
+            obj["voted_for"] = nullptr;
+        } else if constexpr (std::is_same_v<NodeId, std::string>) {
+            obj["voted_for"] = boost::json::string(*vote);
+        } else {
+            obj["voted_for"] = static_cast<std::uint64_t>(*vote);
+        }
+        return boost::json::serialize(obj);
+    }
+
+    /// Strict, deliberately: the record's shape through the shared
+    /// `object_store_persistence_detail::parse_combined_hard_state`, then
+    /// `voted_for` `null` or the `NodeId`'s own JSON type. Anything else — a
+    /// missing or extra member, a float, a string term — throws, which is what
+    /// makes this binary refuse a *future* format the way older binaries
+    /// refuse this one.
+    static auto json_to_hard_state(const std::string& s)
+        -> std::pair<TermId, std::optional<NodeId>> {
+        const auto record = object_store_persistence_detail::parse_combined_hard_state(s);
+        std::pair<TermId, std::optional<NodeId>> out;
+        out.first = static_cast<TermId>(record.term);
+        const boost::json::value& vote = record.voted_for;
+        if (vote.is_null()) {
+            return out;
+        }
+        if constexpr (std::is_same_v<NodeId, std::string>) {
+            if (!vote.is_string()) {
+                throw std::runtime_error(
+                    "the combined hard-state record's voted_for is neither null nor a string");
+            }
+            out.second = std::string(vote.as_string());
+        } else {
+            if (!vote.is_int64() && !vote.is_uint64()) {
+                throw std::runtime_error(
+                    "the combined hard-state record's voted_for is neither null nor an integer");
+            }
+            out.second = vote.to_number<NodeId>();
+        }
+        return out;
+    }
+
     // ── Serialisation — byte-identical to file_persistence_engine's codec ────
 
     static auto entry_to_json(const log_entry_t& e) -> std::string {
@@ -1843,7 +3052,10 @@ private:
     }
 
     static auto json_to_entry(const std::string& s) -> log_entry_t {
-        auto obj = boost::json::parse(s).as_object();
+        return object_to_entry(boost::json::parse(s).as_object());
+    }
+
+    static auto object_to_entry(const boost::json::object& obj) -> log_entry_t {
         log_entry_t e;
         e._term = static_cast<TermId>(obj.at("term").as_int64());
         e._index = static_cast<LogIndex>(obj.at("index").as_int64());
@@ -1851,6 +3063,21 @@ private:
         e._type = obj.contains("type") ? static_cast<entry_type>(obj.at("type").as_int64())
                                        : entry_type::normal;
         return e;
+    }
+
+    /// A segment record (Requirement 5.5): the shape by the shared
+    /// `parse_segment`, then each element decoded as a singleton's record is.
+    static auto object_to_segment(const boost::json::object& obj, LogIndex key_index)
+        -> std::vector<log_entry_t> {
+        (void)object_store_persistence_detail::parse_segment(obj,
+                                                             static_cast<std::uint64_t>(key_index));
+        const boost::json::array& elements = obj.at("entries").as_array();
+        std::vector<log_entry_t> out;
+        out.reserve(elements.size());
+        for (const auto& element : elements) {
+            out.push_back(object_to_entry(element.as_object()));
+        }
+        return out;
     }
 
     static auto snapshot_to_json(const snapshot_t& snap) -> std::string {
@@ -1992,6 +3219,30 @@ private:
     object_persistence_options _opts;
 
     mutable std::mutex _mu;
+    /// One per entry appended, by any append call; the barrier concept's
+    /// sequence, assigned under `_mu` in index order.
+    write_sequence _write_seq{0};
+    /// The last sequence a flush published. Equal to `_write_seq` whenever
+    /// `write_behind` is off.
+    write_sequence _durable_seq{0};
+
+    /// Entries staged under `write_behind`, in index (and so sequence) order,
+    /// always the top of `_log`. Empty when `write_behind` is off.
+    std::deque<staged_entry> _staged;
+    /// Sequences whose entry a truncation or compaction dropped before any
+    /// flush wrote it. `barrier_through` of one throws rather than reporting
+    /// it durable because a later sequence was (Requirement 5.4). Bounded by
+    /// the staged entries ever discarded, which only a conflicting follower
+    /// truncation produces.
+    std::set<write_sequence> _discarded;
+    /// At most one flush runs at a time; it releases `_mu` across its
+    /// requests, and everyone else who needs the log to be still waits on
+    /// `_flush_cv` until it is done.
+    bool _flush_running{false};
+    std::condition_variable _flush_cv;
+    std::uint64_t _flushes_issued{0};
+    /// The last failed flush (see `failed_flush`).
+    std::optional<failed_flush> _last_failed_flush;
     TermId _current_term{0};
     std::optional<NodeId> _voted_for;
     /// Ordered, not hashed: `get_log_entries`, `truncate_log`,
@@ -2010,8 +3261,24 @@ private:
 
     /// Log indices that may have an object on the store and are not in `_log`:
     /// sent by a failed `append_log_entries`, or found past a gap at load.
-    /// Deleted before the next log write or truncation (`clear_strays`).
+    /// Deleted before the next log write, truncation or compaction
+    /// (`clear_strays`).
     std::set<LogIndex> _strays;
+
+    /// What a segment on the chain covers, and — under `compare_and_swap` only —
+    /// the version it was last written or read at, which truncation's in-place
+    /// overwrite is `If-Match`ed on.
+    struct segment_meta {
+        LogIndex last{0};
+        object_version version;
+    };
+
+    /// The segments on the chain, by first index (`log_layout::segmented`). A
+    /// log index no segment covers is a singleton, so singletons need no entry
+    /// here, and under `per_entry` this stays empty: the default engine's
+    /// memory is unchanged. No version is kept for a singleton, which is never
+    /// conditionally rewritten (Requirement 10.2).
+    std::map<LogIndex, segment_meta> _segments;
 
     // ── Fencing (Requirement 9), all inert under `fencing_mode::none` ─────────
 
@@ -2032,6 +3299,24 @@ private:
     /// not clearable at runtime, because a node that has provably lost its state
     /// cannot safely rejoin consensus by being asked nicely.
     std::optional<persistence_fenced_error> _fenced;
+
+    // ── Migration to the combined hard state (hard_state_layout::combined) ────
+
+    /// Whether `<prefix>/term` holds a combined record: loaded as one, or
+    /// written by this engine. While false, the next hard-state write is the
+    /// migration's m1 (or, on a prefix with no hard state, the record's
+    /// creation). Never set under `separate`.
+    bool _term_holds_combined{false};
+
+    /// A pending retirement of `<prefix>/voted_for` — m2 — with the version it
+    /// was loaded at (empty under `fencing_mode::none`). Set by the load path
+    /// on a `combined` engine whenever the vote slot holds a legacy value;
+    /// sent only once `_term_holds_combined`.
+    std::optional<object_version> _vote_slot_to_retire;
+
+    /// Why the last retirement attempt failed; see
+    /// `last_vote_slot_retirement_error()`.
+    std::optional<std::string> _last_retirement_error;
 };
 
 /// @brief `object_store_persistence_engine` with second-writer detection on.
@@ -2097,6 +3382,19 @@ static_assert(
                        std::uint64_t, std::uint64_t, std::uint64_t, log_entry<>, snapshot<>>,
     "a fenced object_store_persistence_engine must satisfy the persistence_engine "
     "concept too");
+
+/// …and the barrier extension, so `node` takes its barriered path for this
+/// engine and a group-scoped wrapper forwards it
+/// (`.kiro/specs/object-store-group-commit/` Requirement 1.3).
+static_assert(
+    barriered_persistence_engine<
+        object_store_persistence_engine<object_store_persistence_detail::concept_check_store>>,
+    "object_store_persistence_engine must satisfy barriered_persistence_engine");
+static_assert(
+    bulk_append_persistence_engine<
+        object_store_persistence_engine<object_store_persistence_detail::concept_check_store>>,
+    "object_store_persistence_engine must keep bulk_append_persistence_engine, "
+    "which node uses for a synchronous engine's follower runs");
 
 namespace object_store_persistence_detail {
 

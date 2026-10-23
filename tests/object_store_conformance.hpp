@@ -44,6 +44,12 @@
 /// | `fail_next_puts(n)` / `fail_next_gets(n)` / `fail_next_deletes(n)` / `fail_next_lists(n)` | injected transient failures |
 /// | `fail_puts_for_key(key)` | a permanent failure, which the engine's single retry cannot ride out |
 ///
+/// ### Optionally, for a harness over a **non-default layout**
+///
+/// | Member | Meaning |
+/// |---|---|
+/// | `static default_options()` | the `object_persistence_options` every `make_engine` overload starts from — e.g. `hard_state_layout::combined`. Absent means `object_persistence_options{}`, so no existing harness needs touching. The cases that build options of their own start from it too, and the layout-dependent cases (exact key set, request counts, body shapes) read their expectation from it rather than being forked |
+///
 /// ### Additionally, for a **fenced** harness
 ///
 /// | Member | Meaning |
@@ -101,6 +107,18 @@ template<typename Harness> constexpr auto harness_is_fenced() -> bool {
         return Harness::fenced;
     } else {
         return false;
+    }
+}
+
+/// The options a harness's engines are built from. Detected like `fenced`, so a
+/// harness over the default layout declares nothing; one over a non-default
+/// layout (`.kiro/specs/object-store-batched-layout/`) returns it here, and its
+/// `make_engine` overloads must start from the same value.
+template<typename Harness> auto harness_default_options() -> object_persistence_options {
+    if constexpr (requires { Harness::default_options(); }) {
+        return Harness::default_options();
+    } else {
+        return object_persistence_options{};
     }
 }
 
@@ -197,15 +215,48 @@ template<typename Harness> struct cases {
                             [&request](const std::string& r) { return r == request; });
     }
 
+    /// What every engine in this instantiation is built from. The helpers below
+    /// start from it, so a case that sets one option keeps the harness's layout.
+    static auto default_options() -> object_persistence_options {
+        return harness_default_options<Harness>();
+    }
+
+    /// Whether `<prefix>/term` holds the combined hard-state record rather
+    /// than the decimal term, and `<prefix>/voted_for` is never written.
+    static auto hard_state_combined() -> bool {
+        return default_options().hard_state == hard_state_layout::combined;
+    }
+
+    /// The body `<prefix>/term` holds once `(term, vote)` is stored, computed
+    /// here rather than asked of the engine, like `padded`. Under the separate
+    /// layout the vote lives elsewhere and `vote` is ignored.
+    static auto term_body(std::uint64_t term, std::optional<std::uint64_t> vote = std::nullopt)
+        -> std::string {
+        if (!hard_state_combined()) {
+            return std::to_string(term);
+        }
+        return "{\"term\":" + std::to_string(term) +
+               ",\"voted_for\":" + (vote ? std::to_string(*vote) : std::string("null")) + "}";
+    }
+
+    /// Whether an extending batched append is written as segments
+    /// (`log_layout::segmented`) rather than one object per entry.
+    static auto log_segmented() -> bool { return default_options().log == log_layout::segmented; }
+
     static auto options_with_retention(std::size_t n) -> object_persistence_options {
-        object_persistence_options opts;
+        object_persistence_options opts = default_options();
         opts.snapshot_retention = n;
         return opts;
     }
 
     static auto options_with_max_bytes(std::size_t n) -> object_persistence_options {
-        object_persistence_options opts;
+        object_persistence_options opts = default_options();
         opts.max_object_bytes = n;
+        // A segment may not be larger than any PUT, which construction
+        // enforces, so a segmented harness lowers its segment bound with the cap.
+        if (log_segmented()) {
+            opts.max_segment_bytes = std::min(opts.max_segment_bytes, n);
+        }
         return opts;
     }
 
@@ -339,8 +390,12 @@ template<typename Harness> struct cases {
             h.prefix() + "/log/" + std::string(19, '0') + "2",
             h.prefix() + "/snapshot",
             h.prefix() + "/term",
-            h.prefix() + "/voted_for",
         };
+        if (!hard_state_combined()) {
+            // The combined layout keeps the vote inside `<prefix>/term` and
+            // never creates the vote slot on a fresh prefix (Requirement 2.5).
+            expected.push_back(h.prefix() + "/voted_for");
+        }
         if constexpr (fenced) {
             // The fence adds exactly one object, and it is named — a fencing
             // implementation that also left a scratch or lock object behind would
@@ -361,7 +416,7 @@ template<typename Harness> struct cases {
         BOOST_TEST(eng.load_current_term() == 0U);
         eng.save_current_term(42);
         BOOST_TEST(eng.load_current_term() == 42U);
-        BOOST_TEST(h.body(h.prefix() + "/term") == "42");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(42));
     }
 
     static auto term_survives_reload() -> void {
@@ -403,7 +458,12 @@ template<typename Harness> struct cases {
         BOOST_TEST(!eng.load_voted_for().has_value());
         eng.save_voted_for(7);
         BOOST_TEST(eng.load_voted_for().value() == 7U);
-        BOOST_TEST(h.body(h.prefix() + "/voted_for") == "7");
+        if (hard_state_combined()) {
+            BOOST_TEST(!h.has(h.prefix() + "/voted_for"));
+            BOOST_TEST(h.body(h.prefix() + "/term") == term_body(0, 7));
+        } else {
+            BOOST_TEST(h.body(h.prefix() + "/voted_for") == "7");
+        }
     }
 
     static auto voted_for_survives_reload() -> void {
@@ -416,9 +476,16 @@ template<typename Harness> struct cases {
         BOOST_TEST(eng2.load_voted_for().value() == 7U);
     }
 
+    /// The combined layout's "no vote" is a JSON `null` inside `<prefix>/term`;
+    /// a legacy `none` in the vote slot is a legacy prefix, which is the
+    /// migration path and not this case.
     static auto the_none_sentinel_loads_as_no_vote() -> void {
         Harness h;
-        h.seed(h.prefix() + "/voted_for", "none");
+        if (hard_state_combined()) {
+            h.seed(h.prefix() + "/term", term_body(3));
+        } else {
+            h.seed(h.prefix() + "/voted_for", "none");
+        }
         engine_t eng = h.make_engine();
         BOOST_TEST(!eng.load_voted_for().has_value());
     }
@@ -581,6 +648,50 @@ template<typename Harness> struct cases {
         BOOST_TEST(!eng2.get_log_entry(2).has_value());
         BOOST_TEST(eng2.get_log_entry(3).has_value());
         BOOST_TEST(eng2.get_last_log_index() == 4U);
+    }
+
+    /// A batched run through truncation, compaction and a reload, with the
+    /// objects and requests each layout owes: one per entry under `per_entry`,
+    /// one segment per run under `segmented`, rewritten in place by the
+    /// truncation and split by the compaction.
+    static auto a_batched_run_survives_truncation_compaction_and_reload() -> void {
+        Harness h;
+        std::vector<log_entry_t> run;
+        for (std::uint64_t i = 1; i <= 10; ++i) {
+            run.push_back(make_entry(1 + (i / 4), i));
+        }
+        {
+            engine_t eng = h.make_engine();
+            h.clear_requests();
+            eng.append_log_entries(run);
+            BOOST_TEST(h.count_requests("PUT") == (log_segmented() ? 1U : 10U));
+            BOOST_TEST(h.has(padded(h, 1)));
+            BOOST_TEST(h.has(padded(h, 2)) == !log_segmented());
+
+            h.clear_requests();
+            eng.truncate_log(8);
+            BOOST_TEST(h.count_requests("PUT") == (log_segmented() ? 1U : 0U));
+            BOOST_TEST(h.count_requests("DELETE") == (log_segmented() ? 0U : 3U));
+
+            h.clear_requests();
+            eng.delete_log_entries_before(3);
+            BOOST_TEST(h.count_requests("PUT") == (log_segmented() ? 1U : 0U));
+            BOOST_TEST(h.count_requests("DELETE") == (log_segmented() ? 1U : 2U));
+            BOOST_TEST(!h.has(padded(h, 1)));
+            BOOST_TEST(h.has(padded(h, 3)));
+            BOOST_TEST(h.has(padded(h, 4)) == !log_segmented());
+            BOOST_TEST(eng.get_last_log_index() == 7U);
+        }
+        engine_t eng2 = h.make_engine();
+        BOOST_TEST(!eng2.get_log_entry(2).has_value());
+        BOOST_TEST(!eng2.get_log_entry(8).has_value());
+        for (std::uint64_t i = 3; i <= 7; ++i) {
+            const auto got = eng2.get_log_entry(i);
+            BOOST_REQUIRE(got.has_value());
+            BOOST_TEST(got->term() == run[i - 1].term());
+            BOOST_TEST((got->command() == run[i - 1].command()));
+        }
+        BOOST_TEST(eng2.get_last_log_index() == 7U);
     }
 
     /// Property 9: the engine deletes only what it can prove it wrote. An
@@ -880,7 +991,7 @@ template<typename Harness> struct cases {
         auto log = h.request_log();
         BOOST_TEST(!log.empty());
         BOOST_TEST(log.back() == "PUT " + h.prefix() + "/term");
-        BOOST_TEST(h.body(h.prefix() + "/term") == "9");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(9));
     }
 
     /// The single-line mistake this pins: treating a non-2xx as success. The
@@ -896,7 +1007,7 @@ template<typename Harness> struct cases {
         h.fail_puts_for_key("");
 
         BOOST_TEST(eng.load_current_term() == 2U);
-        BOOST_TEST(h.body(h.prefix() + "/term") == "2");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(2));
 
         h.fail_puts_for_key(padded(h, 2));
         BOOST_CHECK_THROW(eng.append_log_entry(make_entry(2, 2)), std::runtime_error);
@@ -926,7 +1037,7 @@ template<typename Harness> struct cases {
         } else {
             BOOST_CHECK_NO_THROW(eng.save_current_term(5));
             BOOST_TEST(eng.load_current_term() == 5U);
-            BOOST_TEST(h.body(h.prefix() + "/term") == "5");
+            BOOST_TEST(h.body(h.prefix() + "/term") == term_body(5));
         }
         BOOST_TEST(h.count_requests("PUT") == 2U);
     }
@@ -1206,7 +1317,7 @@ template<typename Harness> struct cases {
         BOOST_CHECK_NO_THROW(eng.save_current_term(7));
         BOOST_TEST(eng.load_current_term() == 7U);
         BOOST_TEST(h.count_requests("PUT") == 2U);
-        BOOST_TEST(h.body(h.prefix() + "/term") == "7");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(7));
     }
 
     /// Every write is verified, not only the single-slot ones.
@@ -1240,7 +1351,7 @@ template<typename Harness> struct cases {
     }
 
     static auto no_retries() -> object_persistence_options {
-        object_persistence_options opts;
+        object_persistence_options opts = default_options();
         opts.write_retries = 0;
         return opts;
     }
@@ -1294,7 +1405,7 @@ template<typename Harness> struct cases {
         // …and the restarted engine can write, which means it picked up the
         // version of the term object it inherited rather than assuming absence.
         BOOST_CHECK_NO_THROW(second.save_current_term(2));
-        BOOST_TEST(h.body(h.prefix() + "/term") == "2");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(2));
     }
 
     /// Requirement 9.6: a different owner cannot open the prefix by accident.
@@ -1315,7 +1426,7 @@ template<typename Harness> struct cases {
         }
         // A refused construction wrote nothing: the prefix still names its owner.
         BOOST_TEST(h.body(owner_key(h)).find(h.owner_id()) != std::string::npos);
-        BOOST_TEST(h.body(h.prefix() + "/term") == "3");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(3));
     }
 
     /// …and with an epoch above the recorded one it succeeds, which is what makes
@@ -1385,7 +1496,7 @@ template<typename Harness> struct cases {
         // One attempt: Requirement 9.4 — retrying a precondition failure is
         // exactly the overwrite the fence exists to prevent.
         BOOST_TEST(h.count_requests("PUT") == 1U);
-        BOOST_TEST(h.body(h.prefix() + "/term") == "2");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(2, 2));
 
         // Latched: every mutating call throws, and none of them reaches the store.
         h.clear_requests();
@@ -1405,7 +1516,7 @@ template<typename Harness> struct cases {
         // The negative control: the rightful writer is unaffected throughout.
         BOOST_TEST(!b.is_fenced());
         BOOST_CHECK_NO_THROW(b.save_current_term(5));
-        BOOST_TEST(h.body(h.prefix() + "/term") == "5");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(5, 2));
     }
 
     /// The case the chokepoint argument does **not** cover, which is why it is
@@ -1495,7 +1606,7 @@ template<typename Harness> struct cases {
         // And the engine is still usable, which is the whole difference between
         // this and a fence.
         BOOST_CHECK_NO_THROW(eng.save_current_term(2));
-        BOOST_TEST(h.body(h.prefix() + "/term") == "2");
+        BOOST_TEST(h.body(h.prefix() + "/term") == term_body(2));
     }
 };
 
@@ -1530,6 +1641,7 @@ template<typename Harness> struct cases {
     KYTHIRA_OSC_CASE(harness_type, delete_log_entries_before_removes_only_older_entries)          \
     KYTHIRA_OSC_CASE(harness_type, delete_before_survives_reload)                                 \
     KYTHIRA_OSC_CASE(harness_type, a_foreign_object_survives_truncation_and_compaction)           \
+    KYTHIRA_OSC_CASE(harness_type, a_batched_run_survives_truncation_compaction_and_reload)       \
     KYTHIRA_OSC_CASE(harness_type, snapshot_round_trip)                                           \
     KYTHIRA_OSC_CASE(harness_type, snapshot_survives_reload)                                      \
     KYTHIRA_OSC_CASE(harness_type, snapshot_overwrites_the_single_slot)                           \

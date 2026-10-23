@@ -18,8 +18,12 @@ namespace kythira {
 
 /// @brief Shared AWS connection settings consumed by both quorum manager implementations.
 struct aws_client_config {
-    /// AWS region string (e.g., `"us-east-1"`).  Empty value falls back to the SDK
-    /// default, which honours the `$AWS_DEFAULT_REGION` environment variable.
+    /// AWS region string (e.g., `"us-east-1"`).  Empty falls back to the SDK chain,
+    /// first match wins: `$AWS_DEFAULT_REGION`, then `$AWS_REGION`, then `region` in
+    /// the shared config profile (`$AWS_CONFIG_FILE` or `~/.aws/config`, profile
+    /// from `$AWS_PROFILE`), then EC2 instance metadata unless IMDS is disabled,
+    /// then `us-east-1`.  Measured against aws-sdk-cpp 1.11.665; see
+    /// `.kiro/specs/object-backup-s3-endpoint/design.md`.
     std::string region;
 
     /// When non-empty, overrides the service endpoint.  Use this to point at a

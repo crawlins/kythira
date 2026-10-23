@@ -193,6 +193,39 @@ Size your own deployment against a measurement taken from where your nodes
 actually run. The CI-runner table carries the suite's p99s (worst-of-run, as
 above), and the sizing rule below is worked from those rather than from p50.
 
+*Batched layouts and write-behind, from GitHub-hosted CI runners* (October
+22, 2026, runs
+[39727417123](https://github.com/crawlins/kythira/actions/runs/39727417123)
+for S3 and
+[39776156973](https://github.com/crawlins/kythira/actions/runs/39776156973)
+for the rest, `.kiro/specs/object-store-batched-layout/` task 10). Every
+provider passed all 12 cases, Alibaba its 12 without the two fencing ones.
+p50 / p99 in ms, 8 samples for the combined write and 10 for each segment:
+
+| Provider | single `append_log_entry` | `save_hard_state` (combined) | 100-entry segment | ~0.88 MiB segment |
+|---|---|---|---|---|
+| S3 (x64) | 161 / 179 | 179 / 202 | 175 / 186 | 230 / 700 |
+| S3 (arm64) | 35 / 42 | 35 / 57 | 40 / 44 | 89 / 313 |
+| GCS | 139 / 155 | 144 / 153 | 139 / 150 | 494 / 515 |
+| Azure Blob | 246 / 294 | 251 / 277 | 311 / 327 | 589 / 648 |
+| OCI Object Storage | 288 / 357 | 292 / 328 | 345 / 355 | 662 / 721 |
+| Alibaba OSS | 939 / 1083 **(distance)** | 949 / 1084 | 908 / 921 | 1982 / 2028 |
+
+- **A 100-entry segment costs about one PUT.** With small entries the body
+  is a few KiB, and the request, not the bytes, is the price. That is the
+  whole case for `log_layout::segmented`: a follower run of 100 is one
+  round trip instead of 100.
+- **A segment near `max_segment_bytes` costs 1.4-3.6 single PUTs at p50**
+  and at most 721 ms at p99 in-region (2 s for Alibaba across the ocean).
+  The 1 MiB default stands. What it does demand is that the RPC timeout a
+  leader gives an AppendEntries exceeds the follower's segment PUT p99, or a
+  full segment times out on every retry. Lower `max_segment_bytes` instead
+  if your timeout cannot grow.
+- **The S3 rows disagree with August's: 2.4x slower on x64 and 1.7x faster
+  on arm64.** Neither moved the bucket; the runners did. It is the
+  measurement-position trap again, and it is why each run records its own
+  position.
+
 ### Election-timeout sizing
 
 A candidate persists an incremented term and then a self-vote before sending
@@ -213,6 +246,41 @@ before the vote on both sides and skips a slot that has not changed, so a
 follower already at the candidate's term pays one PUT rather than two. The
 common case, a follower learning the term from the RequestVote itself, still
 changes both, so the rule above stands.
+
+Until October 20, 2026 that common case cost the follower **three** PUTs, so
+an election was five: stepping down to the new term stored the term and "no
+vote" before the grant stored the vote. `handle_request_vote` now stores the
+new term once, with the vote when it grants and alone when it refuses
+(`.kiro/specs/object-store-batched-layout/`, task 1). Size clusters running
+older builds with `5 × p99(PUT)`.
+
+With `hard_state_layout::combined` (see
+[Combined hard state](#combined-hard-state-and-upgrading-a-bucket-in-place))
+the term and the vote are one object, so each side writes once:
+
+```
+election_timeout_min  ≥  2 × p99(PUT) + rpc_rtt + margin      (combined)
+```
+
+The three rules side by side, worked against the CI-runner p99s below:
+
+| p99(PUT) | Older builds (5×) | `separate`, this build (4×) | `combined` (2×) |
+|---|---|---|---|
+| 30.4 ms Azure Blob, in-provider | 152 ms | 122 ms | **61 ms** |
+| 81.3 ms S3 `us-east-1` | 407 ms | 325 ms | **163 ms** |
+| 153.2 ms GCS `us-central1` | 766 ms | 613 ms | **306 ms**, but keep ≥ ~1 s (below) |
+| 1140.5 ms OSS, cross-ocean | 5.70 s | 4.56 s | **2.28 s** |
+
+All are plus `rpc_rtt` and margin, and the randomized range width must be at
+least the same quantity. Pre-vote adds one RPC round trip and no PUT.
+
+**On GCS, keep `election_timeout_min` at about one second or more under either
+layout.** GCS throttles mutations of one object to about one per second. The
+combined record is one object, written once per election and once per term
+change per node, which is no more often than `<prefix>/term` is written under
+`separate`, so the limit binds no harder than it did. It does bind below the
+2× figure: a node that campaigns faster than once a second can be answered
+`429` on its own `term` object.
 
 | p99(PUT) | Floor on `election_timeout_min` | Verdict |
 |---|---|---|
@@ -277,6 +345,86 @@ network. No provider in this table is fast enough to change the conclusion —
 even the best row is two orders of magnitude below a local NVMe WAL — but a
 badly placed node gives up another order of magnitude on top.
 
+**By default the ceiling is the leader's, and neither layout moves it.** A
+leader's `submit_command` makes one PUT per command while it holds `node`'s
+mutex, so a cluster commits at most about `1 / p50(PUT)` entries a second under
+`log_layout::per_entry` and `log_layout::segmented` alike. The opt-in
+write-behind group commit below is what lifts it. What the segmented log
+changes instead is the follower and recovery side:
+
+| | `per_entry` | `segmented` (defaults) |
+|---|---|---|
+| Follower requests per AppendEntries run of N | N | ⌈N / 100⌉, fewer if 1 MiB fills first |
+| Follower catch-up, N = 10,000 on S3 (p50 ≈ 67 ms) | 10,000 PUTs, ≈ 1,250 rounds at concurrency 8, ≈ 84 s | 100 PUTs, ≈ 13 rounds, ≈ 1 s (a 100-entry segment measured at about one PUT, October 22, 2026) |
+| Recovery GETs for a log of N | N | about N / B, B the entries per segment |
+
+#### Write-behind group commit
+
+`object_persistence_options::write_behind = true`
+(`.kiro/specs/object-store-group-commit/`) makes an append *stage* the entry
+with no request, and makes the durability barrier `node` already waits on
+*flush* everything staged as one run. The engine then answers
+`durability_class::barrier`, so `node` releases its mutex while it waits, and
+commands that arrive during one flush are carried together by the next. At most
+one flush is in flight per engine. With it on, a leader's ceiling is about
+
+```
+commit rate  ≈  B / p50(flush)
+```
+
+where `B` is the entries per flush, which is roughly the commands that arrive
+during one flush. Under `segmented` a flush of up to `max_segment_entries`
+entries is one PUT, so `p50(flush)` is about the p50 of a segment PUT. Under
+`per_entry` it is about `⌈B / append_concurrency⌉` round trips of single-entry
+PUTs. `B` is a property of the workload, not of the engine: one client issuing
+commands one at a time gets `B = 1` and today's ceiling. Measure it as the
+leader's commands divided by its log PUTs, or by `flushes_issued()`. On the
+mock store with every PUT held for 60 ms, 24 concurrent commands cost the
+leader 2 PUTs (`raft_object_store_group_commit_test`).
+
+**Measured on every provider** (October 22, 2026, the runs above): 16
+submitters each appending through one leader-style mutex, 64 commands, with
+`log_layout::segmented`. `B` is commands per log PUT:
+
+| Provider | synchronous commits/s | write-behind commits/s | gain | `B` | mean flush |
+|---|---|---|---|---|---|
+| S3 (x64) | 6.4 | 24.1 | 3.8x | 4.0 | 166 ms |
+| S3 (arm64) | 30.1 | 65.0 | 2.2x | 2.5 | 38 ms |
+| GCS | 6.0 | 18.4 | 3.1x | 3.4 | 183 ms |
+| Azure Blob | 2.9 | 13.3 | 4.5x | 3.4 | 253 ms |
+| OCI Object Storage | 3.3 | 9.1 | 2.7x | 2.8 | 305 ms |
+| Alibaba OSS | 1.1 | 3.0 | 2.9x | 2.9 | 959 ms |
+
+`B / mean flush` reproduces each write-behind rate, so the formula above is
+the right one to size with. `B` stayed between 2.5 and 4 although 16
+callers were waiting: a flush takes whatever is staged when it starts, and
+callers released by one flush stage their next command during the following
+flush, not the current one. More concurrent clients raise `B`; a faster
+store lowers it, which is why the slowest-PUT rows gain the most.
+
+**Latency moves the other way at the median.** The commit p50 rose about
+3x (S3 x64 157 → 500 ms, OCI 303 → 909 ms), because a command now waits for
+a flush to start and then for it to finish. The p99 fell 2-4.5x (S3 x64 10.0 →
+2.7 s, OCI 19.2 → 7.0 s). The synchronous p50 flatters: an unfair mutex
+lets most commands through after one PUT while a few wait for the whole run.
+
+**The default is unchanged.** With `write_behind` off, every append is a PUT
+acknowledged before the call returns. The engine answers
+`durability_class::synchronous` (durable, and a barrier never blocks), and
+`node` keeps its lock and sends exactly the requests it sent before. What
+changes when you switch it on:
+
+- A failed flush publishes the prefix of the run the store acknowledged. The
+  rest stays staged and is retried at the next barrier, after any objects the
+  failed flush sent are deleted. Every caller the flush was to cover gets the
+  error. A refused precondition under `compare_and_swap` latches, as always.
+- A truncation or compaction waits for a running flush. Staged entries it
+  removes are dropped without a request, and a barrier on one of them throws,
+  which is how a follower's truncated batch is refused.
+- Nothing staged is on the store, so a crash loses only entries no caller was
+  told were durable. That is the barrier contract the file engine meets with
+  `fsync`.
+
 **GCS additionally rate-limits mutations of a single object to roughly 1/s**,
 per object. S3 took the identical pattern unthrottled. The engine's `term`,
 `voted_for`, `snapshot` and `owner` keys are single-slot objects, so on GCS
@@ -305,6 +453,28 @@ Stated as a conclusion rather than left as an exercise: **sustained
 high-append-rate workloads are financially prohibitive in this engine, not
 merely slow.**
 
+Per **three-node cluster** and by log layout, at ~$0.005 per 1,000 PUTs (S3,
+Azure Blob, GCS, OCI). `B` is the entries carried by an AppendEntries that
+carries any. The leader writes one PUT per entry under either layout; each
+follower writes one per entry under `per_entry` and one per AppendEntries under
+`segmented`:
+
+| Sustained rate | `per_entry` (3 PUTs/entry) | `segmented`, B = 1 | B = 2 | B = 10 | B → ∞ |
+|---|---|---|---|---|---|
+| 1 entry/s | ~$39/month | ~$39 | ~$26 | ~$16 | ~$13 |
+| 10 entries/s | ~$389/month | ~$389 | ~$259 | ~$156 | ~$130 |
+
+The honest reading: **at steady state with one client command in flight, B is
+about 1 and the segmented layout saves almost nothing.** When AppendEntries
+batch (a burst, a slow follower, many concurrent clients) it saves a third of
+the bill at B = 2, approaching two thirds, the whole follower share, as B
+grows. Its
+large savings are on catch-up and recovery, which are not steady-state costs.
+The leader's PUT per entry is the floor, about $13/month per entry/s per
+cluster, unless `write_behind` is on. With it on, the leader pays one PUT per
+flush, so the floor divides by the leader's `B`. The combined hard state's effect on
+cost is negligible: one fewer PUT per election per node.
+
 Storage itself is negligible for the workloads this engine suits. The
 recurring cost of a CI or small production deployment is the *bucket*, not the
 objects in it.
@@ -324,13 +494,14 @@ Everything one engine instance owns lives under one `prefix` in one bucket:
 
 Three properties of this layout carry weight:
 
-1. **One object per log entry.** The file engine keeps its whole log in one
-   file and rewrites it on truncation — correct for a filesystem, catastrophic
-   in an object store, where the same idiom is a full re-upload of the entire
-   log for an O(1) logical change. One object per entry makes
+1. **One object per log entry, by default.** The file engine keeps its whole
+   log in one file and rewrites it on truncation — correct for a filesystem,
+   catastrophic in an object store, where the same idiom is a full re-upload
+   of the entire log for an O(1) logical change. One object per entry makes
    `append_log_entry` exactly one PUT, `truncate_log` and
    `delete_log_entries_before` bounded batches of DELETEs touching only
-   affected entries, and recovery one LIST plus one GET per live object.
+   affected entries, and recovery one LIST plus one GET per live object. The
+   opt-in segmented log (below) keeps all of that for bounded runs of entries.
 2. **20 zero-padded digits.** `2^64 - 1` is 20 digits, so padding every index
    to exactly 20 makes lexicographic listing order identical to numeric index
    order for every representable `LogIndex`. Without it `log/10` sorts before
@@ -340,6 +511,52 @@ Three properties of this layout carry weight:
 3. **The same JSON codec `file_persistence_engine` writes**, so records stay
    byte-comparable and a bucket can be diffed against a data directory during
    a migration.
+
+### Layout options
+
+Two independent options choose how the hard state and the log are stored. The
+defaults are the layout above, byte for byte and request for request.
+
+| Option | Default | Alternative | What the alternative changes |
+|---|---|---|---|
+| `hard_state` | `separate`: `term` and `voted_for` are two objects, written term first | `combined`: `{"term":42,"voted_for":7}` in `<prefix>/term` | One PUT per hard-state write instead of up to two; election rule `2 × p99(PUT)` |
+| `log` | `per_entry`: `log/<index>` holds one entry | `segmented`: `log/<first>` may hold `{"first_index":f,"last_index":l,"entries":[…]}` | One PUT per segment of an AppendEntries run instead of one per entry; one GET per segment at recovery |
+
+Under `segmented`, `max_segment_entries` (default 100, at least 2) and
+`max_segment_bytes` (default 1 MiB, at most `max_object_bytes`) bound a
+segment. An entry larger than `max_segment_bytes` is written alone. Each
+element of `entries` is exactly the record a per-entry object holds.
+
+- **Append.** A run that continues the log is cut greedily into segments, and
+  each segment is one PUT, up to `append_concurrency` in flight. A run that
+  does not start at the last index + 1 is refused before any request.
+- **Truncation** deletes the objects at or above the cut, highest first, then
+  rewrites the segment that straddles the cut in place, keeping its entries
+  below it (`If-Match` under fencing). That rewrite is the commit point.
+- **Compaction** deletes the objects wholly below the cut, lowest first, then
+  writes the straddling segment's surviving part under its own key and deletes
+  the segment. That DELETE is the commit point.
+- **Recovery** walks the chain from the lowest log object: each next object
+  starts one past the previous one's end. An object off the chain is a
+  *stray*, left by a crash part-way through one of the operations above. It is
+  ignored on load and deleted before the next log write.
+
+Each node's layout is its own, and nothing on the wire changes, so a rolling
+upgrade can switch nodes one at a time.
+
+| From → to | In place? | How |
+|---|---|---|
+| `separate` → `combined` | yes | lazily, at the first hard-state write (see below) |
+| `combined` → `separate` | **refused** at construction | restore from a backup taken before the upgrade |
+| `per_entry` → `segmented` | yes | nothing to do: per-entry objects are already a valid segmented log |
+| `segmented` → `per_entry` | **refused** while any segment exists | restore from a backup taken before the upgrade, or wait until compaction has removed every segment |
+| any upgraded prefix → an older binary | **refused** by the older binary | its strict parse of `term` and `log/<index>` |
+
+**Fencing under `segmented` detects slightly less.** A stale appender whose
+object starts strictly inside one of the owner's segments is not refused by
+the create-only PUT, because the key is new. The owner's next load discards it
+as a stray instead of loading it. The other stale-appender cases are refused as
+before. Details: `.kiro/specs/object-store-batched-layout/` design, Part 3.
 
 ### Snapshot retention
 
@@ -353,6 +570,68 @@ delete the copy of the snapshot just written.
 the same bucket, owned by the same engine, and a takeover or a `--force`
 restore can remove them. If you need a copy that survives losing the prefix,
 use [backup](#backup-and-restore), which writes somewhere else on purpose.
+
+### Combined hard state, and upgrading a bucket in place
+
+`object_persistence_options::hard_state = hard_state_layout::combined` stores
+the term and the vote together in `<prefix>/term` as
+`{"term":42,"voted_for":7}` (`null` for no vote), so every hard-state write is
+one PUT instead of up to two. The default, `separate`, is the layout above.
+
+Setting `combined` on a prefix a default engine wrote migrates it in place,
+lazily. Startup writes nothing for it (under fencing, nothing but the owner
+object, as always). The first hard-state write then PUTs the combined record
+to `<prefix>/term`, which is the commit point, and after it PUTs `retired` to
+`<prefix>/voted_for` if that object exists. Under `compare_and_swap` both are
+`If-Match` the versions the engine loaded, so a duplicate still running the
+old layout is refused at its next write to either. A transient failure of the
+second PUT does not fail the call: it is retried before the next hard-state
+write, and by a fenced engine when it next starts.
+`vote_slot_retirement_pending()` and `last_vote_slot_retirement_error()`
+report it until then. Nothing else is needed, and nodes can be switched one at
+a time: nothing on the wire changes.
+
+**Runbook: an older binary that says `corrupt object <prefix>/term` on an
+upgraded bucket is the rollback guard working, not damage.** Once a node has
+written a combined record it may have acknowledged a vote that exists only
+there. Every earlier engine and backup tool parses `<prefix>/term` as a bare
+decimal and refuses the JSON record instead of falling back to the stale
+`voted_for` beside it. Reading that stale vote is how a rolled-back node would
+vote twice in one term. Do not "repair" the object by writing a decimal into
+it. To go back to an older binary, restore the prefix from a backup taken
+before the upgrade, or stay on this build with `combined` set. A build of this
+engine configured `separate` refuses the same prefix, with a message saying
+that an in-place downgrade is not supported.
+
+**Take a backup before switching a prefix to `combined`; it is the way back to
+an older binary.** After the switch, back the prefix up with the
+`raft_object_backup` from this build or a later one. It reads the combined
+record: `create` takes the term and the vote from `<prefix>/term` (`null`
+appears in the manifest as `"none"`, as the legacy sentinel does), ignores the
+`retired` vote slot or any vote a crash left beside the record, and writes
+`format_version` 2 in the manifest. A prefix still on the default layout gets
+`format_version` 1 and the same manifest, byte for byte, that the older tool
+writes. No new flag is involved.
+
+An older `raft_object_backup` refuses an upgraded prefix, loudly at every step:
+
+- its `create` parses `<prefix>/term` as a bare decimal, fails with `corrupt
+  object <prefix>/term`, and writes no manifest;
+- its `verify` of a `format_version` 2 backup reports `manifest_version` ("is
+  not the 1 this build understands") and checks nothing else;
+- its `restore-clone` and `restore-seed` run that `verify` first and abort
+  before writing anything.
+
+So verify and restore a backup of an upgraded prefix with this build or later
+as well. A clone restore copies the bytes, so the restored prefix is still
+upgraded and needs an engine configured `combined`. A seed restore writes a
+decimal `term` and no vote, which an engine at either setting starts from; a
+`combined` engine migrates it on its first hard-state write.
+
+If `create` on a running node fails with `"retired" is written only after term
+holds a combined hard-state record`, the node migrated between the tool reading
+`term` and reading `voted_for`. The copy would hold no state the node ever had,
+so no manifest is written. Take the backup again.
 
 ## Fencing
 
@@ -470,6 +749,9 @@ provider:
 |---|---|---|
 | `max_object_bytes` | **64 MiB** | Deliberately far below every provider's documented single-request limit (the smallest is 5 GB). The binding constraint is this engine's *shape*, not the service's: one retry, no multipart, no resumption, no progress reporting, and the mutex held for the whole round trip. The cap turns "this deployment has outgrown a single-PUT persistence engine" into a loud error at the first snapshot that reaches it. Configurable upward by an operator who has measured their own case; `0` is rejected |
 | `write_retries` | **1** | PUT-only, and **unconditional-PUT-only**. A conditional write is never retried: a retry cannot distinguish "my write landed and the response was lost" from "I lost the race" |
+| `max_segment_entries` | **100** | Entries per segment under `log_layout::segmented`; at least 2, since one entry is always a singleton. A non-default value under `per_entry` is refused rather than ignored |
+| `max_segment_bytes` | **1 MiB** | Body size per segment under `log_layout::segmented`, at most `max_object_bytes`. Measured October 22, 2026 on all five providers: a ~0.88 MiB segment is at most 721 ms p99 in-region, 2 s on Alibaba from the US. Keep the AppendEntries RPC timeout above that, or lower this |
+| `write_behind` | **off** | Leader group commit, opt-in (see [Write-behind group commit](#write-behind-group-commit)). Off, every append is a PUT before the call returns, as it always was. On, appends stage and the durability barrier flushes them as one run. Accepted with either log layout and either fencing mode |
 | `append_concurrency` | **8** | Log PUTs `append_log_entries` keeps in flight for one AppendEntries. Used only on a store that declares `supports_concurrent_requests` (all five shipped clients do); any other store gets one at a time. Still one PUT per entry: the request count and the keys are the same at every setting. `0` is rejected |
 
 ## Per-provider configuration
@@ -707,18 +989,21 @@ service, and **neither was catchable locally**:
 
 ## Future work
 
-`append_log_entries` and `save_hard_state` landed as optional extensions to
-`kythira::persistence_engine` (`.kiro/specs/batched-durable-writes/`). Two
-limits remain:
+The two limits this section used to list are closed as opt-in layouts
+(`.kiro/specs/object-store-batched-layout/`): `log_layout::segmented` carries a
+run of entries in one object, and `hard_state_layout::combined` writes the term
+and vote as one. What remains:
 
-- **One request per entry.** `append_log_entries` overlaps the PUTs of one
-  AppendEntries but still sends one per entry. Carrying many entries in one
-  object would cut request charges as well as latency, and is a layout change.
-- **Term and vote are still two ordered PUTs.** They must be ordered because
-  `<prefix>/voted_for` does not record which term it belongs to. A vote record
-  that carries its term would let the load path reconcile the two and the
-  writes go out together, halving the dominant term in the election-timeout
-  sizing rule.
+- **Write-behind is opt-in.** By default the leader still writes one PUT per
+  client command under `node`'s mutex, and the cluster's commit rate stays at
+  about `1 / p50(PUT)`. With `write_behind` it is about `B / p50(flush)`,
+  measured at 2.2-4.5x on the five providers with 16 submitters. Whether it
+  becomes the default is open: it trades a higher median commit latency for
+  throughput and a lower tail.
+- **No in-place downgrade.** A prefix with a combined `term` or a segment is
+  refused by an older binary and by a build configured for the older layout.
+  The way back is a backup taken before the upgrade. An offline
+  `raft_object_backup relayout` verb is specified but optional (task 11).
 
 ## Backup and restore
 
@@ -759,11 +1044,54 @@ compiled into that binary.
 
 | Provider | Variables |
 |---|---|
-| `s3` | the AWS SDK default chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, ...) |
+| `s3` | the AWS SDK default chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, ...). The region comes from `--region`, else the SDK chain; the endpoint from `--endpoint` only, since `AWS_ENDPOINT_URL` is not read (see [S3 region and endpoint](#s3-region-and-endpoint)) |
 | `azure-blob` | `KYTHIRA_AZURE_STORAGE_ACCOUNT` (the bucket options name the *container*, which is not enough to build the endpoint), plus the Azure SDK default chain |
 | `gcs` | `GOOGLE_CLOUD_PROJECT`, plus Application Default Credentials |
 | `oci-objectstorage` | `KYTHIRA_OCI_REGION`, and the variables for one auth mode (below) |
 | `oss` | `KYTHIRA_ALIBABA_REGION`, `KYTHIRA_ALIBABA_ACCESS_KEY_ID`, `KYTHIRA_ALIBABA_ACCESS_KEY_SECRET`; `KYTHIRA_ALIBABA_SECURITY_TOKEN` for STS keys; optionally `KYTHIRA_ALIBABA_ENDPOINT_OVERRIDE` |
+
+#### S3 region and endpoint
+
+`--provider s3` takes two flags that no other provider does. They are not
+secrets, so unlike credentials they may be flags, and a one-off restore then
+records its target in the shell history.
+
+- `--region <name>` is the region to sign for. Without it the AWS SDK chain
+  decides, first match wins: `AWS_DEFAULT_REGION`, then `AWS_REGION` (note
+  the order: the reverse of the AWS CLI), then `region` in the config
+  profile, then EC2 instance metadata, then `us-east-1`.
+- `--endpoint <url>` points the tool at an S3-compatible service such as
+  LocalStack or MinIO. It implies path-style addressing and turns off the
+  instance-metadata lookup. The URL needs an `http` or `https` scheme, may
+  carry a port, and may not carry a path, query, fragment or `user:pass@`;
+  a value that breaks a rule is exit 1 before any connection. Plaintext
+  `http` to anything but `localhost`, `127.x.x.x` or `[::1]` warns.
+
+`AWS_ENDPOINT_URL` and `AWS_ENDPOINT_URL_S3` are **not read**, by the linked
+SDK or by the tool, which warns when either is set without `--endpoint`. CI
+points `AWS_ENDPOINT_URL` at an unrelated build cache, and a restore must not
+follow ambient state to the wrong cloud. The OCI and OSS providers refuse both
+flags and name their own `KYTHIRA_*_REGION` / `KYTHIRA_*_ENDPOINT_OVERRIDE`
+variables instead.
+
+```sh
+# LocalStack (accepts any keys and any region)
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+raft_object_backup list --provider s3 \
+    --endpoint http://localhost:4566 \
+    --dest-bucket my-backups --dest-prefix raft-backups
+
+# MinIO, with its own keys and region
+AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=... \
+raft_object_backup restore-clone --provider s3 \
+    --endpoint https://minio.internal:9000 --region us-east-1 \
+    --dest-bucket my-backups --dest-prefix raft-backups \
+    --backup-id 20260817T221530Z \
+    --target-bucket my-raft --target-prefix node-1
+```
+
+CI runs the full `create`, `list`, `verify`, `restore-clone` cycle this way
+against LocalStack on every push (`scripts/backup-s3-localstack-cycle.sh`).
 
 OCI and Alibaba have no SDK in this tree, so nothing else would supply their
 credentials; the tool reads the same `KYTHIRA_OCI_*` and `KYTHIRA_ALIBABA_*`
@@ -841,6 +1169,19 @@ Every problem carries a machine-readable `kind` (`missing_object`,
 because "this backup is bad" is not actionable and "log index 42 is missing
 between the copied entries at 41 and 43" is.
 
+A prefix on `log_layout::segmented` is read by the same rules. Its log objects
+are judged by the engine's chain rule: from the lowest object, each next object
+must start one past where the previous one ends. An object that starts *inside*
+that range is reported as a **note** of kind `stray_object`, not as a problem,
+and it does not change `ok` or `verify`'s exit status. The usual source is a
+compaction that crashed between writing its new first segment and deleting the
+segment it was cut from. The restored engine skips such an object and deletes it
+before its first log write. An object that starts *past* the chain's end is
+still a `log_gap`. Every entry inside a segment gets the `term_regression`
+check, with at most one problem per segment. A segment also makes the manifest
+`format_version` 2, so an older tool refuses the backup, as it does for a
+combined `term`.
+
 `verify` reports **every** problem it finds. Restore aborts on the **first**.
 That difference is intentional: `verify` is a diagnostic run by a human who
 wants the whole picture, and restore is a gate.
@@ -913,6 +1254,7 @@ raft_object_backup restore-clone --provider s3 \
 | `target prefix … already holds N object(s) — refusing to restore into it without force` | The target is not empty | Confirm you have the right target. If you do, re-run with `force`, which **deletes** the target's engine-owned keys first |
 | `corrupt object …/owner: owner record has no epoch` | The backed-up owner object is malformed | The restored node could not fence a returning original. Investigate before starting anything |
 | `… vanished from the backup during the restore — the target prefix … is now partially written` | The backup was mutated mid-restore | **Do not start the target.** Clear it and restore again from an intact backup |
+| `… manifest_version on …/manifest.json: manifest format version 2 is not the 1 this build understands` | An older `raft_object_backup` against a backup of a prefix upgraded to the [combined hard state](#combined-hard-state-and-upgrading-a-bucket-in-place); nothing was written | Use the tool from the build that took the backup, or a later one |
 
 `force` deletes the target's **engine-owned** keys — `term`, `voted_for`,
 `snapshot`, `owner`, `log/*`, `snapshots/*` — and nothing else. Objects under

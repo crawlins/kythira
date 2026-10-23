@@ -11,7 +11,8 @@
 #   1. kythira-ci-real-cloud-tests-boundary, a managed policy set as the CI
 #      role's permissions boundary. It allows everything except IAM,
 #      Organizations and account administration (plus iam:PassRole on the
-#      quorum-test node role, the one IAM action a bundle needs). Whatever
+#      kythira-aws-*-node-role test node roles, the one IAM action a bundle
+#      needs). Whatever
 #      inline policy the workflow applies, the CI role can never grant itself
 #      or anyone else IAM rights.
 #   2. kythira-ci-role-updater, an OIDC role trusted only by jobs in the
@@ -34,7 +35,11 @@ REVIEWERS=()
 CI_ROLE_NAME="kythira-ci-real-cloud-tests"
 UPDATER_ROLE_NAME="kythira-ci-role-updater"
 ENVIRONMENT="ci-role-admin"
-NODE_ROLE_NAME="kythira-aws-quorum-test-node-role"
+# Both provision-quorum-test-node-role.sh roles: the plain
+# kythira-aws-quorum-test-node-role and --leader's kythira-aws-chaos-node-role.
+# Must equal the Resource of policies/ec2-quorum-manager.json's PassRole
+# statement: the CI role can pass a role only when both allow it.
+NODE_ROLE_PATTERN="kythira-aws-*-node-role"
 OIDC_PROVIDER_URL="token.actions.githubusercontent.com"
 DRY_RUN=0
 
@@ -118,10 +123,10 @@ BOUNDARY=$(cat <<EOF
             "Resource": "*"
         },
         {
-            "Sid": "PassTheQuorumTestNodeRoleOnly",
+            "Sid": "PassTheTestNodeRolesOnly",
             "Effect": "Allow",
             "Action": "iam:PassRole",
-            "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/${NODE_ROLE_NAME}"
+            "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/${NODE_ROLE_PATTERN}"
         }
     ]
 }

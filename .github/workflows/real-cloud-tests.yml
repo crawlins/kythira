@@ -1872,7 +1872,7 @@ jobs:
             --with-chaos-node
 
       - name: Upload manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ca-cluster-node-ami-manifest-${{ matrix.arch }}
           path: packer-manifest.json
@@ -2331,9 +2331,28 @@ jobs:
         env:
           AZURE_TEST_KEY_VAULT_URL: ${{ vars.AZURE_TEST_KEY_VAULT_URL }}
           AZURE_TEST_KEY_VAULT_KEY_NAME: ${{ vars.AZURE_TEST_KEY_VAULT_KEY_NAME }}
+          # The P-256 and P-384 keys behind the ES256/ES384 cases. Optional:
+          # a case whose key name or certificate is missing skips, so the
+          # RS256/PS256 cases keep running on a vault that only has the RSA
+          # key. The README has the commands that create them.
+          AZURE_TEST_KEY_VAULT_EC256_KEY_NAME: ${{ vars.AZURE_TEST_KEY_VAULT_EC256_KEY_NAME }}
+          AZURE_TEST_KEY_VAULT_EC384_KEY_NAME: ${{ vars.AZURE_TEST_KEY_VAULT_EC384_KEY_NAME }}
+          # Through the environment, not interpolated into the script, so a
+          # PEM is data to the shell and never part of the command text.
+          EC256_CA_CERT_PEM: ${{ secrets.AZURE_TEST_KEY_VAULT_EC256_CA_CERT_PEM }}
+          EC384_CA_CERT_PEM: ${{ secrets.AZURE_TEST_KEY_VAULT_EC384_CA_CERT_PEM }}
         run: |
           echo "${{ secrets.AZURE_TEST_KEY_VAULT_CA_CERT_PEM }}" > /tmp/azure-test-ca-cert.pem
-          AZURE_TEST_KEY_VAULT_CA_CERT_FILE=/tmp/azure-test-ca-cert.pem \
+          ec_certs=()
+          for c in 256 384; do
+            pem_var="EC${c}_CA_CERT_PEM"
+            if [ -n "${!pem_var}" ]; then
+              printf '%s\n' "${!pem_var}" > "/tmp/azure-test-ec${c}-ca-cert.pem"
+              ec_certs+=("AZURE_TEST_KEY_VAULT_EC${c}_CA_CERT_FILE=/tmp/azure-test-ec${c}-ca-cert.pem")
+            fi
+          done
+          env "${ec_certs[@]}" \
+            AZURE_TEST_KEY_VAULT_CA_CERT_FILE=/tmp/azure-test-ca-cert.pem \
             scripts/run-real-cloud-suite.sh 'real-azure' '^azure_key_vault_ca_provider_real_test$' \
               "Check the AZURE_CI_* federated-credential variables, that AZURE_TEST_KEY_VAULT_URL resolves, and that AZURE_TEST_KEY_VAULT_CA_CERT_PEM is set."
 

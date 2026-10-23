@@ -71,6 +71,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace kythira::testing::azure_real;
@@ -1096,6 +1097,46 @@ void external_vmss_deallocate(const kythira::azure_client_config& azure,
     }
 }
 
+/// Sends one ARM request for @p resource (a path under the resource group,
+/// with its api-version) and returns the status and the parsed body (null when
+/// empty or not JSON). With @p if_none_match the request carries
+/// `If-None-Match: *`, the create-only header the VM manager's numeric-mode id
+/// claim relies on.
+[[nodiscard]] auto arm_send(const kythira::azure_client_config& azure,
+                            Azure::Core::Http::HttpMethod method, const std::string& resource,
+                            const boost::json::value* body = nullptr, bool if_none_match = false)
+    -> std::pair<int, boost::json::value> {
+    auto pipeline = make_test_arm_pipeline(azure);
+    Azure::Core::Url url(arm_base_url(azure) + resource);
+    std::string serialized;
+    std::unique_ptr<Azure::Core::IO::MemoryBodyStream> stream;
+    std::optional<Azure::Core::Http::Request> request;
+    if (body != nullptr) {
+        serialized = boost::json::serialize(*body);
+        stream = std::make_unique<Azure::Core::IO::MemoryBodyStream>(
+            reinterpret_cast<const std::uint8_t*>(serialized.data()), serialized.size());
+        request.emplace(method, url, stream.get());
+        request->SetHeader("Content-Type", "application/json");
+    } else {
+        request.emplace(method, url);
+    }
+    if (if_none_match) {
+        request->SetHeader("If-None-Match", "*");
+    }
+    Azure::Core::Context context;
+    auto response = pipeline.Send(*request, context);
+    const auto& raw = response->GetBody();
+    boost::json::value parsed;
+    if (!raw.empty()) {
+        boost::system::error_code ec;
+        parsed = boost::json::parse(std::string(raw.begin(), raw.end()), ec);
+        if (ec) {
+            parsed = nullptr;
+        }
+    }
+    return {static_cast<int>(response->GetStatusCode()), std::move(parsed)};
+}
+
 /// The member a rollback error names as removed: the text between
 /// `removed ` and ` (` in e.g. `rollback: removed kythira_abc (fresh, Creating)`.
 [[nodiscard]] auto removed_member(const std::string& error) -> std::optional<std::string> {
@@ -1195,6 +1236,106 @@ BOOST_FIXTURE_TEST_CASE(provision_timeout_cleanup, AzureIntegrationFixture,
     cfg.poll_interval = std::chrono::milliseconds{500};
     kythira::azure_vm_quorum_manager<std::uint64_t> mgr{cfg};
     BOOST_CHECK_THROW(std::move(mgr.provision_node("1", std::nullopt)).get(), std::exception);
+}
+
+/// The live half of the numeric-mode id claim (#543), whose collision branch
+/// was otherwise only mock-tested. Node id 1's NIC name is already taken by a
+/// resource this manager did not create, the way a deposed leader's provision
+/// would leave it. The manager must move on to id 2 and leave the holder as it
+/// was.
+///
+/// The holder is a NIC alone: it is free, and next_node_id() counts VMs only,
+/// so id 1 is still offered first. The case also checks the ARM contract the
+/// claim rests on, for both resource providers it uses: a create-only PUT
+/// (`If-None-Match: *`) on a name that exists is refused with 412 rather than
+/// applied as an update. The manager's pre-create GET normally finds the
+/// holder first, so that refusal is otherwise only reached in a race.
+BOOST_FIXTURE_TEST_CASE(numeric_id_claim_skips_a_taken_name, AzureIntegrationFixture,
+                        *boost::unit_test::timeout(600)) {
+    if (!preflight_ok) {
+        BOOST_TEST_MESSAGE("Skipping: preflight failed (see stderr)");
+        return;
+    }
+    using Azure::Core::Http::HttpMethod;
+
+    TestCostReport cost{.test_name = "numeric_id_claim_skips_a_taken_name"};
+    const std::string holder_vm_name =
+        kythira::azure_vm_quorum_manager<std::uint64_t>{vm_config(1)}.node_id_to_vm_name(1);
+    const std::string holder_nic =
+        "/providers/Microsoft.Network/networkInterfaces/" + holder_vm_name + "-nic";
+    const std::string nic_version = "?api-version=2024-05-01";
+
+    // Deleted however the case ends: the fixture's sweep only covers VMs.
+    struct nic_guard {
+        const kythira::azure_client_config& azure;
+        std::string resource;
+        ~nic_guard() {
+            try {
+                (void)arm_send(azure, Azure::Core::Http::HttpMethod::Delete, resource);
+            } catch (const std::exception& ex) {
+                std::cerr << "[azure_quorum_manager_real_test] could not delete holder NIC "
+                          << resource << ": " << ex.what() << " — delete it manually\n";
+            }
+        }
+    };
+
+    boost::json::object ip_props;
+    ip_props["subnet"] = boost::json::object{{"id", *subnet_id.at(1)}};
+    boost::json::object ip_config;
+    ip_config["name"] = "ipconfig1";
+    ip_config["properties"] = std::move(ip_props);
+    boost::json::object nic_props;
+    nic_props["ipConfigurations"] = boost::json::array{std::move(ip_config)};
+    boost::json::object nic_obj;
+    nic_obj["location"] = azure.location;
+    nic_obj["tags"] = boost::json::object{{"kythira:role", "id-claim-holder"}};
+    nic_obj["properties"] = std::move(nic_props);
+    const boost::json::value nic_body = std::move(nic_obj);
+
+    auto [created, created_body] =
+        arm_send(azure, HttpMethod::Put, holder_nic + nic_version, &nic_body, true);
+    BOOST_REQUIRE_MESSAGE(created == 200 || created == 201,
+                          "holder NIC create returned HTTP " << created);
+    nic_guard guard{azure, holder_nic + nic_version};
+
+    // Network RP: a second create-only PUT of the same name is refused.
+    auto [again, again_body] =
+        arm_send(azure, HttpMethod::Put, holder_nic + nic_version, &nic_body, true);
+    BOOST_CHECK_MESSAGE(again == 412, "If-None-Match: * PUT on an existing NIC returned HTTP "
+                                          << again << ", not 412");
+
+    auto [before, before_body] = arm_send(azure, HttpMethod::Get, holder_nic + nic_version);
+    BOOST_REQUIRE_EQUAL(before, 200);
+    const std::string etag_before(before_body.at("etag").as_string());
+
+    escalating_vm_manager mgr{vm_config(1), launch_ladder(azure)};
+    auto peer = mgr.provision("1");
+    cost.resources.push_back(
+        {.label = "VM (" + mgr.option().label() + ")", .hourly_rate = mgr.hourly_rate()});
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+
+    // The holder is untouched: same etag, attached to no VM.
+    auto [after, after_body] = arm_send(azure, HttpMethod::Get, holder_nic + nic_version);
+    BOOST_REQUIRE_EQUAL(after, 200);
+    BOOST_CHECK_EQUAL(std::string(after_body.at("etag").as_string()), etag_before);
+    BOOST_CHECK(!after_body.at("properties").as_object().contains("virtualMachine"));
+
+    // Compute RP: a create-only PUT on the VM the manager just made is
+    // refused too. The body is the VM's own model, so were the header ever
+    // ignored the PUT would be a no-op update rather than a change.
+    const std::string member_vm = "/providers/Microsoft.Compute/virtualMachines/" +
+                                  mgr->node_id_to_vm_name(peer.node_id) + "?api-version=2024-07-01";
+    auto [vm_get, vm_body] = arm_send(azure, HttpMethod::Get, member_vm);
+    BOOST_REQUIRE_EQUAL(vm_get, 200);
+    auto [vm_put, vm_put_body] = arm_send(azure, HttpMethod::Put, member_vm, &vm_body, true);
+    BOOST_CHECK_MESSAGE(vm_put == 412, "If-None-Match: * PUT on an existing VM returned HTTP "
+                                           << vm_put << ", not 412");
+
+    std::move(mgr->decommission_node(peer.node_id)).get();
+    for (auto& r : cost.resources) {
+        r.finalize();
+    }
+    g_cost_accumulator.add(std::move(cost));
 }
 
 BOOST_FIXTURE_TEST_CASE(provision_multi_zone_topology, AzureIntegrationFixture,

@@ -759,6 +759,44 @@ set_tests_properties(batched_durable_writes_unit_test PROPERTIES
     LABELS "unit;persistence;object-store"
 )
 
+# .kiro/specs/object-store-batched-layout/: crash injection, the frozen legacy
+# reader, and the combined hard state's requests, codec and refusals. Like the
+# two suites above it names no provider, so it is registered unconditionally.
+add_raft_completion_test(object_store_batched_layout_unit_test
+    object_store_batched_layout_unit_test.cpp)
+target_include_directories(object_store_batched_layout_unit_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_store_batched_layout_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store"
+)
+
+# object_store_group_commit unit test (.kiro/specs/object-store-group-commit/)
+#
+# The object-store engine as a barriered_persistence_engine: with write-behind
+# off it answers durability_class::synchronous and sends exactly the requests
+# it sent before. Mock store only, so registered unconditionally.
+add_raft_completion_test(object_store_group_commit_unit_test
+    object_store_group_commit_unit_test.cpp)
+target_include_directories(object_store_group_commit_unit_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_store_group_commit_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;persistence;object-store"
+)
+
+# The shared real-tier cases (object_persistence_real_cases.hpp) run against
+# the mock store, so they are known right before a paid run and keep compiling
+# where no provider suite is built. Not a substitute for a live run.
+add_raft_completion_test(object_persistence_real_cases_mock_test
+    object_persistence_real_cases_mock_test.cpp)
+target_include_directories(object_persistence_real_cases_mock_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(object_persistence_real_cases_mock_test PROPERTIES
+    TIMEOUT 300
+    LABELS "unit;persistence;object-store"
+)
+
 # object_store_backup unit test (cloud object persistence, task 12)
 #
 # Unconditional for the same reason the suite above is: `object_store_backup.hpp`
@@ -900,6 +938,15 @@ set_tests_properties(cloud_config_env_unit_test PROPERTIES
     LABELS "unit;object-store;backup;cli;oci;alibaba"
 )
 
+# raft_object_backup's --endpoint shape check and the AWS_ENDPOINT_URL warning
+# (object-backup-s3-endpoint task 2). Unconditional: the header is SDK free, so
+# the rules are tested on every leg, not only where the S3 provider builds.
+add_raft_completion_test(aws_endpoint_override_unit_test aws_endpoint_override_unit_test.cpp)
+set_tests_properties(aws_endpoint_override_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;object-store;backup;cli;aws"
+)
+
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(tcp_cluster_join_test tcp_cluster_join_test.cpp)
 # chaos_node's environment parsing for joining a running cluster.
@@ -1012,6 +1059,19 @@ add_raft_completion_test(raft_snapshot_boundary_replication_test raft_snapshot_b
 # cluster makes — a follower's run in one call, term before vote, "no vote"
 # stored after a term change.
 add_raft_completion_test(raft_batched_durable_writes_test raft_batched_durable_writes_test.cpp)
+
+# Leader group commit over the object store, at the raft level
+# (.kiro/specs/object-store-group-commit/ task 3): a three-node cluster on
+# write-behind object-store engines over the mock store. Concurrent commands
+# share flushes, and none is counted before a majority holds it durably.
+add_raft_completion_test(raft_object_store_group_commit_test
+    raft_object_store_group_commit_test.cpp)
+target_include_directories(raft_object_store_group_commit_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(raft_object_store_group_commit_test PROPERTIES
+    TIMEOUT 180
+    LABELS "persistence;object-store"
+)
 
 # Multi-Raft sharding — .kiro/specs/multi-raft/
 # Phases 1-3 are strictly additive: these targets exercise the sharding value
@@ -5582,8 +5642,9 @@ set_tests_properties(aws_quorum_manager_real_ec2_test PROPERTIES
     # the whole binary. 10800s (180 min) comfortably exceeds the sum of
     # every case's own worst-case timeout plus fixture setup/teardown
     # overhead, and matches real-cloud-tests.yml's own job-level
-    # timeout-minutes: 180.
-    TIMEOUT 10800
+    # timeout-minutes: 180. Raised by 1500s (one case's bound) for
+    # numeric_id_claim_skips_an_id_another_launch_holds.
+    TIMEOUT 12300
     LABELS "integration;raft;quorum;aws;real-ec2;slow"
     # PreflightSkipFixture (a BOOST_GLOBAL_FIXTURE, registered first) exits
     # with this code before any Boost.Test case runs if
@@ -6236,7 +6297,9 @@ if(KYTHIRA_AZURE_REAL_TESTS)
         # but cannot cover SIGKILL. One slow case can now fail alone instead of
         # taking the whole binary, and the leak needs a case to outrun its own
         # bound rather than merely to be slow.
-        TIMEOUT 13800
+        #
+        # 14400: 13800 plus the 600s bound of numeric_id_claim_skips_a_taken_name.
+        TIMEOUT 14400
         LABELS "integration;azure;real-azure;slow"
     )
 endif()

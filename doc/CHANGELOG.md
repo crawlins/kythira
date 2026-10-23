@@ -3,6 +3,180 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 23, 2026)
+
+- **`raft_object_backup --provider s3` works, and can reach LocalStack and
+  MinIO.** The S3 arm never called `Aws::InitAPI`, so every `--provider s3`
+  run died by SIGSEGV in the SDK's config lookup before sending a request;
+  nothing had run the binary against S3 until this change's process test.
+  The arm now initialises and shuts down the SDK around the client. It also
+  gains `--region` and `--endpoint` (`.kiro/specs/object-backup-s3-endpoint/`):
+  the endpoint is shape-checked before any connection and implies path-style
+  addressing, `AWS_ENDPOINT_URL` stays unread but now draws a warning, and
+  the OCI and OSS arms refuse both flags. CI runs a full create, list,
+  verify and restore-clone cycle against LocalStack through `--endpoint`.
+
+### What Changed (October 22, 2026)
+
+- **The batched object layouts and write-behind are measured on all five
+  providers.** `.kiro/specs/object-store-batched-layout/` task 10 ran the
+  six new real-tier cases on S3 (x64 and arm64), Azure Blob, GCS, OCI and
+  Alibaba OSS, and every case passed. A 100-entry segment costs about one
+  PUT. A ~0.88 MiB segment is at most 721 ms p99 in-region, so the 1 MiB
+  `max_segment_bytes` default stands, provided the AppendEntries RPC timeout
+  stays above it. With 16 submitters, write-behind raised the commit rate
+  2.2-4.5x (`B` 2.5-4), roughly tripled the median commit latency and cut
+  the p99 2-4.5x. The tables are in `doc/cloud_object_persistence.md`.
+
+### What Changed (October 21, 2026)
+
+- **A node started from a snapshot keeps the snapshot's configuration.**
+  When an AppendEntries changed a follower's log and the log held no
+  configuration entry, the follower fell back to the configuration set at
+  construction. A node that started from a snapshot had none, and the
+  member was never initialised, so it was left with no members, and in a
+  Release build `_is_joint_consensus` could read true and throw
+  `bad_optional_access` from the append. The fallback is now the latest
+  snapshot's configuration (at start-up, snapshot install and compaction),
+  and the member is value-initialised. The stdexec full suite found it once
+  the append's exceptions were logged rather than swallowed.
+
+- **A follower no longer acknowledges entries its store does not hold.**
+  Two paths in `node` answered an AppendEntries with success for an entry
+  that no barrier had covered, and the leader counted it toward a commit.
+  A follower put each entry in its in-memory log before storing it, so an
+  append the engine refused left the entry there, and the leader's retry
+  found it "already held" and was answered success. It now stores first.
+  And entries an earlier AppendEntries appended but did not make durable,
+  because its barrier failed or was still running with the lock released,
+  were answered for by the next one without a barrier. The node now keeps
+  the sequence of each entry not yet durable, and an AppendEntries, or a
+  peer-to-peer catch-up, that answers for such entries takes a barrier
+  through them first. A refused write is logged and answered as a failure
+  rather than thrown into the transport. CI found it on #598: a follower
+  over a write-behind object store acked entry 11 and never stored it.
+
+- **Object-store write-behind group commit.** A new opt-in
+  `write_behind` option stages each append and writes the staged entries
+  at the durability barrier, as one run, so one flush carries every command
+  that arrived while the previous one was in flight. Under
+  `log_layout::segmented` that is one PUT per segment. With 24 concurrent
+  commands over a 60 ms mock PUT, the leader sent 2 log PUTs instead of 24,
+  and no command completed before a majority held it. The flush releases
+  the engine lock across its requests. On failure it publishes the
+  acknowledged prefix, records the rest as strays and fails every waiter it
+  covered. Truncation and compaction wait for a running flush and drop
+  staged entries, whose waiters then fail. The default is unchanged.
+  `doc/cloud_object_persistence.md` gives the ceiling as `B / p50(flush)`.
+  Planned in `.kiro/specs/object-store-group-commit/` tasks 2-4.
+
+- **The object-store engine is a barriered engine and calls itself durable.**
+  It now provides `append_log_entry_sequenced`, `barrier_through`,
+  `durable_through` and `durability()`, and answers a new
+  `durability_class::synchronous`: every append is durable when it returns,
+  and a barrier never blocks. `describes_durable_storage` accepts it, so an
+  object-store configuration is no longer reported as not durable. `node`
+  keeps its lock across the barrier as before, and still hands a follower's
+  run to `append_log_entries` as one call. That took one change in
+  `persist_and_append_run`, which used the bulk call only for engines without
+  a barrier. The requests sent are unchanged. This is the base for opt-in
+  write-behind group commit. Planned in
+  `.kiro/specs/object-store-group-commit/` task 1.
+
+- **`doc/cloud_object_persistence.md` covers the new layouts.** A layout
+  options table for `hard_state` and `log`, the transitions between them, the
+  election rule for each (`4 ×` and, combined, `2 × p99(PUT)`, worked against
+  the measured p99s, with GCS held at about a second), throughput restated as
+  leader-bound under either layout with what the segmented log changes
+  instead, a per-cluster cost table by entries per AppendEntries, and the two
+  segment limits. "Future work" now names leader group commit as what remains.
+  Planned in `.kiro/specs/object-store-batched-layout/` task 9.
+
+- **The object-store engine can store a batched append as one object.** With
+  `log_layout::segmented`, an AppendEntries run that continues the log is
+  written as segments, `<prefix>/log/<first index>` holding
+  `{"first_index":…,"last_index":…,"entries":[…]}`, at most
+  `max_segment_entries` (100) entries and `max_segment_bytes` (1 MiB) each, so
+  a follower pays one PUT per run instead of one per entry and recovery one GET
+  per segment. Each element of `entries` is exactly the record a per-entry
+  bucket holds. Truncation overwrites a segment it cuts in place (`If-Match`
+  under fencing); compaction writes the surviving part under its own key and
+  then deletes the segment, which is the commit point. A bucket of
+  one-object-per-entry logs is already a valid segmented log, so switching on
+  needs no migration; switching back is refused while any segment exists, and
+  so is every older binary, whose entry parser needs a top-level `term`.
+  Planned in `.kiro/specs/object-store-batched-layout/` task 7.
+
+- **`raft_object_backup` reads segmented logs.** `create` takes a segment's
+  last index from its body, refuses a segment it cannot parse (no manifest is
+  written), and marks a backup holding a segment `format_version` 2, so an
+  older tool refuses it rather than misreading it. `verify` checks the term of
+  every entry inside a segment and judges contiguity by the engine's chain
+  rule. A log object that starts inside the range the chain already covers,
+  which is what a crash in the middle of a compaction leaves behind, is now a
+  `stray_object` **note**: `verify` still passes, prints it, and the restored
+  engine deletes it before its first log write. A hole past the end of the
+  chain is still a `log_gap` problem. Planned in
+  `.kiro/specs/object-store-batched-layout/` task 8.
+
+- **An object-store compaction no longer leaves a stray log object to become
+  the start of the log.** A crash part-way through a batched append can leave
+  an object past a gap in the log; the engine records it as a stray and
+  deletes it before its next append or truncation, but compaction skipped
+  that step. A compaction that then deleted every entry below the stray left
+  it as the lowest log object, and the next restart loaded the log from it:
+  entries this node never acknowledged. `delete_log_entries_before` now
+  deletes strays first, which adds requests only when a stray exists.
+  Recovery is now a walk along the chain of log objects from the lowest one,
+  which over today's one-object-per-entry layout loads exactly what the old
+  contiguous-run rule loaded, and is the form the segmented log
+  (`.kiro/specs/object-store-batched-layout/` task 7) needs.
+
+- **Leader group commit for the object store is scoped.** `node` already
+  coalesces concurrent `submit_command` calls through the durability
+  barrier; the object-store engine pays one PUT per command because it is
+  not a `barriered_persistence_engine`. The fix is engine-local (stage at
+  append, flush the staged run at the barrier) and builds on the segmented
+  log's write path; the batched-layout spec's open question 1 now records
+  this, and the segmented-log tasks proceed.
+
+### What Changed (October 20, 2026)
+
+- **A follower that grants a vote in a newer term stores it once.** Stepping
+  down to the RequestVote's term used to store the term and "no vote", and
+  the grant then stored the vote: three sequential object-store PUTs on the
+  follower's side of an election, five in all rather than the four the
+  sizing rule assumed. `handle_request_vote` now stores the new term once,
+  with the vote when it grants and alone when it refuses, which makes
+  `4 × p99(PUT)` true. Without `save_hard_state` the grant is the term then
+  the vote, two writes where it was three. Planned with the rest of open
+  item 15 in `.kiro/specs/object-store-batched-layout/`.
+
+- **The object-store engine can store the term and the vote in one object,
+  and moves an existing bucket to that layout in place.** With
+  `hard_state_layout::combined`, `<prefix>/term` holds
+  `{"term":…,"voted_for":…}` and every hard-state write is one PUT. On a
+  bucket a default engine wrote, the first hard-state write PUTs that record
+  over the decimal `term`, then marks `voted_for` as `retired`. Under
+  fencing both PUTs are conditional on the versions the engine loaded, so a
+  duplicate node still on the old layout is caught. A crash at any point
+  leaves state that this build reads as the old pair or the new one. An
+  older binary reads the old pair or refuses to start with `corrupt object
+  <prefix>/term`. The runbook in `doc/cloud_object_persistence.md` says why
+  that refusal is the rollback guard and not damage. Take a backup before
+  switching: it is the way back to an older binary.
+
+- **`raft_object_backup` backs up, verifies and restores an upgraded
+  bucket.** `create` reads the term and the vote from the combined
+  `<prefix>/term` record and ignores the `retired` vote slot beside it. The
+  manifest then says `format_version` 2. A bucket on the default layout still
+  gets `format_version` 1 and the same manifest, byte for byte, as before. An
+  older copy of the tool refuses an upgraded bucket at `create`, and refuses a
+  version 2 backup at `verify` and so at both restores, without writing
+  anything; back up and restore an upgraded bucket with this build's tool or a
+  later one. No flag changed. The engine and the tool now share one parser
+  for the record (object-store-batched-layout task 5).
+
 ### What Changed (October 19, 2026)
 
 - **chaos_node's leader can own an EC2 quorum manager.** With

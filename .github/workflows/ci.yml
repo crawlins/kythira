@@ -555,6 +555,40 @@ jobs:
         if: always() && matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
         run: docker stop localstack || true
 
+      # raft_object_backup's full create/list/verify/restore-clone cycle over
+      # real S3 wire traffic, through --endpoint
+      # (.kiro/specs/object-backup-s3-endpoint/ task 7). Its own LocalStack on
+      # its own port, so it neither waits on nor disturbs the EC2 step above.
+      # Same pinned, token-free 4.14.0, which honours the If-None-Match: * and
+      # If-Match conditional writes restore-clone depends on (checked
+      # 2026-10-23). A LocalStack that never becomes healthy fails the step;
+      # so does a binary built without the S3 provider, which exits 1.
+      - name: Run the backup tool's S3 cycle against LocalStack
+        if: matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
+        run: |
+          docker run -d --rm --name localstack-s3 -p 4567:4566 -e SERVICES=s3 \
+            localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl -fsS http://localhost:4567/_localstack/health \
+                | grep -Eq '"s3": "(available|running)"'; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then
+            echo "::error::LocalStack S3 never became available"
+            docker logs localstack-s3 | tail -50
+            exit 1
+          fi
+          scripts/backup-s3-localstack-cycle.sh \
+            build/cmd/raft_object_backup/raft_object_backup http://localhost:4567
+
+      - name: Stop LocalStack S3
+        if: always() && matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
+        run: docker stop localstack-s3 || true
+
       - name: Publish test results
         uses: dorny/test-reporter@3eeb9fc888e82e8be2fb356bbeec2750231672bc # v1
         if: always()
@@ -566,7 +600,7 @@ jobs:
           fail-on-empty: false
 
       - name: Upload test results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-${{ matrix.compiler }}-${{ matrix.arch_label }}
@@ -1734,7 +1768,7 @@ jobs:
 
       - name: Upload BIND fixture log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dns-test-server-log
           path: build/tests/dns-test-server/named.log
@@ -2406,7 +2440,7 @@ jobs:
           fail-on-empty: false
 
       - name: Upload coverage test results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: coverage-test-results
@@ -2546,7 +2580,7 @@ jobs:
             }
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: coverage-report
@@ -2863,7 +2897,7 @@ jobs:
           fail-on-empty: false
 
       - name: Upload ThreadSanitizer test results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: tsan-test-results
@@ -3295,7 +3329,7 @@ jobs:
             -- -LE '^(slow|performance|verbose|benchmark|docker)$'
 
       - name: Upload ${{ matrix.backend }} test results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-future-backend-${{ matrix.backend }}
@@ -3555,7 +3589,7 @@ jobs:
 
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@1f0c5cde4bc74cd7e1254d0cb4de8d49e9068c7d # v4.0.0
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       # Uploaded unconditionally: on main it is what `docs-deploy` publishes, and
       # on a PR it gives the reviewer a downloadable copy of the rendered docs.

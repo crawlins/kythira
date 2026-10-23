@@ -73,6 +73,12 @@ struct backup_cli_args {
     std::vector<std::string> nodes;
     bool quiesced{false};
     bool force{false};
+
+    /// S3 only. Empty means "let the SDK region chain decide".
+    std::string region;
+    /// S3 only. Empty means "AWS's own endpoints". Validated by the S3 arm,
+    /// not here, because only that arm knows the rules.
+    std::string endpoint;
 };
 
 /// @brief Thrown by `parse_backup_cli_args` for anything the operator can fix
@@ -159,6 +165,12 @@ inline auto print_backup_cli_usage(
         << "  --force                  restore: proceed into a non-empty target,\n"
         << "                           DELETING its engine-owned keys first. Never\n"
         << "                           merges\n"
+        << "  --region <name>          s3 only: the region to sign for. Default: the\n"
+        << "                           AWS SDK chain (AWS_DEFAULT_REGION, AWS_REGION,\n"
+        << "                           the config profile, EC2 metadata, us-east-1)\n"
+        << "  --endpoint <url>         s3 only: an S3-compatible service, e.g.\n"
+        << "                           http://localhost:4566. Implies path-style\n"
+        << "                           addressing. AWS_ENDPOINT_URL is NOT read\n"
         << "  --help                   this text\n"
         << "\n"
         << "exit codes:\n"
@@ -271,6 +283,15 @@ inline auto print_backup_cli_usage(std::ostream& out, std::string_view argv0,
             args.backup_id = value();
         } else if (arg == "--nodes") {
             args.nodes = detail::split_commas(value());
+        } else if (arg == "--region" || arg == "--endpoint") {
+            // Presence only (object-backup-s3-endpoint Requirement 3.5): AWS
+            // checks a real region on the first request and MinIO takes any
+            // name, so a spelling check here would reject valid setups.
+            auto v = value();
+            if (v.empty()) {
+                throw backup_cli_usage_error(std::string(arg) + " needs a non-empty value");
+            }
+            (arg == "--region" ? args.region : args.endpoint) = std::move(v);
         } else if (arg == "--quiesced") {
             args.quiesced = true;
         } else if (arg == "--force") {
@@ -357,17 +378,27 @@ auto run_backup_cli(Store store, const backup_cli_args& args, std::ostream& out,
             }
             case backup_verb::verify: {
                 const auto report = backup.verify(dst, args.backup_id);
+                const auto print = [&out](const verification_problem& item) {
+                    out << "  " << item.kind << "  " << item.subject << "\n"
+                        << "      " << item.detail << "\n";
+                };
                 if (report.ok) {
                     out << "verified " << report.manifest.backup_id << " — no problems\n";
-                    return detail::k_exit_ok;
+                } else {
+                    out << "verified " << report.manifest.backup_id << " — "
+                        << report.problems.size() << " problem(s)\n";
+                    for (const auto& problem : report.problems) {
+                        print(problem);
+                    }
                 }
-                out << "verified " << report.manifest.backup_id << " — " << report.problems.size()
-                    << " problem(s)\n";
-                for (const auto& problem : report.problems) {
-                    out << "  " << problem.kind << "  " << problem.subject << "\n"
-                        << "      " << problem.detail << "\n";
+                // Notes do not change the exit status: they are not problems.
+                if (!report.notes.empty()) {
+                    out << report.notes.size() << " note(s)\n";
+                    for (const auto& note : report.notes) {
+                        print(note);
+                    }
                 }
-                return detail::k_exit_verify_problems;
+                return report.ok ? detail::k_exit_ok : detail::k_exit_verify_problems;
             }
             case backup_verb::restore_clone: {
                 const backup_source target{args.target_bucket, args.target_prefix};

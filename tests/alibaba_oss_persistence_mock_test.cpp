@@ -797,6 +797,39 @@ using oss_client_t = kythira::alibaba_oss_client;
 
 KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(alibaba_oss_mock_harness, oss_client_t)
 
+namespace {
+
+/// The same mock with both batched layouts on
+/// (`.kiro/specs/object-store-batched-layout/` task 7): OSS has no conditional
+/// writes, so the unfenced engine is the only one it runs, and the mock
+/// verifies each request's signature over the bytes that arrived — the
+/// segment-sized PUTs included.
+struct alibaba_oss_mock_both_layouts_harness : alibaba_oss_mock_harness {
+    [[nodiscard]] static auto default_options() -> kythira::object_persistence_options {
+        kythira::object_persistence_options opts;
+        opts.hard_state = kythira::hard_state_layout::combined;
+        opts.log = kythira::log_layout::segmented;
+        return opts;
+    }
+
+    [[nodiscard]] auto make_engine() const -> engine_t {
+        return engine_t{client(), bucket(), prefix(), default_options()};
+    }
+    [[nodiscard]] auto make_engine(const std::string& b, const std::string& p) const -> engine_t {
+        return engine_t{client(), b, p, default_options()};
+    }
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{client(), bucket(), prefix(), std::move(opts)};
+    }
+};
+
+using oss_client_both_layouts_t = kythira::alibaba_oss_client;
+
+}  // namespace
+
+KYTHIRA_OBJECT_STORE_CONFORMANCE_NO_INJECTION(alibaba_oss_mock_both_layouts_harness,
+                                              oss_client_both_layouts_t)
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Credentials from the environment (object-backup-oci-oss-credentials 6.2)
 // ─────────────────────────────────────────────────────────────────────────────

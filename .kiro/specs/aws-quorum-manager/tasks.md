@@ -568,16 +568,22 @@ Reference implementations to study before starting:
     but is not registered in CTest; all other tests pass without modification
   - _Requirements: 16.8–16.11, 16.15–16.21, 17.4–17.7, 18.10, 19.6–19.7_
 
-- [ ] 8. Real-EC2 `process_crash_triggers_replacement` (Req 19.7, 16.19j-k)
+- [x] 8. Real-EC2 `process_crash_triggers_replacement` (Req 19.7, 16.19j-k)
   - Replace the heartbeat-tag cases in task 7 (`heartbeat_timeout_triggers_replacement`
     and the quarantine waits on `heartbeat_timeout`) with leader-driven
     checks: run a kythira cluster whose leader owns the manager with
     `quorum_peer_dead_after = 30s`, kill the process over SSH (the current
     `process_crash_via_ssh_kill` calls `StopInstances` instead), verify
     `assess_quorum` still reports the node live, then verify the leader's
-    AZ1 replacement, removal and termination.
+    replacement, removal and termination. With one voter per AZ the dead
+    voter's group has no live member, so the leader heals it as a lost
+    group (Req 9.2) and places the replacement in a surviving AZ, not AZ1.
   - Real-cloud runs follow the project's real-cloud cost rules.
-  - Written October 19, 2026; not yet run against real EC2. The leader is
+  - Passed against real EC2 on x64 and arm64 on October 21, 2026 (Real
+    Cloud Tests run 39586759184, about $0.002 of EC2 time per
+    architecture). The leader launched the replacement in a surviving AZ,
+    terminated the killed node, and the replacement caught up.
+  - Written October 19, 2026. The leader is
     `chaos_node` with `QUORUM_MANAGER=aws` (`cmd/chaos_node/aws_quorum.hpp`)
     and `QUORUM_PEER_DEAD_AFTER_MS`. The test is
     `tests/aws_chaos_node_crash_real_ec2_test.cpp`, its own file rather than
@@ -607,8 +613,13 @@ Reference implementations to study before starting:
   dropped on step-down (14.7): a deposed leader finishing a launch and its
   successor can still pick the same id. The launch's ClientToken, derived from
   the cluster and the id (`launch_client_token`), lets EC2 accept only one
-  launch of an id; see the "Node ids across leaders" note on the
-  `quorum_manager` concept.
+  launch of an id per Availability Zone: a launch into a subnet gets zonal
+  idempotency, and real-EC2 run 39871773330 launched a second id 1 in another
+  AZ. The manager therefore also queries the `client-token` filter, which
+  spans the region, before launching (a holder in another subnet means the id
+  is taken) and after (of two launches that both won, the lower instance id
+  keeps the id and the other is terminated). See the "Node ids across
+  leaders" note on the `quorum_manager` concept.
 
 - `user_data_template` is the primary mechanism for starting kythira on a new
   instance. In real-AWS tests the fixture constructs this dynamically with S3

@@ -584,6 +584,23 @@ private:
             // two) or fails with IdempotentParameterMismatch, or with
             // IdempotentInstanceTerminated when that instance is gone; both
             // mean "taken", and this call moves on to the next id.
+            //
+            // EC2 only enforces that within one Availability Zone. A launch
+            // that names a subnet gets zonal idempotency, so the same token
+            // in a subnet of another AZ launches a second instance; run
+            // 39871773330 did exactly that live. Two more checks close the
+            // cross-AZ gap, both over the cluster's instances in every AZ,
+            // matched on the ClientToken DescribeInstances reports for each
+            // (not the `client-token` filter, which LocalStack rejects):
+            // before the launch, an instance holding the token
+            // in another subnet means the id is taken; after it, an instance
+            // in another AZ that also won its zonal claim to the same token
+            // is a rival, and the one whose instance id sorts lower keeps the
+            // id. The other terminates what it launched and tries the next
+            // id. Both leaders apply the same rule, so they agree on the
+            // winner whichever of them looks first. What remains is two
+            // launches that each miss the other in DescribeInstances, inside
+            // EC2's eventual-consistency window.
             std::optional<NodeId> pre_launch_id;
             Aws::EC2::Model::RunInstancesOutcome outcome;
             for (std::size_t attempt = 1;; ++attempt) {
@@ -592,6 +609,13 @@ private:
                         allocate_numeric_node_id(*_ec2, _cfg.cluster_name, _id_floor->load());
                     raise_id_floor(*pre_launch_id);
                     run_req.SetClientToken(launch_client_token(_cfg.cluster_name, *pre_launch_id));
+                    if (token_held_in_another_subnet(*_ec2, _cfg.cluster_name,
+                                                     run_req.GetClientToken(), subnet_id)) {
+                        if (attempt >= max_id_claim_attempts) {
+                            throw std::runtime_error(id_claim_exhausted(*pre_launch_id));
+                        }
+                        continue;
+                    }
                 }
 
                 if (!_cfg.user_data_template.empty()) {
@@ -621,12 +645,28 @@ private:
 
                 outcome = _ec2->RunInstances(run_req);
                 if constexpr (!instance_is_node_id) {
-                    if (launch_id_taken(outcome)) {
+                    bool taken = launch_id_taken(outcome);
+                    if (!taken && outcome.IsSuccess() &&
+                        !outcome.GetResult().GetInstances().empty()) {
+                        const std::string launched(
+                            outcome.GetResult().GetInstances()[0].GetInstanceId());
+                        if (token_held_by_a_lower_instance(*_ec2, _cfg.cluster_name,
+                                                           run_req.GetClientToken(), launched)) {
+                            Aws::EC2::Model::TerminateInstancesRequest term;
+                            term.AddInstanceIds(launched);
+                            auto terminated = _ec2->TerminateInstances(term);
+                            if (!terminated.IsSuccess()) {
+                                throw std::runtime_error(
+                                    "node id " + node_id_str(*pre_launch_id) +
+                                    " was also claimed in another AZ, and terminating " + launched +
+                                    " failed: " + std::string(terminated.GetError().GetMessage()));
+                            }
+                            taken = true;
+                        }
+                    }
+                    if (taken) {
                         if (attempt >= max_id_claim_attempts) {
-                            throw std::runtime_error("node id " + node_id_str(*pre_launch_id) +
-                                                     " is already in use and " +
-                                                     std::to_string(max_id_claim_attempts) +
-                                                     " attempts to claim a free id all collided");
+                            throw std::runtime_error(id_claim_exhausted(*pre_launch_id));
                         }
                         continue;
                     }
@@ -833,6 +873,8 @@ public:
         Aws::EC2::Model::InstanceStateName state{Aws::EC2::Model::InstanceStateName::NOT_SET};
         std::optional<std::string> node_id_tag;
         std::optional<std::string> cluster_tag;
+        std::string subnet_id;
+        std::string client_token;
     };
 
     /// Composite and string mode: `{region, ec2_id}` as a NodeId, or nullopt when
@@ -893,7 +935,9 @@ public:
                     out.push_back({.instance_id = std::string(inst.GetInstanceId()),
                                    .state = inst.GetState().GetName(),
                                    .node_id_tag = find_tag(inst.GetTags(), "kythira:node-id"),
-                                   .cluster_tag = find_tag(inst.GetTags(), "kythira:cluster")});
+                                   .cluster_tag = find_tag(inst.GetTags(), "kythira:cluster"),
+                                   .subnet_id = std::string(inst.GetSubnetId()),
+                                   .client_token = std::string(inst.GetClientToken())});
                 }
             }
             token = outcome.GetResult().GetNextToken();
@@ -955,6 +999,64 @@ public:
         const auto digest = Aws::Utils::HashingUtils::CalculateSHA256(
             Aws::String(cluster + "/" + node_id_traits<NodeId>::to_text(id)));
         return "kythira-" + std::string(Aws::Utils::HashingUtils::HexEncode(digest)).substr(0, 48);
+    }
+
+    /// Numeric mode: the error for a provision whose every candidate id was taken.
+    static auto id_claim_exhausted(const NodeId& last) -> std::string
+    requires(!instance_is_node_id)
+    {
+        return "node id " + node_id_traits<NodeId>::to_text(last) + " is already in use and " +
+               std::to_string(max_id_claim_attempts) + " attempts to claim a free id all collided";
+    }
+
+    /// Numeric mode: the instances of @p cluster, in any AZ and any state, that
+    /// were launched with @p token. They carry the cluster tag from the launch
+    /// request itself, so a launch is never visible here without it.
+    static auto instances_with_token(Aws::EC2::EC2Client& ec2, const std::string& cluster,
+                                     const Aws::String& token) -> std::vector<cluster_instance>
+    requires(!instance_is_node_id)
+    {
+        auto all = describe_instances(ec2, {make_filter("tag:kythira:cluster", {cluster})});
+        std::erase_if(all, [&](const cluster_instance& ci) { return ci.client_token != token; });
+        return all;
+    }
+
+    /// @brief Whether some instance of @p cluster launched with @p token sits in
+    ///        a subnet other than @p subnet_id.
+    ///
+    /// RunInstances only dedupes a token within one Availability Zone, so a
+    /// holder in another AZ's subnet would not stop this launch. One in another
+    /// subnet of the same AZ would (IdempotentParameterMismatch), and counting
+    /// it here as well just answers that before the launch. A holder in any
+    /// state counts, as IdempotentInstanceTerminated does for the zonal case.
+    static auto token_held_in_another_subnet(Aws::EC2::EC2Client& ec2, const std::string& cluster,
+                                             const Aws::String& token, const std::string& subnet_id)
+        -> bool
+    requires(!instance_is_node_id)
+    {
+        return std::ranges::any_of(
+            instances_with_token(ec2, cluster, token),
+            [&](const cluster_instance& ci) { return ci.subnet_id != subnet_id; });
+    }
+
+    /// @brief Whether an instance of @p cluster other than @p launched, still
+    ///        pending or running, carries @p token and has an instance id that
+    ///        sorts below @p launched.
+    ///
+    /// Two leaders that both pass token_held_in_another_subnet() and launch in
+    /// different AZs each win a zonal claim. Each then runs this check, and the
+    /// lower instance id keeps the node id on both sides.
+    static auto token_held_by_a_lower_instance(Aws::EC2::EC2Client& ec2, const std::string& cluster,
+                                               const Aws::String& token,
+                                               const std::string& launched) -> bool
+    requires(!instance_is_node_id)
+    {
+        using Aws::EC2::Model::InstanceStateName;
+        return std::ranges::any_of(
+            instances_with_token(ec2, cluster, token), [&](const cluster_instance& ci) {
+                return ci.instance_id < launched && ci.state != InstanceStateName::shutting_down &&
+                       ci.state != InstanceStateName::terminated;
+            });
     }
 
     /// @brief Whether a numeric-mode RunInstances outcome means its ClientToken

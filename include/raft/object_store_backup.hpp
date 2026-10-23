@@ -73,6 +73,26 @@
 /// than no backup, because its whole purpose is to be the thing you trust in a
 /// recovery window.
 ///
+/// Both hard-state layouts are read (`.kiro/specs/object-store-batched-layout/`
+/// Requirement 12). A `term` whose first byte is `{` is the combined record,
+/// parsed by the engine's own `parse_combined_hard_state`, and supplies both
+/// `current_term` and `voted_for`; the `voted_for` object beside it is then not
+/// state, whether it holds `retired` or a legacy vote a crash left behind. Which
+/// of those applies depends on both objects, so they are resolved after the
+/// listing loop rather than in listing order. A backup holding a combined record
+/// gets `format_version` 2, which an older tool's `verify` (and so its restores)
+/// refuses; one without gets 1 and a manifest byte-identical to before.
+///
+/// Both log layouts are read too (Requirement 12.1-12.3). A `log/<first>` body
+/// that is a segment (`log_layout::segmented`) is validated by the engine's own
+/// `parse_segment` at `create`, supplies `last_log_index` from its
+/// `last_index`, and makes the manifest `format_version` 2. `verify` checks
+/// every entry's term inside it and judges contiguity by the engine's chain
+/// rule. An object the chain overlaps — the compaction suffix a crash left
+/// beside the segment it was cut from — is a `verification_report::notes`
+/// entry, not a problem: a quiesced torn source legitimately holds one, and the
+/// restored engine deletes it before its first write.
+///
 /// ## Write it to a different bucket
 ///
 /// Requirement 10.5, and the reasoning is Requirement 8.6's: a backup in the
@@ -217,11 +237,26 @@ struct verification_report {
     bool ok{false};
     backup_manifest manifest;
     std::vector<verification_problem> problems;
+    /// Things worth knowing that do not make the backup unsafe to restore, and
+    /// so do not clear `ok`. Today one kind: `"stray_object"`, a log object
+    /// that starts inside the range the chain already covers. The engine skips
+    /// it on load and deletes it before its next log write, so a restore of it
+    /// is harmless; it is still named so an operator is not surprised by a key
+    /// the restored node then removes.
+    std::vector<verification_problem> notes;
 };
 
 namespace object_store_backup_detail {
 
+/// A copy whose `term` is a bare decimal, or absent, and whose log objects are
+/// all singletons: every key and body an older tool reads. Such a manifest is
+/// byte-identical to one written before either new layout existed.
 inline constexpr int k_manifest_format_version = 1;
+/// A copy holding a combined `term` (`hard_state_layout::combined`) or a log
+/// segment (`log_layout::segmented`). An older tool's `verify` refuses it as an
+/// unrecognised version, and its restores run that `verify` first, so it never
+/// restores a layout it cannot read.
+inline constexpr int k_manifest_format_version_combined = 2;
 inline constexpr const char* k_manifest_name = "manifest.json";
 inline constexpr const char* k_objects_dir = "objects/";
 
@@ -230,6 +265,12 @@ inline constexpr const char* k_objects_dir = "objects/";
 /// the padding is a documented, test-pinned part of the on-bucket format that
 /// the conformance suite would catch a divergence in.
 inline constexpr std::size_t k_index_digits = 20;
+
+/// @p index as the engine spells it in a log key.
+[[nodiscard]] inline auto pad_index(std::uint64_t index) -> std::string {
+    std::string digits = std::to_string(index);
+    return std::string(k_index_digits - digits.size(), '0') + digits;
+}
 
 /// A `backup_id` derived from the time, in a form that sorts chronologically
 /// under a lexicographic listing — which is the only ordering these stores
@@ -317,6 +358,7 @@ public:
 
         const std::string source_root = src.prefix + "/";
         const std::string backup_root = backup_prefix(dst, backup_id);
+        hard_state_slots hard_state;
 
         // The listing is taken once, and everything below is relative to it.
         // Objects that appear after it are simply not in this backup — which is
@@ -342,7 +384,7 @@ public:
                 continue;
             }
 
-            interpret_metadata(relative, got->body, key, manifest);
+            interpret_metadata(relative, got->body, key, manifest, hard_state);
 
             const std::string destination = backup_root + detail::k_objects_dir + relative;
             _store.put_object(dst.bucket, destination, got->body);
@@ -350,6 +392,11 @@ public:
             manifest.objects.push_back(
                 backup_object_entry{relative, static_cast<std::uint64_t>(got->body.size()),
                                     object_store_persistence_detail::md5_hex(got->body)});
+        }
+
+        resolve_hard_state(hard_state, manifest);
+        if (hard_state.segment_seen) {
+            manifest.format_version = detail::k_manifest_format_version_combined;
         }
 
         // Written last, and that ordering is the whole commit protocol — see the
@@ -406,12 +453,15 @@ public:
         verification_report report;
         report.manifest = parse_manifest(got->body, manifest_key);
 
-        if (report.manifest.format_version != detail::k_manifest_format_version) {
+        if (report.manifest.format_version != detail::k_manifest_format_version &&
+            report.manifest.format_version != detail::k_manifest_format_version_combined) {
             report.problems.push_back(verification_problem{
                 "manifest_version", manifest_key,
                 "manifest format version " + std::to_string(report.manifest.format_version) +
-                    " is not the " + std::to_string(detail::k_manifest_format_version) +
-                    " this build understands — refusing to interpret it rather than guessing"});
+                    " is not one this build understands (" +
+                    std::to_string(detail::k_manifest_format_version) + " or " +
+                    std::to_string(detail::k_manifest_format_version_combined) +
+                    ") — refusing to interpret it rather than guessing"});
             report.ok = false;
             return report;
         }
@@ -425,8 +475,8 @@ public:
         // it leaves, which is deliberate: "…objects/log/…05 is missing" says
         // what broke, and "log index 5 is missing between 4 and 6" says what it
         // costs.
-        const auto restorable = check_objects(dst, root, report);
-        check_log_contiguity(report, restorable);
+        auto restorable = check_objects(dst, root, report);
+        check_log_contiguity(report, std::move(restorable));
         report.ok = report.problems.empty();
         return report;
     }
@@ -724,23 +774,42 @@ private:
         return dst.prefix + "/" + backup_id + "/";
     }
 
+    /// The indices one copied log object restores: a singleton's one, or a
+    /// segment's `first_index..last_index`.
+    struct log_range {
+        std::uint64_t first{0};
+        std::uint64_t last{0};
+    };
+
+    /// `term` and `voted_for` as copied, held until the listing loop ends:
+    /// whether `voted_for` is state depends on what `term` holds, and the
+    /// listing order is not something to depend on.
+    ///
+    /// `segment_seen` rides along for the same reason: the manifest's
+    /// `format_version` is settled once, after the loop, from everything copied.
+    struct hard_state_slots {
+        std::optional<std::string> term_body;
+        std::string term_key;
+        std::optional<std::string> vote_body;
+        std::string vote_key;
+        bool segment_seen{false};
+    };
+
     /// Reads what the manifest reports about the node's state out of the object
     /// currently being copied. Called with the object's key relative to the
-    /// source prefix, so the layout knowledge is all in one place.
+    /// source prefix, so the layout knowledge is all in one place. `term` and
+    /// `voted_for` are only noted here; `resolve_hard_state` reads them.
     static auto interpret_metadata(const std::string& relative, const std::string& body,
-                                   const std::string& key, backup_manifest& manifest) -> void {
-        namespace detail = object_store_backup_detail;
-
+                                   const std::string& key, backup_manifest& manifest,
+                                   hard_state_slots& hard_state) -> void {
         if (relative == "term") {
-            manifest.current_term = detail::parse_u64(body, key);
+            hard_state.term_body = body;
+            hard_state.term_key = key;
             return;
         }
         if (relative == "voted_for") {
-            // `"none"` is the engine's sentinel for "voted for nobody", and it
-            // is an object that exists — recording it as absent would lose the
-            // distinction between "never voted" and "explicitly voted for
-            // nobody in this term".
-            manifest.voted_for = body;
+            hard_state.vote_body = body;
+            hard_state.vote_key = key;
             return;
         }
         if (relative == "snapshot") {
@@ -748,7 +817,11 @@ private:
             return;
         }
         if (relative.starts_with("log/")) {
-            interpret_log_key(relative.substr(4), key, manifest);
+            const auto index = interpret_log_key(relative.substr(4), key, manifest);
+            if (const auto last = interpret_segment(body, key, index)) {
+                manifest.last_log_index = std::max(*manifest.last_log_index, *last);
+                hard_state.segment_seen = true;
+            }
             return;
         }
         // Anything else — `owner`, retained snapshots under `snapshots/`, and
@@ -756,6 +829,81 @@ private:
         // and contributes nothing to the manifest's interpretation. Copying an
         // object this file does not understand is correct: a backup that
         // silently dropped keys would restore an incomplete prefix.
+    }
+
+    /// The manifest's `current_term`, `voted_for` and `format_version`, by the
+    /// engine's load precedence (`.kiro/specs/object-store-batched-layout/`
+    /// design Part 2):
+    ///
+    ///   * a combined `term` is the pair — `null` becomes `"none"`, the legacy
+    ///     sentinel's manifest value — and the vote slot beside it is ignored,
+    ///     whatever it holds;
+    ///   * otherwise the legacy pair exactly as before: `parse_u64` for `term`,
+    ///     `voted_for` verbatim;
+    ///   * `retired` beside anything but a combined `term` throws, as the
+    ///     engine refuses it. It is written only after the combined record, so
+    ///     on a live source it means a migration landed between the two reads,
+    ///     and the copy holds no state the node ever held.
+    static auto resolve_hard_state(const hard_state_slots& hard_state, backup_manifest& manifest)
+        -> void {
+        namespace detail = object_store_backup_detail;
+        namespace engine_detail = object_store_persistence_detail;
+
+        if (hard_state.term_body && hard_state.term_body->starts_with('{')) {
+            engine_detail::combined_hard_state_record record;
+            try {
+                record = engine_detail::parse_combined_hard_state(*hard_state.term_body);
+            } catch (const std::exception& err) {
+                throw std::runtime_error("object_store_backup: corrupt object " +
+                                         hard_state.term_key +
+                                         ": not a combined hard-state record: " + err.what());
+            }
+            manifest.current_term = record.term;
+            manifest.voted_for = render_combined_vote(record.voted_for, hard_state.term_key);
+            manifest.format_version = detail::k_manifest_format_version_combined;
+            return;
+        }
+
+        if (hard_state.vote_body && *hard_state.vote_body == engine_detail::k_retired_vote) {
+            throw std::runtime_error(
+                "object_store_backup: corrupt object " + hard_state.vote_key + ": \"" +
+                std::string(engine_detail::k_retired_vote) +
+                "\" is written only after term holds a combined hard-state record, but the"
+                " copied term " +
+                (hard_state.term_body ? "is a decimal" : "is absent") +
+                ". On a live source that is a migration landing between the two reads — take the"
+                " backup again");
+        }
+        if (hard_state.term_body) {
+            manifest.current_term = detail::parse_u64(*hard_state.term_body, hard_state.term_key);
+        }
+        if (hard_state.vote_body) {
+            // `"none"` is the engine's sentinel for "voted for nobody", and it
+            // is an object that exists — recording it as absent would lose the
+            // distinction between "never voted" and "explicitly voted for
+            // nobody in this term".
+            manifest.voted_for = *hard_state.vote_body;
+        }
+    }
+
+    /// A combined record's `voted_for` for the manifest: `"none"` for `null`,
+    /// else the node id in display form. Generic over the store and not over
+    /// `NodeId`, so either id type is accepted — but only those: a vote the
+    /// engine could not load at either instantiation is corruption.
+    [[nodiscard]] static auto render_combined_vote(const boost::json::value& vote,
+                                                   const std::string& key) -> std::string {
+        if (vote.is_null()) {
+            return "none";
+        }
+        if (vote.is_string()) {
+            return std::string(vote.as_string());
+        }
+        if (vote.is_uint64() || (vote.is_int64() && vote.as_int64() >= 0)) {
+            return std::to_string(vote.to_number<std::uint64_t>());
+        }
+        throw std::runtime_error("object_store_backup: corrupt object " + key +
+                                 ": the combined hard-state record's voted_for is neither null,"
+                                 " a string nor an unsigned integer");
     }
 
     static auto interpret_snapshot(const std::string& body, const std::string& key,
@@ -801,7 +949,7 @@ private:
     }
 
     static auto interpret_log_key(const std::string& suffix, const std::string& key,
-                                  backup_manifest& manifest) -> void {
+                                  backup_manifest& manifest) -> std::uint64_t {
         namespace detail = object_store_backup_detail;
         if (suffix.size() != detail::k_index_digits ||
             suffix.find_first_not_of("0123456789") != std::string::npos) {
@@ -819,20 +967,54 @@ private:
             manifest.first_log_index ? std::min(*manifest.first_log_index, index) : index;
         manifest.last_log_index =
             manifest.last_log_index ? std::max(*manifest.last_log_index, index) : index;
+        return index;
+    }
+
+    /// A segment's `last_index`, or `nullopt` for a singleton. The key gives a
+    /// singleton's whole range but only a segment's first index, so the body
+    /// has to be read for the manifest's `last_log_index` to be true.
+    ///
+    /// A segment that does not parse, or whose shape the engine's own
+    /// `parse_segment` refuses, throws — the "present and unparseable" rule, so
+    /// no manifest is written over it. A body that is not JSON at all is told
+    /// apart by its opening bytes: the engine writes `first_index` first, and
+    /// `parse_segment` requires it there, so a torn segment still starts
+    /// `{"first_index"`. Anything else unreadable is a singleton's business,
+    /// which `create` has never parsed and `verify` reports, as before.
+    static auto interpret_segment(const std::string& body, const std::string& key,
+                                  std::uint64_t index) -> std::optional<std::uint64_t> {
+        namespace engine_detail = object_store_persistence_detail;
+        boost::system::error_code ec;
+        const auto parsed = boost::json::parse(body, ec);
+        if (ec) {
+            if (body.starts_with(R"({"first_index")")) {
+                throw std::runtime_error("object_store_backup: corrupt object " + key +
+                                         ": not a log segment: " + ec.message());
+            }
+            return std::nullopt;
+        }
+        if (!engine_detail::is_segment(parsed)) {
+            return std::nullopt;
+        }
+        try {
+            return engine_detail::parse_segment(parsed.as_object(), index).last;
+        } catch (const std::exception& err) {
+            throw std::runtime_error("object_store_backup: corrupt object " + key +
+                                     ": not a log segment: " + err.what());
+        }
     }
 
     /// Every manifest entry must still be present, the right size, and hash to
     /// what was recorded. Term monotonicity is checked here too, because it
     /// needs each log entry's body and this is the pass that reads them.
     ///
-    /// Returns the indices of the log entries that survived every check — the
-    /// log as it could actually be restored, which is what contiguity is then
-    /// judged against.
+    /// Returns the index ranges of the log objects that survived every check —
+    /// the log as it could actually be restored, which is what contiguity is
+    /// then judged against. A singleton's range is its one index.
     [[nodiscard]] auto check_objects(const backup_destination& dst, const std::string& root,
-                                     verification_report& report) const
-        -> std::vector<std::uint64_t> {
+                                     verification_report& report) const -> std::vector<log_range> {
         namespace detail = object_store_backup_detail;
-        std::vector<std::uint64_t> restorable;
+        std::vector<log_range> restorable;
         for (const auto& entry : report.manifest.objects) {
             const std::string key = root + detail::k_objects_dir + entry.relative_key;
             const bool is_log = entry.relative_key.starts_with("log/");
@@ -868,10 +1050,9 @@ private:
                                              " but the stored object" + " hashes to " + actual});
                 continue;
             }
-            if (is_log) {
-                check_entry_term(key, got->body, report);
-                if (index) {
-                    restorable.push_back(*index);
+            if (is_log && index) {
+                if (const auto range = check_log_object(key, got->body, *index, report)) {
+                    restorable.push_back(*range);
                 }
             }
         }
@@ -896,6 +1077,52 @@ private:
         return std::stoull(suffix);
     }
 
+    /// One copied log object's term check, and the range it restores. A
+    /// singleton restores its key's index whatever its body holds — a body that
+    /// cannot be read is already a problem, and the gap it would leave is not a
+    /// second one. A segment that does not parse restores nothing, because
+    /// without its body there is no range to restore.
+    static auto check_log_object(const std::string& key, const std::string& body,
+                                 std::uint64_t index, verification_report& report)
+        -> std::optional<log_range> {
+        namespace engine_detail = object_store_persistence_detail;
+        boost::system::error_code ec;
+        const auto parsed = boost::json::parse(body, ec);
+        if (ec || !engine_detail::is_segment(parsed)) {
+            check_entry_term(key, body, report);
+            return log_range{index, index};
+        }
+        std::optional<log_range> range;
+        std::vector<std::uint64_t> terms;
+        try {
+            const auto& obj = parsed.as_object();
+            const auto shape = engine_detail::parse_segment(obj, index);
+            for (const auto& element : obj.at("entries").as_array()) {
+                terms.push_back(term_of(element));
+            }
+            range = log_range{shape.first, shape.last};
+        } catch (const std::exception& err) {
+            report.problems.push_back(verification_problem{
+                "unreadable_entry", key,
+                std::string("the copied log segment could not be parsed for its terms: ") +
+                    err.what()});
+            return std::nullopt;
+        }
+        // One problem per object at most: a segment from a later term than the
+        // manifest's is one smear, not as many as it holds entries.
+        for (const auto term : terms) {
+            if (!check_term_against_manifest(key, term, report)) {
+                break;
+            }
+        }
+        return range;
+    }
+
+    /// An entry record's `term`, as the singleton check has always read it.
+    [[nodiscard]] static auto term_of(const boost::json::value& record) -> std::uint64_t {
+        return static_cast<std::uint64_t>(record.as_object().at("term").to_number<std::int64_t>());
+    }
+
     /// The check that catches the classic smear: `term` read early at 5, the
     /// node advances to 7 and appends, and the copy holds an entry from a term
     /// the manifest says never happened.
@@ -903,9 +1130,7 @@ private:
                                  verification_report& report) -> void {
         std::uint64_t entry_term = 0;
         try {
-            const auto parsed = boost::json::parse(body);
-            entry_term =
-                static_cast<std::uint64_t>(parsed.as_object().at("term").to_number<std::int64_t>());
+            entry_term = term_of(boost::json::parse(body));
         } catch (const std::exception& err) {
             report.problems.push_back(verification_problem{
                 "unreadable_entry", key,
@@ -913,6 +1138,13 @@ private:
                     err.what()});
             return;
         }
+        check_term_against_manifest(key, entry_term, report);
+    }
+
+    /// Whether @p entry_term is consistent with the manifest's `current_term`,
+    /// having recorded why not.
+    static auto check_term_against_manifest(const std::string& key, std::uint64_t entry_term,
+                                            verification_report& report) -> bool {
         if (!report.manifest.current_term) {
             // No `term` object was copied at all, so there is nothing to compare
             // against. Reported rather than passed over: a backup carrying log
@@ -923,7 +1155,7 @@ private:
                 "the backup holds log entries but no term object, so the manifest's term could"
                 " not be checked against entry term " +
                     std::to_string(entry_term)});
-            return;
+            return false;
         }
         if (entry_term > *report.manifest.current_term) {
             report.problems.push_back(verification_problem{
@@ -932,42 +1164,72 @@ private:
                     " but the manifest records current_term " +
                     std::to_string(*report.manifest.current_term) +
                     " — the source advanced its term during the copy, so this backup is a smear"});
+            return false;
         }
+        return true;
     }
 
     /// Every index from the snapshot's `last_included_index + 1` through the
-    /// highest restorable entry must be present.
-    static auto check_log_contiguity(verification_report& report,
-                                     std::vector<std::uint64_t> indices) -> void {
-        if (indices.empty()) {
+    /// highest restorable entry must be present, judged by the engine's chain
+    /// rule (`walk_log_chain`): from the lowest object, each next object starts
+    /// one past the last one's end.
+    ///
+    /// The two ways an object can be off the chain are not treated alike. One
+    /// that starts **inside** the chain's range is a stray the engine skips and
+    /// deletes, and the canonical case is benign — a compaction's suffix PUT
+    /// that landed before the crash that kept its straddler — so it is a note.
+    /// One that starts **past** the chain's end leaves indices in neither, which
+    /// is the gap this check has always reported: on a singleton log it is a
+    /// lost or smeared entry, and the engine would drop everything above it.
+    /// That is stricter than the engine, which loads the prefix below the gap
+    /// without complaint, and deliberately so: a backup is checked to be
+    /// trusted, and the engine has no manifest to say the gap was not there.
+    static auto check_log_contiguity(verification_report& report, std::vector<log_range> ranges)
+        -> void {
+        if (ranges.empty()) {
             return;
         }
-        std::sort(indices.begin(), indices.end());
+        std::sort(ranges.begin(), ranges.end(),
+                  [](const log_range& a, const log_range& b) { return a.first < b.first; });
 
         // The first index the log is required to hold. With a snapshot, that is
         // one past what the snapshot already covers; without one, the log
         // speaks for itself and only its own internal gaps are checkable.
         const std::uint64_t expected_first = report.manifest.snapshot_last_included_index
                                                  ? *report.manifest.snapshot_last_included_index + 1
-                                                 : indices.front();
+                                                 : ranges.front().first;
 
-        if (indices.front() > expected_first) {
+        if (ranges.front().first > expected_first) {
             report.problems.push_back(verification_problem{
                 "log_gap", "log/",
                 "the snapshot covers through index " +
                     std::to_string(*report.manifest.snapshot_last_included_index) +
-                    " and the first copied entry is " + std::to_string(indices.front()) +
+                    " and the first copied entry is " + std::to_string(ranges.front().first) +
                     ", so indices " + std::to_string(expected_first) + ".." +
-                    std::to_string(indices.front() - 1) + " are in neither"});
+                    std::to_string(ranges.front().first - 1) + " are in neither"});
         }
-        for (std::size_t i = 1; i < indices.size(); ++i) {
-            if (indices[i] != indices[i - 1] + 1) {
+        std::uint64_t chain_last = ranges.front().last;
+        for (std::size_t i = 1; i < ranges.size(); ++i) {
+            const log_range& range = ranges[i];
+            if (range.first <= chain_last) {
+                report.notes.push_back(verification_problem{
+                    "stray_object", "log/" + object_store_backup_detail::pad_index(range.first),
+                    "the object holding " + std::to_string(range.first) + ".." +
+                        std::to_string(range.last) +
+                        " starts inside the log the chain already covers (through " +
+                        std::to_string(chain_last) +
+                        "), so a restored engine skips it and deletes it before its first log"
+                        " write"});
+                continue;
+            }
+            if (range.first != chain_last + 1) {
                 report.problems.push_back(verification_problem{
                     "log_gap", "log/",
-                    "log index " + std::to_string(indices[i - 1] + 1) +
-                        " is missing between the copied entries at " +
-                        std::to_string(indices[i - 1]) + " and " + std::to_string(indices[i])});
+                    "log index " + std::to_string(chain_last + 1) +
+                        " is missing between the copied entries at " + std::to_string(chain_last) +
+                        " and " + std::to_string(range.first)});
             }
+            chain_last = range.last;
         }
     }
 

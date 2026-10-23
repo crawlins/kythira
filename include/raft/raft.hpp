@@ -802,6 +802,17 @@ private:
     // unconditional again and nothing about those configurations changes.
     log_index_type _durable_log_index{0};
 
+    // The sequence a barriered engine gave each entry this node appended that
+    // is not yet known durable (index above `_durable_log_index`). A follower
+    // that answers success for entries it already held, appended by an
+    // earlier AppendEntries whose barrier has not finished, takes a barrier
+    // through the highest of their sequences instead of answering at once:
+    // the leader counts that answer, so it must not run ahead of the bytes
+    // (`cover_held_entries_locked`). Per index, not one high-water mark,
+    // because a truncation discards the sequences above it and a barrier on
+    // a discarded sequence can never succeed.
+    std::map<log_index_type, kythira::write_sequence> _undurable_seqs;
+
     // Index of highest log entry applied to state machine (initialized to 0, increases
     // monotonically)
     log_index_type _last_applied;
@@ -949,8 +960,11 @@ private:
     // Current cluster configuration
     cluster_configuration_type _configuration;
 
-    // Bootstrap configuration: the initial configuration set at node construction, used as the
-    // fallback when log truncation removes all configuration entries from the in-memory log.
+    // The configuration in force below the in-memory log: the one set at construction, or the
+    // latest snapshot's once there is one. It is the fallback when the log holds no
+    // configuration entry (append_entries_with_consistency_check's rescan). Value-initialised:
+    // `_is_joint_consensus` has no default, and a node that started from a snapshot used to
+    // read it uninitialised and throw bad_optional_access from cluster_members().
     cluster_configuration_type _boot_configuration;
 
     // Election timeout (randomized between min and max)
@@ -1234,7 +1248,17 @@ private:
     auto send_heartbeats() -> void;
 
     // State transitions
-    auto become_follower(term_id_type new_term) -> void;
+    /// Whether become_follower() stores a newer term itself or leaves that to
+    /// its caller, which then owes the write before it answers.
+    enum class step_down_write {
+        now,
+        deferred
+    };
+    /// @return whether the step-down moved to a newer term. With
+    ///         `step_down_write::deferred` that term is in memory only and the
+    ///         caller must persist it before replying.
+    auto become_follower(term_id_type new_term, step_down_write write = step_down_write::now)
+        -> bool;
     auto become_candidate() -> void;
     auto start_election() -> void;
     // Optional (`.kiro/specs/raft-pre-vote/`): called from
@@ -1322,6 +1346,16 @@ private:
     /// interleaving window in every existing test to buy nothing.
     [[nodiscard]] auto barrier_can_block() const -> bool;
 
+    /// @brief Whether `append_log_entries` alone makes a run durable, so a
+    ///        bulk-append engine can take it as one call: the engine is not
+    ///        barriered, or it answers `durability_class::synchronous`.
+    ///
+    /// Without the second case an engine that gains the barrier extension but
+    /// never blocks — the object store without write-behind — would lose its
+    /// batched run and pay one durable write per entry
+    /// (`.kiro/specs/object-store-group-commit/` Requirement 1.2).
+    [[nodiscard]] auto run_is_one_durable_write() const -> bool;
+
     /// @brief Take the barrier `pending` owes. Takes no lock and needs none.
     ///
     /// @return `false` if the barrier failed. The caller must not advertise
@@ -1331,6 +1365,18 @@ private:
     /// @brief Record that everything through `pending` is durable.
     ///        `_mutex` must be held.
     auto mark_durable_locked(const pending_barrier& pending) -> void;
+
+    /// @brief Make `pending` cover every entry through `last_new_index`.
+    ///        `_mutex` must be held.
+    ///
+    /// A successful AppendEntries response tells the leader this node holds
+    /// everything through `prev_log_index + entries.size()`. When some of
+    /// those entries were already in the log, this RPC appended nothing for
+    /// them and `pending` is empty, but they may still be waiting for the
+    /// barrier an earlier RPC is taking with `_mutex` released (a duplicate,
+    /// or a heartbeat, overtaking it). Without this the duplicate answered
+    /// first and the leader counted entries this node did not yet hold.
+    auto cover_held_entries_locked(pending_barrier& pending, log_index_type last_new_index) -> void;
 
     /// @brief `take_barrier` then `mark_durable_locked`, acquiring `_mutex`
     ///        for the second half.
@@ -1383,7 +1429,10 @@ private:
     ///        run, and record what they owe a barrier in `pending`.
     ///
     /// One `append_log_entries` call on a `bulk_append_persistence_engine`
-    /// that is not barriered, `persist_append` per entry otherwise. The bulk
+    /// whose appends are durable when they return — one that is not
+    /// barriered, or one that answers `durability_class::synchronous`
+    /// (`run_is_one_durable_write`) — and `persist_append` per entry
+    /// otherwise, so that a barriered engine's barrier covers the run. The bulk
     /// call is made **before** the entries join `_log`, and it leaves none of
     /// them in the engine if it throws, so a failure leaves this node's log
     /// and its engine agreeing and the leader's retry sends the same run
@@ -1689,6 +1738,7 @@ node<Types>::node(node_config<Types> cfg)
       _config{cfg.config},
       _node_id{cfg.node_id},
       _configuration{},
+      _boot_configuration{},
       _election_timeout{cfg.config.election_timeout_min()},
       _heartbeat_interval{cfg.config.heartbeat_interval()},
       _last_heartbeat{std::chrono::steady_clock::now()},
@@ -5305,6 +5355,7 @@ auto node<Types>::initialize_from_storage() -> void {
         _snapshot_index = snap.last_included_index();
         _snapshot_term = snap.last_included_term();
         _configuration = snap.configuration();
+        _boot_configuration = _configuration;
 
         _logger.info("Restored from snapshot",
                      {{"node_id", node_id_to_string(_node_id)},
@@ -5525,13 +5576,19 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
     }
 
     // Rule 2: If request term > current term, update current term and become follower (§5.1)
+    //
+    // The new term is stored once, on whichever path below answers: with the
+    // vote when it is granted, alone when it is refused. Storing it here as
+    // well put a second sequential write on every election a follower takes
+    // part in (.kiro/specs/object-store-batched-layout/, Requirement 1).
+    bool term_unstored = false;
     if (request.term() > _current_term) {
         _logger.info("Discovered higher term in RequestVote, becoming follower",
                      {{"node_id", node_id_to_string(_node_id)},
                       {"old_term", std::to_string(_current_term)},
                       {"new_term", std::to_string(request.term())}});
 
-        become_follower(request.term());
+        term_unstored = become_follower(request.term(), step_down_write::deferred);
     }
 
     // Rule 3: Check if we've already voted for another candidate in this term
@@ -5548,6 +5605,11 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
         _metrics.add_one();
         _metrics.emit();
 
+        // Unreachable after a step-down, which clears the vote; kept so that
+        // no refusal can answer from a term storage does not hold.
+        if (term_unstored) {
+            persist_term_locked();
+        }
         return request_vote_response_type{_current_term, false};
     }
 
@@ -5583,6 +5645,9 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
         _metrics.add_one();
         _metrics.emit();
 
+        if (term_unstored) {
+            persist_term_locked();
+        }
         return request_vote_response_type{_current_term, false};
     }
 
@@ -5804,11 +5869,28 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // append_entries_with_consistency_check() (.kiro/specs/peer2peer-log-replication/,
     // Requirement 6.1) so the peer-to-peer fetch path shares this exact logic.
     pending_barrier pending;
-    auto response = append_entries_with_consistency_check(
-        request.prev_log_index(), request.prev_log_term(), request.entries(), pending);
+    append_entries_response_type response;
+    try {
+        response = append_entries_with_consistency_check(
+            request.prev_log_index(), request.prev_log_term(), request.entries(), pending);
+    } catch (const std::exception& e) {
+        // A refused write. The entries stored before it are in the log and
+        // await a barrier the leader's retry takes (cover_held_entries_locked);
+        // the refused one and those after it are in neither. Answered as a
+        // failure, and logged: a transport that drops a throwing handler's
+        // request (the simulator does) would otherwise hide it entirely.
+        _logger.error("AppendEntries could not store its entries",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"prev_log_index", std::to_string(request.prev_log_index())},
+                       {"entries", std::to_string(request.entries().size())},
+                       {"error", e.what()}});
+        return append_entries_response_type{_current_term, false, std::nullopt, std::nullopt};
+    }
     if (!response.success()) {
         return response;
     }
+    cover_held_entries_locked(
+        pending, request.prev_log_index() + static_cast<log_index_type>(request.entries().size()));
 
     // Requirement 1.2: the barrier is taken **before** this returns success.
     // Returning success is the follower's promise to the leader that it holds
@@ -6012,6 +6094,10 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
                 if (_durable_log_index >= entry_index) {
                     _durable_log_index = entry_index - 1;
                 }
+                // Their sequences are discarded with them; a barrier on one
+                // could never succeed.
+                _undurable_seqs.erase(_undurable_seqs.lower_bound(entry_index),
+                                      _undurable_seqs.end());
                 break;
             }
         }
@@ -6291,6 +6377,10 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // being credited with the snapshot's.
     _durable_log_index =
         std::max(request.last_included_index(), std::min(_durable_log_index, get_last_log_index()));
+    // Sequences of entries the snapshot covers or the truncation removed are
+    // discarded by the engine; none may be barriered on again.
+    _undurable_seqs.erase(_undurable_seqs.upper_bound(get_last_log_index()), _undurable_seqs.end());
+    _undurable_seqs.erase(_undurable_seqs.begin(), _undurable_seqs.upper_bound(_durable_log_index));
 
     // Clean up snapshot buffer. Copied out first: `complete_snapshot_data` is a
     // reference INTO it, and the metric below still reads the size.
@@ -6516,7 +6606,7 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
 
 template<raft_types Types>
 
-auto node<Types>::become_follower(term_id_type new_term) -> void {
+auto node<Types>::become_follower(term_id_type new_term, step_down_write write) -> bool {
     auto old_state = _state;
     auto old_term = _current_term;
 
@@ -6555,10 +6645,17 @@ auto node<Types>::become_follower(term_id_type new_term) -> void {
     // Stepping down within the same term keeps the vote: a candidate that
     // hears from its term's leader has voted for itself in that term, and
     // forgetting it would let it vote a second time in the term.
-    if (new_term > _current_term) {
+    //
+    // handle_request_vote() defers the write: it is about to store the term
+    // again, with or without a vote, and two writes there cost an object
+    // store a sequential PUT on the election path for nothing.
+    const bool term_moved = new_term > _current_term;
+    if (term_moved) {
         _current_term = new_term;
         _voted_for = std::nullopt;
-        persist_term_locked();
+        if (write == step_down_write::now) {
+            persist_term_locked();
+        }
     }
 
     // Stop quorum assessment loop if we were leader (Req 13.2)
@@ -6569,6 +6666,7 @@ auto node<Types>::become_follower(term_id_type new_term) -> void {
     // Reset election timer
     reset_election_timer();
     randomize_election_timeout();
+    return term_moved;
 }
 
 template<raft_types Types>
@@ -7295,6 +7393,7 @@ auto node<Types>::persist_append(const log_entry_type& entry, pending_barrier& p
         // needs to barrier a whole AppendEntries batch at once, because
         // sequences are monotonic per engine.
         const auto seq = _persistence.append_log_entry_sequenced(entry);
+        _undurable_seqs[entry.index()] = seq;
         if (!pending._any || seq > pending._seq) {
             pending._seq = seq;
             pending._index = entry.index();
@@ -7309,6 +7408,14 @@ auto node<Types>::persist_append(const log_entry_type& entry, pending_barrier& p
             pending._index = entry.index();
         }
         pending._any = true;
+    }
+}
+
+template<raft_types Types> auto node<Types>::run_is_one_durable_write() const -> bool {
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        return _persistence.durability() == kythira::durability_class::synchronous;
+    } else {
+        return true;
     }
 }
 
@@ -7350,6 +7457,28 @@ auto node<Types>::mark_durable_locked(const pending_barrier& pending) -> void {
     if (pending._any && pending._index > _durable_log_index) {
         _durable_log_index = pending._index;
     }
+    _undurable_seqs.erase(_undurable_seqs.begin(), _undurable_seqs.upper_bound(_durable_log_index));
+}
+
+template<raft_types Types>
+auto node<Types>::cover_held_entries_locked(pending_barrier& pending, log_index_type last_new_index)
+    -> void {
+    if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+        if (last_new_index <= _durable_log_index) {
+            return;
+        }
+        // Entries at or below `last_new_index` still waiting on a barrier.
+        // Sequences are monotonic in index order within one log, so the last
+        // one at or below `last_new_index` is the highest that matters.
+        auto it = _undurable_seqs.upper_bound(last_new_index);
+        if (it == _undurable_seqs.begin()) {
+            return;
+        }
+        --it;
+        pending._seq = std::max(pending._seq, it->second);
+        pending._index = std::max(pending._index, last_new_index);
+        pending._any = true;
+    }
 }
 
 template<raft_types Types>
@@ -7381,22 +7510,34 @@ auto node<Types>::persist_and_append_run(std::span<const log_entry_type> entries
     if (entries.empty()) {
         return;
     }
-    if constexpr (!kythira::barriered_persistence_engine<persistence_engine_type> &&
-                  kythira::bulk_append_persistence_engine<persistence_engine_type>) {
-        _persistence.append_log_entries(entries);
-        for (const auto& entry : entries) {
-            append_log_entry(entry);
+    if constexpr (kythira::bulk_append_persistence_engine<persistence_engine_type>) {
+        if (run_is_one_durable_write()) {
+            _persistence.append_log_entries(entries);
+            for (const auto& entry : entries) {
+                append_log_entry(entry);
+            }
+            // No barrier to wait for, as in persist_append()'s non-barriered
+            // arm: the run is as durable as it will ever be once the call
+            // returns. A synchronous engine's barrier is a no-op, so the
+            // sequence pending carries does not matter, but it is a true one.
+            if constexpr (kythira::barriered_persistence_engine<persistence_engine_type>) {
+                pending._seq = std::max(pending._seq, _persistence.durable_through());
+            }
+            if (!pending._any || entries.back().index() > pending._index) {
+                pending._index = entries.back().index();
+            }
+            pending._any = true;
+            return;
         }
-        // No barrier to wait for, as in persist_append()'s non-barriered arm:
-        // the run is as durable as it will ever be once the call returns.
-        if (!pending._any || entries.back().index() > pending._index) {
-            pending._index = entries.back().index();
-        }
-        pending._any = true;
-    } else {
+    }
+    {
         for (const auto& entry : entries) {
-            append_log_entry(entry);
+            // Store first: if the append throws, the entry is not in `_log`
+            // either. The other order left it there, and the leader's retry
+            // then found it "already held" and was answered success for an
+            // entry the store never received.
             persist_append(entry, pending);
+            append_log_entry(entry);
         }
     }
 }
@@ -8368,6 +8509,12 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
                             consistency_response = this->append_entries_with_consistency_check(
                                 from_index - 1, response.prev_log_term(), response.entries(),
                                 pending);
+                            if (consistency_response.success()) {
+                                this->cover_held_entries_locked(
+                                    pending,
+                                    from_index - 1 +
+                                        static_cast<log_index_type>(response.entries().size()));
+                            }
                             new_last_index = this->get_last_log_index();
                         }
 
@@ -9153,6 +9300,9 @@ auto node<Types>::compact_log() -> void {
     if (last_included_index >= _snapshot_index) {
         _snapshot_index = last_included_index;
         _snapshot_term = snap.last_included_term();
+        // Compaction may remove the log's configuration entries; the snapshot
+        // carries the configuration they set.
+        _boot_configuration = snap.configuration();
     }
 
     _logger.info("Compacting log", {{"node_id", node_id_to_string(_node_id)},
@@ -9198,6 +9348,10 @@ auto node<Types>::compact_log() -> void {
 
     // Delete entries from persistence
     _persistence.delete_log_entries_before(last_included_index + 1);
+    // An engine discards the sequences of entries it compacts away unflushed;
+    // the snapshot covers them, so no barrier may name one again.
+    _undurable_seqs.erase(_undurable_seqs.begin(),
+                          _undurable_seqs.upper_bound(last_included_index));
 
     auto new_log_size = _log.size();
     auto entries_removed = old_log_size - new_log_size;
@@ -9238,6 +9392,7 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
 
         // Restore cluster configuration from the snapshot
         _configuration = snap.configuration();
+        _boot_configuration = _configuration;
         _awaiting_admission = false;
         sync_peer2peer_membership();
 

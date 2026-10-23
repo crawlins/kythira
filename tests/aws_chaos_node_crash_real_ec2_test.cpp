@@ -7,22 +7,26 @@
 // instance that is still `running` looks perfectly healthy to it. Catching
 // that case is the Raft leader's job (quorum_peer_dead_after, Req 13.7):
 // once a voter has been silent that long the leader provisions a
-// replacement in the voter's group, admits it through ClusterJoin as a
-// learner, promotes it, removes the dead voter and terminates its instance.
+// replacement, admits it through ClusterJoin as a learner, promotes it,
+// removes the dead voter and terminates its instance. With one voter per
+// AZ, the silent voter's group has no live member left, which the leader
+// cannot tell apart from losing the AZ, so heal_lost_groups() places the
+// replacement in a surviving group (Req 9.2), not the voter's own.
 // quorum_leader_integration_test.cpp's crashed_process_on_running_vm_is_
 // replaced models this in process; this test runs it on real instances:
 //
 //   1. launch three instances, one per AZ, through this test's own
 //      aws_ec2_quorum_manager<std::uint64_t> (numeric ids 1..3, kythira:*
 //      tags under the same cluster name the nodes are given);
-//   2. start chaos_node on each over SSH with QUORUM_MANAGER=aws and
-//      QUORUM_PEER_DEAD_AFTER_MS=30000, so whichever node wins the election
-//      owns a manager that can launch and terminate instances;
+//   2. once cloud-init has finished on all three, start chaos_node on each
+//      over SSH with QUORUM_MANAGER=aws and QUORUM_PEER_DEAD_AFTER_MS=30000,
+//      so whichever node wins the election owns a manager that can launch
+//      and terminate instances;
 //   3. SIGKILL chaos_node on one follower; its instance keeps running;
 //   4. check that the test's manager still reports all three nodes live:
 //      instance state alone does not see the crash;
-//   5. wait for the leader to act: a new cluster-tagged instance in the
-//      killed node's subnet reaches `running`, the killed instance is
+//   5. wait for the leader to act: a new cluster-tagged instance in one of
+//      the other two subnets reaches `running`, the killed instance is
 //      terminated, the leader still answers /status, and the replacement's
 //      chaos_node (started by the user data the leader's manager rendered)
 //      catches up to the leader's commit index.
@@ -107,11 +111,13 @@
 #include "ordered_global_fixtures.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -197,9 +203,19 @@ BOOST_GLOBAL_FIXTURE(SuiteGlobalFixtures);
 
 // Copied from ca_cluster_node_real_ec2_test.cpp: runs `cmd` on `public_ip`
 // as "ubuntu" with the fixture's key pair and returns stdout, retrying the
-// TCP connect while a fresh instance's sshd comes up.
+// TCP connect while a fresh instance's sshd comes up. Failures throw
+// std::runtime_error rather than BOOST_REQUIRE, since step 2 runs it on
+// worker threads and Boost.Test assertions are not thread-safe.
+//
+// Every libssh2 call after the connect is bounded by `exec_timeout`. Run
+// 39537006735 hung in step 2 for over an hour in a blocking read, until
+// ctest killed the process before teardown and leaked the cluster. When
+// the read times out, the output so far is returned with *timed_out set
+// if the caller passed it, and thrown otherwise.
 auto ssh_execute(const std::string& public_ip, const std::string& private_key_pem,
-                 const std::string& cmd, std::chrono::seconds connect_timeout) -> std::string {
+                 const std::string& cmd, std::chrono::seconds connect_timeout,
+                 std::chrono::seconds exec_timeout = std::chrono::minutes(5),
+                 bool* timed_out = nullptr) -> std::string {
     auto deadline = std::chrono::steady_clock::now() + connect_timeout;
     int sock = -1;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -220,16 +236,37 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
     }
 
     LIBSSH2_SESSION* session = libssh2_session_init();
-    BOOST_REQUIRE(session != nullptr);
-    BOOST_REQUIRE_GE(libssh2_session_handshake(session, sock), 0);
+    auto fail = [&](const std::string& what) {
+        if (session != nullptr) {
+            libssh2_session_free(session);
+        }
+        ::close(sock);
+        throw std::runtime_error("ssh_execute: " + what + " on " + public_ip);
+    };
+    if (session == nullptr) {
+        fail("libssh2_session_init failed");
+    }
+    libssh2_session_set_timeout(
+        session, static_cast<long>(
+                     std::chrono::duration_cast<std::chrono::milliseconds>(exec_timeout).count()));
+    if (libssh2_session_handshake(session, sock) < 0) {
+        fail("SSH handshake failed");
+    }
 
     int rc = libssh2_userauth_publickey_frommemory(
         session, "ubuntu", 6, nullptr, 0, private_key_pem.data(), private_key_pem.size(), nullptr);
-    BOOST_REQUIRE_MESSAGE(rc == 0, "SSH auth failed, rc=" + std::to_string(rc));
+    if (rc != 0) {
+        fail("SSH auth failed, rc=" + std::to_string(rc));
+    }
 
     LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
-    BOOST_REQUIRE(channel != nullptr);
-    BOOST_REQUIRE_GE(libssh2_channel_exec(channel, cmd.c_str()), 0);
+    if (channel == nullptr) {
+        fail("could not open an SSH channel");
+    }
+    if (libssh2_channel_exec(channel, cmd.c_str()) < 0) {
+        libssh2_channel_free(channel);
+        fail("could not exec the command");
+    }
 
     std::string output;
     char buf[4096];
@@ -241,6 +278,15 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
     libssh2_session_disconnect(session, "bye");
     libssh2_session_free(session);
     ::close(sock);
+    if (nread == LIBSSH2_ERROR_TIMEOUT) {
+        if (timed_out != nullptr) {
+            *timed_out = true;
+            return output;
+        }
+        throw std::runtime_error("ssh_execute: command on " + public_ip + " still running after " +
+                                 std::to_string(exec_timeout.count()) +
+                                 "s; output so far: " + output);
+    }
     return output;
 }
 
@@ -268,6 +314,10 @@ struct instance_view {
     std::string state;
     std::string public_ip;
     std::string private_ip;
+    // StateTransitionReason, then StateReason's message: "User initiated"
+    // means a TerminateInstances call, "Client.InstanceInitiatedShutdown"
+    // the guest itself.
+    std::string state_reason;
 };
 
 auto describe(Aws::EC2::EC2Client& ec2, const std::vector<Aws::EC2::Model::Filter>& filters)
@@ -280,6 +330,9 @@ auto describe(Aws::EC2::EC2Client& ec2, const std::vector<Aws::EC2::Model::Filte
     for (;;) {
         auto res = ec2.DescribeInstances(req);
         if (!res.IsSuccess()) {
+            std::cerr << "[" << LOG_TAG
+                      << "] DescribeInstances failed: " << res.GetError().GetExceptionName() << ": "
+                      << res.GetError().GetMessage() << "\n";
             return std::nullopt;
         }
         for (const auto& r : res.GetResult().GetReservations()) {
@@ -292,6 +345,8 @@ auto describe(Aws::EC2::EC2Client& ec2, const std::vector<Aws::EC2::Model::Filte
                             inst.GetState().GetName())),
                     .public_ip = std::string(inst.GetPublicIpAddress()),
                     .private_ip = std::string(inst.GetPrivateIpAddress()),
+                    .state_reason = std::string(inst.GetStateTransitionReason()) + " / " +
+                                    std::string(inst.GetStateReason().GetMessage()),
                 });
             }
         }
@@ -324,6 +379,37 @@ struct chaos_crash_network_fixture : kythira::testing::aws_real_ec2::signal_clea
     kythira::testing::aws_real_ec2::TestCostReport cost_report{
         std::string(boost::unit_test::framework::current_test_case().p_name)};
     bool torn_down_ = false;
+
+    // A Boost timeout siglongjmps out of the case without running this
+    // fixture's destructor, and a ctest TIMEOUT kills with SIGKILL, so
+    // neither tears anything down: run 39537006735 hung, hit both at
+    // 3900 s and leaked its VPC and three instances. The watchdog fires
+    // first, at the case's budget less teardown's 13 minutes, tears down
+    // from its own thread and exits the process.
+    static constexpr std::chrono::seconds WATCHDOG_AFTER{3900 - 13 * 60};
+    std::mutex watchdog_mu_;
+    std::condition_variable watchdog_cv_;
+    bool watchdog_stop_ = false;
+    std::thread watchdog_;
+
+    void start_watchdog() {
+        watchdog_ = std::thread([this] {
+            std::unique_lock lk(watchdog_mu_);
+            if (watchdog_cv_.wait_for(lk, WATCHDOG_AFTER, [this] { return watchdog_stop_; })) {
+                return;
+            }
+            lk.unlock();
+            std::cerr << "[" << LOG_TAG << "] watchdog: still running after "
+                      << WATCHDOG_AFTER.count()
+                      << "s; tearing down before the Boost and ctest timeouts\n"
+                      << std::flush;
+            if (auto* f = kythira::testing::aws_real_ec2::g_active_aws_fixture.exchange(
+                    nullptr, std::memory_order_acq_rel)) {
+                f->teardown();
+            }
+            std::_Exit(EXIT_FAILURE);
+        });
+    }
 
     void track_instance(const std::string& label, const std::string& instance_type) {
         cost_report.resources.push_back(
@@ -456,9 +542,22 @@ struct chaos_crash_network_fixture : kythira::testing::aws_real_ec2::signal_clea
             teardown();
             throw;
         }
+        // Only once nothing can throw: a constructor that throws never
+        // runs the destructor that joins this thread.
+        start_watchdog();
     }
 
-    ~chaos_crash_network_fixture() { teardown(); }
+    ~chaos_crash_network_fixture() {
+        {
+            std::lock_guard lk(watchdog_mu_);
+            watchdog_stop_ = true;
+        }
+        watchdog_cv_.notify_all();
+        if (watchdog_.joinable()) {
+            watchdog_.join();
+        }
+        teardown();
+    }
 
     // Terminates every instance in the VPC or tagged with this run's
     // cluster that is not already terminated or shutting down, and repeats
@@ -737,13 +836,29 @@ auto start_node_command(const std::vector<std::pair<std::string, std::string>>& 
     // Defensive: should the AMI ever ship an enabled chaos_node unit, its
     // Restart= policy would bring the killed process straight back and the
     // test would prove nothing.
-    cmd << "sudo systemctl disable --now chaos_node.service >/dev/null 2>&1; "
-        << "sudo mkdir -p /var/lib/chaos_node && "
+    // The date lines come back as the command's output, so the test log
+    // shows which part of a slow start was slow (run 39514236538 took about
+    // 270 s per node here).
+    //
+    // The mkdir is its own statement, never `mkdir && sudo env ... &`. A
+    // trailing `&` backgrounds the whole AND-list in a forked subshell, and
+    // the redirects bind only to its last command, so that subshell keeps
+    // the SSH channel's stdout and stderr open for as long as chaos_node
+    // runs. sshd then never sends EOF: every start printed its "launched"
+    // stamp within a second and then held the channel until the read
+    // timeout (run 39563651006). Reproduced against a local sshd, where
+    // `true && sleep 1000 >/dev/null 2>&1 </dev/null &` hangs the same way
+    // and this command, with the mkdir split out, closes at once.
+    cmd << "date +'begin %T.%N'; "
+        << "sudo systemctl disable --now chaos_node.service >/dev/null 2>&1; "
+        << "date +'systemctl %T.%N'; "
+        << "sudo mkdir -p /var/lib/chaos_node || exit 1\n"
         << "sudo env";
     for (const auto& [k, v] : environment) {
         cmd << " " << k << "='" << v << "'";
     }
     cmd << " setsid nohup /usr/local/bin/chaos_node > /tmp/chaos_node.log 2>&1 < /dev/null &\n"
+        << "date +'launched %T.%N'\n"
         << "disown\n";
     return cmd.str();
 }
@@ -819,6 +934,17 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
     cfg.provision_timeout = std::chrono::seconds{180};
     manager_t mgr{cfg};
 
+    // Progress lines carry seconds since this point: ctest relays the test's
+    // output in bursts, so the job log's own timestamps cannot order them.
+    const auto test_start = std::chrono::steady_clock::now();
+    auto elapsed = [&] {
+        return "+" +
+               std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+                                  std::chrono::steady_clock::now() - test_start)
+                                  .count()) +
+               "s";
+    };
+
     // ── Step 1: three instances, one per AZ ─────────────────────────────
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     std::vector<node_launch> nodes;
@@ -837,18 +963,117 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
         nodes.push_back({.node_id = peer.node_id, .az = az, .private_ip = view->private_ip});
         public_ips.push_back(view->public_ip);
         instance_ids.push_back(*ec2_id);
+        std::cerr << "[" << LOG_TAG << "] " << elapsed() << " launched node " << peer.node_id
+                  << " (" << *ec2_id << ", " << az << ", " << view->public_ip << ")\n";
     }
     BOOST_REQUIRE_EQUAL(nodes.size(), 3u);
 
     // ── Step 2: chaos_node with QUORUM_MANAGER=aws on each ──────────────
+    // Every node finishes booting before any chaos_node starts. Booting and
+    // starting them one at a time lets the first two form a quorum while the
+    // third is still in cloud-init, and their leader, after
+    // QUORUM_PEER_DEAD_AFTER_MS of silence from it, replaces and terminates
+    // that voter: the behaviour under test, set off by the setup. Run
+    // 39465316239 failed in this step with "ssh_execute: could not connect
+    // to <ip>:22 in time" after an earlier SSH had succeeded, which is what
+    // that would look like (inferred; the log could not show which node).
+    // Run 39514236538 then showed each SSH start taking about 270 s, so
+    // starting the nodes one after another still left node 3 down long
+    // enough for nodes 1 and 2 to replace it (the leader's log had
+    // AppendEntries only to nodes 2 and 4). The starts therefore run
+    // concurrently, one std::thread each, so however long one takes the three
+    // chaos_node processes come up together. A failed SSH reports the
+    // instance's state, so a terminated node is told apart from one whose
+    // sshd never came up, and dumps every reachable node's log.
+    auto report_failure = [&](std::size_t i, const std::runtime_error& e) {
+        std::cerr << "[" << LOG_TAG << "] " << elapsed() << " SSH to node " << nodes[i].node_id
+                  << " failed; dumping node logs\n";
+        dump_node_logs(public_ips, private_key_pem);
+        // A fourth cluster-tagged instance means a chaos_node leader
+        // provisioned a replacement; none means something else
+        // terminated the node.
+        if (auto all = describe(*ec2, {make_filter("tag:kythira:cluster", {cluster_name})})) {
+            for (const auto& v : *all) {
+                std::cerr << "[" << LOG_TAG << "]   cluster instance " << v.instance_id << " in "
+                          << v.subnet_id << ": " << v.state << " (" << v.state_reason << ")\n";
+            }
+        }
+        auto view = instance(instance_ids[i]);
+        throw std::runtime_error(std::string{e.what()} + " (node " +
+                                 std::to_string(nodes[i].node_id) + ", " + instance_ids[i] +
+                                 " is " + (view ? view->state : "not found") + ")");
+    };
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         // SSH can answer before cloud-init has finished.
-        ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
-                    std::chrono::minutes(3));
-        ssh_execute(public_ips[i], private_key_pem,
-                    start_node_command(
-                        node_environment(nodes[i], nodes, *this, ami, cfg.instance_type, profile)),
-                    std::chrono::minutes(1));
+        try {
+            ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
+                        std::chrono::minutes(3));
+        } catch (const std::runtime_error& e) {
+            report_failure(i, e);
+        }
+    }
+    std::cerr << "[" << LOG_TAG << "] " << elapsed() << " cloud-init finished on all "
+              << nodes.size() << " nodes; starting chaos_node\n";
+    {
+        // libssh2_session_init() initialises the library lazily, which is
+        // not thread-safe, so do it once here before the threads start.
+        libssh2_init(0);
+        std::vector<std::string> commands;
+        for (const auto& n : nodes) {
+            commands.push_back(start_node_command(
+                node_environment(n, nodes, *this, ami, cfg.instance_type, profile)));
+        }
+        // Each thread writes only its own slot; all are joined before any
+        // failure is reported, so no thread is still running when the
+        // dump does.
+        std::vector<std::string> outputs(nodes.size());
+        std::vector<std::optional<std::runtime_error>> errors(nodes.size());
+        std::vector<std::thread> starts;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            starts.emplace_back([&, i] {
+                try {
+                    // The command only launches chaos_node in the
+                    // background, so two minutes is generous, and the
+                    // channel now closes as soon as the shell exits (see
+                    // start_node_command). A timeout after the "launched"
+                    // stamp still means chaos_node is up and only the
+                    // channel failed to close, so it stays a pass rather
+                    // than failing a billable run; one before it is a
+                    // failed start.
+                    bool timed_out = false;
+                    outputs[i] =
+                        ssh_execute(public_ips[i], private_key_pem, commands[i],
+                                    std::chrono::minutes(1), std::chrono::minutes(2), &timed_out);
+                    if (timed_out) {
+                        if (outputs[i].find("launched ") == std::string::npos) {
+                            throw std::runtime_error(
+                                "ssh_execute: chaos_node start on " + public_ips[i] +
+                                " did not finish in 120s; output so far: " + outputs[i]);
+                        }
+                        outputs[i] += "(SSH channel still open after 120s; closed it)\n";
+                    }
+                } catch (const std::runtime_error& e) {
+                    errors[i].emplace(e);
+                }
+            });
+        }
+        for (auto& t : starts) {
+            t.join();
+        }
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (errors[i]) {
+                report_failure(i, *errors[i]);
+            }
+        }
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            std::istringstream lines(outputs[i]);
+            std::string stamps;
+            for (std::string line; std::getline(lines, line);) {
+                stamps += (stamps.empty() ? "" : ", ") + line;
+            }
+            std::cerr << "[" << LOG_TAG << "] " << elapsed() << " started chaos_node on node "
+                      << nodes[i].node_id << " (" << instance_ids[i] << "; " << stamps << ")\n";
+        }
     }
 
     auto leader = find_leader(public_ips, private_key_pem, {}, std::chrono::minutes(3));
@@ -880,9 +1105,19 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
 
     // ── Step 5: the leader replaces, removes and terminates ────────────
     // A replacement is any cluster-tagged instance that is not one of the
-    // three bootstrap nodes. Only the victim's group has a deficit, so it
-    // must land in the victim's subnet.
+    // three bootstrap nodes. The victim was its group's only voter, so the
+    // leader treats that group as lost and provisions into a surviving one
+    // (see the file header): the replacement must land in another of the
+    // cluster's subnets. Run 39563651006 asserted the victim's own subnet
+    // and failed on exactly this, with the rest of the heal passing.
     const std::set<std::string> bootstrap(instance_ids.begin(), instance_ids.end());
+    std::map<std::string, std::string> az_by_subnet;
+    for (const auto& [az, subnet] : subnet_by_az) {
+        az_by_subnet.emplace(subnet, az);
+    }
+    auto in_surviving_group = [&](const std::string& subnet) {
+        return subnet != victim_subnet && az_by_subnet.contains(subnet);
+    };
     std::optional<instance_view> replacement;
     bool victim_gone = false;
     bool replacement_tracked = false;
@@ -899,16 +1134,17 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
                     continue;
                 }
                 if (i.state == "pending" || i.state == "running") {
-                    BOOST_TEST(i.subnet_id == victim_subnet,
-                               "replacement " << i.instance_id << " launched in " << i.subnet_id
-                                              << ", not the killed node's " << victim_subnet);
                     found = i;
                 }
             }
             if (found) {
                 replacement = found;
                 if (!replacement_tracked) {
-                    track_instance("replacement (" + nodes[victim].az + ")", cfg.instance_type);
+                    auto az = az_by_subnet.find(found->subnet_id);
+                    track_instance("replacement (" +
+                                       (az != az_by_subnet.end() ? az->second : found->subnet_id) +
+                                       ")",
+                                   cfg.instance_type);
                     replacement_tracked = true;
                     std::cerr << "[" << LOG_TAG << "] leader launched replacement "
                               << found->instance_id << "\n";
@@ -938,7 +1174,10 @@ BOOST_FIXTURE_TEST_CASE(process_crash_triggers_replacement, chaos_crash_network_
                                                                << replacement->state);
     BOOST_REQUIRE_MESSAGE(
         victim_gone, "the killed node's instance " << victim_instance << " was never terminated");
-    BOOST_TEST(replacement->subnet_id == victim_subnet);
+    BOOST_TEST(in_surviving_group(replacement->subnet_id),
+               "replacement " << replacement->instance_id << " launched in "
+                              << replacement->subnet_id
+                              << ", which is the killed node's subnet or not the cluster's");
 
     // The replacement carries a fresh numeric id from the leader's manager.
     auto replacement_id = mgr.node_id_of_instance(replacement->instance_id);

@@ -78,6 +78,7 @@
 #include <arpa/inet.h>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -1170,28 +1171,72 @@ struct RealEc2Fixture : signal_cleanup_target {
 
     // Executes a command over SSH through the bastion using libssh2.
     // The private key is held in the ssh_private_key_pem string — never in a file.
+    //
+    // The TCP connect, SSH handshake and key auth are retried together for
+    // up to three minutes. The fixture only waits for the bastion to reach
+    // `running`, which comes before sshd is serving: early in boot a connect
+    // is refused, or is accepted and then dropped when cloud-init restarts
+    // sshd with fresh host keys (and auth can fail until cloud-init has
+    // installed the key for ec2-user). Either way the handshake failed with
+    // LIBSSH2_ERROR_SOCKET_RECV (-43), which failed process_crash_via_ssh_kill
+    // on 2026-10-03 and twice on 2026-10-23 (runs 39871773330, 39952064272).
+    // The connect's result used to be ignored, so a refused connect also
+    // surfaced as -43 from the handshake. Every libssh2 call is bounded by a
+    // session timeout, so a stalled bastion cannot hang the case.
     auto ssh_execute(const std::string& target_private_ip, const std::string& cmd) -> std::string {
-        // Connect TCP to bastion.
-        struct addrinfo hints{}, *res{};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        int rc = getaddrinfo(bastion_public_ip.c_str(), "22", &hints, &res);
-        if (rc != 0) {
-            throw std::runtime_error("getaddrinfo failed: " + std::string(gai_strerror(rc)));
+        constexpr auto handshake_budget = std::chrono::minutes{3};
+        constexpr long session_timeout_ms = 5L * 60 * 1000;
+        const auto deadline = std::chrono::steady_clock::now() + handshake_budget;
+        int sock = -1;
+        LIBSSH2_SESSION* session = nullptr;
+        std::string last_failure;
+        int attempts = 0;
+        while (true) {
+            ++attempts;
+            struct addrinfo hints{}, *res{};
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            int rc = getaddrinfo(bastion_public_ip.c_str(), "22", &hints, &res);
+            if (rc != 0) {
+                throw std::runtime_error("getaddrinfo failed: " + std::string(gai_strerror(rc)));
+            }
+            sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+            rc = ::connect(sock, res->ai_addr, res->ai_addrlen);
+            const int connect_errno = errno;
+            freeaddrinfo(res);
+            if (rc == 0) {
+                session = libssh2_session_init();
+                BOOST_REQUIRE(session != nullptr);
+                libssh2_session_set_timeout(session, session_timeout_ms);
+                rc = libssh2_session_handshake(session, sock);
+                if (rc >= 0) {
+                    rc = libssh2_userauth_publickey_frommemory(session, "ec2-user", 8, nullptr, 0,
+                                                               ssh_private_key_pem.c_str(),
+                                                               ssh_private_key_pem.size(), nullptr);
+                    if (rc == 0) {
+                        break;
+                    }
+                    last_failure = "SSH auth failed, rc=" + std::to_string(rc);
+                } else {
+                    last_failure = "SSH handshake failed, rc=" + std::to_string(rc);
+                }
+                libssh2_session_free(session);
+                session = nullptr;
+            } else {
+                last_failure = std::string("connect failed: ") + std::strerror(connect_errno);
+            }
+            close(sock);
+            sock = -1;
+            BOOST_REQUIRE_MESSAGE(std::chrono::steady_clock::now() < deadline,
+                                  "bastion " + bastion_public_ip + ":22 not serving SSH after " +
+                                      std::to_string(attempts) +
+                                      " attempts; last: " + last_failure);
+            std::this_thread::sleep_for(std::chrono::seconds{5});
         }
-        int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-        (void)::connect(sock, res->ai_addr, res->ai_addrlen);
-        freeaddrinfo(res);
-
-        LIBSSH2_SESSION* session = libssh2_session_init();
-        BOOST_REQUIRE(session != nullptr);
-        BOOST_REQUIRE_GE(libssh2_session_handshake(session, sock), 0);
-
-        // Authenticate with in-memory PEM.
-        rc = libssh2_userauth_publickey_frommemory(session, "ec2-user", 8, nullptr, 0,
-                                                   ssh_private_key_pem.c_str(),
-                                                   ssh_private_key_pem.size(), nullptr);
-        BOOST_REQUIRE_MESSAGE(rc == 0, "SSH auth failed, rc=" + std::to_string(rc));
+        if (attempts > 1) {
+            BOOST_TEST_MESSAGE("bastion SSH up after "
+                               << attempts << " attempts; last failure: " << last_failure);
+        }
 
         // Build SSH command: either direct (on bastion) or proxied to private host.
         std::string full_cmd = cmd;
@@ -1955,6 +2000,69 @@ BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_te
     BOOST_CHECK_EQUAL(post_health.status, kythira::quorum_status::healthy);
 
     restore_az3_nacl();
+}
+
+// The live half of the numeric-mode id claim (#543), whose collision branch
+// was otherwise only mock-tested. Another launch already holds node id 1's
+// ClientToken in another AZ's subnet, the way a deposed leader's provision
+// would. EC2 dedupes a token only within one AZ, so it would launch a second
+// id 1 here (run 39871773330 did); the manager must find the holder by its
+// token, move on to id 2, and leave the holder alone.
+//
+// The holder carries the cluster tag, so teardown terminates it, but no
+// kythira:node-id tag, so the manager's allocator still offers id 1 first.
+BOOST_AUTO_TEST_CASE(numeric_id_claim_skips_an_id_another_launch_holds,
+                     *boost::unit_test::timeout(1500)) {
+    using manager = kythira::aws_ec2_quorum_manager<std::uint64_t>;
+
+    Aws::EC2::Model::RunInstancesRequest holder_req;
+    holder_req.SetImageId(ami_id);
+    holder_req.SetInstanceType(
+        Aws::EC2::Model::InstanceTypeMapper::GetInstanceTypeForName(instance_type));
+    holder_req.SetMinCount(1);
+    holder_req.SetMaxCount(1);
+    // Another subnet than the manager's AZ1 launch, so the two requests differ.
+    holder_req.SetSubnetId(subnet_az2_id);
+    holder_req.AddSecurityGroupIds(cluster_sg_id);
+    holder_req.SetClientToken(manager::launch_client_token(uuid, 1));
+    {
+        Aws::EC2::Model::TagSpecification tag_spec;
+        tag_spec.SetResourceType(Aws::EC2::Model::ResourceType::instance);
+        tag_spec.AddTags(make_tag("Name", uuid + "-id-claim-holder"));
+        tag_spec.AddTags(make_tag("kythira:cluster", uuid));
+        tag_spec.AddTags(make_tag("kythira:managed-by", "aws_quorum_manager_real_ec2_test"));
+        tag_spec.AddTags(make_tag("kythira:role", "id-claim-holder"));
+        holder_req.AddTagSpecifications(tag_spec);
+    }
+    auto holder_out = ec2->RunInstances(holder_req);
+    BOOST_REQUIRE_MESSAGE(
+        holder_out.IsSuccess(),
+        "holder RunInstances: " + std::string(holder_out.GetError().GetMessage()));
+    const std::string holder_id(holder_out.GetResult().GetInstances()[0].GetInstanceId());
+    track_instances(1);
+
+    manager mgr{mgr_cfg};
+    auto peer = mgr.provision_node("AZ1", std::nullopt).get();
+    track_instances(1);
+    BOOST_CHECK_EQUAL(peer.node_id, 2u);
+    BOOST_CHECK_NE(mgr.instance_id_of(peer.node_id).value_or(""), holder_id);
+
+    // The holder is still what its own launch made: not terminated, not
+    // re-tagged as a member.
+    Aws::EC2::Model::DescribeInstancesRequest describe;
+    describe.AddInstanceIds(holder_id);
+    auto described = ec2->DescribeInstances(describe);
+    BOOST_REQUIRE_MESSAGE(
+        described.IsSuccess(),
+        "DescribeInstances (holder): " + std::string(described.GetError().GetMessage()));
+    const auto& reservations = described.GetResult().GetReservations();
+    BOOST_REQUIRE(!reservations.empty() && !reservations[0].GetInstances().empty());
+    const auto& holder = reservations[0].GetInstances()[0];
+    const auto state = holder.GetState().GetName();
+    BOOST_CHECK(state == Aws::EC2::Model::InstanceStateName::pending ||
+                state == Aws::EC2::Model::InstanceStateName::running);
+    BOOST_CHECK_EQUAL(find_tag_val(holder.GetTags(), "kythira:node-id"), "");
+    BOOST_CHECK_EQUAL(find_tag_val(holder.GetTags(), "kythira:role"), "id-claim-holder");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

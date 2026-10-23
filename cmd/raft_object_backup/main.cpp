@@ -32,7 +32,10 @@
 #include <raft/object_store_backup_cli.hpp>
 
 #ifdef KYTHIRA_BACKUP_PROVIDER_S3
+#include <raft/aws_endpoint_override.hpp>
 #include <raft/aws_s3_client.hpp>
+
+#include <aws/core/Aws.h>
 #endif
 #ifdef KYTHIRA_BACKUP_PROVIDER_AZURE
 #include <raft/azure_blob_client.hpp>
@@ -72,6 +75,14 @@ struct provider_entry {
     /// environment, never from flags, because `argv` is readable by every
     /// local user through `ps`.
     const char* credentials_hint;
+    /// Whether `--region` / `--endpoint` apply. True for `s3` only: the OCI
+    /// and OSS arms read their own variables, and mapping the flags onto them
+    /// would give one setting two sources (object-backup-s3-endpoint Req 2).
+    bool takes_region_endpoint_flags;
+    /// The provider's own variable for each setting, named when the flag is
+    /// refused. Null where the provider has none.
+    const char* region_variable;
+    const char* endpoint_variable;
 };
 
 // clang-format off
@@ -83,7 +94,10 @@ constexpr provider_entry k_providers[] = {
      false,
 #endif
      "CONFIG_AWS_S3_PERSISTENCE=y, and the AWS SDK must be found",
-     "the AWS SDK default chain (AWS_PROFILE, AWS_ACCESS_KEY_ID, ...)"},
+     "the AWS SDK default chain (AWS_PROFILE, AWS_ACCESS_KEY_ID, ...)\n"
+     "region: --region, else the SDK chain (see --region above)\n"
+     "endpoint: --endpoint only; AWS_ENDPOINT_URL is not read",
+     true, nullptr, nullptr},
     {"azure-blob",
 #ifdef KYTHIRA_BACKUP_PROVIDER_AZURE
      true,
@@ -91,7 +105,8 @@ constexpr provider_entry k_providers[] = {
      false,
 #endif
      "CONFIG_AZURE_BLOB_PERSISTENCE=y, and the Azure SDK must be found",
-     "KYTHIRA_AZURE_STORAGE_ACCOUNT, plus the Azure SDK default chain"},
+     "KYTHIRA_AZURE_STORAGE_ACCOUNT, plus the Azure SDK default chain",
+     false, nullptr, nullptr},
     {"gcs",
 #ifdef KYTHIRA_BACKUP_PROVIDER_GCS
      true,
@@ -99,7 +114,8 @@ constexpr provider_entry k_providers[] = {
      false,
 #endif
      "CONFIG_GCP_STORAGE_PERSISTENCE=y, and vcpkg's opt-in `gcp` feature (--x-feature=gcp)",
-     "GOOGLE_CLOUD_PROJECT, plus Application Default Credentials"},
+     "GOOGLE_CLOUD_PROJECT, plus Application Default Credentials",
+     false, nullptr, nullptr},
     {"oci-objectstorage",
 #ifdef KYTHIRA_BACKUP_PROVIDER_OCI
      true,
@@ -117,7 +133,8 @@ constexpr provider_entry k_providers[] = {
      "a key: KYTHIRA_OCI_PRIVATE_KEY_PEM or KYTHIRA_OCI_PRIVATE_KEY_FILE,\n"
      "  [KYTHIRA_OCI_PRIVATE_KEY_PASSPHRASE]\n"
      "optional: KYTHIRA_OCI_NAMESPACE (skips the GET /n/ lookup),\n"
-     "  KYTHIRA_OCI_ENDPOINT_OVERRIDE"},
+     "  KYTHIRA_OCI_ENDPOINT_OVERRIDE",
+     false, "KYTHIRA_OCI_REGION", "KYTHIRA_OCI_ENDPOINT_OVERRIDE"},
     {"oss",
 #ifdef KYTHIRA_BACKUP_PROVIDER_OSS
      true,
@@ -127,7 +144,8 @@ constexpr provider_entry k_providers[] = {
      "CONFIG_ALIBABA_OSS_PERSISTENCE=y (and HTTP_TRANSPORT_TLS, for https)",
      "KYTHIRA_ALIBABA_REGION, KYTHIRA_ALIBABA_ACCESS_KEY_ID,\n"
      "KYTHIRA_ALIBABA_ACCESS_KEY_SECRET, [KYTHIRA_ALIBABA_SECURITY_TOKEN]\n"
-     "optional: KYTHIRA_ALIBABA_ENDPOINT_OVERRIDE"},
+     "optional: KYTHIRA_ALIBABA_ENDPOINT_OVERRIDE",
+     false, "KYTHIRA_ALIBABA_REGION", "KYTHIRA_ALIBABA_ENDPOINT_OVERRIDE"},
 };
 // clang-format on
 
@@ -212,8 +230,41 @@ auto report(const kythira::env_config_result<Config>& result, std::string_view p
 auto run_for_provider(const kythira::backup_cli_args& args) -> int {
 #ifdef KYTHIRA_BACKUP_PROVIDER_S3
     if (args.provider == "s3") {
-        return run_with_client<kythira::aws_s3_client>(kythira::aws_client_config{}, "Amazon S3",
-                                                       {}, args);
+        // Neither flag set leaves cfg default-constructed, exactly as before
+        // object-backup-s3-endpoint (Requirement 1.5).
+        kythira::aws_client_config cfg;
+        cfg.region = args.region;
+        std::string hint;
+        if (!args.endpoint.empty()) {
+            const auto check = kythira::validate_s3_endpoint(args.endpoint);
+            for (const auto& warning : check.warnings) {
+                std::cerr << "raft_object_backup: warning: " << warning << "\n";
+            }
+            if (!check.ok()) {
+                std::cerr << "raft_object_backup: " << check.error << "\n";
+                return 1;
+            }
+            cfg.endpoint_override = check.normalised;
+            hint = "the client was built for --endpoint " + check.normalised;
+        } else {
+            for (const auto& warning :
+                 kythira::ignored_endpoint_variable_warnings(kythira::process_env_lookup())) {
+                std::cerr << "raft_object_backup: warning: " << warning << "\n";
+            }
+        }
+        // aws_s3_client leaves Aws::InitAPI to its caller. Without it the
+        // first SDK call (the client config's profile lookup) dereferences an
+        // uninitialised config cache and the process dies by SIGSEGV, which
+        // is what `--provider s3` did on every run until a process test first
+        // exercised it. The client is destroyed inside run_with_client, so the
+        // guard shuts the SDK down after it.
+        Aws::SDKOptions sdk_options;
+        Aws::InitAPI(sdk_options);
+        struct sdk_guard {
+            Aws::SDKOptions& options;
+            ~sdk_guard() { Aws::ShutdownAPI(options); }
+        } guard{sdk_options};
+        return run_with_client<kythira::aws_s3_client>(std::move(cfg), "Amazon S3", hint, args);
     }
 #endif
 #ifdef KYTHIRA_BACKUP_PROVIDER_AZURE
@@ -338,6 +389,26 @@ auto main(int argc, char** argv) -> int {
         }
         std::cerr << "\n";
         return 1;
+    }
+
+    // object-backup-s3-endpoint Requirement 2: a flag the arm would ignore is
+    // refused before any client exists, so an operator never believes they are
+    // talking to one service while talking to another.
+    if (!entry->takes_region_endpoint_flags) {
+        const auto refuse = [&](const char* flag, const char* variable, const char* what) {
+            std::cerr << "raft_object_backup: " << flag << " applies to --provider s3 only\n";
+            if (variable != nullptr) {
+                std::cerr << "  " << entry->name << " reads its " << what << " from " << variable
+                          << "\n";
+            }
+            return 1;
+        };
+        if (!args.endpoint.empty()) {
+            return refuse("--endpoint", entry->endpoint_variable, "endpoint");
+        }
+        if (!args.region.empty()) {
+            return refuse("--region", entry->region_variable, "region");
+        }
     }
 
     // Each arm catches its own construction failure with a targeted message.
