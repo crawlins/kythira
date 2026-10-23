@@ -40,6 +40,7 @@
 
 #include "config.hpp"
 #include "host_runners.hpp"
+#include "s3_store.hpp"
 #include "stop_signal.hpp"
 
 #include <raft/net_bind.hpp>
@@ -63,6 +64,7 @@
 #include <exception>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #ifdef KYTHIRA_HAS_AWS_SDK
@@ -129,16 +131,8 @@ void resolve_peers_by_discovery(node_options& opt) {
         "multi_raft_node: --discovery ec2-tag needs the AWS SDK, and this binary was built "
         "without it. Rebuild with the SDK available, or use --discovery static with --peer");
 #else
-    Aws::SDKOptions sdk_options;
-    Aws::InitAPI(sdk_options);
-    // The SDK is shut down on every path out of here, including the throwing
-    // ones: a half-initialised SDK left behind by a failed discovery would
-    // outlive the reason it was created.
-    struct sdk_guard {
-        Aws::SDKOptions& o;
-        ~sdk_guard() { Aws::ShutdownAPI(o); }
-    } guard{sdk_options};
-
+    // The SDK is already initialised: `main` holds one `aws_sdk_scope` for
+    // the whole process, so discovery and S3 persistence can share it.
     kythira::aws_ec2_peer_discovery_config cfg;
     cfg.aws.region = opt._discovery_region;
     cfg.aws.endpoint_override = opt._discovery_endpoint;
@@ -205,6 +199,56 @@ void resolve_peers_by_discovery(node_options& opt) {
         std::cerr << " " << id << "=" << url;
     }
     std::cerr << "\n";
+#endif
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AWS SDK lifetime
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `.kiro/specs/multi-raft-node-s3-persistence/` Requirement 6: one
+// `Aws::InitAPI` for the process, before discovery or any S3 store, and one
+// `Aws::ShutdownAPI` after the host and every store it owns are gone. Owned by
+// `main` in an `std::optional` declared before anything that can hold a
+// store, so it is destroyed last on every path, including a startup error
+// after some groups were built. Discovery used to init and shut down its own
+// copy, which would have shut the SDK down under the stores.
+#ifdef KYTHIRA_HAS_AWS_SDK
+struct aws_sdk_scope {
+    Aws::SDKOptions options;
+    aws_sdk_scope() { Aws::InitAPI(options); }
+    ~aws_sdk_scope() { Aws::ShutdownAPI(options); }
+    aws_sdk_scope(const aws_sdk_scope&) = delete;
+    auto operator=(const aws_sdk_scope&) -> aws_sdk_scope& = delete;
+    aws_sdk_scope(aws_sdk_scope&&) = delete;
+    auto operator=(aws_sdk_scope&&) -> aws_sdk_scope& = delete;
+};
+#else
+struct aws_sdk_scope {};
+#endif
+
+/// Checks and announces `--persistence s3` before anything binds. Returns a
+/// non-zero exit status to stop with, or 0 to go on.
+[[nodiscard]] auto prepare_s3(const node_options& opt) -> int {
+    if (opt._persistence != kythira::bench::persistence_mode::s3) {
+        return 0;
+    }
+#ifndef KYTHIRA_NODE_HAS_S3_PERSISTENCE
+    std::cerr << "multi_raft_node: --persistence s3 is not available in this build. Rebuild with "
+                 "CONFIG_AWS_S3_PERSISTENCE=y and the AWS SDK found at configure time.\n";
+    return 2;
+#else
+    for (const auto& warning : opt._s3.warnings) {
+        std::cerr << "multi_raft_node: WARNING: " << warning << "\n";
+    }
+    try {
+        kythira::bench::preflight_s3_options(opt);
+    } catch (const std::exception& e) {
+        std::cerr << "multi_raft_node: --persistence s3: " << e.what() << "\n";
+        return 2;
+    }
+    std::cerr << kythira::bench::describe_s3(opt, kythira::bench::s3_host_prefix(opt)) << "\n";
+    return 0;
 #endif
 }
 
@@ -282,6 +326,17 @@ auto main(int argc, char** argv) -> int {
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n\n" << kythira::bench::node_usage();
         return 2;
+    }
+
+    if (const int status = prepare_s3(opt); status != 0) {
+        return status;
+    }
+
+    // Before discovery and before any store, and destroyed after both.
+    std::optional<aws_sdk_scope> sdk;
+    if (opt._persistence == kythira::bench::persistence_mode::s3 ||
+        opt._discovery == kythira::bench::discovery_mode::ec2_tag) {
+        sdk.emplace();
     }
 
     // Before folly::Init and before any transport: discovery only fills in the

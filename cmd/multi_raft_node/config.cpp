@@ -3,6 +3,9 @@
 
 #include "config.hpp"
 
+#include <raft/aws_endpoint_override.hpp>
+#include <raft/env_config_result.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -104,8 +107,191 @@ auto add_voters(node_options& out, const std::string& spec) -> void {
     if (s == "file-barrier") {
         return persistence_mode::file_barrier;
     }
+    // Accepted in every build: whether the arm is compiled in is `main`'s
+    // question, so a build without it names the switch to turn on rather
+    // than reporting an unknown mode (Requirement 7.2).
+    if (s == "s3") {
+        return persistence_mode::s3;
+    }
     throw std::runtime_error(
-        "multi_raft_node: --persistence must be memory|file-buffered|file-barrier, got: " + s);
+        "multi_raft_node: --persistence must be memory|file-buffered|file-barrier|s3, got: " + s);
+}
+
+[[nodiscard]] auto persistence_spelling(persistence_mode mode) -> const char* {
+    switch (mode) {
+        case persistence_mode::memory:
+            return "memory";
+        case persistence_mode::file_buffered:
+            return "file-buffered";
+        case persistence_mode::file_barrier:
+            return "file-barrier";
+        case persistence_mode::s3:
+            return "s3";
+    }
+    return "unknown";
+}
+
+/// A `0|1` flag, the way `--capacity-dry-run` reads one, except that any
+/// other number is an error: `--s3-write-behind 2` is a typo, not "on".
+[[nodiscard]] auto to_bool01(const std::string& s, const char* what) -> bool {
+    const auto v = to_u64(s, what);
+    if (v > 1) {
+        throw std::runtime_error(std::string("multi_raft_node: ") + what +
+                                 " must be 0 or 1, got: " + s);
+    }
+    return v == 1;
+}
+
+/// The `--s3-*` group. Returns false for any other flag so the caller's
+/// chain can go on. Range rules the engine enforces itself (segment sizes,
+/// concurrency, retention) are deliberately not repeated here: `main`
+/// preflights the options against the engine, so there is one rule and one
+/// message (Requirement 5.3).
+[[nodiscard]] auto apply_s3_flag(s3_persistence_options& s3, const std::string& flag,
+                                 const std::string& value) -> bool {
+    if (!flag.starts_with("--s3-")) {
+        return false;
+    }
+    const char* what = flag.c_str();
+    auto& engine = s3.engine;
+    if (flag == "--s3-bucket" || flag == "--s3-prefix" || flag == "--s3-region" ||
+        flag == "--s3-endpoint") {
+        if (value.empty()) {
+            throw std::runtime_error("multi_raft_node: " + flag + " needs a non-empty value");
+        }
+    }
+    if (flag == "--s3-bucket") {
+        s3.bucket = value;
+    } else if (flag == "--s3-prefix") {
+        s3.prefix = value;
+        while (!s3.prefix.empty() && s3.prefix.back() == '/') {
+            s3.prefix.pop_back();
+        }
+        if (s3.prefix.empty()) {
+            throw std::runtime_error(
+                "multi_raft_node: --s3-prefix is empty once trailing slashes are removed");
+        }
+    } else if (flag == "--s3-region") {
+        s3.region = value;
+    } else if (flag == "--s3-endpoint") {
+        s3.endpoint = value;
+    } else if (flag == "--s3-timeout") {
+        s3.timeout = to_ms(value, what);
+        if (s3.timeout.count() == 0) {
+            throw std::runtime_error("multi_raft_node: --s3-timeout must be at least 1 ms");
+        }
+    } else if (flag == "--s3-fencing") {
+        if (value == "none") {
+            s3.fencing = s3_fencing::none;
+        } else if (value == "cas") {
+            s3.fencing = s3_fencing::cas;
+        } else {
+            throw std::runtime_error("multi_raft_node: --s3-fencing must be none|cas, got: " +
+                                     value);
+        }
+    } else if (flag == "--s3-hard-state") {
+        if (value == "separate") {
+            engine.hard_state = kythira::hard_state_layout::separate;
+        } else if (value == "combined") {
+            engine.hard_state = kythira::hard_state_layout::combined;
+        } else {
+            throw std::runtime_error(
+                "multi_raft_node: --s3-hard-state must be separate|combined, got: " + value);
+        }
+    } else if (flag == "--s3-log") {
+        if (value == "per-entry") {
+            engine.log = kythira::log_layout::per_entry;
+        } else if (value == "segmented") {
+            engine.log = kythira::log_layout::segmented;
+        } else {
+            throw std::runtime_error(
+                "multi_raft_node: --s3-log must be per-entry|segmented, got: " + value);
+        }
+    } else if (flag == "--s3-max-segment-entries") {
+        engine.max_segment_entries = static_cast<std::size_t>(to_u64(value, what));
+    } else if (flag == "--s3-max-segment-bytes") {
+        engine.max_segment_bytes = static_cast<std::size_t>(to_u64(value, what));
+    } else if (flag == "--s3-write-behind") {
+        engine.write_behind = to_bool01(value, what);
+    } else if (flag == "--s3-append-concurrency") {
+        engine.append_concurrency = static_cast<std::size_t>(to_u64(value, what));
+    } else if (flag == "--s3-write-retries") {
+        engine.write_retries = static_cast<unsigned>(to_u64(value, what));
+    } else if (flag == "--s3-snapshot-retention") {
+        engine.snapshot_retention = static_cast<std::size_t>(to_u64(value, what));
+    } else if (flag == "--s3-verify-checksums") {
+        engine.verify_checksums = to_bool01(value, what);
+    } else if (flag == "--s3-max-object-bytes") {
+        engine.max_object_bytes = static_cast<std::size_t>(to_u64(value, what));
+    } else {
+        throw std::runtime_error("multi_raft_node: unknown option " + flag);
+    }
+    s3.flags_seen.push_back(flag);
+    return true;
+}
+
+/// The `--persistence s3` rows of the validation table in the design, plus
+/// the refusal of `--s3-*` under every other mode.
+auto validate_s3(node_options& out) -> void {
+    auto& s3 = out._s3;
+    if (out._persistence != persistence_mode::s3) {
+        if (!s3.flags_seen.empty()) {
+            throw std::runtime_error("multi_raft_node: " + s3.flags_seen.front() +
+                                     " applies to --persistence s3 only, and this host is "
+                                     "--persistence " +
+                                     persistence_spelling(out._persistence));
+        }
+        return;
+    }
+    if (s3.bucket.empty()) {
+        throw std::runtime_error("multi_raft_node: --persistence s3 requires --s3-bucket");
+    }
+    if (s3.prefix.empty()) {
+        throw std::runtime_error(
+            "multi_raft_node: --persistence s3 requires --s3-prefix, e.g. runs/<run-tag>; the "
+            "host appends /nodes/<node-id> itself");
+    }
+    if (!out._data_dir.empty()) {
+        throw std::runtime_error(
+            "multi_raft_node: --data-dir is not used under --persistence s3; every group's log "
+            "is in the bucket, not on local disk");
+    }
+    if (!s3.endpoint.empty()) {
+        auto check = kythira::validate_s3_endpoint(s3.endpoint);
+        if (!check.ok()) {
+            // The validator's message names "--endpoint", the backup tool's
+            // spelling; this binary's flag is --s3-endpoint.
+            auto message = check.error;
+            if (message.starts_with("--endpoint")) {
+                message.insert(2, "s3-");
+            }
+            throw std::runtime_error("multi_raft_node: " + message);
+        }
+        for (auto& warning : check.warnings) {
+            if (warning.starts_with("--endpoint")) {
+                warning.insert(2, "s3-");
+            }
+            s3.warnings.push_back(std::move(warning));
+        }
+        s3.endpoint = check.normalised;
+    } else {
+        for (auto& warning :
+             kythira::ignored_endpoint_variable_warnings(kythira::process_env_lookup())) {
+            const auto at = warning.find("--endpoint");
+            if (at != std::string::npos) {
+                warning.replace(at, 10, "--s3-endpoint");
+            }
+            s3.warnings.push_back(std::move(warning));
+        }
+    }
+    if (out._election_timeout_min < k_s3_min_election_timeout) {
+        s3.warnings.push_back(
+            "--election-timeout-min " + std::to_string(out._election_timeout_min.count()) +
+            " ms is below " + std::to_string(k_s3_min_election_timeout.count()) +
+            " ms; against real S3 a vote must be persisted inside the election, and one PUT can "
+            "take longer than that. See \"Election-timeout sizing\" in "
+            "doc/cloud_object_persistence.md. Fine against a loopback LocalStack or MinIO");
+    }
 }
 
 /// One `key=value` line, `#` comments and blanks ignored. Deliberately the
@@ -137,6 +323,59 @@ auto apply_file(
         }
         apply(out, "--" + line.substr(0, eq), line.substr(eq + 1));
     }
+}
+
+}  // namespace
+
+namespace {
+
+/// The `--s3-*` section. Separate from the rest so its availability line can
+/// depend on the build.
+[[nodiscard]] auto s3_usage() -> std::string {
+    std::string text = R"(
+S3 persistence (.kiro/specs/multi-raft-node-s3-persistence/)
+)";
+#ifdef KYTHIRA_NODE_HAS_S3_PERSISTENCE
+    text += "  Available in this build.\n";
+#else
+    text +=
+        "  UNAVAILABLE IN THIS BUILD: --persistence s3 needs CONFIG_AWS_S3_PERSISTENCE=y and\n"
+        "  the AWS SDK found at configure time.\n";
+#endif
+    text += R"(  Every group's state lives at <prefix>/nodes/<node-id>/groups/<group>, so the
+  hosts of one cluster can share one bucket and one prefix. Credentials come
+  from the AWS SDK default chain only.
+  --s3-bucket NAME           Required.
+  --s3-prefix PATH           Required, e.g. runs/<run-tag>.
+  --s3-region NAME           Default: the SDK chain, first match wins:
+                             $AWS_DEFAULT_REGION, $AWS_REGION, the profile's
+                             region ($AWS_CONFIG_FILE or ~/.aws/config,
+                             $AWS_PROFILE), instance metadata, us-east-1.
+  --s3-endpoint URL          An S3-compatible service, e.g. a LocalStack at
+                             http://localhost:4566. Needs a scheme; no path,
+                             query or userinfo. Implies path-style addressing
+                             and disables IMDS. AWS_ENDPOINT_URL and
+                             AWS_ENDPOINT_URL_S3 are NOT read.
+  --s3-timeout MS            Per-request timeout (default 30000). The SDK
+                             takes whole seconds, so it is rounded up.
+  --s3-fencing MODE          cas | none (default cas). cas refuses a second
+                             host started with the same node id.
+  --s3-hard-state LAYOUT     combined | separate (default combined: one PUT
+                             per term-and-vote write).
+  --s3-log LAYOUT            per-entry | segmented (default per-entry).
+  --s3-max-segment-entries N (default 100; segmented only)
+  --s3-max-segment-bytes N   (default 1048576; segmented only)
+  --s3-write-behind 0|1      Leader group commit (default 0).
+  --s3-append-concurrency N  Log PUTs in flight at once (default 8).
+  --s3-write-retries N       Unconditional-PUT retries (default 1).
+  --s3-snapshot-retention N  Snapshot generations kept (default 1).
+  --s3-verify-checksums 0|1  Check each PUT's ETag (default 1).
+  --s3-max-object-bytes N    Largest single PUT (default 67108864).
+  An --election-timeout-min below 1000 ms draws a warning: against real S3 a
+  vote must be persisted inside the election. See "Election-timeout sizing"
+  in doc/cloud_object_persistence.md.
+)";
+    return text;
 }
 
 }  // namespace
@@ -186,9 +425,11 @@ Shape (all swept axes; none requires a rebuild)
   --tick-interval MS         Period of the thread that drives tick() (default 2).
   --transport NAME           httplib | beast | proxygen (default httplib).
   --serializer NAME          json | cbor (default json).
-  --persistence MODE         memory | file-buffered | file-barrier (default
-                             memory). file-buffered is NOT DURABLE.
-  --data-dir PATH            Where a file-backed log lives.
+  --persistence MODE         memory | file-buffered | file-barrier | s3
+                             (default memory). file-buffered is NOT DURABLE.
+                             s3 keeps every group's log in a bucket; see
+                             "S3 persistence" below.
+  --data-dir PATH            Where a file-backed log lives. Refused under s3.
   --executor-stripes N       Host executor stripes (default 4).
   --data-threads N           Threads serving the data path. A handler blocks
                              for the whole commit, so this caps how many client
@@ -284,7 +525,7 @@ Elastic shard capacity (.kiro/specs/elastic-shard-capacity/, task 16)
 
   --config FILE              Read any of the above as `key=value` lines.
   --help                     This text.
-)";
+)" + s3_usage();
 }
 
 namespace {
@@ -353,6 +594,9 @@ auto parse_node_options(int argc, char** argv) -> node_options {
     // never be accepted by one and rejected by the other.
     std::function<void(node_options&, const std::string&, const std::string&)> apply =
         [&apply](node_options& o, const std::string& flag, const std::string& value) {
+            if (apply_s3_flag(o._s3, flag, value)) {
+                return;
+            }
             if (flag == "--node-id") {
                 // metadata:<provider> is resolved here, so a host that cannot
                 // learn its id refuses to start with the metadata error.
@@ -558,7 +802,10 @@ auto parse_node_options(int argc, char** argv) -> node_options {
             "multi_raft_node: --capacity-role needs --transport httplib --serializer json, the "
             "one stack the control plane is compiled into");
     }
-    if (out._persistence != persistence_mode::memory && out._data_dir.empty()) {
+    validate_s3(out);
+    if ((out._persistence == persistence_mode::file_buffered ||
+         out._persistence == persistence_mode::file_barrier) &&
+        out._data_dir.empty()) {
         throw std::runtime_error(
             "multi_raft_node: --persistence file-* requires --data-dir; a file-backed log with "
             "nowhere to live would silently become a memory one");

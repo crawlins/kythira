@@ -19,6 +19,8 @@
 /// configured as without trusting the command line that launched it.
 
 #include "config.hpp"
+#include "s3_describe.hpp"
+#include "switchable_persistence.hpp"
 
 #include <raft/httplib_listeners.hpp>
 
@@ -120,7 +122,11 @@ public:
                     << _options._tick_interval.count() << R"(,"persistence":")"
                     << persistence_name() << R"(","durable":)" << (durable() ? "true" : "false")
                     << R"(,"shard_split":"pre-split")"
-                    << R"(,"voters":)" << _options._voters.size() << '}';
+                    << R"(,"voters":)" << _options._voters.size();
+                if (_options._persistence == persistence_mode::s3) {
+                    write_s3_status(out);
+                }
+                out << '}';
                 res.set_content(out.str(), "application/json");
             });
 
@@ -323,8 +329,56 @@ private:
                 return "file/buffered (NOT DURABLE)";
             case persistence_mode::file_barrier:
                 return "file/barrier";
+            case persistence_mode::s3:
+                return "s3";
         }
         return "unknown";
+    }
+
+    /// The `"s3"` object and `"fenced_groups"` (multi-raft-node-s3-persistence
+    /// Requirements 4.4, 5.4 and 11.7): where the state lives and every
+    /// option it runs with, so a row records the layout and group-commit
+    /// setting it measured. `flushes` sums the engines' own counters over
+    /// this host's live groups, which adds no request and no work to the
+    /// measured path. Credentials and the region chain's result are not
+    /// reported.
+    auto write_s3_status(std::ostringstream& out) const -> void {
+        const auto& s3 = _options._s3;
+        const auto& e = s3.engine;
+        const auto summary = s3_store_registry::instance().summarise();
+        out << R"(,"s3":{"bucket":)" << json_string(s3.bucket) << R"(,"host_prefix":)"
+            << json_string(s3_host_prefix(_options)) << R"(,"endpoint":)"
+            << (s3.endpoint.empty() ? std::string("null") : json_string(s3.endpoint))
+            << R"(,"fencing":")" << s3_fencing_name(s3.fencing) << R"(","hard_state":")"
+            << s3_hard_state_name(e.hard_state) << R"(","log":")" << s3_log_name(e.log)
+            << R"(","max_segment_entries":)" << e.max_segment_entries << R"(,"max_segment_bytes":)"
+            << e.max_segment_bytes << R"(,"write_behind":)" << (e.write_behind ? "true" : "false")
+            << R"(,"append_concurrency":)" << e.append_concurrency << R"(,"flushes":)"
+            << summary.flushes << R"(},"fenced_groups":[)";
+        for (std::size_t i = 0; i < summary.fenced_groups.size(); ++i) {
+            out << (i == 0 ? "" : ",") << summary.fenced_groups[i];
+        }
+        out << ']';
+    }
+
+    /// Bucket and prefix are operator text; escape what JSON requires.
+    [[nodiscard]] static auto json_string(std::string_view text) -> std::string {
+        std::string out = "\"";
+        for (const char c : text) {
+            if (c == '"' || c == '\\') {
+                out.push_back('\\');
+                out.push_back(c);
+            } else if (static_cast<unsigned char>(c) < 0x20) {
+                static constexpr const char* k_hex = "0123456789abcdef";
+                out += "\\u00";
+                out.push_back(k_hex[(static_cast<unsigned char>(c) >> 4) & 0xf]);
+                out.push_back(k_hex[static_cast<unsigned char>(c) & 0xf]);
+            } else {
+                out.push_back(c);
+            }
+        }
+        out.push_back('"');
+        return out;
     }
 
     /// Requirement 5.4 of `.kiro/specs/durable-append-barrier/`, answered on
@@ -332,7 +386,8 @@ private:
     /// durable here rather than being described optimistically and corrected
     /// in prose later.
     [[nodiscard]] auto durable() const -> bool {
-        return _options._persistence == persistence_mode::file_barrier;
+        return _options._persistence == persistence_mode::file_barrier ||
+               _options._persistence == persistence_mode::s3;
     }
 
     Host& _host;
