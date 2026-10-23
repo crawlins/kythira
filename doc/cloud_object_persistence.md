@@ -1044,11 +1044,54 @@ compiled into that binary.
 
 | Provider | Variables |
 |---|---|
-| `s3` | the AWS SDK default chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, ...) |
+| `s3` | the AWS SDK default chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, ...). The region comes from `--region`, else the SDK chain; the endpoint from `--endpoint` only, since `AWS_ENDPOINT_URL` is not read (see [S3 region and endpoint](#s3-region-and-endpoint)) |
 | `azure-blob` | `KYTHIRA_AZURE_STORAGE_ACCOUNT` (the bucket options name the *container*, which is not enough to build the endpoint), plus the Azure SDK default chain |
 | `gcs` | `GOOGLE_CLOUD_PROJECT`, plus Application Default Credentials |
 | `oci-objectstorage` | `KYTHIRA_OCI_REGION`, and the variables for one auth mode (below) |
 | `oss` | `KYTHIRA_ALIBABA_REGION`, `KYTHIRA_ALIBABA_ACCESS_KEY_ID`, `KYTHIRA_ALIBABA_ACCESS_KEY_SECRET`; `KYTHIRA_ALIBABA_SECURITY_TOKEN` for STS keys; optionally `KYTHIRA_ALIBABA_ENDPOINT_OVERRIDE` |
+
+#### S3 region and endpoint
+
+`--provider s3` takes two flags that no other provider does. They are not
+secrets, so unlike credentials they may be flags, and a one-off restore then
+records its target in the shell history.
+
+- `--region <name>` is the region to sign for. Without it the AWS SDK chain
+  decides, first match wins: `AWS_DEFAULT_REGION`, then `AWS_REGION` (note
+  the order: the reverse of the AWS CLI), then `region` in the config
+  profile, then EC2 instance metadata, then `us-east-1`.
+- `--endpoint <url>` points the tool at an S3-compatible service such as
+  LocalStack or MinIO. It implies path-style addressing and turns off the
+  instance-metadata lookup. The URL needs an `http` or `https` scheme, may
+  carry a port, and may not carry a path, query, fragment or `user:pass@`;
+  a value that breaks a rule is exit 1 before any connection. Plaintext
+  `http` to anything but `localhost`, `127.x.x.x` or `[::1]` warns.
+
+`AWS_ENDPOINT_URL` and `AWS_ENDPOINT_URL_S3` are **not read**, by the linked
+SDK or by the tool, which warns when either is set without `--endpoint`. CI
+points `AWS_ENDPOINT_URL` at an unrelated build cache, and a restore must not
+follow ambient state to the wrong cloud. The OCI and OSS providers refuse both
+flags and name their own `KYTHIRA_*_REGION` / `KYTHIRA_*_ENDPOINT_OVERRIDE`
+variables instead.
+
+```sh
+# LocalStack (accepts any keys and any region)
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+raft_object_backup list --provider s3 \
+    --endpoint http://localhost:4566 \
+    --dest-bucket my-backups --dest-prefix raft-backups
+
+# MinIO, with its own keys and region
+AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=... \
+raft_object_backup restore-clone --provider s3 \
+    --endpoint https://minio.internal:9000 --region us-east-1 \
+    --dest-bucket my-backups --dest-prefix raft-backups \
+    --backup-id 20260817T221530Z \
+    --target-bucket my-raft --target-prefix node-1
+```
+
+CI runs the full `create`, `list`, `verify`, `restore-clone` cycle this way
+against LocalStack on every push (`scripts/backup-s3-localstack-cycle.sh`).
 
 OCI and Alibaba have no SDK in this tree, so nothing else would supply their
 credentials; the tool reads the same `KYTHIRA_OCI_*` and `KYTHIRA_ALIBABA_*`

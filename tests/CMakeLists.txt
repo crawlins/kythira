@@ -938,6 +938,15 @@ set_tests_properties(cloud_config_env_unit_test PROPERTIES
     LABELS "unit;object-store;backup;cli;oci;alibaba"
 )
 
+# raft_object_backup's --endpoint shape check and the AWS_ENDPOINT_URL warning
+# (object-backup-s3-endpoint task 2). Unconditional: the header is SDK free, so
+# the rules are tested on every leg, not only where the S3 provider builds.
+add_raft_completion_test(aws_endpoint_override_unit_test aws_endpoint_override_unit_test.cpp)
+set_tests_properties(aws_endpoint_override_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;object-store;backup;cli;aws"
+)
+
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(tcp_cluster_join_test tcp_cluster_join_test.cpp)
 # chaos_node's environment parsing for joining a running cluster.

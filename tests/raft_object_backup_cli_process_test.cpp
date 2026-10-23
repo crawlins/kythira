@@ -12,13 +12,24 @@
 // than reaching `std::terminate`. Each run gets an explicit, scrubbed `envp`,
 // so a developer's own credentials never leak into a case.
 //
-// Registered by `cmd/raft_object_backup/CMakeLists.txt` only when the OCI or
-// OSS provider is compiled in, with the same KYTHIRA_BACKUP_PROVIDER_* macros
-// the binary gets, so each case runs only where its provider exists.
+// Registered by `cmd/raft_object_backup/CMakeLists.txt` only when the S3, OCI
+// or OSS provider is compiled in, with the same KYTHIRA_BACKUP_PROVIDER_*
+// macros the binary gets, so each case runs only where its provider exists.
+//
+// The S3 cases (`.kiro/specs/object-backup-s3-endpoint/`, Requirement 5) run
+// the binary against an in-process cpp-httplib server bound for `localhost`,
+// so they prove `--endpoint` and `--region` reach the wire without an account.
 
 #ifdef KYTHIRA_BACKUP_PROVIDER_OCI
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#endif
+#ifdef KYTHIRA_BACKUP_PROVIDER_S3
+#include <httplib.h>
+
+#include <filesystem>
+#include <mutex>
+#include <thread>
 #endif
 
 #include <arpa/inet.h>
@@ -233,3 +244,162 @@ BOOST_AUTO_TEST_CASE(oss_with_no_environment_exits_1_naming_every_variable) {
 }
 
 #endif  // KYTHIRA_BACKUP_PROVIDER_OSS
+
+#ifdef KYTHIRA_BACKUP_PROVIDER_OCI
+
+// object-backup-s3-endpoint Requirement 2: a flag the OCI arm would ignore is
+// refused, naming OCI's own variable, before any client exists.
+BOOST_AUTO_TEST_CASE(oci_refuses_endpoint_and_region_flags_naming_its_own_variables) {
+    auto endpoint_args = list_args("oci-objectstorage");
+    endpoint_args.insert(endpoint_args.end(), {"--endpoint", "http://x"});
+    const auto e = run(endpoint_args, {});
+    BOOST_TEST(exited_with(e, 1), describe(e));
+    BOOST_TEST(contains(e.err, "--endpoint applies to --provider s3 only"), describe(e));
+    BOOST_TEST(contains(e.err, "KYTHIRA_OCI_ENDPOINT_OVERRIDE"), describe(e));
+
+    auto region_args = list_args("oci-objectstorage");
+    region_args.insert(region_args.end(), {"--region", "us-phoenix-1"});
+    const auto r = run(region_args, {});
+    BOOST_TEST(exited_with(r, 1), describe(r));
+    BOOST_TEST(contains(r.err, "KYTHIRA_OCI_REGION"), describe(r));
+}
+
+#endif  // KYTHIRA_BACKUP_PROVIDER_OCI
+
+#ifdef KYTHIRA_BACKUP_PROVIDER_S3
+
+namespace {
+
+struct recorded_request {
+    std::string method;
+    std::string path;
+    std::string query_list_type;
+    std::string host;
+    std::string authorization;
+};
+
+/// A stand-in S3 service on `localhost`: records every request and answers
+/// each GET with an empty ListObjectsV2 result. `localhost`, not 127.0.0.1,
+/// because the SDK goes path style for IP literals by itself, so only a host
+/// name proves the client's own path-style switch (Requirement 5.2).
+class fake_s3 {
+public:
+    fake_s3() {
+        _server.Get(".*", [this](const httplib::Request& req, httplib::Response& res) {
+            record(req);
+            res.set_content(R"(<?xml version="1.0" encoding="UTF-8"?>)"
+                            R"(<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">)"
+                            R"(<Name>backups</Name><Prefix></Prefix><KeyCount>0</KeyCount>)"
+                            R"(<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>)"
+                            R"(</ListBucketResult>)",
+                            "application/xml");
+        });
+        _server.set_error_handler(
+            [this](const httplib::Request& req, httplib::Response&) { record(req); });
+        _port = _server.bind_to_any_port("localhost");
+        BOOST_REQUIRE(_port > 0);
+        _thread = std::thread([this] { _server.listen_after_bind(); });
+        _server.wait_until_ready();
+    }
+    ~fake_s3() {
+        _server.stop();
+        _thread.join();
+    }
+    fake_s3(const fake_s3&) = delete;
+    auto operator=(const fake_s3&) -> fake_s3& = delete;
+    fake_s3(fake_s3&&) = delete;
+    auto operator=(fake_s3&&) -> fake_s3& = delete;
+
+    [[nodiscard]] auto endpoint() const -> std::string {
+        return "http://localhost:" + std::to_string(_port);
+    }
+    [[nodiscard]] auto port() const -> int { return _port; }
+    [[nodiscard]] auto requests() -> std::vector<recorded_request> {
+        std::lock_guard lock(_mutex);
+        return _requests;
+    }
+
+private:
+    void record(const httplib::Request& req) {
+        std::lock_guard lock(_mutex);
+        _requests.push_back({req.method, req.path, req.get_param_value("list-type"),
+                             req.get_header_value("Host"), req.get_header_value("Authorization")});
+    }
+
+    httplib::Server _server;
+    int _port{};
+    std::thread _thread;
+    std::mutex _mutex;
+    std::vector<recorded_request> _requests;
+};
+
+/// Static keys and a HOME with no `.aws`, so the SDK chain finds credentials
+/// without reaching a profile, and nothing on the developer's machine leaks in.
+auto s3_env() -> std::vector<std::string> {
+    static const auto home = [] {
+        auto dir = std::filesystem::temp_directory_path() / "kythira-backup-cli-empty-home";
+        std::filesystem::create_directories(dir);
+        return dir.string();
+    }();
+    return {"AWS_ACCESS_KEY_ID=AKIDPROCESSTEST", "AWS_SECRET_ACCESS_KEY=process-test-secret",
+            "HOME=" + home};
+}
+
+auto s3_list_args(std::initializer_list<std::string> extra) -> std::vector<std::string> {
+    auto args = list_args("s3");
+    args.insert(args.end(), extra);
+    return args;
+}
+
+}  // namespace
+
+// Requirement 5.2. The region is deliberately not us-east-1: that is also the
+// SDK's last-resort default, so it would pass even if --region were dropped.
+BOOST_AUTO_TEST_CASE(s3_endpoint_and_region_reach_the_wire_path_style) {
+    fake_s3 server;
+    const auto r =
+        run(s3_list_args({"--endpoint", server.endpoint(), "--region", "eu-west-3"}), s3_env());
+    BOOST_TEST(exited_with(r, 0), describe(r));
+    const auto requests = server.requests();
+    BOOST_REQUIRE_MESSAGE(!requests.empty(), "no request reached the server; " << describe(r));
+    const auto& first = requests.front();
+    BOOST_TEST(first.method == "GET");
+    BOOST_TEST(first.path == "/backups");
+    BOOST_TEST(first.query_list_type == "2");
+    BOOST_TEST(first.host == "localhost:" + std::to_string(server.port()));
+    BOOST_TEST(contains(first.authorization, "/eu-west-3/s3/aws4_request"),
+               "Authorization was: " << first.authorization);
+}
+
+// Requirement 3.1/3.2: a shape error is exit 1 before any connection.
+BOOST_AUTO_TEST_CASE(s3_endpoint_without_a_scheme_exits_1_before_connecting) {
+    fake_s3 server;
+    const auto r =
+        run(s3_list_args({"--endpoint", "localhost:" + std::to_string(server.port())}), s3_env());
+    BOOST_TEST(exited_with(r, 1), describe(r));
+    BOOST_TEST(contains(r.err, "needs a scheme"), describe(r));
+    BOOST_TEST(server.requests().empty());
+}
+
+// Requirement 3.3 and 5.3: the flag wins over AWS_ENDPOINT_URL, which is not
+// read, and nothing warns about it when --endpoint is given.
+BOOST_AUTO_TEST_CASE(s3_endpoint_flag_wins_over_aws_endpoint_url) {
+    fake_s3 server;
+    auto env = s3_env();
+    env.emplace_back("AWS_ENDPOINT_URL=http://secret-host.example");
+    const auto r = run(s3_list_args({"--endpoint", server.endpoint()}), env);
+    BOOST_TEST(exited_with(r, 0), describe(r));
+    BOOST_TEST(!server.requests().empty(), describe(r));
+    BOOST_TEST(!contains(r.err, "AWS_ENDPOINT_URL"), describe(r));
+    BOOST_TEST(!contains(r.err, "secret-host"), describe(r));
+}
+
+BOOST_AUTO_TEST_CASE(help_lists_the_region_and_endpoint_flags) {
+    const auto r = run({"--help"}, {});
+    BOOST_REQUIRE_MESSAGE(exited_with(r, 0), describe(r));
+    BOOST_TEST(contains(r.out, "--region <name>"));
+    BOOST_TEST(contains(r.out, "--endpoint <url>"));
+    BOOST_TEST(contains(r.out, "AWS_ENDPOINT_URL is not read"));
+}
+
+#endif  // KYTHIRA_BACKUP_PROVIDER_S3

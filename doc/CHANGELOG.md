@@ -3,6 +3,19 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 23, 2026)
+
+- **`raft_object_backup --provider s3` works, and can reach LocalStack and
+  MinIO.** The S3 arm never called `Aws::InitAPI`, so every `--provider s3`
+  run died by SIGSEGV in the SDK's config lookup before sending a request;
+  nothing had run the binary against S3 until this change's process test.
+  The arm now initialises and shuts down the SDK around the client. It also
+  gains `--region` and `--endpoint` (`.kiro/specs/object-backup-s3-endpoint/`):
+  the endpoint is shape-checked before any connection and implies path-style
+  addressing, `AWS_ENDPOINT_URL` stays unread but now draws a warning, and
+  the OCI and OSS arms refuse both flags. CI runs a full create, list,
+  verify and restore-clone cycle against LocalStack through `--endpoint`.
+
 ### What Changed (October 22, 2026)
 
 - **The batched object layouts and write-behind are measured on all five
