@@ -613,8 +613,13 @@ Reference implementations to study before starting:
   dropped on step-down (14.7): a deposed leader finishing a launch and its
   successor can still pick the same id. The launch's ClientToken, derived from
   the cluster and the id (`launch_client_token`), lets EC2 accept only one
-  launch of an id; see the "Node ids across leaders" note on the
-  `quorum_manager` concept.
+  launch of an id per Availability Zone: a launch into a subnet gets zonal
+  idempotency, and real-EC2 run 39871773330 launched a second id 1 in another
+  AZ. The manager therefore also queries the `client-token` filter, which
+  spans the region, before launching (a holder in another subnet means the id
+  is taken) and after (of two launches that both won, the lower instance id
+  keeps the id and the other is terminated). See the "Node ids across
+  leaders" note on the `quorum_manager` concept.
 
 - `user_data_template` is the primary mechanism for starting kythira on a new
   instance. In real-AWS tests the fixture constructs this dynamically with S3
