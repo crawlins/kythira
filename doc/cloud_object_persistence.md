@@ -987,6 +987,72 @@ service, and **neither was catchable locally**:
   agree, however wrongly they both encode**. A signature bug of that shape is
   only observable against a party that computes the signature independently.
 
+## Running a cluster on S3
+
+`multi_raft_node --persistence s3` runs a whole cluster on this engine, one
+engine over `aws_s3_client` per group
+(`.kiro/specs/multi-raft-node-s3-persistence/`). It exists so a Tier C, D or E
+row can take S3 as the durable log, and so a cluster can be exercised end to
+end with no cloud account. **`multi_raft_node` is a measurement host, not a
+server**: it has no data-path authentication, and S3 persistence does not
+change that.
+
+Every host of a cluster can share one bucket and one prefix. Each appends
+`/nodes/<node-id>` itself, so group `g` of node `n` lives under
+`<prefix>/nodes/<n>/groups/<g>/`, and the host prints that prefix at startup.
+
+Three hosts against a LocalStack (or MinIO) on `localhost:4566`:
+
+```sh
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
+curl -X PUT http://localhost:4566/kythira-runs        # create the bucket
+for id in 1 2 3; do
+  multi_raft_node --node-id $id --bind 127.0.0.1 \
+    --raft-port 900$id --data-port 910$id --control-port 920$id \
+    --peer 1=http://127.0.0.1:9001 --peer 2=http://127.0.0.1:9002 \
+    --peer 3=http://127.0.0.1:9003 \
+    --persistence s3 --s3-bucket kythira-runs --s3-prefix runs/local-1 \
+    --s3-endpoint http://localhost:4566 --s3-region us-east-1 &
+done
+```
+
+Against real S3, drop `--s3-endpoint`, give the region, and size the election
+timeout from a measurement (see below):
+
+```sh
+multi_raft_node --node-id 1 ... \
+  --persistence s3 --s3-bucket my-bucket --s3-prefix runs/$RUN_TAG \
+  --s3-region eu-west-3 --election-timeout-min 1500 --election-timeout-max 3000 \
+  --s3-log segmented --s3-write-behind 1
+```
+
+What to know:
+
+- **Defaults.** `--s3-fencing cas` and `--s3-hard-state combined`; every other
+  `--s3-*` flag defaults to `object_persistence_options`'s own default, so
+  group commit (`--s3-write-behind 1`) is on only when a row asks for it.
+  `--help` lists every flag. An option the engine rejects refuses startup with
+  the engine's message, before any server binds.
+- **Election timeout.** Below 1000 ms the host warns, because a vote must be
+  persisted inside the election and one S3 PUT can take longer than that from
+  where the nodes run; see [Election-timeout sizing](#election-timeout-sizing).
+  It is a warning, not a refusal: against a loopback LocalStack the short
+  default is fine.
+- **A reused node id is refused.** Under `cas` each group's owner is
+  `<node-id>@<own Raft URL>`, so restarting a host with the same flags claims
+  the next epoch, while a second process under the same id, at another
+  address, is refused at startup naming the owner object. The cost is that a
+  host that comes back at a different address under the same prefix is
+  refused too; use a fresh, run-scoped prefix.
+- **Status.** The control port's `/describe` reports `"persistence":"s3"`,
+  an `"s3"` object (bucket, host prefix, endpoint, layouts, write-behind,
+  append concurrency and `flushes`, the engines' flush count) and
+  `"fenced_groups"`. A group fenced at run time is logged once and listed
+  there; the host does not retry or clear the latch.
+- **Credentials and endpoints** follow the backup tool: the SDK default chain
+  only, and `AWS_ENDPOINT_URL` is not read (see
+  [S3 region and endpoint](#s3-region-and-endpoint)).
+
 ## Future work
 
 The two limits this section used to list are closed as opt-in layouts

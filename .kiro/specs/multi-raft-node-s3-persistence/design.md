@@ -413,3 +413,65 @@ creation. It runs the process test's steps 1 to 3 against
 `http://localhost:<port>` instead of the mock, once with write-behind off and
 once on, and fails when the service is unhealthy. This is the check that the mock and a real implementation agree on
 the conditional-write and listing behaviour the engine depends on.
+
+## Implementation notes (2026-10-23)
+
+What the implementation changed from the design above, and why.
+
+### The CAS owner is `<node-id>@<own Raft URL>`
+
+Requirement 4.3 asked for `owner_id = host_node_id_text(node id)`. That
+cannot meet Requirements 4.4 and 10.4. The engine treats a recorded owner
+equal to its own `owner_id` as a restart and claims the next epoch, because a
+crash-restart and a duplicate are indistinguishable at construction
+(`object_store_persistence.hpp`, "The owner object"). With the bare node id,
+a second host under a reused id would start, and the fence would fall later
+on whichever host wrote second, which can be the original.
+
+The owner is therefore the node id plus this host's own entry in its peer
+map, the URL peers dial, which is unique per live process. A restart with the
+same flags is the same owner and claims the next epoch (Requirement 1.4), and
+a second process under the same id at another address is a different owner,
+refused at construction with the engine's message. The process test checks
+both, and that the refused host wrote nothing. The cost: a host that comes
+back at another address under the same prefix is refused too and needs a
+fresh prefix, which run-scoped prefixes already give. The preflight runs
+before discovery, when this host may not be in its own peer map, and falls
+back to the bare id there; it only needs a non-empty owner.
+
+### The S3 arm is behind an interface from the start
+
+`switchable_persistence` holds a `std::shared_ptr<s3_group_store>`, an
+abstract class whose two implementations (one per fencing mode) live in
+`cmd/multi_raft_node/s3_store.cpp`, compiled only with the arm. The
+`run_*.cpp` units therefore parse no SDK header and instantiate no S3 engine.
+Task 4.4's measurement, `run_httplib_cbor.cpp` with g++-13 at `-O1` on the
+sandbox: 1,898,032 KiB peak RSS on main before the change and 1,845,832 KiB
+after, i.e. no rise. A virtual call per persistence operation is noise beside
+the round trip behind it. The shared pointer also lets a process-wide
+registry (`s3_store_registry`) hold every live group store weakly, which is
+how the status surface sums `flushes_issued()` and lists fenced groups.
+
+### `object_persistence_options` has its own header
+
+`config.hpp` needs the struct and its two layout enums. Including
+`object_store_persistence.hpp` for them pulls in `persistence.hpp` and, through
+it, the future backend, which would have made the parser and its unit test
+need Folly. They moved to `include/raft/object_persistence_options.hpp`,
+which the engine header includes, so no existing user changes.
+
+### Smaller points
+
+- `--s3-timeout` is milliseconds like every other duration flag, and
+  `aws_client_config::api_timeout` is whole seconds, so it is rounded up.
+- `--s3-endpoint` reuses `validate_s3_endpoint()` unchanged; its messages say
+  `--endpoint` and the parser rewrites that to `--s3-endpoint`.
+- `0|1` flags reject any other number rather than reading it as on.
+- B in the batching test is the leader's log growth on the mock (last index
+  after minus before, from segment bodies or singleton keys) over its log
+  PUTs in the window. Measured locally: 4.3 with write-behind and `segmented`
+  (320 entries, 74 PUTs, 74 flushes), exactly 1.0 without and `per-entry`.
+- The CI step's script ran locally against LocalStack 4.14.0 under both
+  Docker and rootless Podman (task 9.2).
+- The status object is on `/describe`, beside the existing `persistence` and
+  `durable` fields, which is where this host's status surface is.
