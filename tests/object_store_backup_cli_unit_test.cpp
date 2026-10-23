@@ -198,6 +198,60 @@ BOOST_AUTO_TEST_CASE(node_lists_split_on_commas_and_ignore_empties) {
     BOOST_TEST(parsed.nodes[1] == "beta");
 }
 
+// object-backup-s3-endpoint Requirements 1.1 and 3.5. The parser only stores
+// the two values; the S3 arm validates the endpoint and the other arms refuse
+// both, which needs the provider table in main.cpp and is covered by the
+// process test.
+BOOST_AUTO_TEST_CASE(region_and_endpoint_are_stored_for_any_verb) {
+    const char* argv[] = {"raft_object_backup", "list",
+                          "--dest-bucket",      "b",
+                          "--dest-prefix",      "p",
+                          "--region",           "us-west-2",
+                          "--endpoint",         "http://localhost:4566"};
+    const auto parsed = parse_backup_cli_args(10, argv);
+    BOOST_TEST(parsed.region == "us-west-2");
+    BOOST_TEST(parsed.endpoint == "http://localhost:4566");
+}
+
+BOOST_AUTO_TEST_CASE(region_and_endpoint_default_to_empty) {
+    const char* argv[] = {"raft_object_backup", "list", "--dest-bucket", "b", "--dest-prefix", "p"};
+    const auto parsed = parse_backup_cli_args(6, argv);
+    BOOST_TEST(parsed.region.empty());
+    BOOST_TEST(parsed.endpoint.empty());
+}
+
+BOOST_AUTO_TEST_CASE(region_and_endpoint_need_a_non_empty_value) {
+    for (const char* flag : {"--region", "--endpoint"}) {
+        BOOST_TEST_CONTEXT("flag " << flag) {
+            const char* missing[] = {
+                "raft_object_backup", "list", "--dest-bucket", "b", "--dest-prefix", "p", flag};
+            BOOST_CHECK_THROW(std::ignore = parse_backup_cli_args(7, missing),
+                              backup_cli_usage_error);
+            const char* empty[] = {
+                "raft_object_backup", "list", "--dest-bucket", "b", "--dest-prefix", "p", flag, ""};
+            try {
+                std::ignore = parse_backup_cli_args(8, empty);
+                BOOST_FAIL("expected an empty value to be refused");
+            } catch (const backup_cli_usage_error& err) {
+                BOOST_TEST(std::string(err.what()).find(flag) != std::string::npos);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_repeated_region_or_endpoint_keeps_the_last_value) {
+    const char* argv[] = {"raft_object_backup", "list",
+                          "--dest-bucket",      "b",
+                          "--dest-prefix",      "p",
+                          "--region",           "us-east-1",
+                          "--endpoint",         "http://localhost:1",
+                          "--region",           "eu-west-1",
+                          "--endpoint",         "http://localhost:2"};
+    const auto parsed = parse_backup_cli_args(14, argv);
+    BOOST_TEST(parsed.region == "eu-west-1");
+    BOOST_TEST(parsed.endpoint == "http://localhost:2");
+}
+
 BOOST_AUTO_TEST_CASE(an_option_with_no_value_is_refused) {
     const char* argv[] = {"raft_object_backup", "list", "--dest-bucket"};
     BOOST_CHECK_THROW(std::ignore = parse_backup_cli_args(3, argv), backup_cli_usage_error);

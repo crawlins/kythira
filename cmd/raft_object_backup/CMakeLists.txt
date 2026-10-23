@@ -101,13 +101,23 @@ elseif(TARGET Boost::json)
     target_link_libraries(raft_object_backup PRIVATE Boost::json)
 endif()
 
-# ── Process-level test (object-backup-oci-oss-credentials, Requirement 6.3) ──
+# ── Process-level test (object-backup-oci-oss-credentials, Requirement 6.3;
+#    object-backup-s3-endpoint, Requirement 5) ──────────────────────────────────
 #
 # Registered here rather than in tests/ because tests/ is configured first and
-# this file is what knows which providers the binary carries. Only the OCI and
-# OSS arms read credentials this tool maps itself, so only they get a test; the
-# test is given the same provider macros, and gates each case on its own.
+# this file is what knows which providers the binary carries. The OCI and OSS
+# arms read credentials this tool maps itself, and the S3 arm takes --region and
+# --endpoint, so those three get cases; the test is given the same provider
+# macros, and gates each case on its own.
+#
+# The S3 cases stand up a cpp-httplib server for the binary to reach, so they
+# need httplib, not the AWS SDK: the test only spawns the binary.
 set(_KYTHIRA_BACKUP_PROCESS_TEST_DEFS "")
+set(_KYTHIRA_BACKUP_PROCESS_TEST_LIBS "")
+if("s3" IN_LIST _KYTHIRA_BACKUP_ENABLED AND TARGET httplib::httplib)
+    list(APPEND _KYTHIRA_BACKUP_PROCESS_TEST_DEFS KYTHIRA_BACKUP_PROVIDER_S3)
+    list(APPEND _KYTHIRA_BACKUP_PROCESS_TEST_LIBS httplib::httplib)
+endif()
 if("oci-objectstorage" IN_LIST _KYTHIRA_BACKUP_ENABLED)
     list(APPEND _KYTHIRA_BACKUP_PROCESS_TEST_DEFS KYTHIRA_BACKUP_PROVIDER_OCI)
 endif()
@@ -122,7 +132,7 @@ if(_KYTHIRA_BACKUP_PROCESS_TEST_DEFS AND TARGET Boost::unit_test_framework)
         ${_KYTHIRA_BACKUP_PROCESS_TEST_DEFS}
         RAFT_OBJECT_BACKUP_PATH="$<TARGET_FILE:raft_object_backup>")
     target_link_libraries(raft_object_backup_cli_process_test PRIVATE
-        Boost::unit_test_framework OpenSSL::Crypto)
+        Boost::unit_test_framework OpenSSL::Crypto ${_KYTHIRA_BACKUP_PROCESS_TEST_LIBS})
     add_dependencies(raft_object_backup_cli_process_test raft_object_backup)
     add_test(NAME raft_object_backup_cli_process_test
         COMMAND raft_object_backup_cli_process_test)

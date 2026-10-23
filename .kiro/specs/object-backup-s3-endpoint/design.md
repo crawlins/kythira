@@ -97,6 +97,50 @@ no SDK dependency. It is named for the setting rather than for the CLI, so
 `chaos_node` or any other `cmd/` binary that later grows an S3 endpoint
 option can reuse it.
 
+## Measured: where the linked SDK finds a region and an endpoint (task 1)
+
+Measured on 2026-10-23 against aws-sdk-cpp 1.11.665, the version the vcpkg
+baseline pins, built from source with `BUILD_ONLY=s3`. A probe constructed
+`Aws::S3::S3ClientConfiguration` from `ClientConfigurationInitValues`, the
+way `aws_s3_client` does, under `env -i` with `HOME` pointed at a directory
+with no `.aws`, and printed `region`:
+
+| Environment | `region` |
+|---|---|
+| nothing (IMDS disabled, or enabled but unreachable) | `us-east-1` |
+| `AWS_DEFAULT_REGION` | its value |
+| `AWS_REGION` | its value |
+| both | `AWS_DEFAULT_REGION`'s value |
+| `region` in `AWS_CONFIG_FILE`'s `[default]` | the profile's value |
+| the same with `AWS_PROFILE=named` | `[profile named]`'s value |
+| `$HOME/.aws/config` (no `AWS_CONFIG_FILE`) | the profile's value |
+| profile plus either variable | the variable's value |
+
+So the chain is, first match wins:
+
+1. `AWS_DEFAULT_REGION`
+2. `AWS_REGION`
+3. `region` in the shared config profile (`AWS_CONFIG_FILE`, else
+   `~/.aws/config`; `AWS_PROFILE` picks the profile)
+4. EC2 instance metadata, unless IMDS is disabled. `aws_s3_client`
+   disables it whenever `endpoint_override` is set, and
+   `AWS_EC2_METADATA_DISABLED=true` disables it too. Not measurable off EC2;
+   read from `ClientConfiguration::ClientConfiguration()` in
+   `src/aws-cpp-sdk-core/source/client/ClientConfiguration.cpp`, which
+   also shows steps 1-3 (`calculateRegion()`).
+5. `us-east-1`
+
+Two consequences worth stating. `AWS_DEFAULT_REGION` beats `AWS_REGION`,
+which is the reverse of the AWS CLI v2; an operator with both set gets the
+"default" one. And `--endpoint` without `--region` and without any of 1-3
+signs for `us-east-1`, which LocalStack and a default MinIO accept.
+
+`strings libaws-cpp-sdk-core.a | grep AWS_ENDPOINT_URL` finds nothing, so
+the C++ SDK still never reads the variable for a service endpoint. The only
+library in the build that carries the string is the CRT's `libaws-c-auth.a`,
+which this client does not use to pick an S3 endpoint. Requirement 3.3's
+wording ("the linked SDK does not read it") stands.
+
 ## Components and Interfaces
 
 ### Parser (`include/raft/object_store_backup_cli.hpp`)
