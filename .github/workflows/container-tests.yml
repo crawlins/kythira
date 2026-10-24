@@ -248,8 +248,10 @@ jobs:
       # share cluster names.
       # The scripted scenarios also run the cairn checkers over every case
       # (tests/docker_chaos/chaos_fixture.hpp); each case's workload
-      # history lands in the artifact directory for the upload below.
-      - name: docker-chaos-tests (8 chaos scenarios)
+      # history lands in the artifact directory for the upload below, and so
+      # does the chaos_ctl scenario's run directory (schedule log, snapshots,
+      # history) when it fails.
+      - name: docker-chaos-tests (9 chaos scenarios)
         env:
           KYTHIRA_CHAOS_ARTIFACT_DIR: ${{ runner.temp }}/chaos-histories
         run: |

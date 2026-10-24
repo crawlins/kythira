@@ -88,6 +88,15 @@ target_include_directories(chaos_workload_unit_tests PRIVATE
 add_docker_chaos_unit_test(docker_chaos_checkers_unit_tests
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/checkers_unit_test.cpp")
 
+# cmd/chaos_ctl's tools, schedule log and replay (cairn-chaos-testing task 7),
+# over the CmdExecutor/HttpGet stubs. Reads docker/cairn/failpoints.allowlist.
+add_docker_chaos_unit_test(chaos_ctl_unit_tests
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/chaos_ctl_unit_test.cpp")
+target_include_directories(chaos_ctl_unit_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/cmd/chaos_ctl")
+target_compile_definitions(chaos_ctl_unit_tests PRIVATE
+    KYTHIRA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 # ── Docker scenario tests (require Docker at runtime) ─────────────────────────
 # Each scenario test is its own executable — Boost.Test embeds BOOST_TEST_MODULE
 # in every TU so they cannot share a binary.
@@ -101,6 +110,7 @@ set(_scenario_tests
     docker_chaos_persistence_faults_test
     docker_chaos_safety_assertions_test
     docker_chaos_five_node_test
+    docker_chaos_chaos_ctl_test
 )
 
 add_docker_chaos_scenario_test(docker_chaos_smoke_test
@@ -119,6 +129,10 @@ add_docker_chaos_scenario_test(docker_chaos_safety_assertions_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/safety_assertions_test.cpp")
 add_docker_chaos_scenario_test(docker_chaos_five_node_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/five_node_test.cpp")
+# Drives the chaos_ctl binary one process per call, as the cairn MCP adapter
+# will (cairn-chaos-testing task 7).
+add_docker_chaos_scenario_test(docker_chaos_chaos_ctl_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/chaos_ctl_scenario_test.cpp")
 
 # ── Quorum healing Docker scenario tests (Req 19) ────────────────────────────
 
@@ -392,6 +406,23 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    # The chaos_ctl scenario needs the chaos_ctl binary, which exists under
+    # the same guard as chaos_node (docker-chaos-image above): a coverage
+    # build skips cmd/ entirely, and $<TARGET_FILE:chaos_ctl> would fail
+    # generation there.
+    set(_chaos_ctl_scenario_command "")
+    set(_chaos_ctl_target "")
+    if(NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+        set(_chaos_ctl_target chaos_ctl)
+        set(_chaos_ctl_scenario_command
+            COMMAND ${CMAKE_COMMAND} -E env
+                    ${_RT_ENV}
+                    KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
+                    KYTHIRA_CHAOS_CTL=$<TARGET_FILE:chaos_ctl>
+                    $<TARGET_FILE:docker_chaos_chaos_ctl_test>
+                    --log_level=message)
+    endif()
+
     add_custom_target(docker-chaos-tests
         COMMAND ${CMAKE_COMMAND} -E env
                 ${_RT_ENV}
@@ -433,7 +464,8 @@ if(_RUNTIME_EXE)
                 KYTHIRA_CHAOS5_COMPOSE_FILE=${_CHAOS5_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_five_node_test>
                 --log_level=message
-        DEPENDS docker-chaos-image ${_scenario_tests}
+        ${_chaos_ctl_scenario_command}
+        DEPENDS docker-chaos-image ${_chaos_ctl_target} ${_scenario_tests}
         COMMENT "Running chaos scenario tests (runtime: ${CONTAINER_RUNTIME})"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )

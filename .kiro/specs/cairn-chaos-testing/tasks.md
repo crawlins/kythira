@@ -148,17 +148,93 @@ compatibility").
         election check is per term, and its leader-completeness check skips
         leaders behind the highest sampled term.
 
-- [ ] **7. `chaos_ctl` and the schedule log.** (Requirement 3, design §3-§4.)
-  - [ ] 7.1 One subcommand per tool from Requirement 3.1. `clock_skew`
+- [x] **7. `chaos_ctl` and the schedule log.** (Requirement 3, design §3-§4.)
+  - [x] 7.1 One subcommand per tool from Requirement 3.1. `clock_skew`
         returns `unsupported` (design §6).
-  - [ ] 7.2 Failpoint allowlist generated from
+  - [x] 7.2 Failpoint allowlist generated from
         `include/raft/fault_injection.hpp`, with a check that fails the
         build on drift.
-  - [ ] 7.3 Append the schedule log before each call and update it after;
+  - [x] 7.3 Append the schedule log before each call and update it after;
         snapshot `/elections` and `/log` before kill and restart.
-  - [ ] 7.4 `chaos_ctl replay [--repeat N]` and `chaos_ctl minimize`, both
+  - [x] 7.4 `chaos_ctl replay [--repeat N]` and `chaos_ctl minimize`, both
         LLM-free.
-  - [ ] 7.5 Unit tests over the existing `CmdExecutor`/`HttpGet` stubs.
+  - [x] 7.5 Unit tests over the existing `CmdExecutor`/`HttpGet` stubs.
+
+        Done October 24, 2026. `cmd/chaos_ctl/` holds the logic, and the
+        MCP adapter (task 10) will only map tools onto it. Decisions made
+        while building it:
+        - One process per call, as the adapter will run it, so a run is a
+          directory (`run_state.hpp`): `run.json` from `chaos_ctl init`,
+          the schedule log, node snapshots, the workload's pid and its
+          history. A `flock` serializes calls from several workers into
+          one order.
+        - The workload runs as its own `chaos_workload` process.
+          `WORKLOAD_DURATION_S=0` now means "until SIGTERM", and SIGTERM
+          stops it the way the deadline does, between operations. One
+          workload per run, so process ids never restart at 0 within a
+          history. `workload.start` writes its resolved seed into the
+          logged arguments, so a replay runs the same workload.
+        - The schedule log appends a second line for each outcome rather
+          than rewriting the `started` line (`schedule_log.hpp`). The file
+          stays append-only, a crashed call stays on record as `started`,
+          and a reader folds the two lines by `seq`.
+        - Every tool that changes the cluster runs `raft_safety` after it
+          (design §3.3 step 4), including a call that failed part-way.
+          Violations carry `schedule_seq`. Reads, `workload.*`, `check.run`
+          and an `unsupported` call skip it.
+        - 7.2: the names are not in `fault_injection.hpp`, which holds only
+          the `fiu_do_on` macros. `scripts/gen-cairn-failpoints.py` reads
+          every `fiu_do_on`/`fiu_fail` in `include/raft/` in the four
+          families and keeps those `chaos_node` reaches:
+          `file_persistence.hpp` and `test_state_machine.hpp`. A new
+          header declaring such a name fails the check until it is
+          classified. ci.yml's docs job runs `--check`. **Finding:** the
+          `raft/network/*` names are evaluated only by
+          `simulator_network.hpp`, and chaos_node talks over `tcp_rpc`, so
+          they never fire in chaos_node. Requirement 3.2 lists that family,
+          but offering names that do nothing would let an agent spend a
+          run on a no-op, so the allowlist leaves them out. The same
+          applies to `election_recovery_test.cpp`'s
+          `election_after_fiu_network_isolation`, which arms them on
+          chaos_node and so tests nothing beyond a quiet cluster (left for
+          a separate fix; see doc/TODO.md). `raft/objstore/*` waits for an
+          object-store target (M4), and `barrier_delay` reads a delay none
+          of the three modes can set.
+        - `fault.partition` takes the whole partition (`groups`, every node
+          once) and replaces the one in place; `heal` removes it. A node
+          that is down has no address, so it is refused rather than
+          guessed. `fault.delay` and `fault.drop` each replace the node's
+          netem qdisc, as `os_faults.hpp` builds them.
+        - Replay runs the logged calls at their logged offsets from the
+          first call, then stops the workload, heals and runs all three
+          checkers, each attempt in its own directory under
+          `<run>/replay/`. A log with no recorded violation counts any
+          violation as a reproduction. It refuses an image whose id differs
+          from the logged one unless `--allow-image-mismatch`.
+        - `minimize` is ddmin over the calls that inject or undo a fault.
+          Workload and check calls are always kept, and kept calls keep
+          their original offsets. `--keep <seqs>` judges one subset an
+          agent proposes.
+        - The post-step check runs while the workload is still writing,
+          and nodes are read one after another. The first CI run flagged
+          `leader_completeness` twice under Podman: a follower read after
+          the leader reported a commit newer than the leader's sample. It
+          was a sampling artefact (the final check and the replay were
+          clean), so `collect_node_states` now reads the leader of the
+          highest term again after every other node.
+        - Each post-step check reads every node's whole log. That is cheap
+          now but grows with the run; an incremental read is the fix if
+          long runs make it slow.
+
+        `chaos_ctl_unit_test.cpp` (29 cases) covers the toolset, the log
+        ordering, snapshots, partitions, the post-step check, the
+        workload's lifecycle, `check.run`, ddmin and reproduction counting.
+        `chaos_ctl_scenario_test.cpp` drives the binary end to end in
+        `docker-chaos-tests` under both runtimes: a known-good schedule
+        must leave every checker clean, and its replay must run clean. A
+        local rootless Podman run passed every tool except `fault.delay`
+        (the sandbox kernel has no netem) and reported `fault.pause` as
+        `unsupported` (no cgroup freezer), as designed.
 
 - [ ] **8. Filtering proxy and fence.** (Requirements 3.4 and 7, design §3.2
   and §5.)

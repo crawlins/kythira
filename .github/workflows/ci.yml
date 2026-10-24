@@ -3600,6 +3600,14 @@ jobs:
       - name: Check the cloud .env.example files cover their config structs
         run: ./scripts/check-cloud-env-examples.py
 
+      # chaos_ctl's fault.failpoint accepts only the names in
+      # docker/cairn/failpoints.allowlist, which is generated from the
+      # fiu_do_on() calls chaos_node can reach. A failpoint added, renamed or
+      # moved in include/raft/ would leave the allowlist offering a name that
+      # does nothing, or missing a real one; this fails instead. Text only.
+      - name: Check the cairn failpoint allowlist is current
+        run: ./scripts/gen-cairn-failpoints.py --check
+
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

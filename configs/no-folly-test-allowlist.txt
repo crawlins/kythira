@@ -29,6 +29,7 @@ ca_cluster_node_rpc_tls_test cmd/ca_cluster_node/CMakeLists.txt returns unless f
 ca_cluster_node_test cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
 cbor_serializer_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 chaos_commit_recovery_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
+chaos_ctl_unit_tests tests/docker_chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 chaos_election_safety_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 chaos_leader_completeness_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 chaos_leader_election_recovery_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
