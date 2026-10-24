@@ -14,9 +14,16 @@
 #   1. serves a static Prometheus text exposition on localhost:9464 — the
 #      same exposition format prometheus_scrape_server emits — containing
 #      one known gauge;
-#   2. installs the Management Agent in an oraclelinux:8 container
-#      (--network host, so the example config's localhost:9464 url works
-#      verbatim) using the operator-minted installer + install key;
+#   2. installs the Management Agent on the runner itself (so the example
+#      config's localhost:9464 url works verbatim) using the
+#      operator-minted installer + install key. Not in a container: the
+#      installer registers a systemd or init.d service and aborts when it
+#      finds neither, which is what the first live run inside an
+#      oraclelinux:8 container did (40125075314). The ubuntu-24.04 runner
+#      has systemd and passwordless sudo and is thrown away after the job,
+#      so the install needs no undoing; the script refuses to run outside
+#      GitHub Actions rather than install a system service on a
+#      workstation;
 #   3. drops the example .properties
 #      (docker/cloud-monitoring/oci-management-agent-prometheus-emitter.
 #      properties) into the agent's PrometheusEmitter discovery directory,
@@ -36,13 +43,18 @@
 #     installer, e.g. a pre-authenticated request minted after downloading
 #     it once from the console (Management Agents → Downloads and Keys).
 #
-# NOTE: this script has never run against a live tenancy (the installer
-# URL/key are not provisioned yet) — it stays fail-closed until an operator
-# supplies them, and the response-file keys below should be checked against
-# the input.rsp.example shipped inside the downloaded installer ZIP on
-# first use.
+# NOTE: the installer URL and key were first provisioned on 2026-10-24
+# (scripts/ci-cloud-credentials/provision-monitoring-tests.sh). The script
+# fails closed without them, and the response-file keys below should be
+# checked against the input.rsp.example inside the ZIP if a run rejects
+# them.
 
 set -euo pipefail
+if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+    echo "oci-monitoring.sh installs the OCI Management Agent as a system service" >&2
+    echo "on this machine, so it only runs on a throwaway GitHub Actions runner." >&2
+    exit 1
+fi
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/real-cloud-monitoring/common.sh
 source scripts/real-cloud-monitoring/common.sh
@@ -52,7 +64,7 @@ require_env KYTHIRA_OCI_SECURITY_TOKEN KYTHIRA_OCI_PRIVATE_KEY_PEM \
     OCI_MGMT_AGENT_INSTALL_KEY OCI_MGMT_AGENT_INSTALLER_URL
 
 RUN_ID="${GITHUB_RUN_ID:-local-$$}"
-AGENT_CONTAINER="kythira-oci-mgmt-agent"
+AGENT_HOME="/opt/oracle/mgmt_agent"
 AGENT_DISPLAY_NAME="kythira-ci-monitoring-${RUN_ID}"
 WORK_DIR="$(mktemp -d)"
 EXPOSITION_PID=""
@@ -86,8 +98,7 @@ setup_cli() {
 
 cleanup() {
     [ -n "${EXPOSITION_PID}" ] && kill "${EXPOSITION_PID}" 2>/dev/null || true
-    docker logs "${AGENT_CONTAINER}" 2>/dev/null | tail -50 || true
-    docker rm -f "${AGENT_CONTAINER}" 2>/dev/null || true
+    sudo tail -50 "${AGENT_HOME}/agent_inst/log/mgmt_agent.log" 2>/dev/null || true
     # Deregister the agent this run created — agents are per-install
     # tenancy objects, not per-container processes, and leak otherwise.
     local agent_id
@@ -116,7 +127,7 @@ printf '%s\n' \
 (cd "${WORK_DIR}/www" && python3 -m http.server 9464 >/dev/null 2>&1) &
 EXPOSITION_PID=$!
 
-# ── 2+3. Agent container with the substituted example config. ──
+# ── 2+3. Agent on the runner with the substituted example config. ──
 sed "s|^compartmentId=.*|compartmentId=${KYTHIRA_OCI_COMPARTMENT_ID}|" \
     docker/cloud-monitoring/oci-management-agent-prometheus-emitter.properties \
     > "${WORK_DIR}/kythira.properties"
@@ -128,30 +139,33 @@ printf '%s\n' \
 
 curl -fsSL --retry 3 -o "${WORK_DIR}/omagent.zip" "${OCI_MGMT_AGENT_INSTALLER_URL}"
 
-docker run -d --name "${AGENT_CONTAINER}" --network host \
-    -v "${WORK_DIR}:/bootstrap:ro" \
-    oraclelinux:8 sleep infinity
-docker exec "${AGENT_CONTAINER}" bash -c '
-    set -euo pipefail
-    dnf -y -q install java-11-openjdk unzip
-    mkdir /tmp/omagent && cd /tmp/omagent
-    unzip -q /bootstrap/omagent.zip
-    # Find installer.sh rather than assume a layout: the comment here used
-    # to say the ZIP unpacks to a versioned oracle.mgmt_agent* directory,
-    # but the first live run (39979774036) found no such directory, so
-    # the installer sits at the top level or one directory down.
-    installer=$(find . -maxdepth 2 -name installer.sh -print -quit)
-    if [[ -z "${installer}" ]]; then
-        echo "installer.sh not found in the agent ZIP; it holds:" >&2
-        find . -maxdepth 2 | head -40 >&2
-        exit 1
-    fi
-    cd "$(dirname "${installer}")"
-    bash installer.sh /bootstrap/input.rsp
-    mkdir -p /opt/oracle/mgmt_agent/agent_inst/discovery/PrometheusEmitter
-    cp /bootstrap/kythira.properties \
-        /opt/oracle/mgmt_agent/agent_inst/discovery/PrometheusEmitter/
-'
+mkdir "${WORK_DIR}/omagent"
+unzip -q "${WORK_DIR}/omagent.zip" -d "${WORK_DIR}/omagent"
+# Find installer.sh rather than assume a layout: the comment here used to
+# say the ZIP unpacks to a versioned oracle.mgmt_agent* directory, but the
+# first live run (39979774036) found no such directory, so the installer
+# sits at the top level or one directory down.
+installer="$(find "${WORK_DIR}/omagent" -maxdepth 2 -name installer.sh -print -quit)"
+if [ -z "${installer}" ]; then
+    echo "::error::installer.sh not found in the agent ZIP; it holds:" >&2
+    find "${WORK_DIR}/omagent" -maxdepth 2 | head -40 >&2
+    exit 1
+fi
+# The installer creates the mgmt_agent user and then configures the agent
+# as that user, which must read the response file: the second live run
+# (40126837668) failed with "input.rsp file is either not present or not
+# readable to mgmt_agent user". So the work directory becomes traversable
+# (711, not listable) and only input.rsp readable; the session key and
+# token stay 600 under the umask set in setup_cli. The runner has no other
+# users. The installer brings its own JDK, so none is installed here.
+chmod 711 "${WORK_DIR}"
+chmod 644 "${WORK_DIR}/input.rsp"
+(cd "$(dirname "${installer}")" && sudo bash installer.sh "${WORK_DIR}/input.rsp")
+discovery="${AGENT_HOME}/agent_inst/discovery/PrometheusEmitter"
+sudo mkdir -p "${discovery}"
+sudo cp "${WORK_DIR}/kythira.properties" "${discovery}/"
+# The agent runs as its own user: give the file the discovery tree's owner.
+sudo chown -R --reference="${AGENT_HOME}/agent_inst/discovery" "${discovery}"
 
 # ── 4. The assertion, through OCI Monitoring's own query API. The emitter
 # scrapes on scheduleMins=1 and PostMetricData latency is seconds, but
