@@ -202,6 +202,8 @@ jobs:
       OCI_MONITORING: ${{ vars.REAL_CLOUD_TESTS_OCI_MONITORING_ENABLED == 'true' }}
       ALIBABA_MONITORING: ${{ github.event.inputs.alibaba_monitoring_enabled == 'true' || (github.event.inputs.alibaba_monitoring_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_MONITORING_ENABLED == 'true') }}
       EVENT: ${{ github.event_name }}
+      # No dispatch input (the 25-input cap): set for one dispatch, then cleared.
+      SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' }}
     steps:
       - name: Report what this run will do
         run: |
@@ -235,7 +237,10 @@ jobs:
               [ "$on" = true ] && selected=$((selected + 1))
               echo "| $job | $([ "$on" = true ] && echo yes || echo 'no (skipped)') |"
             done
+            echo ""
+            echo "Segment-size sweep in the object-persistence bundles (REAL_CLOUD_SEGMENT_SWEEP): **$SEGMENT_SWEEP**"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "Segment-size sweep (REAL_CLOUD_SEGMENT_SWEEP): $SEGMENT_SWEEP"
 
           if [ "$MASTER" != true ]; then
             msg="the master switch is off, so no real-cloud test runs and every job below reports skipped"
@@ -607,6 +612,9 @@ jobs:
         env:
           KYTHIRA_AWS_S3_BUCKET: ${{ vars.AWS_OBJECT_PERSISTENCE_BUCKET }}
           KYTHIRA_AWS_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+          # Opt-in segment-size sweep (object-store-segment-size-sweep);
+          # the cases pass at once unless this is 'true'.
+          KYTHIRA_SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP }}
         run: |
           rc=0
           ./build/tests/aws_s3_object_persistence_real_test --log_level=test_suite || rc=$?
@@ -2231,6 +2239,9 @@ jobs:
         env:
           KYTHIRA_AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_OBJECT_PERSISTENCE_ACCOUNT }}
           KYTHIRA_AZURE_BLOB_CONTAINER: ${{ vars.AZURE_OBJECT_PERSISTENCE_CONTAINER }}
+          # Opt-in segment-size sweep (object-store-segment-size-sweep);
+          # the cases pass at once unless this is 'true'.
+          KYTHIRA_SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP }}
         run: |
           rc=0
           ./build/tests/azure_blob_object_persistence_real_test --log_level=test_suite || rc=$?
@@ -2933,6 +2944,9 @@ jobs:
         env:
           KYTHIRA_GCS_BUCKET: ${{ vars.GCP_OBJECT_PERSISTENCE_BUCKET }}
           GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}
+          # Opt-in segment-size sweep (object-store-segment-size-sweep);
+          # the cases pass at once unless this is 'true'.
+          KYTHIRA_SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP }}
         run: |
           rc=0
           ./build/tests/gcp_gcs_object_persistence_real_test --log_level=test_suite || rc=$?
@@ -3441,6 +3455,10 @@ jobs:
       # not a policy edit.
       - name: Object Storage persistence bundle
         if: env.BUNDLE_OBJECT_PERSISTENCE == 'true'
+        env:
+          # Opt-in segment-size sweep (object-store-segment-size-sweep);
+          # the cases pass at once unless this is 'true'.
+          KYTHIRA_SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP }}
         run: |
           rc=0
           ./build/tests/oci_object_storage_persistence_real_test --log_level=test_suite || rc=$?
@@ -3799,6 +3817,9 @@ jobs:
           KYTHIRA_ALIBABA_ACCESS_KEY_SECRET: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
           KYTHIRA_ALIBABA_SECURITY_TOKEN: ${{ env.ALIBABA_CLOUD_SECURITY_TOKEN }}
           KYTHIRA_ALIBABA_OSS_BUCKET: ${{ vars.ALIBABA_OSS_BUCKET }}
+          # Opt-in segment-size sweep (object-store-segment-size-sweep);
+          # the cases pass at once unless this is 'true'.
+          KYTHIRA_SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP }}
         run: |
           rc=0
           ./build/tests/alibaba_oss_persistence_real_test --log_level=test_suite || rc=$?
