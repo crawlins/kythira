@@ -3,7 +3,8 @@
 
 # A filtering front for the container API socket, for the scenario tests
 # whose nodes provision containers (docker-compose.quorum.yml,
-# elastic-capacity-compose.yml). See proxy.py for what it lets through.
+# elastic-capacity-compose.yml) and for the cairn tool server
+# (PROXY_MODE=chaos_ctl). See proxy.py for what it lets through.
 
 FROM python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
 
