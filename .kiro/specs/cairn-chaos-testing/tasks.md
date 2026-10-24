@@ -1,6 +1,6 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (2/14 tasks: 2 and 3)
+## Status: In progress (3/14 tasks: 2, 3 and 4)
 
 **Last Updated**: October 24, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
@@ -88,12 +88,26 @@ compatibility").
     replace a leader, delay and loss on a follower, two followers down,
     with election safety checked from every node's `/elections`.
 
-- [ ] **4. Workload client `cmd/chaos_workload`.** (Requirement 4, design §2.2.)
-  - [ ] 4.1 Reads (both modes), writes and CAS over a configurable key set,
+- [x] **4. Workload client `cmd/chaos_workload`.** (Requirement 4, design §2.2.)
+  - [x] 4.1 Reads (both modes), writes and CAS over a configurable key set,
         concurrency and rate, as a compose service on `raft_net`.
-  - [ ] 4.2 JSONL history with `invoke`/`ok`/`fail`/`info`. Timeouts after
+  - [x] 4.2 JSONL history with `invoke`/`ok`/`fail`/`info`. Timeouts after
         send are `info`, and a process retires after an `info`.
-  - [ ] 4.3 Leader redirect via `/status`, with every attempt recorded.
+  - [x] 4.3 Leader redirect via `/status`, with every attempt recorded.
+  - Notes (October 24, 2026): the history format lives in
+    `tests/docker_chaos/history.hpp`, shared with the checkers to come, with
+    a `structural_error()` that checks invoke/complete pairing and process
+    retirement. The client's outcome rules are in
+    `cmd/chaos_workload/workload.hpp`: only a refused connection, a
+    `not_leader` refusal, a `400` or a CAS that did not match is `fail`; a
+    timeout after sending, a `commit_failed` from a leader, or an
+    unrecognised reply is `info`. Every request an operation made is listed
+    in its completion's `attempts`. The binary ships in the chaos_node
+    image instead of an image of its own, because it shares that image's
+    gate and base and a second image would only add a build step. It runs
+    as `c5workload` under the `workload` compose profile in
+    `docker/chaos-5-compose.yml`, and `five_node_test.cpp` runs it through a
+    leader pause.
 
 - [ ] **5. Checkers.** (Requirement 5, design §2.3.)
   - [ ] 5.1 `linearizability.hpp` (WGL, per-key, register-with-CAS model,

@@ -2004,6 +2004,8 @@ endif()
 if(NOT ENABLE_COVERAGE)
     if(KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
         add_subdirectory(cmd/chaos_node)
+        # Ships in chaos_node's image (docker-chaos-image), so it shares its gate.
+        add_subdirectory(cmd/chaos_workload)
         add_subdirectory(cmd/poco_discovery_node)
         # The Tier C/E measurement host and its driver
         # (.kiro/specs/multi-raft-host-binary/). Neither is in any install
@@ -2048,7 +2050,7 @@ endif()
 # a second time. Each is added only when its own gate above admitted it.
 add_custom_target(host_binaries)
 foreach(_kythira_host_binary
-        ca_service ca_cluster_node chaos_node poco_discovery_node multi_raft_node
+        ca_service ca_cluster_node chaos_node chaos_workload poco_discovery_node multi_raft_node
         multi_raft_bench redis_gateway_node dns_discovery_node dns_sd_discovery_node
         oci_heartbeat_writer_node raft_object_backup)
     if(TARGET ${_kythira_host_binary})

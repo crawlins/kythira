@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/chaos_node/dist/chaos_node /usr/local/bin/chaos_node
+# The cairn workload client rides along; a compose service runs it with its
+# own entrypoint (docker/chaos-5-compose.yml, profile "workload").
+COPY docker/chaos_node/dist/chaos_workload /usr/local/bin/chaos_workload
 COPY docker/chaos_node/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

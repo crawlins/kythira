@@ -441,8 +441,11 @@ BOOST_AUTO_TEST_CASE(chaos5_compose_matches_node_table) {
     int current = 0;
     std::string line;
     while (std::getline(in, line)) {
-        if (line.rfind("  c5node", 0) == 0 && line.back() == ':') {
-            current = std::stoi(line.substr(8, line.size() - 9));
+        // A service starts at two spaces of indent; any other service (the
+        // workload client) ends the node before it.
+        if (line.size() > 3 && line.rfind("  ", 0) == 0 && line[2] != ' ' && line.back() == ':') {
+            current =
+                line.rfind("  c5node", 0) == 0 ? std::stoi(line.substr(8, line.size() - 9)) : 0;
             continue;
         }
         if (current == 0) {

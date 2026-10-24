@@ -38,6 +38,7 @@ chaos_profiles_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if
 chaos_smoke_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 chaos_state_machine_recovery_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 chaos_state_machine_safety_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
+chaos_workload_unit_tests tests/docker_chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 coap_block_transfer_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 coap_cantcoap_raft_node_test uses Folly directly (`folly::Init`)
 coap_certificate_validation_failure_property_test its transport Types bundle names `folly::Executor` as executor_type

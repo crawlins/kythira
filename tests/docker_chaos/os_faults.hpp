@@ -242,6 +242,11 @@ inline std::vector<std::string> docker_logs_cmd(const std::string& container,
     return {container_runtime(), "logs", "--tail", std::to_string(tail_lines), container};
 }
 
+// Every line the container has logged, stdout and stderr both.
+inline std::vector<std::string> container_logs_all_cmd(const std::string& container) {
+    return {container_runtime(), "logs", container};
+}
+
 inline std::vector<std::string> container_ip_cmd(const std::string& container) {
     return {container_runtime(), "inspect", "--format",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container};
@@ -251,6 +256,27 @@ inline std::vector<std::string> compose_up_cmd(const std::string& compose_file) 
     auto cmd = compose_prefix();
     cmd.insert(cmd.end(), {"-f", compose_file, "up", "-d"});
     return cmd;
+}
+
+// Starts one service, including one that sits behind a compose profile.
+inline std::vector<std::string> compose_up_service_cmd(const std::string& compose_file,
+                                                       const std::string& profile,
+                                                       const std::string& service) {
+    auto cmd = compose_prefix();
+    cmd.insert(cmd.end(), {"-f", compose_file, "--profile", profile, "up", "-d", service});
+    return cmd;
+}
+
+// Blocks until the container exits and prints its exit status.
+inline std::vector<std::string> container_wait_cmd(const std::string& container) {
+    return {container_runtime(), "wait", container};
+}
+
+// Removes a container whatever its state. A stopped container still holds
+// its network endpoint, so one left behind makes `compose down` fail to
+// remove the network.
+inline std::vector<std::string> container_rm_cmd(const std::string& container) {
+    return {container_runtime(), "rm", "-f", container};
 }
 
 inline std::vector<std::string> compose_down_cmd(const std::string& compose_file) {

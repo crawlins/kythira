@@ -62,6 +62,12 @@ target_compile_definitions(docker_chaos_harness_unit_tests PRIVATE
 add_docker_chaos_unit_test(docker_chaos_fault_control_unit_tests
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/fault_control_unit_test.cpp")
 
+# cmd/chaos_workload's core and the history format (cairn-chaos-testing task 4).
+add_docker_chaos_unit_test(chaos_workload_unit_tests
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/chaos_workload_unit_test.cpp")
+target_include_directories(chaos_workload_unit_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/cmd/chaos_workload")
+
 # ── Docker scenario tests (require Docker at runtime) ─────────────────────────
 # Each scenario test is its own executable — Boost.Test embeds BOOST_TEST_MODULE
 # in every TU so they cannot share a binary.
@@ -273,12 +279,15 @@ if(_RUNTIME_EXE)
     # `$<TARGET_FILE:chaos_node>` with "No target chaos_node".
     if(NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
         add_custom_target(docker-chaos-image
-            DEPENDS chaos_node
+            DEPENDS chaos_node chaos_workload
             COMMAND ${CMAKE_COMMAND} -E make_directory
                     "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist"
             COMMAND ${CMAKE_COMMAND} -E copy
                     "$<TARGET_FILE:chaos_node>"
                     "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist/chaos_node"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:chaos_workload>"
+                    "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist/chaos_workload"
             COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_CHAOS_DOCKERFILE}"
                     --tag kythira-chaos-node:dev
