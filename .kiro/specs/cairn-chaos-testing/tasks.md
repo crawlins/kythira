@@ -109,14 +109,14 @@ compatibility").
     `docker/chaos-5-compose.yml`, and `five_node_test.cpp` runs it through a
     leader pause.
 
-- [ ] **5. Checkers.** (Requirement 5, design §2.3.)
-  - [ ] 5.1 `linearizability.hpp` (WGL, per-key, register-with-CAS model,
+- [x] **5. Checkers.** (Requirement 5, design §2.3.)
+  - [x] 5.1 `linearizability.hpp` (WGL, per-key, register-with-CAS model,
         search budget that yields `unknown`, never `ok`).
-  - [ ] 5.2 `raft_safety.hpp` (one leader per term from `/elections`, log
+  - [x] 5.2 `raft_safety.hpp` (one leader per term from `/elections`, log
         matching, leader completeness, state-machine safety).
-  - [ ] 5.3 `liveness.hpp` (bound as a recorded multiple of
+  - [x] 5.3 `liveness.hpp` (bound as a recorded multiple of
         `ELECTION_TIMEOUT_MAX_MS × KYTHIRA_TEST_TIMEOUT_SCALE`).
-  - [ ] 5.4 Unit tests for each one with hand-written histories, including at
+  - [x] 5.4 Unit tests for each one with hand-written histories, including at
         least one known-bad history per invariant that the checker must
         flag.
 

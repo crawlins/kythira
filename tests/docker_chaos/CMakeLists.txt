@@ -16,6 +16,14 @@ else()
     set(_boost_json_lib "")
 endif()
 
+# tests/CMakeLists.txt applies KYTHIRA_TEST_TIMEOUT_SCALE with
+# add_compile_definitions at its very end, after this directory is added, so
+# it never reaches these targets. checkers/liveness.hpp scales its bound by
+# it, so pass it here too.
+if(KYTHIRA_TEST_TIMEOUT_SCALE GREATER 1)
+    add_compile_definitions(KYTHIRA_TEST_TIMEOUT_SCALE=${KYTHIRA_TEST_TIMEOUT_SCALE})
+endif()
+
 # Helper: build one unit-test executable and register in CTest.
 function(add_docker_chaos_unit_test test_name source_file)
     add_executable(${test_name} "${source_file}")
@@ -67,6 +75,11 @@ add_docker_chaos_unit_test(chaos_workload_unit_tests
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/chaos_workload_unit_test.cpp")
 target_include_directories(chaos_workload_unit_tests PRIVATE
     "${CMAKE_SOURCE_DIR}/cmd/chaos_workload")
+
+# Linearizability, Raft safety and liveness checkers (cairn-chaos-testing
+# task 5), against hand-written histories including known-bad ones.
+add_docker_chaos_unit_test(docker_chaos_checkers_unit_tests
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/checkers_unit_test.cpp")
 
 # ── Docker scenario tests (require Docker at runtime) ─────────────────────────
 # Each scenario test is its own executable — Boost.Test embeds BOOST_TEST_MODULE
