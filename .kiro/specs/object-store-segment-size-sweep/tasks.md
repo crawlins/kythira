@@ -2,10 +2,10 @@
 
 A real-tier sweep of `max_segment_bytes` for the object-store segmented log
 (`.kiro/specs/object-store-batched-layout/`), and the default it supports.
-Tasks 1–3 are code and mock-tier tests and need no approval. Task 4 is a paid
+Tasks 1–3 are code and mock-tier tests and need no approval (done). Task 4 is a paid
 real-cloud run and needs Clark's go; task 5 depends on its numbers.
 
-- [ ] 1. Follower liveness under a slow run
+- [x] 1. Follower liveness under a slow run
   - `tests/raft_object_store_segment_liveness_test.cpp` (mock, CTest): a
     three-node cluster whose follower's engine sleeps longer than
     `election_timeout_max` inside one `append_log_entries`, with a healthy
@@ -16,8 +16,11 @@ real-cloud run and needs Clark's go; task 5 depends on its numbers.
   - If the follower campaigns, say so in the PR and raise it with Clark as
     open question 1; do not change `node` in this spec
   - _Requirements: 7.1, 7.2_
+  - Done: the follower's timer fires on release, but its PreVote round is
+    refused and its term never moves; no resend. Bound: run persist time <
+    `append_entries_timeout`. Open question 1 closed
 
-- [ ] 2. Sweep cases and the mock smoke run
+- [x] 2. Sweep cases and the mock smoke run
   - `sweep_grid`, the body-size helper that encodes with the engine's own
     format, `KYTHIRA_SEGMENT_SWEEP` reporting, `sweep_enabled()`
   - Cases 12–15 in `tests/object_persistence_real_cases.hpp`; case 11's driver

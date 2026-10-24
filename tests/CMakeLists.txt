@@ -1085,6 +1085,19 @@ set_tests_properties(raft_object_store_group_commit_test PROPERTIES
     LABELS "persistence;object-store"
 )
 
+# Follower liveness under one slow persistence run
+# (.kiro/specs/object-store-segment-size-sweep/ task 1): a follower whose run
+# takes longer than its election timeout keeps its term, because its timer's
+# PreVote round is refused while the leader is healthy.
+add_raft_completion_test(raft_object_store_segment_liveness_test
+    raft_object_store_segment_liveness_test.cpp)
+target_include_directories(raft_object_store_segment_liveness_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests)
+set_tests_properties(raft_object_store_segment_liveness_test PROPERTIES
+    TIMEOUT 180
+    LABELS "persistence;object-store"
+)
+
 # Multi-Raft sharding — .kiro/specs/multi-raft/
 # Phases 1-3 are strictly additive: these targets exercise the sharding value
 # types, the routing table and its tiling invariant, and the typed errors,

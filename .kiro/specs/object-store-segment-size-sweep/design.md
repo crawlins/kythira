@@ -39,47 +39,52 @@ A follower's AppendEntries handler resets its election timer **on receipt**
 (`raft.hpp`, "Reset election timer on valid AppendEntries (§5.2)"), before
 Rule 5's `persist_and_append_run`. Under `write_behind = false` the engine
 answers `synchronous`, `barrier_can_block()` is false, and the run's PUTs are
-made with `node::_mutex` held. Two consequences, of which the second is the
-open one:
+made with `node::_mutex` held. While they run, the election-timer tick and
+the leader's next AppendEntries both wait on `_mutex`.
 
-1. **The leader resends.** If run persist time exceeds
-   `append_entries_timeout` (5 s by default), the leader's RPC times out and
-   its retry policy resends the run. The follower's second call then writes
-   chunks the first already wrote: create-only keys refused, which under
-   `compare_and_swap` latch. That is a hard ceiling, and the sweep reports run
-   persist time against it directly.
-2. **The follower may campaign on its own.** While the PUTs run, the
-   election-timer tick and the leader's next AppendEntries both wait on
-   `_mutex`. If the tick wins, it sees `now − _last_heartbeat` past the
-   timeout and starts an election against a healthy leader. Whether it can win
-   that race depends on how `node`'s timer and RPC dispatch acquire the mutex,
-   which reading alone does not settle.
+Task 1 settled what happens next on the mock
+(`tests/raft_object_store_segment_liveness_test.cpp`): a three-node cluster
+whose follower holds one run's PUT for 1.5 s against a 300–600 ms election
+timeout, five rounds, with a healthy leader heartbeating every 50 ms.
 
-Task 1 settles (2) on the mock with a test, before any paid run: a follower
-whose engine sleeps longer than `election_timeout_max` inside one
-`append_log_entries`, a healthy leader heartbeating it, and an assertion on
-whether the follower's term moves. The bound is then:
+- **The follower's timer fires.** The tick takes the mutex before the queued
+  heartbeat in every round, sees `now − _last_heartbeat` past its timeout,
+  and starts a round. The time a follower spends in its own persistence does
+  count against it.
+- **The term never moves.** The round is a PreVote round
+  (`.kiro/specs/raft-pre-vote/`), and the other two nodes refuse it because
+  they heard from the leader within their own timeouts. No `RequestVote` is
+  sent, the leader keeps its term, and the queued heartbeats are answered
+  straight after. Every shipped transport implements PreVote (the simulator,
+  TCP, TLS-TCP, the three HTTP clients, gRPC and the three CoAP backends), and
+  there is no runtime switch to turn it off, so this holds for every
+  deployment; the test `static_assert`s it so a transport without PreVote
+  cannot silently invalidate it.
+- **The leader does not resend.** No log key was PUT twice: a run answered
+  inside `append_entries_timeout` is not retried.
 
-- **If the follower can campaign**: tail(run persist time) <
-  `election_timeout_min` − `heartbeat_interval`. A follower that overshoots by
-  one heartbeat has not yet received the next one.
-- **If it cannot**: tail(run persist time) < `append_entries_timeout`, with
-  `election_timeout_min` unaffected by segment size. The test becomes a
-  regression guard for that property.
+So the bound is the second of the two this section used to offer:
 
-Either way the bound is evaluated at each provider's documented `combined`
-floor (`doc/cloud_object_persistence.md`, "Election-timeout sizing"). OCI has
-no row there yet; for OCI the floor is computed from its measured
-`save_hard_state_combined` tail with the same `2 ×` rule.
+> tail(run persist time) < `append_entries_timeout` (5 s by default)
 
-The test is mock-only and stays in CTest. If it shows the campaign, that is a
-`node` bug worth its own thread (a follower should not count time it spent
-blocked in its own persistence against the leader); this spec records it and
-does not fix it, because the decision rule already accounts for it.
+and `election_timeout_min` is unaffected by segment size. Past that bound the
+leader's RPC times out and its retry policy resends the run; the follower's
+second call writes chunks the first already wrote, create-only keys are
+refused, and under `compare_and_swap` that latches the engine. That is the
+hard ceiling the sweep reports run persist time against. The provider's
+`combined` election-timeout floor (`doc/cloud_object_persistence.md`,
+"Election-timeout sizing") no longer enters the rule, because the bound does
+not depend on it.
+
+The one cost the test does show is a wasted PreVote round per run that
+overruns the follower's timeout: two small RPCs, refused, with no effect on
+the cluster. The sweep need not price it. The test stays in CTest as a
+regression guard: a change that let a follower's own persistence time move
+its term would fail it.
 
 ## The cases
 
-All four live in `tests/object_persistence_real_cases.hpp`, beside cases
+All five live in `tests/object_persistence_real_cases.hpp`, beside cases
 1–11, and take the same `(store, bucket, prefix, provider)` arguments plus a
 `sweep_grid` describing the sizes and samples:
 
@@ -222,11 +227,10 @@ is safe for existing buckets and needs no migration.
 
 ## Open questions
 
-1. If task 1 shows a follower can campaign against a healthy leader while
-   blocked in its own persistence, does Clark want that fixed in `node` before
-   the sweep's decision is made? The decision rule is written to be correct
-   either way, but a fix would relax the bound and could move the answer
-   upward.
+1. ~~If task 1 shows a follower can campaign against a healthy leader while
+   blocked in its own persistence, does Clark want that fixed in `node`?~~
+   Settled by task 1: it cannot. Its timer fires, but the PreVote round is
+   refused and the term never moves (see "Requirement 7: the liveness bound").
 2. Whether the arm64 and x64 runners' very different S3 latencies (35 ms vs
    160 ms p50 for one small PUT) reflect runner placement rather than
    architecture. The sweep reports both; the decision uses the worse.
