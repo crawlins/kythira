@@ -41,9 +41,21 @@ check_timeseries_listed() {
     token="$(gcloud auth print-access-token)"
     start="$(date -u -d '-30 minutes' +%Y-%m-%dT%H:%M:%SZ)"
     end="$(date -u -d '+5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
-    curl -fsS -H "Authorization: Bearer ${token}" \
+    if curl -fsS -H "Authorization: Bearer ${token}" \
         "https://monitoring.googleapis.com/v3/projects/${GCP_PROJECT_ID}/timeSeries?filter=metric.type%3D%22workload.googleapis.com%2F${KYTHIRA_MONITORING_PROBE_METRIC}%22&interval.startTime=${start}&interval.endTime=${end}" \
-        | grep -q "${KYTHIRA_MONITORING_PROBE_METRIC}"
+        | grep -q "${KYTHIRA_MONITORING_PROBE_METRIC}"; then
+        return 0
+    fi
+    # Not there yet: post a fresh point. The googlecloud exporter drops a
+    # batch that timeSeries.create rejects instead of retrying it, and the
+    # first write of a new metric type can fail with a transient INTERNAL
+    # while Cloud Monitoring creates its descriptor; the first live run
+    # (40125075314) lost its only probe that way and then polled for 300 s
+    # for a point that was never coming. A real chaos node exports every
+    # interval, so re-posting is what the config sees in use. The 10 s poll
+    # interval keeps points above the 5 s minimum a gauge series accepts.
+    post_otlp_probe "${RUN_ID}" >/dev/null
+    return 1
 }
 
 poll_until 300 10 "probe time series listed in Cloud Monitoring" check_timeseries_listed
