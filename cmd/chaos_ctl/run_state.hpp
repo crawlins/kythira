@@ -69,7 +69,8 @@ struct run_config {
                                             {"rpc_port", p.rpc_port},
                                             {"http_port", p.http_port},
                                             {"fiu_port", p.fiu_port},
-                                            {"container", p.container_name}});
+                                            {"container", p.container_name},
+                                            {"host", p.host}});
     }
     return {{"compose_file", c.compose_file},
             {"nodes", std::move(nodes)},
@@ -87,12 +88,15 @@ struct run_config {
     c.nodes.clear();
     for (const auto& v : o.at("nodes").as_array()) {
         const auto& n = v.as_object();
-        c.nodes.emplace(
-            static_cast<int>(n.at("id").to_number<std::int64_t>()),
-            docker_chaos::NodePorts{static_cast<int>(n.at("rpc_port").to_number<std::int64_t>()),
-                                    static_cast<int>(n.at("http_port").to_number<std::int64_t>()),
-                                    static_cast<int>(n.at("fiu_port").to_number<std::int64_t>()),
-                                    std::string(n.at("container").as_string())});
+        docker_chaos::NodePorts p{static_cast<int>(n.at("rpc_port").to_number<std::int64_t>()),
+                                  static_cast<int>(n.at("http_port").to_number<std::int64_t>()),
+                                  static_cast<int>(n.at("fiu_port").to_number<std::int64_t>()),
+                                  std::string(n.at("container").as_string())};
+        // Absent from run directories written before the cairn layout.
+        if (const auto* h = n.if_contains("host"); h != nullptr) {
+            p.host = std::string(h->as_string());
+        }
+        c.nodes.emplace(static_cast<int>(n.at("id").to_number<std::int64_t>()), std::move(p));
     }
     if (c.nodes.empty()) {
         throw std::runtime_error("run.json: no nodes");

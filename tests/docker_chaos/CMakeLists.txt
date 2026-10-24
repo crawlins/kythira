@@ -470,6 +470,38 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    # The cairn fence (.kiro/specs/cairn-chaos-testing/ task 8):
+    # docker-cairn-tool-server-image stages chaos_ctl and builds the tool
+    # server on top of kythira-chaos-node:dev; docker-cairn-fence-tests
+    # brings up docker/cairn/cairn-compose.yml and checks it with
+    # scripts/cairn/fence-check.sh. Same guard as the chaos_ctl scenario.
+    if(_chaos_ctl_target)
+        add_custom_target(docker-cairn-tool-server-image
+            DEPENDS docker-chaos-image chaos_ctl
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_SOURCE_DIR}/docker/cairn/tool_server/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:chaos_ctl>"
+                    "${CMAKE_SOURCE_DIR}/docker/cairn/tool_server/dist/chaos_ctl"
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
+                    --file "${CMAKE_SOURCE_DIR}/docker/cairn/tool_server/Dockerfile"
+                    --tag kythira-cairn-tool-server:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Staging chaos_ctl and building kythira-cairn-tool-server:dev image"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+        add_custom_target(docker-cairn-fence-tests
+            COMMAND ${CMAKE_COMMAND} -E env
+                    ${_RT_ENV}
+                    KYTHIRA_CHAOS_CTL=$<TARGET_FILE:chaos_ctl>
+                    "${CMAKE_SOURCE_DIR}/scripts/cairn/fence-check.sh"
+            DEPENDS docker-cairn-tool-server-image
+            COMMENT "Checking the cairn fence (runtime: ${CONTAINER_RUNTIME})"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            USES_TERMINAL
+        )
+    endif()
+
     add_custom_target(quorum-healing-tests
         COMMAND ${CMAKE_COMMAND} -E env
                 ${_RT_ENV}

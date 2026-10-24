@@ -46,6 +46,10 @@ struct NodePorts {
     int http_port;
     int fiu_port;
     std::string container_name;
+    /// Where the ports are reached: localhost for the published ports of
+    /// the compose files above, a compose service name for a caller inside
+    /// the stack's network (the cairn tool server, docker/cairn/).
+    std::string host{"localhost"};
 };
 
 inline const std::map<int, NodePorts> k_node_map{
@@ -78,6 +82,33 @@ inline std::map<int, NodePorts> chaos5_node_table(const std::string& cluster) {
     for (int id = 1; id <= 5; ++id) {
         table.emplace(
             id, NodePorts{7200 + id, 8280 + id, 9200 + id, cluster + "-" + std::to_string(id)});
+    }
+    return table;
+}
+
+// ── cairn layout — mirrors docker/cairn/cairn-compose.yml ────────────────────
+//
+// The cluster the cairn tool server drives from inside the fence. Nothing
+// is published: the tool server shares the nodes' internal network and
+// reaches each by service name on its container port. Container names are
+// "<run>-node<id>", where <run> is $CAIRN_RUN, the variable the compose
+// file reads, with the same default.
+
+inline constexpr std::string_view k_cairn_default_run = "kythira-cairn";
+
+inline std::string cairn_run_name() {
+    const char* env = std::getenv("CAIRN_RUN");
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
+    return std::string{k_cairn_default_run};
+}
+
+inline std::map<int, NodePorts> cairn_node_table(const std::string& run) {
+    std::map<int, NodePorts> table;
+    for (int id = 1; id <= 3; ++id) {
+        const auto service = "node" + std::to_string(id);
+        table.emplace(id, NodePorts{7000, 8080, 9000, run + "-" + service, service});
     }
     return table;
 }
@@ -257,9 +288,13 @@ public:
               HttpPost http_post)
         : ChaosNode(node_id, ports.http_port, static_cast<std::uint16_t>(ports.fiu_port),
                     ports.container_name, std::move(exec), std::move(http_get),
-                    std::move(http_post)) {}
+                    std::move(http_post)) {
+        _host = ports.host;
+    }
 
     [[nodiscard]] int id() const { return _node_id; }
+    /// The host its HTTP and fiu ports are reached on.
+    [[nodiscard]] const std::string& host() const { return _host; }
     [[nodiscard]] int http_port() const { return _http_port; }
     [[nodiscard]] std::uint16_t fiu_port() const { return _fiu_port; }
     [[nodiscard]] const std::string& container() const { return _container; }
@@ -354,12 +389,12 @@ public:
 
     void enable_fault(std::string_view name, std::string_view mode = "always",
                       double probability = 1.0) {
-        fiu::enable_fault("localhost", _fiu_port, name, mode, probability);
+        fiu::enable_fault(_host, _fiu_port, name, mode, probability);
     }
 
-    void disable_fault(std::string_view name) { fiu::disable_fault("localhost", _fiu_port, name); }
+    void disable_fault(std::string_view name) { fiu::disable_fault(_host, _fiu_port, name); }
 
-    void disable_all_faults() { fiu::disable_all_faults("localhost", _fiu_port); }
+    void disable_all_faults() { fiu::disable_all_faults(_host, _fiu_port); }
 
     // ── OS-layer network faults (docker exec) ─────────────────────────────
 
@@ -447,10 +482,11 @@ public:
 
 private:
     [[nodiscard]] std::string http_url(const std::string& path) const {
-        return "http://localhost:" + std::to_string(_http_port) + path;
+        return "http://" + _host + ":" + std::to_string(_http_port) + path;
     }
 
     int _node_id;
+    std::string _host{"localhost"};
     int _http_port;
     std::uint16_t _fiu_port;
     std::string _container;

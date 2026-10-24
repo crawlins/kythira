@@ -573,6 +573,20 @@ BOOST_AUTO_TEST_CASE(config_round_trips) {
     BOOST_TEST(back.nodes.at(4).container_name == "x-4");
     BOOST_TEST(back.seed == 99u);
     BOOST_TEST(back.image_id == "sha256:abc");
+    BOOST_TEST(back.nodes.at(4).host == "localhost");
+
+    c.nodes = dc::cairn_node_table("r");
+    back = chaos_ctl::config_from_json(chaos_ctl::to_json(c));
+    BOOST_TEST(back.nodes.at(2).host == "node2");
+    BOOST_TEST(back.nodes.at(2).http_port == 8080);
+    BOOST_TEST(back.nodes.at(2).container_name == "r-node2");
+
+    // A run.json written before nodes had a host reads as localhost.
+    auto old = chaos_ctl::to_json(c);
+    for (auto& n : old.at("nodes").as_array()) {
+        n.as_object().erase("host");
+    }
+    BOOST_TEST(chaos_ctl::config_from_json(old).nodes.at(1).host == "localhost");
 }
 
 BOOST_AUTO_TEST_CASE(checked_in_allowlist_holds_only_names_chaos_node_reaches) {

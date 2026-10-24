@@ -579,8 +579,8 @@ inline auto workload_start(context& ctx, const boost::json::object& a, call_stat
     }
     std::string nodes;
     for (const auto& [id, p] : ctx.cfg.nodes) {
-        nodes += (nodes.empty() ? "" : ",") + std::to_string(id) +
-                 "=localhost:" + std::to_string(p.http_port);
+        nodes += (nodes.empty() ? "" : ",") + std::to_string(id) + "=" + p.host + ":" +
+                 std::to_string(p.http_port);
     }
     std::vector<std::string> env{
         "WORKLOAD_NODES=" + nodes,

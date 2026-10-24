@@ -44,6 +44,8 @@ on:
       # The quorum and elastic-capacity scenarios run their nodes' container
       # API through this proxy.
       - docker/container_api_proxy/**
+      - docker/cairn/**
+      - scripts/cairn/**
 
 permissions:
   contents: read
@@ -260,6 +262,16 @@ jobs:
         run: |
           mkdir -p "$KYTHIRA_CHAOS_ARTIFACT_DIR"
           cmake --build build --target docker-chaos-tests -j"$(nproc)"
+
+      # The cairn fence (.kiro/specs/cairn-chaos-testing/ task 8): chaos_ctl
+      # in the tool server drives the cluster only through the filtering
+      # proxy, the tool server can do nothing else, a worker's seat reaches
+      # the model host (api.anthropic.com, through the egress proxy) and
+      # nothing else, kill.sh takes it all down, and the run replays on the
+      # host. See scripts/cairn/fence-check.sh.
+      - name: docker-cairn-fence-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-cairn-fence-tests -j"$(nproc)"
 
       # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
       - name: Assert binaries were linked by mold

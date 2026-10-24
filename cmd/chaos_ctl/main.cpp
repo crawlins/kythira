@@ -7,14 +7,22 @@
 // and does nothing else.
 //
 //   chaos_ctl tools
-//   chaos_ctl init [--compose F] [--layout chaos3|chaos5] [--seed N]
-//                  [--election-timeout-max-ms N] [--image I]
+//   chaos_ctl init [--compose F] [--layout chaos3|chaos5|cairn] [--seed N]
+//                  [--election-timeout-max-ms N] [--image I] [--image-id ID]
 //                  [--workload-binary P] [--start]
 //   chaos_ctl <tool> [JSON | -]          e.g. chaos_ctl fault.kill '{"node":2}'
-//   chaos_ctl replay [--log F] [--repeat N] [--out-dir D]
-//                    [--allow-image-mismatch] [--keep-cluster]
-//   chaos_ctl minimize [--repeat N] [--keep 3,7,9] [--out F]
-//                      [--allow-image-mismatch]
+//   chaos_ctl replay [--log F] [--repeat N] [--out-dir D] [--layout L --compose F]
+//                    [--workload-binary P] [--allow-image-mismatch] [--keep-cluster]
+//   chaos_ctl minimize [--repeat N] [--keep 3,7,9] [--out F] [--layout L --compose F]
+//                      [--workload-binary P] [--allow-image-mismatch]
+//
+// The cairn layout is the cluster of docker/cairn/cairn-compose.yml, driven
+// from the tool server inside the fence: nodes by service name, the runtime
+// only through the filtering proxy, so `init` there takes the image id
+// (--image-id or $KYTHIRA_IMAGE_ID) rather than asking the runtime, and
+// does not start the cluster. Replay and minimize start clusters, so they
+// run on the host: a cairn run replays there with --layout chaos3, the same
+// image and settings on published ports.
 //
 // Every command takes --run-dir D (default $KYTHIRA_CHAOS_RUN_DIR) and
 // --failpoints F (default $KYTHIRA_CAIRN_FAILPOINTS, else the allowlist the
@@ -33,6 +41,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -136,7 +145,31 @@ auto kythira_commit() -> std::string {
 }
 
 void real_fiu_send(docker_chaos::ChaosNode& n, const std::string& cmd) {
-    docker_chaos::fiu::send_fiu_cmd("localhost", n.fiu_port(), cmd);
+    docker_chaos::fiu::send_fiu_cmd(n.host(), n.fiu_port(), cmd);
+}
+
+/// Sets cfg's node table and compose file from --layout and --compose.
+void apply_layout(run_config& cfg, const std::string& layout,
+                  const std::optional<std::string>& compose) {
+    std::string default_compose = "docker/docker-compose.yml";
+    if (layout == "chaos3") {
+        cfg.nodes = docker_chaos::k_node_map;
+    } else if (layout == "chaos5") {
+        cfg.nodes = docker_chaos::chaos5_node_table(docker_chaos::chaos5_cluster_name());
+    } else if (layout == "cairn") {
+        cfg.nodes = docker_chaos::cairn_node_table(docker_chaos::cairn_run_name());
+        default_compose = "docker/cairn/cairn-compose.yml";
+    } else {
+        throw usage_error("--layout must be chaos3, chaos5 or cairn");
+    }
+    cfg.compose_file = fs::absolute(compose.value_or(default_compose));
+}
+
+/// Whether the host can reach every node itself, as a cluster it starts
+/// must be reached; a node reached by service name is inside a stack.
+auto reachable_from_host(const run_config& cfg) -> bool {
+    return std::ranges::all_of(cfg.nodes,
+                               [](const auto& n) { return n.second.host == "localhost"; });
 }
 
 void print(const boost::json::value& v) {
@@ -156,19 +189,19 @@ auto cmd_init(const cli& c) -> int {
         throw usage_error(paths.config().string() + " exists; use a new run directory");
     }
     run_config cfg;
-    cfg.compose_file = fs::absolute(opt(c, "--compose").value_or("docker/docker-compose.yml"));
-    const auto layout = opt(c, "--layout").value_or("chaos3");
-    if (layout == "chaos5") {
-        cfg.nodes = docker_chaos::chaos5_node_table(docker_chaos::chaos5_cluster_name());
-    } else if (layout != "chaos3") {
-        throw usage_error("--layout must be chaos3 or chaos5");
+    apply_layout(cfg, opt(c, "--layout").value_or("chaos3"), opt(c, "--compose"));
+    if (c.flags.contains("--start") && !reachable_from_host(cfg)) {
+        throw usage_error("this layout's cluster is started from the host by its compose file");
     }
     cfg.seed = opt(c, "--seed") ? std::stoull(*opt(c, "--seed"))
                                 : static_cast<std::uint64_t>(real_mono_ms()) ^
                                       static_cast<std::uint64_t>(::getpid());
     cfg.election_timeout_max_ms = std::stoll(opt(c, "--election-timeout-max-ms").value_or("300"));
     cfg.image = opt(c, "--image").value_or(cfg.image);
-    cfg.image_id = image_id(cfg.image);
+    cfg.image_id = opt(c, "--image-id", "KYTHIRA_IMAGE_ID").value_or("");
+    if (cfg.image_id.empty()) {
+        cfg.image_id = image_id(cfg.image);
+    }
     cfg.kythira_commit = kythira_commit();
     cfg.workload_binary =
         fs::absolute(opt(c, "--workload-binary").value_or((exe_dir() / "chaos_workload").string()));
@@ -286,10 +319,32 @@ auto positive_int(const std::optional<std::string>& v, int fallback) -> int {
     return n;
 }
 
+/// The run's config as a replay must use it: on the cluster --layout
+/// names, if given, so a run from inside a stack replays on the host.
+auto replay_config(const run_paths& paths, const cli& c) -> run_config {
+    auto cfg = load_config(paths);
+    if (auto layout = opt(c, "--layout")) {
+        apply_layout(cfg, *layout, opt(c, "--compose"));
+    }
+    if (!reachable_from_host(cfg)) {
+        throw usage_error(
+            "this run's nodes are reached inside its stack; replay it on the host with "
+            "--layout chaos3");
+    }
+    // A run recorded in the tool server names the workload binary at its
+    // path in that image.
+    if (auto w = opt(c, "--workload-binary")) {
+        cfg.workload_binary = fs::absolute(*w);
+    } else if (!fs::exists(cfg.workload_binary)) {
+        cfg.workload_binary = exe_dir() / "chaos_workload";
+    }
+    check_image(cfg, c);
+    return cfg;
+}
+
 auto cmd_replay(const cli& c) -> int {
     const auto paths = paths_of(c);
-    const auto cfg = load_config(paths);
-    check_image(cfg, c);
+    const auto cfg = replay_config(paths, c);
     const auto log = opt(c, "--log").value_or(paths.schedule().string());
     const auto calls = read_calls(log);
     if (calls.empty()) {
@@ -317,8 +372,7 @@ auto parse_keep(const std::string& s) -> std::set<std::int64_t> {
 
 auto cmd_minimize(const cli& c) -> int {
     const auto paths = paths_of(c);
-    const auto cfg = load_config(paths);
-    check_image(cfg, c);
+    const auto cfg = replay_config(paths, c);
     const auto all = read_calls(paths.schedule().string());
     const auto n = positive_int(opt(c, "--repeat"), 3);
     const auto attempt = real_attempt(cfg, paths.dir / "minimize", failpoints_of(c), false);
