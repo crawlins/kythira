@@ -260,6 +260,7 @@ public:
                     std::move(http_post)) {}
 
     [[nodiscard]] int id() const { return _node_id; }
+    [[nodiscard]] int http_port() const { return _http_port; }
     [[nodiscard]] const std::string& container() const { return _container; }
 
     // ── Status queries ─────────────────────────────────────────────────────
@@ -309,6 +310,20 @@ public:
     }
 
     boost::json::object elections() { return parse_elections(_http_get(http_url("/elections"))); }
+
+    /// Best effort: a node that is already down or unreachable has nothing
+    /// to save, and the fault about to be applied must still be applied.
+    void remember_elections() {
+        try {
+            _remembered_elections.push_back(elections());
+        } catch (...) {
+        }
+    }
+
+    /// Every /elections body saved before this node was killed or stopped.
+    [[nodiscard]] const std::vector<boost::json::object>& remembered_elections() const {
+        return _remembered_elections;
+    }
 
     // mode is "linearizable" or "local". The key is sent as-is, so keep
     // chaos keys to URL-safe characters.
@@ -383,9 +398,18 @@ public:
 
     // ── Container lifecycle ───────────────────────────────────────────────
 
-    void kill() { os::checked_exec(_exec, os::docker_kill_cmd(_container)); }
+    // kill() and stop() first save the node's /elections: the node keeps
+    // them in memory, so a restart loses every term it won before. A
+    // checker reads remembered_elections() alongside the live ones.
+    void kill() {
+        remember_elections();
+        os::checked_exec(_exec, os::docker_kill_cmd(_container));
+    }
 
-    void stop() { os::checked_exec(_exec, os::docker_stop_cmd(_container)); }
+    void stop() {
+        remember_elections();
+        os::checked_exec(_exec, os::docker_stop_cmd(_container));
+    }
 
     // Throws fault_unsupported on a host that cannot freeze containers
     // (rootless Podman on cgroup v1), never returns as if the node paused.
@@ -432,6 +456,7 @@ private:
     os::CmdExecutor _exec;
     HttpGet _http_get;
     HttpPost _http_post;
+    std::vector<boost::json::object> _remembered_elections;
 };
 
 // ── ChaosCluster ─────────────────────────────────────────────────────────────
@@ -626,21 +651,7 @@ inline std::string default_chaos5_compose_file() {
     return "docker/chaos-5-compose.yml";
 }
 
-// Per-test-case fixture: starts a fresh cluster in ctor, stops in dtor.
-struct ChaosFixture {
-    ChaosCluster cluster;
-
-    ChaosFixture() : cluster(default_compose_file(), std::chrono::seconds{30}) {
-        cluster.start();
-        cluster.wait_for_leader(std::chrono::seconds{15});
-    }
-
-    ~ChaosFixture() {
-        try {
-            cluster.stop();
-        } catch (...) {
-        }
-    }
-};
+// ChaosFixture, the per-test-case fixture, is in chaos_fixture.hpp: it runs
+// the cairn checkers, which build on this header.
 
 }  // namespace docker_chaos

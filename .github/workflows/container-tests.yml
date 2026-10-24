@@ -246,8 +246,15 @@ jobs:
       # suites running after an earlier one fails, so one run reports every
       # verdict; the job still ends red. Never two stacks at once: several
       # share cluster names.
+      # The scripted scenarios also run the cairn checkers over every case
+      # (tests/docker_chaos/chaos_fixture.hpp); each case's workload
+      # history lands in the artifact directory for the upload below.
       - name: docker-chaos-tests (8 chaos scenarios)
-        run: cmake --build build --target docker-chaos-tests -j"$(nproc)"
+        env:
+          KYTHIRA_CHAOS_ARTIFACT_DIR: ${{ runner.temp }}/chaos-histories
+        run: |
+          mkdir -p "$KYTHIRA_CHAOS_ARTIFACT_DIR"
+          cmake --build build --target docker-chaos-tests -j"$(nproc)"
 
       # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.
       - name: Assert binaries were linked by mold
@@ -308,6 +315,15 @@ jobs:
       - name: Podman service log
         if: always() && matrix.runtime == 'podman'
         run: tail -n 200 "$RUNNER_TEMP/podman-service.log" || true
+
+      - name: Upload chaos workload histories
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: chaos-histories-${{ matrix.runtime }}
+          path: ${{ runner.temp }}/chaos-histories
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Leftover containers
         if: always()

@@ -4,7 +4,7 @@
 #define BOOST_TEST_MODULE persistence_faults_test
 #include <boost/test/unit_test.hpp>
 
-#include "harness.hpp"
+#include "chaos_fixture.hpp"
 
 #include <thread>
 

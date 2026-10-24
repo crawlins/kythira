@@ -4,7 +4,7 @@
 #define BOOST_TEST_MODULE network_degradation_test
 #include <boost/test/unit_test.hpp>
 
-#include "harness.hpp"
+#include "chaos_fixture.hpp"
 
 #include <thread>
 
