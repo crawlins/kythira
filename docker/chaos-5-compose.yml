@@ -1,0 +1,138 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# chaos-5-compose.yml: five chaos_nodes for the cairn-chaos-testing harness
+# (.kiro/specs/cairn-chaos-testing/ task 3.3) and five_node_test.cpp. Same
+# image and timing as docker-compose.yml, with five voters instead of three,
+# so a fault can take out two nodes and the cluster still has a majority.
+#
+# Peers are addressed by service name and resolved by the runtime's DNS; no
+# service has a static address (CLAUDE.md "Container runtime
+# compatibility"). Container names are "${CHAOS5_CLUSTER}-<id>" and host
+# ports are 7201-7205 (RPC), 8281-8285 (HTTP control) and 9201-9205
+# (fiu_rc_tcp). tests/docker_chaos/harness.hpp's chaos5_node_table() builds
+# its node table from the same variable and layout, and harness_unit_test
+# checks this file against it.
+#
+# Published ports bind to 127.0.0.1 unless KYTHIRA_BIND_ADDRESS says
+# otherwise: the control plane and fiu_rc_tcp are unauthenticated.
+
+services:
+  c5node1:
+    image: kythira-chaos-node:dev
+    container_name: ${CHAOS5_CLUSTER:-kythira-chaos5}-1
+    hostname: c5node1
+    environment:
+      NODE_ID: "1"
+      PEERS: "2:c5node2:7000,3:c5node3:7000,4:c5node4:7000,5:c5node5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7201:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8281:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9201:9000"
+    cap_add:
+      - NET_ADMIN     # tc and iptables inside the container
+    networks:
+      - chaos5_net
+
+  c5node2:
+    image: kythira-chaos-node:dev
+    container_name: ${CHAOS5_CLUSTER:-kythira-chaos5}-2
+    hostname: c5node2
+    environment:
+      NODE_ID: "2"
+      PEERS: "1:c5node1:7000,3:c5node3:7000,4:c5node4:7000,5:c5node5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7202:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8282:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9202:9000"
+    cap_add:
+      - NET_ADMIN     # tc and iptables inside the container
+    networks:
+      - chaos5_net
+
+  c5node3:
+    image: kythira-chaos-node:dev
+    container_name: ${CHAOS5_CLUSTER:-kythira-chaos5}-3
+    hostname: c5node3
+    environment:
+      NODE_ID: "3"
+      PEERS: "1:c5node1:7000,2:c5node2:7000,4:c5node4:7000,5:c5node5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7203:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8283:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9203:9000"
+    cap_add:
+      - NET_ADMIN     # tc and iptables inside the container
+    networks:
+      - chaos5_net
+
+  c5node4:
+    image: kythira-chaos-node:dev
+    container_name: ${CHAOS5_CLUSTER:-kythira-chaos5}-4
+    hostname: c5node4
+    environment:
+      NODE_ID: "4"
+      PEERS: "1:c5node1:7000,2:c5node2:7000,3:c5node3:7000,5:c5node5:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7204:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8284:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9204:9000"
+    cap_add:
+      - NET_ADMIN     # tc and iptables inside the container
+    networks:
+      - chaos5_net
+
+  c5node5:
+    image: kythira-chaos-node:dev
+    container_name: ${CHAOS5_CLUSTER:-kythira-chaos5}-5
+    hostname: c5node5
+    environment:
+      NODE_ID: "5"
+      PEERS: "1:c5node1:7000,2:c5node2:7000,3:c5node3:7000,4:c5node4:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7205:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8285:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9205:9000"
+    cap_add:
+      - NET_ADMIN     # tc and iptables inside the container
+    networks:
+      - chaos5_net
+
+networks:
+  chaos5_net:
+    driver: bridge

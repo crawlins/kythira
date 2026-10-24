@@ -246,7 +246,7 @@ jobs:
       # suites running after an earlier one fails, so one run reports every
       # verdict; the job still ends red. Never two stacks at once: several
       # share cluster names.
-      - name: docker-chaos-tests (7 chaos scenarios)
+      - name: docker-chaos-tests (8 chaos scenarios)
         run: cmake --build build --target docker-chaos-tests -j"$(nproc)"
 
       # Same check as ci.yml's build-and-test; see scripts/check-linker.sh.

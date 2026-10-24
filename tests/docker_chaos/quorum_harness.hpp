@@ -61,13 +61,9 @@ public:
 
     // ── Pause / unpause ───────────────────────────────────────────────────────
 
-    void pause(int node_id) {
-        os::checked_exec(_exec, {os::container_runtime(), "pause", container_name(node_id)});
-    }
+    void pause(int node_id) { os::checked_exec(_exec, os::pause_cmd(container_name(node_id))); }
 
-    void unpause(int node_id) {
-        os::checked_exec(_exec, {os::container_runtime(), "unpause", container_name(node_id)});
-    }
+    void unpause(int node_id) { os::checked_exec(_exec, os::unpause_cmd(container_name(node_id))); }
 
     // ── Cluster-size polling ──────────────────────────────────────────────────
 

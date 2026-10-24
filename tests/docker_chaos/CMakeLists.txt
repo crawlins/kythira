@@ -55,6 +55,9 @@ endfunction()
 
 add_docker_chaos_unit_test(docker_chaos_harness_unit_tests
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/harness_unit_test.cpp")
+# chaos5_compose_matches_node_table reads docker/chaos-5-compose.yml.
+target_compile_definitions(docker_chaos_harness_unit_tests PRIVATE
+    KYTHIRA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_docker_chaos_unit_test(docker_chaos_fault_control_unit_tests
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/fault_control_unit_test.cpp")
@@ -71,6 +74,7 @@ set(_scenario_tests
     docker_chaos_az_partition_test
     docker_chaos_persistence_faults_test
     docker_chaos_safety_assertions_test
+    docker_chaos_five_node_test
 )
 
 add_docker_chaos_scenario_test(docker_chaos_smoke_test
@@ -87,6 +91,8 @@ add_docker_chaos_scenario_test(docker_chaos_persistence_faults_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/persistence_faults_test.cpp")
 add_docker_chaos_scenario_test(docker_chaos_safety_assertions_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/safety_assertions_test.cpp")
+add_docker_chaos_scenario_test(docker_chaos_five_node_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/five_node_test.cpp")
 
 # ── Quorum healing Docker scenario tests (Req 19) ────────────────────────────
 
@@ -208,6 +214,7 @@ endif()
 
 if(_RUNTIME_EXE)
     set(_CHAOS_COMPOSE_FILE              "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
+    set(_CHAOS5_COMPOSE_FILE             "${CMAKE_SOURCE_DIR}/docker/chaos-5-compose.yml")
     set(_CHAOS_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
     set(_QUORUM_COMPOSE_FILE             "${CMAKE_SOURCE_DIR}/docker/docker-compose.quorum.yml")
     set(_QUORUM5_COMPOSE_FILE            "${CMAKE_SOURCE_DIR}/docker/docker-compose.quorum-5.yml")
@@ -391,6 +398,11 @@ if(_RUNTIME_EXE)
                 ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_safety_assertions_test>
+                --log_level=message
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_CHAOS5_COMPOSE_FILE=${_CHAOS5_COMPOSE_FILE}
+                $<TARGET_FILE:docker_chaos_five_node_test>
                 --log_level=message
         DEPENDS docker-chaos-image ${_scenario_tests}
         COMMENT "Running chaos scenario tests (runtime: ${CONTAINER_RUNTIME})"

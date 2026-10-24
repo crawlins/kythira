@@ -1,8 +1,8 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (0/14 tasks; task 2 sub-tasks 2.1-2.6 done)
+## Status: In progress (2/14 tasks: 2 and 3)
 
-**Last Updated**: October 21, 2026. The spec was written from Clark's doc
+**Last Updated**: October 24, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
 at `7f4f25b`.
 
@@ -33,7 +33,7 @@ compatibility").
   - [ ] Record all answers with the date. An unrecorded probe gets re-run by
         the next person.
 
-- [ ] **2. chaos_node control-plane endpoints.** (Requirement 1, design §1.)
+- [x] **2. chaos_node control-plane endpoints.** (Requirement 1, design §1.)
   - [x] 2.1 Replace the `GET /log/<i>` stub; add the `GET /log?from=&to=`
         range form.
   - [x] 2.2 Extend `GET /status` with `leader_id`, `last_log_index`,
@@ -44,11 +44,11 @@ compatibility").
         `"op":"cas"` to `POST /command`. Leave the existing put/get/del
         encodings untouched, and add a unit case pinning their bytes.
   - [x] 2.6 Add `POST /membership/add` and `/remove`.
-  - [ ] 2.7 Extend the `parse_*` helpers in `harness.hpp` and their unit
+  - [x] 2.7 Extend the `parse_*` helpers in `harness.hpp` and their unit
         cases in `fault_control_unit_test.cpp`. Every existing
         `tests/docker_chaos/` scenario still passes.
-        Helpers and unit cases done; open until a Container Scenario Tests
-        run passes on the new image.
+        Container Scenario Tests run 40033765207 passed under Docker and
+        rootless Podman on the PR #614 head (October 23).
   - Notes (October 23, 2026): `GET /status`'s `leader_id` is the node
     itself on a leader, `known_leader()` elsewhere, and `null` before any
     leader is known. `/elections` is backed by `node::leadership_history()`,
@@ -63,17 +63,30 @@ compatibility").
     `tests/chaos_node_control_test.cpp`, which serves every route from a
     one-node cluster on loopback.
 
-- [ ] **3. Harness gaps.** (Requirement 2, design §2.1.)
-  - [ ] 3.1 A node-table constructor for `ChaosCluster`. The 3-node default
+- [x] **3. Harness gaps.** (Requirement 2, design §2.1.)
+  - [x] 3.1 A node-table constructor for `ChaosCluster`. The 3-node default
         and every current caller are unchanged.
-  - [ ] 3.2 `ChaosNode::pause()`/`unpause()`, `apply_delay`, `apply_loss`.
+  - [x] 3.2 `ChaosNode::pause()`/`unpause()`, `apply_delay`, `apply_loss`.
         Each command vector gets a pure builder in `os_faults.hpp` and a
         `harness_unit_test.cpp` case.
-  - [ ] 3.3 A 5-node compose target for `chaos_node` with service-name
+  - [x] 3.3 A 5-node compose target for `chaos_node` with service-name
         peers and no static IPs, plus its node table derived from the same
         variables.
-  - [ ] 3.4 `pause` under rootless Podman on cgroup v1 reports
+  - [x] 3.4 `pause` under rootless Podman on cgroup v1 reports
         `unsupported` rather than succeeding silently.
+  - Notes (October 24, 2026): the 5-node target is
+    `docker/chaos-5-compose.yml` (host ports 7201-7205, 8281-8285,
+    9201-9205; containers `${CHAOS5_CLUSTER:-kythira-chaos5}-<id>`), and
+    `chaos5_node_table()` builds the matching table from the same variable.
+    `harness_unit_test` parses the compose file and fails if the two drift.
+    `ChaosNode::pause()` throws `fault_unsupported` when the runtime's error
+    says the host cannot freeze containers; it matches loosely, on "cgroup"
+    plus "v1", "freezer", "not available" or "not supported", because the
+    wording differs between Podman versions. No cgroup v1 host was
+    available, so that path is covered by unit cases over the error text
+    only. `five_node_test.cpp` runs in `docker-chaos-tests`: pause and
+    replace a leader, delay and loss on a follower, two followers down,
+    with election safety checked from every node's `/elections`.
 
 - [ ] **4. Workload client `cmd/chaos_workload`.** (Requirement 4, design §2.2.)
   - [ ] 4.1 Reads (both modes), writes and CAS over a configurable key set,
