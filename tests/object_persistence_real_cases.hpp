@@ -6,7 +6,8 @@
 /// @file object_persistence_real_cases.hpp
 /// @brief The checks every provider's real tier runs, written once
 ///        (cloud-object-persistence task 16; cases 6-11 are
-///        object-store-batched-layout task 10).
+///        object-store-batched-layout task 10; cases 12-16, the opt-in
+///        segment-size sweep, are object-store-segment-size-sweep task 2).
 ///
 /// Each is a free function taking a store, a bucket and a prefix, so a
 /// provider's suite supplies only authentication and a bucket name. See
@@ -19,6 +20,7 @@
 /// rather than against an in-memory map that agrees with the client by
 /// construction.
 
+#include "mock_object_store.hpp"
 #include "object_persistence_real_support.hpp"
 
 #include <raft/key_object_store.hpp>
@@ -27,16 +29,21 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <sys/utsname.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -533,17 +540,84 @@ auto case_batched_backup_verify_restore(Store store, const std::string& bucket,
     check_log(restored, 1, 45, [](std::uint64_t) { return 11U; });
 }
 
+/// What one run of the commit-rate driver measured.
+struct commit_rate_result {
+    std::size_t commands{0};
+    double seconds{0};
+    std::size_t log_puts{0};
+    std::vector<double> latencies_ms;  ///< sorted
+    std::uint64_t durable_through{0};
+};
+
+/// @brief The leader-side driver behind case 11 and the sweep's write-behind
+///        measurement (segment-size-sweep Requirement 6).
+///
+/// Does what `node` does with each command, without the cluster: under one
+/// mutex, append the next entry; synchronous, that append is the PUT and the
+/// mutex is held across it (`durability_class::synchronous` never releases
+/// it); write-behind, the append stages, the mutex is released, and the
+/// caller waits at `barrier_through`. @p submitters threads share
+/// @p commands commands of @p payload_bytes each.
+template<key_object_store Store>
+auto drive_commit_rate(Store store, const std::string& bucket, const std::string& prefix,
+                       const object_persistence_options& opts, std::size_t submitters,
+                       std::size_t commands, std::size_t payload_bytes = 16) -> commit_rate_result {
+    engine_for<Store> engine{store, bucket, prefix, opts};
+    engine.save_hard_state(1, std::nullopt);
+
+    std::mutex node_mutex;
+    std::uint64_t next_index = 0;
+    std::atomic<std::size_t> issued{0};
+    commit_rate_result result;
+    result.commands = commands;
+    std::mutex latencies_mutex;
+
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    threads.reserve(submitters);
+    for (std::size_t t = 0; t < submitters; ++t) {
+        threads.emplace_back([&] {
+            while (issued.fetch_add(1) < commands) {
+                const auto began = std::chrono::steady_clock::now();
+                std::optional<write_sequence> seq;
+                {
+                    std::lock_guard lock{node_mutex};
+                    const auto entry =
+                        make_run(next_index + 1, next_index + 1, 1, payload_bytes).front();
+                    if (opts.write_behind) {
+                        seq = engine.append_log_entry_sequenced(entry);
+                    } else {
+                        engine.append_log_entry(entry);
+                    }
+                    ++next_index;
+                }
+                if (seq.has_value()) {
+                    engine.barrier_through(*seq);
+                }
+                const auto ms = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - began)
+                                    .count();
+                std::lock_guard lock{latencies_mutex};
+                result.latencies_ms.push_back(ms);
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    result.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    result.log_puts = opts.write_behind ? engine.flushes_issued() : commands;
+    result.durable_through = engine.durable_through();
+    std::ranges::sort(result.latencies_ms);
+    return result;
+}
+
 /// @brief Case 11 — a leader's commit rate with `write_behind` beside the
 ///        synchronous one (object-store-group-commit Requirement 8.6).
 ///
-/// The driver does what `node` does with each command, without the cluster:
-/// under one mutex, append the next entry; synchronous, that append is the
-/// PUT and the mutex is held across it (`durability_class::synchronous` never
-/// releases it); write-behind, the append stages, the mutex is released, and
-/// the caller waits at `barrier_through`. @p submitters threads share
-/// @p commands commands. Both modes use the segmented log.
-///
-/// Reported per mode, on one greppable line:
+/// `drive_commit_rate` per mode, both over the segmented log. Reported per
+/// mode, on one greppable line:
 ///   - `commits_per_s`, the leader's commit rate (one replica; a follower's
 ///     PUT overlaps the leader's in a real cluster)
 ///   - `log_puts`, the flushes (write-behind) or appends (synchronous)
@@ -561,51 +635,10 @@ auto case_write_behind_commit_rate(Store store, const std::string& bucket,
         const std::string mode_prefix = prefix + "/" + mode;
         auto opts = batched_options();
         opts.write_behind = write_behind;
-        engine_for<Store> engine{store, bucket, mode_prefix, opts};
-        engine.save_hard_state(1, std::nullopt);
+        const auto run = drive_commit_rate(store, bucket, mode_prefix, opts, submitters, commands);
+        const double seconds = run.seconds;
+        const std::size_t log_puts = run.log_puts;
 
-        std::mutex node_mutex;
-        std::uint64_t next_index = 0;
-        std::atomic<std::size_t> issued{0};
-        std::vector<double> latencies_ms;
-        std::mutex latencies_mutex;
-
-        const auto start = std::chrono::steady_clock::now();
-        std::vector<std::thread> threads;
-        threads.reserve(submitters);
-        for (std::size_t t = 0; t < submitters; ++t) {
-            threads.emplace_back([&] {
-                while (issued.fetch_add(1) < commands) {
-                    const auto began = std::chrono::steady_clock::now();
-                    std::optional<write_sequence> seq;
-                    {
-                        std::lock_guard lock{node_mutex};
-                        const auto entry = make_run(next_index + 1, next_index + 1, 1).front();
-                        if (write_behind) {
-                            seq = engine.append_log_entry_sequenced(entry);
-                        } else {
-                            engine.append_log_entry(entry);
-                        }
-                        ++next_index;
-                    }
-                    if (seq.has_value()) {
-                        engine.barrier_through(*seq);
-                    }
-                    const auto ms = std::chrono::duration<double, std::milli>(
-                                        std::chrono::steady_clock::now() - began)
-                                        .count();
-                    std::lock_guard lock{latencies_mutex};
-                    latencies_ms.push_back(ms);
-                }
-            });
-        }
-        for (auto& thread : threads) {
-            thread.join();
-        }
-        const double seconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-
-        const std::size_t log_puts = write_behind ? engine.flushes_issued() : commands;
         std::cout << "KYTHIRA_COMMIT_RATE provider=" << provider << " mode=" << mode
                   << " submitters=" << submitters << " commands=" << commands
                   << " seconds=" << seconds
@@ -616,7 +649,7 @@ auto case_write_behind_commit_rate(Store store, const std::string& bucket,
                   << " measured=client-side-around-engine-call\n";
         std::cout.flush();
 
-        std::ranges::sort(latencies_ms);
+        const auto& latencies_ms = run.latencies_ms;
         latency_report report;
         report.operation = "commit_" + mode;
         report.samples = latencies_ms.size();
@@ -631,7 +664,7 @@ auto case_write_behind_commit_rate(Store store, const std::string& bucket,
         }
         report_latency(provider, report);
 
-        BOOST_TEST(engine.durable_through() >= commands);
+        BOOST_TEST(run.durable_through >= commands);
         if (write_behind) {
             // Sixteen submitters queue behind every flush; anything else means
             // the barrier is not coalescing against this service.
@@ -639,6 +672,478 @@ auto case_write_behind_commit_rate(Store store, const std::string& bucket,
         }
         engine_for<Store> reader{store, bucket, mode_prefix, batched_options()};
         check_log(reader, 1, commands, [](std::uint64_t) { return 1U; });
+    }
+}
+
+// ── Segment-size sweep (.kiro/specs/object-store-segment-size-sweep/) ────────
+
+inline constexpr std::size_t k_kib = 1024;
+inline constexpr std::size_t k_mib = 1024 * k_kib;
+
+/// The sizes and sample counts the sweep runs at. The defaults are the paid
+/// run's (Requirements 1 and 5); the mock test passes a reduced grid.
+struct sweep_grid {
+    std::vector<std::size_t> segment_bytes{64 * k_kib, 256 * k_kib, 512 * k_kib, 1 * k_mib,
+                                           2 * k_mib,  4 * k_mib,   8 * k_mib};
+    std::size_t samples{30};
+    std::size_t recovery_samples{5};
+    std::size_t recovery_log_bytes{16 * k_mib};
+    std::size_t recovery_entry_payload{128 * k_kib};
+};
+
+/// The opt-in: `KYTHIRA_SEGMENT_SWEEP=true`, set by the workflow from the
+/// `REAL_CLOUD_SEGMENT_SWEEP` repository variable (Requirement 9.1).
+[[nodiscard]] inline auto sweep_enabled() -> bool {
+    const char* value = std::getenv("KYTHIRA_SEGMENT_SWEEP");
+    return value != nullptr && std::string_view{value} == "true";
+}
+
+/// Each sweep case's first line. A pass with a message, not exit 77: the
+/// suite's other cases ran, and 77 means "could not run" (Requirement 9.2).
+[[nodiscard]] inline auto skip_unless_sweep_enabled() -> bool {
+    if (sweep_enabled()) {
+        return false;
+    }
+    BOOST_TEST_MESSAGE("segment sweep not enabled (REAL_CLOUD_SEGMENT_SWEEP)");
+    return true;
+}
+
+/// The runner's architecture as `uname -m` reports it, in the names the
+/// workflow uses, so a local run reports truthfully too.
+[[nodiscard]] inline auto runner_arch() -> std::string {
+    utsname name{};
+    if (uname(&name) != 0) {
+        return "unknown";
+    }
+    std::string machine = name.machine;
+    if (machine == "x86_64" || machine == "amd64") {
+        return "x64";
+    }
+    if (machine == "aarch64" || machine == "arm64") {
+        return "arm64";
+    }
+    return machine;
+}
+
+/// The segmented log at segment bound @p segment_bytes. @p owner_id set makes
+/// the options fenced.
+[[nodiscard]] inline auto sweep_options(std::size_t segment_bytes, std::string owner_id = {})
+    -> object_persistence_options {
+    auto opts = batched_options(std::move(owner_id));
+    opts.max_segment_bytes = segment_bytes;
+    return opts;
+}
+
+/// The log objects one `append_log_entries` of a run makes: how many, and
+/// their body bytes.
+struct run_shape {
+    std::size_t objects{0};
+    std::size_t max_body{0};
+    std::size_t total_body{0};
+};
+
+/// @brief What @p run becomes under @p opts, found by having the engine write
+///        it to a scratch in-memory store and reading the bodies back.
+///
+/// The engine's own encoding and chunking, not an estimate: entries are
+/// base64 inside JSON, and `chunk_run` counts index digits, so a 4/3 rule
+/// would miss a boundary by a few bytes and land a run that was meant to be
+/// one segment in two. Costs no request against the real service.
+[[nodiscard]] inline auto shape_of(object_persistence_options opts,
+                                   std::span<const log_entry<>> run) -> run_shape {
+    opts.owner_id.clear();
+    opts.write_behind = false;
+    const mock_object_store scratch;
+    engine_for<mock_object_store> engine{scratch, "shape", "shape", opts};
+    engine.append_log_entries(run);
+    run_shape shape;
+    for (const auto& key : scratch.list_keys("shape", engine.log_prefix())) {
+        const auto object = scratch.get_object("shape", key);
+        if (!object.has_value()) {
+            continue;
+        }
+        ++shape.objects;
+        shape.max_body = std::max(shape.max_body, object->body.size());
+        shape.total_body += object->body.size();
+    }
+    return shape;
+}
+
+/// A run sized to be exactly one segment at bound @p segment_bytes.
+struct segment_fill {
+    std::size_t entries{0};
+    std::size_t payload{0};
+    std::size_t body_bytes{0};
+    bool singleton{false};
+};
+
+/// The highest index any sweep case reaches stays below this, so sizing a run
+/// at it gives the widest index digits the case will see: a run sized here
+/// is no larger at the index it is actually written at.
+inline constexpr std::uint64_t k_sizing_index = 1'000'000;
+
+/// @brief The run that fills one segment at bound @p segment_bytes: the most
+///        96 KiB entries (case 9's size) that fit, at least @p min_entries,
+///        with the payload then grown (or shrunk) to the largest that keeps
+///        the run one object of at most @p segment_bytes.
+///
+/// Below one entry's encoded size the result is a singleton, reported as
+/// such: there the segment bound is no longer what is being measured.
+/// Requirement 2's "within 5% below S" is checked by the caller.
+[[nodiscard]] inline auto fill_segment(const object_persistence_options& opts,
+                                       std::size_t segment_bytes, std::size_t min_entries = 1)
+    -> segment_fill {
+    constexpr std::size_t k_entry_payload = 96 * k_kib;
+    const auto one_object = [&](std::size_t entries,
+                                std::size_t payload) -> std::optional<run_shape> {
+        const auto run = make_run(k_sizing_index, k_sizing_index + entries - 1, 1, payload);
+        const auto shape = shape_of(opts, run);
+        if (shape.objects == 1 && shape.max_body <= segment_bytes) {
+            return shape;
+        }
+        return std::nullopt;
+    };
+    std::size_t entries = min_entries;
+    while (one_object(entries + 1, k_entry_payload).has_value()) {
+        ++entries;
+    }
+    // The largest payload that keeps `entries` in one object within the bound.
+    std::size_t low = 1;
+    std::size_t high = segment_bytes;
+    while (low < high) {
+        const std::size_t mid = low + (high - low + 1) / 2;
+        if (one_object(entries, mid).has_value()) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    const auto shape = one_object(entries, low);
+    BOOST_REQUIRE_MESSAGE(shape.has_value(), "no run of " << entries << " entries fits one "
+                                                          << segment_bytes << "-byte segment");
+    return {.entries = entries,
+            .payload = low,
+            .body_bytes = shape->max_body,
+            .singleton = entries == 1};
+}
+
+/// p50, p90 and the maximum of @p timings (sorted here), nearest rank.
+/// Nothing is called p99 (Requirement 1.4): no sample set here has 100.
+struct sweep_stats {
+    double p50_ms{0};
+    double p90_ms{0};
+    double max_ms{0};
+};
+
+[[nodiscard]] inline auto stats_of(std::vector<double> timings) -> sweep_stats {
+    if (timings.empty()) {
+        return {};
+    }
+    std::ranges::sort(timings);
+    const auto pick = [&](double q) {
+        const auto rank = static_cast<std::size_t>(q * static_cast<double>(timings.size()));
+        return timings[std::min(rank, timings.size() - 1)];
+    };
+    return {.p50_ms = pick(0.50), .p90_ms = pick(0.90), .max_ms = timings.back()};
+}
+
+/// One greppable line per sample set (Requirement 1.2), in the style of
+/// `KYTHIRA_LATENCY` and `KYTHIRA_COMMIT_RATE`. @p fields is the
+/// operation-specific part, `key=value` pairs separated by spaces.
+inline auto report_sweep(const std::string& provider, const std::string& op,
+                         std::size_t segment_bytes, const std::string& fields,
+                         const std::vector<double>& timings) -> void {
+    const auto stats = stats_of(timings);
+    std::cout << "KYTHIRA_SEGMENT_SWEEP provider=" << provider << " arch=" << runner_arch()
+              << " op=" << op << " segment_bytes=" << segment_bytes << " " << fields
+              << " samples=" << timings.size() << " p50_ms=" << stats.p50_ms
+              << " p90_ms=" << stats.p90_ms << " max_ms=" << stats.max_ms
+              << " measured=client-side-around-engine-call\n";
+    std::cout.flush();
+}
+
+/// Wall time of @p op in milliseconds.
+template<typename Op> [[nodiscard]] auto time_ms(Op&& op) -> double {
+    const auto start = std::chrono::steady_clock::now();
+    std::forward<Op>(op)();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+        .count();
+}
+
+[[nodiscard]] inline auto size_prefix(const std::string& prefix, std::size_t segment_bytes)
+    -> std::string {
+    return prefix + "/s" + std::to_string(segment_bytes);
+}
+
+/// @brief Case 12 — one full segment's PUT at every S (Requirement 2).
+///
+/// Each sample is one `append_log_entries` of a run that is exactly one
+/// segment, within 5% below S, with `max_segment_entries` raised to 1000 so
+/// the byte bound is the one that binds. One engine per S on a sub-prefix,
+/// visited round-robin (Requirement 1.3).
+template<key_object_store Store>
+auto case_segment_sweep_put(Store store, const std::string& bucket, const std::string& prefix,
+                            const std::string& provider, const sweep_grid& grid = {}) -> void {
+    if (skip_unless_sweep_enabled()) {
+        return;
+    }
+    struct size_state {
+        std::size_t segment_bytes;
+        segment_fill fill;
+        std::unique_ptr<engine_for<Store>> engine;
+        std::uint64_t next{1};
+        std::vector<double> timings;
+    };
+    std::vector<size_state> sizes;
+    for (const auto bytes : grid.segment_bytes) {
+        auto opts = sweep_options(bytes);
+        opts.max_segment_entries = 1000;
+        auto fill = fill_segment(opts, bytes);
+        // A singleton is as big as one entry may be, not as big as S.
+        if (!fill.singleton) {
+            BOOST_TEST(fill.body_bytes * 100 >= bytes * 95,
+                       "S=" << bytes << " filled only " << fill.body_bytes);
+        }
+        sizes.push_back({.segment_bytes = bytes,
+                         .fill = fill,
+                         .engine = std::make_unique<engine_for<Store>>(
+                             store, bucket, size_prefix(prefix + "/put", bytes), opts),
+                         .next = 1,
+                         .timings = {}});
+    }
+    for (std::size_t round = 0; round < grid.samples; ++round) {
+        for (auto& size : sizes) {
+            const auto first = size.next;
+            const auto run = make_run(first, first + size.fill.entries - 1, 1, size.fill.payload);
+            size.timings.push_back(time_ms(
+                [&] { size.engine->append_log_entries(std::span<const log_entry<>>{run}); }));
+            size.next += size.fill.entries;
+        }
+    }
+    for (auto& size : sizes) {
+        report_sweep(provider, "segment_put", size.segment_bytes,
+                     "entries=" + std::to_string(size.fill.entries) +
+                         " entry_payload=" + std::to_string(size.fill.payload) +
+                         " body_bytes=" + std::to_string(size.fill.body_bytes) +
+                         " singleton=" + (size.fill.singleton ? "true" : "false"),
+                     size.timings);
+        BOOST_TEST(size.engine->get_last_log_index() == size.next - 1);
+    }
+}
+
+/// @brief Case 13 — a follower's run persist time: one 100-entry
+///        AppendEntries run at 4 KiB and at 32 KiB of payload, at every S
+///        (Requirement 3).
+///
+/// `max_segment_entries` stays at its default (100), as on a follower. Each
+/// sample's segment count is reported (from `shape_of`, the engine's own
+/// chunking), so a reader can tell when `append_concurrency` ran the run's
+/// PUTs in one parallel wave and when they queued.
+template<key_object_store Store>
+auto case_segment_sweep_follower_run(Store store, const std::string& bucket,
+                                     const std::string& prefix, const std::string& provider,
+                                     const sweep_grid& grid = {}) -> void {
+    if (skip_unless_sweep_enabled()) {
+        return;
+    }
+    constexpr std::uint64_t k_run = 100;
+    struct cell {
+        std::size_t segment_bytes;
+        std::size_t payload;
+        run_shape shape;
+        std::unique_ptr<engine_for<Store>> engine;
+        std::uint64_t next{1};
+        std::vector<double> timings;
+    };
+    std::vector<cell> cells;
+    for (const std::size_t payload : {4 * k_kib, 32 * k_kib}) {
+        for (const auto bytes : grid.segment_bytes) {
+            const auto opts = sweep_options(bytes);
+            const auto sized = make_run(k_sizing_index, k_sizing_index + k_run - 1, 1, payload);
+            cells.push_back(
+                {.segment_bytes = bytes,
+                 .payload = payload,
+                 .shape = shape_of(opts, sized),
+                 .engine = std::make_unique<engine_for<Store>>(
+                     store, bucket, size_prefix(prefix + "/run" + std::to_string(payload), bytes),
+                     opts),
+                 .next = 1,
+                 .timings = {}});
+        }
+    }
+    for (std::size_t round = 0; round < grid.samples; ++round) {
+        for (auto& c : cells) {
+            const auto run = make_run(c.next, c.next + k_run - 1, 1, c.payload);
+            c.timings.push_back(
+                time_ms([&] { c.engine->append_log_entries(std::span<const log_entry<>>{run}); }));
+            c.next += k_run;
+        }
+    }
+    for (auto& c : cells) {
+        report_sweep(provider, "follower_run", c.segment_bytes,
+                     "entries=100 entry_payload=" + std::to_string(c.payload) +
+                         " body_bytes=" + std::to_string(c.shape.total_body) +
+                         " chunks=" + std::to_string(c.shape.objects),
+                     c.timings);
+        BOOST_TEST(c.engine->get_last_log_index() == c.next - 1);
+    }
+}
+
+/// @brief Case 14 — truncation inside a full segment, which rewrites it in
+///        place, at every S (Requirement 4); fenced or not by @p Engine.
+///
+/// Each sample is its own sub-prefix: write one full segment (at least two
+/// entries, so there is a middle), time `truncate_log` at its middle index,
+/// then a fresh engine reads the truncated tail back — the correctness check,
+/// untimed. Fenced, the rewrite is an `If-Match` overwrite; providers that do
+/// not fence (Alibaba) pass the unfenced engine.
+template<typename Engine, key_object_store Store>
+auto case_segment_sweep_truncate(Store store, const std::string& bucket, const std::string& prefix,
+                                 const std::string& provider, const std::string& owner_id,
+                                 const sweep_grid& grid = {}) -> void {
+    if (skip_unless_sweep_enabled()) {
+        return;
+    }
+    struct size_state {
+        std::size_t segment_bytes;
+        object_persistence_options opts;
+        segment_fill fill;
+        std::vector<double> timings;
+    };
+    std::vector<size_state> sizes;
+    for (const auto bytes : grid.segment_bytes) {
+        auto opts = sweep_options(bytes, owner_id);
+        opts.max_segment_entries = 1000;
+        sizes.push_back({.segment_bytes = bytes,
+                         .opts = opts,
+                         .fill = fill_segment(opts, bytes, 2),
+                         .timings = {}});
+    }
+    for (std::size_t round = 0; round < grid.samples; ++round) {
+        for (auto& size : sizes) {
+            const std::string sample_prefix =
+                size_prefix(prefix + "/truncate", size.segment_bytes) + "/" + std::to_string(round);
+            const auto last = static_cast<std::uint64_t>(size.fill.entries);
+            const auto middle = last / 2 + 1;
+            {
+                Engine writer{store, bucket, sample_prefix, size.opts};
+                const auto run = make_run(1, last, 1, size.fill.payload);
+                writer.append_log_entries(std::span<const log_entry<>>{run});
+                size.timings.push_back(time_ms([&] { writer.truncate_log(middle); }));
+            }
+            engine_for<Store> reader{store, bucket, sample_prefix, batched_options()};
+            BOOST_TEST(reader.get_last_log_index() == middle - 1);
+            BOOST_TEST(!reader.get_log_entry(middle).has_value());
+            const auto kept = reader.get_log_entry(middle - 1);
+            BOOST_TEST((kept.has_value() && kept->command().size() == size.fill.payload));
+        }
+    }
+    for (auto& size : sizes) {
+        report_sweep(provider, "truncate_rewrite", size.segment_bytes,
+                     "entries=" + std::to_string(size.fill.entries) +
+                         " entry_payload=" + std::to_string(size.fill.payload) +
+                         " body_bytes=" + std::to_string(size.fill.body_bytes) +
+                         " fenced=" + (owner_id.empty() ? "false" : "true"),
+                     size.timings);
+    }
+}
+
+/// @brief Case 15 — recovery: a fresh engine's construction over a log of
+///        the same total payload at every S (Requirement 5).
+///
+/// Each S writes its log once (`recovery_log_bytes` of
+/// `recovery_entry_payload` entries, in 100-entry runs), then the samples
+/// alternate S, each a whole engine construction: the LIST and the sequential
+/// GET of every log object.
+template<key_object_store Store>
+auto case_segment_sweep_recovery(Store store, const std::string& bucket, const std::string& prefix,
+                                 const std::string& provider, const sweep_grid& grid = {}) -> void {
+    if (skip_unless_sweep_enabled()) {
+        return;
+    }
+    const auto entries = static_cast<std::uint64_t>(
+        std::max<std::size_t>(1, grid.recovery_log_bytes / grid.recovery_entry_payload));
+    struct size_state {
+        std::size_t segment_bytes;
+        std::string prefix;
+        std::size_t objects{0};
+        std::vector<double> timings;
+    };
+    std::vector<size_state> sizes;
+    for (const auto bytes : grid.segment_bytes) {
+        const auto size_pfx = size_prefix(prefix + "/recovery", bytes);
+        engine_for<Store> writer{store, bucket, size_pfx, sweep_options(bytes)};
+        for (std::uint64_t first = 1; first <= entries; first += 100) {
+            const auto run =
+                make_run(first, std::min(first + 99, entries), 1, grid.recovery_entry_payload);
+            writer.append_log_entries(std::span<const log_entry<>>{run});
+        }
+        sizes.push_back({.segment_bytes = bytes,
+                         .prefix = size_pfx,
+                         .objects = store.list_keys(bucket, writer.log_prefix()).size(),
+                         .timings = {}});
+    }
+    for (std::size_t round = 0; round < grid.recovery_samples; ++round) {
+        for (auto& size : sizes) {
+            std::uint64_t loaded = 0;
+            size.timings.push_back(time_ms([&] {
+                engine_for<Store> reader{store, bucket, size.prefix,
+                                         sweep_options(size.segment_bytes)};
+                loaded = reader.get_last_log_index();
+            }));
+            BOOST_TEST(loaded == entries);
+        }
+    }
+    for (auto& size : sizes) {
+        report_sweep(provider, "recovery", size.segment_bytes,
+                     "entries=" + std::to_string(entries) +
+                         " entry_payload=" + std::to_string(grid.recovery_entry_payload) +
+                         " log_objects=" + std::to_string(size.objects),
+                     size.timings);
+    }
+}
+
+/// @brief Case 16 — write-behind with large commands at every S
+///        (Requirement 6), through case 11's driver.
+///
+/// 16 submitters, 64 commands of 64 KiB, `write_behind = true`, one run per
+/// S per round. The engine does not report how each flush was chunked, so
+/// the split is counted from the listing: `log_objects − log_puts` is the
+/// extra segments split flushes made, zero when no flush was split.
+template<key_object_store Store>
+auto case_segment_sweep_write_behind(Store store, const std::string& bucket,
+                                     const std::string& prefix, const std::string& provider,
+                                     const sweep_grid& grid = {}, std::size_t rounds = 1) -> void {
+    if (skip_unless_sweep_enabled()) {
+        return;
+    }
+    constexpr std::size_t k_submitters = 16;
+    constexpr std::size_t k_commands = 64;
+    constexpr std::size_t k_payload = 64 * k_kib;
+    for (std::size_t round = 0; round < rounds; ++round) {
+        for (const auto bytes : grid.segment_bytes) {
+            auto opts = sweep_options(bytes);
+            opts.write_behind = true;
+            const auto run_prefix =
+                size_prefix(prefix + "/write-behind", bytes) + "/" + std::to_string(round);
+            const auto run = drive_commit_rate(store, bucket, run_prefix, opts, k_submitters,
+                                               k_commands, k_payload);
+            engine_for<Store> reader{store, bucket, run_prefix, sweep_options(bytes)};
+            check_log(reader, 1, k_commands, [](std::uint64_t) { return 1U; });
+            const auto objects = store.list_keys(bucket, reader.log_prefix()).size();
+            report_sweep(provider, "write_behind_commit", bytes,
+                         "entry_payload=" + std::to_string(k_payload) +
+                             " submitters=" + std::to_string(k_submitters) +
+                             " commands=" + std::to_string(k_commands) + " commits_per_s=" +
+                             std::to_string(static_cast<double>(k_commands) / run.seconds) +
+                             " log_puts=" + std::to_string(run.log_puts) + " B=" +
+                             std::to_string(static_cast<double>(k_commands) /
+                                            static_cast<double>(run.log_puts)) +
+                             " log_objects=" + std::to_string(objects) + " split_extra_segments=" +
+                             std::to_string(objects - std::min(objects, run.log_puts)),
+                         run.latencies_ms);
+            BOOST_TEST(run.durable_through >= k_commands);
+        }
     }
 }
 

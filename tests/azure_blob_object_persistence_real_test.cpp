@@ -111,4 +111,29 @@ BOOST_FIXTURE_TEST_CASE(write_behind_commit_rate, RealBlobFixture,
     obj::case_write_behind_commit_rate(client(), bucket, prefix + "/commit-rate", k_provider);
 }
 
+// The opt-in segment-size sweep (object-store-segment-size-sweep task 2).
+// Each case passes at once unless KYTHIRA_SEGMENT_SWEEP=true.
+BOOST_FIXTURE_TEST_CASE(segment_sweep_put, RealBlobFixture, *boost::unit_test::timeout(1800)) {
+    obj::case_segment_sweep_put(client(), bucket, prefix + "/sweep", k_provider);
+}
+
+BOOST_FIXTURE_TEST_CASE(segment_sweep_follower_run, RealBlobFixture,
+                        *boost::unit_test::timeout(1800)) {
+    obj::case_segment_sweep_follower_run(client(), bucket, prefix + "/sweep", k_provider);
+}
+
+BOOST_FIXTURE_TEST_CASE(segment_sweep_truncate, RealBlobFixture, *boost::unit_test::timeout(1800)) {
+    obj::case_segment_sweep_truncate<obj::fenced_engine_for<decltype(client())>>(
+        client(), bucket, prefix + "/sweep", k_provider, "node-1");
+}
+
+BOOST_FIXTURE_TEST_CASE(segment_sweep_recovery, RealBlobFixture, *boost::unit_test::timeout(1800)) {
+    obj::case_segment_sweep_recovery(client(), bucket, prefix + "/sweep", k_provider);
+}
+
+BOOST_FIXTURE_TEST_CASE(segment_sweep_write_behind, RealBlobFixture,
+                        *boost::unit_test::timeout(1800)) {
+    obj::case_segment_sweep_write_behind(client(), bucket, prefix + "/sweep", k_provider);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -9,7 +9,7 @@
 | Operations measured against size | one PUT | one PUT, a follower's run, a truncation rewrite, recovery, a write-behind flush |
 | Bound the default is judged against | none written down | Requirement 7's, backed by a mock-tier Raft test |
 
-The sweep is four new real-tier cases and a reporting line. The engine does
+The sweep is five new real-tier cases and a reporting line. The engine does
 not change. `node` does not change. The workflow gains one environment
 variable per provider step.
 
@@ -98,7 +98,10 @@ struct sweep_grid {
 };
 ```
 
-The mock test passes `{ {4 * k_kib, 16 * k_kib, 64 * k_kib}, 3, 1, 256 * k_kib }`.
+The grid also carries `recovery_entry_payload` (128 KiB). The mock test
+passes `{ {4 * k_kib, 64 * k_kib, 512 * k_kib}, 3, 1, 256 * k_kib, 16 * k_kib }`:
+512 KiB is the one size where case 12's fill is several entries and a 4 KiB
+follower run splits.
 
 | Case | Requirement | Each sample |
 |---|---|---|
@@ -106,11 +109,14 @@ The mock test passes `{ {4 * k_kib, 16 * k_kib, 64 * k_kib}, 3, 1, 256 * k_kib }
 | 13 `case_segment_sweep_follower_run` | 3 | one 100-entry run of 4 KiB, then of 32 KiB, entries; records the chunk count by listing the new keys |
 | 14 `case_segment_sweep_truncate` | 4 | write one full segment, `truncate_log` at its middle index, then a fresh engine reads the truncated tail back (a correctness check, untimed) |
 | 15 `case_segment_sweep_recovery` | 5 | per S, write 16 MiB of 128 KiB-payload entries once; then time `recovery_samples` fresh engine constructions |
+| 16 `case_segment_sweep_write_behind` | 6 | case 11's driver (`drive_commit_rate`), 16 submitters, 64 commands of 64 KiB, `write_behind = true`; the 64 command latencies are the samples |
 
-Requirement 6 does not need a case of its own: case 11's driver becomes a
-function taking options and a payload size, which case 11 calls exactly as
-today and the sweep calls once per S with 64 KiB payloads and
-`write_behind = true`. Case 11's output line is unchanged so the S3 numbers
+Requirement 6 needs no measuring code of its own: case 11's driver becomes a
+function taking options and a payload size (`drive_commit_rate`), which
+case 11 calls exactly as today and case 16 calls once per S with 64 KiB
+payloads and `write_behind = true`. The engine does not report how each
+flush was chunked, so case 16 reports `split_extra_segments`, the log
+objects beyond one per flush, in place of a count of split flushes. Case 11's output line is unchanged so the S3 numbers
 from run 39727417123 stay comparable.
 
 Round-robin (Requirement 1.3) is per case: each case opens one engine per S on
