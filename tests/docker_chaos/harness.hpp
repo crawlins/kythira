@@ -261,6 +261,7 @@ public:
 
     [[nodiscard]] int id() const { return _node_id; }
     [[nodiscard]] int http_port() const { return _http_port; }
+    [[nodiscard]] std::uint16_t fiu_port() const { return _fiu_port; }
     [[nodiscard]] const std::string& container() const { return _container; }
 
     // ── Status queries ─────────────────────────────────────────────────────
@@ -500,11 +501,22 @@ public:
 
     ~ChaosCluster() {
         // Best-effort cleanup — called by RAII even on test failure.
+        if (_detached) {
+            return;
+        }
         try {
             stop();
         } catch (...) {
         }
     }
+
+    ChaosCluster(const ChaosCluster&) = delete;
+    ChaosCluster& operator=(const ChaosCluster&) = delete;
+
+    // Leaves the cluster running when this object goes away. chaos_ctl
+    // (cmd/chaos_ctl/) addresses one long-lived cluster from a new process
+    // per call, so no one call's object may take it down.
+    void detach() { _detached = true; }
 
     void start() {
         os::checked_exec(_exec, os::compose_up_cmd(_compose_file));
@@ -631,6 +643,7 @@ private:
     HttpGet _http_get;
     HttpPost _http_post;
     std::map<int, ChaosNode> _nodes;
+    bool _detached{false};
 };
 
 // ── Test fixture helpers ──────────────────────────────────────────────────────

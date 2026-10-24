@@ -25,6 +25,7 @@
 #include "checkers/linearizability.hpp"
 #include "checkers/liveness.hpp"
 #include "checkers/raft_safety.hpp"
+#include "cluster_checks.hpp"
 #include "harness.hpp"
 #include "history.hpp"
 #include "http_transport.hpp"
@@ -132,104 +133,9 @@ inline auto case_name() -> std::string {
 
 }  // namespace fixture_detail
 
-/// Undoes every fault a scenario may have left behind, so liveness is
-/// measured from a healed cluster. Best effort throughout: a node that is
-/// already clean must not stop the others being healed.
-inline void heal_all(ChaosCluster& cluster) {
-    for (auto* n : cluster.all_nodes()) {
-        try {
-            n->unpause();
-        } catch (...) {
-        }
-        n->clear_tc_netem();
-        n->unpartition();
-        try {
-            n->disable_all_faults();
-        } catch (...) {
-        }
-    }
-    for (auto* n : cluster.all_nodes()) {
-        if (!n->is_healthy()) {
-            try {
-                n->restart(true, std::chrono::seconds{30});
-            } catch (const std::exception& e) {
-                BOOST_TEST_MESSAGE("heal: node " + std::to_string(n->id()) +
-                                   " did not come back: " + e.what());
-            }
-        }
-    }
-}
-
-/// One liveness sample: the leader any node reports, and the highest
-/// commit_index any reachable node reports. A leader is also given a write,
-/// since a cluster with nothing to commit never advances.
-inline auto liveness_sample(ChaosCluster& cluster, int& writes) -> checkers::liveness::sample {
-    checkers::liveness::sample s;
-    for (auto* n : cluster.all_nodes()) {
-        try {
-            auto st = n->status();
-            s.commit_index =
-                std::max(s.commit_index, st.at("commit_index").to_number<std::uint64_t>());
-            if (st.at("role").as_string() == "leader") {
-                s.leader = n->id();
-            }
-        } catch (...) {
-        }
-    }
-    if (s.leader) {
-        try {
-            static_cast<void>(
-                cluster.node(*s.leader).submit_command("cairn_liveness", std::to_string(++writes)));
-        } catch (...) {
-        }
-    }
-    return s;
-}
-
-/// Every node's /status and whole /log, as the Raft safety checker takes
-/// them. A node that cannot be read is left out and named.
-inline auto collect_node_states(ChaosCluster& cluster)
-    -> std::vector<checkers::raft_safety::node_state> {
-    std::vector<checkers::raft_safety::node_state> out;
-    for (auto* n : cluster.all_nodes()) {
-        try {
-            auto status = n->status();
-            const auto snapshot = status.at("snapshot_index").to_number<std::uint64_t>();
-            const auto last = status.at("last_log_index").to_number<std::uint64_t>();
-            std::vector<boost::json::object> ranges;
-            // /log serves at most 1024 entries per call.
-            for (std::uint64_t from = snapshot + 1; from <= last; from += 1024) {
-                const auto to = std::min(last, from + 1023);
-                ranges.push_back(n->log_range(from, to));
-            }
-            out.push_back(checkers::raft_safety::node_state_from_json(status, ranges));
-        } catch (const std::exception& e) {
-            BOOST_TEST_MESSAGE("raft_safety: node " + std::to_string(n->id()) +
-                               " not read: " + e.what());
-        }
-    }
-    return out;
-}
-
-inline auto collect_elections(ChaosCluster& cluster)
-    -> std::vector<checkers::raft_safety::election> {
-    std::vector<checkers::raft_safety::election> out;
-    auto add = [&out](const boost::json::object& body) {
-        auto e = checkers::raft_safety::elections_from_json(body);
-        out.insert(out.end(), e.begin(), e.end());
-    };
-    for (auto* n : cluster.all_nodes()) {
-        for (const auto& saved : n->remembered_elections()) {
-            add(saved);
-        }
-        try {
-            add(n->elections());
-        } catch (const std::exception& e) {
-            BOOST_TEST_MESSAGE("raft_safety: node " + std::to_string(n->id()) +
-                               " /elections not read: " + e.what());
-        }
-    }
-    return out;
+/// The cluster_checks.hpp helpers, reporting through Boost.Test.
+inline void fixture_note(const std::string& msg) {
+    BOOST_TEST_MESSAGE(msg);
 }
 
 /// The three checkers over one finished case, reported through Boost.Test.
@@ -243,17 +149,10 @@ inline void check_invariants(ChaosCluster& cluster, const std::vector<history::e
         }
     }
 
-    heal_all(cluster);
+    heal_all(cluster, fixture_note);
 
     int writes = 0;
-    std::uint64_t baseline = 0;
-    for (auto* n : cluster.all_nodes()) {
-        try {
-            baseline =
-                std::max(baseline, n->status().at("commit_index").to_number<std::uint64_t>());
-        } catch (...) {
-        }
-    }
+    const std::uint64_t baseline = highest_commit(cluster);
     const auto bound =
         checkers::liveness::bound(k_compose_election_timeout_max, k_scripted_liveness_k);
     auto live = checkers::liveness::wait(
@@ -266,8 +165,8 @@ inline void check_invariants(ChaosCluster& cluster, const std::vector<history::e
                        ", bound " + std::to_string(bound.count()) + "ms)");
     BOOST_TEST(live.overall == checkers::verdict::ok, "liveness after heal: " << live.detail);
 
-    auto safety =
-        checkers::raft_safety::check(collect_node_states(cluster), collect_elections(cluster));
+    auto safety = checkers::raft_safety::check(collect_node_states(cluster, fixture_note),
+                                               collect_elections(cluster, {}, fixture_note));
     BOOST_TEST_MESSAGE("raft_safety: " + std::string(checkers::to_string(safety.overall)) + ", " +
                        std::to_string(safety.terms_with_a_leader) + " terms with a leader, " +
                        std::to_string(safety.committed_entries_compared) +

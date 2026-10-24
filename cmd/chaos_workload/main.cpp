@@ -11,20 +11,25 @@
 //   WORKLOAD_VALUES       values 0..<n-1>                  (default 5)
 //   WORKLOAD_CONCURRENCY  worker threads                   (default 4)
 //   WORKLOAD_RATE         total ops/second, 0 = unpaced    (default 50)
-//   WORKLOAD_DURATION_S   seconds to run                   (default 10)
+//   WORKLOAD_DURATION_S   seconds to run, 0 = until signalled (default 10)
 //   WORKLOAD_MIX          "read=3,local=1,write=4,cas=2"   (default)
 //   WORKLOAD_SEED         RNG seed; worker i uses seed+i   (default: time)
 //   WORKLOAD_TIMEOUT_MS   per-request read timeout          (default 3000)
 //
 // History lines go to stdout and nothing else does; diagnostics go to
-// stderr. Exit status is 0 once the duration has passed, 2 on bad
-// configuration.
+// stderr. SIGTERM or SIGINT stops it early, the same way the deadline does:
+// each worker finishes the operation it has in flight, so the history never
+// ends on an invoke the client gave up on (chaos_ctl's workload.stop relies
+// on this). Exit status is 0 once the duration has passed or a stop signal
+// arrived, 2 on bad configuration.
 
 #include "http_transport.hpp"
 #include "runner.hpp"
 #include "workload.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -32,6 +37,12 @@
 #include <string>
 
 namespace {
+
+std::atomic<bool> g_stop_requested{false};
+
+extern "C" void request_stop(int /*signal*/) {
+    g_stop_requested.store(true);
+}
 
 auto env_or(const char* name, const std::string& fallback) -> std::string {
     const char* v = std::getenv(name);
@@ -65,8 +76,11 @@ int main() {
                   << " concurrency=" << concurrency << " rate=" << rate
                   << " duration_s=" << duration.count() << " seed=" << seed << "\n";
 
+        std::signal(SIGTERM, request_stop);
+        std::signal(SIGINT, request_stop);
         const auto start = clock::now();
         const auto deadline = start + duration;
+        const bool forever = duration.count() == 0;
         std::mutex out_mutex;
         auto emit = [&out_mutex](const chaos_workload::event& e) {
             auto line = docker_chaos::history::to_line(e);
@@ -82,7 +96,10 @@ int main() {
                                         .weights = weights,
                                         .seed = seed,
                                         .key_prefix = "k"},
-            [deadline] { return clock::now() >= deadline; }, emit, start);
+            [deadline, forever] {
+                return g_stop_requested.load() || (!forever && clock::now() >= deadline);
+            },
+            emit, start);
         std::cerr << "[chaos_workload] done, " << processes << " processes used\n";
         return 0;
     } catch (const std::exception& e) {
