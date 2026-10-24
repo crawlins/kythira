@@ -76,6 +76,7 @@ connection_oriented_example_test examples/ is added only when folly_FOUND (root 
 continuation_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 cross_backend_concept_compliance_property_test uses Folly directly (`folly::exception_wrapper`), compares the Folly backend with the others
 custom_types_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
+docker_chaos_checkers_unit_tests tests/docker_chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 docker_chaos_fault_control_unit_tests tests/docker_chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 docker_chaos_harness_unit_tests tests/docker_chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 error_handling_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
