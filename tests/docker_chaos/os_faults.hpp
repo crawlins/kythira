@@ -6,10 +6,13 @@
 #include <sys/wait.h>
 
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <functional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace docker_chaos::os {
@@ -106,6 +109,47 @@ inline std::vector<std::string> tc_netem_cmd(const std::string& container, const
             "root", "netem", "loss",    loss, "delay", delay,     "corrupt", corrupt};
 }
 
+// One `tc qdisc replace` each for the two shapes a chaos tool names on its
+// own (cairn-chaos-testing Requirement 2.3): delay with optional jitter, and
+// loss alone. Both replace whatever qdisc is there, so they do not stack with
+// each other or with tc_netem_cmd; tc_clear_cmd undoes any of them.
+inline std::vector<std::string> tc_delay_cmd(const std::string& container, int delay_ms,
+                                             int jitter_ms = 0) {
+    std::vector<std::string> cmd{container_runtime(),
+                                 "exec",
+                                 container,
+                                 "tc",
+                                 "qdisc",
+                                 "replace",
+                                 "dev",
+                                 "eth0",
+                                 "root",
+                                 "netem",
+                                 "delay",
+                                 std::to_string(delay_ms) + "ms"};
+    if (jitter_ms > 0) {
+        cmd.push_back(std::to_string(jitter_ms) + "ms");
+    }
+    return cmd;
+}
+
+inline std::vector<std::string> tc_loss_cmd(const std::string& container, double loss_pct) {
+    std::ostringstream pct;
+    pct << loss_pct << '%';
+    return {container_runtime(),
+            "exec",
+            container,
+            "tc",
+            "qdisc",
+            "replace",
+            "dev",
+            "eth0",
+            "root",
+            "netem",
+            "loss",
+            pct.str()};
+}
+
 inline std::vector<std::string> tc_clear_cmd(const std::string& container) {
     return {container_runtime(), "exec", container, "tc", "qdisc", "del", "dev", "eth0", "root"};
 }
@@ -157,6 +201,40 @@ inline std::vector<std::string> docker_stop_cmd(const std::string& container,
 
 inline std::vector<std::string> docker_start_cmd(const std::string& container) {
     return {container_runtime(), "start", container};
+}
+
+// Freezes every process in the container (cgroup freezer); unpause thaws it.
+// Unlike kill or stop, the node keeps its sockets and in-memory state, so on
+// thaw it acts on whatever it believed before: the case a paused GC or a
+// stalled VM produces.
+inline std::vector<std::string> pause_cmd(const std::string& container) {
+    return {container_runtime(), "pause", container};
+}
+
+inline std::vector<std::string> unpause_cmd(const std::string& container) {
+    return {container_runtime(), "unpause", container};
+}
+
+// Whether a failed `pause` failed because this host cannot freeze containers
+// at all, rather than because of this container. Rootless Podman has the
+// freezer only on cgroup v2, and refuses on cgroup v1 with an error that
+// names cgroups. Matched loosely, on the words the runtimes use, because the
+// exact text differs between versions; a miss reports an ordinary failure,
+// which is the safe direction.
+inline bool is_pause_unsupported(std::string_view output) {
+    std::string lower(output);
+    for (auto& c : lower) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (lower.find("cgroup") == std::string::npos) {
+        return false;
+    }
+    for (std::string_view marker : {"v1", "freezer", "not available", "not supported"}) {
+        if (lower.find(marker) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
 }
 
 inline std::vector<std::string> docker_logs_cmd(const std::string& container,

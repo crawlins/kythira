@@ -11,6 +11,8 @@
 #include <boost/json.hpp>
 
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <sstream>
@@ -51,6 +53,34 @@ inline const std::map<int, NodePorts> k_node_map{
     {2, {7002, 8082, 9002, "chaos_node_2"}},
     {3, {7003, 8083, 9003, "chaos_node_3"}},
 };
+
+// ── 5-node layout — mirrors docker/chaos-5-compose.yml ───────────────────────
+//
+// Host ports 7201-7205 / 8281-8285 / 9201-9205, clear of the 3-node file's
+// 70xx/80xx/90xx and the quorum files' 71xx/81xx/91xx. Container names are
+// "<cluster>-<id>", where <cluster> is $CHAOS5_CLUSTER, the same variable
+// the compose file reads, with the same default. harness_unit_test parses
+// the compose file and checks it against this table, so the two cannot
+// drift apart silently.
+
+inline constexpr std::string_view k_chaos5_default_cluster = "kythira-chaos5";
+
+inline std::string chaos5_cluster_name() {
+    const char* env = std::getenv("CHAOS5_CLUSTER");
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
+    return std::string(k_chaos5_default_cluster);
+}
+
+inline std::map<int, NodePorts> chaos5_node_table(const std::string& cluster) {
+    std::map<int, NodePorts> table;
+    for (int id = 1; id <= 5; ++id) {
+        table.emplace(
+            id, NodePorts{7200 + id, 8280 + id, 9200 + id, cluster + "-" + std::to_string(id)});
+    }
+    return table;
+}
 
 // ── HTTP call types ───────────────────────────────────────────────────────────
 
@@ -179,6 +209,13 @@ inline boost::json::object parse_membership_response(const HttpResult& r) {
     return obj;
 }
 
+// A fault this host cannot inject, reported as such rather than as a fault
+// that took effect (cairn-chaos-testing Requirement 2.5 and task 3.4).
+class fault_unsupported : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 // ── ChaosNode ─────────────────────────────────────────────────────────────────
 
 class ChaosNode {
@@ -213,6 +250,14 @@ public:
           _http_port(http_port),
           _fiu_port(fiu_port),
           _container(std::move(container)) {}
+
+    // Node-table ctor — the ports and container name come from a NodePorts
+    // row, so any layout ChaosCluster is given reaches its nodes unchanged.
+    ChaosNode(int node_id, const NodePorts& ports, os::CmdExecutor exec, HttpGet http_get,
+              HttpPost http_post)
+        : ChaosNode(node_id, ports.http_port, static_cast<std::uint16_t>(ports.fiu_port),
+                    ports.container_name, std::move(exec), std::move(http_get),
+                    std::move(http_post)) {}
 
     [[nodiscard]] int id() const { return _node_id; }
     [[nodiscard]] const std::string& container() const { return _container; }
@@ -307,6 +352,21 @@ public:
         os::checked_exec(_exec, os::tc_netem_cmd(_container, loss, delay, corrupt));
     }
 
+    // One qdisc each; see os::tc_delay_cmd / os::tc_loss_cmd.
+    void apply_delay(int delay_ms, int jitter_ms = 0) {
+        if (delay_ms < 0 || jitter_ms < 0) {
+            throw std::invalid_argument("apply_delay: negative delay or jitter");
+        }
+        os::checked_exec(_exec, os::tc_delay_cmd(_container, delay_ms, jitter_ms));
+    }
+
+    void apply_loss(double loss_pct) {
+        if (std::isnan(loss_pct) || loss_pct < 0.0 || loss_pct > 100.0) {
+            throw std::invalid_argument("apply_loss: percentage outside [0, 100]");
+        }
+        os::checked_exec(_exec, os::tc_loss_cmd(_container, loss_pct));
+    }
+
     void clear_tc_netem() { os::try_exec(_exec, os::tc_clear_cmd(_container)); }
 
     void partition_from(const std::vector<std::string>& peer_ips) {
@@ -326,6 +386,22 @@ public:
     void kill() { os::checked_exec(_exec, os::docker_kill_cmd(_container)); }
 
     void stop() { os::checked_exec(_exec, os::docker_stop_cmd(_container)); }
+
+    // Throws fault_unsupported on a host that cannot freeze containers
+    // (rootless Podman on cgroup v1), never returns as if the node paused.
+    void pause() {
+        auto result = _exec(os::pause_cmd(_container));
+        if (result.code == 0) {
+            return;
+        }
+        if (os::is_pause_unsupported(result.out)) {
+            throw fault_unsupported("pause is unsupported on this host: " + result.out);
+        }
+        throw std::runtime_error("pause " + _container + " failed (exit " +
+                                 std::to_string(result.code) + "): " + result.out);
+    }
+
+    void unpause() { os::checked_exec(_exec, os::unpause_cmd(_container)); }
 
     void restart(bool wait = true,
                  std::chrono::milliseconds health_timeout = std::chrono::seconds{15}) {
@@ -369,14 +445,31 @@ public:
 
     ChaosCluster(std::string compose_file, std::chrono::milliseconds startup_timeout,
                  os::CmdExecutor exec, HttpGet http_get, HttpPost http_post)
+        : ChaosCluster(std::move(compose_file), k_node_map, startup_timeout, std::move(exec),
+                       std::move(http_get), std::move(http_post)) {}
+
+    // Node-table ctors (cairn-chaos-testing Requirement 2.1): any number of
+    // nodes, any ports and container names. The two above are this with
+    // k_node_map, so the 3-node default and its callers are unchanged.
+    ChaosCluster(std::string compose_file, const std::map<int, NodePorts>& node_table,
+                 std::chrono::milliseconds startup_timeout = std::chrono::seconds{30})
+        : ChaosCluster(std::move(compose_file), node_table, startup_timeout, os::real_exec,
+                       real_http_get, real_http_post) {}
+
+    ChaosCluster(std::string compose_file, const std::map<int, NodePorts>& node_table,
+                 std::chrono::milliseconds startup_timeout, os::CmdExecutor exec, HttpGet http_get,
+                 HttpPost http_post)
         : _compose_file(std::move(compose_file)),
           _startup_timeout(startup_timeout),
           _exec(exec),
           _http_get(http_get),
           _http_post(http_post) {
-        for (const auto& [id, _] : k_node_map) {
+        if (node_table.empty()) {
+            throw std::invalid_argument("ChaosCluster: empty node table");
+        }
+        for (const auto& [id, ports] : node_table) {
             _nodes.emplace(std::piecewise_construct, std::forward_as_tuple(id),
-                           std::forward_as_tuple(id, exec, http_get, http_post));
+                           std::forward_as_tuple(id, ports, exec, http_get, http_post));
         }
     }
 
@@ -481,7 +574,7 @@ public:
 
     // Returns the last `tail_lines` log lines for the given node.
     std::vector<std::string> log_lines(int node_id, int tail_lines = 200) {
-        auto out = _exec(os::docker_logs_cmd(k_node_map.at(node_id).container_name, tail_lines));
+        auto out = _exec(os::docker_logs_cmd(node(node_id).container(), tail_lines));
         std::vector<std::string> lines;
         std::istringstream ss(out.out);
         std::string line;
@@ -523,6 +616,14 @@ inline std::string default_compose_file() {
         return env;
     }
     return "docker/docker-compose.yml";
+}
+
+inline std::string default_chaos5_compose_file() {
+    const char* env = std::getenv("KYTHIRA_CHAOS5_COMPOSE_FILE");
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
+    return "docker/chaos-5-compose.yml";
 }
 
 // Per-test-case fixture: starts a fresh cluster in ctor, stops in dtor.
