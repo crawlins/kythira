@@ -3608,6 +3608,14 @@ jobs:
       - name: Check the cairn failpoint allowlist is current
         run: ./scripts/gen-cairn-failpoints.py --check
 
+      # docker/container_api_proxy/ is all that stands between a compromised
+      # quorum node or cairn tool server and the container runtime socket.
+      # Its tests drive the proxy against a fake API on a unix socket and
+      # check every call outside its allowlist gets 403 without reaching
+      # the API. Standard library only; a few seconds.
+      - name: Test the container API proxy
+        run: python3 -m unittest discover -s docker/container_api_proxy -p '*_test.py' -v
+
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0

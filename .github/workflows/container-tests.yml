@@ -41,6 +41,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/container-tests.yml
+      # The quorum and elastic-capacity scenarios run their nodes' container
+      # API through this proxy.
+      - docker/container_api_proxy/**
 
 permissions:
   contents: read

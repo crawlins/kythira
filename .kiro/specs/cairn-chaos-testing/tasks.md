@@ -1,6 +1,6 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (3/14 tasks: 2, 3 and 4)
+## Status: In progress (6/14 tasks: 2-7; 8.1 of task 8)
 
 **Last Updated**: October 24, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
@@ -238,9 +238,28 @@ compatibility").
 
 - [ ] **8. Filtering proxy and fence.** (Requirements 3.4 and 7, design §3.2
   and §5.)
-  - [ ] 8.1 Extend `docker/container_api_proxy/` with the
+  - [x] 8.1 Extend `docker/container_api_proxy/` with the
         kill/start/pause/unpause/exec allowlist scoped to this run's
         label. Add a test that every other call gets `403`.
+        Notes (October 24, 2026): `PROXY_MODE=chaos_ctl` with
+        `PROXY_LABEL=key=value`; quorum mode is unchanged and still the
+        default. It forwards `HEAD|GET /_ping`, inspect, `kill` (KILL or
+        TERM), `stop?t=`, `start`, `pause`, `unpause`, exec create whose
+        `Cmd` is one of the `os_faults.hpp` tc/iptables shapes (no
+        `Privileged`, `User`, `Env`, `WorkingDir`, TTY or stdin), and
+        exec start and inspect only for exec ids it created; exec start
+        is relayed raw, as the CLI hijacks the connection. Each container
+        call inspects the container first, refuses unless it carries the
+        label, and goes upstream by its id, so a name cannot be
+        re-pointed between check and call. Inspect is scoped too, since it
+        returns a container's environment. `proxy_test.py` (stdlib
+        `unittest`, run in the CI docs job) checks about 120 refused
+        calls, that none of them reaches a fake API on a unix socket, and
+        the exec round trip. The real `docker` CLI was driven through the
+        proxy against rootless Podman's socket: every `os_faults.hpp`
+        command, exit codes included, worked, and `ps`, `run`, `rm`,
+        `logs`, `restart`, `exec sh`, `exec --privileged/-u/-e` and any
+        call on an unlabelled container got 403.
   - [ ] 8.2 `docker/cairn/cairn-compose.yml` with `internal: true`
         networks, an egress proxy allowlisting only the model hosts, and
         the panel on `127.0.0.1`. No `--privileged`, no host networking.
