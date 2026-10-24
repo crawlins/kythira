@@ -133,6 +133,27 @@ services:
     networks:
       - chaos5_net
 
+  # The cairn workload client (task 4), off unless asked for by name or by
+  # `--profile workload`. It writes a JSONL history to stdout, runs for
+  # CHAOS5_WORKLOAD_DURATION_S seconds and exits; five_node_test reads the
+  # history from its log, then removes the container.
+  c5workload:
+    image: kythira-chaos-node:dev
+    profiles: ["workload"]
+    container_name: ${CHAOS5_CLUSTER:-kythira-chaos5}-workload
+    entrypoint: ["chaos_workload"]
+    environment:
+      WORKLOAD_NODES: "1=c5node1:8080,2=c5node2:8080,3=c5node3:8080,4=c5node4:8080,5=c5node5:8080"
+      WORKLOAD_DURATION_S: "${CHAOS5_WORKLOAD_DURATION_S:-10}"
+      WORKLOAD_SEED: "${CHAOS5_WORKLOAD_SEED:-1}"
+      WORKLOAD_CONCURRENCY: "4"
+      WORKLOAD_RATE: "40"
+      WORKLOAD_KEYS: "3"
+    healthcheck:
+      disable: true
+    networks:
+      - chaos5_net
+
 networks:
   chaos5_net:
     driver: bridge

@@ -10,7 +10,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include "harness.hpp"
+#include "history.hpp"
 
+#include <cctype>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <set>
@@ -109,6 +112,7 @@ struct FiveNodeFixture {
     }
 
     ~FiveNodeFixture() {
+        os::try_exec(os::real_exec, os::container_rm_cmd(chaos5_cluster_name() + "-workload"));
         for (int id : all_ids()) {
             try {
                 cluster.node(id).unpause();
@@ -227,6 +231,67 @@ BOOST_AUTO_TEST_CASE(two_followers_down_three_still_commit, *boost::unit_test::t
         cluster.node(id).restart(true, 30s);
     }
     BOOST_REQUIRE(commit(cluster, all_ids(), "all_back", "1"));
+    assert_one_leader_per_term(cluster);
+}
+
+// The workload client (cairn task 4) runs as a compose service against the
+// five nodes while the leader is paused and thawed. Its history must be
+// well formed: every completion matches an invoke, no process has two
+// operations outstanding, and a process that recorded info never invokes
+// again. Whether the history is linearizable is task 5's checker's call.
+BOOST_AUTO_TEST_CASE(workload_records_a_well_formed_history, *boost::unit_test::timeout(240)) {
+    const std::string compose_file = default_chaos5_compose_file();
+    const std::string workload = chaos5_cluster_name() + "-workload";
+    ::setenv("CHAOS5_WORKLOAD_DURATION_S", "12", 1);
+    os::try_exec(os::real_exec, os::container_rm_cmd(workload));
+    os::checked_exec(os::real_exec,
+                     os::compose_up_service_cmd(compose_file, "workload", "c5workload"));
+
+    std::this_thread::sleep_for(3s);
+    auto* leader = leader_among(cluster, all_ids(), 15s);
+    BOOST_REQUIRE(leader != nullptr);
+    bool paused = false;
+    try {
+        leader->pause();
+        paused = true;
+    } catch (const fault_unsupported& e) {
+        BOOST_TEST_MESSAGE(std::string("pause unsupported, killing a follower instead: ") +
+                           e.what());
+        cluster.node(some_follower(leader->id())).kill();
+    }
+    std::this_thread::sleep_for(3s);
+    if (paused) {
+        leader->unpause();
+    } else {
+        cluster.node(some_follower(leader->id())).restart(true, 30s);
+    }
+
+    auto exit_status = os::checked_exec(os::real_exec, os::container_wait_cmd(workload));
+    while (!exit_status.empty() &&
+           std::isspace(static_cast<unsigned char>(exit_status.back())) != 0) {
+        exit_status.pop_back();
+    }
+    auto logs = os::real_exec(os::container_logs_all_cmd(workload));
+    os::try_exec(os::real_exec, os::container_rm_cmd(workload));
+    BOOST_TEST_MESSAGE("workload exited with " + exit_status);
+    BOOST_TEST(exit_status == "0");
+
+    auto events = history::parse_history(logs.out);
+    BOOST_TEST_MESSAGE(std::to_string(events.size()) + " history events");
+    BOOST_TEST(history::structural_error(events) == "");
+
+    std::map<history::event_type, int> counts;
+    std::int64_t invokes = 0;
+    for (const auto& e : events) {
+        ++counts[e.type];
+        invokes += e.type == history::event_type::invoke ? 1 : 0;
+    }
+    BOOST_TEST_MESSAGE("ok=" + std::to_string(counts[history::event_type::ok]) +
+                       " fail=" + std::to_string(counts[history::event_type::fail]) +
+                       " info=" + std::to_string(counts[history::event_type::info]));
+    // Every worker joins before the process exits, so nothing is left open.
+    BOOST_TEST(invokes == static_cast<std::int64_t>(events.size()) - invokes);
+    BOOST_TEST(counts[history::event_type::ok] >= 20);
     assert_one_leader_per_term(cluster);
 }
 
