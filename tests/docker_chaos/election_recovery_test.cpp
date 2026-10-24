@@ -4,7 +4,7 @@
 #define BOOST_TEST_MODULE election_recovery_test
 #include <boost/test/unit_test.hpp>
 
-#include "harness.hpp"
+#include "chaos_fixture.hpp"
 
 #include <thread>
 

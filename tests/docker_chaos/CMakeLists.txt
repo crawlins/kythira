@@ -24,6 +24,8 @@ if(KYTHIRA_TEST_TIMEOUT_SCALE GREATER 1)
     add_compile_definitions(KYTHIRA_TEST_TIMEOUT_SCALE=${KYTHIRA_TEST_TIMEOUT_SCALE})
 endif()
 
+find_package(Threads REQUIRED)
+
 # Helper: build one unit-test executable and register in CTest.
 function(add_docker_chaos_unit_test test_name source_file)
     add_executable(${test_name} "${source_file}")
@@ -43,14 +45,19 @@ endfunction()
 # Helper: build one scenario-test executable.
 # Not registered in CTest — requires Docker at runtime.
 # Run via the docker-chaos-tests custom target.
+#
+# cmd/chaos_workload is on the include path because chaos_fixture.hpp runs
+# the workload from the test process (cairn-chaos-testing task 6).
 function(add_docker_chaos_scenario_test test_name source_file)
     add_executable(${test_name} "${source_file}")
     target_include_directories(${test_name} PRIVATE
         "${CMAKE_SOURCE_DIR}/tests/docker_chaos"
+        "${CMAKE_SOURCE_DIR}/cmd/chaos_workload"
     )
     target_link_libraries(${test_name} PRIVATE
         Boost::unit_test_framework
         httplib::httplib
+        Threads::Threads
         ${_boost_json_lib}
     )
     target_compile_features(${test_name} PRIVATE cxx_std_23)

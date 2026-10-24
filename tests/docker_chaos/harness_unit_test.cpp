@@ -235,6 +235,43 @@ BOOST_AUTO_TEST_CASE(kill_issues_docker_kill) {
     BOOST_TEST(exec.calls[0] == docker_chaos::os::docker_kill_cmd("chaos_node_1"));
 }
 
+// A restart loses the node's in-memory /elections, so kill() and stop()
+// save them first (cairn-chaos-testing task 6).
+BOOST_AUTO_TEST_CASE(kill_and_stop_save_elections_first) {
+    MockExec exec;
+    auto get = [](const std::string& url) -> docker_chaos::HttpResult {
+        if (url.find("/elections") != std::string::npos) {
+            return {200, R"({"node_id":1,"elections":[{"term":3,"at_ms":7}]})"};
+        }
+        return {200, R"({"status":"running"})"};
+    };
+    docker_chaos::ChaosNode n(
+        1, std::ref(exec), get,
+        [](const std::string&, const std::string&) -> docker_chaos::HttpResult {
+            return {200, "{}"};
+        });
+    n.kill();
+    n.stop();
+    BOOST_REQUIRE(n.remembered_elections().size() == 2U);
+    BOOST_TEST(n.remembered_elections()[0].at("elections").as_array().size() == 1U);
+    BOOST_TEST(exec.calls.size() == 2U);
+}
+
+// A node that cannot answer has nothing to save; the kill still happens.
+BOOST_AUTO_TEST_CASE(kill_of_an_unreachable_node_still_kills) {
+    MockExec exec;
+    docker_chaos::ChaosNode n(
+        1, std::ref(exec),
+        [](const std::string&) -> docker_chaos::HttpResult { return {0, "connection failed"}; },
+        [](const std::string&, const std::string&) -> docker_chaos::HttpResult {
+            return {200, "{}"};
+        });
+    n.kill();
+    BOOST_TEST(n.remembered_elections().empty());
+    BOOST_REQUIRE(exec.calls.size() == 1U);
+    BOOST_TEST(exec.calls[0] == docker_chaos::os::docker_kill_cmd("chaos_node_1"));
+}
+
 BOOST_AUTO_TEST_CASE(kill_nonzero_exit_throws) {
     MockExec exec;
     exec.return_code = 1;

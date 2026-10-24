@@ -104,7 +104,8 @@ struct mix {
     return out;
 }
 
-/// Random operations over keys k0..k<keys-1> and values 0..<values-1>.
+/// Random operations over keys <prefix>0..<prefix><keys-1> (prefix "k" by
+/// default) and values 0..<values-1>.
 ///
 /// The value domain is small on purpose, as in Jepsen's cas-register: with
 /// a handful of values a CAS's expected value is often the current one, so
@@ -112,8 +113,9 @@ struct mix {
 /// same value by their timing, not by the value.
 class generator {
 public:
-    generator(std::uint64_t seed, unsigned keys, unsigned values, mix weights)
-        : _rng(seed), _keys(keys), _values(values), _mix(weights) {
+    generator(std::uint64_t seed, unsigned keys, unsigned values, mix weights,
+              std::string key_prefix = "k")
+        : _rng(seed), _keys(keys), _values(values), _mix(weights), _prefix(std::move(key_prefix)) {
         if (keys == 0 || values == 0) {
             throw std::invalid_argument("generator: keys and values must be at least 1");
         }
@@ -121,15 +123,18 @@ public:
 
     auto next() -> operation {
         operation op;
-        op.key = "k" + std::to_string(pick(_keys));
+        op.key = _prefix + std::to_string(pick(_keys));
         const unsigned total = _mix.linearizable_read + _mix.local_read + _mix.write + _mix.cas;
-        auto roll = pick(total);
-        if (roll < _mix.linearizable_read) {
+        const auto roll = pick(total);
+        const unsigned local_from = _mix.linearizable_read;
+        const unsigned write_from = local_from + _mix.local_read;
+        const unsigned cas_from = write_from + _mix.write;
+        if (roll < local_from) {
             op.f = op_kind::read;
-        } else if ((roll -= _mix.linearizable_read) < _mix.local_read) {
+        } else if (roll < write_from) {
             op.f = op_kind::read;
             op.local_read = true;
-        } else if ((roll -= _mix.local_read) < _mix.write) {
+        } else if (roll < cas_from) {
             op.f = op_kind::write;
             op.value = std::to_string(pick(_values));
         } else {
@@ -149,6 +154,7 @@ private:
     unsigned _keys;
     unsigned _values;
     mix _mix;
+    std::string _prefix;
 };
 
 // ── Node table ───────────────────────────────────────────────────────────────
@@ -304,7 +310,7 @@ private:
         return body.find("not_leader") != std::string::npos;
     }
 
-    auto next_node(int after) const -> int {
+    [[nodiscard]] auto next_node(int after) const -> int {
         auto it = _nodes.upper_bound(after);
         return it == _nodes.end() ? _nodes.begin()->first : it->first;
     }

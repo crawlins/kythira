@@ -120,13 +120,33 @@ compatibility").
         least one known-bad history per invariant that the checker must
         flag.
 
-- [ ] **6. Checkers pass on the scripted suite.** (Requirement 5.4.)
-  - [ ] Collect histories and node state while `safety_assertions_test`,
+- [x] **6. Checkers pass on the scripted suite.** (Requirement 5.4.)
+  - [x] Collect histories and node state while `safety_assertions_test`,
         `network_degradation_test`, `crash_recovery_test`,
         `election_recovery_test`, `persistence_faults_test` and
         `az_partition_test` run, and run all three checkers on them. Any
         flag is a checker or harness bug and is fixed before going on.
         Record the run here.
+
+        Recorded October 24, 2026, Container Scenario Tests run 40059957978
+        (PR #616, head b3f05ae). `ChaosFixture`
+        (`tests/docker_chaos/chaos_fixture.hpp`) now runs the workload
+        and all three checkers over every case of those six suites. In 11
+        cases under Docker and 11 under rootless Podman, every checker
+        reported `ok` and none flagged anything:
+        - Liveness: a leader within 9 ms of the heal and a commit within
+          116 ms, against a 6000 ms bound (20 × 300 ms).
+        - Raft safety: 1-3 terms with a leader per case, and 8-139
+          committed entries compared.
+        - Linearizability: 3-166 checked operations per case over three
+          keys, 12-492 history events. The `fail` and local-read counts
+          are reported beside them.
+        No checker or harness bug surfaced, so none needed fixing. The
+        Podman log of `safety_assertions_test` does show two nodes reporting
+        `leader` at once. They are in different terms, a deposed leader that
+        has not heard yet, and `raft_safety` correctly passes it: its
+        election check is per term, and its leader-completeness check skips
+        leaders behind the highest sampled term.
 
 - [ ] **7. `chaos_ctl` and the schedule log.** (Requirement 3, design §3-§4.)
   - [ ] 7.1 One subcommand per tool from Requirement 3.1. `clock_skew`
