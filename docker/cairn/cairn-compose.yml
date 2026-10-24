@@ -1,0 +1,183 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The cairn fence (.kiro/specs/cairn-chaos-testing/ Requirements 3.4 and 7,
+# design §3.2 and §5): the chaos cluster, the tool server that drives it,
+# the filtering proxy that is the only holder of the runtime socket, the
+# egress proxy that is the only way out, and the Cairn engine.
+#
+#   raft_net     internal  node1-3, tool-server
+#   control_net  internal  tool-server, container-api-proxy
+#   cairn_net    internal  tool-server, egress-proxy, engine, workers
+#   egress_net             egress-proxy only: the one route off the host
+#   panel_net              engine only, so its panel can be published (a
+#                          port on an internal network is never published)
+#
+# So a worker can reach the tool server and, through egress-proxy, the
+# model hosts in CAIRN_EGRESS_ALLOW, and nothing else: not the cluster, not
+# the runtime, not a package mirror. fence-probe checks exactly that from a
+# worker's seat (scripts/cairn/fence-check.sh). The tool server reaches the
+# runtime only through container-api-proxy, which forwards kill, stop,
+# start, pause, unpause and the os_faults.hpp tc/iptables execs, and only on
+# containers labelled kythira.cairn.run=$CAIRN_RUN: these three nodes.
+#
+# No static IPs, no host networking, no --privileged; NET_ADMIN on the
+# nodes is the only capability (CLAUDE.md "Container runtime
+# compatibility", Requirement 7.3). Nothing but the panel is published, and
+# that on 127.0.0.1 only (Requirement 7.1). No container gets cloud
+# credentials (Requirement 7.5).
+#
+# Images: kythira-chaos-node:dev (docker-chaos-image) and
+# kythira-cairn-tool-server:dev (docker-cairn-tool-server-image) come from
+# the CMake build; the two proxies build from their directories here.
+# Profiles: `engine` runs Cairn, whose image task 1 pins by digest (until
+# then CAIRN_ENGINE_IMAGE must be set to run it); `probe` runs fence-probe.
+#
+# Start:  <runtime> compose -f docker/cairn/cairn-compose.yml up -d
+# Stop:   scripts/cairn/kill.sh
+
+x-chaos-node: &chaos-node
+  image: kythira-chaos-node:dev
+  labels:
+    kythira.cairn.run: "${CAIRN_RUN:-kythira-cairn}"
+  cap_add:
+    - NET_ADMIN     # tc and iptables inside the container
+  networks:
+    - raft_net
+
+x-chaos-node-env: &chaos-node-env
+  RPC_PORT: "7000"
+  HTTP_PORT: "8080"
+  FIU_PORT: "9000"
+  DATA_DIR: "/var/lib/chaos_node"
+  ELECTION_TIMEOUT_MIN_MS: "150"
+  ELECTION_TIMEOUT_MAX_MS: "300"
+  HEARTBEAT_INTERVAL_MS: "50"
+
+services:
+  # The same nodes as docker/docker-compose.yml, unpublished. A run made
+  # here replays on the host against that file (chaos_ctl replay --layout
+  # chaos3), so the settings above must stay equal to its.
+  node1:
+    <<: *chaos-node
+    container_name: ${CAIRN_RUN:-kythira-cairn}-node1
+    hostname: node1
+    environment:
+      <<: *chaos-node-env
+      NODE_ID: "1"
+      PEERS: "2:node2:7000,3:node3:7000"
+
+  node2:
+    <<: *chaos-node
+    container_name: ${CAIRN_RUN:-kythira-cairn}-node2
+    hostname: node2
+    environment:
+      <<: *chaos-node-env
+      NODE_ID: "2"
+      PEERS: "1:node1:7000,3:node3:7000"
+
+  node3:
+    <<: *chaos-node
+    container_name: ${CAIRN_RUN:-kythira-cairn}-node3
+    hostname: node3
+    environment:
+      <<: *chaos-node-env
+      NODE_ID: "3"
+      PEERS: "1:node1:7000,2:node2:7000"
+
+  # chaos_ctl and chaos_workload. Run directories live in the runs volume;
+  # `chaos_ctl init --layout cairn` there addresses the nodes above by
+  # service name.
+  tool-server:
+    image: kythira-cairn-tool-server:dev
+    container_name: ${CAIRN_RUN:-kythira-cairn}-tool-server
+    environment:
+      CAIRN_RUN: "${CAIRN_RUN:-kythira-cairn}"
+      DOCKER_HOST: "tcp://container-api-proxy:2375"
+    volumes:
+      - runs:/runs
+    depends_on:
+      - container-api-proxy
+      - node1
+      - node2
+      - node3
+    networks:
+      - raft_net
+      - control_net
+      - cairn_net
+
+  container-api-proxy:
+    image: kythira-container-api-proxy:dev
+    build:
+      context: ../container_api_proxy
+    container_name: ${CAIRN_RUN:-kythira-cairn}-container-api-proxy
+    environment:
+      PROXY_MODE: chaos_ctl
+      PROXY_LABEL: "kythira.cairn.run=${CAIRN_RUN:-kythira-cairn}"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    networks:
+      - control_net
+
+  egress-proxy:
+    image: kythira-cairn-egress-proxy:dev
+    build:
+      context: egress_proxy
+    container_name: ${CAIRN_RUN:-kythira-cairn}-egress-proxy
+    environment:
+      # host:port pairs: the Anthropic API, plus the llama.cpp server once
+      # task 1b says a worker can use it (e.g. ",llama.lan:8080").
+      EGRESS_ALLOW: "${CAIRN_EGRESS_ALLOW:-api.anthropic.com:443}"
+    networks:
+      - cairn_net
+      - egress_net
+
+  # Cairn v0.2.1, unmodified. Task 1 records its image digest and panel
+  # port; until then this profile needs CAIRN_ENGINE_IMAGE and
+  # CAIRN_PANEL_CONTAINER_PORT set.
+  engine:
+    profiles: ["engine"]
+    image: "${CAIRN_ENGINE_IMAGE:-cairn-engine-unpinned-see-task-1}"
+    container_name: ${CAIRN_RUN:-kythira-cairn}-engine
+    environment:
+      HTTPS_PROXY: "http://egress-proxy:3128"
+      HTTP_PROXY: "http://egress-proxy:3128"
+      NO_PROXY: "tool-server"
+    ports:
+      - "127.0.0.1:${CAIRN_PANEL_PORT:-7777}:${CAIRN_PANEL_CONTAINER_PORT:-7777}"
+    networks:
+      - cairn_net
+      - panel_net
+
+  # Sits where a worker sits (cairn_net only, proxy env set as a worker's
+  # is) and checks the fence. Run by scripts/cairn/fence-check.sh.
+  fence-probe:
+    profiles: ["probe"]
+    image: kythira-cairn-egress-proxy:dev
+    build:
+      context: egress_proxy
+    entrypoint: ["python3", "-u", "/usr/local/bin/fence_probe.py"]
+    environment:
+      HTTPS_PROXY: "http://egress-proxy:3128"
+      HTTP_PROXY: "http://egress-proxy:3128"
+      PROBE_PROXY: "egress-proxy:3128"
+      PROBE_ALLOWED: "${CAIRN_PROBE_ALLOWED:-api.anthropic.com:443}"
+    depends_on:
+      - egress-proxy
+    networks:
+      - cairn_net
+
+volumes:
+  runs:
+
+networks:
+  raft_net:
+    internal: true
+  control_net:
+    internal: true
+  cairn_net:
+    internal: true
+  egress_net:
+    driver: bridge
+  panel_net:
+    driver: bridge

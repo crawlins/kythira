@@ -1,6 +1,6 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (6/14 tasks: 2-7; 8.1 of task 8)
+## Status: In progress (7/14 tasks: 2-8)
 
 **Last Updated**: October 24, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
@@ -236,7 +236,7 @@ compatibility").
         (the sandbox kernel has no netem) and reported `fault.pause` as
         `unsupported` (no cgroup freezer), as designed.
 
-- [ ] **8. Filtering proxy and fence.** (Requirements 3.4 and 7, design §3.2
+- [x] **8. Filtering proxy and fence.** (Requirements 3.4 and 7, design §3.2
   and §5.)
   - [x] 8.1 Extend `docker/container_api_proxy/` with the
         kill/start/pause/unpause/exec allowlist scoped to this run's
@@ -260,13 +260,64 @@ compatibility").
         command, exit codes included, worked, and `ps`, `run`, `rm`,
         `logs`, `restart`, `exec sh`, `exec --privileged/-u/-e` and any
         call on an unlabelled container got 403.
-  - [ ] 8.2 `docker/cairn/cairn-compose.yml` with `internal: true`
+  - [x] 8.2 `docker/cairn/cairn-compose.yml` with `internal: true`
         networks, an egress proxy allowlisting only the model hosts, and
         the panel on `127.0.0.1`. No `--privileged`, no host networking.
-  - [ ] 8.3 `scripts/cairn/kill.sh`, run under both runtimes.
-  - [ ] 8.4 Verify the fence from inside a worker container: the model
+  - [x] 8.3 `scripts/cairn/kill.sh`, run under both runtimes.
+  - [x] 8.4 Verify the fence from inside a worker container: the model
         hosts are reachable; a general host, package installs and the
         runtime socket are not.
+  - Notes on 8.2-8.4 (October 24, 2026):
+    - Networks: `raft_net` (nodes, tool server), `control_net` (tool
+      server, container API proxy) and `cairn_net` (tool server, egress
+      proxy, engine, workers) are `internal: true`. `egress_net` holds
+      only the egress proxy. The engine also joins `panel_net`, an
+      ordinary bridge, because neither runtime publishes a port from an
+      internal network; the engine is not an agent (Requirement 7.2), and
+      nothing else is on that network.
+    - `docker/cairn/egress_proxy/` is a stdlib Python proxy:
+      `CONNECT host:port` and absolute-form `http://` requests to the
+      exact `host:port` pairs in `EGRESS_ALLOW`
+      (default `api.anthropic.com:443`), 403 for everything else.
+    - The tool server image (`docker/cairn/tool_server/`,
+      `docker-cairn-tool-server-image`) is `kythira-chaos-node:dev` plus
+      `chaos_ctl` and the static docker CLI 29.9.1, checked by sha256
+      per architecture. The CLI speaks the same API to Docker and to
+      Podman's compatible socket, so the image needs no runtime switch.
+      It idles until task 10's MCP adapter.
+    - chaos_ctl gained `--layout cairn`: nodes by compose service name
+      on their container ports (`NodePorts::host`, persisted in
+      `run.json`). `init --image-id` (or `$KYTHIRA_IMAGE_ID`) records the
+      image, since the proxy refuses image inspect. `replay` and
+      `minimize` refuse a layout the host cannot reach, and take
+      `--layout chaos3 --compose docker/docker-compose.yml` to replay a
+      fenced run on the host's published cluster, with the same image
+      and settings. They also fall back to the `chaos_workload` next to
+      them when the recorded one (a path in the tool server image) is
+      missing.
+    - The engine service is under the `engine` profile and needs
+      `CAIRN_ENGINE_IMAGE` and `CAIRN_PANEL_CONTAINER_PORT` until task 1
+      records the v0.2.1 digest and panel port. The fence does not
+      depend on it.
+    - `scripts/cairn/fence-check.sh` (`docker-cairn-fence-tests`, run in
+      Container Scenario Tests on both runtimes) checks five things:
+      - chaos_ctl in the tool server drives a schedule through the proxy
+        with every checker clean.
+      - The tool server is refused `ps`, `run`, `rm`, `exec sh`,
+        `exec -u 0`, kill or inspect of an unlabelled container, and any
+        internet access.
+      - `fence-probe`, which sits where a worker sits, passes
+        `fence_probe.py`: a verified TLS handshake to the model host
+        through the egress proxy; 403 for example.com, pypi, the Alpine
+        and Debian mirrors and GitHub; no direct route anywhere; no proxy,
+        node or socket reachable; `pip download` and `apk add` both fail.
+      - `kill.sh` leaves no container of the run.
+      - The run replays on the host.
+    - The probe stands in for a worker until task 10 builds the worker
+      images, and task 10 reruns it inside each of them.
+    - A local rootless Podman run passed all five steps. The model-host
+      handshake was skipped there because the sandbox intercepts TLS; its
+      `CONNECT` got through.
 
 ## M1: seeded bug
 

@@ -508,4 +508,82 @@ BOOST_AUTO_TEST_CASE(chaos5_compose_matches_node_table) {
     }
 }
 
+// cairn_node_table() reaches its nodes by service name on their container
+// ports, from inside the stack, and the fiu and HTTP calls follow it.
+BOOST_AUTO_TEST_CASE(cairn_nodes_are_reached_by_service_name) {
+    MockExec exec;
+    MockGet get;
+    get.result = {200, R"({"status":"running"})"};
+    docker_chaos::ChaosCluster cluster("cairn.yml", docker_chaos::cairn_node_table("r"),
+                                       std::chrono::seconds{1}, std::ref(exec), std::ref(get),
+                                       no_post());
+    BOOST_TEST(cluster.all_nodes().size() == 3U);
+    BOOST_TEST(cluster.node(2).container() == "r-node2");
+    BOOST_TEST(cluster.node(2).host() == "node2");
+    (void)cluster.node(2).is_healthy();
+    BOOST_TEST(get.called_urls.back() == "http://node2:8080/health");
+    cluster.node(3).kill();
+    BOOST_TEST(exec.calls.back() == docker_chaos::os::docker_kill_cmd("r-node3"));
+    // The other layouts are unchanged: published ports on localhost.
+    BOOST_TEST(docker_chaos::k_node_map.at(1).host == "localhost");
+    BOOST_TEST(docker_chaos::chaos5_node_table("t").at(5).host == "localhost");
+}
+
+// docker/cairn/cairn-compose.yml and cairn_node_table() describe one
+// layout. This reads the file and fails on any drift, and on a node that
+// publishes a port or lacks the run label the filtering proxy scopes by.
+BOOST_AUTO_TEST_CASE(cairn_compose_matches_node_table) {
+    std::ifstream in(std::string(KYTHIRA_SOURCE_DIR) + "/docker/cairn/cairn-compose.yml");
+    BOOST_REQUIRE(in.good());
+    const std::string run_var = "${CAIRN_RUN:-kythira-cairn}";
+    auto table = docker_chaos::cairn_node_table(std::string(docker_chaos::k_cairn_default_run));
+
+    std::map<int, std::string> containers;
+    std::map<int, std::string> hostnames;
+    std::map<int, std::string> env;
+    bool anchor_labels = false;
+    bool anchor = false;
+    int current = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line[0] != ' ') {
+            anchor = line.rfind("x-chaos-node:", 0) == 0;
+            current = 0;
+            continue;
+        }
+        if (anchor && line.find("kythira.cairn.run: \"" + run_var + "\"") != std::string::npos) {
+            anchor_labels = true;
+        }
+        if (line.size() > 3 && line.rfind("  ", 0) == 0 && line[2] != ' ' && line.back() == ':') {
+            current = line.rfind("  node", 0) == 0 ? std::stoi(line.substr(6, line.size() - 7)) : 0;
+            continue;
+        }
+        if (current == 0) {
+            continue;
+        }
+        BOOST_TEST(line.find("ports:") == std::string::npos, "node" << current << " publishes");
+        if (auto pos = line.find("container_name: "); pos != std::string::npos) {
+            auto name = line.substr(pos + 16);
+            BOOST_REQUIRE(name.rfind(run_var, 0) == 0);
+            containers[current] =
+                std::string(docker_chaos::k_cairn_default_run) + name.substr(run_var.size());
+        }
+        if (auto pos = line.find("hostname: "); pos != std::string::npos) {
+            hostnames[current] = line.substr(pos + 10);
+        }
+        if (auto pos = line.find("<<: *chaos-node-env"); pos != std::string::npos) {
+            env[current] = "shared";
+        }
+    }
+    BOOST_TEST(anchor_labels);
+    BOOST_REQUIRE(containers.size() == table.size());
+    for (const auto& [id, ports] : table) {
+        BOOST_TEST(containers[id] == ports.container_name);
+        BOOST_TEST(hostnames[id] == ports.host);
+        BOOST_TEST(env[id] == "shared");
+        BOOST_TEST(ports.http_port == 8080);
+        BOOST_TEST(ports.fiu_port == 9000);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

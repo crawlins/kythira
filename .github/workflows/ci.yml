@@ -3609,12 +3609,15 @@ jobs:
         run: ./scripts/gen-cairn-failpoints.py --check
 
       # docker/container_api_proxy/ is all that stands between a compromised
-      # quorum node or cairn tool server and the container runtime socket.
-      # Its tests drive the proxy against a fake API on a unix socket and
-      # check every call outside its allowlist gets 403 without reaching
-      # the API. Standard library only; a few seconds.
-      - name: Test the container API proxy
-        run: python3 -m unittest discover -s docker/container_api_proxy -p '*_test.py' -v
+      # quorum node or cairn tool server and the container runtime socket,
+      # and docker/cairn/egress_proxy/ is the cairn fence's only way out.
+      # Their tests drive each proxy against local fakes and check every
+      # call outside its allowlist is refused without reaching the far
+      # side. Standard library only; a few seconds.
+      - name: Test the container API and egress proxies
+        run: |
+          python3 -m unittest discover -s docker/container_api_proxy -p '*_test.py' -v
+          python3 -m unittest discover -s docker/cairn/egress_proxy -p '*_test.py' -v
 
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
