@@ -226,4 +226,39 @@ BOOST_FIXTURE_TEST_CASE(shared_write_behind_commit_rate, RealOssFixture,
         alibaba_oss_client{cfg.client_config()}, cfg.oss_bucket, prefix + "/commit-rate", "oss");
 }
 
+// The opt-in segment-size sweep (object-store-segment-size-sweep task 2).
+// Each case passes at once unless KYTHIRA_SEGMENT_SWEEP=true. The truncation
+// rewrite runs on the unfenced engine, for the reason the fencing case is
+// absent (Requirement 4.1).
+BOOST_FIXTURE_TEST_CASE(shared_segment_sweep_put, RealOssFixture,
+                        *boost::unit_test::timeout(1800)) {
+    kythira::object_real::case_segment_sweep_put(alibaba_oss_client{cfg.client_config()},
+                                                 cfg.oss_bucket, prefix + "/sweep", "oss");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_segment_sweep_follower_run, RealOssFixture,
+                        *boost::unit_test::timeout(1800)) {
+    kythira::object_real::case_segment_sweep_follower_run(alibaba_oss_client{cfg.client_config()},
+                                                          cfg.oss_bucket, prefix + "/sweep", "oss");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_segment_sweep_truncate, RealOssFixture,
+                        *boost::unit_test::timeout(1800)) {
+    kythira::object_real::case_segment_sweep_truncate<
+        kythira::object_real::engine_for<alibaba_oss_client>>(
+        alibaba_oss_client{cfg.client_config()}, cfg.oss_bucket, prefix + "/sweep", "oss", "");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_segment_sweep_recovery, RealOssFixture,
+                        *boost::unit_test::timeout(1800)) {
+    kythira::object_real::case_segment_sweep_recovery(alibaba_oss_client{cfg.client_config()},
+                                                      cfg.oss_bucket, prefix + "/sweep", "oss");
+}
+
+BOOST_FIXTURE_TEST_CASE(shared_segment_sweep_write_behind, RealOssFixture,
+                        *boost::unit_test::timeout(1800)) {
+    kythira::object_real::case_segment_sweep_write_behind(alibaba_oss_client{cfg.client_config()},
+                                                          cfg.oss_bucket, prefix + "/sweep", "oss");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

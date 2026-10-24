@@ -31,13 +31,23 @@ real-cloud run and needs Clark's go; task 5 depends on its numbers.
   - `object_persistence_real_cases_mock_test` runs them with the reduced grid;
     a run with the opt-in unset passes every sweep case with the skip message
   - _Requirements: 1.1-1.4, 2.1, 3.1, 3.2, 4.1, 5.1, 5.2, 6.1, 9.2, 9.5, 10.1_
+  - Done. Requirement 6 is a case of its own, 16
+    `case_segment_sweep_write_behind`, calling case 11's driver
+    (`drive_commit_rate`); case 11's output is unchanged. The engine does not
+    report how each flush was chunked, so case 16 reports
+    `split_extra_segments` (log objects − flushes) rather than a count of
+    split flushes. Case 13's segment count comes from `shape_of` (the
+    engine's chunking over a scratch in-memory store) rather than a LIST per
+    sample. Case 14 uses a sub-prefix per sample, so its fresh reader loads
+    one segment. Cleanup is each suite's existing prefix teardown
 
-- [ ] 3. Workflow opt-in
+- [x] 3. Workflow opt-in
   - `KYTHIRA_SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP }}` on each
     object-persistence bundle step in `.github/workflows/real-cloud-tests.yml`;
     the run plan job prints whether the sweep is on
   - No new `workflow_dispatch` input (the workflow is at GitHub's limit of 25)
   - _Requirements: 9.1, 9.2_
+  - Done, on all five bundle steps (OCI's step gains an `env:` block)
 
 - [ ] 4. Real-cloud sweep — needs Clark's go
   - S3 first, both architectures, with `REAL_CLOUD_SEGMENT_SWEEP=true` set for
