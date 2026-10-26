@@ -861,6 +861,7 @@ jobs:
           aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
 
       - name: Audit for leaked instances
+        id: ec2-audit
         if: always()
         env:
           AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
@@ -1119,6 +1120,23 @@ jobs:
 
           [ "${found}" -eq 0 ] || exit 1
           echo "Post-run audit clean: no leaked instances (tagged or not), NAT gateways or VPCs in ${AWS_DEFAULT_REGION}."
+
+      # The audit above only reports. Run 39962794527's chaos-crash case hung
+      # until ctest killed it, its teardown never ran, and the three t3.micro
+      # and the VPC it left billed for three days while every later run's
+      # audit named them. This removes what a finished run (or this one) left
+      # behind, and leaves alone anything it cannot attribute: an unstamped
+      # VPC, a run still going, an instance without kythira:managed-by. It
+      # runs only after the audit failed, so the job stays red: detection
+      # stays loud and remediation does not hide it, as with the ACM PCA
+      # sweep. See the script's header for the rules.
+      - name: Sweep leaked real-EC2 networks
+        if: ${{ always() && steps.ec2-audit.outcome == 'failure' }}
+        timeout-minutes: 20
+        env:
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/aws-real-ec2-leaks.sh sweep
 
   # ── AWS: aws_asg_quorum_manager (.kiro/specs/aws-asg-real-cloud-tests/) ──
   # Its own job rather than a step in `aws` above, for two reasons:
