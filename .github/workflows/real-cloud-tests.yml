@@ -2184,7 +2184,7 @@ jobs:
       # variable (cold vs. warm cache) duration.
       - name: Azure login (Workload Identity Federation)
         id: azure-login
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -2278,7 +2278,7 @@ jobs:
       # cached yet, so it cannot help after that much time.
       - name: Azure re-login before quorum-manager (fresh federated assertion)
         if: ${{ env.BUNDLE_QUORUM_MANAGER == 'true' && env.BUNDLE_OBJECT_PERSISTENCE == 'true' }}
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -2364,7 +2364,7 @@ jobs:
       # a line to the pre-warm and does not need a re-login of its own.
       - name: Azure re-login before key-vault (fresh federated assertion)
         if: ${{ env.BUNDLE_KEY_VAULT == 'true' }}
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -2423,7 +2423,7 @@ jobs:
       # step only runs when that login succeeded.
       - name: Azure re-login before the leak audits (fresh federated assertion)
         if: ${{ always() && steps.azure-login.outcome == 'success' }}
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -2585,7 +2585,7 @@ jobs:
       # after the last login.
       - name: Azure re-login before the leak sweeps (fresh federated assertion)
         if: ${{ always() && steps.azure-login.outcome == 'success' }}
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
@@ -4146,7 +4146,7 @@ jobs:
           exit 1
 
       - name: Azure login (Workload Identity Federation)
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
