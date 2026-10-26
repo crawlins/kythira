@@ -1,0 +1,82 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+#
+# Mints fresh RAM STS credentials, then runs part of
+# alibaba_oss_persistence_real_test with them.
+#
+# The alibaba job runs the OSS suite in slices, minting new credentials
+# before each one, because no single STS session can be trusted to outlast
+# the whole suite. Run 40326601959 showed why: with the segment-size sweep
+# enabled the suite needs about as long as OCI's (56 minutes), the
+# session ended at 30 minutes (the action's default), and every request after
+# that failed with SecurityTokenExpired. Only the first sweep case ran.
+#
+# A longer session alone would not fix this. RAM caps a session at the
+# role's MaxSessionDuration, which is 3600 s unless an operator raises it.
+# A one-hour session would only hold until the sweep gets slower. Slicing
+# instead bounds the session to the longest single slice. The AWS job does
+# the same, re-assuming its role for each bundle rather than raising
+# --session-duration-seconds.
+#
+# The credentials go to GITHUB_ENV, as the aliyun action always writes
+# them, so the steps after this one also get the fresh session.
+#
+# Exit 77 is the suite's "not configured" skip. Because this slice was asked
+# for, a 77 is treated as a misconfiguration and fails loudly.
+
+name: Alibaba OSS real-test slice
+description: Mint fresh RAM STS credentials and run a Boost.Test slice of the real-OSS suite
+
+inputs:
+  run-test:
+    description: Boost.Test --run_test filter selecting the slice
+    required: true
+  role-to-assume:
+    description: ALIBABA_CI_ROLE_ARN
+    required: true
+  oidc-provider-arn:
+    description: ALIBABA_CI_OIDC_PROVIDER_ARN
+    required: true
+  region:
+    description: ALIBABA_CI_REGION
+    required: true
+  bucket:
+    description: ALIBABA_OSS_BUCKET
+    required: true
+  segment-sweep:
+    description: "'true' to run the opt-in segment-size sweep cases for real"
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Configure Alibaba Cloud credentials (RAM OIDC)
+      uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1.1.0
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        oidc-provider-arn: ${{ inputs.oidc-provider-arn }}
+        # The role's MaxSessionDuration default. The action's own default
+        # is 1800 s.
+        role-session-expiration: 3600
+
+    - name: Run ${{ inputs.run-test }}
+      shell: bash
+      env:
+        RUN_TEST: ${{ inputs.run-test }}
+        KYTHIRA_ALIBABA_REGION: ${{ inputs.region }}
+        KYTHIRA_ALIBABA_OSS_BUCKET: ${{ inputs.bucket }}
+        KYTHIRA_SEGMENT_SWEEP: ${{ inputs.segment-sweep }}
+      run: |
+        # From the shell environment: the credentials step above exported
+        # them through GITHUB_ENV.
+        export KYTHIRA_ALIBABA_ACCESS_KEY_ID="${ALIBABA_CLOUD_ACCESS_KEY_ID}"
+        export KYTHIRA_ALIBABA_ACCESS_KEY_SECRET="${ALIBABA_CLOUD_ACCESS_KEY_SECRET}"
+        export KYTHIRA_ALIBABA_SECURITY_TOKEN="${ALIBABA_CLOUD_SECURITY_TOKEN}"
+        rc=0
+        ./build/tests/alibaba_oss_persistence_real_test --log_level=test_suite "--run_test=${RUN_TEST}" || rc=$?
+        if [ $rc -eq 77 ]; then
+          echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the credentials step and the ALIBABA_* variables." >&2
+          exit 1
+        fi
+        exit $rc

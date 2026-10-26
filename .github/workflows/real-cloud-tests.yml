@@ -3852,42 +3852,88 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           sccache --show-stats
-      # Deliberately AFTER the build and immediately before the test steps.
-      # The azure job learned this the expensive way: it logged in first, took
-      # ~84 minutes to cold-build, and its credentials had expired before the
-      # first test ran. STS credentials are short-lived; keep the gap between
-      # minting and using them to the width of the test steps.
-      - name: Configure Alibaba Cloud credentials (RAM OIDC)
-        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1.1.0
-        with:
-          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
-          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
-          # No `region` input: the action has none, and passing one only
-          # earned an "Unexpected input(s) 'region'" warning on every run.
-          # The suites take their region from KYTHIRA_ALIBABA_REGION below.
-
-      # Exit 77 is the suites' "not configured" skip. In CI that is a
-      # misconfiguration, not a skip — the bundle was explicitly enabled — so
-      # it is converted into a loud failure rather than a silent green.
+      # Every credentials step in this job comes AFTER the build, each just
+      # before the steps that use it. The azure job learned this the
+      # expensive way: it logged in first, spent ~84 minutes on a cold build,
+      # and its credentials had expired before the first test ran.
+      #
+      # The OSS suite also mints new credentials for each slice it runs (see
+      # .github/actions/alibaba-oss-real-case). Run 40326601959 ran the whole
+      # suite on one 30-minute session, and the segment-size sweep outlived
+      # it. Each slice writes its credentials to GITHUB_ENV, so the backup
+      # check after the last slice uses the freshest ones.
+      #
+      # The first slice covers every case except the opt-in sweep. Each
+      # sweep case then runs as its own slice, and only when the sweep is
+      # on; when it is off those cases pass at once, so there would be
+      # nothing to run them for. The sweep slices use !cancelled() rather
+      # than the default success(), so a failure in one case does not hide
+      # the others. One run reporting all five is what task 4 of the sweep
+      # spec needs.
       - name: Run oss-persistence bundle
         if: ${{ env.BUNDLE_OSS_PERSISTENCE == 'true' }}
-        env:
-          KYTHIRA_ALIBABA_REGION: ${{ vars.ALIBABA_CI_REGION }}
-          KYTHIRA_ALIBABA_ACCESS_KEY_ID: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_ID }}
-          KYTHIRA_ALIBABA_ACCESS_KEY_SECRET: ${{ env.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
-          KYTHIRA_ALIBABA_SECURITY_TOKEN: ${{ env.ALIBABA_CLOUD_SECURITY_TOKEN }}
-          KYTHIRA_ALIBABA_OSS_BUCKET: ${{ vars.ALIBABA_OSS_BUCKET }}
-          # Opt-in segment-size sweep (object-store-segment-size-sweep);
-          # the cases pass at once unless this is 'true'.
-          KYTHIRA_SEGMENT_SWEEP: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP }}
-        run: |
-          rc=0
-          ./build/tests/alibaba_oss_persistence_real_test --log_level=test_suite || rc=$?
-          if [ $rc -eq 77 ]; then
-            echo "::error::The suite skipped for want of configuration, but this bundle was enabled. Check the credentials step and the ALIBABA_* variables." >&2
-            exit 1
-          fi
-          exit $rc
+        uses: ./.github/actions/alibaba-oss-real-case
+        with:
+          run-test: '!alibaba_oss_persistence_real/shared_segment_sweep_*'
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+          bucket: ${{ vars.ALIBABA_OSS_BUCKET }}
+
+      - name: Run oss-persistence segment sweep (put)
+        if: ${{ !cancelled() && env.BUNDLE_OSS_PERSISTENCE == 'true' && vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' }}
+        uses: ./.github/actions/alibaba-oss-real-case
+        with:
+          run-test: alibaba_oss_persistence_real/shared_segment_sweep_put
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+          bucket: ${{ vars.ALIBABA_OSS_BUCKET }}
+          segment-sweep: 'true'
+
+      - name: Run oss-persistence segment sweep (follower_run)
+        if: ${{ !cancelled() && env.BUNDLE_OSS_PERSISTENCE == 'true' && vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' }}
+        uses: ./.github/actions/alibaba-oss-real-case
+        with:
+          run-test: alibaba_oss_persistence_real/shared_segment_sweep_follower_run
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+          bucket: ${{ vars.ALIBABA_OSS_BUCKET }}
+          segment-sweep: 'true'
+
+      - name: Run oss-persistence segment sweep (truncate)
+        if: ${{ !cancelled() && env.BUNDLE_OSS_PERSISTENCE == 'true' && vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' }}
+        uses: ./.github/actions/alibaba-oss-real-case
+        with:
+          run-test: alibaba_oss_persistence_real/shared_segment_sweep_truncate
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+          bucket: ${{ vars.ALIBABA_OSS_BUCKET }}
+          segment-sweep: 'true'
+
+      - name: Run oss-persistence segment sweep (recovery)
+        if: ${{ !cancelled() && env.BUNDLE_OSS_PERSISTENCE == 'true' && vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' }}
+        uses: ./.github/actions/alibaba-oss-real-case
+        with:
+          run-test: alibaba_oss_persistence_real/shared_segment_sweep_recovery
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+          bucket: ${{ vars.ALIBABA_OSS_BUCKET }}
+          segment-sweep: 'true'
+
+      - name: Run oss-persistence segment sweep (write_behind)
+        if: ${{ !cancelled() && env.BUNDLE_OSS_PERSISTENCE == 'true' && vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' }}
+        uses: ./.github/actions/alibaba-oss-real-case
+        with:
+          run-test: alibaba_oss_persistence_real/shared_segment_sweep_write_behind
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+          bucket: ${{ vars.ALIBABA_OSS_BUCKET }}
+          segment-sweep: 'true'
 
       # Read-only: lists a fresh prefix, writes nothing
       # (object-backup-oci-oss-credentials task 9). Exercises the tool's own
@@ -3903,6 +3949,18 @@ jobs:
           scripts/raft-object-backup-live-check.sh
           ./build/cmd/raft_object_backup/raft_object_backup
           oss "${{ vars.ALIBABA_OSS_BUCKET }}"
+
+      # Fresh credentials for this bundle. The OSS slices before it may have
+      # used up most of the last session, or may not have run at all.
+      - name: Configure Alibaba Cloud credentials for the ess-quorum bundle (RAM OIDC)
+        if: ${{ env.BUNDLE_ESS_QUORUM == 'true' }}
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1.1.0
+        with:
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          # No `region` input: the action has none. 3600 s is the role's
+          # MaxSessionDuration default; the action's own default is 1800 s.
+          role-session-expiration: 3600
 
       - name: Run ess-quorum-manager bundle
         if: ${{ env.BUNDLE_ESS_QUORUM == 'true' }}
@@ -3920,6 +3978,19 @@ jobs:
             exit 1
           fi
           exit $rc
+
+      # Fresh credentials for the audit, for the reason the AWS job gives for
+      # its own audit refresh: the audit is the last step and runs after
+      # however long the bundles took, so the session from the bundle step
+      # may have expired. Only when the ess bundle was enabled, because
+      # otherwise the audit has nothing to check and exits early.
+      - name: Configure Alibaba Cloud credentials for the audit (RAM OIDC)
+        if: ${{ always() && env.BUNDLE_ESS_QUORUM == 'true' }}
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1.1.0
+        with:
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          role-session-expiration: 3600
 
       # Every cloud provider in this project leaked something on its first
       # live run. The suites tear down unconditionally, including on a signal,
