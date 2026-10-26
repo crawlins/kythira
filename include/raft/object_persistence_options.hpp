@@ -176,7 +176,11 @@ struct object_persistence_options {
     /// pays and the GET recovery pays per object. Must be at least 1 and at most
     /// `max_object_bytes`, and is rejected at any value but the default under
     /// `log_layout::per_entry`. An entry whose own record is larger is written
-    /// as a singleton, bounded by `max_object_bytes` alone.
+    /// as a singleton, bounded by `max_object_bytes` alone. The 1 MiB default
+    /// is measured (`.kiro/specs/object-store-segment-size-sweep/`): a
+    /// follower's run persists in about one parallel wave of PUTs on every
+    /// provider, and 4-8 MiB trade slower rewrites for faster recovery. See
+    /// "Segment size" in `doc/cloud_object_persistence.md`.
     std::size_t max_segment_bytes{1024U * 1024U};
 
     /// Leader group commit (`.kiro/specs/object-store-group-commit/`). Off —

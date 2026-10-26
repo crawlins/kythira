@@ -226,6 +226,81 @@ p50 / p99 in ms, 8 samples for the combined write and 10 for each segment:
   measurement-position trap again, and it is why each run records its own
   position.
 
+### Segment size
+
+`max_segment_bytes` was swept from 64 KiB to 8 MiB on every provider
+(`.kiro/specs/object-store-segment-size-sweep/`): S3 on both runner
+architectures in run
+[40143696448](https://github.com/crawlins/kythira/actions/runs/40143696448),
+and GCS, OCI Object Storage, Azure Blob and Alibaba OSS (x64) in run
+[40326601959](https://github.com/crawlins/kythira/actions/runs/40326601959),
+both on `main` at f0e2548. Like the tables above they were measured from
+GitHub-hosted runners, so they are cross-region for most providers.
+
+What a follower pays to persist one 100-entry AppendEntries of 32 KiB
+entries (~4.4 MB), p50 / max in ms over 30 samples. This is the number the
+default is judged by. The run must finish inside the 5 s
+`append_entries_timeout`, or the leader resends a run the follower is still
+writing:
+
+| S | S3 x64 | S3 arm64 | GCS | OCI | Azure Blob |
+|---|---|---|---|---|---|
+| 64 KiB | 492 / 546 | 572 / 652 | 1587 / 1948 | 4444 / 4651 | 3334 / 3563 |
+| 256 KiB | 181 / 247 | 195 / 290 | 682 / 912 | 1321 / 1471 | 952 / 1052 |
+| 512 KiB | 117 / 216 | 125 / 191 | 545 / 599 | 928 / 1586 | 671 / 1047 |
+| 1 MiB | 107 / 167 | 115 / 242 | 406 / 1096 | 549 / 636 | 448 / 495 |
+| 2 MiB | 98 / 145 | 106 / 218 | 457 / 560 | 567 / 681 | 444 / 523 |
+| 4 MiB | 108 / 165 | 106 / 334 | 475 / 2611 | 628 / 713 | 450 / 603 |
+| 8 MiB | 109 / 117 | 108 / 277 | 503 / 679 | 622 / 751 | 491 / 603 |
+
+Loading a 16 MiB log of 128 KiB entries in a fresh engine, p50 of 5. Recovery
+reads the log objects one at a time, so it scales with their count:
+
+| S | S3 x64 | S3 arm64 | GCS | OCI | Azure Blob |
+|---|---|---|---|---|---|
+| 64 KiB | 3.9 s | 4.2 s | 20.6 s | 46.4 s | 33.9 s |
+| 256 KiB | 3.8 s | 4.2 s | 20.1 s | 47.0 s | 34.0 s |
+| 512 KiB | 2.0 s | 2.2 s | 11.3 s | 28.4 s | 20.7 s |
+| 1 MiB | 0.9 s | 1.0 s | 5.0 s | 14.2 s | 10.5 s |
+| 2 MiB | 0.5 s | 0.6 s | 2.8 s | 7.9 s | 5.9 s |
+| 4 MiB | 0.4 s | 0.4 s | 1.7 s | 4.9 s | 3.8 s |
+| 8 MiB | 0.3 s | 0.3 s | 1.1 s | 3.1 s | 2.6 s |
+
+One full segment PUT, p50 in ms:
+
+| S | S3 x64 | S3 arm64 | GCS | OCI | Azure Blob | Alibaba OSS |
+|---|---|---|---|---|---|---|
+| 64 KiB | 37 | 42 | 158 | 338 | 256 | 1467 |
+| 256 KiB | 49 | 45 | 250 | 434 | 330 | 1885 |
+| 512 KiB | 51 | 71 | 290 | 470 | 366 | 2091 |
+| 1 MiB | 70 | 84 | 335 | 506 | 393 | 2309 |
+| 2 MiB | 83 | 86 | 403 | 566 | 437 | 2536 |
+| 4 MiB | 107 | 107 | 504 | 621 | 482 | 2750 |
+| 8 MiB | 182 | 176 | 564 | 733 | 542 | 3206 |
+
+- **Every size keeps the follower inside the bound on the four providers that
+  finished.** The closest is OCI at 64 KiB, 4.65 s, where every 32 KiB entry
+  is its own object. With 4 KiB entries (~0.55 MB per run) every size is
+  at most 0.8 s.
+- **Above 1 MiB the follower gains nothing.** A run that fits in at most
+  `append_concurrency` (8) segments goes out in one parallel wave, so past
+  that point a larger segment can only make the wave slower. From 1 MiB to
+  8 MiB the 32 KiB p50 moves between −6% and +24%.
+- **Recovery is where size pays.** Each step up halves the object count, and
+  8 MiB loads 16 MiB three to five times faster than 1 MiB. A truncation's
+  rewrite and a single full-segment PUT cost 30-70% more at 8 MiB.
+- **The default stays 1 MiB, now measured** (the sweep spec's Requirement
+  8.3). It passes the bound everywhere, and no smaller size beats the largest
+  passing one, 8 MiB, by the 20% on three providers the rule asks for. For a
+  node whose log is large and whose restarts must be fast, raise it to 4 or
+  8 MiB; both pass the bound on every provider measured. Loading never
+  consults the setting, so an existing bucket reads at any value.
+- **Alibaba OSS finished only the PUT case.** Its RAM session expired 30
+  minutes into the bundle, partway through the follower runs. At 1.5-3.2 s per
+  PUT from the runner, a 32 KiB run at 64 KiB would take about 18 s, so small
+  segments do not fit the bound there; 1 MiB and up should, as five or fewer
+  parallel PUTs.
+
 ### Election-timeout sizing
 
 A candidate persists an incremented term and then a self-vote before sending
@@ -750,7 +825,7 @@ provider:
 | `max_object_bytes` | **64 MiB** | Deliberately far below every provider's documented single-request limit (the smallest is 5 GB). The binding constraint is this engine's *shape*, not the service's: one retry, no multipart, no resumption, no progress reporting, and the mutex held for the whole round trip. The cap turns "this deployment has outgrown a single-PUT persistence engine" into a loud error at the first snapshot that reaches it. Configurable upward by an operator who has measured their own case; `0` is rejected |
 | `write_retries` | **1** | PUT-only, and **unconditional-PUT-only**. A conditional write is never retried: a retry cannot distinguish "my write landed and the response was lost" from "I lost the race" |
 | `max_segment_entries` | **100** | Entries per segment under `log_layout::segmented`; at least 2, since one entry is always a singleton. A non-default value under `per_entry` is refused rather than ignored |
-| `max_segment_bytes` | **1 MiB** | Body size per segment under `log_layout::segmented`, at most `max_object_bytes`. Measured October 22, 2026 on all five providers: a ~0.88 MiB segment is at most 721 ms p99 in-region, 2 s on Alibaba from the US. Keep the AppendEntries RPC timeout above that, or lower this |
+| `max_segment_bytes` | **1 MiB** | Body size per segment under `log_layout::segmented`, at most `max_object_bytes`. Swept from 64 KiB to 8 MiB in October 2026 (see "Segment size"): a follower's 100 × 32 KiB run is at most 1.1 s at 1 MiB on S3, GCS, OCI and Azure Blob, against the 5 s `append_entries_timeout`. Raise to 4-8 MiB for 3-5x faster recovery of a large log; below 512 KiB a run of large entries needs several waves of PUTs |
 | `write_behind` | **off** | Leader group commit, opt-in (see [Write-behind group commit](#write-behind-group-commit)). Off, every append is a PUT before the call returns, as it always was. On, appends stage and the durability barrier flushes them as one run. Accepted with either log layout and either fencing mode |
 | `append_concurrency` | **8** | Log PUTs `append_log_entries` keeps in flight for one AppendEntries. Used only on a store that declares `supports_concurrent_requests` (all five shipped clients do); any other store gets one at a time. Still one PUT per entry: the request count and the keys are the same at every setting. `0` is rejected |
 
@@ -1070,6 +1145,10 @@ and vote as one. What remains:
   refused by an older binary and by a build configured for the older layout.
   The way back is a backup taken before the upgrade. An offline
   `raft_object_backup relayout` verb is specified but optional (task 11).
+- **Segment size on Alibaba OSS is half measured.** The sweep's follower,
+  truncation, recovery and write-behind cases did not run there, because the
+  CI's RAM session lasts 30 minutes and OSS is the slowest provider from the
+  runner. A longer session, or a re-login between cases, would finish it.
 
 ## Backup and restore
 

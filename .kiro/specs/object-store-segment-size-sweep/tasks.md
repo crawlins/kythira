@@ -49,15 +49,21 @@ real-cloud run and needs Clark's go; task 5 depends on its numbers.
   - _Requirements: 9.1, 9.2_
   - Done, on all five bundle steps (OCI's step gains an `env:` block)
 
-- [ ] 4. Real-cloud sweep — needs Clark's go
+- [x] 4. Real-cloud sweep — needs Clark's go
   - S3 first, both architectures, with `REAL_CLOUD_SEGMENT_SWEEP=true` set for
     that dispatch only and cleared after; ask again before Azure, GCS, OCI and
     Alibaba
   - Check the run's request count and bytes against the design's cost table
   - Not checked off against the mock tier
   - _Requirements: 9.3, 9.4, 10.3_
+  - Done October 26, 2026, on `main` at f0e2548: S3 x64 and arm64 in run
+    40143696448 (October 25), GCS, OCI, Azure Blob and Alibaba OSS (x64) in
+    run 40326601959, the repository variable set by Clark for the two runs.
+    Every provider but Alibaba ran all five cases; Alibaba's RAM session
+    expired 30 minutes in, during the follower runs, so it has the PUT case
+    only. Every object was deleted in teardown.
 
-- [ ] 5. Decision and documentation
+- [x] 5. Decision and documentation
   - `doc/cloud_object_persistence.md`: the sweep table beside the existing
     latency tables, with run ids; the limits-table row and the "Future work"
     bullet for `max_segment_bytes` rewritten from the measurements; a
@@ -68,3 +74,10 @@ real-cloud run and needs Clark's go; task 5 depends on its numbers.
   - Tick object-store-batched-layout task 10's "revisit the
     `max_segment_bytes` default" line by pointing to this task
   - _Requirements: 8.1-8.5, 10.2_
+  - Done October 26, 2026. Every S from 64 KiB to 8 MiB keeps the follower
+    run inside the 5 s bound on S3, GCS, OCI and Azure Blob (worst: OCI,
+    64 KiB, 4.65 s). No smaller S lowers the 32 KiB p50 by 20% against
+    8 MiB on three providers, so by 8.3 the default stays 1 MiB, now
+    measured. `doc/cloud_object_persistence.md` carries the tables
+    ("Segment size"), the limits row and a Future-work bullet for the
+    unfinished Alibaba cases. 8.5 did not apply.

@@ -338,6 +338,9 @@ before and after.
     with the AppendEntries RPC timeout to be kept above it. Write-behind
     raised the commit rate 2.2-4.5x with `B` between 2.5 and 4 at 16
     submitters, and roughly tripled the median commit latency.
+  - The `max_segment_bytes` revisit went further in
+    `.kiro/specs/object-store-segment-size-sweep/` task 5, which swept 64 KiB
+    to 8 MiB on every provider and kept 1 MiB as the measured default.
 
 - [ ] 11. (Optional, pending open question 2) `raft_object_backup relayout`
   - Offline, against a stopped node's prefix: combined → separate (PUT
