@@ -3703,7 +3703,15 @@ jobs:
   alibaba:
     name: Real Cloud Tests (Alibaba Cloud)
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # 120 minutes covers a normal run with room to spare: the OSS suite
+    # takes about 11 minutes. The opt-in segment-size sweep needs much
+    # longer. Run 40388183572 spent 10, 60 and 26 minutes on the put,
+    # follower_run and truncate slices. Most of follower_run's hour was
+    # fixture teardown deleting its objects across the ocean, after the
+    # case's own 24 minutes. The job hit the 120-minute limit during the
+    # recovery slice and never reached write_behind. So the limit is
+    # raised only while the sweep is on.
+    timeout-minutes: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' && 300 || 120 }}
     environment: real-cloud-tests
     permissions:
       id-token: write
