@@ -32,8 +32,15 @@
     moving terms)
   - _Requirements: 4.1, 4.2_
 
-- [ ] 6. Live measurement on a real object store
+- [x] 6. Live measurement on a real object store
   - Re-run the real-tier append latency case with a multi-entry AppendEntries
     and record the throughput next to the `1 / p50(PUT)` table in
     `doc/cloud_object_persistence.md`. Needs cloud credentials; not run.
+  - Done by later specs' live runs, recorded in
+    `doc/cloud_object_persistence.md`. The "Throughput" section's follower
+    table, beside the `1 / p50(PUT)` ceilings, gives a 100-entry run as about
+    one PUT (object-store-batched-layout task 10, October 22, 2026). "Segment
+    size" gives the p50 and max of a 100-entry AppendEntries run on all six
+    provider and runner combinations (object-store-segment-size-sweep; OSS in
+    run 40576544362, October 27, 2026).
   - _Requirements: 2.1_
