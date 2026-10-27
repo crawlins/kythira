@@ -126,3 +126,28 @@ the listing against **acknowledged writes**, never against the number of writes
 attempted: a round where ten PUTs were declined and the listing shows fifteen
 is a *complete* listing, and reading it as a lagging one would have invented a
 consistency defect out of an authorization flake.
+
+## `s3_checksum_spike/`: encrypted-bucket checksums
+
+A C++ program, not a Python probe, for a specific reason. The question in
+`.kiro/specs/object-store-encrypted-bucket-checksums/` task 1 is what
+`aws_s3_client`'s **own SDK configuration** sends and gets back. That covers
+`requestChecksumCalculation = WHEN_REQUIRED`, the body framing, and which
+response headers `PutObjectResult` models. A hand-rolled signer or the AWS CLI
+has different checksum defaults and could not answer it. The program copies
+the client's constructor and must be kept in step with it. Results:
+`.kiro/specs/object-store-encrypted-bucket-checksums/spike-notes.md`.
+
+It is built standalone, outside the main tree's build:
+
+```sh
+cmake -S scripts/object-store-probes/s3_checksum_spike -B build-spike -G Ninja \
+    -DCMAKE_PREFIX_PATH=$PWD/vcpkg_installed/x64-linux
+cmake --build build-spike
+AWS_PROFILE=personal build-spike/s3_checksum_spike \
+    --put sse-kms=<bucket> --conditional <bucket> [--trace /tmp/s3trace_]
+```
+
+`--trace` writes the SDK's trace log, which is the only place the raw
+response headers appear. That log contains the access key **ID** and request
+signatures, so keep it out of the repository.

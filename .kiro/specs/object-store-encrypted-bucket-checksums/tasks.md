@@ -4,7 +4,7 @@ Keeping `verify_checksums` on for SSE-KMS buckets. Task 1 is a measurement
 that decides which of the later tasks run. Each later task is one mergeable
 PR. Every real-cloud step (tasks 1 and 6) needs Clark's go before it runs.
 
-- [ ] 1. Spike: measure S3 and OSS behaviour on encrypted buckets
+- [x] 1. Spike: measure S3 and OSS behaviour on encrypted buckets
   - Needs Clark's go, and the encrypted test buckets (design "Real-cloud
     leg") created first
   - Small standalone program on `aws_s3_client`'s exact SDK configuration:

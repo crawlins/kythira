@@ -23,6 +23,60 @@ it stored; check it"), and each client chooses what to report. That keeps
 the layering of cloud-object-persistence Requirement 7.0: the client knows
 its headers, the engine holds the bytes.
 
+## Spike result (task 1, 2026-10-27)
+
+The measurements are in `spike-notes.md`. The decision:
+
+- **S3: route C.** Under `WHEN_REQUIRED`, on SSE-S3, SSE-KMS and DSSE-KMS
+  alike, a PUT with no explicit checksum returns
+  `x-amz-checksum-crc64nvme` (`FULL_OBJECT`). It equals the local
+  CRC-64/NVME of the body, and SDK 1.11.665 models it as
+  `PutObjectResult::GetChecksumCRC64NVME()`. Route C needs no request change
+  at all, so Requirement 5.3 holds with nothing added.
+- **Route A works on the wire but fails 5.3 as written.** The echo comes back
+  under all three modes, the body stays plain `Content-Length`, and a wrong
+  value gets 400 `BadDigest`. But the SDK adds `x-amz-sdk-checksum-algorithm`
+  whenever a checksum value is set, so route A costs **two** request headers
+  per PUT. It is the alternative if Clark prefers a second service-side check
+  and relaxes 5.3 to two headers.
+- **Route A excludes route C.** An explicit checksum replaces the default
+  CRC64NVME in the response; the two are never returned together.
+- **The KMS ETag is a different value on every PUT of the same bytes**, so
+  nothing ETag-based (route B included) could ever verify it. Fencing is
+  unaffected: If-Match and If-None-Match return 412 / 200 exactly as on an
+  unencrypted bucket.
+- **SSE-C.** A plain PUT to a bucket whose policy requires SSE-C gets
+  **403 `AccessDenied`** (explicit deny), not a mismatch. New buckets also
+  block SSE-C by default. Requirement 7.2's correction is "SSE-C buckets
+  refuse this client's writes".
+- **OSS: Requirement 4.1.** The ETag is still the uppercase MD5 hex under
+  SSE-KMS, as with no encryption and with SSE-OSS. No code change. Task 4
+  folds into task 5 as documentation.
+- **LocalStack 4.14.0 does not reproduce the KMS ETag** (it returns the MD5)
+  and rejects DSSE bucket config. The encrypted-bucket unit case therefore
+  rests on `MockS3` alone (Requirement 1.4). LocalStack does return
+  CRC64NVME, so the digest path itself can still run there.
+
+Consequences for the later tasks:
+
+- `digest_algorithm` needs only `crc64nvme` (Requirement 2.5). The Boost.CRC
+  parameters below reproduce S3's value and the published check value
+  `0xae8b14860a799888`.
+- Task 3 declares `reports_content_digest`, returns
+  `{crc64nvme, GetChecksumCRC64NVME()}`, and keeps the request untouched.
+- **One trade-off task 3 must settle explicitly.** An S3-compatible endpoint
+  (`endpoint_override`) whose ETag *is* the MD5 but which sends no
+  `x-amz-checksum-crc64nvme` verifies today. Under 2.4 it would throw on
+  every PUT once the client declares the digest. Route A has the same
+  exposure for a store that ignores the header. The options:
+  - declare the digest only for AWS endpoints;
+  - fall back to the ETag comparison when no digest arrives and the ETag is
+    an MD5-shaped value (this weakens 2.4 for that case only);
+  - accept the regression and document `verify_checksums = false` for such
+    stores.
+
+  The first keeps 2.4 strict where it matters.
+
 ## Routes considered
 
 ### A. An explicit flexible checksum on the request, verified from the echo (recommended for S3)
