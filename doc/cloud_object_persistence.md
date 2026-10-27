@@ -261,8 +261,13 @@ architectures in run
 [40143696448](https://github.com/crawlins/kythira/actions/runs/40143696448),
 and GCS, OCI Object Storage, Azure Blob and Alibaba OSS (x64) in run
 [40326601959](https://github.com/crawlins/kythira/actions/runs/40326601959),
-both on `main` at f0e2548. Like the tables above they were measured from
-GitHub-hosted runners, so they are cross-region for most providers.
+both on `main` at f0e2548. Alibaba OSS ran out of time in that run, and its
+follower, truncation and recovery cases come from run
+[40576544362](https://github.com/crawlins/kythira/actions/runs/40576544362)
+(October 27, 2026, `main` plus #632's longer recovery timeout). Like the
+tables above they were measured from GitHub-hosted runners, so they are
+cross-region for most providers, and OSS in `ap-southeast-1` is across the
+Pacific.
 
 What a follower pays to persist one 100-entry AppendEntries of 32 KiB
 entries (~4.4 MB), p50 / max in ms over 30 samples. This is the number the
@@ -270,28 +275,28 @@ default is judged by. The run must finish inside the 5 s
 `append_entries_timeout`, or the leader resends a run the follower is still
 writing:
 
-| S | S3 x64 | S3 arm64 | GCS | OCI | Azure Blob |
-|---|---|---|---|---|---|
-| 64 KiB | 492 / 546 | 572 / 652 | 1587 / 1948 | 4444 / 4651 | 3334 / 3563 |
-| 256 KiB | 181 / 247 | 195 / 290 | 682 / 912 | 1321 / 1471 | 952 / 1052 |
-| 512 KiB | 117 / 216 | 125 / 191 | 545 / 599 | 928 / 1586 | 671 / 1047 |
-| 1 MiB | 107 / 167 | 115 / 242 | 406 / 1096 | 549 / 636 | 448 / 495 |
-| 2 MiB | 98 / 145 | 106 / 218 | 457 / 560 | 567 / 681 | 444 / 523 |
-| 4 MiB | 108 / 165 | 106 / 334 | 475 / 2611 | 628 / 713 | 450 / 603 |
-| 8 MiB | 109 / 117 | 108 / 277 | 503 / 679 | 622 / 751 | 491 / 603 |
+| S | S3 x64 | S3 arm64 | GCS | OCI | Azure Blob | Alibaba OSS |
+|---|---|---|---|---|---|---|
+| 64 KiB | 492 / 546 | 572 / 652 | 1587 / 1948 | 4444 / 4651 | 3334 / 3563 | **16757 / 17239** |
+| 256 KiB | 181 / 247 | 195 / 290 | 682 / 912 | 1321 / 1471 | 952 / 1052 | **4983 / 5248** |
+| 512 KiB | 117 / 216 | 125 / 191 | 545 / 599 | 928 / 1586 | 671 / 1047 | 3696 / 3837 |
+| 1 MiB | 107 / 167 | 115 / 242 | 406 / 1096 | 549 / 636 | 448 / 495 | 2054 / 2234 |
+| 2 MiB | 98 / 145 | 106 / 218 | 457 / 560 | 567 / 681 | 444 / 523 | 2248 / 2433 |
+| 4 MiB | 108 / 165 | 106 / 334 | 475 / 2611 | 628 / 713 | 450 / 603 | 2430 / 2615 |
+| 8 MiB | 109 / 117 | 108 / 277 | 503 / 679 | 622 / 751 | 491 / 603 | 2433 / 2604 |
 
 Loading a 16 MiB log of 128 KiB entries in a fresh engine, p50 of 5. Recovery
 reads the log objects one at a time, so it scales with their count:
 
-| S | S3 x64 | S3 arm64 | GCS | OCI | Azure Blob |
-|---|---|---|---|---|---|
-| 64 KiB | 3.9 s | 4.2 s | 20.6 s | 46.4 s | 33.9 s |
-| 256 KiB | 3.8 s | 4.2 s | 20.1 s | 47.0 s | 34.0 s |
-| 512 KiB | 2.0 s | 2.2 s | 11.3 s | 28.4 s | 20.7 s |
-| 1 MiB | 0.9 s | 1.0 s | 5.0 s | 14.2 s | 10.5 s |
-| 2 MiB | 0.5 s | 0.6 s | 2.8 s | 7.9 s | 5.9 s |
-| 4 MiB | 0.4 s | 0.4 s | 1.7 s | 4.9 s | 3.8 s |
-| 8 MiB | 0.3 s | 0.3 s | 1.1 s | 3.1 s | 2.6 s |
+| S | S3 x64 | S3 arm64 | GCS | OCI | Azure Blob | Alibaba OSS |
+|---|---|---|---|---|---|---|
+| 64 KiB | 3.9 s | 4.2 s | 20.6 s | 46.4 s | 33.9 s | 129.4 s |
+| 256 KiB | 3.8 s | 4.2 s | 20.1 s | 47.0 s | 34.0 s | 128.8 s |
+| 512 KiB | 2.0 s | 2.2 s | 11.3 s | 28.4 s | 20.7 s | 78.5 s |
+| 1 MiB | 0.9 s | 1.0 s | 5.0 s | 14.2 s | 10.5 s | 42.3 s |
+| 2 MiB | 0.5 s | 0.6 s | 2.8 s | 7.9 s | 5.9 s | 25.1 s |
+| 4 MiB | 0.4 s | 0.4 s | 1.7 s | 4.9 s | 3.8 s | 15.9 s |
+| 8 MiB | 0.3 s | 0.3 s | 1.1 s | 3.1 s | 2.6 s | 10.2 s |
 
 One full segment PUT, p50 in ms:
 
@@ -305,10 +310,15 @@ One full segment PUT, p50 in ms:
 | 4 MiB | 107 | 107 | 504 | 621 | 482 | 2750 |
 | 8 MiB | 182 | 176 | 564 | 733 | 542 | 3206 |
 
-- **Every size keeps the follower inside the bound on the four providers that
-  finished.** The closest is OCI at 64 KiB, 4.65 s, where every 32 KiB entry
+- **Every size keeps the follower inside the bound on S3, GCS, OCI and
+  Azure.** The closest is OCI at 64 KiB, 4.65 s, where every 32 KiB entry
   is its own object. With 4 KiB entries (~0.55 MB per run) every size is
-  at most 0.8 s.
+  at most 0.8 s there.
+- **Alibaba OSS across the ocean fails the bound at 64 KiB and 256 KiB**
+  (16.8 s and 5.2 s at worst), and passes from 512 KiB up, with 1 MiB the
+  fastest at 2.1 s. With 4 KiB entries every size passes (at most 2.7 s). A
+  well-placed OSS node would sit with the other providers. These figures are
+  the runner's distance, as everywhere else in this document.
 - **Above 1 MiB the follower gains nothing.** A run that fits in at most
   `append_concurrency` (8) segments goes out in one parallel wave, so past
   that point a larger segment can only make the wave slower. From 1 MiB to
@@ -322,11 +332,13 @@ One full segment PUT, p50 in ms:
   node whose log is large and whose restarts must be fast, raise it to 4 or
   8 MiB; both pass the bound on every provider measured. Loading never
   consults the setting, so an existing bucket reads at any value.
-- **Alibaba OSS finished only the PUT case.** Its RAM session expired 30
-  minutes into the bundle, partway through the follower runs. At 1.5-3.2 s per
-  PUT from the runner, a 32 KiB run at 64 KiB would take about 18 s, so small
-  segments do not fit the bound there; 1 MiB and up should, as five or fewer
-  parallel PUTs.
+- **OSS confirms the 1 MiB default rather than moving it.** Its recovery
+  scales with the object count like everyone else's (129 s at 64 KiB down to
+  10 s at 8 MiB), and its follower run is fastest at 1 MiB. With 64 KiB
+  commands under `write_behind`, OSS committed 2.2-2.9 commits/s at every
+  size, with `B` between 3.6 and 5.3. The sizes that split a flush across
+  more segments (64 and 256 KiB) were not slower, because a flush's
+  segments go out in parallel.
 
 ### Election-timeout sizing
 
