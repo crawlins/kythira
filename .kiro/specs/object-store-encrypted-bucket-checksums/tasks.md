@@ -37,7 +37,7 @@ PR. Every real-cloud step (tasks 1 and 6) needs Clark's go before it runs.
   - No client declares the new trait yet, so no behaviour changes
   - _Requirements: 2.1-2.6, 5.1, 5.2, 6.2_
 
-- [ ] 3. `aws_s3_client`: report the digest (skipped if task 1 says "cannot
+- [x] 3. `aws_s3_client`: report the digest (skipped if task 1 says "cannot
   be overcome"; then do 3b)
   - Route A or C per task 1; declare `reports_content_digest`, drop
     `version_is_content_md5`

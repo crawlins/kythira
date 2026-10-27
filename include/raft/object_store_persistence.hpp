@@ -686,8 +686,20 @@ namespace object_store_persistence_detail {
     switch (algorithm) {
         case digest_algorithm::crc64nvme:
             return crc64nvme_base64(data);
+        case digest_algorithm::md5:
+            return md5_hex(data);
     }
     throw std::logic_error("object_store_persistence_engine: unknown digest algorithm");
+}
+
+/// @brief A reported digest in the form `content_digest_of` produces: an MD5
+///        ETag loses its quotes and its case (see `normalise_content_digest`);
+///        base64 is case-sensitive and is compared as received.
+[[nodiscard]] inline auto normalise_reported_digest(const content_digest& reported) -> std::string {
+    if (reported.algorithm == digest_algorithm::md5) {
+        return normalise_content_digest(reported.value);
+    }
+    return reported.value;
 }
 
 /// @brief The name an error message gives `algorithm`.
@@ -695,6 +707,8 @@ namespace object_store_persistence_detail {
     switch (algorithm) {
         case digest_algorithm::crc64nvme:
             return "CRC64NVME";
+        case digest_algorithm::md5:
+            return "MD5";
     }
     return "unknown";
 }
@@ -2247,18 +2261,21 @@ private:
                     " promised a content digest on every PUT and sent none — the write cannot "
                     "be verified and must not be treated as persisted");
             }
-            const content_digest& reported = *reported_by_store.digest;
+            const content_digest& reported_digest = *reported_by_store.digest;
             const std::string computed_from_content =
-                object_store_persistence_detail::content_digest_of(reported.algorithm, bytes);
-            if (reported.value != computed_from_content) {
+                object_store_persistence_detail::content_digest_of(reported_digest.algorithm,
+                                                                   bytes);
+            const std::string reported =
+                object_store_persistence_detail::normalise_reported_digest(reported_digest);
+            if (reported != computed_from_content) {
                 const std::string_view algorithm =
-                    object_store_persistence_detail::digest_algorithm_name(reported.algorithm);
+                    object_store_persistence_detail::digest_algorithm_name(
+                        reported_digest.algorithm);
                 throw std::runtime_error(
                     "object_store_persistence_engine: checksum mismatch on " + key + ": sent " +
                     std::to_string(bytes.size()) + " bytes with " + std::string(algorithm) + " " +
                     computed_from_content + " but " + std::string(_store.provider_name()) +
-                    " reported " +
-                    (reported.value.empty() ? std::string("nothing") : reported.value) +
+                    " reported " + (reported.empty() ? std::string("nothing") : reported) +
                     " — the stored object does not match what was written and must not be treated "
                     "as persisted");
             }

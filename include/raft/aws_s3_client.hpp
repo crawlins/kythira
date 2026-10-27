@@ -73,18 +73,26 @@
 /// the build. An SDK default that silently changes the framing of every write
 /// is precisely the class of thing this design pins.
 ///
-/// ## `version_is_content_md5`, and the one bucket configuration that breaks it
+/// ## The local check: a reported digest, not the ETag
 ///
-/// S3's ETag **is** the lowercase MD5 hex of the content for a single-part
-/// upload, so this client declares `version_is_content_md5` and the engine
-/// verifies every PUT's returned version locally against its own digest
-/// (Requirement 7.2). That equality does **not** hold for a bucket with SSE-KMS
-/// or SSE-C default encryption, where S3 returns an ETag that is not a content
-/// digest — against such a bucket every write would fail verification, and the
-/// remedy is `object_persistence_options::verify_checksums = false`, which
-/// leaves the service-side `Content-MD5` check above untouched. Multipart is a
-/// documented non-goal of this engine, so the other ETag-is-not-an-MD5 case
-/// cannot arise here.
+/// S3's ETag is the MD5 of single-part content only on an unencrypted or
+/// SSE-S3 bucket. Under SSE-KMS and DSSE-KMS it is not, and it differs between
+/// two PUTs of the same bytes (`.kiro/specs/object-store-encrypted-bucket-
+/// checksums/spike-notes.md`, measured 2026-10-27). So this client does not
+/// declare `version_is_content_md5`. It declares `reports_content_digest`
+/// instead and returns S3's `x-amz-checksum-crc64nvme`, which real S3 sends on
+/// every PUT under every encryption mode, with the request unchanged
+/// (`WHEN_REQUIRED`, no checksum header added). The engine checks it against
+/// its own CRC-64/NVME of the bytes it sent, so `verify_checksums` stays on for
+/// KMS buckets.
+///
+/// An `endpoint_override` store that sends no CRC-64/NVME has its ETag reported
+/// as an MD5 instead, which is the check such a store had before; on one whose
+/// ETag is not an MD5 either, every write fails verification and the remedy is
+/// `verify_checksums = false`. Against AWS the CRC-64/NVME is required. SSE-C
+/// is a refused write rather than a failed check: a bucket that requires it
+/// answers this client's PUTs 403 `AccessDenied`, because the client sends no
+/// SSE-C headers. Multipart is a documented non-goal of this engine.
 ///
 /// ## One stated residual: a listing with no `IsTruncated` at all
 ///
@@ -262,6 +270,28 @@ inline constexpr const char* k_no_such_bucket = "NoSuchBucket";
     return Aws::Utils::HashingUtils::Base64Encode(Aws::Utils::HashingUtils::CalculateMD5(payload));
 }
 
+/// The content digest a PUT reports
+/// (`.kiro/specs/object-store-encrypted-bucket-checksums/` task 3).
+///
+/// S3's `x-amz-checksum-crc64nvme` when the response carries one, which real
+/// S3 does on every PUT under every encryption mode (spike-notes.md). Without
+/// it, and only when `md5_etag_fallback` is set (an `endpoint_override`
+/// store), the ETag is reported as an MD5: an S3-compatible service that sends
+/// no CRC-64/NVME but an MD5 ETag keeps the check it had before. Otherwise
+/// nothing, which the engine fails as a broken promise. Clark chose this split
+/// on 2026-10-27: strict on AWS, where the KMS buckets are, and no regression
+/// for the S3-compatible stores that verified until now.
+[[nodiscard]] inline auto reported_digest(const Aws::String& crc64nvme, const Aws::String& etag,
+                                          bool md5_etag_fallback) -> std::optional<content_digest> {
+    if (!crc64nvme.empty()) {
+        return content_digest{digest_algorithm::crc64nvme, from_aws(crc64nvme)};
+    }
+    if (md5_etag_fallback && !etag.empty()) {
+        return content_digest{digest_algorithm::md5, from_aws(etag)};
+    }
+    return std::nullopt;
+}
+
 }  // namespace aws_s3_detail
 
 /// @brief The object operations the persistence engine needs, over the AWS SDK.
@@ -276,10 +306,10 @@ public:
     ///        after construction (`kythira::concurrent_key_object_store`).
     static constexpr bool supports_concurrent_requests = true;
 
-    /// @brief S3's ETag is the lowercase MD5 hex of single-part content, so the
-    ///        engine may verify every PUT locally (Requirement 7.2). See the
-    ///        file comment for the SSE-KMS/SSE-C caveat.
-    static constexpr bool version_is_content_md5 = true;
+    /// @brief Every PUT reports a content digest, S3's CRC-64/NVME, which the
+    ///        engine verifies locally (Requirement 7.2) under every bucket
+    ///        encryption mode. See the file comment and `reported_digest`.
+    static constexpr bool reports_content_digest = true;
 
     explicit aws_s3_client(aws_client_config cfg) : _cfg(std::move(cfg)) {
         // IMDS config lookup is disabled whenever a mock or LocalStack endpoint
@@ -487,7 +517,11 @@ private:
             }
             throw std::runtime_error(aws_s3_detail::describe("PutObject", key, err));
         }
-        return put_result{aws_s3_detail::from_aws(outcome.GetResult().GetETag())};
+        const auto& result = outcome.GetResult();
+        return put_result{
+            aws_s3_detail::from_aws(result.GetETag()),
+            aws_s3_detail::reported_digest(result.GetChecksumCRC64NVME(), result.GetETag(),
+                                           /*md5_etag_fallback=*/!_cfg.endpoint_override.empty())};
     }
 
     auto send_delete(const std::string& bucket, const std::string& key,
@@ -555,8 +589,11 @@ static_assert(
     "aws_s3_client must satisfy conditional_key_object_store — S3 expresses every "
     "conditional primitive (spike-notes.md Finding 10), so fencing_mode::compare_and_swap "
     "must remain available for it");
-static_assert(content_md5_versioned_store<aws_s3_client>,
-              "aws_s3_client's ETag is the content MD5 for single-part uploads");
+static_assert(content_digest_reporting_store<aws_s3_client>,
+              "aws_s3_client reports S3's CRC-64/NVME, the digest that survives SSE-KMS");
+static_assert(!content_md5_versioned_store<aws_s3_client>,
+              "aws_s3_client must NOT declare version_is_content_md5: on an SSE-KMS or DSSE-KMS "
+              "bucket the ETag is not the content MD5");
 
 }  // namespace kythira
 

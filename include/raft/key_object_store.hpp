@@ -79,11 +79,15 @@ using object_version = std::string;
 /// (`.kiro/specs/object-store-encrypted-bucket-checksums/` Requirement 2.5).
 /// `crc64nvme` is S3's default full-object checksum, which its PUT response
 /// carries under every encryption mode, SSE-KMS included, where the ETag is no
-/// longer the content MD5 (spike-notes.md). A new algorithm is added here with
-/// the engine's computation of it, never ahead of a client that needs it.
+/// longer the content MD5 (spike-notes.md). `md5` is what `aws_s3_client`
+/// reports from an S3-compatible endpoint that sends no CRC-64/NVME, whose ETag
+/// is then the only digest on offer. A new algorithm is added here with the
+/// engine's computation of it, never ahead of a client that needs it.
 enum class digest_algorithm {
     /// CRC-64/NVME, sent as the base64 of its eight big-endian bytes.
     crc64nvme,
+    /// MD5 as hex, in either case, optionally quoted: an ETag as received.
+    md5,
 };
 
 /// @brief What a store says it stored, as a function of the bytes alone.
