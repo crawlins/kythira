@@ -47,7 +47,7 @@ Reference material to read before starting:
 
 ## Tasks
 
-- [ ] 1. Measure the clients, the object sizes and the working set
+- [x] 1. Measure the clients, the object sizes and the working set
   - Per design.md Component 0. A recording stub stands in for the server.
     Capture sccache 0.17.0's WebDAV requests for `--start-server`, a miss and
     a hit, and vcpkg's `http` source requests for a restore, a miss, a 500 and
@@ -59,6 +59,165 @@ Reference material to read before starting:
   - Record one `main` run's working set (bytes read, both caches).
   - Update design.md's WebDAV rows if the capture differs (Requirement 1.5).
   - _Requirements: 1.1–1.6_
+
+### Task 1 results (measured 2026-10-27 on Clark's workstation)
+
+**The stub.** A Python `ThreadingHTTPServer` (HTTP/1.1) that logs method,
+path, selected headers, request-body size and status, and answers from a dict:
+
+- GET/HEAD: 200 or 404.
+- PUT: 201.
+- DELETE: 204 or 404.
+- MKCOL: 201, and records the directory.
+- PROPFIND: 207 for a stored key or a known directory, 404 otherwise.
+- Any request: a forced 404 or 500 when switched to that mode with
+  `GET /_mode/<normal|404|500>`.
+
+It is not committed; the behaviour the gateway must copy is below.
+
+#### sccache 0.17.0 WebDAV (Requirement 1.1)
+
+The binary was the release tarball CI installs:
+`sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz`, SHA-256 `67c4a96d…0006`,
+the same checksum `.github/actions/oci-build-cache/action.yml` pins.
+
+```bash
+SCCACHE_WEBDAV_ENDPOINT=http://127.0.0.1:18080/cache SCCACHE_SERVER_PORT=14226 \
+SCCACHE_DIR=$W/local sccache --start-server
+sccache cc -c a.c -o a.o            # miss
+rm a.o; sccache cc -c a.c -o a.o    # hit
+```
+
+What it sent:
+
+| Phase | Requests (in order) |
+|---|---|
+| `--start-server` | `GET /cache/.sccache_check` → 404; `PROPFIND /cache/` `Depth: 0` → 207; `PUT /cache/.sccache_check` (13 bytes) → 201 |
+| miss | `GET /cache/8/5/6/8561f8…ce90` → 404; `PROPFIND /cache/8/5/6/` `Depth: 0` → 207; `PUT /cache/8/5/6/8561f8…ce90` (539 bytes, `Content-Length`) → 201 |
+| miss, parent directories absent | `GET` → 404; `PROPFIND /cache/8/5/6/` → 404; `PROPFIND /cache/8/5/` → 404; `PROPFIND /cache/8/` → 404; `MKCOL /cache/8/`, `MKCOL /cache/8/5/`, `MKCOL /cache/8/5/6/` → 201 each; `PUT` → 201 |
+| hit | `GET /cache/8/5/6/8561f8…ce90` → 200. Nothing else. |
+
+Facts the gateway must honour:
+
+- **Methods used:** GET, PUT, PROPFIND and MKCOL only. Never HEAD, DELETE,
+  MOVE, COPY or `Range`.
+- **Keys:** `<prefix>/<k0>/<k1>/<k2>/<64-hex>`.
+- **PUTs** always carry `Content-Length`; there is no chunked transfer
+  encoding. No `Expect`, no conditional headers. The User-Agent is
+  `sccache/0.17.0`.
+- **PROPFIND targets the parent collection, never the key.** It is
+  `Depth: 0`, and its 91-byte body is
+  `<D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>`.
+  - A 404 makes OpenDAL walk upward with further PROPFINDs, then MKCOL each
+    missing level top-down.
+  - A 207 for every collection path means no MKCOL is ever sent.
+- **OpenDAL parses the PROPFIND reply strictly.** A minimal multistatus
+  (`href`, `resourcetype`, `status` only) failed with
+  `write failed Unexpected (permanent) at write => deserialize xml`, and every
+  write failed with it. A mod_dav-shaped reply worked: per `D:response`,
+  `displayname`, `getlastmodified` (RFC 1123), `resourcetype`, and for a file
+  `getcontentlength`, `getcontenttype` and `getetag`.
+- **Read-only mode exists:** `SCCACHE_WEBDAV_RW_MODE=READ_ONLY`.
+  - `--start-server` sends only `GET /cache/.sccache_check`; a 404 there is
+    accepted.
+  - Misses send no PROPFIND, MKCOL or PUT, and are counted as "Cache write
+    errors". So a read-only client never needs `read_write`.
+- **Failures:**
+
+  | When | Server response | sccache behaviour |
+  |---|---|---|
+  | startup check (`.sccache_check` GET) | 500 | `--start-server` exits 2 ("Server startup failed: cache storage failed to read"), and every compile exits 2 |
+  | startup check | connection refused | the same, "send http request" |
+  | mid-build, after a healthy start | 500 on GET/PROPFIND | compile succeeds locally (rc 0), counted as a miss plus a write error; one request each, no retry |
+  | mid-build | connection refused | the same, about 0.16 s per compile |
+
+  The startup check is the gateway's real availability contract:
+  `start-sccache.sh`'s probe exists for exactly this case.
+
+#### vcpkg `http` binary source (Requirement 1.2)
+
+Measured with a scratch clone of `microsoft/vcpkg` at `9a7f7340` (vcpkg.json's
+builtin-baseline, which CI pins), bootstrapped to tool
+`2025-10-16-71538f26`. Port: `zlib` (plus host `vcpkg-cmake`), classic mode,
+`x64-linux`.
+
+```bash
+VCPKG_BINARY_SOURCES='clear;http,http://127.0.0.1:18081/{name}/{version}/{sha},readwrite' \
+  ./vcpkg install zlib
+```
+
+| Case | Requests | Outcome |
+|---|---|---|
+| fresh | `GET /vcpkg-cmake/2024-04-23/4f9a5f…1b0c` → 404, `GET /zlib/1.3.1/d0fef2…525e` → 404, then after building `PUT` both (10,267 and 226,219 bytes, `Content-Length`) → 201 | built, "Completed submission … to 1 binary cache(s)" |
+| restore | `GET /zlib/1.3.1/d0fef2…525e` → 200 | "Restored 1 package(s) from HTTP servers in 94.5 ms" |
+| 404 everywhere | `GET` → 404, `PUT` → 404 | built from source, warning "curl failed to put file … http code 404", rc 0 |
+| 500 everywhere | `GET` ×4 → 500 (retried, 7.1 s total), `PUT` ×1 → 500 | built from source, warning, rc 0 |
+| refused | no request reaches the server | warning "curl operation failed with error code 7", built, PUT warning, rc 0 |
+
+- `{name}`/`{version}`/`{sha}` expand to the port name, the port version
+  (`1.3.1`, `2024-04-23`) and the 64-hex ABI hash. There is no triplet and no
+  `.zip`.
+- **No `HEAD` is ever sent.** A `--dry-run` install sends no request at all.
+- PUTs are not retried. No failure ever reddens the install.
+- User-Agent is `vcpkg/2025-10-16-71538f2694db93da4668782d094768ba74c45991 (curl)`.
+
+CI today uses `x-aws` with keys `vcpkg/<triplet>/<abi>.zip`, not this
+template. The http source's keys therefore will not match the existing objects
+without a re-seed.
+
+#### OCI bucket sizes (Requirement 1.3)
+
+`kythira-build-cache`, us-phoenix-1, listed 2026-10-27T14:41Z with
+`oci os object list --all --fields name,size,timeCreated`. This was list-only,
+through the local `DEFAULT` CLI profile; the `KYTHIRA_CI` profile cannot see
+the bucket. Percentiles are nearest-rank.
+
+| Prefix | Objects | Total | Largest | p50 | p99 | Over 8 MiB (count / bytes) |
+|---|---|---|---|---|---|---|
+| `sccache/` | 109,166 | 108.39 GiB | 16.6 MiB (17,417,848 B) | 487 KiB | 10.14 MiB (10,636,940 B) | **2.46 %** / 25.65 % |
+| `vcpkg/` | 1,128 | 21.93 GiB | 955.3 MiB (1,001,753,768 B) | 297 KiB | 480.6 MiB (503,902,591 B) | 14.1 % / 96.4 % |
+| `sccache-measure-3/` (leftover from oci-build-cache task measurements, 2026-09-07) | 4,421 | 2.04 GiB | 19.3 MiB | 155 KiB | 4.09 MiB | 0.66 % / 16.4 % |
+
+- **sccache:** mean 1.02 MiB, p99.9 13.5 MiB, nothing over 64 MiB.
+- **vcpkg:** 81 objects over 64 MiB. The five largest are all ~955 MiB
+  `x64-linux` zips.
+- **Implications.** The value-on-disk design must stream vcpkg objects of
+  nearly 1 GiB. The 8 MiB chunk boundary splits about one sccache object in
+  forty, but those objects hold a quarter of sccache's bytes.
+
+#### Working set of one `main` run (Requirement 1.4)
+
+CI run 40423882255 (`ci.yml`, push to `main` at `e9f8b8e2`, 28 jobs, all
+green). Each job's log was fetched with
+`gh api repos/crawlins/kythira/actions/jobs/<id>/logs`, because
+`gh run view --log` does not work on this machine.
+
+- **sccache:** the jobs' final `--show-stats` sum to **6,200 hits** and
+  17 misses. The heavy jobs are the five Build & Test legs, Full suite
+  (boost), Coverage, Config Variants and No Folly, each with 496-713 hits.
+  The stats carry no keys, so bytes are approximated as hits × the prefix's
+  mean object size: **≈ 6.2 GiB** (≈ 2.9 GiB at the median size). That
+  counts hits per job, so an object read by several jobs counts once per
+  job, which is what the server serves.
+- **vcpkg:** the `vcpkg_installed/` actions/cache tree hit in 18 jobs. In
+  those jobs the binary cache is never read.
+  - Four jobs missed it and restored from OCI:
+
+    | Job | Packages restored | Restore time |
+    |---|---|---|
+    | Build & Test (g++-14, x64) | 131 | 5.7 min |
+    | Build & Test (clang++-18, arm64) | 131 | 5.2 min |
+    | Build & Test (g++-13, arm64) | 131 | 4.3 min |
+    | GCP SDK Build (clang++-18, x64) | 133 | 5.7 min |
+
+  - Every restored package's ABI hash appears in the job log. All 526 were
+    matched exactly to `vcpkg/<triplet>/<abi>.zip` objects in the listing:
+    **4.44 GiB** in total, at 0.68-1.34 GiB per job, the largest object
+    read being 483.9 MiB.
+- **One run's read working set ≈ 10.6 GiB** (6.2 sccache + 4.4 vcpkg). That
+  is ≈ 8 % of the bucket's 132 GiB. The vcpkg share depends entirely on how
+  many tree-cache misses a run has. It would be ≈ 0 on a fully warm run, and
+  about 1.1 GiB more for each additional leg that misses.
 
 - [ ] 2. `cache_chunk_store` and `chunk_refcounts`
   - `include/raft/cache_chunk_store.hpp` per design.md Components 1 and 1a:

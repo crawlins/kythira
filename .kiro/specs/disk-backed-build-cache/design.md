@@ -282,13 +282,33 @@ transport itself.
 | `HEAD /<key>` | read_only | 200 with `Content-Length` and `ETag: "<value sha>"`, or 404 |
 | `PUT /<key>` | read_write | stream, chunk, propose, `commit`; 201. 413 over max, 507 under the free-space floor |
 | `DELETE /<key>` | read_write | propose `del`; 204 |
-| `PROPFIND /<key>` `Depth: 0` | read_only | 207 multistatus with `getcontentlength`, or 404 |
-| `MKCOL /<path>` | read_write | 201, no-op |
+| `PROPFIND /<dir>/` `Depth: 0` | read_write | 207 multistatus for any collection path (keys have no real directories), so sccache never needs `MKCOL`; 207 with `getcontentlength` for a stored key, 404 otherwise |
+| `MKCOL /<dir>/` | read_write | 201, no-op |
 | `GET /_chunk/<sha>` | internal secret | raw chunk bytes |
 | `GET /_metrics` | admin | Requirement 6.5's counters |
 
-The WebDAV rows are provisional until task 1. Requirement 1.5 says what to do
-if sccache sends something else.
+Task 1 measured these rows against sccache 0.17.0; the capture is in tasks.md
+task 1. sccache uses exactly GET, PUT, PROPFIND and MKCOL, so no method is
+added (Requirement 1.5). HEAD and DELETE stay for other clients and for
+operators.
+
+The capture corrected two details of the provisional rows:
+
+- **PROPFIND targets the parent collection, not the key.** OpenDAL sends it
+  before every PUT, as `Depth: 0` with an `allprop` body, and only on the
+  write path. A read-only client never sends it, so the role is `read_write`.
+- **The 207 body must be a complete multistatus.** OpenDAL rejected a minimal
+  one with "deserialize xml", and that failed every write. Each
+  `D:response` needs `displayname`, `getlastmodified` (RFC 1123) and
+  `resourcetype`, plus `getcontentlength`, `getcontenttype` and `getetag` for
+  a file.
+
+Answering 207 for every collection path avoids the upward PROPFIND walk and
+the per-level MKCOLs a 404 triggers. A PUT therefore costs one PROPFIND plus
+the PUT. sccache fails to start, and every compile fails, if the
+`.sccache_check` GET at startup gets a 5xx or no connection. That one request
+is the gateway's real availability contract. Later failures only cost cache
+hits.
 
 **PUT path.** The body parser reads into a chunk-sized buffer. Each full
 buffer is hashed and proposed as `put_chunk`, and the next buffer fills while
