@@ -105,6 +105,33 @@ Azure Blob is the only provider whose durability-on-response claim is
 creates `Standard_ZRS` for exactly this reason, and says so in its header. If
 you provision the account by hand, this is the setting to get right.
 
+### Encrypted buckets and `verify_checksums`
+
+On S3 and OSS every PUT is checked twice. The service checks the
+`Content-MD5` the client sends and refuses a mismatch. That half is always on.
+The engine then checks a digest the store returned against one it computed
+from the bytes it sent. `object_persistence_options::verify_checksums`
+(default `true`) governs only this second, local half.
+
+What the local check reads, measured on 2026-10-27
+(`.kiro/specs/object-store-encrypted-bucket-checksums/spike-notes.md`):
+
+| Store | Bucket encryption | ETag is the content MD5? | Local check reads | `verify_checksums` |
+|---|---|---|---|---|
+| AWS S3 | none, SSE-S3 | yes | `x-amz-checksum-crc64nvme` | leave on |
+| AWS S3 | SSE-KMS, DSSE-KMS | **no**, and it differs between PUTs of the same bytes | `x-amz-checksum-crc64nvme` | leave on |
+| AWS S3 | SSE-C required by policy | n/a: the PUT is refused `403 AccessDenied`, since the client sends no SSE-C headers | — | — |
+| S3-compatible (`endpoint_override`) | any | if it sends no CRC-64/NVME, the ETag is checked as an MD5 | CRC-64/NVME if sent, else the ETag | set `false` only if the store sends neither a CRC nor an MD5 ETag |
+| Alibaba OSS | none, SSE-OSS, SSE-KMS | yes, unchanged by encryption | the ETag | leave on |
+| Azure, GCS, OCI | any | not used | no local check | no effect |
+
+Real S3 sends `x-amz-checksum-crc64nvme` on every PUT under every encryption
+mode without the client asking for it, so `aws_s3_client` adds no request
+header and no round trip. Against AWS a missing CRC fails the write as a
+broken promise rather than skipping the check. Before 2026-10-27 the S3 client
+compared the ETag instead, so every write to an SSE-KMS bucket failed and the
+advice was to turn `verify_checksums` off. That advice is withdrawn.
+
 ## The operating envelope
 
 ### Measured write latency
