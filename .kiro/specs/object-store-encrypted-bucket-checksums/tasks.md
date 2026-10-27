@@ -25,7 +25,7 @@ PR. Every real-cloud step (tasks 1 and 6) needs Clark's go before it runs.
     Requirement 4
   - _Requirements: 1.1-1.6_
 
-- [ ] 2. Engine: reported content digests
+- [x] 2. Engine: reported content digests
   - `content_digest`, `digest_algorithm` (only the algorithms task 1
     chose), `put_result::digest`, `content_digest_reporting_store`
   - `verify_returned_digest` per the design's four steps; local digest

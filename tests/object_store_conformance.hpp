@@ -63,6 +63,13 @@
 /// | Member | Meaning |
 /// |---|---|
 /// | `wrong_version_for_next_puts(n)` | report a digest that does not match what was stored, for `n` PUTs — a corrupted transfer |
+///
+/// ### Additionally, for a **content-digest-reporting** store
+///
+/// | Member | Meaning |
+/// |---|---|
+/// | `wrong_digest_for_next_puts(n)` | report a content digest that does not match what was stored, for `n` PUTs — a corrupted transfer |
+/// | `no_digest_for_next_puts(n)` | report no content digest at all, for `n` PUTs — a broken promise |
 // clang-format on
 ///
 /// A harness that cannot inject a failure (a real bucket, say) instantiates the
@@ -1350,6 +1357,115 @@ template<typename Harness> struct cases {
         BOOST_TEST(eng.load_current_term() == 3U);
     }
 
+    // ── Reported content digests ─────────────────────────────────────────────
+    //
+    // `.kiro/specs/object-store-encrypted-bucket-checksums/` Requirement 6.2.
+    // Instantiated only for a harness whose store declares
+    // `content_digest_reporting_store`, by
+    // KYTHIRA_OBJECT_STORE_CONFORMANCE_DIGEST.
+
+    /// A digest that matches is a successful write, on every kind of write —
+    /// the control without which the cases below would pass against an engine
+    /// that rejected everything.
+    static auto a_matching_reported_digest_is_a_successful_write() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(no_retries());
+        BOOST_CHECK_NO_THROW(eng.save_current_term(4));
+        BOOST_CHECK_NO_THROW(eng.append_log_entry(make_entry(4, 1)));
+        BOOST_CHECK_NO_THROW(eng.save_snapshot(make_snapshot(1, 4)));
+
+        engine_t reader = h.make_engine();
+        BOOST_TEST(reader.load_current_term() == 4U);
+        BOOST_TEST(reader.load_snapshot().has_value());
+    }
+
+    /// A digest that does not match throws, naming the key, the algorithm and
+    /// the provider, and leaves the mirror unchanged; the single retry then
+    /// repairs it, as it repairs any corrupted transfer. Under fencing the
+    /// write is conditional and so never retried, and the mismatch stands.
+    static auto a_wrong_reported_digest_throws_and_the_retry_repairs_it() -> void {
+        {
+            Harness h;
+            engine_t eng = h.make_engine(no_retries());
+            eng.save_current_term(1);
+
+            h.wrong_digest_for_next_puts(1);
+            try {
+                eng.save_current_term(2);
+                BOOST_FAIL(
+                    "a mismatched reported digest must not be treated as a successful "
+                    "write");
+            } catch (const std::runtime_error& e) {
+                const std::string what = e.what();
+                BOOST_TEST(what.find(h.prefix() + "/term") != std::string::npos);
+                BOOST_TEST(what.find("checksum mismatch") != std::string::npos);
+                BOOST_TEST(what.find("CRC64NVME") != std::string::npos);
+            }
+            BOOST_TEST(eng.load_current_term() == 1U);
+
+            h.wrong_digest_for_next_puts(1);
+            BOOST_CHECK_THROW(eng.append_log_entry(make_entry(1, 1)), std::runtime_error);
+            BOOST_TEST(eng.get_last_log_index() == 0U);
+        }
+        {
+            Harness h;
+            engine_t eng = h.make_engine();  // the default single retry
+            h.clear_requests();
+
+            h.wrong_digest_for_next_puts(1);
+            if constexpr (harness_is_fenced<Harness>()) {
+                BOOST_CHECK_THROW(eng.save_current_term(7), std::runtime_error);
+                BOOST_TEST(h.count_requests("PUT") == 1U);
+            } else {
+                BOOST_CHECK_NO_THROW(eng.save_current_term(7));
+                BOOST_TEST(eng.load_current_term() == 7U);
+                BOOST_TEST(h.count_requests("PUT") == 2U);
+                BOOST_TEST(h.body(h.prefix() + "/term") == term_body(7));
+            }
+        }
+    }
+
+    /// A store that promised a digest and sent none fails the write: a promised
+    /// check that silently does not happen is the failure the declaration
+    /// exists to prevent (Requirement 2.4).
+    static auto a_promised_digest_that_is_omitted_throws() -> void {
+        Harness h;
+        engine_t eng = h.make_engine(no_retries());
+        eng.save_current_term(1);
+
+        h.no_digest_for_next_puts(1);
+        try {
+            eng.save_current_term(2);
+            BOOST_FAIL("a PUT that omits a promised digest must not be treated as verified");
+        } catch (const std::runtime_error& e) {
+            const std::string what = e.what();
+            BOOST_TEST(what.find(h.prefix() + "/term") != std::string::npos);
+            BOOST_TEST(what.find("sent none") != std::string::npos);
+        }
+        BOOST_TEST(eng.load_current_term() == 1U);
+
+        h.no_digest_for_next_puts(1);
+        BOOST_CHECK_THROW(eng.save_snapshot(make_snapshot(1, 1)), std::runtime_error);
+        BOOST_TEST(!eng.load_snapshot().has_value());
+    }
+
+    /// `verify_checksums = false` turns the digest check off too, wrong and
+    /// missing digests alike (Requirement 5.2).
+    static auto digest_verification_can_be_disabled() -> void {
+        Harness h;
+        object_persistence_options opts = no_retries();
+        opts.verify_checksums = false;
+        engine_t eng = h.make_engine(opts);
+
+        h.wrong_digest_for_next_puts(1);
+        BOOST_CHECK_NO_THROW(eng.save_current_term(3));
+        BOOST_TEST(eng.load_current_term() == 3U);
+
+        h.no_digest_for_next_puts(1);
+        BOOST_CHECK_NO_THROW(eng.save_current_term(4));
+        BOOST_TEST(eng.load_current_term() == 4U);
+    }
+
     static auto no_retries() -> object_persistence_options {
         object_persistence_options opts = default_options();
         opts.write_retries = 0;
@@ -1699,6 +1815,20 @@ template<typename Harness> struct cases {
     KYTHIRA_OSC_CASE(harness_type, a_corrupted_transfer_is_repaired_by_the_retry)                \
     KYTHIRA_OSC_CASE(harness_type, log_and_snapshot_writes_are_verified_too)                     \
     KYTHIRA_OSC_CASE(harness_type, verification_can_be_disabled)                                 \
+    BOOST_AUTO_TEST_SUITE_END()
+
+/// Reported content digests (`.kiro/specs/object-store-encrypted-bucket-checksums/`
+/// Requirement 6.2). Instantiated **in addition** to the suites above, by a
+/// harness whose store declares `content_digest_reporting_store`. The harness
+/// must also offer `wrong_digest_for_next_puts(n)` and
+/// `no_digest_for_next_puts(n)`.
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define KYTHIRA_OBJECT_STORE_CONFORMANCE_DIGEST(harness_type, suite_prefix)                 \
+    BOOST_AUTO_TEST_SUITE(suite_prefix##_conformance_digest)                                \
+    KYTHIRA_OSC_CASE(harness_type, a_matching_reported_digest_is_a_successful_write)        \
+    KYTHIRA_OSC_CASE(harness_type, a_wrong_reported_digest_throws_and_the_retry_repairs_it) \
+    KYTHIRA_OSC_CASE(harness_type, a_promised_digest_that_is_omitted_throws)                \
+    KYTHIRA_OSC_CASE(harness_type, digest_verification_can_be_disabled)                     \
     BOOST_AUTO_TEST_SUITE_END()
 
 /// The fencing cases (Requirement 9). Instantiated **in addition** to the suites
