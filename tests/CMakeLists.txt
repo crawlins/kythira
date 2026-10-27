@@ -5852,15 +5852,18 @@ endif()  # AWSSDK_FOUND
 #
 # Needs the AWS SDK's s3 component (already in the component list
 # CMakeLists.txt:1072 resolves) and httplib for the local server the test points
-# `endpoint_override` at. Deliberately does NOT link network_simulator: this
-# client uses no futures, so linking it would pull folly in and force a
-# folly::init fixture for nothing. That means KYTHIRA_HAS_AWS_SDK has to be
-# defined here, since it normally arrives on network_simulator's INTERFACE.
+# `endpoint_override` at. It links network_simulator because the
+# encrypted-bucket cases (object-store-encrypted-bucket-checksums task 3) drive
+# the persistence engine over the real client, and the engine's futures need
+# Folly on the default backend; the test carries the usual folly::Init global
+# fixture for that. KYTHIRA_HAS_AWS_SDK is still defined here explicitly so the
+# target does not depend on how network_simulator's INTERFACE gets it.
 if(AWSSDK_FOUND AND TARGET httplib::httplib AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE)
     add_executable(aws_s3_client_unit_test aws_s3_client_unit_test.cpp)
     target_compile_definitions(aws_s3_client_unit_test PRIVATE KYTHIRA_HAS_AWS_SDK)
     target_link_libraries(aws_s3_client_unit_test PRIVATE
         Boost::unit_test_framework
+        network_simulator
         httplib::httplib
         ${AWSSDK_LINK_LIBRARIES}
     )

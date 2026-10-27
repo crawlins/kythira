@@ -116,10 +116,13 @@ struct object_persistence_options {
     /// advance is not a takeover, and is rejected rather than ignored.
     std::optional<std::uint64_t> takeover_epoch;
 
-    /// Verify each PUT's returned version against the digest computed here, and
-    /// throw naming the key on a mismatch. On by default, and it costs nothing on
-    /// a store that does not declare `content_md5_versioned_store` — there is no
-    /// digest to compare against, so nothing is computed either.
+    /// Verify each PUT's reported digest (or, on a `content_md5_versioned_store`,
+    /// its returned version) against the digest computed here, and throw naming
+    /// the key on a mismatch. On by default, and it costs nothing on a store that
+    /// declares neither `content_digest_reporting_store` nor
+    /// `content_md5_versioned_store`: there is nothing to compare against, so
+    /// nothing is computed either. S3 reports a CRC-64/NVME, which holds on
+    /// SSE-KMS buckets too, so this stays on there.
     ///
     /// This is the **local** half of Requirement 7. The service-side half — a
     /// `Content-MD5` (or native) header the service evaluates and rejects on

@@ -5,6 +5,13 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/aws_s3_client.hpp>
+#include <raft/object_store_persistence.hpp>
+
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+#include <folly/init/Init.h>
+
+#include <memory>
+#endif
 
 // Unit coverage for `aws_s3_client` (cloud-object-persistence Requirement 12,
 // task 7). Every assertion here is made against the bytes that **actually
@@ -29,6 +36,21 @@
 //  3. **A truncated listing is never silently short.** Recovery reads the log
 //     from one prefixed LIST and cannot tell "40 entries" from "60 entries, 40
 //     shown".
+
+// The encrypted-bucket cases run the persistence engine, whose futures need
+// Folly's singletons registered on the default backend.
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+struct FollyInitFixture {
+    FollyInitFixture() {
+        int argc = 1;
+        char* argv0[] = {const_cast<char*>("aws_s3_client_unit_test"), nullptr};
+        char** argv = argv0;
+        _init = std::make_unique<folly::Init>(&argc, &argv);
+    }
+    std::unique_ptr<folly::Init> _init;
+};
+BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 #ifdef KYTHIRA_HAS_AWS_SDK
 
@@ -228,7 +250,8 @@ BOOST_AUTO_TEST_SUITE(aws_s3_concepts)
 BOOST_AUTO_TEST_CASE(satisfies_the_store_concepts) {
     static_assert(key_object_store<aws_s3_client>);
     static_assert(conditional_key_object_store<aws_s3_client>);
-    static_assert(content_md5_versioned_store<aws_s3_client>);
+    static_assert(content_digest_reporting_store<aws_s3_client>);
+    static_assert(!content_md5_versioned_store<aws_s3_client>);
     BOOST_TEST(aws_s3_client::provider_name() == "s3");
 }
 
@@ -784,6 +807,182 @@ BOOST_AUTO_TEST_CASE(a_failed_page_throws_rather_than_truncating) {
 
     const aws_s3_client client{config_for(mock)};
     BOOST_CHECK_THROW((void)client.list_keys("b", ""), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Encrypted buckets (`.kiro/specs/object-store-encrypted-bucket-checksums/`) ──
+//
+// The mock answers a PUT the way the spike recorded S3 answering on an SSE-KMS
+// bucket: an ETag that is not the content MD5, the encryption header, and the
+// CRC-64/NVME of the body. The engine runs over the real client with default
+// options, so `verify_checksums` is on, which is the configuration that failed
+// every write before this client reported a digest.
+
+namespace {
+
+/// GET `?list-type=2` answers an empty listing, any other GET is absent, and a
+/// PUT is answered by `on_put`.
+auto engine_responder(std::function<void(const recorded_request&, httplib::Response&)> on_put)
+    -> std::function<void(const recorded_request&, httplib::Response&)> {
+    return [on_put = std::move(on_put)](const recorded_request& req, httplib::Response& res) {
+        if (req.method == "PUT") {
+            on_put(req, res);
+            return;
+        }
+        if (req.method == "GET" && !req.param("list-type").empty()) {
+            res.set_content(listing_xml("", false), "application/xml");
+            res.status = 200;
+            return;
+        }
+        res.status = 404;
+        res.set_content(s3_error_xml("NoSuchKey", "The specified key does not exist."),
+                        "application/xml");
+    };
+}
+
+/// An SSE-KMS PUT response: a non-MD5 ETag (one the spike recorded), and the
+/// CRC-64/NVME of `digested`.
+auto kms_put_response_over(std::string_view digested, httplib::Response& res) -> void {
+    res.set_header("ETag", "\"7ce0d6da6d8cb635dd20ab62afc88984\"");
+    res.set_header("x-amz-server-side-encryption", "aws:kms");
+    res.set_header("x-amz-checksum-crc64nvme",
+                   kythira::object_store_persistence_detail::crc64nvme_base64(digested));
+    res.set_header("x-amz-checksum-type", "FULL_OBJECT");
+    res.status = 200;
+}
+
+/// …of what actually arrived.
+auto kms_put_response(const recorded_request& req, httplib::Response& res) -> void {
+    kms_put_response_over(req.body, res);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(aws_s3_encrypted_bucket)
+
+// The client returns S3's CRC-64/NVME as the digest, verbatim.
+BOOST_AUTO_TEST_CASE(a_put_reports_the_crc64nvme_s3_returned) {
+    MockS3 mock;
+    mock.responders.push_back(kms_put_response);
+    mock.start();
+
+    const aws_s3_client client{config_for(mock)};
+    const put_result result = client.put_object("b", "k", "hello");
+    BOOST_REQUIRE(result.digest.has_value());
+    BOOST_TEST((result.digest->algorithm == digest_algorithm::crc64nvme));
+    BOOST_TEST(result.digest->value ==
+               kythira::object_store_persistence_detail::crc64nvme_base64("hello"));
+    BOOST_TEST(result.version == "\"7ce0d6da6d8cb635dd20ab62afc88984\"");
+}
+
+// Requirement 6.3: with the default options, an engine over this client
+// writes to an SSE-KMS bucket. With the client reverted to reporting only its
+// ETag as an MD5, every one of these writes fails with a checksum mismatch.
+BOOST_AUTO_TEST_CASE(the_engine_writes_to_an_sse_kms_bucket_with_default_options) {
+    MockS3 mock;
+    mock.responders.push_back(engine_responder(kms_put_response));
+    mock.start();
+
+    object_store_persistence_engine<aws_s3_client> eng{aws_s3_client{config_for(mock)}, "b",
+                                                       "raft"};
+    BOOST_CHECK_NO_THROW(eng.save_current_term(3));
+    log_entry<> entry;
+    entry._term = 3;
+    entry._index = 1;
+    entry._command = {std::byte{1}};
+    BOOST_CHECK_NO_THROW(eng.append_log_entry(entry));
+    BOOST_TEST(eng.load_current_term() == 3U);
+}
+
+// …and a corrupted transfer is still caught: S3 reporting the CRC of other
+// bytes fails the write, naming the algorithm.
+BOOST_AUTO_TEST_CASE(a_wrong_crc64nvme_fails_the_write) {
+    MockS3 mock;
+    mock.responders.push_back(engine_responder([](const recorded_request&, httplib::Response& res) {
+        kms_put_response_over("not what the caller sent", res);
+    }));
+    mock.start();
+
+    object_persistence_options opts;
+    opts.write_retries = 0;
+    object_store_persistence_engine<aws_s3_client> eng{aws_s3_client{config_for(mock)}, "b", "raft",
+                                                       opts};
+    try {
+        eng.save_current_term(3);
+        BOOST_FAIL("a wrong CRC-64/NVME must fail the write");
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        BOOST_TEST(what.find("checksum mismatch") != std::string::npos);
+        BOOST_TEST(what.find("CRC64NVME") != std::string::npos);
+    }
+}
+
+// An `endpoint_override` store that sends no CRC-64/NVME but an MD5 ETag (the
+// S3-compatible case) keeps the check it had: the ETag is reported as an MD5.
+BOOST_AUTO_TEST_CASE(an_s3_compatible_store_without_crc64nvme_is_checked_on_its_md5_etag) {
+    MockS3 mock;
+    mock.responders.push_back(
+        engine_responder([](const recorded_request& req, httplib::Response& res) {
+            res.set_header(
+                "ETag", "\"" + kythira::object_store_persistence_detail::md5_hex(req.body) + "\"");
+            res.status = 200;
+        }));
+    mock.start();
+
+    const aws_s3_client client{config_for(mock)};
+    const put_result result = client.put_object("b", "k", "hello");
+    BOOST_REQUIRE(result.digest.has_value());
+    BOOST_TEST((result.digest->algorithm == digest_algorithm::md5));
+
+    object_store_persistence_engine<aws_s3_client> eng{aws_s3_client{config_for(mock)}, "b",
+                                                       "raft"};
+    BOOST_CHECK_NO_THROW(eng.save_current_term(5));
+}
+
+// …and one whose ETag is not an MD5 either fails verification, naming MD5, so
+// the operator sees why and reaches for `verify_checksums = false`.
+BOOST_AUTO_TEST_CASE(an_s3_compatible_store_with_neither_digest_fails_naming_md5) {
+    MockS3 mock;
+    mock.responders.push_back(engine_responder([](const recorded_request&, httplib::Response& res) {
+        res.set_header("ETag", "\"opaque-token-1\"");
+        res.status = 200;
+    }));
+    mock.start();
+
+    object_persistence_options opts;
+    opts.write_retries = 0;
+    object_store_persistence_engine<aws_s3_client> eng{aws_s3_client{config_for(mock)}, "b", "raft",
+                                                       opts};
+    try {
+        eng.save_current_term(3);
+        BOOST_FAIL("an unverifiable PUT must fail");
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        BOOST_TEST(what.find("checksum mismatch") != std::string::npos);
+        BOOST_TEST(what.find("MD5") != std::string::npos);
+    }
+
+    opts.verify_checksums = false;
+    object_store_persistence_engine<aws_s3_client> unchecked{aws_s3_client{config_for(mock)}, "b",
+                                                             "raft", opts};
+    BOOST_CHECK_NO_THROW(unchecked.save_current_term(3));
+}
+
+// Against AWS itself (no `endpoint_override`) there is no ETag fallback: a
+// response without CRC-64/NVME reports no digest, which the engine fails as a
+// broken promise. Real S3 always sends it, so this is a guard, and it is
+// pinned on the helper because a mock is by definition an override.
+BOOST_AUTO_TEST_CASE(without_an_endpoint_override_a_missing_crc64nvme_reports_nothing) {
+    const Aws::String etag = "\"5d41402abc4b2a76b9719d911017c592\"";
+    BOOST_TEST(!aws_s3_detail::reported_digest("", etag, /*md5_etag_fallback=*/false).has_value());
+    const auto fallback = aws_s3_detail::reported_digest("", etag, /*md5_etag_fallback=*/true);
+    BOOST_REQUIRE(fallback.has_value());
+    BOOST_TEST((fallback->algorithm == digest_algorithm::md5));
+    const auto crc = aws_s3_detail::reported_digest("R4NjxwqUDEk=", etag, false);
+    BOOST_REQUIRE(crc.has_value());
+    BOOST_TEST((crc->algorithm == digest_algorithm::crc64nvme));
+    BOOST_TEST(crc->value == "R4NjxwqUDEk=");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
