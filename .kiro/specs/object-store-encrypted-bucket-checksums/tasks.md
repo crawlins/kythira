@@ -52,14 +52,14 @@ PR. Every real-cloud step (tasks 1 and 6) needs Clark's go before it runs.
     the mismatch message
   - _Requirements: 3.4, 3.5_
 
-- [ ] 4. `alibaba_oss_client`: per task 1
+- [x] 4. `alibaba_oss_client`: per task 1
   - ETag still MD5 under KMS: comment fix only, folded into task 5
   - Otherwise: report `Content-MD5` (preferred) or `x-oss-hash-crc64ecma`;
     declare the trait; mock encrypted-bucket mode and unit case as in
     task 3
   - _Requirements: 4.1-4.3, 6.1, 6.3_
 
-- [ ] 5. Documentation
+- [x] 5. Documentation
   - File comments in `aws_s3_client.hpp` and `alibaba_oss_client.hpp`, the
     `verify_checksums` comment, `doc/cloud_object_persistence.md`, and the
     SSE-C correction

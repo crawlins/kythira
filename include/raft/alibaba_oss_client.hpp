@@ -71,10 +71,15 @@
 ///   ETag **is** the MD5 of single-part content, spelled in **uppercase hex**
 ///   and returned **with its quotes**. The engine's comparison normalises both,
 ///   which is what lets S3's lowercase and OSS's uppercase share one code path.
-///   The declaration does not hold for a server-side-encrypted object, whose
-///   ETag is not a content digest; the remedy there is
-///   `object_persistence_options::verify_checksums = false`, which leaves the
-///   service-side check above untouched.
+///   The declaration holds under server-side encryption too: on 2026-10-27 a
+///   bucket with no encryption, one with SSE-OSS (`AES256`) and one with SSE-KMS
+///   (default OSS-managed key) all returned the same uppercase-MD5 ETag for the
+///   same body, stable across repeated PUTs
+///   (`.kiro/specs/object-store-encrypted-bucket-checksums/spike-notes.md`
+///   Finding 5). So, unlike S3 on SSE-KMS, an encrypted OSS bucket needs no
+///   change and `verify_checksums` stays on. `verify_checksums = false` remains
+///   only for an S3-compatible endpoint whose ETag is not an MD5, and it leaves
+///   the service-side check above untouched.
 
 #include <raft/alibaba_client_config.hpp>
 #include <raft/alibaba_signing.hpp>
