@@ -1082,6 +1082,9 @@ auto case_segment_sweep_recovery(Store store, const std::string& bucket, const s
                          .prefix = size_pfx,
                          .objects = store.list_keys(bucket, writer.log_prefix()).size(),
                          .timings = {}});
+        // Progress, so a slice that hits its timeout shows how far it got.
+        BOOST_TEST_MESSAGE("recovery sweep: wrote S=" << bytes << " (" << sizes.back().objects
+                                                      << " log objects)");
     }
     for (std::size_t round = 0; round < grid.recovery_samples; ++round) {
         for (auto& size : sizes) {
@@ -1093,6 +1096,8 @@ auto case_segment_sweep_recovery(Store store, const std::string& bucket, const s
             }));
             BOOST_TEST(loaded == entries);
         }
+        BOOST_TEST_MESSAGE("recovery sweep: round " << (round + 1) << " of "
+                                                    << grid.recovery_samples << " done");
     }
     for (auto& size : sizes) {
         report_sweep(provider, "recovery", size.segment_bytes,

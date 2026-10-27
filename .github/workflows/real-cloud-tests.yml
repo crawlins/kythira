@@ -3710,8 +3710,11 @@ jobs:
     # fixture teardown deleting its objects across the ocean, after the
     # case's own 24 minutes. The job hit the 120-minute limit during the
     # recovery slice and never reached write_behind. So the limit is
-    # raised only while the sweep is on.
-    timeout-minutes: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' && 300 || 120 }}
+    # raised only while the sweep is on. Run 40516345843 then found the
+    # recovery slice needs more than its old 1800 s case timeout, so that
+    # case now has 4200 s and the sweep job gets GitHub's 360-minute
+    # maximum to hold it.
+    timeout-minutes: ${{ vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' && 360 || 120 }}
     environment: real-cloud-tests
     permissions:
       id-token: write

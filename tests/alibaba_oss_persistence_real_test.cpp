@@ -249,8 +249,19 @@ BOOST_FIXTURE_TEST_CASE(shared_segment_sweep_truncate, RealOssFixture,
         alibaba_oss_client{cfg.client_config()}, cfg.oss_bucket, prefix + "/sweep", "oss", "");
 }
 
+// 4200 s, not the 1800 s of the other slices. Run 40516345843 spent the whole
+// 1800 s here without finishing: every one of the 35 timed constructions
+// reads the 16 MiB log back sequentially from a GitHub runner in the US to
+// OSS in Asia, plus seven 16 MiB writes. Run 40553670229 measured it: about
+// two minutes of writes, then about 7.7 minutes per sampling round, so some
+// 41 minutes in all. The other providers finish in a few minutes, so only
+// this case gets the longer limit.
+//
+// Not more than about 4294 s: Boost.Test holds the timeout in microseconds in
+// 32 bits, so 5400 s wrapped to 5400e6 - 2^32 us and fired SIGALRM after
+// 1105 s on run 40553670229.
 BOOST_FIXTURE_TEST_CASE(shared_segment_sweep_recovery, RealOssFixture,
-                        *boost::unit_test::timeout(1800)) {
+                        *boost::unit_test::timeout(4200)) {
     kythira::object_real::case_segment_sweep_recovery(alibaba_oss_client{cfg.client_config()},
                                                       cfg.oss_bucket, prefix + "/sweep", "oss");
 }
