@@ -8,7 +8,9 @@
     ],
     "Resource": [
       "acs:oss:*:*:{{BUCKET}}",
-      "acs:oss:*:*:{{BUCKET}}/*"
+      "acs:oss:*:*:{{BUCKET}}/*",
+      "acs:oss:*:*:kythira-objpersist-kms-*",
+      "acs:oss:*:*:kythira-objpersist-kms-*/*"
     ],
     "Effect": "Allow"
   }
