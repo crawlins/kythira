@@ -73,12 +73,39 @@ namespace kythira {
 ///        decimal generation number on GCS. The engine never inspects it.
 using object_version = std::string;
 
+/// @brief The algorithms a store may report a content digest in.
+///
+/// Only the ones some client actually returns are listed
+/// (`.kiro/specs/object-store-encrypted-bucket-checksums/` Requirement 2.5).
+/// `crc64nvme` is S3's default full-object checksum, which its PUT response
+/// carries under every encryption mode, SSE-KMS included, where the ETag is no
+/// longer the content MD5 (spike-notes.md). A new algorithm is added here with
+/// the engine's computation of it, never ahead of a client that needs it.
+enum class digest_algorithm {
+    /// CRC-64/NVME, sent as the base64 of its eight big-endian bytes.
+    crc64nvme,
+};
+
+/// @brief What a store says it stored, as a function of the bytes alone.
+///
+/// `value` is in the algorithm's wire encoding as the client received it; the
+/// engine computes the same encoding over the bytes it sent and compares.
+struct content_digest {
+    digest_algorithm algorithm{digest_algorithm::crc64nvme};
+    std::string value;
+};
+
 /// @brief What a successful PUT reports back.
 ///
 /// A store that cannot report a version reports an empty one, which disqualifies
 /// it from `fencing_mode::compare_and_swap` and nothing else.
+///
+/// `digest` is absent unless the store reported one. A store that declares
+/// `content_digest_reporting_store` promises it on every successful PUT, and the
+/// engine treats its absence as an error rather than as nothing to check.
 struct put_result {
     object_version version;
+    std::optional<content_digest> digest{};
 };
 
 /// @brief A fetched object and the version it was read at.
@@ -228,5 +255,22 @@ concept concurrent_key_object_store = key_object_store<S> && requires {
 template<typename S>
 concept content_md5_versioned_store =
     key_object_store<S> && requires { S::version_is_content_md5; } && S::version_is_content_md5;
+
+/// @brief A store whose every successful PUT reports a content digest of what it
+///        stored (`.kiro/specs/object-store-encrypted-bucket-checksums/`).
+///
+/// Declared by adding `static constexpr bool reports_content_digest = true;`,
+/// and, like `content_md5_versioned_store`, a **declaration by the client**: the
+/// engine never infers it from a digest happening to arrive. Where it is
+/// declared, `object_store_persistence_engine` verifies the reported digest
+/// against its own computation over the bytes it sent, and a PUT that reports
+/// none fails, because a promised check that silently does not happen is the
+/// failure this exists to prevent (Requirement 2.4).
+///
+/// A store may declare both this and `content_md5_versioned_store`; the engine
+/// then checks the digest and ignores the version (Requirement 2.6).
+template<typename S>
+concept content_digest_reporting_store =
+    key_object_store<S> && requires { S::reports_content_digest; } && S::reports_content_digest;
 
 }  // namespace kythira

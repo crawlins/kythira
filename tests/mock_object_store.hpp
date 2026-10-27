@@ -97,6 +97,16 @@ struct mock_object_store_state {
     /// carries no such promise.
     int wrong_version_for_next_puts{0};
 
+    /// Report a content digest that is *not* the digest of what was stored, for
+    /// this many further PUTs — a corrupted transfer, on a store that reports a
+    /// digest. Inert on a store that does not.
+    int wrong_digest_for_next_puts{0};
+
+    /// Report no content digest at all, for this many further PUTs — a store
+    /// that declared `reports_content_digest` and then broke the promise.
+    /// Inert on a store that does not report one.
+    int no_digest_for_next_puts{0};
+
     /// Apply this many further PUTs (conditional or not) and then throw as if
     /// the response had been lost on the way back — the request landed, the
     /// caller cannot know it did. The case the crash tables call "landed,
@@ -136,12 +146,20 @@ struct mock_object_store_state {
 ///         declaration is a compile-time property of the store, which is what
 ///         lets the engine compute no digest at all where there is nothing to
 ///         compare against.
-template<bool VersionIsContentMd5> class basic_mock_object_store {
+/// @tparam ReportsContentDigest return a CRC-64/NVME `content_digest` of the
+///         stored bytes with every PUT, the way S3 does under every encryption
+///         mode, and declare `reports_content_digest`
+///         (`.kiro/specs/object-store-encrypted-bucket-checksums/`).
+template<bool VersionIsContentMd5, bool ReportsContentDigest = false>
+class basic_mock_object_store {
 public:
-    /// Read by `kythira::content_md5_versioned_store`. Present on both
-    /// instantiations, `false` on one — a store may equally well say so
+    /// Read by `kythira::content_md5_versioned_store`. Present on every
+    /// instantiation, `false` on some — a store may equally well say so
     /// explicitly.
     static constexpr bool version_is_content_md5 = VersionIsContentMd5;
+
+    /// Read by `kythira::content_digest_reporting_store`, likewise.
+    static constexpr bool reports_content_digest = ReportsContentDigest;
 
     /// Read by `kythira::concurrent_key_object_store`: every operation takes
     /// the shared state's mutex, so concurrent calls are safe.
@@ -174,7 +192,7 @@ public:
         if (!_state->fail_puts_for_key.empty() && _state->fail_puts_for_key == key) {
             throw std::runtime_error("mock_object_store: injected PUT failure for " + key);
         }
-        return {store_then_maybe_lose_response_locked(key, bytes)};
+        return store_then_maybe_lose_response_locked(key, bytes);
     }
 
     [[nodiscard]] auto get_object(const std::string& bucket, const std::string& key) const
@@ -263,7 +281,7 @@ public:
             // (S3's 409), and the engine must not latch on it.
             throw std::runtime_error("mock_object_store: injected PUT failure for " + key);
         }
-        return {store_then_maybe_lose_response_locked(key, bytes)};
+        return store_then_maybe_lose_response_locked(key, bytes);
     }
 
     auto delete_object_if(const std::string& bucket, const std::string& key,
@@ -378,6 +396,20 @@ public:
         _state->wrong_version_for_next_puts = n;
     }
 
+    /// Report a content digest that does not match what was stored, for the
+    /// next `n` PUTs. As with `wrong_version_for_next_puts`, the object itself
+    /// is stored intact.
+    auto wrong_digest_for_next_puts(int n) const -> void {
+        const std::lock_guard lock(_state->mu);
+        _state->wrong_digest_for_next_puts = n;
+    }
+
+    /// Report no content digest for the next `n` PUTs.
+    auto no_digest_for_next_puts(int n) const -> void {
+        const std::lock_guard lock(_state->mu);
+        _state->no_digest_for_next_puts = n;
+    }
+
     /// Apply the next `n` PUTs and then throw an ordinary failure, as if each
     /// response had been lost after the service stored the object.
     auto lose_next_put_responses(int n) const -> void {
@@ -428,14 +460,34 @@ private:
     /// Callers hold `_state->mu`. Store, then honour `lose_next_put_responses`.
     [[nodiscard]] auto store_then_maybe_lose_response_locked(const std::string& key,
                                                              std::string_view bytes) const
-        -> object_version {
-        object_version version = store_locked(key, std::string(bytes));
+        -> put_result {
+        put_result result{store_locked(key, std::string(bytes))};
+        if constexpr (ReportsContentDigest) {
+            result.digest = reported_digest_locked(bytes);
+        }
         if (_state->lose_next_put_responses > 0) {
             --_state->lose_next_put_responses;
             throw std::runtime_error("mock_object_store: injected lost response for PUT " + key +
                                      " (the object was stored)");
         }
-        return version;
+        return result;
+    }
+
+    /// Callers hold `_state->mu`. The digest this PUT reports, after the
+    /// injected omissions and corruptions.
+    [[nodiscard]] auto reported_digest_locked(std::string_view bytes) const
+        -> std::optional<content_digest> {
+        if (_state->no_digest_for_next_puts > 0) {
+            --_state->no_digest_for_next_puts;
+            return std::nullopt;
+        }
+        std::string_view digested = bytes;
+        if (_state->wrong_digest_for_next_puts > 0) {
+            --_state->wrong_digest_for_next_puts;
+            digested = "not what the caller sent";
+        }
+        return content_digest{digest_algorithm::crc64nvme,
+                              kythira::object_store_persistence_detail::crc64nvme_base64(digested)};
     }
 
     /// `put_delay`, with the mutex released, counted in `puts_in_flight`.
@@ -530,6 +582,15 @@ using mock_object_store = basic_mock_object_store<false>;
 /// content MD5, like S3's and OSS's ETag.
 using md5_versioned_mock_object_store = basic_mock_object_store<true>;
 
+/// The substrate for a store that reports a content digest: an opaque version,
+/// like S3's ETag on an SSE-KMS bucket, and a CRC-64/NVME of the content beside
+/// it, like S3's `x-amz-checksum-crc64nvme`.
+using digest_reporting_mock_object_store = basic_mock_object_store<false, true>;
+
+/// Both declarations at once, which is how the engine's preference for the
+/// digest over the version (Requirement 2.6) is held to.
+using digest_and_md5_versioned_mock_object_store = basic_mock_object_store<true, true>;
+
 static_assert(key_object_store<mock_object_store>,
               "mock_object_store must satisfy key_object_store");
 static_assert(conditional_key_object_store<mock_object_store>,
@@ -540,5 +601,13 @@ static_assert(!content_md5_versioned_store<mock_object_store>,
 static_assert(conditional_key_object_store<md5_versioned_mock_object_store>);
 static_assert(content_md5_versioned_store<md5_versioned_mock_object_store>,
               "md5_versioned_mock_object_store must declare its version is the content MD5");
+
+static_assert(!content_digest_reporting_store<mock_object_store>);
+static_assert(!content_digest_reporting_store<md5_versioned_mock_object_store>);
+static_assert(conditional_key_object_store<digest_reporting_mock_object_store>);
+static_assert(content_digest_reporting_store<digest_reporting_mock_object_store>);
+static_assert(!content_md5_versioned_store<digest_reporting_mock_object_store>);
+static_assert(content_digest_reporting_store<digest_and_md5_versioned_mock_object_store> &&
+              content_md5_versioned_store<digest_and_md5_versioned_mock_object_store>);
 
 }  // namespace kythira

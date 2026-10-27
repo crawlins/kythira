@@ -387,6 +387,7 @@
 #include <raft/persistence.hpp>
 #include <raft/types.hpp>
 
+#include <boost/crc.hpp>
 #include <boost/json.hpp>
 
 #include <array>
@@ -638,6 +639,64 @@ namespace object_store_persistence_detail {
         }
     }
     return out;
+}
+
+/// @brief CRC-64/NVME of `data`: S3's default full-object checksum.
+///
+/// Reflected, polynomial 0xAD93D23594C93659, initial value and final XOR all
+/// ones. Taken from Boost.CRC rather than hand-rolled, so the only thing to pin
+/// is the parameter set, and the unit test pins it against the published check
+/// value (`"123456789"` → 0xAE8B14860A799888) and against a value S3 itself
+/// returned in the encrypted-bucket spike.
+[[nodiscard]] inline auto crc64nvme(std::string_view data) -> std::uint64_t {
+    boost::crc_optimal<64, 0xAD93D23594C93659ULL, ~0ULL, ~0ULL, true, true> crc;
+    crc.process_bytes(data.data(), data.size());
+    return crc.checksum();
+}
+
+/// @brief CRC-64/NVME of `data` in S3's wire encoding: the base64 of its eight
+///        big-endian bytes, as `x-amz-checksum-crc64nvme` carries it.
+[[nodiscard]] inline auto crc64nvme_base64(std::string_view data) -> std::string {
+    static constexpr std::string_view k_alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const std::uint64_t value = crc64nvme(data);
+    std::array<std::uint8_t, 8> be{};
+    for (std::size_t i = 0; i < be.size(); ++i) {
+        be[i] = static_cast<std::uint8_t>((value >> (8U * (7U - i))) & 0xFFU);
+    }
+    std::string out;
+    out.reserve(12);
+    for (std::size_t i = 0; i < be.size(); i += 3) {
+        const std::size_t left = be.size() - i;
+        const std::uint32_t chunk = (static_cast<std::uint32_t>(be[i]) << 16U) |
+                                    (left > 1 ? static_cast<std::uint32_t>(be[i + 1]) << 8U : 0U) |
+                                    (left > 2 ? static_cast<std::uint32_t>(be[i + 2]) : 0U);
+        out += k_alphabet[(chunk >> 18U) & 0x3FU];
+        out += k_alphabet[(chunk >> 12U) & 0x3FU];
+        out += left > 1 ? k_alphabet[(chunk >> 6U) & 0x3FU] : '=';
+        out += left > 2 ? k_alphabet[chunk & 0x3FU] : '=';
+    }
+    return out;
+}
+
+/// @brief The digest `algorithm` produces over `data`, in that algorithm's wire
+///        encoding — the form a store's reported `content_digest::value` takes.
+[[nodiscard]] inline auto content_digest_of(digest_algorithm algorithm, std::string_view data)
+    -> std::string {
+    switch (algorithm) {
+        case digest_algorithm::crc64nvme:
+            return crc64nvme_base64(data);
+    }
+    throw std::logic_error("object_store_persistence_engine: unknown digest algorithm");
+}
+
+/// @brief The name an error message gives `algorithm`.
+[[nodiscard]] inline auto digest_algorithm_name(digest_algorithm algorithm) -> std::string_view {
+    switch (algorithm) {
+        case digest_algorithm::crc64nvme:
+            return "CRC64NVME";
+    }
+    return "unknown";
 }
 
 /// The vote slot's body once a migrated prefix has retired it
@@ -2032,17 +2091,16 @@ private:
             fiu_do_on("raft/objstore/put_object",
                       throw std::runtime_error("chaos: raft/objstore/put_object " + key););
             if constexpr (Fencing == fencing_mode::compare_and_swap) {
-                object_version version;
+                put_result result;
                 try {
-                    version =
-                        _store.put_object_if(_bucket, key, body, precondition{if_absent{}}).version;
+                    result = _store.put_object_if(_bucket, key, body, precondition{if_absent{}});
                 } catch (const object_precondition_failed& e) {
                     out.state = put_state::precondition_failed;
                     out.detail = e.what();
                     return out;
                 }
-                verify_returned_digest(key, body, version);
-                out.version = std::move(version);
+                verify_returned_digest(key, body, result);
+                out.version = std::move(result.version);
             } else {
                 put_with_retry(key, body);
             }
@@ -2160,23 +2218,58 @@ private:
             "within your election timeout");
     }
 
-    /// Compare what the store reported against the digest of what was sent, where
-    /// the store declares its version **is** that digest (Requirement 7.2).
+    /// Compare what the store reported against the digest of what was sent
+    /// (Requirement 7.2), where the store declares that it reports one.
     ///
-    /// A no-op — not even a digest computed — on the three providers whose version
-    /// is an opaque token, and on any store that says nothing. The two arguments
-    /// are named for what they are rather than `a` and `b`, because a check whose
+    /// Two declarations, checked in this order
+    /// (`.kiro/specs/object-store-encrypted-bucket-checksums/` Requirement 2):
+    ///
+    /// 1. `content_digest_reporting_store`: the reported `digest` is compared
+    ///    against the same algorithm computed here, and a PUT that reports none
+    ///    fails. The version is not consulted, even if the store also declares
+    ///    the next one, because a digest is what survives bucket encryption.
+    /// 2. `content_md5_versioned_store`: the version **is** the content MD5.
+    ///
+    /// A no-op — not even a digest computed — on a store that declares neither,
+    /// and on every store when `verify_checksums` is off. The two arguments are
+    /// named for what they are rather than `a` and `b`, because a check whose
     /// inputs can be transposed without a type error eventually is.
     auto verify_returned_digest(const std::string& key, std::string_view bytes,
-                                const object_version& reported_by_store) const -> void {
-        if constexpr (content_md5_versioned_store<Store>) {
+                                const put_result& reported_by_store) const -> void {
+        if constexpr (content_digest_reporting_store<Store>) {
+            if (!_opts.verify_checksums) {
+                return;
+            }
+            if (!reported_by_store.digest.has_value()) {
+                throw std::runtime_error(
+                    "object_store_persistence_engine: checksum missing on " + key + ": " +
+                    std::string(_store.provider_name()) +
+                    " promised a content digest on every PUT and sent none — the write cannot "
+                    "be verified and must not be treated as persisted");
+            }
+            const content_digest& reported = *reported_by_store.digest;
+            const std::string computed_from_content =
+                object_store_persistence_detail::content_digest_of(reported.algorithm, bytes);
+            if (reported.value != computed_from_content) {
+                const std::string_view algorithm =
+                    object_store_persistence_detail::digest_algorithm_name(reported.algorithm);
+                throw std::runtime_error(
+                    "object_store_persistence_engine: checksum mismatch on " + key + ": sent " +
+                    std::to_string(bytes.size()) + " bytes with " + std::string(algorithm) + " " +
+                    computed_from_content + " but " + std::string(_store.provider_name()) +
+                    " reported " +
+                    (reported.value.empty() ? std::string("nothing") : reported.value) +
+                    " — the stored object does not match what was written and must not be treated "
+                    "as persisted");
+            }
+        } else if constexpr (content_md5_versioned_store<Store>) {
             if (!_opts.verify_checksums) {
                 return;
             }
             const std::string computed_from_content =
                 object_store_persistence_detail::md5_hex(bytes);
-            const std::string reported =
-                object_store_persistence_detail::normalise_content_digest(reported_by_store);
+            const std::string reported = object_store_persistence_detail::normalise_content_digest(
+                reported_by_store.version);
             if (reported != computed_from_content) {
                 throw std::runtime_error(
                     "object_store_persistence_engine: checksum mismatch on " + key + ": sent " +
@@ -2213,7 +2306,7 @@ private:
                 // is a corrupted transfer, which is exactly what re-sending the
                 // identical bytes to the identical key repairs.
                 const put_result result = _store.put_object(_bucket, key, bytes);
-                verify_returned_digest(key, bytes, result.version);
+                verify_returned_digest(key, bytes, result);
                 return;
             } catch (const std::exception& e) {
                 if (attempts_left == 0) {
@@ -2274,9 +2367,9 @@ private:
         check_object_size(key, bytes);
         fiu_do_on("raft/objstore/put_object",
                   throw std::runtime_error("chaos: raft/objstore/put_object " + key););
-        object_version version;
+        put_result result;
         try {
-            version = _store.put_object_if(_bucket, key, bytes, pre).version;
+            result = _store.put_object_if(_bucket, key, bytes, pre);
         } catch (const object_precondition_failed& e) {
             latch(key, expected_version_of(pre), e.what());
         } catch (const std::exception& e) {
@@ -2286,8 +2379,8 @@ private:
         // Outside the catch, so a checksum mismatch keeps its own message rather
         // than being re-wrapped as a conditional-write failure — and so it cannot
         // be mistaken for a precondition failure, which would latch.
-        verify_returned_digest(key, bytes, version);
-        return version;
+        verify_returned_digest(key, bytes, result);
+        return std::move(result.version);
     }
 
     /// Record the fence and raise it. Callers hold `_mu`.

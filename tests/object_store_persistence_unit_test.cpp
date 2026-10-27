@@ -181,6 +181,88 @@ struct md5_versioned_mock_object_store_harness {
     auto wrong_version_for_next_puts(int n) const -> void { store.wrong_version_for_next_puts(n); }
 };
 
+/// The harness for a store that reports a content digest
+/// (`.kiro/specs/object-store-encrypted-bucket-checksums/`): an opaque version
+/// beside a CRC-64/NVME of the content, the shape S3 has on an SSE-KMS bucket.
+/// As with the MD5 harness, only the store type and the injection knobs differ.
+struct digest_reporting_mock_object_store_harness {
+    using store_t = kythira::digest_reporting_mock_object_store;
+    using engine_t = kythira::object_store_persistence_engine<store_t>;
+
+    store_t store;
+
+    [[nodiscard]] static auto bucket() -> std::string { return "kythira"; }
+    [[nodiscard]] static auto prefix() -> std::string { return "raft"; }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name)};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        return engine_t{store, bucket(), prefix(), opts};
+    }
+
+    auto seed(const std::string& key, std::string_view body) const -> void {
+        store.seed(key, body);
+    }
+    [[nodiscard]] auto keys() const -> std::vector<std::string> { return store.keys(); }
+    [[nodiscard]] auto has(const std::string& key) const -> bool { return store.has(key); }
+    [[nodiscard]] auto body(const std::string& key) const -> std::string { return store.body(key); }
+    [[nodiscard]] auto request_log() const -> std::vector<std::string> {
+        return store.request_log();
+    }
+    [[nodiscard]] auto count_requests(std::string_view verb) const -> std::size_t {
+        return store.count_requests(verb);
+    }
+    auto clear_requests() const -> void { store.clear_requests(); }
+    auto fail_next_puts(int n) const -> void { store.fail_next_puts(n); }
+    auto fail_puts_for_key(std::string key) const -> void {
+        store.fail_puts_for_key(std::move(key));
+    }
+    auto fail_next_gets(int n) const -> void { store.fail_next_gets(n); }
+    auto fail_next_deletes(int n) const -> void { store.fail_next_deletes(n); }
+    auto fail_next_lists(int n) const -> void { store.fail_next_lists(n); }
+    auto wrong_digest_for_next_puts(int n) const -> void { store.wrong_digest_for_next_puts(n); }
+    auto no_digest_for_next_puts(int n) const -> void { store.no_digest_for_next_puts(n); }
+};
+
+/// …and fenced: a conditional PUT returns its digest through a different code
+/// path (`conditional_put`, and the create-only log PUT) from the retried one.
+struct fenced_digest_reporting_mock_object_store_harness
+    : digest_reporting_mock_object_store_harness {
+    using engine_t = kythira::fenced_object_store_persistence_engine<store_t>;
+
+    static constexpr bool fenced = true;
+
+    [[nodiscard]] static auto owner_id() -> std::string { return "node-a"; }
+
+    [[nodiscard]] auto make_engine() const -> engine_t { return make_engine(bucket(), prefix()); }
+
+    [[nodiscard]] auto make_engine(std::string bucket_name, std::string prefix_name) const
+        -> engine_t {
+        kythira::object_persistence_options opts;
+        opts.owner_id = owner_id();
+        return engine_t{store, std::move(bucket_name), std::move(prefix_name), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine(kythira::object_persistence_options opts) const -> engine_t {
+        opts.owner_id = owner_id();
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+
+    [[nodiscard]] auto make_engine_as(std::string owner,
+                                      std::optional<std::uint64_t> takeover_epoch) const
+        -> engine_t {
+        kythira::object_persistence_options opts;
+        opts.owner_id = std::move(owner);
+        opts.takeover_epoch = takeover_epoch;
+        return engine_t{store, bucket(), prefix(), std::move(opts)};
+    }
+};
+
 /// The in-memory harness with `hard_state_layout::combined`
 /// (`.kiro/specs/object-store-batched-layout/` task 3). Only construction
 /// differs, and the suite reads the layout from `default_options()` for the few
@@ -405,6 +487,21 @@ KYTHIRA_OBJECT_STORE_CONFORMANCE(md5_versioned_mock_object_store_harness, md5_mo
 KYTHIRA_OBJECT_STORE_CONFORMANCE_CHECKSUM(md5_versioned_mock_object_store_harness,
                                           md5_mock_object_store)
 
+// …and the reported-digest check (`.kiro/specs/object-store-encrypted-bucket-
+// checksums/` Requirement 6.2), unfenced and fenced. The full suite runs over
+// both for the same reason as above: a check is only worth having if every
+// legitimate write still passes it.
+KYTHIRA_OBJECT_STORE_CONFORMANCE(digest_reporting_mock_object_store_harness,
+                                 digest_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_DIGEST(digest_reporting_mock_object_store_harness,
+                                        digest_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE(fenced_digest_reporting_mock_object_store_harness,
+                                 fenced_digest_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_DIGEST(fenced_digest_reporting_mock_object_store_harness,
+                                        fenced_digest_mock_object_store)
+KYTHIRA_OBJECT_STORE_CONFORMANCE_FENCING(fenced_digest_reporting_mock_object_store_harness,
+                                         fenced_digest_mock_object_store)
+
 // …and over the combined hard state (`.kiro/specs/object-store-batched-layout/`
 // task 3), unfenced and fenced. The same cases, with the layout-dependent
 // expectations read from the harness, are the evidence that one PUT per
@@ -599,6 +696,64 @@ BOOST_AUTO_TEST_CASE(the_digest_comparison_ignores_quotes_and_case) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // ── Options ──────────────────────────────────────────────────────────────────
+
+// ── Reported content digests ────────────────────────────────────────────────
+//
+// `.kiro/specs/object-store-encrypted-bucket-checksums/` Requirements 2.5
+// and 2.6. The algorithm is pinned against its published check value and
+// against what S3 itself returned in the spike, so a wrong Boost.CRC parameter
+// cannot pass by agreeing with the mock that uses the same function.
+
+BOOST_AUTO_TEST_SUITE(object_store_persistence_content_digest)
+
+BOOST_AUTO_TEST_CASE(crc64nvme_matches_its_published_check_value) {
+    using kythira::object_store_persistence_detail::crc64nvme;
+    BOOST_TEST(crc64nvme("123456789") == 0xAE8B14860A799888ULL);
+    BOOST_TEST(crc64nvme("") == 0ULL);
+}
+
+BOOST_AUTO_TEST_CASE(crc64nvme_base64_matches_what_s3_returned) {
+    using kythira::object_store_persistence_detail::crc64nvme_base64;
+    // The spike's 4096-byte body (spike-notes.md), for which S3 returned
+    // `x-amz-checksum-crc64nvme: R4NjxwqUDEk=` under SSE-S3, SSE-KMS and
+    // DSSE-KMS alike.
+    std::string body;
+    for (int i = 0; body.size() < 4096; ++i) {
+        body += "kythira encrypted-bucket checksum spike line " + std::to_string(i) + "\n";
+    }
+    body.resize(4096);
+    BOOST_TEST(crc64nvme_base64(body) == "R4NjxwqUDEk=");
+    // Eight bytes always encode to twelve characters with one pad.
+    BOOST_TEST(crc64nvme_base64("").size() == 12U);
+    BOOST_TEST(crc64nvme_base64("") == "AAAAAAAAAAA=");
+}
+
+/// A store that declares both a reported digest and an MD5 version is checked
+/// on the digest, and the version is ignored (Requirement 2.6): a wrong version
+/// with a right digest succeeds, a right version with a wrong digest fails.
+BOOST_AUTO_TEST_CASE(the_reported_digest_is_preferred_over_an_md5_version) {
+    kythira::digest_and_md5_versioned_mock_object_store store;
+    kythira::object_persistence_options opts;
+    opts.write_retries = 0;
+    kythira::object_store_persistence_engine<kythira::digest_and_md5_versioned_mock_object_store>
+        eng{store, "kythira", "raft", opts};
+
+    store.wrong_version_for_next_puts(1);
+    BOOST_CHECK_NO_THROW(eng.save_current_term(1));
+
+    store.wrong_digest_for_next_puts(1);
+    BOOST_CHECK_THROW(eng.save_current_term(2), std::runtime_error);
+    BOOST_TEST(eng.load_current_term() == 1U);
+}
+
+/// Every existing client builds its result from the version alone; that must
+/// keep compiling and report nothing (Requirement 2.1).
+BOOST_AUTO_TEST_CASE(a_put_result_built_from_a_version_alone_reports_no_digest) {
+    const kythira::put_result result{"v1"};
+    BOOST_TEST(!result.digest.has_value());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(object_store_persistence_options_suite)
 
