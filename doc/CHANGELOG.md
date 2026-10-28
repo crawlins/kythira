@@ -3,6 +3,23 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 28, 2026)
+
+- **Seven retry-rescued test flakes fixed, and one real lost write found.**
+  A survey of 78 `ci.yml` runs (October 24-28) found 39 tests that passed
+  only on a retry. The most frequent, `multi_raft_node_s3_process_test` (17
+  jobs), is not a flake: with `--s3-write-behind 1`, killing the leader
+  mid-load lost exactly one acknowledged write. It never failed in 102 local
+  runs, so its failure message now names each lost key, the read result, the
+  acknowledging host, and every host's role changes; it stays open in
+  TODO.md. The next seven were test bugs: a delay check that started its
+  clock after Folly's timer had begun, a 10 ms budget for a ready future
+  under Coverage, two wrapper-overhead ratios taken from one noisy sample
+  (now the best of seven), and three thread-pool checks behind fixed sleeps
+  that also let queued tasks write to a dead stack variable. Eleven more
+  tests seen twice or more are on `.github/ctest-retry-allowlist.txt`.
+  `CTEST_STRICT_RETRIES` stays off: 13 of the 78 runs would still fail it.
+
 ### What Changed (October 23, 2026)
 
 - **`multi_raft_node` can keep its log in S3.** `--persistence s3`
