@@ -2,7 +2,8 @@
 
 ## Implementation Status
 
-Task 1 done (October 28, 2026): `include/raft/txn_envelope.hpp`.
+Tasks 1-4 done (October 28, 2026): `include/raft/txn_envelope.hpp` and
+`include/raft/txn_state_machine.hpp`.
 
 Each task is one independently mergeable PR: it builds, its tests pass, and
 an unwrapped host is byte- and lock-identical before and after it
@@ -38,7 +39,7 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     holder and its primary. `txn_isolation` and `txn_record_status` live
     here too, since the exceptions name them.
 
-- [ ] 2. Wrapper: plain, one-phase, snapshot format
+- [x] 2. Wrapper: plain, one-phase, snapshot format
   - `include/raft/txn_state_machine.hpp` with `_inner`, `_intents`,
     `_records`; `plain` and `one_phase` apply; `inner()`, `intent_on()`;
     versioned `get_state`/`restore_from_snapshot` and the format refusal
@@ -46,19 +47,42 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     `splittable_state_machine` exactly when `SM` does
   - Tests: `tests/txn_state_machine_test.cpp` (plain, 1PC, conflicts, format)
   - _Requirements: 1.1, 1.3, 1.4, 2.2, 2.3, 3.2_
+  - Notes: the snapshot opens with `kythira-txn-sm` and a version byte,
+    then the oracle high-water mark, the three maps in key order and the
+    wrapped state as a length-prefixed blob. A snapshot without that magic
+    is refused with a message naming both formats. Snapshot table counts
+    are bounded by the bytes left, not the envelope's 65,536 cap, since a
+    shard may hold more intents than one transaction may name. The
+    partitioner is a requires-clause on `key_of` rather than the
+    `partitioner` concept, because `multi_raft.hpp` will include this
+    header. `mvcc::on` is a static_assert until tasks 11-12.
 
-- [ ] 3. Wrapper: prepare, commit, abort, resolve
+- [x] 3. Wrapper: prepare, commit, abort, resolve
   - `prepare`, `commit_primary`, `commit_secondary`, `abort`, `heartbeat`,
     `check_and_resolve` (including the rollback marker) and `cleanup`
   - Every op idempotent by `txn_id`
   - Tests: every op, duplicate and out-of-order delivery, the TTL table
   - _Requirements: 3.3, 3.4, 3.6, 3.7, 4.1, 4.2, 4.3, 4.4, 4.7_
+  - Notes: a third map, `_settled` (written key, then `txn_id`, to
+    committed or aborted), makes a prepare or 1PC that arrives after its
+    transaction finished on this shard a no-op. Without it a retried
+    secondary prepare would install a fresh intent and the resolver would
+    apply the write twice. `txn_cleanup` drops settled entries with the
+    record. A `commit_primary` or `check_and_resolve` that finds no record
+    writes the rollback marker; an `abort` after the commit point reports
+    the committed record and changes nothing.
 
-- [ ] 4. Wrapper: split and absorb
+- [x] 4. Wrapper: split and absorb
   - Partition and re-join the lock table and records with the inner state
   - Tests: `tests/txn_split_absorb_property_test.cpp`, the round-trip law
     over random data, intents and records
   - _Requirements: 6.1, 6.2_
+  - Notes: intents and settled entries move with their own key, records
+    with their primary key, and the oracle high-water mark with the
+    leftmost child. The property test also checks each child holds only
+    its own range's locks, since the law alone would pass a split that
+    left everything in one child; dropping the settled map from the right
+    children fails it.
 
 - [ ] 5. Host: envelope plain commands, `submit_txn`
   - `if constexpr` envelope in `submit_command`; `submit_txn` with every-key
