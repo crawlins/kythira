@@ -1200,6 +1200,9 @@ add_raft_completion_test(txn_split_absorb_property_test txn_split_absorb_propert
 # Task 5: the host's transaction surface (plain envelopes, submit_txn), and
 # proof that an unwrapped host logs exactly what it did before.
 add_raft_completion_test(multi_raft_txn_host_test multi_raft_txn_host_test.cpp)
+# Task 6: the transaction coordinator over in-process hosts: 1PC, 2PC,
+# conflicts, both read_committed modes, and a crash after every step.
+add_raft_completion_test(multi_raft_txn_test multi_raft_txn_test.cpp)
 add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
 add_raft_completion_test(multi_raft_merge_integration_test
