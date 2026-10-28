@@ -42,6 +42,7 @@
 #include <raft/shard_placement_driver.hpp>
 #include <raft/shard_types.hpp>
 #include <raft/striped_executor.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <array>
 #include <atomic>
@@ -794,6 +795,19 @@ struct multi_raft_config {
     /// replica is always a heartbeat's worth of entries behind, and a zero
     /// lag would keep every learner pending forever.
     std::uint64_t replica_catch_up_lag{64};
+
+    // ── transactions (.kiro/specs/multi-raft-transactions/) ──────────────────
+    //
+    // Read only on a host whose state machine is a
+    // `transactional_state_machine`; an unwrapped host ignores both.
+
+    /// @brief The options a transaction gets when it names none
+    ///        (Requirement 10.3).
+    txn_options txn_defaults{};
+
+    /// @brief How often a shard leader looks for intents past their TTL and
+    ///        resolves them (task 7).
+    std::chrono::milliseconds resolver_interval{std::chrono::seconds{1}};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -970,6 +984,27 @@ public:
     /// @throws std::logic_error if no partitioner is configured.
     auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout)
         -> future_type;
+
+    /// @brief Submit a transaction envelope to the shard owning every key in
+    ///        `keys` (multi-raft-transactions task 5).
+    ///
+    /// The multi-key form of `submit_command`, for the coordinator's prepare,
+    /// commit, abort and resolve ops. It resolves `keys.front()`, then checks
+    /// *every* key against the local replica's own range: a key outside it
+    /// means the coordinator partitioned against a routing table that has
+    /// since moved, so the request is refused with
+    /// `shard_epoch_mismatch_exception` carrying the descriptors now covering
+    /// those keys, and the coordinator re-partitions (Requirement 3.5). The
+    /// stale-row repair, the merge-freeze backoff and the not-leader hint are
+    /// `submit_command`'s, unchanged.
+    ///
+    /// @param envelope An encoded `txn_envelope<Key>`, submitted as is.
+    /// @return (via the future) the encoded `txn_result<Key>`; decoding and
+    ///         acting on it is the coordinator's job.
+    /// @throws std::invalid_argument (via the future) if `keys` is empty.
+    auto submit_txn(const std::vector<Key>& keys, const std::vector<std::byte>& envelope,
+                    std::chrono::milliseconds timeout) -> future_type
+    requires is_transactional_state_machine_v<typename Types::state_machine_type>;
 
     /// @brief Linearisable read against the shard owning `key`.
     auto read_state(const Key& key, std::chrono::milliseconds timeout) -> future_type;
@@ -1745,11 +1780,21 @@ private:
     /// @brief Shared body of the routing retry loop.
     ///
     /// `resolve_key` is `nullopt` for the group-addressed form, which skips the
-    /// key lookup but keeps every other gate.
+    /// key lookup but keeps every other gate. `txn_keys` is set only by
+    /// `submit_txn`: `command` is then already an envelope, every key is
+    /// range-checked instead of the partitioner's one, and the result is
+    /// returned undecoded.
     auto route_and_run(std::optional<Key> key, std::optional<GroupId> group,
                        std::optional<shard_epoch> expected_epoch,
                        const std::vector<std::byte>* command, bool is_read,
-                       std::chrono::milliseconds timeout) -> future_type;
+                       std::chrono::milliseconds timeout,
+                       const std::vector<Key>* txn_keys = nullptr) -> future_type;
+
+    /// @brief A plain command on a wrapped host: envelope it, submit it, and
+    ///        turn the result back into what an unwrapped host returns
+    ///        (Requirement 2.1, 2.2).
+    auto submit_plain_enveloped(group_node_type& node, const std::vector<std::byte>& command,
+                                std::chrono::milliseconds timeout) -> future_type;
 
     [[nodiscard]] static auto failed_future(std::exception_ptr error) -> future_type;
 

@@ -64,6 +64,7 @@
 #include <raft/types.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -86,6 +87,21 @@ namespace kythira {
 enum class mvcc : bool {
     off = false,
     on = true
+};
+
+/// @brief Per-transaction options (Requirement 10.1).
+///
+/// Here rather than with the coordinator because `multi_raft_config` carries
+/// the defaults (Requirement 10.3), and `multi_raft.hpp` includes this header.
+struct txn_options {
+    txn_isolation isolation{txn_isolation::read_committed};
+    /// How long a prepared intent lives without a heartbeat before a resolver
+    /// may abort its transaction.
+    std::chrono::milliseconds lock_ttl{std::chrono::seconds{3}};
+    /// The whole transaction's budget, `begin()` to the commit point.
+    std::chrono::milliseconds timeout{std::chrono::seconds{10}};
+    /// Automatic retries after a conflict; zero hands every conflict back.
+    std::size_t max_retries{0};
 };
 
 /// @brief An intent as a read path sees it (Requirement 5.5).

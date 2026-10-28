@@ -1197,6 +1197,9 @@ add_raft_completion_test(txn_envelope_test txn_envelope_test.cpp)
 # round-trip law over random locks and records.
 add_raft_completion_test(txn_state_machine_test txn_state_machine_test.cpp)
 add_raft_completion_test(txn_split_absorb_property_test txn_split_absorb_property_test.cpp)
+# Task 5: the host's transaction surface (plain envelopes, submit_txn), and
+# proof that an unwrapped host logs exactly what it did before.
+add_raft_completion_test(multi_raft_txn_host_test multi_raft_txn_host_test.cpp)
 add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
 add_raft_completion_test(multi_raft_merge_integration_test
