@@ -10,7 +10,8 @@ anyone who gets code execution in it the whole daemon: one
 root on the host. This proxy is the only container that mounts the socket.
 It listens on a compose network (nothing is published), forwards exactly the
 calls one client makes, on one set of containers, and refuses the rest with
-403. It has two modes, PROXY_MODE=quorum (the default) and chaos_ctl.
+403. It has three modes, PROXY_MODE=quorum (the default), chaos_ctl and
+cairn_dispatcher.
 
 quorum: the quorum-healing and elastic-capacity scenario tests run nodes
 whose docker_quorum_manager creates and removes containers. It may send
@@ -53,14 +54,45 @@ attached to, and an exec runs as the container's default user with no
 privileges, no environment and no TTY. So a compromised tool server can, at
 worst, kill, pause and partition this run's cluster, which is its job.
 
+cairn_dispatcher: Cairn's dispatcher (docker-py, cairn/dispatcher/runtime/
+containers.py at v0.2.1) creates one worker container per project, execs
+agent CLIs in it and removes it when the project ends (.kiro/specs/
+cairn-chaos-testing/ task 10). It may send
+
+  GET    /version, HEAD|GET /_ping      docker-py's version negotiation
+  POST   /containers/create             only `cairn-dispatch-*` or
+                                        `cairn-startup-healthcheck-*`, only
+                                        of PROXY_IMAGE running `sleep
+                                        infinity`, only on PROXY_NETWORK, no
+                                        other HostConfig (see
+                                        _check_worker_create); the proxy adds
+                                        PROXY_LABEL to it
+  GET    /containers/json               list; the reply keeps only labelled
+                                        containers
+  GET    /containers/<c>/json           inspect
+  POST   /containers/<c>/{start,stop}
+  DELETE /containers/<c>
+  PUT    /containers/<c>/archive        a file into it (the agents' configs)
+  POST   /containers/<c>/exec           any command, as the image's user,
+                                        unprivileged, no TTY or stdin
+  POST   /exec/<id>/start, GET /exec/<id>/json   as in chaos_ctl mode
+
+<c> must carry PROXY_LABEL, so it is a container this proxy created; any
+other container, the cluster nodes included, answers 404 as if it did not
+exist, which is what docker-py's NotFound handling in the dispatcher
+expects. So a compromised dispatcher can, at worst, run commands in worker
+containers, which is its job, and make more of them on the one network.
+
 Configuration, from the environment:
 
-  PROXY_MODE     quorum (default) or chaos_ctl
+  PROXY_MODE     quorum (default), chaos_ctl or cairn_dispatcher
   PROXY_CLUSTER  quorum: the cluster name (required)
-  PROXY_IMAGE    quorum: the one image a created container may run (required)
-  PROXY_NETWORK  quorum: the one network a created container may join (required)
-  PROXY_LABEL    chaos_ctl: `key=value` every container acted on must carry
-                 (required)
+  PROXY_IMAGE    quorum and cairn_dispatcher: the one image a created
+                 container may run (required)
+  PROXY_NETWORK  quorum and cairn_dispatcher: the one network a created
+                 container may join (required)
+  PROXY_LABEL    chaos_ctl and cairn_dispatcher: `key=value` every container
+                 acted on must carry (required)
   PROXY_SOCKET   the API socket (default /var/run/docker.sock)
   PROXY_PORT     the TCP port to listen on (default 2375)
 """
@@ -81,6 +113,9 @@ import urllib.parse
 VERSION_RE = re.compile(r"^/v[0-9]+(\.[0-9]+)?(?=/)")
 CONTAINER_RE = re.compile(r"^/containers/([^/]+)(/json|/start)?$")
 CHAOS_CONTAINER_RE = re.compile(r"^/containers/([^/]+)/(json|kill|stop|start|pause|unpause|exec)$")
+WORKER_CONTAINER_RE = re.compile(r"^/containers/([^/]+)(?:/(json|start|stop|exec|archive))?$")
+# The names cairn's ContainerManager gives its containers.
+WORKER_NAME_RE = re.compile(r"^(cairn-dispatch-|cairn-startup-healthcheck-)[A-Za-z0-9_.-]{1,200}$")
 EXEC_RE = re.compile(r"^/exec/([0-9a-f]{12,128})/(start|json)$")
 
 # The keys docker_quorum_manager::provision writes. Anything else, HostConfig
@@ -105,6 +140,19 @@ EXEC_ATTACH = {"AttachStdout", "AttachStderr"}
 EXEC_START_KEYS = {"Detach", "Tty", "ConsoleSize"}
 
 KILL_SIGNALS = {"", "KILL", "SIGKILL", "9", "TERM", "SIGTERM", "15"}
+
+# The keys docker-py's containers.run() writes for the dispatcher's
+# `run(image, ["sleep", "infinity"], detach=True, name=..., network_mode=...,
+# cap_add=None)`, each that must be false listed apart from the two that may
+# be either. Labels is the proxy's own, and HostConfig is checked on its own.
+WORKER_CREATE_FALSE = {"Tty", "OpenStdin", "StdinOnce", "AttachStdin", "NetworkDisabled"}
+WORKER_CREATE_KEYS = WORKER_CREATE_FALSE | {"AttachStdout", "AttachStderr", "Cmd", "Image",
+                                            "HostConfig", "Labels"}
+WORKER_CMD = ["sleep", "infinity"]
+# docker-py's exec_create(): what the dispatcher's ManagedProcess and
+# exec_run() write. Cmd and Env are the agents' and are not filtered.
+WORKER_EXEC_KEYS = {"Container", "User", "Privileged", "Tty", "AttachStdin", "AttachStdout",
+                    "AttachStderr", "Cmd", "Env", "WorkingDir", "DetachKeys"}
 
 PCT_RE = re.compile(r"^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?%$")
 TIME_RE = re.compile(r"^[0-9]+(\.[0-9]+)?(us|ms|s)$")
@@ -140,16 +188,23 @@ class Config:
 
     def missing(self):
         """The settings this mode needs and lacks, or why the mode is bad."""
+        label = [] if self.label_key and self.label_value else ["PROXY_LABEL (key=value)"]
         if self.mode == "quorum":
             return [n for n, v in (("PROXY_CLUSTER", self.cluster), ("PROXY_IMAGE", self.image),
                                    ("PROXY_NETWORK", self.network)) if not v]
         if self.mode == "chaos_ctl":
-            return [] if self.label_key and self.label_value else ["PROXY_LABEL (key=value)"]
-        return [f"PROXY_MODE quorum or chaos_ctl, not {self.mode!r}"]
+            return label
+        if self.mode == "cairn_dispatcher":
+            return [n for n, v in (("PROXY_IMAGE", self.image),
+                                   ("PROXY_NETWORK", self.network)) if not v] + label
+        return [f"PROXY_MODE quorum, chaos_ctl or cairn_dispatcher, not {self.mode!r}"]
 
     def describe(self):
         if self.mode == "chaos_ctl":
             return f"mode=chaos_ctl label={self.label}"
+        if self.mode == "cairn_dispatcher":
+            return (f"mode=cairn_dispatcher image={self.image} network={self.network} "
+                    f"label={self.label}")
         return f"mode=quorum cluster={self.cluster} image={self.image} network={self.network}"
 
 
@@ -157,13 +212,22 @@ class Forward:
     """What check() approved. `container` is set when the call acts on a
     container that must first be found in scope; `exec_id` when it acts on
     an exec; `hijack` when the response is a raw stream; `records_exec`
-    when the response's Id is an exec this proxy now owns."""
+    when the response's Id is an exec this proxy now owns. `body`, when
+    set, replaces the request body; `filter_list` keeps only in-scope
+    containers in a list reply; `exec_container` rewrites an exec body's
+    Container to the resolved id; `hide_missing` answers 404 rather than
+    403 for a container out of scope."""
 
-    def __init__(self, container=None, exec_id=None, hijack=False, records_exec=False):
+    def __init__(self, container=None, exec_id=None, hijack=False, records_exec=False,
+                 body=None, filter_list=False, exec_container=False, hide_missing=False):
         self.container = container
         self.exec_id = exec_id
         self.hijack = hijack
         self.records_exec = records_exec
+        self.body = body
+        self.filter_list = filter_list
+        self.exec_container = exec_container
+        self.hide_missing = hide_missing
 
 
 def _strings(value, what):
@@ -386,9 +450,153 @@ def _check_chaos_ctl(method, path, query, body, known_execs):
     raise Refused(f"{method} {path} is not a call this proxy forwards")
 
 
+# ── cairn_dispatcher mode ───────────────────────────────────────────────────
+
+
+def _false(value):
+    return value is False or value is None
+
+
+def _check_worker_create(cfg, body):
+    """The create body with PROXY_LABEL added; Refused unless it is one
+    the dispatcher's containers.run() call could have written."""
+    spec = _json_body(body, "create")
+    if not isinstance(spec, dict):
+        raise Refused("create body must be an object")
+    extra = set(spec) - WORKER_CREATE_KEYS
+    if extra:
+        raise Refused(f"create may not set {sorted(extra)}")
+    for key in WORKER_CREATE_FALSE:
+        if key in spec and not _false(spec[key]):
+            raise Refused(f"create may not set {key}={spec[key]!r}")
+    for key in ("AttachStdout", "AttachStderr"):
+        if key in spec and not isinstance(spec[key], bool):
+            raise Refused(f"create's {key} must be a boolean")
+    if spec.get("Image") != cfg.image:
+        raise Refused(f"create may only run image {cfg.image}")
+    if spec.get("Cmd") != WORKER_CMD:
+        raise Refused(f"create may only run {WORKER_CMD}")
+    host = spec.get("HostConfig")
+    if not isinstance(host, dict) or host.get("NetworkMode") != cfg.network:
+        raise Refused(f"create may only join network {cfg.network}")
+    extra = {k for k, v in host.items() if k != "NetworkMode" and not (k == "CapAdd" and not v)}
+    if extra:
+        raise Refused(f"create may not set HostConfig {sorted(extra)}")
+    labels = spec.get("Labels") or {}
+    if not isinstance(labels, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in labels.items()):
+        raise Refused("create's Labels must map strings to strings")
+    spec["Labels"] = {**labels, cfg.label_key: cfg.label_value}
+    return json.dumps(spec).encode()
+
+
+def _check_worker_exec(body):
+    spec = _json_body(body, "exec")
+    if not isinstance(spec, dict):
+        raise Refused("exec body must be an object")
+    extra = set(spec) - WORKER_EXEC_KEYS
+    if extra:
+        raise Refused(f"exec may not set {sorted(extra)}")
+    for key, ok in (("User", ("", None)), ("DetachKeys", ("", None))):
+        if key in spec and spec[key] not in ok:
+            raise Refused(f"exec may not set {key}={spec[key]!r}")
+    for key in ("Privileged", "Tty", "AttachStdin"):
+        if key in spec and not _false(spec[key]):
+            raise Refused(f"exec may not set {key}={spec[key]!r}")
+    for key in ("AttachStdout", "AttachStderr"):
+        if key in spec and not isinstance(spec[key], bool):
+            raise Refused(f"exec's {key} must be a boolean")
+    _strings(spec.get("Cmd"), "Cmd")
+    if not spec["Cmd"]:
+        raise Refused("exec must name a Cmd")
+    if spec.get("Env") is not None:
+        _strings(spec["Env"], "Env")
+    if "WorkingDir" in spec and not isinstance(spec["WorkingDir"], (str, type(None))):
+        raise Refused("exec's WorkingDir must be a string")
+    if "Container" in spec and not isinstance(spec["Container"], str):
+        raise Refused("exec's Container must be a string")
+
+
+def _check_cairn_dispatcher(cfg, method, path, query, body, known_execs):
+    if method in ("GET", "HEAD") and path == "/_ping" and not query:
+        return Forward()
+    if method == "GET" and path == "/version" and not query and not body:
+        return Forward()
+    if method == "POST" and path == "/containers/create":
+        names = query.get("name", [])
+        if set(query) != {"name"} or len(names) != 1 or not WORKER_NAME_RE.match(names[0]):
+            raise Refused("create must be named cairn-dispatch-<project> or "
+                          "cairn-startup-healthcheck-<id>")
+        return Forward(body=_check_worker_create(cfg, body))
+    if method == "GET" and path == "/containers/json":
+        if set(query) - {"limit", "all", "size", "trunc_cmd", "filters"}:
+            raise Refused("list takes only limit=, all=, size=, trunc_cmd= and filters=")
+        if query.get("size", ["0"]) not in (["0"], ["false"], ["False"], [""]):
+            raise Refused("list may not ask for size")
+        return Forward(filter_list=True)
+
+    m = WORKER_CONTAINER_RE.match(path)
+    if m:
+        name = urllib.parse.unquote(m.group(1))
+        action = m.group(2)
+        if method == "GET" and action == "json" and set(query) <= {"size"} and not body:
+            if query.get("size", ["false"]) not in (["false"], ["0"], [""]):
+                raise Refused("inspect may not ask for size")
+            return Forward(container=name, hide_missing=True)
+        if method == "POST" and action == "start" and not query and not body:
+            return Forward(container=name, hide_missing=True)
+        if method == "POST" and action == "stop" and not body:
+            times = query.get("t", ["10"])
+            if set(query) - {"t"} or len(times) != 1 or not re.fullmatch(r"[0-9]{1,3}", times[0]):
+                raise Refused("stop takes only t=<seconds>")
+            return Forward(container=name, hide_missing=True)
+        if method == "DELETE" and action is None and not body:
+            if set(query) - {"v", "link", "force"}:
+                raise Refused("remove takes only v=, link= and force=")
+            for key in ("v", "link"):
+                if query.get(key, ["False"]) not in (["False"], ["false"], ["0"]):
+                    raise Refused(f"remove may not set {key}")
+            return Forward(container=name, hide_missing=True)
+        if method == "PUT" and action == "archive":
+            paths = query.get("path", [])
+            if set(query) != {"path"} or len(paths) != 1 or not paths[0].startswith("/"):
+                raise Refused("archive takes only path=<absolute path>")
+            return Forward(container=name, hide_missing=True)
+        if method == "POST" and action == "exec" and not query:
+            _check_worker_exec(body)
+            return Forward(container=name, records_exec=True, exec_container=True,
+                           hide_missing=True)
+        raise Refused(f"{method} {path} is not a call this proxy forwards")
+
+    m = EXEC_RE.match(path)
+    if m:
+        exec_id, action = m.group(1), m.group(2)
+        if exec_id not in known_execs:
+            raise Refused(f"exec {exec_id} was not created through this proxy")
+        if method == "POST" and action == "start" and not query:
+            _check_exec_start(body)
+            return Forward(exec_id=exec_id, hijack=True)
+        if method == "GET" and action == "json" and not query and not body:
+            return Forward(exec_id=exec_id)
+    raise Refused(f"{method} {path} is not a call this proxy forwards")
+
+
+def filter_list(cfg, data):
+    """A container list reply with only the containers in scope."""
+    try:
+        items = json.loads(data)
+    except ValueError:
+        raise Upstream("upstream list is not JSON") from None
+    if not isinstance(items, list):
+        raise Upstream("upstream list is not a list")
+    kept = [c for c in items if isinstance(c, dict) and isinstance(c.get("Labels"), dict)
+            and c["Labels"].get(cfg.label_key) == cfg.label_value]
+    return json.dumps(kept).encode()
+
+
 def in_scope(cfg, inspect):
     """Whether an inspect body (GET /containers/<c>/json) is a container
-    this chaos_ctl-mode proxy may act on."""
+    this chaos_ctl- or cairn_dispatcher-mode proxy may act on."""
     config = inspect.get("Config") if isinstance(inspect, dict) else None
     labels = config.get("Labels") if isinstance(config, dict) else None
     return isinstance(labels, dict) and labels.get(cfg.label_key) == cfg.label_value
@@ -402,6 +610,8 @@ def check(cfg, method, target, body, known_execs=frozenset()):
     query = urllib.parse.parse_qs(url.query, keep_blank_values=True)
     if cfg.mode == "chaos_ctl":
         return _check_chaos_ctl(method, path, query, body, known_execs)
+    if cfg.mode == "cairn_dispatcher":
+        return _check_cairn_dispatcher(cfg, method, path, query, body, known_execs)
     if method == "HEAD":
         raise Refused("method not forwarded")
     return _check_quorum(cfg, method, path, query, body)
@@ -411,8 +621,8 @@ def with_container_id(target, name, container_id):
     """target with its container segment replaced by container_id."""
     url = urllib.parse.urlsplit(target)
     quoted = re.escape(urllib.parse.quote(name, safe="")) + "|" + re.escape(name)
-    path = re.sub(r"(/containers/)(?:" + quoted + r")(/)",
-                  lambda m: m.group(1) + container_id + m.group(2), url.path, count=1)
+    path = re.sub(r"(/containers/)(?:" + quoted + r")(?=/|$)",
+                  lambda m: m.group(1) + container_id, url.path, count=1)
     return urllib.parse.urlunsplit(url._replace(path=path))
 
 
@@ -437,6 +647,11 @@ HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-length"
 
 class Upstream(Exception):
     pass
+
+
+class Missing(Refused):
+    """A container that is not there, or not in scope where the mode hides
+    those (Forward.hide_missing)."""
 
 
 def _relay(src, dst):
@@ -498,13 +713,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         res, data = self._upstream("GET", "/containers/" + urllib.parse.quote(name, safe="") +
                                    "/json")
         if res.status != 200:
-            raise Refused(f"container {name} not found")
+            raise Missing(f"container {name} not found")
         try:
             inspect = json.loads(data)
         except ValueError:
             raise Refused(f"container {name}: upstream inspect is not JSON") from None
         if not in_scope(self.cfg, inspect):
-            raise Refused(f"container {name} does not carry {self.cfg.label}")
+            raise Missing(f"container {name} does not carry {self.cfg.label}")
         container_id = inspect.get("Id")
         if not isinstance(container_id, str) or not re.fullmatch(r"[0-9a-f]{12,128}",
                                                                   container_id):
@@ -558,15 +773,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         with self.execs_lock:
             known = frozenset(self.known_execs)
+        fwd = None
         try:
             fwd = check(self.cfg, self.command, self.path, body, known)
             target = self.path
+            if fwd.body is not None:
+                body = fwd.body
             if fwd.container is not None:
                 container_id, res, data = self._resolve(fwd.container)
                 if self.command == "GET":
                     self._reply(res.status, data, res.getheader("Content-Type", "application/json"))
                     return
                 target = with_container_id(target, fwd.container, container_id)
+                if fwd.exec_container:
+                    spec = json.loads(body)
+                    if "Container" in spec:
+                        spec["Container"] = container_id
+                        body = json.dumps(spec).encode()
+        except Missing as ex:
+            if fwd is not None and fwd.hide_missing:
+                sys.stderr.write(f"hidden {self.command} {self.path}: {ex}\n")
+                self._reply(404, json.dumps({"message": f"No such container: {fwd.container}"})
+                            .encode())
+            else:
+                self._refuse(ex)
+            return
         except Refused as ex:
             self._refuse(ex)
             return
@@ -584,6 +815,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if fwd.records_exec and 200 <= res.status < 300:
             self._remember_exec(data)
+        if fwd.filter_list and res.status == 200:
+            try:
+                data = filter_list(self.cfg, data)
+            except Upstream as ex:
+                self._reply(502, json.dumps({"message": f"container_api_proxy: {ex}"}).encode())
+                return
         headers = [(k, v) for k, v in res.getheaders() if k.lower() not in HOP_HEADERS]
         self._reply(res.status, data, res.getheader("Content-Type", "application/json"), headers)
 
@@ -591,11 +828,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_POST = _handle
     do_DELETE = _handle
     do_HEAD = _handle
+    # Only cairn_dispatcher mode forwards a PUT (an archive); check() refuses
+    # it in the others.
+    do_PUT = _handle
 
     def _method_refused(self):
         self._refuse("method not forwarded")
 
-    do_PUT = _method_refused
     do_PATCH = _method_refused
     do_OPTIONS = _method_refused
 
