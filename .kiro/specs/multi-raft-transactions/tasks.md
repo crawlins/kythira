@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-Spec only. No task has started.
+Task 1 done (October 28, 2026): `include/raft/txn_envelope.hpp`.
 
 Each task is one independently mergeable PR: it builds, its tests pass, and
 an unwrapped host is byte- and lock-identical before and after it
@@ -18,7 +18,7 @@ Question 1 (gateway default) must be answered before task 9, and question 3
 
 ### Tier 1: atomic multi-key writes, read committed
 
-- [ ] 1. Envelope
+- [x] 1. Envelope
   - `include/raft/txn_envelope.hpp`: encode/decode for every op in the
     design's table, versioned, with length and count caps applied before any
     allocation (the untrusted-input rule of PR #507)
@@ -26,6 +26,17 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     (`key_locked_exception`, `isolation_unsupported_exception`)
   - Tests: round trip and truncation/garbage refusal for every op
   - _Requirements: 1.5, 2.2_
+  - Notes: magic `0x4B`, version 1, then an op code that is the
+    `txn_envelope<Key>` variant index plus one. Keys go through the host's
+    `shard_key_codec`. Caps: 65,536 entries per list, 64 KiB per key,
+    64 MiB per command; every count is also checked against the bytes left
+    before `reserve()`, and the length check compares against the bytes
+    remaining rather than `offset + n`, which a forged length would wrap.
+    Unknown ops and enum values, booleans other than 0/1 and trailing
+    bytes are refused. Results carry only the fields their status uses;
+    the conflict statuses name the key and, when an intent caused it, the
+    holder and its primary. `txn_isolation` and `txn_record_status` live
+    here too, since the exceptions name them.
 
 - [ ] 2. Wrapper: plain, one-phase, snapshot format
   - `include/raft/txn_state_machine.hpp` with `_inner`, `_intents`,
