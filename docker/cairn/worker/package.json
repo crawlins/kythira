@@ -1,0 +1,7 @@
+{
+  "name": "kythira-cairn-worker",
+  "private": true,
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "0.73.0"
+  }
+}

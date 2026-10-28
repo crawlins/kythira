@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+// The agents' way to the chaos cluster (.kiro/specs/cairn-chaos-testing/
+// task 10). Cairn workers have no MCP; their agent runs commands, and this
+// is the one command that reaches the tool server
+// (docker/cairn/tool_server/chaos_http.py), which runs chaos_ctl.
+//
+//   chaos tools                  list the tools and what each takes
+//   chaos <tool> [JSON | -]      call one, e.g. chaos fault.kill '{"node":2}'
+//
+// Prints the tool's JSON result on stdout and exits with chaos_ctl's own
+// status: 0 done, 1 the tool reported an error (read it), 2 bad usage.
+// CHAOS_URL overrides http://tool-server:7700.
+
+"use strict";
+
+const base = (process.env.CHAOS_URL || "http://tool-server:7700").replace(/\/+$/, "");
+const usage =
+    "usage: chaos tools | chaos <tool> [JSON | -]\n" +
+    "  e.g. chaos cluster.status; chaos fault.partition '{\"groups\":[[1],[2,3]]}'\n";
+
+function readStdin() {
+    return new Promise((resolve, reject) => {
+        let data = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", (chunk) => (data += chunk));
+        process.stdin.on("end", () => resolve(data));
+        process.stdin.on("error", reject);
+    });
+}
+
+async function main(argv) {
+    if (argv.length === 0 || argv[0] === "-h" || argv[0] === "--help" || argv[0] === "help") {
+        process.stdout.write(usage);
+        return argv.length === 0 ? 2 : 0;
+    }
+    if (argv.length > 2) {
+        process.stderr.write(usage);
+        return 2;
+    }
+    const [name, rawArg] = argv;
+    let res;
+    if (name === "tools") {
+        res = await fetch(`${base}/tools`);
+    } else {
+        let body = rawArg === undefined ? "{}" : rawArg === "-" ? await readStdin() : rawArg;
+        try {
+            JSON.parse(body);
+        } catch (e) {
+            process.stderr.write(`chaos: arguments are not JSON: ${e.message}\n${usage}`);
+            return 2;
+        }
+        res = await fetch(`${base}/tool/${encodeURIComponent(name)}`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body,
+        });
+    }
+    const text = await res.text();
+    process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+    const exit = res.headers.get("x-chaos-exit");
+    if (exit !== null) {
+        return Number(exit);
+    }
+    return res.ok ? 0 : 2;
+}
+
+main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (e) => {
+        process.stderr.write(`chaos: cannot reach the tool server at ${base}: ${e.cause?.message || e.message}\n`);
+        process.exit(2);
+    },
+);

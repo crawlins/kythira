@@ -6,8 +6,9 @@
 # container runtime only through the filtering proxy (DOCKER_HOST, set by
 # docker/cairn/cairn-compose.yml). The CLI speaks the same API to Docker
 # and to rootless Podman's compatible socket, so one image serves both.
-# The MCP adapter (task 10) will be added here; until then the container
-# idles and chaos_ctl is run in it with `exec`.
+# Agents reach it through chaos_http.py on port 7700 (task 10; Cairn has
+# no MCP, so this is plain HTTP that the workers' `chaos` command calls);
+# the host still runs init and fence checks with `exec chaos_ctl`.
 #
 # Built from the repository root after `cmake --build build --target
 # docker-cairn-tool-server-image` stages chaos_ctl into dist/; the base,
@@ -36,7 +37,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 FROM kythira-chaos-node:dev
 
+# python3 for chaos_http.py, nothing else.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=docker-cli /tmp/docker/docker /usr/local/bin/docker
+COPY docker/cairn/tool_server/chaos_http.py /usr/local/bin/chaos_http.py
 COPY docker/cairn/tool_server/dist/chaos_ctl /usr/local/bin/chaos_ctl
 COPY docker/cairn/failpoints.allowlist /usr/local/bin/cairn-failpoints.allowlist
 
@@ -48,4 +54,6 @@ ENV KYTHIRA_CONTAINER_RUNTIME=docker \
 # The base image's healthcheck probes a chaos_node that does not run here.
 HEALTHCHECK NONE
 
-ENTRYPOINT ["sleep", "infinity"]
+EXPOSE 7700
+
+ENTRYPOINT ["python3", "-u", "/usr/local/bin/chaos_http.py"]
