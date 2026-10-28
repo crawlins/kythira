@@ -1,0 +1,26 @@
+run-tier-c-row.sh: 3 host processes started; logs under /tmp/kythira-tier-c-WtsOI0
+  network probe from node 1: {"node_id":"1","peers":[{"peer":"2","rtt_samples":11,"rtt_median_us":260.712,"probe_bytes":1048576,"bandwidth_mib_per_sec":542.785},{"peer":"3","rtt_samples":11,"rtt_median_us":323.188,"probe_bytes":1048576,"bandwidth_mib_per_sec":576.362}]}
+  network probe from node 2: {"node_id":"2","peers":[{"peer":"1","rtt_samples":11,"rtt_median_us":254.153,"probe_bytes":1048576,"bandwidth_mib_per_sec":632.713},{"peer":"3","rtt_samples":11,"rtt_median_us":246.355,"probe_bytes":1048576,"bandwidth_mib_per_sec":817.848}]}
+  network probe from node 3: {"node_id":"3","peers":[{"peer":"1","rtt_samples":11,"rtt_median_us":256.715,"probe_bytes":1048576,"bandwidth_mib_per_sec":550.196},{"peer":"2","rtt_samples":11,"rtt_median_us":238.79,"probe_bytes":1048576,"bandwidth_mib_per_sec":781.526}]}
+    run 1/11: 2193.2 ops/sec
+    run 2/11: 2204.9 ops/sec
+    run 3/11: 2194.7 ops/sec
+    run 4/11: 2215.8 ops/sec
+    run 5/11: 2179.8 ops/sec
+    run 6/11: 2196.7 ops/sec
+    run 7/11: 2204.5 ops/sec
+    run 8/11: 2213.4 ops/sec
+    run 9/11: 2196.3 ops/sec
+    run 10/11: 2174.9 ops/sec
+    run 11/11: 2165.3 ops/sec
+  httplib / application/json / write: nodes=3 groups=4 value=128B in_flight=4 tick=2ms
+      tier:     Tier C (one host process per node, one machine, driver in its own process) — a like-for-like comparison with an external number is permitted at this tier (Requirement 3.3)
+      routing:  submit_command(key, ...), leader resolved by key
+      headline: 2196.3 ops/sec (median of 11 runs) | min 2165.3 max 2215.8 | spread 1.4% of median (p50 spread 1.5%)
+      verdict:  stable (judged on the throughput spread); machine was not quiet at start
+      median run: p50=1791.5us p95=2266.6us p99=n/a (400 samples)
+      counts:   50 warm-up operations discarded per run, 400 offered per measured run (Requirement 6.1)
+      replication: NOT MEASURED at this tier — the host process is deliberately uninstrumented (Requirement 8.2 keeps measurement counters out of the measured process), so these columns are absent rather than zero
+      placement: all host processes and the driver on ip-172-31-11-121, loopback
+      elections: 0 of 11 measured windows contained one. Reported, never asserted — a window that contained an election is not a window measuring a workload, and a row that cannot say whether it did cannot be read at all.
+      artifacts: /tmp/tierc/multi_raft_bench_20261028_182053.{csv,json}

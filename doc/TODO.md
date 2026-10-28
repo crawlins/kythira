@@ -927,15 +927,63 @@ unverified completion claim.
   near-identical network read "container-shaped" (2.78x). That is the
   October 15 fix to item 7 above taking effect, not a network change.
 
+  ### The ordering on current code (October 28, 2026)
+
+  Five more runs, interleaved by placement so time-of-day drift cannot line
+  up with it, on the **same binaries as retake 4** (sha256 `c05ce0a8...` /
+  `f9d126ba...`, built from `e9f8b8e`, checked before every run), the same
+  workload, `--also-tier-c` throughout. Data in
+  `doc/data/tier-e-shape-2/sweep-c6i-e9f8b8e-*`. Every run stable in both
+  arms, 0 elections, every instance a Xeon 8375C, loopback 38-39 us, audits
+  clean, ~$1.50 total.
+
+  | condition | n | Tier E | Tier C | E/C | RTT |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | cluster | 2 | 2144.6, 2453.3 | 2516.0, 2196.3 | 0.852-1.117 | 82-84 us |
+  | single-az | 2 | 2290.7, 2291.0 | 2120.1, 2169.7 | 1.056-1.080 | 140-141 us |
+  | multi-az | 2 | 1737.8, 1758.0 | 2162.2, 2172.1 | 0.804-0.809 | 353-355 us |
+
+  (single-az's first row is retake 4.) The `git_commit` in these five
+  `run.json` files is `50297aa`, the checkout that ran the script, not the
+  binaries' commit; `scripts/perf-cloud/` is identical between the two.
+
+  **1. Multi-AZ is last, and that is now a finding on current code.** Both
+  multi-AZ rows sit below both rows of either other placement in raw Tier E
+  and in E/C, with Tier C pinned at 2162-2172 so the machine is not the
+  variable. It costs ~24% against single-AZ, and it is the most repeatable
+  condition in the sweep (1.2% apart).
+
+  **2. Single-AZ reproduces to 0.01%** (2290.7, 2291.0), with Tier C 2.3%
+  apart. That is the first Shape 2 condition ever to repeat inside its own
+  window spread.
+
+  **3. Single-AZ against cluster is UNRESOLVED, and cluster is the noisy
+  one now.** Cluster's two Tier E rows (2145, 2453) bracket single-AZ's
+  2291 at the same RTT. Its first run also drew a driver whose Tier C read
+  2516, 16% above the median of the other five arms (2120-2196), so its E/C of 0.852 is
+  partly a fast loopback machine; the second run's 1.117 is the highest
+  in the table. Two runs cannot say whether cluster beats single-AZ, and
+  the 140 us vs 83 us RTT gap evidently buys little at this load. Read no
+  cluster number from one run.
+
+  **4. The September ranking does not carry over.** On `e4a0c51` cluster
+  beat multi-AZ by 30% normalised and single-AZ was unresolved; on
+  `e9f8b8e` single-AZ is at least level with cluster. Tier E rose
+  1.2-1.7x for cluster, 1.7-1.9x for multi-AZ and 2.3x for single-AZ,
+  while Tier C rose 1.3-1.7x. The code changes between the two
+  (connection pooling above all) shrank the per-RPC cost the network
+  multiplied, which is consistent with E/C rising for single-AZ and
+  multi-AZ. Placement findings are statements about a build, and the build
+  belongs on the row.
+
   ### Still owed
 
-  A three-way placement ordering on **current** code: cluster and multi-az
-  retaken on the same binaries as retake 4 (or newer, all three rebuilt
-  together), each repeated, each with `--also-tier-c`. That is four more
-  runs at ~$0.30 each, plus a second single-AZ repeat. Build them in an
-  `ubuntu:24.04` container while the controlling machine is on 26.04 (the
-  launched AMI is 24.04). The September result stands as a statement about
-  `e4a0c51`: cluster beats multi-AZ, single-AZ unresolved.
+  Nothing for the multi-AZ claim. A third and fourth cluster run would
+  settle cluster against single-AZ (~$0.60); not scheduled, since the
+  production-relevant gap (one AZ vs three) is now measured. Perf binaries
+  for these runs must be built in an `ubuntu:24.04` container while the
+  controlling machine is on 26.04 (glibc 2.43 binaries do not start on the
+  24.04 AMI).
 
 - **CI has never built warning-free, and the "no warnings" claim in Current
   Status is now settled — measured, attributed, and *not* fixed (September 5,
