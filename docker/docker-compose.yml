@@ -9,7 +9,7 @@
 
 services:
   node1:
-    image: kythira-chaos-node:dev
+    image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
     container_name: chaos_node_1
     hostname: node1
     environment:
@@ -40,7 +40,7 @@ services:
       - raft_net
 
   node2:
-    image: kythira-chaos-node:dev
+    image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
     container_name: chaos_node_2
     hostname: node2
     environment:
@@ -63,7 +63,7 @@ services:
       - raft_net
 
   node3:
-    image: kythira-chaos-node:dev
+    image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
     container_name: chaos_node_3
     hostname: node3
     environment:

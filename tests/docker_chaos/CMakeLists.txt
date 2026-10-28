@@ -311,6 +311,12 @@ if(_RUNTIME_EXE)
     # hits this branch with folly/Boost/httplib all found but no chaos_node
     # target actually defined, failing CMake generate on
     # `$<TARGET_FILE:chaos_node>` with "No target chaos_node".
+    # A seeded-bug build (KYTHIRA_CHAOS_SEEDED_BUG) gets its own tag, so it
+    # can never overwrite :dev, which every scenario and the cairn fence run.
+    set(_CHAOS_IMAGE_TAG kythira-chaos-node:dev)
+    if(KYTHIRA_CHAOS_SEEDED_BUG STREQUAL "vote_term")
+        set(_CHAOS_IMAGE_TAG kythira-chaos-node:seeded-vote-term)
+    endif()
     if(NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
         add_custom_target(docker-chaos-image
             DEPENDS chaos_node chaos_workload
@@ -324,9 +330,9 @@ if(_RUNTIME_EXE)
                     "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist/chaos_workload"
             COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_CHAOS_DOCKERFILE}"
-                    --tag kythira-chaos-node:dev
+                    --tag ${_CHAOS_IMAGE_TAG}
                     "${CMAKE_SOURCE_DIR}"
-            COMMENT "Staging chaos_node binary and building kythira-chaos-node:dev image"
+            COMMENT "Staging chaos_node binary and building ${_CHAOS_IMAGE_TAG} image"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         )
     else()

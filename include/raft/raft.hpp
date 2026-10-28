@@ -5644,7 +5644,21 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
     }
 
     // Rule 3: Check if we've already voted for another candidate in this term
-    if (_voted_for.has_value() && _voted_for.value() != request.candidate_id()) {
+    //
+    // KYTHIRA_CHAOS_SEEDED_BUG_VOTE_TERM plants the cairn M1 bug
+    // (.kiro/specs/cairn-chaos-testing/ task 9): the vote is granted without
+    // checking whether this term already has one, so two candidates in one
+    // term can both win. Only chaos_node is ever built with it, and only under
+    // -DKYTHIRA_CHAOS_SEEDED_BUG=vote_term, which no default build, defconfig
+    // or CI job sets. It is not a failpoint on purpose: an agent that could
+    // switch the bug on would not have found it.
+#if defined(KYTHIRA_CHAOS_SEEDED_BUG_VOTE_TERM)
+    constexpr bool one_vote_per_term = false;
+#else
+    constexpr bool one_vote_per_term = true;
+#endif
+    if (one_vote_per_term && _voted_for.has_value() &&
+        _voted_for.value() != request.candidate_id()) {
         _logger.debug("Denying vote: already voted for another candidate",
                       {{"node_id", node_id_to_string(_node_id)},
                        {"voted_for", node_id_to_string(_voted_for.value())},

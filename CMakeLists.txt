@@ -1651,6 +1651,32 @@ else()
     message(STATUS "libfiu not found — chaos tests disabled (sudo apt install libfiu-dev)")
 endif()
 
+# ── Cairn M1 seeded bug (.kiro/specs/cairn-chaos-testing/ task 9) ────────────
+#
+# Plants a known Raft bug in chaos_node, and only there, so the cairn M1 runs
+# can show the agent loop finds something before a clean result means
+# anything. Empty (the default) plants nothing. `vote_term` grants a vote
+# without checking whether the term already has one (raft.hpp, Rule 3). It is
+# a build option rather than a failpoint because the agents can toggle
+# failpoints, and no defconfig or CI job sets it.
+set(KYTHIRA_CHAOS_SEEDED_BUG "" CACHE STRING
+    "Plant a known Raft bug in chaos_node for the cairn M1 runs: empty (none) or vote_term")
+set_property(CACHE KYTHIRA_CHAOS_SEEDED_BUG PROPERTY STRINGS "" vote_term)
+if(KYTHIRA_CHAOS_SEEDED_BUG STREQUAL "vote_term")
+    message(WARNING
+        "\n"
+        "  ****************************************************************\n"
+        "  *  KYTHIRA_CHAOS_SEEDED_BUG=vote_term                          *\n"
+        "  *  chaos_node is built with a PLANTED RAFT BUG (double votes). *\n"
+        "  *  docker-chaos-image tags it kythira-chaos-node:seeded-vote-  *\n"
+        "  *  term. Never ship or test anything else with this build.     *\n"
+        "  ****************************************************************")
+elseif(NOT KYTHIRA_CHAOS_SEEDED_BUG STREQUAL "")
+    message(FATAL_ERROR
+        "KYTHIRA_CHAOS_SEEDED_BUG='${KYTHIRA_CHAOS_SEEDED_BUG}' is not a known seeded bug; "
+        "use vote_term, or leave it empty")
+endif()
+
 # ── The heavy-translation-unit job pool ──────────────────────────────────────
 #
 # A Ninja job pool that lets at most ONE memory-heavy translation unit compile

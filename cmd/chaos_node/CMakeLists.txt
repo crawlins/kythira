@@ -43,6 +43,12 @@ else()
     message(STATUS "chaos_node: fault injection disabled (libfiu not found)")
 endif()
 
+# The cairn M1 seeded bug, planted only here (top-level CMakeLists.txt
+# explains the option and prints the banner).
+if(KYTHIRA_CHAOS_SEEDED_BUG STREQUAL "vote_term")
+    target_compile_definitions(chaos_node PRIVATE KYTHIRA_CHAOS_SEEDED_BUG_VOTE_TERM)
+endif()
+
 set_target_properties(chaos_node PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
