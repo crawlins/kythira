@@ -4,11 +4,12 @@
 
 # Stops everything the cairn chaos tests start, in one command
 # (.kiro/specs/cairn-chaos-testing/ Requirement 7.6, design §5): the engine
-# and its workers, the tool server, both proxies and the cluster in
-# docker/cairn/cairn-compose.yml, plus the host-side clusters that
-# `chaos_ctl replay` and `minimize` start (docker/docker-compose.yml,
-# docker/chaos-5-compose.yml) and any chaos_workload a host-side run left
-# running. It is also what a run's wall-clock limit fires:
+# and its workers, the tool server, the proxies, the tunnel to llama.cpp
+# and the cluster in docker/cairn/cairn-compose.yml, plus the host-side
+# clusters that `chaos_ctl replay` and `minimize` start
+# (docker/docker-compose.yml, docker/chaos-5-compose.yml) and any
+# chaos_workload a host-side run left running. It is also what a run's
+# wall-clock limit fires:
 #
 #   scripts/cairn/kill.sh               stop now
 #   scripts/cairn/kill.sh --after 7200  stop in two hours (run it with &)
@@ -59,8 +60,26 @@ down() {
     fi
 }
 
-# Every profile, so the engine and the probe come down with the rest.
-down "$repo/docker/cairn/cairn-compose.yml" --profile engine --profile probe
+# The workers first: Cairn's dispatcher creates them, not compose, so
+# `down` does not know them. Stopping the dispatcher first keeps it from
+# starting more.
+cairn_run="${CAIRN_RUN:-kythira-cairn}"
+"$runtime" stop --time 5 "$cairn_run-dispatcher" > /dev/null 2>&1 || true
+workers="$("$runtime" ps -aq --filter "label=kythira.cairn.worker=$cairn_run" 2>/dev/null || true)"
+if [ -n "$workers" ]; then
+    # shellcheck disable=SC2086  # one id per word
+    if "$runtime" rm -f $workers > /dev/null; then
+        echo "cairn kill: removed $(wc -w <<< "$workers") worker container(s)"
+    else
+        echo "cairn kill: worker containers did not all come down" >&2
+        status=1
+    fi
+fi
+
+# Every profile, so the engine, the tunnel and the probe come down with the
+# rest.
+down "$repo/docker/cairn/cairn-compose.yml" --profile engine --profile dispatch --profile llm \
+    --profile probe
 down "$repo/docker/docker-compose.yml"
 down "$repo/docker/chaos-5-compose.yml"
 

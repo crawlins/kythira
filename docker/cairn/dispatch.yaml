@@ -1,0 +1,87 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Cairn v0.2.1's dispatcher config for the kythira chaos runs
+# (.kiro/specs/cairn-chaos-testing/ task 10, design §5 and §7). Mounted
+# into the dispatcher service of cairn-compose.yml; scripts/cairn/
+# start-run.sh renders a copy for a CAIRN_RUN other than the default.
+#
+# Routing: one tier for now, the local model. Only Cairn's Pi worker can
+# speak to llama.cpp (task 1b), and it does so with no API key and no API
+# spend; llama-server is reached through the llm-tunnel service. The two
+# API tiers of Requirement 8.2 are left commented out: they need a key
+# with a monthly spend limit, which Clark has not set up, and nothing in
+# this file may carry a real key. M1 (task 11) measures what the local
+# tier manages alone.
+
+server: "http://engine:8000"
+
+# Merged into every worker's environment. The tool server and the tunnel
+# are on cairn_net; anything else a worker asks for goes to the egress
+# proxy, which refuses all but the model hosts.
+common_env:
+  HTTP_PROXY: "http://egress-proxy:3128"
+  HTTPS_PROXY: "http://egress-proxy:3128"
+  NO_PROXY: "tool-server,llm-tunnel"
+
+runtime:
+  interval: 3
+  # One project at a time: every project drives the same cluster, and two
+  # would inject faults into each other's runs.
+  max_running_projects: 1
+  max_workers: 2
+  max_project_workers: 2
+  # A cold llama-server answers its first request slowly.
+  healthcheck_timeout: 120
+  prompt_group: "default"
+
+tasks:
+  bootstrap:
+    timeout: 600
+    conclude_timeout: 120
+  reason:
+    timeout: 300
+    max_intents: 2
+  explore:
+    timeout: 900
+    conclude_timeout: 120
+
+container:
+  # Must equal CAIRN_WORKER_IMAGE: the dispatch API proxy refuses any other.
+  image: "kythira-cairn-worker:dev"
+  # cairn_net's name in cairn-compose.yml, ${CAIRN_RUN}-cairn_net.
+  network_mode: "kythira-cairn-cairn_net"
+  # Kept for triage; scripts/cairn/kill.sh removes them.
+  completed_action: "stop"
+
+workers:
+  # llama.cpp's llama-server, as set up for M1 (tasks.md, task 10 notes).
+  # It serves one model whatever PI_MODEL says; the name is what Pi
+  # records. The key is a placeholder: llama-server is started without one
+  # and listens only on the GPU host's loopback.
+  - name: "pi_local"
+    type: "pi"
+    task_types: [bootstrap, reason, explore]
+    # One sequence at a time keeps the whole 32k context per request.
+    max_running: 1
+    priority: 0
+    env:
+      PI_MODEL: "qwen3-coder-30b-a3b-instruct"
+      PI_BASE_URL: "http://llm-tunnel:8080/v1"
+      PI_API_KEY: "unused"
+      PI_PROVIDER_API: "openai-completions"
+      PI_MODEL_CONTEXT_WINDOW: "32768"
+
+  # The API tiers of Requirement 8.2, for when a spend-limited key exists.
+  # They also need their agent CLI added to docker/cairn/worker/, which
+  # carries only Pi. Never commit a real key: pass it at run time.
+  #
+  # - name: "claudecode_planner"
+  #   type: "claudecode"
+  #   task_types: [reason]
+  #   max_running: 1
+  #   priority: 1
+  #   env:
+  #     ANTHROPIC_MODEL: "<top Claude model>"
+  #     ANTHROPIC_BASE_URL: "https://api.anthropic.com"
+  #     ANTHROPIC_AUTH_TOKEN: "<from the run's environment>"
