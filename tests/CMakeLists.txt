@@ -1190,6 +1190,9 @@ add_raft_completion_test(multi_raft_static_cluster_integration_test
 add_raft_completion_test(admin_entry_unit_test admin_entry_unit_test.cpp)
 add_raft_completion_test(splittable_state_machine_unit_test splittable_state_machine_unit_test.cpp)
 add_raft_completion_test(shard_commands_unit_test shard_commands_unit_test.cpp)
+# Cross-shard transactions (.kiro/specs/multi-raft-transactions/ task 1): the
+# envelope and result wire formats.
+add_raft_completion_test(txn_envelope_test txn_envelope_test.cpp)
 add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
 add_raft_completion_test(multi_raft_merge_integration_test
