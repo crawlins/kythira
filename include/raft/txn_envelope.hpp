@@ -446,13 +446,15 @@ public:
     }
 
     /// @brief A list count, refused before any allocation if it exceeds
-    /// `k_txn_max_keys` or could not fit in the bytes left at
-    /// `min_element_bytes` each.
-    auto count(std::size_t min_element_bytes, const char* what) -> std::size_t {
+    /// `cap` or could not fit in the bytes left at `min_element_bytes` each.
+    /// Envelope lists use the default `k_txn_max_keys`; snapshot tables pass a
+    /// larger cap since a shard can hold more intents than one txn writes.
+    auto count(std::size_t min_element_bytes, const char* what, std::size_t cap = k_txn_max_keys)
+        -> std::size_t {
         const auto n = u64();
-        if (n > k_txn_max_keys) {
+        if (n > cap) {
             fail(std::string(what) + " count " + std::to_string(n) + " exceeds the cap of " +
-                 std::to_string(k_txn_max_keys));
+                 std::to_string(cap));
         }
         if (n > remaining() / min_element_bytes) {
             fail(std::string(what) + " count " + std::to_string(n) + " cannot fit in the " +

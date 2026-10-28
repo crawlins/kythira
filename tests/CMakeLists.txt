@@ -1193,6 +1193,10 @@ add_raft_completion_test(shard_commands_unit_test shard_commands_unit_test.cpp)
 # Cross-shard transactions (.kiro/specs/multi-raft-transactions/ task 1): the
 # envelope and result wire formats.
 add_raft_completion_test(txn_envelope_test txn_envelope_test.cpp)
+# Tasks 2-4: the transactional_state_machine wrapper, and its split/absorb
+# round-trip law over random locks and records.
+add_raft_completion_test(txn_state_machine_test txn_state_machine_test.cpp)
+add_raft_completion_test(txn_split_absorb_property_test txn_split_absorb_property_test.cpp)
 add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
 add_raft_completion_test(multi_raft_merge_integration_test
