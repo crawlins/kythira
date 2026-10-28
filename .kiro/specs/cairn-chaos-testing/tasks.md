@@ -1,6 +1,6 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (9/14 tasks: 1-9)
+## Status: In progress (10/14 tasks: 1-10)
 
 **Last Updated**: October 28, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
@@ -454,12 +454,100 @@ compatibility").
       probabilistic here, as design §4 expects; M1's "found" bar
       (task 11) is the agent's, not this schedule's.
 
-- [ ] **10. Worker images, routing and projects.** (Design §5.)
-  - [ ] Worker Dockerfiles FROM pinned upstream digests, adding only MCP
-        client config.
-  - [ ] Three-tier model routing per task 1b's answer.
-  - [ ] One project per invariant under `docker/cairn/projects/`, with the
-        origin facts and the doc's seed hints.
+- [x] **10. Worker images, routing and projects.** (Design §3.1, §5, §7.)
+  - [x] 10.1 The agents' way to the tools. The original wording here
+        ("adding only MCP client config") assumed MCP, which task 1a found
+        Cairn does not have. Instead `docker/cairn/tool_server/chaos_http.py`
+        (stdlib) answers `GET /tools` and `POST /tool/<name>` on
+        `cairn_net` and runs `chaos_ctl <name> -`, one call at a time,
+        only for names `chaos_ctl tools` lists; the worker image's `chaos`
+        command (`docker/cairn/worker/chaos`, Node, no dependencies) calls
+        it. The tool server image gains python3 and runs it as its
+        entrypoint.
+  - [x] 10.2 Worker image `docker/cairn/worker/`: `node:22.21.1-bookworm-slim`
+        by digest, Pi 0.73.0 with its tree pinned by `package-lock.json`
+        and install scripts skipped, `ripgrep` and `fd-find` (Pi's grep
+        and find tools otherwise download them at run time), `chaos`, and
+        `PI_OFFLINE=1`. Not FROM Cairn's worker image: it is Kali with a
+        security toolchain (Requirement 7.4), and its Codex and Claude Code
+        cannot reach llama.cpp anyway (task 1b).
+  - [x] 10.3 The dispatcher behind its own proxy. `container_api_proxy`
+        gains `PROXY_MODE=cairn_dispatcher`, allowing exactly the calls
+        Cairn's `ContainerManager` makes (docker-py 7.1): create only
+        `cairn-dispatch-*` / `cairn-startup-healthcheck-*` of the worker
+        image running `sleep infinity` on the run's `cairn_net` with no
+        other host config (labelled by the proxy), list (filtered),
+        inspect, start, stop, remove, `PUT archive`, and unprivileged
+        exec with no TTY or stdin. Other containers answer 404.
+  - [x] 10.4 Routing (`docker/cairn/dispatch.yaml`): one Pi worker on the
+        local model, `max_running_projects: 1` since every project drives
+        the one cluster. The API tiers are written out but commented: they
+        need a spend-limited key (Requirement 8.1) and their CLI in the
+        worker image, and M1 first measures the local tier alone.
+  - [x] 10.5 Model server for M1 (added October 28, 2026: no machine here
+        has a GPU that can serve a useful model, and Clark chose to rent
+        one, capped at $15 for M1).
+    - AWS g5.xlarge (A10G, 24 GB VRAM, 4 vCPU, 16 GiB RAM, about
+      $1.006/hour on demand in us-east-1), Deep Learning Base AMI
+      (Ubuntu 24.04, NVIDIA driver), 80 GB gp3 root volume. Security
+      group: SSH only, from one address. Stopped between runs; the
+      stopped volume costs about $6/month.
+    - llama.cpp built from source with CUDA 13.2 (build 8642541b2).
+      Model `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`, Q4_K_M,
+      18.56 GB.
+    - `llama-server --host 127.0.0.1 --port 8080 -ngl 99 -c 32768 -lm none`.
+      `-lm none` is required: with mmap the 18.56 GB file thrashes the
+      16 GiB of RAM during load. Load takes about 72 s; VRAM 21.0 of
+      23.0 GiB; about 130 tokens/s generation.
+    - Reached only through the `llm-tunnel` service (an SSH local
+      forward to the server's loopback; `CAIRN_LLM_SSH`,
+      `CAIRN_LLM_SSH_KEY`). Setup and smoke test cost about $0.72,
+      including Cairn's `PiDriver` healthcheck over the tunnel.
+  - [x] 10.6 Engine and wiring. `scripts/cairn/build-engine.sh` builds
+        Cairn unmodified from the pinned commit (there is no published
+        engine image). `cairn-compose.yml` gains the engine (on
+        `engine_net` and `panel_net` only), the dispatcher (profile
+        `dispatch`), `dispatch-api-proxy`, `llm-tunnel` (profile `llm`), a
+        fixed name for `cairn_net`, and a `cairn_data` volume.
+        `kill.sh` also removes the dispatcher's workers.
+  - [x] 10.7 Projects: `docker/cairn/projects/*.json`, one per invariant
+        (election safety, log matching, leader completeness, state-machine
+        safety, linearizability, liveness), each with a goal that names
+        the checker output that proves it and the doc's seed hints; the
+        peer-to-peer and object-store hints are given only when
+        `CAIRN_TARGET_FEATURES` says the target has them. `scripts/cairn/
+        start-run.sh <project>` starts the stack, makes a fresh run
+        directory current, waits for a leader, stops projects left active
+        by earlier runs, creates the project with the cluster's
+        `cluster.status` as its origin, and arms `kill.sh --after`.
+  - Checked (October 28, 2026, rootless Podman 4 in the cloud sandbox,
+    with a scripted stand-in for the model, since the GPU host stays
+    stopped until task 11):
+    - `start-run.sh election-safety` brought the stack up; Cairn's own
+      dispatcher created the project's worker through the dispatch
+      proxy; Pi, driven by the stand-in, ran `chaos cluster.status` with
+      its bash tool; the call went through `chaos_http.py` and
+      `chaos_ctl` into the run's `schedule.jsonl`, and its output became a
+      fact on the board.
+    - From inside a worker: `tool-server` and `llm-tunnel` answer;
+      `node1`, `engine` and both API proxies do not resolve. The engine
+      was on `cairn_net` in the first wiring and a worker could reach its
+      API, which would let an agent write the board it is judged by; it
+      now has its own network.
+    - The engine's `cairn_data` volume outlives `kill.sh`, and Cairn
+      resumed an earlier run's still-active project against the new
+      cluster; `start-run.sh` now stops leftover projects first.
+    - Under rootless Podman without systemd, healthchecks never run, so a
+      `depends_on: service_healthy` on the engine waited forever; the
+      dispatcher is started by `start-run.sh` once the engine answers.
+    - `kill.sh` removed the worker and every container of the run.
+    - Not exercised here: the real build of the worker image's apt step,
+      the engine build from the upstream Dockerfile, and `llm-tunnel`
+      (the sandbox's proxy refuses the Debian, Alpine, PyPI-mirror and
+      ghcr blob hosts). Cairn's `uv.lock` pins every package to the
+      mirrors.aliyun.com index, so `build-engine.sh` needs that host
+      reachable; tikhov reached it in task 1. Task 11's first run is the
+      check for all three.
 
 - [ ] **11. Five M1 runs against the seeded image.**
   - [ ] Success: found in at least 4 of 5 runs within the 2-hour limit.
