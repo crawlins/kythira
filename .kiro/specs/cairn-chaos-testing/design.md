@@ -6,10 +6,10 @@ Three layers, built bottom-up, and only the top one involves an LLM:
 
 ```
                 ┌──────────────────────────────────────────────┐
-  cairn_net     │ Cairn engine v0.2.1 (unmodified)  panel :127.0.0.1 │
-  (internal)    │ worker containers (Claude / Haiku / llama.cpp)     │
-                └───────────────┬──────────────────────────────┘
-                                │ MCP tool calls only
+  engine_net    │ Cairn engine v0.2.1 (unmodified)  panel :127.0.0.1 │
+  cairn_net     │ worker containers (Pi on llama.cpp for M1)         │
+  (internal)    └───────────────┬──────────────────────────────┘
+                                │ `chaos` command → HTTP, only
                 ┌───────────────▼──────────────────────────────┐
                 │ chaos tool server  ── schedule log (JSONL)   │
                 │   chaos_ctl (C++, harness.hpp)               │
@@ -133,14 +133,19 @@ existing scripted scenarios in `tests/docker_chaos/` run (`safety_assertions_tes
 ### 3.1 Shape
 
 `cmd/chaos_ctl` is a C++ CLI over `harness.hpp`, one subcommand per tool,
-JSON in and JSON out. A thin MCP adapter (`docker/cairn/tool_server/`)
-exposes those subcommands as MCP tools to Cairn workers and does nothing
-else. Keeping the logic in `chaos_ctl` means:
+JSON in and JSON out. Cairn v0.2.1 has no MCP (task 1a): a worker's tools
+are its agent CLI's own, and anything else is a command the agent runs. So
+a thin HTTP front (`docker/cairn/tool_server/chaos_http.py`) answers
+`GET /tools` and `POST /tool/<name>` on `cairn_net`, runs
+`chaos_ctl <name> -` one call at a time, and refuses any name
+`chaos_ctl tools` does not list (so not `init`, `replay` or `minimize`).
+The worker image carries a `chaos` command (`docker/cairn/worker/chaos`)
+that calls it. Keeping the logic in `chaos_ctl` means:
 
-- replay (§4) is the same binary with no MCP and no agent;
+- replay (§4) is the same binary with no front and no agent;
 - the tool surface is unit-testable with the existing `CmdExecutor` /
   `HttpGet` stubs;
-- the adapter is small enough to audit at a glance.
+- the front is small enough to audit at a glance.
 
 ### 3.2 The runtime socket stays behind a filter
 
@@ -155,8 +160,8 @@ is root on the host). The proxy is extended with an allowlist for
 shapes `os_faults.hpp` builds, on containers carrying this run's label.
 Everything else is `403`.
 
-Agents never see the proxy either. They see MCP tools with typed
-arguments, and the failpoint names are checked against
+Agents never see the proxy either. They see the `chaos` command's tools
+with typed JSON arguments, and the failpoint names are checked against
 `docker/cairn/failpoints.allowlist`, generated from
 `include/raft/fault_injection.hpp` so the two cannot drift.
 
@@ -191,31 +196,57 @@ Two caveats are part of the design, not footnotes:
 
 ## 5. Cairn layer: `docker/cairn/`
 
-- `cairn-compose.yml`: the engine at the v0.2.1 image pinned by digest, the
-  worker services, the tool server, the extended API proxy, an egress proxy,
-  and the networks. The panel publishes `127.0.0.1:<port>` only.
-- Networks: `cairn_net` (`internal: true`) for engine, workers and tool
-  server. `raft_net` (`internal: true`) for the cluster, the workload and the
-  tool server. `egress_net` connects only the egress proxy, which forwards to
-  the Anthropic API host and the llama.cpp host and refuses the rest.
-  Service-name addressing throughout and no static IPs (CLAUDE.md rules 1
-  and 5).
-- Worker images: our own Dockerfiles, each FROM the upstream worker image at
-  a pinned digest, adding only the MCP client config. No other tooling is
-  installed (Requirement 7.4).
-- Model routing: Cairn configuration only, no fork. M0 records whether a
-  worker can point at llama.cpp's OpenAI-compatible endpoint. If none can
-  without changing Cairn, routing falls back to the two API tiers and the
-  cost model in §7 is redone before M1.
-- Projects: one per invariant, under `docker/cairn/projects/`. The origin is
-  the healthy cluster's facts: node ids, leader, term, commit index and
-  configuration. The goal is one invariant. Seed hints are the doc's four:
-  snapshot install during a partition, joint-consensus transitions, gossip
-  replication racing leader replication, and object-store persistence
-  failures. The last applies only to a target built with object-store
-  persistence, which is M4.
-- `scripts/cairn/kill.sh`: stops every compose project this spec starts, for
-  the configured runtime, and is also what the wall-clock limit fires.
+- `cairn-compose.yml`: the engine (Cairn v0.2.1 built unmodified from its
+  pinned commit by `scripts/cairn/build-engine.sh`, since Cairn publishes no
+  engine image), its dispatcher, the tool server, two API proxies, an
+  egress proxy, an SSH tunnel to the model, and the networks. The panel
+  publishes `127.0.0.1:<port>` only. Workers are not compose services:
+  Cairn's dispatcher creates one per project.
+- Networks: `cairn_net` (`internal: true`) for workers, the tool server, the
+  egress proxy and the tunnel. `engine_net` (`internal: true`) for the
+  engine and the dispatcher only, because the engine's API would let an
+  agent write the board it is judged by. `dispatch_net` (`internal: true`)
+  for the dispatcher and its API proxy. `raft_net` (`internal: true`) for
+  the cluster, the workload and the tool server. `egress_net` connects only
+  the egress proxy, which forwards to the allowlisted model hosts and
+  refuses the rest, and the tunnel. Service-name addressing throughout and
+  no static IPs (CLAUDE.md rules 1 and 5); `cairn_net` has a fixed name,
+  `${CAIRN_RUN}-cairn_net`, because the dispatcher creates workers on it by
+  name.
+- The dispatcher's runtime access goes through its own instance of the API
+  proxy (`PROXY_MODE=cairn_dispatcher`): create only `cairn-dispatch-*` /
+  `cairn-startup-healthcheck-*` containers of the worker image running
+  `sleep infinity` on `cairn_net` with no other host config, exec in them
+  unprivileged, copy files in, stop and remove them. The proxy labels what
+  it creates and hides every other container. So a compromised dispatcher
+  can start more sandboxed workers and nothing else.
+- Worker image: our own, `node` slim pinned by digest plus Pi 0.73.0 (the
+  version Cairn's image carries, its dependency tree pinned by a
+  lockfile), `rg` and `fd` for Pi's search tools, and the `chaos` command.
+  Not FROM Cairn's worker image: that is Kali with a security toolchain,
+  which Requirement 7.4 rules out, and its other two agent CLIs cannot reach
+  llama.cpp anyway (task 1b).
+- Model routing: Cairn configuration only, no fork (`dispatch.yaml`). Task
+  1b found that only the Pi worker can use llama.cpp's OpenAI-compatible
+  endpoint, so M1 runs on one tier: Pi on a local model, reached through
+  `llm-tunnel`, an SSH forward to `llama-server` on the model host's
+  loopback. The API tiers are written out but commented: they need a
+  spend-limited key (Requirement 8.1) and their CLI in the worker image.
+- Projects: one per invariant, under `docker/cairn/projects/`, created by
+  `scripts/cairn/start-run.sh`, which also starts the stack, makes a fresh
+  run directory current, stops any project left active by an earlier run
+  and arms the wall-clock limit. The origin is how to use the `chaos`
+  command plus the healthy cluster's facts from `cluster.status`: node ids,
+  leader, term, commit index and configuration. The goal is one invariant.
+  Seed hints are the doc's four: snapshot install during a partition,
+  joint-consensus transitions, gossip replication racing leader
+  replication, and object-store persistence failures. The last two apply
+  only to a target built with peer-to-peer catch-up or object-store
+  persistence, which the Docker `chaos_node` is not, so they are added
+  only when `CAIRN_TARGET_FEATURES` names them.
+- `scripts/cairn/kill.sh`: stops every compose project this spec starts and
+  the workers the dispatcher made, for the configured runtime, and is also
+  what the wall-clock limit fires.
 
 ## 6. Clock skew
 
@@ -245,6 +276,15 @@ handles work a local model fails at. llama.cpp runs the bulk of the
 step-by-step tool loops and log reading. M1 measures tokens per role per run
 and records them in `tasks.md`. The monthly cadence for M5 is set from that
 measurement, not assumed.
+
+M1 starts with the local tier alone and no API key at all: no machine
+here has a GPU that can hold a useful model, so the model host is a rented
+cloud GPU (task 10's model-server notes), started for the runs and stopped
+between them. Its cost per run (instance hours, plus the stopped volume)
+is recorded with the tokens. Pi reports each turn's token counts in its
+JSON event stream, which the dispatcher logs. Whether the API tiers are
+needed is what M1 shows: if the local model cannot find the seeded bug, the
+miss is recorded (Requirement 9.7) before any key is set up.
 
 ## 8. The seeded bug (M1)
 
