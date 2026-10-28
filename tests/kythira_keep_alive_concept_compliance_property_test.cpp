@@ -167,13 +167,18 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_concept_compliance_property_test,
                 [&counter, j]() { counter.fetch_add(j + 1, std::memory_order_relaxed); });
         }
 
-        // Wait for tasks to complete
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-        // Verify tasks were executed
         int expected_sum = 0;
         for (int j = 0; j < num_tasks; ++j) {
             expected_sum += (j + 1);
+        }
+
+        // Wait for the tasks to run, with a deadline rather than a fixed
+        // 10 ms sleep. The sleep failed under load (counter still 0), and
+        // worse, it let this iteration's `counter` go out of scope while
+        // tasks that captured it by reference were still queued.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (counter.load() != expected_sum && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         BOOST_CHECK_EQUAL(counter.load(), expected_sum);
     }
@@ -202,8 +207,11 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_different_executors,
         std::atomic<bool> executed{false};
         keep_alive_instance.add([&executed]() { executed.store(true); });
 
-        // Wait for execution
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // Wait for execution, with a deadline rather than a fixed 50 ms.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!executed.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         BOOST_CHECK(executed.load());
     }
 
@@ -291,8 +299,13 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_thread_safety, *boost::unit_t
     }
     BOOST_CHECK_EQUAL(failed_checks.load(), 0);
 
-    // Wait for all tasks to complete
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Wait for all tasks to complete, with a deadline rather than a fixed
+    // 100 ms.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (total_operations.load() != num_threads * operations_per_thread &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
     // Verify all operations completed
     BOOST_CHECK_EQUAL(total_operations.load(), num_threads * operations_per_thread);
@@ -334,8 +347,13 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_exception_handling,
             });
         }
 
-        // Wait for tasks to complete
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Wait for tasks to complete, with a deadline rather than a fixed
+        // 100 ms.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while ((total_tasks.load() != 8 || successful_tasks.load() != 5) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
 
         // KeepAlive should still be valid and satisfy concept
         BOOST_CHECK(keep_alive_instance.is_valid());

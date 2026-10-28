@@ -50,8 +50,11 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
             auto duration =
                 std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            // Should complete very quickly (within 10ms)
-            BOOST_CHECK(duration < std::chrono::milliseconds{10});
+            // A ready future must not block. The bound is loose on purpose:
+            // isReady() above is the real check, and a 10 ms budget failed
+            // under the Coverage build's instrumentation (0.5-2.5 s whole-test
+            // runs) when first-use setup landed inside the window.
+            BOOST_CHECK(duration < std::chrono::milliseconds{500});
         }
 
         // Test 2: Ordering behavior preservation

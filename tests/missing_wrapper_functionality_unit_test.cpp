@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <folly/init/Init.h>
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <stdexcept>
@@ -509,32 +510,39 @@ BOOST_AUTO_TEST_CASE(wrapper_overhead_validation_test, *boost::unit_test::timeou
     // Validates: Requirements 19.5
 
     constexpr std::size_t num_operations = 10000;
+    // Best of several interleaved trials. One back-to-back pair of 1-5 ms
+    // loops measured whichever other tests the parallel ctest run scheduled
+    // on the same core, and failed at 4780 us against 1618 us in CI. The
+    // minimum of each side is the cost of the code, not of the neighbours.
+    constexpr int trials = 7;
 
-    // Measure folly direct usage
-    auto start_folly = std::chrono::steady_clock::now();
-    for (std::size_t i = 0; i < num_operations; ++i) {
-        auto future = folly::makeFuture(static_cast<int>(i));
-        auto result = std::move(future).get();
-        (void)result;  // Suppress unused variable warning
+    auto folly_time = std::chrono::microseconds::max();
+    auto wrapper_time = std::chrono::microseconds::max();
+    for (int trial = 0; trial < trials; ++trial) {
+        auto start_folly = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < num_operations; ++i) {
+            auto future = folly::makeFuture(static_cast<int>(i));
+            auto result = std::move(future).get();
+            (void)result;  // Suppress unused variable warning
+        }
+        auto end_folly = std::chrono::steady_clock::now();
+
+        auto start_wrapper = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < num_operations; ++i) {
+            auto future = kythira::FutureFactory::makeFuture(static_cast<int>(i));
+            auto result = std::move(future).get();
+            (void)result;  // Suppress unused variable warning
+        }
+        auto end_wrapper = std::chrono::steady_clock::now();
+
+        folly_time = std::min(folly_time, std::chrono::duration_cast<std::chrono::microseconds>(
+                                              end_folly - start_folly));
+        wrapper_time = std::min(wrapper_time, std::chrono::duration_cast<std::chrono::microseconds>(
+                                                  end_wrapper - start_wrapper));
     }
-    auto end_folly = std::chrono::steady_clock::now();
-
-    // Measure kythira wrapper usage
-    auto start_wrapper = std::chrono::steady_clock::now();
-    for (std::size_t i = 0; i < num_operations; ++i) {
-        auto future = kythira::FutureFactory::makeFuture(static_cast<int>(i));
-        auto result = std::move(future).get();
-        (void)result;  // Suppress unused variable warning
-    }
-    auto end_wrapper = std::chrono::steady_clock::now();
-
-    auto folly_time =
-        std::chrono::duration_cast<std::chrono::microseconds>(end_folly - start_folly);
-    auto wrapper_time =
-        std::chrono::duration_cast<std::chrono::microseconds>(end_wrapper - start_wrapper);
 
     // Wrapper should not be more than 100% slower than direct folly usage (2x overhead is
-    // acceptable) This accounts for system noise and ensures the test is not flaky
+    // acceptable).
     BOOST_CHECK_LE(wrapper_time.count(), folly_time.count() * 2.0);
 }
 
