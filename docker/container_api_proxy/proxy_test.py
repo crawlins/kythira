@@ -27,8 +27,13 @@ import proxy  # noqa: E402
 LABEL = "kythira.cairn.run=r1"
 CHAOS = proxy.Config(mode="chaos_ctl", label=LABEL)
 QUORUM = proxy.Config(cluster="c1", image="kythira-chaos-node:dev", network="net1")
+WORKER_IMAGE = "kythira-cairn-worker:dev"
+WORKER_LABEL = "kythira.cairn.worker=r1"
+DISPATCHER = proxy.Config(mode="cairn_dispatcher", image=WORKER_IMAGE, network="r1-cairn_net",
+                          label=WORKER_LABEL)
 
 NODE_ID = "a" * 64
+WORKER_ID = "e" * 64
 OTHER_ID = "b" * 64
 EXEC_ID = "c" * 64
 
@@ -38,6 +43,26 @@ def exec_body(cmd, **over):
     body = {"User": "", "Privileged": False, "Tty": False, "AttachStdin": False,
             "AttachStderr": True, "AttachStdout": True, "Detach": False, "DetachKeys": "",
             "Env": None, "WorkingDir": "", "Cmd": cmd}
+    body.update(over)
+    return json.dumps(body).encode()
+
+
+def worker_create(**over):
+    """The body docker-py 7.1 writes for the dispatcher's containers.run()
+    (captured from cairn v0.2.1's ContainerManager against rootless Podman)."""
+    body = {"Tty": False, "OpenStdin": False, "StdinOnce": False, "AttachStdin": False,
+            "AttachStdout": False, "AttachStderr": False, "Cmd": ["sleep", "infinity"],
+            "Image": WORKER_IMAGE, "NetworkDisabled": False,
+            "HostConfig": {"NetworkMode": "r1-cairn_net"}}
+    body.update(over)
+    return json.dumps(body).encode()
+
+
+def worker_exec(cmd, **over):
+    """docker-py's exec_create() body, as ManagedProcess sends it."""
+    body = {"Container": WORKER_ID, "User": "", "Privileged": False, "Tty": False,
+            "AttachStdin": False, "AttachStdout": True, "AttachStderr": True, "Cmd": cmd,
+            "Env": ["PI_MODEL=qwen3-coder"]}
     body.update(over)
     return json.dumps(body).encode()
 
@@ -227,6 +252,154 @@ class CheckChaosCtlTest(unittest.TestCase):
             self.refused(method, target, body)
 
 
+class CheckCairnDispatcherTest(unittest.TestCase):
+    """cairn_dispatcher mode: every call cairn's ContainerManager makes, and
+    the dangerous neighbours of each."""
+
+    def allowed(self, method, target, body=b"", known=frozenset()):
+        return proxy.check(DISPATCHER, method, target, body, known)
+
+    def refused(self, method, target, body=b"", known=frozenset()):
+        with self.assertRaises(proxy.Refused, msg=f"{method} {target} {body!r}"):
+            proxy.check(DISPATCHER, method, target, body, known)
+
+    def test_the_dispatchers_calls_are_forwarded(self):
+        self.assertIsNone(self.allowed("GET", "/version").container)
+        self.allowed("HEAD", "/_ping")
+        for name in ("cairn-dispatch-proj-1", "cairn-startup-healthcheck-9af84308d6d6"):
+            fwd = self.allowed("POST", f"/v1.41/containers/create?name={name}", worker_create())
+            labels = json.loads(fwd.body)["Labels"]
+            self.assertEqual(labels, {"kythira.cairn.worker": "r1"})
+        fwd = self.allowed("GET", "/v1.41/containers/json?limit=-1&all=1&size=0&trunc_cmd=0")
+        self.assertTrue(fwd.filter_list)
+        for method, target, body in [
+            ("GET", f"/v1.41/containers/{WORKER_ID}/json", b""),
+            ("GET", "/v1.41/containers/cairn-dispatch-proj-1/json", b""),
+            ("POST", f"/v1.41/containers/{WORKER_ID}/start", b""),
+            ("POST", f"/v1.41/containers/{WORKER_ID}/stop?t=1", b""),
+            ("DELETE", f"/v1.41/containers/{WORKER_ID}?v=False&link=False&force=True", b""),
+            ("PUT", f"/v1.41/containers/{WORKER_ID}/archive?path=%2Froot", b"tar bytes"),
+        ]:
+            fwd = self.allowed(method, target, body)
+            self.assertTrue(fwd.hide_missing, target)
+            self.assertIsNotNone(fwd.container, target)
+        for cmd in (["timeout", "-k", "5s", "300s", "pi", "-p", "go"], ["kill", "-KILL", "1088"],
+                    ["sh", "-lc", "kill -KILL 1088"]):
+            fwd = self.allowed("POST", f"/v1.41/containers/{WORKER_ID}/exec", worker_exec(cmd))
+            self.assertTrue(fwd.records_exec and fwd.exec_container)
+        self.allowed("POST", f"/v1.41/containers/{WORKER_ID}/exec",
+                     worker_exec(["id"], AttachStdout=False, AttachStderr=False, Env=None))
+        known = frozenset({EXEC_ID})
+        self.assertTrue(self.allowed("POST", f"/exec/{EXEC_ID}/start",
+                                     b'{"Tty": false, "Detach": false}', known).hijack)
+        self.allowed("GET", f"/exec/{EXEC_ID}/json", b"", known)
+
+    def test_create_may_not_escape_the_worker_shape(self):
+        name = "cairn-dispatch-p"
+        for body in [
+            worker_create(Image="kythira-chaos-node:dev"),
+            worker_create(Cmd=["sh", "-c", "id"]),
+            worker_create(Cmd=None),
+            worker_create(HostConfig={"NetworkMode": "host"}),
+            worker_create(HostConfig={"NetworkMode": "r1-raft_net"}),
+            worker_create(HostConfig={}),
+            worker_create(HostConfig=None),
+            worker_create(HostConfig={"NetworkMode": "r1-cairn_net", "Privileged": True}),
+            worker_create(HostConfig={"NetworkMode": "r1-cairn_net", "Binds": ["/:/host"]}),
+            worker_create(HostConfig={"NetworkMode": "r1-cairn_net", "CapAdd": ["NET_ADMIN"]}),
+            worker_create(HostConfig={"NetworkMode": "r1-cairn_net", "PidMode": "host"}),
+            worker_create(HostConfig={"NetworkMode": "r1-cairn_net", "Devices": []}),
+            worker_create(Volumes={"/host": {}}),
+            worker_create(User="0"),
+            worker_create(Entrypoint=["sh"]),
+            worker_create(Env=["X=1"]),
+            worker_create(Tty=True),
+            worker_create(OpenStdin=True),
+            worker_create(NetworkDisabled=True),
+            worker_create(AttachStdout="yes"),
+            worker_create(Labels=["x"]),
+            worker_create(Labels={"x": 1}),
+            b"", b"[]", b"{",
+        ]:
+            self.refused("POST", f"/containers/create?name={name}", body)
+        for target in ("/containers/create", "/containers/create?name=engine",
+                       "/containers/create?name=cairn-dispatch-", "/containers/create?name=x"
+                       "&name=cairn-dispatch-p", "/containers/create?name=cairn-dispatch-a/b",
+                       "/containers/create?name=cairn-dispatch-p&platform=x"):
+            self.refused("POST", target, worker_create())
+        # A label the dispatcher could set cannot impersonate a scope.
+        fwd = self.allowed("POST", f"/containers/create?name={name}",
+                           worker_create(Labels={"kythira.cairn.worker": "other", "a": "b"}))
+        self.assertEqual(json.loads(fwd.body)["Labels"],
+                         {"kythira.cairn.worker": "r1", "a": "b"})
+
+    def test_exec_runs_unprivileged_as_the_images_user(self):
+        target = f"/containers/{WORKER_ID}/exec"
+        for over in ({"Privileged": True}, {"User": "0"}, {"User": "root"}, {"Tty": True},
+                     {"AttachStdin": True}, {"DetachKeys": "ctrl-p"}, {"Cmd": []},
+                     {"Cmd": "id"}, {"Cmd": ["id", 1]}, {"Env": "X=1"}, {"Env": [1]},
+                     {"WorkingDir": 1}, {"Container": 7}, {"HostConfig": {}},
+                     {"Capabilities": ["CAP_SYS_ADMIN"]}):
+            self.refused("POST", target, worker_exec(["id"], **over))
+        self.refused("POST", target + "?x=1", worker_exec(["id"]))
+        self.refused("POST", f"/exec/{'d' * 64}/start", b"{}", frozenset({EXEC_ID}))
+
+    def test_every_other_call_is_refused(self):
+        w = WORKER_ID
+        for method, target, body in [
+            ("GET", "/containers/json?size=1", b""),
+            ("GET", "/containers/json?all=1&before=x", b""),
+            ("GET", f"/containers/{w}/json?size=1", b""),
+            ("POST", f"/containers/{w}/kill", b""),
+            ("POST", f"/containers/{w}/pause", b""),
+            ("POST", f"/containers/{w}/restart", b""),
+            ("POST", f"/containers/{w}/start", b'{"Binds":["/:/host"]}'),
+            ("POST", f"/containers/{w}/start?detachKeys=x", b""),
+            ("POST", f"/containers/{w}/stop?t=-1", b""),
+            ("POST", f"/containers/{w}/stop?signal=HUP", b""),
+            ("DELETE", f"/containers/{w}?v=True", b""),
+            ("DELETE", f"/containers/{w}?link=1", b""),
+            ("DELETE", f"/containers/{w}?x=1", b""),
+            ("PUT", f"/containers/{w}/archive?path=root", b"x"),
+            ("PUT", f"/containers/{w}/archive", b"x"),
+            ("PUT", f"/containers/{w}/archive?path=/&copyUIDGID=1", b"x"),
+            ("GET", f"/containers/{w}/archive?path=/", b""),
+            ("GET", f"/containers/{w}/logs?stdout=1", b""),
+            ("POST", f"/containers/{w}/attach?stream=1", b""),
+            ("POST", f"/containers/{w}/update", b'{"Privileged":true}'),
+            ("POST", f"/containers/{w}/commit", b""),
+            ("GET", f"/containers/{w}/export", b""),
+            ("POST", "/containers/prune", b""),
+            ("GET", "/version?x=1", b""),
+            ("GET", "/info", b""),
+            ("GET", "/images/json", b""),
+            ("POST", "/images/create?fromImage=alpine", b""),
+            ("POST", "/build", b""),
+            ("GET", "/networks", b""),
+            ("POST", "/networks/r1-cairn_net/connect", b'{"Container":"x"}'),
+            ("POST", "/volumes/create", b"{}"),
+            ("GET", "/events", b""),
+            ("POST", "/libpod/containers/create", b"{}"),
+            ("GET", "/", b""),
+        ]:
+            self.refused(method, target, body)
+
+    def test_list_reply_keeps_only_labelled_containers(self):
+        data = json.dumps([
+            {"Id": WORKER_ID, "Names": ["/cairn-dispatch-p"],
+             "Labels": {"kythira.cairn.worker": "r1"}},
+            {"Id": NODE_ID, "Names": ["/r1-node1"], "Labels": {"kythira.cairn.run": "r1"}},
+            {"Id": OTHER_ID, "Names": ["/cairn-dispatch-q"],
+             "Labels": {"kythira.cairn.worker": "r2"}},
+            {"Id": EXEC_ID, "Names": ["/x"], "Labels": None},
+            "junk",
+        ]).encode()
+        kept = json.loads(proxy.filter_list(DISPATCHER, data))
+        self.assertEqual([c["Id"] for c in kept], [WORKER_ID])
+        with self.assertRaises(proxy.Upstream):
+            proxy.filter_list(DISPATCHER, b"{}")
+
+
 class CheckQuorumTest(unittest.TestCase):
     """quorum mode is unchanged by chaos_ctl mode's addition."""
 
@@ -267,6 +440,8 @@ class CheckQuorumTest(unittest.TestCase):
         self.assertEqual(len(proxy.Config(mode="chaos_ctl").missing()), 1)
         self.assertEqual(len(proxy.Config(mode="chaos_ctl", label="novalue").missing()), 1)
         self.assertEqual(len(proxy.Config(mode="other").missing()), 1)
+        self.assertEqual(DISPATCHER.missing(), [])
+        self.assertEqual(len(proxy.Config(mode="cairn_dispatcher").missing()), 3)
         env = {"PROXY_MODE": "chaos_ctl", "PROXY_LABEL": LABEL}
         self.assertEqual(proxy.Config.from_env(env).label_value, "r1")
 
@@ -287,6 +462,12 @@ class ScopeTest(unittest.TestCase):
                          f"/v1.51/containers/{NODE_ID}/kill?signal=KILL")
         self.assertEqual(proxy.with_container_id("/containers/a%20b/exec", "a b", NODE_ID),
                          f"/containers/{NODE_ID}/exec")
+        # A remove has no segment after the container.
+        self.assertEqual(proxy.with_container_id("/v1.41/containers/cairn-dispatch-p?force=True",
+                                                 "cairn-dispatch-p", WORKER_ID),
+                         f"/v1.41/containers/{WORKER_ID}?force=True")
+        self.assertEqual(proxy.with_container_id("/containers/node1x/start", "node1", NODE_ID),
+                         "/containers/node1x/start")
 
 
 # ── through a running proxy ──────────────────────────────────────────────────
@@ -309,6 +490,7 @@ class FakeApiHandler(http.server.BaseHTTPRequestHandler):
     containers = {
         "chaos_node_1": (NODE_ID, {"kythira.cairn.run": "r1"}),
         "engine": (OTHER_ID, {"kythira.cairn.run": "other"}),
+        "cairn-dispatch-p1": (WORKER_ID, {"kythira.cairn.worker": "r1"}),
     }
 
     def _send(self, status, body=b"", headers=()):
@@ -334,6 +516,17 @@ class FakeApiHandler(http.server.BaseHTTPRequestHandler):
             self.server.calls.append((self.command, self.path, body))
         path = proxy.VERSION_RE.sub("", self.path.split("?")[0])
         parts = path.strip("/").split("/")
+        if self.command == "POST" and path == "/containers/create":
+            self._send(201, json.dumps({"Id": "f" * 64}).encode())
+            return
+        if self.command == "GET" and path == "/containers/json":
+            self._send(200, json.dumps([{"Id": cid, "Names": ["/" + name], "Labels": labels}
+                                        for name, (cid, labels) in self.containers.items()])
+                       .encode())
+            return
+        if parts[0] == "containers" and len(parts) == 2 and self.command == "DELETE":
+            self._send(204 if self._find(parts[1]) else 404)
+            return
         if path == "/_ping":
             self._send(200, b"OK" if self.command == "GET" else b"",
                        [("Api-Version", "1.51"), ("Connection", "close")])
@@ -349,6 +542,8 @@ class FakeApiHandler(http.server.BaseHTTPRequestHandler):
                                             "Config": {"Labels": labels}}).encode())
             elif parts[2] == "exec":
                 self._send(201, json.dumps({"Id": EXEC_ID}).encode())
+            elif parts[2] == "archive":
+                self._send(200)
             else:
                 self._send(204)
             return
@@ -484,12 +679,90 @@ class ThroughProxyTest(unittest.TestCase):
         self.assertEqual(json.loads(data)["ExitCode"], 0)
 
     def test_chunked_body_is_refused(self):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        conn.request("POST", "/containers/chaos_node_1/exec", body=iter([exec_body(["x"])]),
-                     headers={"Transfer-Encoding": "chunked"}, encode_chunked=True)
-        self.assertEqual(conn.getresponse().status, 411)
-        conn.close()
+        # Headers only, then read: the proxy answers and hangs up before any
+        # body, so a client still sending chunks would race that hang-up
+        # (EPIPE) and fail the test at random.
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+            sock.sendall(b"POST /containers/chaos_node_1/exec HTTP/1.1\r\n"
+                         b"Host: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                         b"Transfer-Encoding: chunked\r\n\r\n")
+            resp = http.client.HTTPResponse(sock)
+            resp.begin()
+            self.assertEqual(resp.status, 411)
         self.assertEqual(self.upstream_calls(), [])
+
+
+class DispatcherThroughProxyTest(ThroughProxyTest):
+    """cairn_dispatcher mode against the fake API."""
+
+    def setUp(self):
+        super().setUp()
+        self.proxy.shutdown()
+        self.proxy.server_close()
+        self.proxy = proxy.serve(DISPATCHER, self.api.server_address, 0, host="127.0.0.1")
+        self.port = self.proxy.server_address[1]
+        threading.Thread(target=self.proxy.serve_forever, daemon=True).start()
+
+    def test_a_refused_call_never_reaches_the_api(self):
+        status, _, _ = self.request("POST", "/containers/create?name=cairn-dispatch-p",
+                                    worker_create(HostConfig={"NetworkMode": "host"}))
+        self.assertEqual(status, 403)
+        self.assertEqual(self.upstream_calls(), [])
+
+    def test_out_of_scope_container_is_refused_after_inspect_only(self):
+        # Hidden rather than refused: docker-py turns a 404 into NotFound,
+        # which the dispatcher handles.
+        for method, target, body in [
+            ("GET", "/containers/chaos_node_1/json", b""),
+            ("POST", "/containers/engine/start", b""),
+            ("DELETE", f"/containers/{NODE_ID}?force=True", b""),
+            ("POST", "/containers/chaos_node_1/exec", worker_exec(["id"])),
+            ("PUT", "/containers/engine/archive?path=/", b"x"),
+            ("GET", "/containers/missing/json", b""),
+        ]:
+            status, data, _ = self.request(method, target, body)
+            self.assertEqual(status, 404, f"{method} {target}: {data!r}")
+        for method, path, _ in self.upstream_calls():
+            self.assertEqual(method, "GET")
+            self.assertTrue(path.endswith("/json"), path)
+
+    def test_in_scope_call_goes_upstream_by_id(self):
+        status, _, _ = self.request("DELETE", "/v1.41/containers/cairn-dispatch-p1?force=True")
+        self.assertEqual(status, 204)
+        self.assertEqual(self.upstream_calls()[-1],
+                         ("DELETE", f"/v1.41/containers/{WORKER_ID}?force=True", b""))
+        status, _, _ = self.request("PUT", "/containers/cairn-dispatch-p1/archive?path=%2Froot",
+                                    b"tar bytes")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.upstream_calls()[-1],
+                         ("PUT", f"/containers/{WORKER_ID}/archive?path=%2Froot", b"tar bytes"))
+
+    def test_create_carries_the_label_and_list_hides_the_rest(self):
+        status, _, _ = self.request("POST", "/v1.41/containers/create?name=cairn-dispatch-p2",
+                                    worker_create())
+        self.assertEqual(status, 201)
+        sent = json.loads(self.upstream_calls()[-1][2])
+        self.assertEqual(sent["Labels"], {"kythira.cairn.worker": "r1"})
+        status, data, _ = self.request("GET", "/v1.41/containers/json?all=1")
+        self.assertEqual(status, 200)
+        self.assertEqual([c["Id"] for c in json.loads(data)], [WORKER_ID])
+
+    def test_exec_round_trip(self):
+        status, data, _ = self.request("POST", "/containers/cairn-dispatch-p1/exec",
+                                       worker_exec(["pi", "-p", "x"], Container="cairn-dispatch-p1"))
+        self.assertEqual(status, 201, data)
+        method, path, sent = self.upstream_calls()[-1]
+        self.assertEqual(path, f"/containers/{WORKER_ID}/exec")
+        self.assertEqual(json.loads(sent)["Container"], WORKER_ID)
+        status, data, _ = self.request("GET", f"/exec/{EXEC_ID}/json")
+        self.assertEqual(status, 200)
+
+    def test_ping_keeps_the_version_header(self):
+        status, _, _ = self.request("GET", "/version")
+        self.assertEqual(status, 500)  # forwarded; the fake has no /version
+
+    def test_chunked_body_is_refused(self):
+        super().test_chunked_body_is_refused()
 
 
 if __name__ == "__main__":
