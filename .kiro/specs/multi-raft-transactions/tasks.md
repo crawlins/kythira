@@ -2,8 +2,8 @@
 
 ## Implementation Status
 
-Tasks 1-4 done (October 28, 2026): `include/raft/txn_envelope.hpp` and
-`include/raft/txn_state_machine.hpp`.
+Tasks 1-5 done (October 28, 2026): `include/raft/txn_envelope.hpp`,
+`include/raft/txn_state_machine.hpp` and the host's `submit_txn`.
 
 Each task is one independently mergeable PR: it builds, its tests pass, and
 an unwrapped host is byte- and lock-identical before and after it
@@ -84,13 +84,25 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     left everything in one child; dropping the settled map from the right
     children fails it.
 
-- [ ] 5. Host: envelope plain commands, `submit_txn`
+- [x] 5. Host: envelope plain commands, `submit_txn`
   - `if constexpr` envelope in `submit_command`; `submit_txn` with every-key
     range check, epoch-mismatch refusal, frozen backoff and leader hint
   - `multi_raft_config::txn_defaults`, `resolver_interval`
   - Prove the unwrapped path unchanged: existing multi-raft suites pass
     unmodified, and a test asserts identical log bytes for an unwrapped host
   - _Requirements: 1.2, 2.1, 3.5, 6.3, 6.4, 10.3_
+  - Notes: the envelope is added at submit time, after the cross-shard
+    admission check, so the partitioner still reads the application's own
+    command. A `key_locked` result becomes `key_locked_exception`; any
+    other plain result is the wrapped machine's payload, as before.
+    `submit_txn` shares `route_and_run` through a `txn_keys` argument: a
+    stray key is refused with `shard_epoch_mismatch_exception` carrying the
+    local descriptor plus the routing rows for every stray key, and nothing
+    is proposed. `txn_options` lives in `txn_state_machine.hpp` because the
+    config carries the defaults. `resolver_interval` is in the config but
+    unused until task 7. Tests: `tests/multi_raft_txn_host_test.cpp`
+    records each store's `normal` appends and asserts an unwrapped host
+    logs a plain command byte for byte.
 
 - [ ] 6. Coordinator
   - `include/raft/txn_coordinator.hpp`: `txn_participant_client` concept,

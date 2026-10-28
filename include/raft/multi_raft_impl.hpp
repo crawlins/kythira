@@ -3110,7 +3110,8 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
                                                     std::optional<GroupId> group,
                                                     std::optional<shard_epoch> expected_epoch,
                                                     const std::vector<std::byte>* command,
-                                                    bool is_read, std::chrono::milliseconds timeout)
+                                                    bool is_read, std::chrono::milliseconds timeout,
+                                                    const std::vector<Key>* txn_keys)
     -> future_type {
     std::exception_ptr last_error;
 
@@ -3181,7 +3182,39 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
         // There is no distributed transaction here, and pretending otherwise
         // would be the worst available failure: a command silently applied to a
         // shard that does not own its key produces a state no invariant catches.
-        if (command != nullptr && _cfg.partitioner) {
+        //
+        // A transaction op names its own keys, all of which must be here. One
+        // that is not means the coordinator partitioned against a routing
+        // table that has since moved: refuse with the descriptors now covering
+        // the stray keys, so it re-partitions without asking anyone else
+        // (multi-raft-transactions Requirement 3.5).
+        if (txn_keys != nullptr) {
+            std::vector<descriptor_type> covering{local->_descriptor};
+            bool outside = false;
+            for (const auto& k : *txn_keys) {
+                if (local->_descriptor._range.contains(k)) {
+                    continue;
+                }
+                outside = true;
+                std::optional<descriptor_type> other;
+                {
+                    std::shared_lock lock(_map_mutex);
+                    other = _shard_map.lookup(k);
+                }
+                if (other.has_value() &&
+                    std::none_of(covering.begin(), covering.end(),
+                                 [&](const auto& d) { return d._group_id == other->_group_id; })) {
+                    covering.push_back(*other);
+                }
+            }
+            if (outside) {
+                last_error = std::make_exception_ptr(
+                    shard_epoch_mismatch_exception<GroupId, Key, node_id_type>{
+                        desc->_group_id, desc->_epoch, local->_descriptor._epoch,
+                        std::move(covering)});
+                break;
+            }
+        } else if (command != nullptr && _cfg.partitioner) {
             const auto command_key = _cfg.partitioner(*command);
             if (!local->_descriptor._range.contains(command_key)) {
                 last_error = std::make_exception_ptr(cross_shard_command_exception<GroupId, Key>{
@@ -3271,6 +3304,11 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
         }
         local->_writes.fetch_add(1, std::memory_order_relaxed);
         local->_write_bytes.fetch_add(command->size(), std::memory_order_relaxed);
+        if constexpr (is_transactional_state_machine_v<typename Types::state_machine_type>) {
+            if (txn_keys == nullptr) {
+                return submit_plain_enveloped(*local->_node, *command, timeout);
+            }
+        }
         return local->_node->submit_command(*command, timeout);
     }
 
@@ -3308,6 +3346,47 @@ auto multi_raft<Types, Key, GroupId>::submit_command(const std::vector<std::byte
     }
     return route_and_run(_cfg.partitioner(command), std::nullopt, std::nullopt, &command, false,
                          timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::submit_txn(const std::vector<Key>& keys,
+                                                 const std::vector<std::byte>& envelope,
+                                                 std::chrono::milliseconds timeout) -> future_type
+requires is_transactional_state_machine_v<typename Types::state_machine_type>
+{
+    if (keys.empty()) {
+        return failed_future(std::make_exception_ptr(
+            std::invalid_argument("multi_raft: submit_txn needs at least one key")));
+    }
+    return route_and_run(keys.front(), std::nullopt, std::nullopt, &envelope, false, timeout,
+                         &keys);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::submit_plain_enveloped(group_node_type& node,
+                                                             const std::vector<std::byte>& command,
+                                                             std::chrono::milliseconds timeout)
+    -> future_type {
+    using sm_type = typename Types::state_machine_type;
+    using codec_type = typename sm_type::key_codec_type;
+    static_assert(std::same_as<typename sm_type::key_type, Key>,
+                  "multi_raft: a transactional_state_machine's Key must be the host's Key");
+
+    const auto envelope =
+        encode_txn_envelope<Key, codec_type>(txn_envelope<Key>{txn_plain{command}});
+    return node.submit_command(envelope, timeout)
+        .thenValue([](std::vector<std::byte> bytes) -> std::vector<std::byte> {
+            auto res = decode_txn_result<Key, codec_type>(bytes);
+            if (res._status == txn_result_status::key_locked) {
+                const auto holder = res._holder.value_or(txn_lock_holder<Key>{});
+                throw key_locked_exception<Key>(res._key, holder._txn, holder._primary);
+            }
+            if (res._status != txn_result_status::ok) {
+                throw std::logic_error("multi_raft: a plain command returned transaction status " +
+                                       std::to_string(static_cast<int>(res._status)));
+            }
+            return std::move(res._payload);
+        });
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
