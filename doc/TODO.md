@@ -883,11 +883,59 @@ unverified completion claim.
     exactly that way and cannot enter the normalised comparison. **Read
     `tier_c_comparison_taken` when reproducing a row.**
 
+  ### Retake 4 (October 28, 2026): the owed single-AZ arm, on new binaries
+
+  Data in `doc/data/tier-e-shape-2/sweep-c6i-retake-single-az-4`. Same
+  workload as retake 3 down to the warm-up (50), same instance type, every
+  instance a Xeon 8375C, `--also-tier-c` on, 0 elections in either arm.
+
+  | condition | n | Tier E | Tier C | E/C | RTT | binaries |
+  | --- | ---: | ---: | ---: | ---: | ---: | --- |
+  | single-az (retake 3) | 1 | 994.3 | 1295.0 | 0.768 | 136 us | `e4a0c51` |
+  | single-az (retake 4) | 1 | **2290.7** | **2120.1** | **1.080** | 141 us | `e9f8b8e` |
+
+  Spreads 2.6% (E) and 1.9% (C), both stable; the Tier C arm also printed
+  "machine was not quiet at start". Median-run p50 fell from 4754 us to
+  1649 us in Tier E and from 2894 us to 1838 us in Tier C.
+
+  **This row does NOT complete the three-way ordering, and must not be set
+  beside the September rows.** Retake 3's binaries were built from
+  `e4a0c51` (September 13); retake 4's from `e9f8b8e`, 562 commits later.
+  Those include per-peer `cpp_httplib_client` connection pooling
+  (`eef22bc1`), skipping up-to-date followers on the multi-raft tick
+  (`026d73e0`), bounded server workers (`7946f772`) and a dozen Raft
+  correctness fixes on the commit path. The machine did not change (Tier C
+  on the same CPU model moved +64%, far outside the 0.10-0.55% the arm held
+  to across September repeats), so the jump is the code. The build also
+  differed: the controlling machine moved to Ubuntu 26.04, whose glibc 2.43
+  binaries do not start on the 24.04 AMI, so these were built in an
+  `ubuntu:24.04` container with the same g++ 14.2 and the same vcpkg
+  baseline, trimmed to the ports the two binaries link.
+
+  Rule 4 above (never set rows from different hardware side by side)
+  applies with equal force to rows from different code. E/C does not rescue
+  the comparison: both arms ran the new binary, but a change like
+  connection pooling helps the multi-machine arm more than the loopback
+  one, and Tier E now beats Tier C (1.080) where every September single-AZ
+  and multi-AZ row had it the other way round. A plausible reading, offered
+  as a hypothesis: with the transport overhead gone, the four processes
+  sharing one 8-vCPU box in Tier C now cost more than the 141 us network
+  does in Tier E. The September cluster rows (E/C 0.904-1.102) show that
+  inversion was already possible.
+
+  The verdict is now "multi-machine" (3.62x loopback) where retake 3's
+  near-identical network read "container-shaped" (2.78x). That is the
+  October 15 fix to item 7 above taking effect, not a network change.
+
   ### Still owed
 
-  A second single-AZ run **with** the arm, which is the only thing standing
-  between this sweep and a three-way placement ordering. Everything else in
-  items 1 to 4 above is done.
+  A three-way placement ordering on **current** code: cluster and multi-az
+  retaken on the same binaries as retake 4 (or newer, all three rebuilt
+  together), each repeated, each with `--also-tier-c`. That is four more
+  runs at ~$0.30 each, plus a second single-AZ repeat. Build them in an
+  `ubuntu:24.04` container while the controlling machine is on 26.04 (the
+  launched AMI is 24.04). The September result stands as a statement about
+  `e4a0c51`: cluster beats multi-AZ, single-AZ unresolved.
 
 - **CI has never built warning-free, and the "no warnings" claim in Current
   Status is now settled — measured, attributed, and *not* fixed (September 5,
