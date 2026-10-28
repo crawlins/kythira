@@ -1738,6 +1738,54 @@ unverified completion claim.
       predecessor's acknowledged writes. DEL and the immutable-value check
       read the same stale state. 2 of 52 local runs failed before, 0 of 32
       after.
+    **Re-measured October 28, 2026** over 78 `ci.yml` runs (2026-10-24..28,
+    read from the "Passed only on retry" annotations): 116 rescues not on
+    the allowlist, in 39 tests, and 46 of the 78 runs had at least one, so
+    strict retries would have failed 59% of runs (69 of 117 on October 23).
+    - `multi_raft_node_s3_process_test`, 17 jobs, is **not a flake**. In 15
+      of them `write_behind/acknowledged_writes_survive_a_leader_sigkill`
+      failed with "1 of 2000 (or 1997) acknowledged keys are lost": with
+      `--s3-write-behind 1`, killing the leader mid-load loses exactly one
+      acknowledged write. The others were a SegFault in the test process
+      during the load (line 605) and "host 2 never became ready". 102 local
+      runs (the case alone, the whole binary, and the case under four CPU
+      hogs; g++-13 Release against the stateful mock) never failed, so the
+      failure now explains itself: it names each lost key, what reading it
+      returned, which host acknowledged it, and every host's role changes,
+      the killed process's included. Allowlisted only so strict mode can be
+      judged on the rest; the next CI failure's message is the lead. **Open,
+      and a durability bug until shown otherwise.** Two leads from the local
+      runs: after the restart, leadership between the two survivors flips
+      every 1-2 s with the term climbing each time (PreVote should stop
+      that), and one in 22 whole-binary runs failed
+      `group_commit_batches_and_the_baseline_does_not` on "leadership moved
+      during the window", the same churn under 50 ms PUTs.
+    - Fixed the same day, all test-side: `kythira_future_continuation_operations_property_test`
+      (11: the clock started after Folly's `delayed()` timer had already
+      begun, so a loaded runner read 0 ms), `behavioral_preservation_property_test`
+      (5, Coverage only: a 10 ms wall-clock budget for a ready future),
+      `missing_wrapper_functionality_unit_test` and
+      `folly_concept_wrappers_integration_test` (3 and 2: one sample of a
+      1-5 ms loop against another, under parallel ctest; now the best of
+      seven interleaved trials), and the two `kythira_keep_alive_*` tests and
+      `folly_concept_wrappers_interoperability_property_test` (7 together:
+      fixed 10-100 ms sleeps before checking work on a thread pool, which also
+      let a stack counter or flag die while tasks that captured it by
+      reference were still queued, the SegFaults noted on October 7).
+    - Allowlisted, two or more jobs each and not yet fixed:
+      `raft_multi_node_property_test` 5 ("no leader" after a disruption
+      round), `coap_cantcoap_integration_test` 4 (EDHOC re-bootstrap after a
+      server restart gets a client error), `membership_change_joint_safety_test`
+      4 (`truncated_configuration_entry_is_reverted`: the entry at the joint
+      index reads term 2, below the new leader's 4, on both minority nodes),
+      `coap_cantcoap_interop_test` 3, and at 2 each
+      `raft_batched_durable_writes_test` (no leader within 4 s),
+      `raft_multi_node_partition_test`, `raft_multi_node_fixture_test`,
+      `coap_io_wait_mode_test`, `coap_libnyoci_interop_test`,
+      `http_pre_vote_timeout_now_test` and `ca_cluster_node_rpc_tls_test`.
+    - With those fixes and entries, 13 of the 78 runs (17%) would still have
+      failed strict mode, every one on a test seen once. That is too many to
+      set `CTEST_STRICT_RETRIES` yet; re-survey after a week on these fixes.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`
