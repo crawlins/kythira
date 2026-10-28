@@ -270,8 +270,22 @@ public:
     }
 
     auto start(std::uint64_t id) -> void {
-        _hosts[id] =
-            std::make_unique<host_process>(args(id, _ports.at(id)), "host" + std::to_string(id));
+        // A restart replaces the process, and with it the log file, so keep
+        // what the earlier process wrote for a failure message.
+        if (auto it = _hosts.find(id); it != _hosts.end() && it->second) {
+            it->second->stop(SIGKILL);
+            _earlier_output[id] += it->second->output();
+        }
+        // A distinct log name per process: the replaced host_process's
+        // destructor deletes its log file, which under one shared name was
+        // the file the new process had just opened.
+        _hosts[id] = std::make_unique<host_process>(
+            args(id, _ports.at(id)), "host" + std::to_string(id) + "-" + std::to_string(++_starts));
+    }
+
+    /// Everything host `id` has written, across restarts.
+    [[nodiscard]] auto all_output(std::uint64_t id) -> std::string {
+        return _earlier_output[id] + host(id).output();
     }
     auto start_all() -> void {
         for (std::uint64_t id = 1; id <= 3; ++id) {
@@ -341,24 +355,37 @@ public:
     /// following not-leader hints, until @p limit. True on an acknowledged
     /// write.
     auto put(const std::string& key, const std::string& value,
-             std::chrono::milliseconds limit = 20s) -> bool {
-        return until_ok(limit, [&](kv_data_client& client) {
-            return client.put(key, kythira::testing::kv_put(key, value));
-        });
+             std::chrono::milliseconds limit = 20s, std::uint64_t* acked_by = nullptr) -> bool {
+        return until_ok(
+            limit,
+            [&](kv_data_client& client) {
+                return client.put(key, kythira::testing::kv_put(key, value));
+            },
+            acked_by);
     }
 
     /// A linearizable read through the log. The value, or nullopt.
-    auto get(const std::string& key, std::chrono::milliseconds limit = 20s)
-        -> std::optional<std::string> {
+    auto get(const std::string& key, std::chrono::milliseconds limit = 20s,
+             std::string* last_outcome = nullptr) -> std::optional<std::string> {
         std::optional<std::string> value;
-        until_ok(limit, [&](kv_data_client& client) {
-            auto r = client.get(key, wire_read_kind::log, kythira::testing::kv_get(key));
-            if (r.ok()) {
-                value =
-                    std::string(reinterpret_cast<const char*>(r._value.data()), r._value.size());
-            }
-            return r;
-        });
+        std::uint64_t answered_by = 0;
+        until_ok(
+            limit,
+            [&](kv_data_client& client) {
+                auto r = client.get(key, wire_read_kind::log, kythira::testing::kv_get(key));
+                if (r.ok()) {
+                    value = std::string(reinterpret_cast<const char*>(r._value.data()),
+                                        r._value.size());
+                }
+                if (last_outcome != nullptr) {
+                    *last_outcome = "outcome " + std::to_string(static_cast<int>(r._outcome));
+                }
+                return r;
+            },
+            &answered_by);
+        if (last_outcome != nullptr && value) {
+            *last_outcome = "read from host " + std::to_string(answered_by);
+        }
         return value;
     }
 
@@ -366,7 +393,9 @@ public:
     [[nodiscard]] auto host(std::uint64_t id) -> host_process& { return *_hosts.at(id); }
 
 private:
-    template<typename F> auto until_ok(std::chrono::milliseconds limit, F&& attempt) -> bool {
+    template<typename F>
+    auto until_ok(std::chrono::milliseconds limit, F&& attempt,
+                  std::uint64_t* answered_by = nullptr) -> bool {
         const auto deadline = std::chrono::steady_clock::now() + limit;
         std::uint64_t target = 1;
         while (std::chrono::steady_clock::now() < deadline) {
@@ -377,6 +406,9 @@ private:
             kv_data_client client("127.0.0.1", _ports.at(target).data, "application/json", 1s, 6s);
             const auto r = attempt(client);
             if (r.ok()) {
+                if (answered_by != nullptr) {
+                    *answered_by = target;
+                }
                 return true;
             }
             if (r._outcome == kv_outcome::not_leader && r._leader.has_value()) {
@@ -395,6 +427,8 @@ private:
     std::vector<std::string> _extra;
     std::map<std::uint64_t, host_ports> _ports;
     std::map<std::uint64_t, std::unique_ptr<host_process>> _hosts;
+    std::map<std::uint64_t, std::string> _earlier_output;
+    std::size_t _starts{0};
 };
 
 auto value_for(std::size_t i) -> std::string {
@@ -404,7 +438,8 @@ auto value_for(std::size_t i) -> std::string {
 /// Writes keys [first, first + count) from `writers` threads; returns the
 /// keys that were acknowledged.
 auto write_keys(s3_cluster& cluster, std::size_t first, std::size_t count, std::size_t writers,
-                std::chrono::milliseconds per_key_limit = 20s) -> std::set<std::size_t> {
+                std::chrono::milliseconds per_key_limit = 20s,
+                std::map<std::size_t, std::uint64_t>* acked_by = nullptr) -> std::set<std::size_t> {
     std::mutex mu;
     std::set<std::size_t> acked;
     std::atomic<std::size_t> next{first};
@@ -412,9 +447,13 @@ auto write_keys(s3_cluster& cluster, std::size_t first, std::size_t count, std::
     for (std::size_t w = 0; w < writers; ++w) {
         threads.emplace_back([&] {
             for (auto i = next.fetch_add(1); i < first + count; i = next.fetch_add(1)) {
-                if (cluster.put(kythira::testing::kv_key(i), value_for(i), per_key_limit)) {
+                std::uint64_t host = 0;
+                if (cluster.put(kythira::testing::kv_key(i), value_for(i), per_key_limit, &host)) {
                     std::lock_guard lock(mu);
                     acked.insert(i);
+                    if (acked_by != nullptr) {
+                        (*acked_by)[i] = host;
+                    }
                 }
             }
         });
@@ -425,17 +464,48 @@ auto write_keys(s3_cluster& cluster, std::size_t first, std::size_t count, std::
     return acked;
 }
 
-auto require_readable(s3_cluster& cluster, const std::set<std::size_t>& keys) -> void {
-    std::size_t missing = 0;
-    for (const auto i : keys) {
-        const auto got = cluster.get(kythira::testing::kv_key(i));
-        if (got != value_for(i)) {
-            ++missing;
-            BOOST_TEST_MESSAGE("key " << i << " read back as "
-                                      << (got ? "'" + *got + "'" : std::string("nothing")));
+/// Every line of host `id`'s log that records a role change, so a failure
+/// message can say who led when. The full debug log is tens of megabytes.
+auto role_changes(s3_cluster& cluster, std::uint64_t id) -> std::string {
+    std::istringstream in(cluster.all_output(id));
+    std::string out;
+    for (std::string line; std::getline(in, line);) {
+        if (contains(line, "Transitioning to") || contains(line, "Node initialized from storage")) {
+            out += line.substr(0, 240) + "\n";
         }
     }
-    BOOST_TEST(missing == 0U, missing << " of " << keys.size() << " acknowledged keys are lost");
+    return out;
+}
+
+/// The failure message names each lost key, what reading it returned, and
+/// which host acknowledged the write, followed by every host's role changes.
+/// The SIGKILL case lost exactly one acknowledged write in about one CI job
+/// in twenty-five (2026-10-24..28) and never in 102 local runs, so the
+/// failure has to explain itself.
+auto require_readable(s3_cluster& cluster, const std::set<std::size_t>& keys,
+                      const std::map<std::size_t, std::uint64_t>& acked_by = {}) -> void {
+    std::size_t missing = 0;
+    std::string detail;
+    for (const auto i : keys) {
+        std::string outcome;
+        const auto got = cluster.get(kythira::testing::kv_key(i), 20s, &outcome);
+        if (got != value_for(i)) {
+            ++missing;
+            const auto acker = acked_by.find(i);
+            detail += "\n  key " + std::to_string(i) + " read back as " +
+                      (got ? "'" + *got + "'" : std::string("nothing")) + " (" + outcome +
+                      "), acknowledged by host " +
+                      (acker == acked_by.end() ? std::string("?") : std::to_string(acker->second));
+        }
+    }
+    if (missing != 0U) {
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            detail += "\n── host " + std::to_string(id) + " role changes ──\n" +
+                      role_changes(cluster, id);
+        }
+    }
+    BOOST_TEST(missing == 0U,
+               missing << " of " << keys.size() << " acknowledged keys are lost" << detail);
 }
 
 auto describe_hosts(s3_cluster& cluster) -> std::string {
@@ -606,7 +676,8 @@ BOOST_AUTO_TEST_CASE(acknowledged_writes_survive_a_leader_sigkill) {
 
     mock.set_put_delay(50ms);
     std::set<std::size_t> acked;
-    std::thread load([&] { acked = write_keys(cluster, 0, 2000, 16, 3s); });
+    std::map<std::size_t, std::uint64_t> acked_by;
+    std::thread load([&] { acked = write_keys(cluster, 0, 2000, 16, 3s, &acked_by); });
     std::this_thread::sleep_for(2s);
     // SIGKILL, not SIGTERM: a graceful stop could flush the staged run and
     // hide exactly the loss this case exists to catch.
@@ -616,9 +687,10 @@ BOOST_AUTO_TEST_CASE(acknowledged_writes_survive_a_leader_sigkill) {
     BOOST_TEST_MESSAGE(acked.size() << " writes acknowledged around the kill");
     BOOST_REQUIRE(!acked.empty());
 
+    BOOST_TEST_MESSAGE("host " << *leader << " led group 1 and was killed");
     cluster.start(*leader);
     cluster.wait_ready();
-    require_readable(cluster, acked);
+    require_readable(cluster, acked, acked_by);
 }
 
 BOOST_AUTO_TEST_CASE(a_failed_flush_never_acknowledges_a_lost_entry) {
