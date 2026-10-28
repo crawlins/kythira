@@ -3613,11 +3613,15 @@ jobs:
       # and docker/cairn/egress_proxy/ is the cairn fence's only way out.
       # Their tests drive each proxy against local fakes and check every
       # call outside its allowlist is refused without reaching the far
-      # side. Standard library only; a few seconds.
-      - name: Test the container API and egress proxies
+      # side. docker/cairn/tool_server/chaos_http.py is the agents' only
+      # door to chaos_ctl; its tests check it calls nothing chaos_ctl does
+      # not list, and drive the workers' `chaos` client (Node) through it.
+      # Standard library only; a few seconds.
+      - name: Test the container API and egress proxies and the chaos front
         run: |
           python3 -m unittest discover -s docker/container_api_proxy -p '*_test.py' -v
           python3 -m unittest discover -s docker/cairn/egress_proxy -p '*_test.py' -v
+          python3 -m unittest discover -s docker/cairn/tool_server -p '*_test.py' -v
 
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
