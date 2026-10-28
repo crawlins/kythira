@@ -4,6 +4,7 @@
 #define BOOST_TEST_MODULE folly_concept_wrappers_interoperability_property_test
 #include <boost/test/unit_test.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -197,12 +198,16 @@ BOOST_AUTO_TEST_CASE(test_concept_constrained_template_compatibility,
         auto cpu_executor = std::make_shared<folly::CPUThreadPoolExecutor>(1);
         kythira::Executor executor(cpu_executor.get());
 
-        bool work_done = false;
-        submit_work_to_executor(executor, [&work_done]() { work_done = true; });
+        // Atomic, and waited for with a deadline: a plain bool read after a
+        // fixed 10 ms sleep was a data race that failed under load.
+        std::atomic<bool> work_done{false};
+        submit_work_to_executor(executor, [&work_done]() { work_done.store(true); });
 
-        // Give some time for work to execute
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        BOOST_CHECK(work_done);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!work_done.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        BOOST_CHECK(work_done.load());
     }
 }
 

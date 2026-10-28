@@ -10,6 +10,7 @@
 #include <folly/init/Init.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <vector>
@@ -413,30 +414,36 @@ BOOST_AUTO_TEST_SUITE(performance_integration_tests)
  */
 BOOST_AUTO_TEST_CASE(wrapper_performance_impact, *boost::unit_test::timeout(60)) {
     constexpr std::size_t num_operations = 1000;
+    // Best of several interleaved trials: a single pair of sub-millisecond
+    // loops measured the parallel ctest run's other tests as much as this
+    // code, and failed in CI at a ratio of 4.06.
+    constexpr int trials = 7;
 
-    // Measure direct folly usage
-    auto start_folly = std::chrono::steady_clock::now();
-    for (std::size_t i = 0; i < num_operations; ++i) {
-        auto future = folly::makeFuture(static_cast<int>(i));
-        auto result = std::move(future).get();
-        (void)result;  // Suppress unused variable warning
+    auto folly_time = std::chrono::microseconds::max();
+    auto wrapper_time = std::chrono::microseconds::max();
+    for (int trial = 0; trial < trials; ++trial) {
+        auto start_folly = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < num_operations; ++i) {
+            auto future = folly::makeFuture(static_cast<int>(i));
+            auto result = std::move(future).get();
+            (void)result;  // Suppress unused variable warning
+        }
+        auto end_folly = std::chrono::steady_clock::now();
+
+        auto start_wrapper = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < num_operations; ++i) {
+            auto folly_future = folly::makeFuture(static_cast<int>(i));
+            auto wrapper_future = kythira::Future<int>(std::move(folly_future));
+            auto result = wrapper_future.get();
+            (void)result;  // Suppress unused variable warning
+        }
+        auto end_wrapper = std::chrono::steady_clock::now();
+
+        folly_time = std::min(folly_time, std::chrono::duration_cast<std::chrono::microseconds>(
+                                              end_folly - start_folly));
+        wrapper_time = std::min(wrapper_time, std::chrono::duration_cast<std::chrono::microseconds>(
+                                                  end_wrapper - start_wrapper));
     }
-    auto end_folly = std::chrono::steady_clock::now();
-
-    // Measure wrapper usage
-    auto start_wrapper = std::chrono::steady_clock::now();
-    for (std::size_t i = 0; i < num_operations; ++i) {
-        auto folly_future = folly::makeFuture(static_cast<int>(i));
-        auto wrapper_future = kythira::Future<int>(std::move(folly_future));
-        auto result = wrapper_future.get();
-        (void)result;  // Suppress unused variable warning
-    }
-    auto end_wrapper = std::chrono::steady_clock::now();
-
-    auto folly_time =
-        std::chrono::duration_cast<std::chrono::microseconds>(end_folly - start_folly);
-    auto wrapper_time =
-        std::chrono::duration_cast<std::chrono::microseconds>(end_wrapper - start_wrapper);
 
     // Wrapper should not be more than 100% slower than direct folly usage
     // This is a generous threshold to account for test environment variability

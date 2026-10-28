@@ -43,6 +43,16 @@ constexpr int test_iterations = 100;
 constexpr std::chrono::milliseconds test_timeout{30};
 constexpr std::size_t thread_pool_size = 4;
 constexpr int num_threads = 8;
+
+/// Waits up to 10 s for `counter` to reach `expected`. A fixed sleep both
+/// failed under load and let a stack counter die while queued tasks that
+/// captured it by reference had yet to run.
+auto wait_for_count(const std::atomic<int>& counter, int expected) -> void {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (counter.load() != expected && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
 constexpr int operations_per_thread = 25;
 }
 
@@ -208,14 +218,11 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test,
                 [&task_counter, j]() { task_counter.fetch_add(j + 1, std::memory_order_relaxed); });
         }
 
-        // Wait for tasks to complete
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-        // Verify all tasks executed
         int expected_sum = 0;
         for (int j = 0; j < num_tasks; ++j) {
             expected_sum += (j + 1);
         }
+        wait_for_count(task_counter, expected_sum);
         BOOST_CHECK_EQUAL(task_counter.load(), expected_sum);
     }
 
@@ -255,14 +262,11 @@ BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_behavior, *boost::unit_test::
             });
         }
 
-        // Wait for all tasks to complete
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        // Verify all tasks executed
         int expected_sum = 0;
         for (size_t i = 0; i < keep_alives.size(); ++i) {
             expected_sum += static_cast<int>(i + 1);
         }
+        wait_for_count(total_tasks, expected_sum);
         BOOST_CHECK_EQUAL(total_tasks.load(), expected_sum);
 
         // Remove half the KeepAlive instances
@@ -281,7 +285,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_behavior, *boost::unit_test::
                 [&remaining_tasks]() { remaining_tasks.fetch_add(1, std::memory_order_relaxed); });
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        wait_for_count(remaining_tasks, static_cast<int>(keep_alives.size()));
         BOOST_CHECK_EQUAL(remaining_tasks.load(), static_cast<int>(keep_alives.size()));
     }
 }
@@ -333,15 +337,18 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, *boost::unit_test:
                         }
 
                         // Test concurrent work submission
-                        std::atomic<bool> task_executed{false};
-                        assigned.add([&task_executed]() {
-                            task_executed.store(true, std::memory_order_relaxed);
+                        // Shared, not on this iteration's stack: a task the
+                        // pool runs after the wait below must not write to a
+                        // flag that has already gone out of scope.
+                        auto task_executed = std::make_shared<std::atomic<bool>>(false);
+                        assigned.add([task_executed]() {
+                            task_executed->store(true, std::memory_order_relaxed);
                         });
 
                         // Brief wait to allow task execution
                         std::this_thread::sleep_for(std::chrono::microseconds(100));
 
-                        if (task_executed.load()) {
+                        if (task_executed->load()) {
                             successful_operations.fetch_add(1, std::memory_order_relaxed);
                         }
 

@@ -136,14 +136,17 @@ BOOST_AUTO_TEST_CASE(test_delay_execution, *boost::unit_test::timeout(60)) {
         auto promise = kythira::Promise<int>();
         auto future = promise.getFuture();
 
-        // Add delay to future
+        // The clock starts before delay(), not after setValue(). Folly's
+        // delayed() starts its timer when it is called, so on a loaded
+        // runner the whole delay can pass before a later start_time is
+        // taken and the check below read 0 ms. A backend that starts the
+        // timer at completion instead waits at least as long from here.
+        auto start_time = std::chrono::steady_clock::now();
         auto delayed_future = std::move(future).delay(short_delay);
 
         // Set value immediately
         promise.setValue(test_value);
 
-        // Measure time and verify delay
-        auto start_time = std::chrono::steady_clock::now();
         auto result = std::move(delayed_future).get();
         auto end_time = std::chrono::steady_clock::now();
 
@@ -158,14 +161,17 @@ BOOST_AUTO_TEST_CASE(test_delay_execution, *boost::unit_test::timeout(60)) {
         auto promise = kythira::Promise<void>();
         auto future = promise.getFuture();
 
-        // Add delay to future
+        // The clock starts before delay(), not after setValue(). Folly's
+        // delayed() starts its timer when it is called, so on a loaded
+        // runner the whole delay can pass before a later start_time is
+        // taken and the check below read 0 ms. A backend that starts the
+        // timer at completion instead waits at least as long from here.
+        auto start_time = std::chrono::steady_clock::now();
         auto delayed_future = std::move(future).delay(short_delay);
 
         // Set value immediately
         promise.setValue();
 
-        // Measure time and verify delay
-        auto start_time = std::chrono::steady_clock::now();
         std::move(delayed_future).get();
         auto end_time = std::chrono::steady_clock::now();
 
