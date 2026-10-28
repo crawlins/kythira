@@ -2,8 +2,10 @@
 
 ## Implementation Status
 
-Tasks 1-5 done (October 28, 2026): `include/raft/txn_envelope.hpp`,
-`include/raft/txn_state_machine.hpp` and the host's `submit_txn`.
+Tasks 1-6 done (October 28, 2026): `include/raft/txn_envelope.hpp`,
+`include/raft/txn_state_machine.hpp`, the host's `submit_txn`,
+`include/raft/txn_coordinator.hpp` and the in-process
+`include/raft/multi_raft_txn_client.hpp`.
 
 Each task is one independently mergeable PR: it builds, its tests pass, and
 an unwrapped host is byte- and lock-identical before and after it
@@ -104,7 +106,7 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     records each store's `normal` appends and asserts an unwrapped host
     logs a plain command byte for byte.
 
-- [ ] 6. Coordinator
+- [x] 6. Coordinator
   - `include/raft/txn_coordinator.hpp`: `txn_participant_client` concept,
     `begin/put/get/commit/rollback`, the 1PC path, primary choice,
     concurrent prepares, abort on conflict, async secondaries,
@@ -114,6 +116,31 @@ Question 1 (gateway default) must be answered before task 9, and question 3
   - Tests: `tests/multi_raft_txn_test.cpp`: three in-process hosts, a crash
     hook after every protocol step, all-or-nothing after resolution
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.8, 5.1, 5.2, 5.3, 5.5, 10.1, 13.3_
+  - Done. `transaction_coordinator<Client, Key, KeyCodec>` buffers writes
+    per key and, at `commit()`, partitions them through `resolve()`. One
+    group sends a `txn_one_phase`; a routing refusal there falls through to
+    two phases over the repaired map, since the host refuses a stray key
+    before proposing. Otherwise the primary is the smallest key of the
+    largest group, every prepare goes out at once, and the primary is
+    heartbeated every TTL/3 while they are outstanding. A group whose
+    prepare comes back with a stale-routing refusal is re-partitioned and
+    re-sent alone. Any conflict or failure aborts best effort; once the
+    primary commits, the secondaries' commits are fire-and-forget and
+    `drain()` waits for them. A crash hook fires after each `txn_step`.
+    Deviations: the TTL deadline is stamped from `client.now_ms()`, the
+    participants' clock, not the coordinator's; and a transaction does
+    not read its own buffered writes, which stay opaque commands until
+    they apply. Sends return any `kythira::future`, never `std::future`
+    (which `complete_conversion_validation_property_test` forbids).
+    `multi_raft_txn_client` is the in-process client: each send runs on a
+    thread the client joins, fulfils a `future_default`, and skips hosts
+    that do not lead the group; `refresh()`
+    teaches every host the descriptors an epoch-mismatch refusal carried,
+    and reads go to the leader through `with_state_machine`. Tests:
+    `tests/multi_raft_txn_test.cpp`, three hosts and two shards: 1PC,
+    cross-shard 2PC, a conflict abort, both `read_committed` modes, a stale
+    route repaired and re-partitioned, every crash point all-or-nothing
+    after resolution, and an isolation the build lacks refused at `begin`.
 
 - [ ] 7. Leader-side resolver, cleanup, metrics
   - Resolver, record cleanup and their rate limits in the tick's apply phase
