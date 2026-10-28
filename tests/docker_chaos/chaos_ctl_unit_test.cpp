@@ -327,9 +327,9 @@ BOOST_FIXTURE_TEST_CASE(unknown_tool_is_refused_without_logging, fixture) {
 }
 
 BOOST_FIXTURE_TEST_CASE(failpoint_outside_allowlist_is_refused, fixture) {
-    auto out = chaos_ctl::call(
-        ctx, "fault.failpoint",
-        {{"node", 1}, {"name", "raft/network/send_request_vote"}, {"mode", "always"}});
+    auto out =
+        chaos_ctl::call(ctx, "fault.failpoint",
+                        {{"node", 1}, {"name", "raft/objstore/put_object"}, {"mode", "always"}});
     BOOST_TEST(out.at("status").as_string() == "error");
     BOOST_TEST(std::string(out.at("error").as_string()).find("allowlist") != std::string::npos);
     BOOST_TEST(fiu.empty());
@@ -594,8 +594,10 @@ BOOST_AUTO_TEST_CASE(checked_in_allowlist_holds_only_names_chaos_node_reaches) {
                                           "docker/cairn/failpoints.allowlist");
     BOOST_TEST(fps.contains("raft/persistence/save_current_term"));
     BOOST_TEST(fps.contains("raft/state_machine/apply"));
-    // Evaluated only by the simulator transport and object-store persistence.
-    BOOST_TEST(!fps.contains("raft/network/send_request_vote"));
+    // tcp_rpc and tls_tcp_rpc evaluate the network names chaos_node sends
+    // through; object-store persistence is not chaos_node's engine.
+    BOOST_TEST(fps.contains("raft/network/send_request_vote"));
+    BOOST_TEST(fps.contains("raft/network/send_append_entries"));
     BOOST_TEST(!fps.contains("raft/objstore/put_object"));
     for (const auto& n : fps) {
         BOOST_TEST(n.starts_with("raft/"), n);

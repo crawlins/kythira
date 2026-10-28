@@ -197,7 +197,10 @@ compatibility").
           applies to `election_recovery_test.cpp`'s
           `election_after_fiu_network_isolation`, which arms them on
           chaos_node and so tests nothing beyond a quiet cluster (left for
-          a separate fix; see doc/TODO.md). `raft/objstore/*` waits for an
+          a separate fix; see doc/TODO.md). **Fixed 2026-10-28:**
+          `tcp_rpc.hpp` and `tls_tcp_rpc.hpp` now evaluate the five
+          `raft/network/send_*` names, both are classified as reached, and
+          the allowlist carries them. `raft/objstore/*` waits for an
           object-store target (M4), and `barrier_delay` reads a delay none
           of the three modes can set.
         - `fault.partition` takes the whole partition (`groups`, every node

@@ -38,13 +38,16 @@ NAME_RE = re.compile(
 REACHED = {
     "include/raft/file_persistence.hpp": "chaos_node's persistence engine",
     "include/raft/test_state_machine.hpp": "chaos_node's state machine",
+    "include/raft/tcp_rpc.hpp": "chaos_node's plaintext RPC transport",
+    "include/raft/tls_tcp_rpc.hpp": "chaos_node's mutual-TLS RPC transport (RPC_TLS_*)",
 }
 
 # Headers that declare names in the families but whose code chaos_node never
 # runs. Their names are left out of the allowlist.
 NOT_REACHED = {
     "include/raft/simulator_network.hpp":
-        "the in-process simulator transport; chaos_node talks over tcp_rpc",
+        "the in-process simulator transport; chaos_node talks over tcp_rpc, which "
+        "evaluates the same raft/network/* names",
     "include/raft/persistence.hpp":
         "the in-memory persistence engine; chaos_node uses file persistence",
     "include/raft/object_store_persistence.hpp":
@@ -59,7 +62,12 @@ EXCLUDED = {
 
 # chaos_node must still include what REACHED says it runs, and nothing from
 # NOT_REACHED whose code it would then run.
-REQUIRED_INCLUDES = ("raft/file_persistence.hpp", "raft/test_state_machine.hpp")
+REQUIRED_INCLUDES = (
+    "raft/file_persistence.hpp",
+    "raft/test_state_machine.hpp",
+    "raft/tcp_rpc.hpp",
+    "raft/tls_tcp_rpc.hpp",
+)
 FORBIDDEN_INCLUDES = ("raft/object_store_persistence.hpp",)
 
 HEADER = """\

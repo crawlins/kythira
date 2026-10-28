@@ -135,9 +135,9 @@ BOOST_AUTO_TEST_CASE(known_good_schedule_is_clean_and_replays_clean,
     auto skew = run({"fault.clock_skew", "{}", "--run-dir", dir.path.string()});
     BOOST_TEST(skew.code == 1);
     BOOST_TEST(skew.out.at("status").as_string() == "unsupported");
-    auto bad = run({"fault.failpoint",
-                    R"({"node":1,"name":"raft/network/send_request_vote","mode":"always"})",
-                    "--run-dir", dir.path.string()});
+    auto bad =
+        run({"fault.failpoint", R"({"node":1,"name":"raft/objstore/put_object","mode":"always"})",
+             "--run-dir", dir.path.string()});
     BOOST_TEST(bad.out.at("status").as_string() == "error");
 
     ok(dir.path, "run.reset");

@@ -948,6 +948,13 @@ set_tests_properties(aws_endpoint_override_unit_test PROPERTIES
 )
 
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
+# The raft/network/* failpoint case needs libfiu's control API; without it
+# the case compiles away along with the failpoints.
+if(FIU_FOUND)
+    target_compile_definitions(tcp_rpc_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(tcp_rpc_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(tcp_rpc_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
 add_raft_completion_test(tcp_cluster_join_test tcp_cluster_join_test.cpp)
 # chaos_node's environment parsing for joining a running cluster.
 add_raft_completion_test(chaos_node_config_unit_test chaos_node_config_unit_test.cpp)
