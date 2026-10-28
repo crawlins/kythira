@@ -1,6 +1,6 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (8/14 tasks: 1-8)
+## Status: In progress (9/14 tasks: 1-9)
 
 **Last Updated**: October 28, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
@@ -419,12 +419,40 @@ compatibility").
 
 ## M1: seeded bug
 
-- [ ] **9. Seeded-bug image.** (Requirement 9.2, design §8.)
-  - [ ] `-DKYTHIRA_CHAOS_SEEDED_BUG=vote_term`, off by default, with a
+- [x] **9. Seeded-bug image.** (Requirement 9.2, design §8.)
+  - [x] `-DKYTHIRA_CHAOS_SEEDED_BUG=vote_term`, off by default, with a
         configure warning banner, building
         `kythira-chaos-node:seeded-vote-term`. No failpoint enables it.
-  - [ ] Show that `chaos_ctl replay` of a hand-written schedule catches it
+  - [x] Show that `chaos_ctl replay` of a hand-written schedule catches it
         before any agent is involved.
+  - Notes (October 28, 2026):
+    - **Which check is skipped.** The bug drops the one-vote-per-term
+      check (`raft.hpp`, RequestVote Rule 3), so a voter grants every
+      candidate in a term and two can win it. Skipping Rule 1 (the stale
+      term) instead would be invisible: the grant carries the voter's
+      newer term, the candidate steps down, and no checker could ever
+      see it. The define reaches only the `chaos_node` target; any other
+      value of the option is a configure error.
+    - **Image.** `docker-chaos-image` tags a seeded build
+      `kythira-chaos-node:seeded-vote-term`, never `:dev`. The chaos3 and
+      cairn compose files take `${KYTHIRA_CHAOS_NODE_IMAGE}` (default
+      `:dev`), and `chaos_ctl` exports it from the run's recorded image on
+      every call, so a seeded run replays on the seeded image. Nothing at
+      run time says the binary is seeded, on purpose: the agents read
+      `/status` and logs.
+    - **Schedule.** `scripts/cairn/seeded-bug-check.sh`: every node's
+      AppendEntries sends fail (elections run back to back) and 70% of
+      RequestVote sends fail (a candidate reaches the third node but not
+      its rival, which then campaigns in the same term). It needs no
+      `tc`, so it runs under rootless Podman.
+    - **Result (rootless Podman 4, this sandbox).** Seeded image: 3 of 3
+      live runs reported `election_safety` (for example "2 nodes won
+      term 5"), and replays reproduced it in 9 of 20 attempts, twice
+      with log-matching, state-machine-safety and once linearizability
+      violations as well. Control (same build without the define): 0
+      violations in its live run and 0 of 10 replays. Replay is
+      probabilistic here, as design §4 expects; M1's "found" bar
+      (task 11) is the agent's, not this schedule's.
 
 - [ ] **10. Worker images, routing and projects.** (Design §5.)
   - [ ] Worker Dockerfiles FROM pinned upstream digests, adding only MCP

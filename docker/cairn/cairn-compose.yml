@@ -37,7 +37,7 @@
 # Stop:   scripts/cairn/kill.sh
 
 x-chaos-node: &chaos-node
-  image: kythira-chaos-node:dev
+  image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
   labels:
     kythira.cairn.run: "${CAIRN_RUN:-kythira-cairn}"
   cap_add:

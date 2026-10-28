@@ -176,6 +176,14 @@ void print(const boost::json::value& v) {
     std::cout << boost::json::serialize(v) << '\n';
 }
 
+/// Points every compose call this process makes at the run's image. The
+/// compose files read it as ${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev},
+/// so a run on the seeded image (cairn-chaos-testing task 9) replays on it
+/// rather than on whatever :dev happens to be.
+void use_image(const run_config& cfg) {
+    ::setenv("KYTHIRA_CHAOS_NODE_IMAGE", cfg.image.c_str(), 1);
+}
+
 void start_cluster(docker_chaos::ChaosCluster& cluster) {
     cluster.stop();
     cluster.start();
@@ -206,6 +214,7 @@ auto cmd_init(const cli& c) -> int {
     cfg.workload_binary =
         fs::absolute(opt(c, "--workload-binary").value_or((exe_dir() / "chaos_workload").string()));
     write_json_file(paths.config(), to_json(cfg));
+    use_image(cfg);
     if (c.flags.contains("--start")) {
         docker_chaos::ChaosCluster cluster(cfg.compose_file, cfg.nodes, std::chrono::seconds{60});
         start_cluster(cluster);
@@ -235,6 +244,7 @@ auto cmd_tool(const cli& c) -> int {
     auto args = read_args(c);
     run_lock lock(paths);
     const auto cfg = load_config(paths);
+    use_image(cfg);
     // The cluster outlives every chaos_ctl process.
     docker_chaos::ChaosCluster cluster(cfg.compose_file, cfg.nodes);
     cluster.detach();
@@ -259,6 +269,7 @@ auto real_attempt(const run_config& cfg, const fs::path& out_dir, const std::set
         fs::remove_all(paths.dir);
         fs::create_directories(paths.dir);
         write_json_file(paths.config(), to_json(cfg));
+        use_image(cfg);
         docker_chaos::ChaosCluster cluster(cfg.compose_file, cfg.nodes, std::chrono::seconds{60});
         start_cluster(cluster);
         if (keep_cluster) {
