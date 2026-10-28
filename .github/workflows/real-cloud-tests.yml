@@ -624,6 +624,29 @@ jobs:
           fi
           exit $rc
 
+      # The same suite again, against the SSE-KMS bucket, with default
+      # options (verify_checksums on). Under SSE-KMS the ETag is not the
+      # body's MD5, so this leg proves the CRC64NVME digest path holds on
+      # the real service (object-store-encrypted-bucket-checksums
+      # Requirement 6.4). The role reaches this bucket through the bucket's
+      # own policy, not the inline one, which is at IAM's size limit
+      # (spike-notes Finding 6). The sweep variable is not passed: the
+      # sweep is a layout question, not an encryption one. Skipped when
+      # the variable is unset, so a fork without the bucket stays green.
+      - name: Run object-persistence bundle (S3, SSE-KMS bucket)
+        if: ${{ env.BUNDLE_OBJECT_PERSISTENCE == 'true' && vars.AWS_OBJECT_PERSISTENCE_KMS_BUCKET != '' }}
+        env:
+          KYTHIRA_AWS_S3_BUCKET: ${{ vars.AWS_OBJECT_PERSISTENCE_KMS_BUCKET }}
+          KYTHIRA_AWS_REGION: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+        run: |
+          rc=0
+          ./build/tests/aws_s3_object_persistence_real_test --log_level=test_suite || rc=$?
+          if [ $rc -eq 77 ]; then
+            echo "::error::The suite skipped against the SSE-KMS bucket. Check AWS_OBJECT_PERSISTENCE_KMS_BUCKET and that the bucket policy grants the CI role kythira-real-test/* (provision-object-persistence-bucket.sh --encryption sse-kms)." >&2
+            exit 1
+          fi
+          exit $rc
+
       # Second for the same reason as object persistence: it runs on the
       # job's first one-hour session and finishes in minutes. The suite
       # deletes its own CAs, on a signal included; the audit below is what
@@ -3890,6 +3913,22 @@ jobs:
           oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
           region: ${{ vars.ALIBABA_CI_REGION }}
           bucket: ${{ vars.ALIBABA_OSS_BUCKET }}
+
+      # The main slice again, against the SSE-KMS bucket, with default
+      # options. The OSS ETag stays the MD5 under SSE-KMS (spike Finding
+      # 5), so this leg pins that on the real service
+      # (object-store-encrypted-bucket-checksums Requirement 6.4). Its own
+      # slice, so it gets its own STS session. Skipped when the variable
+      # is unset.
+      - name: Run oss-persistence bundle (SSE-KMS bucket)
+        if: ${{ !cancelled() && env.BUNDLE_OSS_PERSISTENCE == 'true' && vars.ALIBABA_OBJECT_PERSISTENCE_KMS_BUCKET != '' }}
+        uses: ./.github/actions/alibaba-oss-real-case
+        with:
+          run-test: '!alibaba_oss_persistence_real/shared_segment_sweep_*'
+          role-to-assume: ${{ vars.ALIBABA_CI_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALIBABA_CI_OIDC_PROVIDER_ARN }}
+          region: ${{ vars.ALIBABA_CI_REGION }}
+          bucket: ${{ vars.ALIBABA_OBJECT_PERSISTENCE_KMS_BUCKET }}
 
       - name: Run oss-persistence segment sweep (put)
         if: ${{ !cancelled() && env.BUNDLE_OSS_PERSISTENCE == 'true' && vars.REAL_CLOUD_SEGMENT_SWEEP == 'true' }}

@@ -65,10 +65,15 @@ PR. Every real-cloud step (tasks 1 and 6) needs Clark's go before it runs.
     SSE-C correction
   - _Requirements: 7.1, 7.2_
 
-- [ ] 6. Real-cloud encrypted-bucket legs
+- [x] 6. Real-cloud encrypted-bucket legs
   - `real-cloud-tests.yml`: second run of the S3 (and OSS) object-persistence
     test against `AWS_OBJECT_PERSISTENCE_KMS_BUCKET` /
     `ALIBABA_OBJECT_PERSISTENCE_KMS_BUCKET`, default options, skipping when
     unset
   - One dispatched run, with Clark's go, passing on x64 and arm64
   - _Requirements: 6.4_
+  - Done: run 40629782773 (2026-10-28). S3 against the SSE-KMS bucket
+    passed on x64 and arm64; OSS against its SSE-KMS bucket passed after
+    the `kythira-ci-oss-persistence` RAM policy (v6) added
+    `kythira-objpersist-kms-*`. No KMS permission was needed on the OSS
+    caller
