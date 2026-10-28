@@ -1,8 +1,8 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (7/14 tasks: 2-8)
+## Status: In progress (8/14 tasks: 1-8)
 
-**Last Updated**: October 24, 2026. The spec was written from Clark's doc
+**Last Updated**: October 28, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
 at `7f4f25b`.
 
@@ -18,20 +18,115 @@ compatibility").
 
 ## M0: harness without agents
 
-- [ ] **1. Probe Cairn before building against it.** No repo changes except
+- [x] **1. Probe Cairn before building against it.** No repo changes except
   the answers recorded here.
-  - [ ] 1a. Pull Cairn v0.2.1 (commit
+  - [x] 1a. Pull Cairn v0.2.1 (commit
         `e0ef2f850e5805f824815ee38f049e066deeb7d1`). Record the engine and
         worker image digests, and record how a project declares its tools
         (MCP or otherwise).
-  - [ ] 1b. Can any worker type point at a llama.cpp server's
+  - [x] 1b. Can any worker type point at a llama.cpp server's
         OpenAI-compatible endpoint without changing Cairn? The doc infers
         the Pi worker; test it. If none can, record that, and design §7's cost model
         is redone before task 11.
-  - [ ] 1c. Does the engine run unmodified under rootless Podman? Record
+  - [x] 1c. Does the engine run unmodified under rootless Podman? Record
         what breaks, if anything.
-  - [ ] Record all answers with the date. An unrecorded probe gets re-run by
+  - [x] Record all answers with the date. An unrecorded probe gets re-run by
         the next person.
+  - Findings (October 28, 2026, probed on tikhov with Podman 5.7.0;
+    Docker is not installed there, so only the Podman path was
+    exercised). Cairn checked out at `e0ef2f85` and confirmed as tag
+    `v0.2.1`.
+  - 1a — images and tool model.
+    - There is no published "engine" image. `docker-compose.yaml` builds
+      both `cairn-server` and `cairn-dispatcher` from the repo-root
+      `Dockerfile`, whose base is
+      `ghcr.io/astral-sh/uv@sha256:0a04b3cd4eb1797f131b6df7e13bb2add57e25945144ec4543a1fd873b3991e0`
+      (`uv:python3.13-trixie`); the built image is ~1.22 GB.
+    - Worker image `ghcr.io/oritera/cairn-worker-container:latest`,
+      RepoDigest as pulled (`--platform=linux/amd64`)
+      `sha256:d41bd6922951e7237f0c1c2cd4451b4bb7d38cf373e2258ae00b841a71fcdfc2`;
+      the registry `latest` multi-arch index digest is
+      `sha256:d90d40b7c634b8d5dc9464e04b863a185b9efe964ffd2b246f6e5cbc2a2ef053`.
+      It is built `FROM kalilinux/kali-rolling:latest`
+      (`container/Dockerfile`) with a security toolchain and three agent
+      CLIs baked in: Codex 0.118.0, Claude Code 2.1.98, Pi 0.73.0.
+    - A project declares NO tools, and Cairn uses no MCP. The server's
+      project model (`cairn/src/cairn/server/models.py`) is only Facts,
+      Intents, Hints and Settings (timeouts) — no tools field — and the
+      only `mcp`/`tool` strings in the tree are vendored Tailwind JS.
+      Tools are whatever the worker agent CLI has natively, run inside
+      the worker container: the Pi adapter passes
+      `--tools read,write,edit,bash,grep,find,ls` with
+      `--no-skills --no-extensions`
+      (`cairn/src/cairn/dispatcher/workers/adapters/pi.py`), Claude Code
+      runs `claude -p --dangerously-skip-permissions` (`claudecode.py`),
+      Codex runs `codex exec --dangerously-bypass-approvals-and-sandbox`
+      (`codex.py`). Matches the README's "Zero MCP tools, zero RAG".
+  - 1b — yes, the Pi worker, with no change to Cairn. `PiDriver`
+    (`.../adapters/pi.py`, `_models_json`) writes a pi provider straight
+    from env: `baseUrl=$PI_BASE_URL`, `api=$PI_PROVIDER_API`,
+    `apiKey=$PI_API_KEY`, and the shipped `dispatch.yaml` already uses
+    `PI_PROVIDER_API: "openai-completions"` — the OpenAI
+    chat-completions wire API that llama.cpp's `llama-server` serves
+    (`/v1/chat/completions`, `/v1/models`). To target llama.cpp, on a
+    `type: pi` worker set `PI_BASE_URL=<server>/v1`,
+    `PI_PROVIDER_API=openai-completions`, `PI_MODEL=<served model>`, any
+    dummy `PI_API_KEY`, and optionally `PI_MODEL_CONTEXT_WINDOW`.
+    Evidence: the exact healthcheck argv `PiDriver` builds, run inside
+    the worker container with `--network host` pointed at a local stub
+    OpenAI endpoint, produced a request at the stub
+    (`POST /v1/chat/completions`, 1700 bytes) and pi reported
+    `"api":"openai-completions","provider":"cairn","model":"stub"`. The
+    other two backends do not fit llama.cpp as wired: Codex hardcodes
+    `wire_api="responses"` (OpenAI Responses API) and Claude Code posts
+    to `/v1/messages` (Anthropic Messages API); each accepts a custom
+    base URL but expects a protocol llama.cpp does not serve, so either
+    would need a translating proxy. Design §7's Pi-based cost model
+    therefore stands; no redo needed.
+  - 1c — the server runs unmodified; the dispatcher does not, as the
+    compose file is shipped.
+    - `cairn serve` started cleanly under rootless Podman and answered
+      `GET /projects` with `[]`.
+    - The dispatcher fails at construction: `ContainerManager.__init__`
+      calls `docker.from_env()`
+      (`cairn/src/cairn/dispatcher/runtime/containers.py:26`) and
+      `docker-compose.yaml` bind-mounts `/var/run/docker.sock`, absent on
+      a rootless Podman host. Exact error:
+      `docker.errors.DockerException: Error while fetching server API`
+      `version: ('Connection aborted.', FileNotFoundError(2, 'No such`
+      `file or directory'))`.
+    - Fixable WITHOUT touching Cairn source: enable Podman's
+      Docker-compatible API (`systemctl --user start podman.socket`) and
+      mount `$XDG_RUNTIME_DIR/podman/podman.sock` at
+      `/var/run/docker.sock` in the dispatcher (or set `DOCKER_HOST`).
+      With that it gets past `docker.from_env()` and proceeds into the
+      startup healthcheck (worker-container create/exec over the Podman
+      API). So M0 needs only a compose/socket adjustment, not a code
+      patch; the stock `docker-compose.yaml` will not come up rootless.
+    - Both images are amd64 (`--platform=linux/amd64`); tikhov is
+      x86_64, so no emulation. Workers use `network_mode: host`, which
+      rootless Podman honours.
+  - How it was probed (all under `~/scratch/cairn-probe`, outside this
+    checkout; every container, the stub, and the user Podman socket were
+    stopped and removed afterward):
+    - `git clone https://github.com/oritera/Cairn`,
+      `git checkout e0ef2f85`, confirmed `git describe --tags` = v0.2.1.
+    - `podman pull --platform=linux/amd64 ghcr.io/oritera/cairn-worker-container:latest`,
+      digest from `podman image inspect --format '{{index .RepoDigests 0}}'`,
+      cross-checked against the ghcr manifest API.
+    - `podman build -t cairn-app -f Dockerfile .` for the engine image.
+    - Server: `podman run --rm -p 8000:8000 cairn-app uv run cairn serve`
+      `--host 0.0.0.0 --no-access-log`, then `curl 127.0.0.1:8000/projects`.
+    - 1b: a ~20-line Python `http.server` stub answering
+      `/v1/chat/completions` and `/v1/models`, then
+      `podman run --rm --network host <worker-image> /bin/sh -lc`
+      `<PiDriver script>` with `PI_BASE_URL` on the stub; watched the
+      stub log.
+    - 1c: `podman run --rm --network host -v <dispatch_mock.yaml>:/cairn/dispatch.yaml`
+      `cairn-app uv run cairn dispatch --config dispatch.yaml`
+      `--startup-healthcheck-only`, first with no socket (captured the
+      error above), then with the Podman socket bind-mounted at
+      `/var/run/docker.sock`.
 
 - [x] **2. chaos_node control-plane endpoints.** (Requirement 1, design §1.)
   - [x] 2.1 Replace the `GET /log/<i>` stub; add the `GET /log?from=&to=`
