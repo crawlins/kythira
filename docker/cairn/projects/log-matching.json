@@ -1,0 +1,17 @@
+{
+  "title": "Kythira chaos: log matching",
+  "invariant": "log-matching",
+  "goal": "Make two nodes hold different entries at the same log index and term, or the same entry with different prefixes. Done when raft_safety reports a log_matching violation; report that output and the chaos calls that led to it.",
+  "hints": [
+    "Snapshot install during a partition: a follower cut off long enough falls behind the leader's compacted log and must catch up by InstallSnapshot when the partition heals. Faults that land while the snapshot is in flight (another partition, a kill, a leader change) are the interesting part.",
+    "Joint-consensus transitions: cluster.add_member and cluster.remove_member change the configuration through a joint phase. Faults during that phase (a leader kill or a partition that splits old and new majorities) are where membership bugs live."
+  ],
+  "hints_by_feature": {
+    "peer2peer": [
+      "Gossip replication racing leader replication: with peer-to-peer catch-up on, a lagging node pulls entries from a peer as well as from the leader. Entries that arrive by both routes around a leader change, a partition heal or a truncation are where the two can disagree."
+    ],
+    "object_store": [
+      "Object-store persistence failures: when the target persists its log to an object store, failed or slow writes can make a node acknowledge an entry it has not stored. The raft/persistence/ failpoints are the lever."
+    ]
+  }
+}

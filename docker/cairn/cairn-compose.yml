@@ -4,22 +4,32 @@
 # The cairn fence (.kiro/specs/cairn-chaos-testing/ Requirements 3.4 and 7,
 # design §3.2 and §5): the chaos cluster, the tool server that drives it,
 # the filtering proxy that is the only holder of the runtime socket, the
-# egress proxy that is the only way out, and the Cairn engine.
+# egress proxy that is the only way out, and the Cairn engine with its
+# dispatcher, which starts the worker containers the agents run in.
 #
 #   raft_net     internal  node1-3, tool-server
 #   control_net  internal  tool-server, container-api-proxy
-#   cairn_net    internal  tool-server, egress-proxy, engine, workers
-#   egress_net             egress-proxy only: the one route off the host
+#   dispatch_net internal  dispatcher, dispatch-api-proxy
+#   engine_net   internal  engine, dispatcher
+#   cairn_net    internal  tool-server, egress-proxy, llm-tunnel, workers
+#   egress_net             egress-proxy and llm-tunnel: the routes off the
+#                          host
 #   panel_net              engine only, so its panel can be published (a
 #                          port on an internal network is never published)
 #
-# So a worker can reach the tool server and, through egress-proxy, the
-# model hosts in CAIRN_EGRESS_ALLOW, and nothing else: not the cluster, not
-# the runtime, not a package mirror. fence-probe checks exactly that from a
-# worker's seat (scripts/cairn/fence-check.sh). The tool server reaches the
-# runtime only through container-api-proxy, which forwards kill, stop,
-# start, pause, unpause and the os_faults.hpp tc/iptables execs, and only on
-# containers labelled kythira.cairn.run=$CAIRN_RUN: these three nodes.
+# So a worker can reach the tool server (the `chaos` command), the model
+# through llm-tunnel and, through egress-proxy, the model hosts in
+# CAIRN_EGRESS_ALLOW, and nothing else: not the cluster, not the runtime,
+# not a package mirror, and not the engine, whose API would let an agent
+# write the board it is judged by. fence-probe checks the egress part from
+# a worker's seat (scripts/cairn/fence-check.sh). The tool server reaches the runtime
+# only through container-api-proxy, which forwards kill, stop, start,
+# pause, unpause and the os_faults.hpp tc/iptables execs, and only on
+# containers labelled kythira.cairn.run=$CAIRN_RUN: these three nodes. The
+# dispatcher reaches it only through dispatch-api-proxy, which lets it
+# create containers of the worker image on cairn_net, exec in them and
+# remove them, and nothing else (container_api_proxy/proxy.py,
+# cairn_dispatcher mode); those carry kythira.cairn.worker=$CAIRN_RUN.
 #
 # No static IPs, no host networking, no --privileged; NET_ADMIN on the
 # nodes is the only capability (CLAUDE.md "Container runtime
@@ -29,12 +39,15 @@
 #
 # Images: kythira-chaos-node:dev (docker-chaos-image) and
 # kythira-cairn-tool-server:dev (docker-cairn-tool-server-image) come from
-# the CMake build; the two proxies build from their directories here.
-# Profiles: `engine` runs Cairn, whose image task 1 pins by digest (until
-# then CAIRN_ENGINE_IMAGE must be set to run it); `probe` runs fence-probe.
+# the CMake build; the proxies, the tunnel and the worker build from their
+# directories here; the engine is Cairn v0.2.1 built unmodified from its
+# pinned commit by scripts/cairn/build-engine.sh. Profiles: `engine` runs
+# Cairn's server, `dispatch` its dispatcher, `llm` the tunnel to
+# llama.cpp, `probe` fence-probe.
 #
-# Start:  <runtime> compose -f docker/cairn/cairn-compose.yml up -d
-# Stop:   scripts/cairn/kill.sh
+# Start a run:  scripts/cairn/start-run.sh <project> (see its header)
+# Cluster only: <runtime> compose -f docker/cairn/cairn-compose.yml up -d
+# Stop:         scripts/cairn/kill.sh
 
 x-chaos-node: &chaos-node
   image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
@@ -85,9 +98,10 @@ services:
       NODE_ID: "3"
       PEERS: "1:node1:7000,2:node2:7000"
 
-  # chaos_ctl and chaos_workload. Run directories live in the runs volume;
-  # `chaos_ctl init --layout cairn` there addresses the nodes above by
-  # service name.
+  # chaos_ctl and chaos_workload, and chaos_http.py on :7700, which the
+  # workers' `chaos` command calls. Run directories live in the runs
+  # volume; `chaos_ctl init --layout cairn` there addresses the nodes above
+  # by service name.
   tool-server:
     image: kythira-cairn-tool-server:dev
     container_name: ${CAIRN_RUN:-kythira-cairn}-tool-server
@@ -119,6 +133,25 @@ services:
     networks:
       - control_net
 
+  # The dispatcher's only way to the runtime (proxy.py, cairn_dispatcher
+  # mode). Its image and network must match dispatch.yaml's container
+  # section, which start-run.sh renders from these same variables.
+  dispatch-api-proxy:
+    profiles: ["dispatch"]
+    image: kythira-container-api-proxy:dev
+    build:
+      context: ../container_api_proxy
+    container_name: ${CAIRN_RUN:-kythira-cairn}-dispatch-api-proxy
+    environment:
+      PROXY_MODE: cairn_dispatcher
+      PROXY_IMAGE: "${CAIRN_WORKER_IMAGE:-kythira-cairn-worker:dev}"
+      PROXY_NETWORK: "${CAIRN_RUN:-kythira-cairn}-cairn_net"
+      PROXY_LABEL: "kythira.cairn.worker=${CAIRN_RUN:-kythira-cairn}"
+    volumes:
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    networks:
+      - dispatch_net
+
   egress-proxy:
     image: kythira-cairn-egress-proxy:dev
     build:
@@ -132,22 +165,68 @@ services:
       - cairn_net
       - egress_net
 
-  # Cairn v0.2.1, unmodified. Task 1 records its image digest and panel
-  # port; until then this profile needs CAIRN_ENGINE_IMAGE and
-  # CAIRN_PANEL_CONTAINER_PORT set.
+  # Cairn v0.2.1, unmodified: the server, whose panel and API are on
+  # :8000, published on 127.0.0.1 only. There is no published image (task
+  # 1a); scripts/cairn/build-engine.sh builds this one from the pinned
+  # commit. UV_OFFLINE keeps `uv run` from reaching for an index: the image
+  # already holds the locked environment.
   engine:
     profiles: ["engine"]
-    image: "${CAIRN_ENGINE_IMAGE:-cairn-engine-unpinned-see-task-1}"
+    image: "${CAIRN_ENGINE_IMAGE:-kythira-cairn-engine:v0.2.1}"
     container_name: ${CAIRN_RUN:-kythira-cairn}-engine
+    command: ["uv", "run", "cairn", "serve", "--host", "0.0.0.0", "--no-access-log"]
     environment:
-      HTTPS_PROXY: "http://egress-proxy:3128"
-      HTTP_PROXY: "http://egress-proxy:3128"
-      NO_PROXY: "tool-server"
+      UV_OFFLINE: "1"
+      TZ: "UTC"
+    volumes:
+      - cairn_data:/root/.local/share/cairn
     ports:
-      - "127.0.0.1:${CAIRN_PANEL_PORT:-7777}:${CAIRN_PANEL_CONTAINER_PORT:-7777}"
+      - "127.0.0.1:${CAIRN_PANEL_PORT:-7777}:8000"
+    networks:
+      - engine_net
+      - panel_net
+
+  # Cairn's dispatcher, unmodified: claims work from the engine and runs
+  # each project's agents in a worker container it creates through
+  # dispatch-api-proxy. dispatch.yaml sets the workers and the model
+  # routing. Its own profile, because it must start after the engine
+  # answers and rootless Podman without systemd never runs healthchecks,
+  # so `depends_on: service_healthy` would wait forever; start-run.sh
+  # brings it up once the engine's API responds.
+  dispatcher:
+    profiles: ["dispatch"]
+    image: "${CAIRN_ENGINE_IMAGE:-kythira-cairn-engine:v0.2.1}"
+    container_name: ${CAIRN_RUN:-kythira-cairn}-dispatcher
+    command: ["uv", "run", "cairn", "dispatch", "--config", "/run/cairn/dispatch.yaml"]
+    environment:
+      UV_OFFLINE: "1"
+      TZ: "UTC"
+      DOCKER_HOST: "tcp://dispatch-api-proxy:2375"
+    volumes:
+      - ${CAIRN_DISPATCH_CONFIG:-./dispatch.yaml}:/run/cairn/dispatch.yaml:ro
+    depends_on:
+      - engine
+      - dispatch-api-proxy
+    networks:
+      - engine_net
+      - dispatch_net
+
+  # SSH local forward to llama-server on the GPU host (llm_tunnel/). Needs
+  # CAIRN_LLM_SSH (user@host) and CAIRN_LLM_SSH_KEY (a private key file).
+  llm-tunnel:
+    profiles: ["llm"]
+    image: kythira-cairn-llm-tunnel:dev
+    build:
+      context: llm_tunnel
+    container_name: ${CAIRN_RUN:-kythira-cairn}-llm-tunnel
+    environment:
+      LLM_SSH_TARGET: "${CAIRN_LLM_SSH:-}"
+      LLM_REMOTE_PORT: "${CAIRN_LLM_REMOTE_PORT:-8080}"
+    volumes:
+      - ${CAIRN_LLM_SSH_KEY:-/dev/null}:/run/llm-key:ro
     networks:
       - cairn_net
-      - panel_net
+      - egress_net
 
   # Sits where a worker sits (cairn_net only, proxy env set as a worker's
   # is) and checks the fence. Run by scripts/cairn/fence-check.sh.
@@ -169,13 +248,21 @@ services:
 
 volumes:
   runs:
+  cairn_data:
 
 networks:
   raft_net:
     internal: true
   control_net:
     internal: true
+  dispatch_net:
+    internal: true
+  engine_net:
+    internal: true
+  # Named, not prefixed by the compose project, because the dispatcher
+  # creates workers on it by this name (dispatch.yaml network_mode).
   cairn_net:
+    name: "${CAIRN_RUN:-kythira-cairn}-cairn_net"
     internal: true
   egress_net:
     driver: bridge
