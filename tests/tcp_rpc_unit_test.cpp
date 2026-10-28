@@ -9,6 +9,11 @@
 
 #include "tcp_server_hardening_cases.hpp"
 
+#ifdef FIU_ENABLE
+#include <fiu-control.h>
+#include <fiu.h>
+#endif
+
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -585,6 +590,46 @@ BOOST_AUTO_TEST_CASE(test_request_vote_round_trip, *boost::unit_test::timeout(15
 
     server.stop();
 }
+
+#ifdef FIU_ENABLE
+// chaos_node sends over this client, so the raft/network/* failpoints have to
+// fail it here, as they do the simulator transport; before this they were
+// accepted and changed nothing. The handler counts calls: an armed send must
+// fail without reaching the server, and the next one, disarmed, must reach it.
+BOOST_AUTO_TEST_CASE(test_network_failpoints_fail_sends, *boost::unit_test::timeout(15)) {
+    fiu_init(0);
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    std::atomic<int> calls{0};
+    server.register_request_vote_handler([&](const kythira::request_vote_request<>&) {
+        ++calls;
+        return kythira::request_vote_response<>{};
+    });
+    server.register_append_entries_handler([&](const kythira::append_entries_request<>&) {
+        ++calls;
+        return kythira::append_entries_response<>{};
+    });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(1, "127.0.0.1", port);
+    const auto t = std::chrono::milliseconds{5000};
+
+    fiu_enable("raft/network/send_request_vote", 1, nullptr, 0);
+    fiu_enable("raft/network/send_append_entries", 1, nullptr, 0);
+    BOOST_CHECK_THROW(client.send_request_vote(1, {}, t).get(), kythira::network_exception);
+    BOOST_CHECK_THROW(client.send_append_entries(1, {}, t).get(), kythira::network_exception);
+    BOOST_TEST(calls.load() == 0);
+
+    fiu_disable("raft/network/send_request_vote");
+    fiu_disable("raft/network/send_append_entries");
+    static_cast<void>(client.send_request_vote(1, {}, t).get());
+    static_cast<void>(client.send_append_entries(1, {}, t).get());
+    BOOST_TEST(calls.load() == 2);
+
+    server.stop();
+}
+#endif
 
 // The server tells its peer-seen handler which node an RPC claims to be
 // from and where the connection came from, before the handler runs.

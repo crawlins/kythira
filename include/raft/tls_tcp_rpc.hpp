@@ -63,6 +63,7 @@
 #include <raft/ca_http_helpers.hpp>
 #include <raft/exceptions.hpp>
 #include <raft/executor_default.hpp>
+#include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/network.hpp>
@@ -979,9 +980,16 @@ public:
         _impl->reload_trust_policy(std::move(policy));
     }
 
+    // Each Raft send evaluates the same raft/network/* failpoint the
+    // simulator transport does (simulator_network.hpp), so a fault enabled
+    // in chaos_node fails the send here rather than being accepted and
+    // changing nothing. A no-op unless the binary is built with FIU_ENABLE.
     auto send_request_vote(const NodeId& target, const request_vote_request<NodeId>& req,
                            std::chrono::milliseconds timeout)
         -> future_default<request_vote_response<>> {
+        fiu_do_on("raft/network/send_request_vote",
+                  return future_factory_default::makeExceptionalFuture<request_vote_response<>>(
+                      std::make_exception_ptr(network_exception("chaos: send_request_vote"))););
         return _impl->template call<request_vote_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_request_vote_response(d);
@@ -992,6 +1000,9 @@ public:
     auto send_request_pre_vote(const NodeId& target, const request_pre_vote_request<NodeId>& req,
                                std::chrono::milliseconds timeout)
         -> future_default<request_pre_vote_response<>> {
+        fiu_do_on("raft/network/send_request_pre_vote",
+                  return future_factory_default::makeExceptionalFuture<request_pre_vote_response<>>(
+                      std::make_exception_ptr(network_exception("chaos: send_request_pre_vote"))););
         return _impl->template call<request_pre_vote_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_request_pre_vote_response(d);
@@ -1003,6 +1014,9 @@ public:
     auto send_timeout_now(const NodeId& target, const timeout_now_request<NodeId>& req,
                           std::chrono::milliseconds timeout)
         -> future_default<timeout_now_response<>> {
+        fiu_do_on("raft/network/send_timeout_now",
+                  return future_factory_default::makeExceptionalFuture<timeout_now_response<>>(
+                      std::make_exception_ptr(network_exception("chaos: send_timeout_now"))););
         return _impl->template call<timeout_now_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_timeout_now_response(d);
@@ -1023,6 +1037,9 @@ public:
     auto send_append_entries(const NodeId& target, const append_entries_request<NodeId>& req,
                              std::chrono::milliseconds timeout)
         -> future_default<append_entries_response<>> {
+        fiu_do_on("raft/network/send_append_entries",
+                  return future_factory_default::makeExceptionalFuture<append_entries_response<>>(
+                      std::make_exception_ptr(network_exception("chaos: send_append_entries"))););
         return _impl->template call<append_entries_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_append_entries_response(d);
@@ -1032,6 +1049,9 @@ public:
     auto send_install_snapshot(const NodeId& target, const install_snapshot_request<NodeId>& req,
                                std::chrono::milliseconds timeout)
         -> future_default<install_snapshot_response<>> {
+        fiu_do_on("raft/network/send_install_snapshot",
+                  return future_factory_default::makeExceptionalFuture<install_snapshot_response<>>(
+                      std::make_exception_ptr(network_exception("chaos: send_install_snapshot"))););
         return _impl->template call<install_snapshot_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_install_snapshot_response(d);

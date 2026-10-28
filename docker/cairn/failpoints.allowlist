@@ -6,6 +6,11 @@
 # the raft/{network,persistence,objstore,state_machine}/ families. The
 # generator says which headers were left out and why.
 
+raft/network/send_append_entries
+raft/network/send_install_snapshot
+raft/network/send_request_pre_vote
+raft/network/send_request_vote
+raft/network/send_timeout_now
 raft/persistence/append_log_entry
 raft/persistence/barrier
 raft/persistence/save_current_term
