@@ -1078,6 +1078,12 @@ add_raft_completion_test(raft_snapshot_boundary_replication_test raft_snapshot_b
 # cluster makes — a follower's run in one call, term before vote, "no vote"
 # stored after a term change.
 add_raft_completion_test(raft_batched_durable_writes_test raft_batched_durable_writes_test.cpp)
+# A follower's write-behind barrier, taken with the node's lock released,
+# outlived by a newer leader's AppendEntries that truncates what it covered:
+# the old request is not acknowledged, and its barrier does not count for the
+# replacement entries.
+add_raft_completion_test(raft_barrier_outlived_by_new_term_test
+    raft_barrier_outlived_by_new_term_test.cpp)
 
 # Leader group commit over the object store, at the raft level
 # (.kiro/specs/object-store-group-commit/ task 3): a three-node cluster on

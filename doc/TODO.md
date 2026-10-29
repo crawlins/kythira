@@ -1760,6 +1760,21 @@ unverified completion claim.
       that), and one in 22 whole-binary runs failed
       `group_commit_batches_and_the_baseline_does_not` on "leadership moved
       during the window", the same churn under 50 ms PUTs.
+      **October 29, 2026: one real cause found and fixed, not yet proven
+      to be this one.** Under write-behind a follower drops its lock while
+      its AppendEntries barrier runs. A newer leader's AppendEntries could
+      run in that window, step the node to the newer term and truncate the
+      entries the first request carried; the first request then answered
+      success in the old term, so the old leader counted entries this node
+      no longer held toward a commit (and the stale barrier also raised
+      `_durable_log_index` over the replacement entries). Both are fixed in
+      `raft.hpp` and pinned by `raft_barrier_outlived_by_new_term_test`,
+      which fails on the old code. It needs two leaders' AppendEntries to
+      overlap at a third, live follower, so in this case only a leadership
+      change before the kill, while all three hosts are up, can hit it;
+      after the kill only two hosts are left.
+      Keep the test allowlisted until a week of CI shows no lost key; if
+      one appears, its message is the next lead.
     - Fixed the same day, all test-side: `kythira_future_continuation_operations_property_test`
       (11: the clock started after Folly's `delayed()` timer had already
       begun, so a loaded runner read 0 ms), `behavioral_preservation_property_test`
