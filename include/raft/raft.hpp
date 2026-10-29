@@ -849,6 +849,14 @@ private:
     // a discarded sequence can never succeed.
     std::map<log_index_type, kythira::write_sequence> _undurable_seqs;
 
+    // How many times this node has thrown away the top of its log (a conflict
+    // truncation, a snapshot install, a reload from storage). A barrier taken
+    // with `_mutex` released records the count it started under, so that on
+    // waking it can tell whether the entries it covered are still the ones in
+    // the log: if not, it proves nothing about them and must not raise
+    // `_durable_log_index` or be answered as success.
+    std::uint64_t _log_truncations{0};
+
     // Index of highest log entry applied to state machine (initialized to 0, increases
     // monotonically)
     log_index_type _last_applied;
@@ -1365,6 +1373,8 @@ private:
         kythira::write_sequence _seq{0};
         log_index_type _index{0};
         bool _any{false};
+        /// `_log_truncations` when the entries were appended or covered.
+        std::uint64_t _truncations{0};
     };
 
     /// @brief Write `entry` to the store and record what it owes a barrier.
@@ -1403,7 +1413,12 @@ private:
 
     /// @brief Record that everything through `pending` is durable.
     ///        `_mutex` must be held.
-    auto mark_durable_locked(const pending_barrier& pending) -> void;
+    ///
+    /// @return `false`, recording nothing, if the log was truncated since
+    ///         `pending` was filled: the barrier covered entries that are no
+    ///         longer the ones at those indices, so it says nothing about what
+    ///         the log now holds there.
+    auto mark_durable_locked(const pending_barrier& pending) -> bool;
 
     /// @brief Make `pending` cover every entry through `last_new_index`.
     ///        `_mutex` must be held.
@@ -1418,7 +1433,7 @@ private:
     auto cover_held_entries_locked(pending_barrier& pending, log_index_type last_new_index) -> void;
 
     /// @brief `take_barrier` then `mark_durable_locked`, acquiring `_mutex`
-    ///        for the second half.
+    ///        for the second half. `false` if either says no.
     ///
     /// **Call with `_mutex` released.** Requirement 3.2: a barrier waited for
     /// under a lock that other appends need is a barrier nothing else can
@@ -5426,6 +5441,7 @@ auto node<Types>::initialize_from_storage() -> void {
     // survives from the previous run, and starting there would drop committed
     // entries no snapshot covers. In a fresh process the two are equal.
     _log.clear();
+    ++_log_truncations;
     log_index_type first_needed =
         snap_opt.has_value() ? snap_opt->last_included_index() + 1 : log_index_type{1};
     log_index_type last_persisted = _persistence.get_last_log_index();
@@ -5975,6 +5991,7 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // existing test and buy nothing (Requirements 5.1, 5.2).
     if (pending._any) {
         bool durable = false;
+        const auto term_before_barrier = _current_term;
         if (barrier_can_block()) {
             lock.unlock();
             durable = take_barrier(pending);
@@ -5988,7 +6005,22 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
             // as held until a barrier does cover them.
             return append_entries_response_type{_current_term, false, std::nullopt, std::nullopt};
         }
-        mark_durable_locked(pending);
+        // With `_mutex` released, a newer leader may have been heard from:
+        // its AppendEntries can have truncated the entries this request
+        // brought and replaced them with its own. Answering success now, in
+        // the old term, told the old leader this node held entries it had
+        // just thrown away, and the old leader counted that toward a commit
+        // the new leader's log does not contain: an acknowledged write lost.
+        // Answer in the current term instead, which also steps that leader
+        // down.
+        const bool still_held = mark_durable_locked(pending);
+        if (!still_held || _current_term != term_before_barrier) {
+            _logger.info("AppendEntries outlived by a newer term or truncation during its barrier",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"request_term", std::to_string(request.term())},
+                          {"current_term", std::to_string(_current_term)}});
+            return append_entries_response_type{_current_term, false, std::nullopt, std::nullopt};
+        }
     }
 
     // Rule 6: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new
@@ -6153,6 +6185,7 @@ auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_
 
                 // Persist truncation
                 _persistence.truncate_log(entry_index);
+                ++_log_truncations;
                 // Entries that no longer exist cannot be durable. Without this
                 // the watermark would still name a truncated index and a later
                 // barrier would appear to have covered entries this node threw
@@ -6419,6 +6452,7 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
 
         _log.clear();
         _persistence.truncate_log(1);  // Clear all log entries
+        ++_log_truncations;
     } else {
         // Retain entries after the snapshot index: drop only the persisted
         // prefix the snapshot now covers. (This used to call
@@ -7470,6 +7504,7 @@ auto node<Types>::persist_append(const log_entry_type& entry, pending_barrier& p
             pending._index = entry.index();
         }
         pending._any = true;
+        pending._truncations = _log_truncations;
     } else {
         _persistence.append_log_entry(entry);
         // No barrier to wait for, so the entry is as durable as it will ever
@@ -7479,6 +7514,7 @@ auto node<Types>::persist_append(const log_entry_type& entry, pending_barrier& p
             pending._index = entry.index();
         }
         pending._any = true;
+        pending._truncations = _log_truncations;
     }
 }
 
@@ -7524,11 +7560,23 @@ template<raft_types Types> auto node<Types>::take_barrier(const pending_barrier&
 }
 
 template<raft_types Types>
-auto node<Types>::mark_durable_locked(const pending_barrier& pending) -> void {
+auto node<Types>::mark_durable_locked(const pending_barrier& pending) -> bool {
+    if (pending._any && pending._truncations != _log_truncations) {
+        // The barrier ran with `_mutex` released, and meanwhile a newer
+        // leader's AppendEntries (or a snapshot) replaced the entries it was
+        // for. It made *those* durable; the log now holds others at the same
+        // indices, which their own appends barrier. Raising the watermark here
+        // would credit them with a barrier they never had.
+        _logger.info("Barrier outlived a log truncation; not counted",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"log_index", std::to_string(pending._index)}});
+        return false;
+    }
     if (pending._any && pending._index > _durable_log_index) {
         _durable_log_index = pending._index;
     }
     _undurable_seqs.erase(_undurable_seqs.begin(), _undurable_seqs.upper_bound(_durable_log_index));
+    return true;
 }
 
 template<raft_types Types>
@@ -7549,6 +7597,7 @@ auto node<Types>::cover_held_entries_locked(pending_barrier& pending, log_index_
         pending._seq = std::max(pending._seq, it->second);
         pending._index = std::max(pending._index, last_new_index);
         pending._any = true;
+        pending._truncations = _log_truncations;
     }
 }
 
@@ -7558,8 +7607,7 @@ auto node<Types>::settle_barrier(const pending_barrier& pending) -> bool {
         return false;
     }
     std::lock_guard<std::mutex> lock(_mutex);
-    mark_durable_locked(pending);
-    return true;
+    return mark_durable_locked(pending);
 }
 
 template<raft_types Types>
@@ -7598,6 +7646,7 @@ auto node<Types>::persist_and_append_run(std::span<const log_entry_type> entries
                 pending._index = entries.back().index();
             }
             pending._any = true;
+            pending._truncations = _log_truncations;
             return;
         }
     }

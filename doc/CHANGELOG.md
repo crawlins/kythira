@@ -3,6 +3,20 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (October 29, 2026)
+
+- **A follower no longer acknowledges entries a newer leader has already
+  replaced.** With a barrier that can block (the object store under
+  write-behind), a follower releases its lock while it waits. A newer
+  leader's AppendEntries arriving in that window could truncate the entries
+  the waiting request carried, and the waiting request still answered
+  success in the old term, so the old leader could commit and acknowledge a
+  write that the newer leader's log does not have. The waiting request now
+  answers failure in the current term, and a barrier that outlived a
+  truncation no longer counts toward durability. A candidate cause of the
+  lost write in `multi_raft_node_s3_process_test`, which stays open in
+  TODO.md until CI confirms it.
+
 ### What Changed (October 28, 2026)
 
 - **Seven retry-rescued test flakes fixed, and one real lost write found.**
