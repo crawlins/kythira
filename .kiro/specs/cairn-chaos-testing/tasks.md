@@ -2,7 +2,7 @@
 
 ## Status: In progress (10/14 tasks: 1-10)
 
-**Last Updated**: October 28, 2026. The spec was written from Clark's doc
+**Last Updated**: October 30, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
 at `7f4f25b`.
 
@@ -549,10 +549,47 @@ compatibility").
       reachable; tikhov reached it in task 1. Task 11's first run is the
       check for all three.
 
-- [ ] **11. Five M1 runs against the seeded image.**
+- [ ] **11. Five M1 runs against the seeded image.** Run October 29-30,
+  2026; the bar was not met. Re-run with a model that can hold Cairn's
+  protocol before M1 counts as passed.
   - [ ] Success: found in at least 4 of 5 runs within the 2-hour limit.
-  - [ ] Record per-role token use and cost per run here (Requirement 8.2),
-        and set the run cadence from it.
+        **0 of 5.**
+  - [x] Record per-role token use and cost per run here (Requirement 8.2),
+        and set the run cadence from it. Cost is recorded below; token
+        counts were not captured, and no cadence is set until a run passes.
+  - Setup: tikhov, rootless Podman, `start-run.sh election-safety --hours 2`
+    five times in a row against `kythira-chaos-node:seeded-vote-term`, one
+    worker tier only (`pi_local`): Qwen3-Coder-30B-A3B-Instruct Q4 in
+    llama.cpp's `llama-server` (`-c 32768`) on a rented g5.xlarge, over
+    the `llm-tunnel` SSH tunnel.
+
+    | run | found | chaos calls | GPU minutes | what happened |
+    |-----|-------|-------------|-------------|---------------|
+    | 1 | no | ~288 | 120 | explored, never produced the double vote |
+    | 2 | no | 2 | 120 | never left bootstrap |
+    | 3 | no | 2 | 120 | never left bootstrap |
+    | 4 | no | 2 | 120 | never left bootstrap |
+    | 5 | no | 2 | 120 | never left bootstrap |
+
+  - Cause: the harness worked (tunnel, dispatcher, dispatch proxy, tool
+    server, `chaos` calls into the schedule log); the model did not. Cairn's
+    bootstrap step needs a bare JSON object, and the dispatcher logged
+    `bootstrap parse failed ... error=accepted must be true or false` again
+    and again: the model answered in prose or with its event stream. This
+    is the "local tier alone" measurement that task 10 set up, and its
+    answer is that this model at this quantization cannot drive Cairn.
+  - Cost: about $10 of GPU time for the five runs (10 hours of
+    g5.xlarge); about $20.70 for the whole of M1 including setup and an
+    idle stretch before the instance's self-stop watchdog was added.
+  - Found on the way: the chaos_node image lacked `libldns3`, which
+    chaos_node links when the build host has ldns; the nodes did not start
+    until `docker/chaos_node/Dockerfile` installed it.
+  - Next: a model that keeps to a strict JSON reply (a stronger local
+    model, or llama-server's JSON grammar if Pi can ask for it, or one of
+    the API tiers of Requirement 8.2 once a spend-limited key exists).
+    A run whose bootstrap fails repeatedly should also be stopped early
+    rather than left to its 2-hour limit: runs 2-5 spent 8 GPU hours
+    stuck there.
 
 ## M2-M5
 
