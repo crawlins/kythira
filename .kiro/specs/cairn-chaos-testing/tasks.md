@@ -2,7 +2,7 @@
 
 ## Status: In progress (10/14 tasks: 1-10)
 
-**Last Updated**: October 30, 2026. The spec was written from Clark's doc
+**Last Updated**: October 31, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
 at `7f4f25b`.
 
@@ -549,15 +549,16 @@ compatibility").
       reachable; tikhov reached it in task 1. Task 11's first run is the
       check for all three.
 
-- [ ] **11. Five M1 runs against the seeded image.** Run October 29-30,
-  2026; the bar was not met. Re-run with a model that can hold Cairn's
-  protocol before M1 counts as passed.
+- [ ] **11. Five M1 runs against the seeded image.** Two campaigns,
+  October 29-30, 2026. The first found the bug 0 times in 5; the second,
+  with Qwen3.8-27B and a corrected llama-server setup, found it 3 times
+  in 5. The bar is 4, so M1 is not yet passed.
   - [ ] Success: found in at least 4 of 5 runs within the 2-hour limit.
-        **0 of 5.**
+        **0 of 5, then 3 of 5.**
   - [x] Record per-role token use and cost per run here (Requirement 8.2),
-        and set the run cadence from it. Cost is recorded below; token
-        counts were not captured, and no cadence is set until a run passes.
-  - Setup: tikhov, rootless Podman, `start-run.sh election-safety --hours 2`
+        and set the run cadence from it. Cost and tokens are recorded
+        below; no cadence is set until a campaign passes.
+  - First campaign. Setup: tikhov, rootless Podman, `start-run.sh election-safety --hours 2`
     five times in a row against `kythira-chaos-node:seeded-vote-term`, one
     worker tier only (`pi_local`): Qwen3-Coder-30B-A3B-Instruct Q4 in
     llama.cpp's `llama-server` (`-c 32768`) on a rented g5.xlarge, over
@@ -576,8 +577,10 @@ compatibility").
     bootstrap step needs a bare JSON object, and the dispatcher logged
     `bootstrap parse failed ... error=accepted must be true or false` again
     and again: the model answered in prose or with its event stream. This
-    is the "local tier alone" measurement that task 10 set up, and its
-    answer is that this model at this quantization cannot drive Cairn.
+    is the "local tier alone" measurement that task 10 set up. In
+    hindsight the server, not only the model, was at fault: it ran without
+    `--jinja`, so the model's chat and tool template was never applied (see
+    the second campaign).
   - Cost: about $10 of GPU time for the five runs (10 hours of
     g5.xlarge); about $20.70 for the whole of M1 including setup and an
     idle stretch before the instance's self-stop watchdog was added.
@@ -590,6 +593,50 @@ compatibility").
     A run whose bootstrap fails repeatedly should also be stopped early
     rather than left to its 2-hour limit: runs 2-5 spent 8 GPU hours
     stuck there.
+  - Second campaign (October 30). Same project, image and host, with
+    Qwen3.8-27B (dense, `unsloth/Qwen3.8-27B-GGUF`, `UD-Q4_K_M`, 16.5 GB)
+    on a g5.xlarge: 17.4 GB of VRAM at a 32k context. The llama-server
+    flags that matter are `--jinja --no-reasoning-preserve
+    --reasoning-budget 0`:
+    - Without `--jinja` the chat and tool template is not applied, and
+      bootstrap failed as in the first campaign.
+    - With `--jinja` alone, bootstrap passed in one run and failed in the
+      next two: the model's reasoning text leaked into the reply.
+    - `--reasoning-format none` must not be added: it leaves an empty
+      `<think></think>` in the reply's content, which Cairn cannot parse.
+    The run driver restarted a run's project after a bootstrap parse
+    failure, up to 3 times, instead of leaving the run stuck.
+
+    | run | found | minutes to violation | chaos calls | tokens | GPU minutes |
+    |-----|-------|----------------------|-------------|--------|-------------|
+    | 1 | yes | 29 | 737 | ~155k | 29 |
+    | 2 | yes | 35 | 865 | ~273k | 35 |
+    | 3 | yes | 72 | 2,748 | ~541k | 72 |
+    | 4 | no | - | - | ~940k | 120 |
+    | 5 | no | - | 2 | - | 21 |
+
+    Tokens are prompt plus completion, taken from llama-server's
+    cumulative log, so they are per campaign run rather than per role
+    (Pi was the only role). Run 4 bootstrapped and explored for the full
+    two hours without producing the double vote. Run 5 failed bootstrap
+    three times, so the reasoning leak is rarer but not gone.
+  - Replays: each found run's schedule was replayed three times with
+    `chaos_ctl replay` and no model. Run 1: the violation reproduced 3 of
+    3 times (one attempt also tripped log matching and state-machine
+    safety, as two diverging leaders would). Run 2: reproduced 1 of 3
+    (that attempt also tripped leader completeness, linearizability, log
+    matching and state-machine safety); a low rate is expected, since
+    task 9's hand-written schedule reproduced in 9 of 20 replays. Run 3:
+    replay in progress (about 6 hours for 2,748 calls). Minimization was skipped: replays wait out each recorded
+    fault, so ddmin would take many hours on tikhov.
+  - Cost: about $9 for the second campaign; about $30 for all of M1,
+    including an availability-zone move when us-east-1a had no g5
+    capacity (a snapshot-restored volume reads cold blocks at about
+    15-20 MB/s, slower than downloading the model again).
+  - Next: the remaining failures are an occasional bootstrap reply that
+    is not bare JSON, and timing luck. Constrained JSON decoding for the
+    bootstrap reply only would address the first; a longer limit or a
+    stronger model the second. A re-run is Clark's call.
 
 ## M2-M5
 
