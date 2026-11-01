@@ -9,6 +9,7 @@
 #endif
 #include <raft/error_handler.hpp>
 #include <raft/future_default.hpp>
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <iostream>
@@ -184,7 +185,12 @@ BOOST_AUTO_TEST_CASE(test_jitter_application, *boost::unit_test::timeout(30)) {
     // Run multiple times to observe jitter variation
     std::vector<std::chrono::milliseconds> total_times;
 
-    for (int run = 0; run < 5; ++run) {
+    // Ten runs, judged by their spread. Each total is two jittered delays,
+    // 100 +/- 20 ms and 200 +/- 40 ms, so it varies with a standard deviation
+    // near 26 ms. The old check (five runs, any one more than 10 ms from the
+    // first) failed in CI on 312, 311, 304, 321 and 320 ms; ten runs all
+    // inside a 10 ms window is around one in a million.
+    for (int run = 0; run < 10; ++run) {
         std::size_t attempt_count = 0;
 
         auto operation = [&attempt_count]() -> future_default<int> {
@@ -209,13 +215,8 @@ BOOST_AUTO_TEST_CASE(test_jitter_application, *boost::unit_test::timeout(30)) {
     }
 
     // Check that times vary (jitter is working)
-    bool has_variation = false;
-    for (std::size_t i = 1; i < total_times.size(); ++i) {
-        if (std::abs(total_times[i].count() - total_times[0].count()) > 10) {
-            has_variation = true;
-            break;
-        }
-    }
+    const auto [fastest, slowest] = std::minmax_element(total_times.begin(), total_times.end());
+    const bool has_variation = (*slowest - *fastest).count() > 10;
 
     std::cout << "Jitter test times: ";
     for (const auto& time : total_times) {

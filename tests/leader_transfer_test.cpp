@@ -39,6 +39,7 @@
 #include <folly/init/Init.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -267,6 +268,41 @@ public:
             budget);
         BOOST_REQUIRE_MESSAGE(id.has_value(), "no leader was elected for group " << group);
         return *id;
+    }
+
+    /// @brief `require_leader`, then tick until every node is in the
+    ///        leader's term and the leader has held it for `hold`.
+    ///
+    /// A just-elected leader can still be deposed: when two nodes start
+    /// pre-vote rounds in the same tick of a fresh cluster, every voter grants
+    /// both (none has heard from a leader yet), and the loser's real election
+    /// can then win the next term. CI caught that under
+    /// a_target_without_timeout_now_ends_the_transfer_as_unsupported: node 2
+    /// won term 1, node 3 won term 2, and the transfer node 2 had started
+    /// waited out its deadline. Once every node has the leader's term and the
+    /// leader has kept it through some heartbeats, each follower has heard
+    /// from it, and pre-vote's "heard from a leader recently" check holds.
+    auto require_settled_leader(group_id_type group,
+                                std::chrono::milliseconds hold = std::chrono::milliseconds{200},
+                                std::chrono::milliseconds budget = std::chrono::milliseconds{10000})
+        -> std::uint64_t {
+        const auto deadline = std::chrono::steady_clock::now() + budget;
+        while (true) {
+            const auto id = require_leader(group);
+            const auto term = term_of(id, group);
+            const bool settled = tick_until(
+                [&] {
+                    return std::ranges::all_of(_nodes,
+                                               [&](auto n) { return term_of(n, group) == term; });
+                },
+                hold);
+            tick_until([] { return false; }, hold);
+            if (settled && leader_of(group) == std::optional{id} && term_of(id, group) == term) {
+                return id;
+            }
+            BOOST_REQUIRE_MESSAGE(std::chrono::steady_clock::now() < deadline,
+                                  "group " << group << " never settled on a leader");
+        }
     }
 
     template<typename Predicate>
@@ -736,7 +772,7 @@ BOOST_AUTO_TEST_CASE(a_target_without_timeout_now_ends_the_transfer_as_unsupport
     cluster.create_group(k_group);
     cluster.start();
 
-    const auto from = cluster.require_leader(k_group);
+    const auto from = cluster.require_settled_leader(k_group);
     const std::uint64_t to = from == 1 ? 2 : 1;
     cluster.fabric().set_not_implemented(to, "timeout_now");
 

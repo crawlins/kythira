@@ -204,6 +204,9 @@ BOOST_AUTO_TEST_CASE(truncated_configuration_entry_is_reverted,
     id_list majority{followers[1], followers[2], followers[3]};
     const id_list everyone{1, 2, 3, 4, 5};
 
+    // The joint entry's term: the entry that overwrites it must be newer.
+    const auto joint_term = f->term_of(*leader);
+
     f->partition({minority, majority});
     auto change = f->node(*leader).remove_server(followers[3]);
     auto joint_index = f->node(*leader).last_log_index();
@@ -217,7 +220,6 @@ BOOST_AUTO_TEST_CASE(truncated_configuration_entry_is_reverted,
     // its index.
     auto new_leader = f->wait_for_leader(scaled_deadline(5000), majority);
     BOOST_REQUIRE(new_leader.has_value());
-    auto new_term = f->term_of(*new_leader);
     BOOST_REQUIRE(f->submit_to(*new_leader, raft_multi_node_fixture::put_command("k", "v"), 3s).ok);
     BOOST_REQUIRE_GE(f->commit_index_of(*new_leader), joint_index);
 
@@ -226,7 +228,12 @@ BOOST_AUTO_TEST_CASE(truncated_configuration_entry_is_reverted,
     for (auto id : minority) {
         auto at = f->node(id).log_entries_between(joint_index, joint_index);
         BOOST_REQUIRE_EQUAL(at.size(), 1u);
-        BOOST_CHECK_GE(at.front().term(), new_term);
+        // Newer than the joint entry, and not necessarily new_leader's own
+        // term: the majority can elect more than once before the leader we
+        // waited for is found (CI saw a term-3 entry under a term-6
+        // leader), and the entry is whichever majority leader first wrote
+        // that index.
+        BOOST_CHECK_GT(at.front().term(), joint_term);
         BOOST_CHECK(at.front().type() != kythira::entry_type::configuration);
     }
     BOOST_CHECK(!await_result(std::move(change), 1s).ok);
