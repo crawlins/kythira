@@ -5,7 +5,20 @@ if(NOT folly_FOUND OR NOT Boost_FOUND OR NOT httplib_FOUND)
     return()
 endif()
 
-add_executable(chaos_node main.cpp)
+# ONE `run_node<Bundle>` INSTANTIATION FILE PER ONE OR TWO TYPE BUNDLES, and
+# that is load-bearing rather than tidiness: see run_node.hpp. main.cpp used to
+# instantiate kythira::node for all twelve bundles itself, which made it the
+# last edge of every cold build and, by November 2026, the reason the
+# `Full suite (stdexec future backend)` leg was reclaimed mid-build.
+add_executable(chaos_node
+    main.cpp
+    run_node_plain.cpp
+    run_node_tls_aws.cpp
+    run_node_otlp_netdata.cpp
+    run_node_prometheus.cpp
+    run_node_victoriametrics.cpp
+    run_node_telegraf.cpp
+)
 
 target_include_directories(chaos_node PRIVATE
     "${CMAKE_SOURCE_DIR}/include"
@@ -49,6 +62,12 @@ if(KYTHIRA_CHAOS_SEEDED_BUG STREQUAL "vote_term")
     target_compile_definitions(chaos_node PRIVATE KYTHIRA_CHAOS_SEEDED_BUG_VOTE_TERM)
 endif()
 
+# The split alone is not the whole fix. One two-bundle run_node_*.cpp still
+# measures 6,109 MiB under stdexec (g++-13, -O3), so three of them at once
+# under CI's `-j3` would exhaust a 16 GiB runner again. `heavy_tu` (declared in
+# the top-level CMakeLists.txt) admits one at a time. The property is
+# per-target, so main.cpp (1,632 MiB, 58 s) is serialised with them too.
 set_target_properties(chaos_node PROPERTIES
+    JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )

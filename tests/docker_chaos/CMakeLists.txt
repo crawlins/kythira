@@ -303,9 +303,9 @@ if(_RUNTIME_EXE)
     # package it into a runtime-only image (.kiro/specs/chaos-node-host-build/).
     # Guarded exactly like cmd/chaos_node's own inclusion at the top level
     # (NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
-    # — chaos_node is defined later in configure-time processing order
-    # (cmd/chaos_node is added after tests/ at the top level) so
-    # `if(TARGET chaos_node)` isn't usable here; this must match the top-level
+    # — this guard predates cmd/chaos_node moving ahead of tests/ at the top
+    # level, and keeps matching its inclusion rather than testing
+    # `if(TARGET chaos_node)`. It must match the top-level
     # CMakeLists.txt guard exactly, including NOT ENABLE_COVERAGE, or a
     # coverage build (which skips add_subdirectory(cmd/chaos_node) entirely)
     # hits this branch with folly/Boost/httplib all found but no chaos_node
@@ -612,8 +612,8 @@ if(_RUNTIME_EXE)
     # kythira-chaos-node:dev plus ca_service, which the stack runs as its
     # one-shot CA. chaos_node has its RPC_TLS_* path only when linked with
     # certificate_authority under KYTHIRA_HTTP_TLS
-    # (cmd/chaos_node/CMakeLists.txt); ca_service needs the former too. chaos_node itself is defined after this
-    # directory, hence docker-chaos-image's own condition rather than
+    # (cmd/chaos_node/CMakeLists.txt); ca_service needs the former too. It
+    # reuses docker-chaos-image's own condition rather than
     # if(TARGET chaos_node).
     if(NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND
        AND TARGET ca_service AND TARGET certificate_authority AND KYTHIRA_HTTP_TLS)

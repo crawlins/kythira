@@ -27,7 +27,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWLIST = ROOT / "docker/cairn/failpoints.allowlist"
-CHAOS_NODE_MAIN = ROOT / "cmd/chaos_node/main.cpp"
+# chaos_node's own sources that include the raft headers it runs. The type
+# bundles, and so the transport and persistence includes, live in
+# node_types.hpp since main.cpp was split (cmd/chaos_node/run_node.hpp).
+CHAOS_NODE_SOURCES = tuple(
+    ROOT / "cmd/chaos_node" / f for f in ("main.cpp", "node_types.hpp", "run_node.hpp"))
 
 FAMILIES = ("network", "persistence", "objstore", "state_machine")
 NAME_RE = re.compile(
@@ -102,14 +106,14 @@ def scan():
     for rel in list(REACHED) + list(NOT_REACHED):
         if not (ROOT / rel).exists():
             errors.append(f"{rel} is classified but no longer exists")
-    main = CHAOS_NODE_MAIN.read_text()
+    main = "".join(p.read_text() for p in CHAOS_NODE_SOURCES)
     for inc in REQUIRED_INCLUDES:
         if f"#include <{inc}>" not in main:
-            errors.append(f"cmd/chaos_node/main.cpp no longer includes <{inc}>: "
+            errors.append(f"chaos_node's sources no longer include <{inc}>: "
                           "re-check REACHED")
     for inc in FORBIDDEN_INCLUDES:
         if f"#include <{inc}>" in main:
-            errors.append(f"cmd/chaos_node/main.cpp now includes <{inc}>: "
+            errors.append(f"chaos_node's sources now include <{inc}>: "
                           "move it from NOT_REACHED to REACHED")
     for n in EXCLUDED:
         if n not in names:

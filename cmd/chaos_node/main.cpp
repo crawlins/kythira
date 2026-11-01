@@ -3,31 +3,8 @@
 
 #include "aws_quorum.hpp"
 #include "config.hpp"
-#include "http_control.hpp"
-
-#include <raft/console_logger.hpp>
-#include <raft/docker_quorum_manager.hpp>
-#include <raft/file_persistence.hpp>
-#include <raft/membership.hpp>
-#include <raft/loki_logger.hpp>
-#include <raft/metrics.hpp>
-#include <raft/netdata_metrics.hpp>
-#include <raft/otlp_logger.hpp>
-#include <raft/otlp_metrics.hpp>
-#include <raft/peer_discovery.hpp>
-#include <raft/prometheus_metrics.hpp>
-#include <raft/raft.hpp>
-#include <raft/telegraf_metrics.hpp>
-#include <raft/tcp_raft_types.hpp>
-#include <raft/tcp_rpc.hpp>
-#include <raft/telegraf_logger.hpp>
-#include <raft/test_state_machine.hpp>
-#include <raft/victorialogs_logger.hpp>
-#include <raft/victoriametrics_metrics.hpp>
-
-#ifdef KYTHIRA_CHAOS_NODE_RPC_TLS
-#include <raft/tls_tcp_rpc.hpp>
-#endif
+#include "node_types.hpp"
+#include "run_node.hpp"
 
 #ifdef KYTHIRA_FAULT_INJECTION
 #include <fiu.h>
@@ -40,57 +17,22 @@
 #include <aws/core/Aws.h>
 #endif
 
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <csignal>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <sstream>
-#include <mutex>
-#include <thread>
-#include <type_traits>
 #include <unordered_map>
 
-// ── Signal handling ──────────────────────────────────────────────────────────
-
-static std::atomic<bool> g_stop{false};
-static std::mutex g_stop_mu;
-static std::condition_variable g_stop_cv;
-
-static void sigterm_handler(int) {
-    g_stop = true;
-    g_stop_cv.notify_all();
-}
-
-// ── Types: tcp_raft_types extended with docker_quorum_manager ────────────────
+// ── Types: the bundles live in node_types.hpp, run_node in run_node.hpp ─────
 
 namespace {
 
-// The node id every bundle below uses: kythira::host_node_id, which is
-// std::uint64_t or canonical text depending on KYTHIRA_NODE_ID_KIND.
-using chaos_node::node_id_type;
-using host_tcp_raft_types = kythira::basic_tcp_raft_types<node_id_type>;
-
-// Inherits all type aliases from tcp_raft_types; adds seed-list peer discovery
-// so that a node started with JOIN=1 can send a ClusterJoin to PEERS instead of
-// installing them as its configuration (quorum-management Req 19). A node
-// without JOIN gets an empty seed list, which run_bootstrap() treats exactly
-// like the no_op discovery it replaces.
-struct tcp_raft_types_joinable : host_tcp_raft_types {
-    using address_type = std::string;
-    using peer_discovery_type = kythira::seed_peer_discovery<node_id_type, address_type>;
-};
+using namespace chaos_node;
 
 using seed_list = std::vector<kythira::peer_info<node_id_type, std::string>>;
-
-template<typename RaftTypes>
-constexpr bool is_joinable =
-    std::is_same_v<typename kythira::node_config<RaftTypes>::peer_discovery_type,
-                   kythira::seed_peer_discovery<node_id_type, std::string>>;
 
 // PEERS as ClusterJoin seeds when joining, nothing otherwise.
 auto join_seeds(const chaos_node::node_config& cfg) -> seed_list {
@@ -103,67 +45,7 @@ auto join_seeds(const chaos_node::node_config& cfg) -> seed_list {
     return seeds;
 }
 
-// Adds quorum_manager_type so that _quorum_manager_type_traits picks up
-// docker_quorum_manager instead of the no_op fallback.
-struct tcp_raft_types_with_docker_qm : tcp_raft_types_joinable {
-    using quorum_manager_type = kythira::docker_quorum_manager<node_id_type, std::string>;
-};
-
-#ifdef KYTHIRA_HAS_AWS_SDK
-// QUORUM_MANAGER=aws: the leader provisions and terminates EC2 instances.
-struct tcp_raft_types_with_aws_qm : tcp_raft_types_joinable {
-    using quorum_manager_type = kythira::aws_ec2_quorum_manager<node_id_type, std::string>;
-};
-#endif
-
-// Inherits all type aliases from tcp_raft_types; swaps logger_type/
-// metrics_type to the OTLP implementations (.kiro/specs/otlp-telemetry-backend/,
-// Requirement 5.3). Selected at startup, not combined with
-// tcp_raft_types_with_docker_qm above in this pass — OTLP + docker quorum
-// manager together is future work, not required by that spec.
-struct tcp_raft_types_with_otlp : host_tcp_raft_types {
-    using logger_type = kythira::otlp_logger;
-    using metrics_type = kythira::otlp_metrics;
-};
-
-// Self-hosted metrics backends (doc/TODO.md "Metrics Backends"). Same
-// swap-one-alias pattern as tcp_raft_types_with_otlp; logger stays the
-// default console_logger — these backends are metrics-only.
-struct tcp_raft_types_with_prometheus : host_tcp_raft_types {
-    using metrics_type = kythira::prometheus_metrics;
-};
-struct tcp_raft_types_with_victoriametrics : host_tcp_raft_types {
-    using metrics_type = kythira::victoriametrics_metrics;
-};
-struct tcp_raft_types_with_telegraf : host_tcp_raft_types {
-    using metrics_type = kythira::telegraf_metrics;
-};
-
-// Paired logger bundles (doc/TODO.md's logging-alongside-backends item):
-// each ecosystem's logger is only selectable together with its metrics
-// backend — config.hpp rejects an unpaired logger env var — so exactly
-// three logger-bearing combinations exist, not a full logger×metrics matrix.
-struct tcp_raft_types_with_prometheus_loki : tcp_raft_types_with_prometheus {
-    using logger_type = kythira::loki_logger;
-};
-struct tcp_raft_types_with_victoriametrics_victorialogs : tcp_raft_types_with_victoriametrics {
-    using logger_type = kythira::victorialogs_logger;
-};
-struct tcp_raft_types_with_telegraf_logs : tcp_raft_types_with_telegraf {
-    using logger_type = kythira::telegraf_logger;
-};
-struct tcp_raft_types_with_netdata : host_tcp_raft_types {
-    using metrics_type = kythira::netdata_metrics;
-};
-
 #ifdef KYTHIRA_CHAOS_NODE_RPC_TLS
-// The RPC transport swapped for the mutual-TLS one (RPC_TLS_* in
-// config.hpp); everything else is the plain path's.
-struct tcp_raft_types_with_tls : host_tcp_raft_types {
-    using network_client_type = kythira::basic_tls_tcp_rpc_client<node_id_type>;
-    using network_server_type = kythira::basic_tls_tcp_rpc_server<node_id_type>;
-};
-
 auto read_text_file(const std::string& path) -> std::string {
     std::ifstream in(path);
     if (!in) {
@@ -192,71 +74,6 @@ auto rpc_tls_config_of(const chaos_node::node_config& cfg)
     };
 }
 #endif
-
-// Core startup logic templated on the raft types.  Both the plain and the
-// docker-QM paths share identical timer, signal, and HTTP control logic.
-template<typename RaftTypes>
-int run_node(chaos_node::node_config cfg, kythira::node_config<RaftTypes> ncfg) {
-    if constexpr (!is_joinable<RaftTypes>) {
-        if (cfg.join) {
-            std::cerr << "chaos_node: JOIN=1 is not supported with a telemetry backend\n";
-            return 1;
-        }
-    }
-
-    kythira::node<RaftTypes> raft_node(std::move(ncfg));
-    // A joiner's configuration arrives from the leader once it is admitted.
-    if (!cfg.join) {
-        raft_node.set_cluster_configuration(cfg.all_node_ids());
-    }
-
-    std::cerr << "[info] chaos_node starting: id=" << cfg.node_id << " rpc=" << cfg.rpc_address
-              << ":" << cfg.rpc_port << " http=" << cfg.http_port << " peers=" << cfg.peers.size()
-              << (cfg.join ? " join=" + cfg.self_address : std::string{}) << "\n";
-
-    raft_node.start();
-
-    chaos_node::http_control_tmpl<kythira::node<RaftTypes>> http(raft_node, cfg.node_id,
-                                                                 cfg.http_port);
-    http.start();
-
-    std::thread election_timer([&] {
-        while (!g_stop) {
-            std::this_thread::sleep_for(cfg.election_timeout_min / 2);
-            if (!g_stop) {
-                raft_node.check_election_timeout();
-            }
-        }
-    });
-
-    std::thread heartbeat_timer([&] {
-        while (!g_stop) {
-            std::this_thread::sleep_for(cfg.heartbeat_interval);
-            if (!g_stop) {
-                raft_node.check_heartbeat_timeout();
-            }
-        }
-    });
-
-    std::signal(SIGTERM, sigterm_handler);
-    std::signal(SIGINT, sigterm_handler);
-
-    {
-        std::unique_lock lock(g_stop_mu);
-        g_stop_cv.wait(lock, [] { return g_stop.load(); });
-    }
-
-    std::cerr << "[info] chaos_node shutting down\n";
-
-    g_stop = true;
-    election_timer.join();
-    heartbeat_timer.join();
-
-    http.stop();
-    raft_node.stop();
-
-    return 0;
-}
 
 }  // namespace
 
