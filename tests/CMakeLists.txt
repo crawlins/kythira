@@ -1309,6 +1309,13 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
         target_link_libraries(cache_chunk_store_unit_test PRIVATE ${FIU_LDFLAGS})
         target_include_directories(cache_chunk_store_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
     endif()
+    # Task 3: the disk-backed state machine over the chunk store, with the
+    # design's correctness properties 1-4 as randomized trials and the
+    # Requirement 2.2 index-memory bound.
+    add_raft_completion_test(cache_kv_state_machine_unit_test cache_kv_state_machine_unit_test.cpp)
+    target_link_libraries(cache_kv_state_machine_unit_test PRIVATE OpenSSL::Crypto)
+    set_tests_properties(cache_kv_state_machine_unit_test PROPERTIES
+        LABELS "unit;redis;cache" TIMEOUT 600)
     if(folly_FOUND)
         add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
         target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)

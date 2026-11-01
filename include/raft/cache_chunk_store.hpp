@@ -297,18 +297,25 @@ public:
     /// replayed `put_chunk`). Throws `std::invalid_argument` if `bytes` does
     /// not hash to `sha` or exceeds the largest chunk, and
     /// `cache_chunk_store_error` on an I/O failure.
+    ///
+    /// The store's one invariant is that a name is its content's hash.
+    /// Checking here costs one SHA-256 against an fsync, and turns a caller
+    /// bug into an exception instead of a chunk that fails every later read.
     auto put(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
+        if (sha256_of(bytes) != sha) {
+            throw std::invalid_argument("cache_chunk_store: bytes do not hash to " + to_hex(sha));
+        }
+        return put_verified(sha, bytes);
+    }
+
+    /// `put` for a caller that has already hashed `bytes` and found `sha`
+    /// (the state machine checks every `put_chunk` before storing it, so a
+    /// second SHA-256 of a 4 MiB chunk here would be pure cost).
+    auto put_verified(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
         if (bytes.size() > _options._max_chunk_bytes) {
             throw std::invalid_argument("cache_chunk_store: chunk of " +
                                         std::to_string(bytes.size()) +
                                         " bytes exceeds the largest chunk");
-        }
-        // The store's one invariant is that a name is its content's hash.
-        // Checking here costs one SHA-256 against an fsync, and turns a
-        // caller bug into an exception instead of a chunk that fails every
-        // later read.
-        if (sha256_of(bytes) != sha) {
-            throw std::invalid_argument("cache_chunk_store: bytes do not hash to " + to_hex(sha));
         }
         if (is_packed_size(bytes.size())) {
             return put_packed(sha, bytes);
@@ -1102,35 +1109,66 @@ public:
 
     /// Store `bytes` if absent and take one reference, atomically with
     /// respect to `release`. Returns whether the bytes were written.
-    auto put_and_acquire(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
+    /// `verified` says the caller has already checked that `bytes` hash to
+    /// `sha` (see `cache_chunk_store::put_verified`).
+    auto put_and_acquire(const chunk_sha& sha, std::span<const std::byte> bytes,
+                         bool verified = false) -> bool {
         const std::lock_guard lock(_mu);
-        const bool written = _store.put(sha, bytes);
+        const bool written = verified ? _store.put_verified(sha, bytes) : _store.put(sha, bytes);
         ++_counts[sha];
         return written;
     }
 
-    /// Take one reference to a chunk that may or may not be on disk yet (a
+    /// Take `n` references to a chunk that may or may not be on disk yet (a
     /// snapshot restore names chunks the fetcher has still to bring).
     /// Returns the new count.
-    auto acquire(const chunk_sha& sha) -> std::uint64_t {
+    auto acquire(const chunk_sha& sha, std::uint64_t n = 1) -> std::uint64_t {
         const std::lock_guard lock(_mu);
-        return ++_counts[sha];
+        return _counts[sha] += n;
     }
 
-    /// Drop one reference. At zero the chunk is removed from the store.
-    /// Returns `true` if this call removed it. Releasing a chunk with no
-    /// references is a caller bug and throws `std::logic_error`.
-    auto release(const chunk_sha& sha) -> bool {
+    /// Drop `n` references. At zero the chunk is removed from the store.
+    /// Returns `true` if this call removed it. Releasing more references than
+    /// are held is a caller bug and throws `std::logic_error`.
+    auto release(const chunk_sha& sha, std::uint64_t n = 1) -> bool {
         const std::lock_guard lock(_mu);
         auto it = _counts.find(sha);
-        if (it == _counts.end() || it->second == 0) {
+        if (it == _counts.end() || it->second < n) {
             throw std::logic_error("chunk_refcounts: release of unreferenced chunk " + to_hex(sha));
         }
-        if (--it->second > 0) {
+        it->second -= n;
+        if (it->second > 0) {
             return false;
         }
         _counts.erase(it);
         return _store.remove(sha);
+    }
+
+    /// Store `bytes` for a chunk this caller already holds a reference to
+    /// but whose file is missing (a replayed `put_chunk` after a fetch was
+    /// still pending). Under the same mutex as `release`, like every create.
+    auto put_referenced(const chunk_sha& sha, std::span<const std::byte> bytes,
+                        bool verified = false) -> bool {
+        const std::lock_guard lock(_mu);
+        return verified ? _store.put_verified(sha, bytes) : _store.put(sha, bytes);
+    }
+
+    /// Drop `n` references without removing the chunk at zero. For a replica
+    /// that is going away (destroyed on shutdown, or absorbed by a sibling)
+    /// rather than deleting the keys it held: its chunks are still needed by
+    /// whoever takes the keys over, or by the restart that rebuilds these
+    /// counts. A file left with no reference is collected by start-up orphan
+    /// collection (Requirement 2.6).
+    auto forget(const chunk_sha& sha, std::uint64_t n = 1) -> void {
+        const std::lock_guard lock(_mu);
+        auto it = _counts.find(sha);
+        if (it == _counts.end() || it->second < n) {
+            throw std::logic_error("chunk_refcounts: forget of unreferenced chunk " + to_hex(sha));
+        }
+        it->second -= n;
+        if (it->second == 0) {
+            _counts.erase(it);
+        }
     }
 
     [[nodiscard]] auto count(const chunk_sha& sha) const -> std::uint64_t {

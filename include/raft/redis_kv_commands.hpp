@@ -24,9 +24,30 @@
 ///                   { u32 BE keylen, key, u64 BE expire_at_ms }
 ///     evict (0x04)  key is empty; u32 BE count, then count x { u32 BE keylen, key }
 ///
+/// Format version 0x02 (.kiro/specs/disk-backed-build-cache/ design Component
+/// 2) adds three opcodes for the disk-backed store. Opcodes 0x01-0x04 keep
+/// version 0x01, so a log written by the in-memory gateway decodes unchanged
+/// and the in-memory gateway's entries stay byte-identical; 0x05-0x07 are
+/// valid only under version 0x02.
+///
+///     put_chunk (0x05)  key is the key being uploaded (routing only);
+///                       32-byte sha256; u32 BE len; bytes
+///     commit    (0x06)  key; u64 BE expire_at_ms; u64 BE total_len;
+///                       32-byte value sha256; u32 BE n; n x 32-byte chunk sha256
+///     touch     (0x07)  key is empty; u32 BE count, then count x { u32 BE keylen, key }
+///
+/// `put_chunk` carries the uploading key, where design.md's layout left it
+/// empty: `multi_raft` routes every proposal by `redis_kv_partitioner`, and an
+/// empty routing key is refused by cross-shard admission, so a chunk must name
+/// the shard its `commit` will land in. `touch` is never proposed through the
+/// log (it travels on the forwarding link as an advisory batch); the opcode is
+/// reserved here so the format stays one namespace.
+///
 /// Big-endian throughout matches `default_shard_key_codec` so the byte order
 /// in a log dump is the byte order in a shard-map dump.
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -41,12 +62,20 @@
 namespace kythira {
 
 inline constexpr std::uint8_t redis_kv_format_version = 0x01;
+/// The version byte of `put_chunk`, `commit` and `touch` records.
+inline constexpr std::uint8_t redis_kv_format_version_2 = 0x02;
+
+/// A SHA-256, as the chunk store names chunks.
+using redis_kv_sha256 = std::array<std::byte, 32>;
 
 enum class redis_kv_opcode : std::uint8_t {
     set = 0x01,
     del = 0x02,
     sweep = 0x03,
     evict = 0x04,
+    put_chunk = 0x05,
+    commit = 0x06,
+    touch = 0x07,
 };
 
 struct redis_kv_set_command {
@@ -79,8 +108,39 @@ struct redis_kv_evict_command {
     std::vector<std::string> _keys;
 };
 
-using redis_kv_command = std::variant<redis_kv_set_command, redis_kv_del_command,
-                                      redis_kv_sweep_command, redis_kv_evict_command>;
+/// One chunk of a value being uploaded to the disk-backed store. `apply`
+/// stores it and holds it as pending until a `commit` names it or the orphan
+/// grace period passes.
+struct redis_kv_put_chunk_command {
+    /// The key whose upload this chunk belongs to. Routing only: the chunk is
+    /// stored by hash, and `apply` does not look at the key.
+    std::string _key;
+    redis_kv_sha256 _sha{};
+    std::vector<std::byte> _bytes;
+};
+
+/// Bind `_key` to the value made of `_chunks`, in order. A key becomes
+/// visible only when this is applied (Requirement 3.2).
+struct redis_kv_commit_command {
+    std::string _key;
+    std::uint64_t _expire_at_ms = 0;
+    std::uint64_t _total_len = 0;
+    /// SHA-256 of the whole value: what a reader checks the reassembled
+    /// bytes against, and the HTTP `ETag` (Requirement 3.7).
+    redis_kv_sha256 _value_sha{};
+    std::vector<redis_kv_sha256> _chunks;
+};
+
+/// Keys a follower served, for the leader's LRU (Requirement 6.2). Advisory;
+/// never proposed through the log.
+struct redis_kv_touch_command {
+    std::vector<std::string> _keys;
+};
+
+using redis_kv_command =
+    std::variant<redis_kv_set_command, redis_kv_del_command, redis_kv_sweep_command,
+                 redis_kv_evict_command, redis_kv_put_chunk_command, redis_kv_commit_command,
+                 redis_kv_touch_command>;
 
 class redis_kv_codec_error : public std::runtime_error {
 public:
@@ -165,7 +225,9 @@ inline auto put_header(std::vector<std::byte>& out, redis_kv_opcode op, std::str
     if (key.size() > 0xFFFFFFFFu) {
         throw redis_kv_codec_error("key too long to encode");
     }
-    out.push_back(static_cast<std::byte>(redis_kv_format_version));
+    out.push_back(static_cast<std::byte>(static_cast<std::uint8_t>(op) >= 0x05
+                                             ? redis_kv_format_version_2
+                                             : redis_kv_format_version));
     out.push_back(static_cast<std::byte>(op));
     put_u32(out, static_cast<std::uint32_t>(key.size()));
     put_string(out, key);
@@ -235,6 +297,59 @@ inline auto put_header(std::vector<std::byte>& out, redis_kv_opcode op, std::str
     return out;
 }
 
+[[nodiscard]] inline auto encode_redis_kv_command(const redis_kv_put_chunk_command& c)
+    -> std::vector<std::byte> {
+    using namespace redis_kv_detail;
+    if (c._bytes.size() > 0xFFFFFFFFu) {
+        throw redis_kv_codec_error("chunk too long to encode");
+    }
+    std::vector<std::byte> out;
+    out.reserve(2 + 4 + c._key.size() + 32 + 4 + c._bytes.size());
+    put_header(out, redis_kv_opcode::put_chunk, c._key);
+    put_bytes(out, c._sha);
+    put_u32(out, static_cast<std::uint32_t>(c._bytes.size()));
+    put_bytes(out, c._bytes);
+    return out;
+}
+
+[[nodiscard]] inline auto encode_redis_kv_command(const redis_kv_commit_command& c)
+    -> std::vector<std::byte> {
+    using namespace redis_kv_detail;
+    if (c._chunks.size() > 0xFFFFFFFFu) {
+        throw redis_kv_codec_error("too many chunks to encode");
+    }
+    std::vector<std::byte> out;
+    out.reserve(2 + 4 + c._key.size() + 8 + 8 + 32 + 4 + (32 * c._chunks.size()));
+    put_header(out, redis_kv_opcode::commit, c._key);
+    put_u64(out, c._expire_at_ms);
+    put_u64(out, c._total_len);
+    put_bytes(out, c._value_sha);
+    put_u32(out, static_cast<std::uint32_t>(c._chunks.size()));
+    for (const auto& sha : c._chunks) {
+        put_bytes(out, sha);
+    }
+    return out;
+}
+
+[[nodiscard]] inline auto encode_redis_kv_command(const redis_kv_touch_command& c)
+    -> std::vector<std::byte> {
+    using namespace redis_kv_detail;
+    if (c._keys.size() > 0xFFFFFFFFu) {
+        throw redis_kv_codec_error("too many touch entries to encode");
+    }
+    std::vector<std::byte> out;
+    put_header(out, redis_kv_opcode::touch, {});
+    put_u32(out, static_cast<std::uint32_t>(c._keys.size()));
+    for (const auto& k : c._keys) {
+        if (k.size() > 0xFFFFFFFFu) {
+            throw redis_kv_codec_error("key too long to encode");
+        }
+        put_u32(out, static_cast<std::uint32_t>(k.size()));
+        put_string(out, k);
+    }
+    return out;
+}
+
 [[nodiscard]] inline auto encode_redis_kv_command(const redis_kv_command& c)
     -> std::vector<std::byte> {
     return std::visit([](const auto& v) { return encode_redis_kv_command(v); }, c);
@@ -248,11 +363,18 @@ inline auto put_header(std::vector<std::byte>& out, redis_kv_opcode op, std::str
     using namespace redis_kv_detail;
     reader in(data);
     auto version = in.u8();
-    if (version != redis_kv_format_version) {
+    if (version != redis_kv_format_version && version != redis_kv_format_version_2) {
         throw redis_kv_codec_error("unknown redis kv command format version " +
                                    std::to_string(version));
     }
     auto op = in.u8();
+    // Each opcode has exactly one version: 0x01-0x04 under 0x01, 0x05-0x07
+    // under 0x02. A record that pairs them otherwise was not written by this
+    // codec.
+    if ((op >= 0x05) != (version == redis_kv_format_version_2)) {
+        throw redis_kv_codec_error("redis kv opcode " + std::to_string(op) +
+                                   " under format version " + std::to_string(version));
+    }
     auto key_len = in.u32();
     auto key = in.string(key_len);
 
@@ -311,6 +433,53 @@ inline auto put_header(std::vector<std::byte>& out, redis_kv_opcode op, std::str
             result = std::move(c);
             break;
         }
+        case redis_kv_opcode::put_chunk: {
+            redis_kv_put_chunk_command c;
+            c._key = std::move(key);
+            auto sha = in.bytes(32);
+            std::copy(sha.begin(), sha.end(), c._sha.begin());
+            auto n = in.u32();
+            auto b = in.bytes(n);
+            c._bytes.assign(b.begin(), b.end());
+            result = std::move(c);
+            break;
+        }
+        case redis_kv_opcode::commit: {
+            redis_kv_commit_command c;
+            c._key = std::move(key);
+            c._expire_at_ms = in.u64();
+            c._total_len = in.u64();
+            auto sha = in.bytes(32);
+            std::copy(sha.begin(), sha.end(), c._value_sha.begin());
+            auto n = in.u32();
+            if (static_cast<std::size_t>(n) > in.remaining() / 32) {
+                throw redis_kv_codec_error("commit chunk count exceeds buffer");
+            }
+            c._chunks.resize(n);
+            for (auto& chunk : c._chunks) {
+                auto b = in.bytes(32);
+                std::copy(b.begin(), b.end(), chunk.begin());
+            }
+            result = std::move(c);
+            break;
+        }
+        case redis_kv_opcode::touch: {
+            if (!key.empty()) {
+                throw redis_kv_codec_error("touch record carries a key");
+            }
+            redis_kv_touch_command c;
+            auto count = in.u32();
+            if (static_cast<std::size_t>(count) > in.remaining() / 4) {
+                throw redis_kv_codec_error("touch count exceeds buffer");
+            }
+            c._keys.reserve(count);
+            for (std::uint32_t i = 0; i < count; ++i) {
+                auto n = in.u32();
+                c._keys.push_back(in.string(n));
+            }
+            result = std::move(c);
+            break;
+        }
         default:
             throw redis_kv_codec_error("unknown redis kv opcode " + std::to_string(op));
     }
@@ -329,15 +498,18 @@ inline auto put_header(std::vector<std::byte>& out, redis_kv_opcode op, std::str
     using namespace redis_kv_detail;
     try {
         reader in(data);
-        if (in.u8() != redis_kv_format_version) {
+        const auto version = in.u8();
+        if (version != redis_kv_format_version && version != redis_kv_format_version_2) {
             return {};
         }
         auto op = static_cast<redis_kv_opcode>(in.u8());
         auto key = in.string(in.u32());
-        if (op == redis_kv_opcode::set || op == redis_kv_opcode::del) {
+        if (op == redis_kv_opcode::set || op == redis_kv_opcode::del ||
+            op == redis_kv_opcode::put_chunk || op == redis_kv_opcode::commit) {
             return key;
         }
-        if (op == redis_kv_opcode::sweep || op == redis_kv_opcode::evict) {
+        if (op == redis_kv_opcode::sweep || op == redis_kv_opcode::evict ||
+            op == redis_kv_opcode::touch) {
             if (in.u32() == 0) {
                 return {};
             }
@@ -359,11 +531,20 @@ struct redis_kv_partitioner {
 /// audit/trace logging so that an 8 MiB value is never copied for a log line.
 [[nodiscard]] inline auto peek_redis_kv_opcode(std::span<const std::byte> data)
     -> std::optional<redis_kv_opcode> {
-    if (data.size() < 2 || static_cast<std::uint8_t>(data[0]) != redis_kv_format_version) {
+    if (data.size() < 2) {
         return std::nullopt;
     }
+    const auto version = static_cast<std::uint8_t>(data[0]);
     auto op = static_cast<std::uint8_t>(data[1]);
-    if (op < 0x01 || op > 0x04) {
+    if (version == redis_kv_format_version) {
+        if (op < 0x01 || op > 0x04) {
+            return std::nullopt;
+        }
+    } else if (version == redis_kv_format_version_2) {
+        if (op < 0x05 || op > 0x07) {
+            return std::nullopt;
+        }
+    } else {
         return std::nullopt;
     }
     return static_cast<redis_kv_opcode>(op);

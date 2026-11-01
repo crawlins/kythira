@@ -676,3 +676,32 @@ BOOST_AUTO_TEST_CASE(refcounts_race_between_shards, *boost::unit_test::timeout(6
     BOOST_CHECK(refs.release(sha));
     BOOST_CHECK(!store.contains(sha));
 }
+
+BOOST_AUTO_TEST_CASE(refcounts_in_bulk_and_forget, *boost::unit_test::timeout(10)) {
+    temp_dir dir;
+    cache_chunk_store store(options_for(dir._path));
+    chunk_refcounts refs(store);
+    const auto v = make_bytes(2000, 60);
+    const auto sha = sha256_of(v);
+
+    // A caller that has hashed the bytes itself skips the store's check.
+    BOOST_CHECK(refs.put_and_acquire(sha, v, true));
+    BOOST_CHECK_EQUAL(refs.acquire(sha, 4), 5U);
+    BOOST_CHECK(!refs.release(sha, 3));
+    BOOST_CHECK_THROW(refs.release(sha, 3), std::logic_error);
+    BOOST_CHECK_EQUAL(refs.count(sha), 2U);
+
+    // Forgetting drops the count without deleting the file: a replica going
+    // away has not deleted its keys.
+    refs.forget(sha, 2);
+    BOOST_CHECK_EQUAL(refs.count(sha), 0U);
+    BOOST_CHECK(store.contains(sha));
+    BOOST_CHECK_THROW(refs.forget(sha), std::logic_error);
+
+    // A referenced chunk whose file went missing is written back.
+    refs.acquire(sha);
+    BOOST_CHECK(store.remove(sha));
+    BOOST_CHECK(refs.put_referenced(sha, v));
+    BOOST_CHECK(store.read(sha) == v);
+    BOOST_CHECK(!refs.put_referenced(sha, v));
+}

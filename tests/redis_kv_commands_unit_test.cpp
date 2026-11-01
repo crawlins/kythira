@@ -131,3 +131,84 @@ BOOST_AUTO_TEST_CASE(sweep_with_key_is_rejected, *boost::unit_test::timeout(10))
                                   std::byte{0},    std::byte{0},    std::byte{0}};
     BOOST_CHECK_THROW(decode_redis_kv_command(buf), redis_kv_codec_error);
 }
+
+// ---- format 0x02 (.kiro/specs/disk-backed-build-cache/ task 3) -------------
+
+namespace {
+
+auto sha_of_seed(int seed) -> redis_kv_sha256 {
+    redis_kv_sha256 out{};
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = static_cast<std::byte>(seed + static_cast<int>(i));
+    }
+    return out;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(put_chunk_round_trip_routes_by_key, *boost::unit_test::timeout(10)) {
+    redis_kv_put_chunk_command c{"zlib/1.3.1/abc", sha_of_seed(1), bytes_of("chunk-bytes")};
+    auto encoded = encode_redis_kv_command(c);
+    BOOST_CHECK_EQUAL(static_cast<int>(encoded[0]), 0x02);
+    BOOST_CHECK_EQUAL(static_cast<int>(encoded[1]), 0x05);
+    BOOST_REQUIRE_EQUAL(encoded.size(), 1u + 1u + 4u + 14u + 32u + 4u + 11u);
+    auto decoded = std::get<redis_kv_put_chunk_command>(decode_redis_kv_command(encoded));
+    BOOST_CHECK_EQUAL(decoded._key, c._key);
+    BOOST_CHECK(decoded._sha == c._sha);
+    BOOST_CHECK(decoded._bytes == c._bytes);
+    BOOST_CHECK_EQUAL(redis_kv_command_key(encoded), "zlib/1.3.1/abc");
+    BOOST_CHECK(peek_redis_kv_opcode(encoded) == redis_kv_opcode::put_chunk);
+}
+
+BOOST_AUTO_TEST_CASE(commit_round_trip, *boost::unit_test::timeout(10)) {
+    redis_kv_commit_command c{"k", 77, 9000000, sha_of_seed(2), {sha_of_seed(3), sha_of_seed(4)}};
+    auto encoded = encode_redis_kv_command(c);
+    BOOST_REQUIRE_EQUAL(encoded.size(), 1u + 1u + 4u + 1u + 8u + 8u + 32u + 4u + 64u);
+    auto decoded = std::get<redis_kv_commit_command>(decode_redis_kv_command(encoded));
+    BOOST_CHECK_EQUAL(decoded._key, "k");
+    BOOST_CHECK_EQUAL(decoded._expire_at_ms, 77u);
+    BOOST_CHECK_EQUAL(decoded._total_len, 9000000u);
+    BOOST_CHECK(decoded._value_sha == c._value_sha);
+    BOOST_CHECK(decoded._chunks == c._chunks);
+    BOOST_CHECK_EQUAL(redis_kv_command_key(encoded), "k");
+    BOOST_CHECK(peek_redis_kv_opcode(encoded) == redis_kv_opcode::commit);
+
+    // A commit of zero chunks (an empty value) is legal.
+    redis_kv_commit_command empty{"e", 0, 0, sha_of_seed(5), {}};
+    auto d2 =
+        std::get<redis_kv_commit_command>(decode_redis_kv_command(encode_redis_kv_command(empty)));
+    BOOST_CHECK(d2._chunks.empty());
+}
+
+BOOST_AUTO_TEST_CASE(touch_round_trip, *boost::unit_test::timeout(10)) {
+    redis_kv_touch_command c{{"a", "bb"}};
+    auto encoded = encode_redis_kv_command(c);
+    auto decoded = std::get<redis_kv_touch_command>(decode_redis_kv_command(encoded));
+    BOOST_CHECK(decoded._keys == c._keys);
+    BOOST_CHECK_EQUAL(redis_kv_command_key(encoded), "a");
+}
+
+BOOST_AUTO_TEST_CASE(each_opcode_has_one_version, *boost::unit_test::timeout(10)) {
+    // A new opcode under version 0x01 is refused, as an old one under 0x02 is.
+    auto put = encode_redis_kv_command(redis_kv_put_chunk_command{"k", sha_of_seed(1), {}});
+    put[0] = std::byte{0x01};
+    BOOST_CHECK_THROW(decode_redis_kv_command(put), redis_kv_codec_error);
+    BOOST_CHECK(!peek_redis_kv_opcode(put).has_value());
+    // Version 0x01 records are unchanged by the new format.
+    auto set = encode_redis_kv_command(redis_kv_set_command{"k", bytes_of("v"), 0});
+    BOOST_CHECK_EQUAL(static_cast<int>(set[0]), 0x01);
+}
+
+BOOST_AUTO_TEST_CASE(commit_with_absurd_chunk_count_is_rejected, *boost::unit_test::timeout(10)) {
+    auto encoded = encode_redis_kv_command(redis_kv_commit_command{"k", 0, 0, sha_of_seed(1), {}});
+    // Overwrite the chunk count (the last four bytes) with 2^32-1.
+    for (std::size_t i = encoded.size() - 4; i < encoded.size(); ++i) {
+        encoded[i] = std::byte{0xff};
+    }
+    BOOST_CHECK_THROW(decode_redis_kv_command(encoded), redis_kv_codec_error);
+    // And a truncated put_chunk.
+    auto put =
+        encode_redis_kv_command(redis_kv_put_chunk_command{"k", sha_of_seed(1), bytes_of("abc")});
+    put.pop_back();
+    BOOST_CHECK_THROW(decode_redis_kv_command(put), redis_kv_codec_error);
+}
