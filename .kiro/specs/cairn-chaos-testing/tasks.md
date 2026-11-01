@@ -627,8 +627,9 @@ compatibility").
     (that attempt also tripped leader completeness, linearizability, log
     matching and state-machine safety); a low rate is expected, since
     task 9's hand-written schedule reproduced in 9 of 20 replays. Run 3:
-    replay in progress (about 6 hours for 2,748 calls). Minimization was skipped: replays wait out each recorded
-    fault, so ddmin would take many hours on tikhov.
+    reproduced 3 of 3 (about 6 hours of replay for 2,748 calls).
+    Minimization was skipped: replays wait out each recorded fault, so
+    ddmin would take many hours on tikhov.
   - Cost: about $9 for the second campaign; about $30 for all of M1,
     including an availability-zone move when us-east-1a had no g5
     capacity (a snapshot-restored volume reads cold blocks at about
