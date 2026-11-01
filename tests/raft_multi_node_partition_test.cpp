@@ -103,8 +103,18 @@ BOOST_AUTO_TEST_CASE(isolated_leader_is_replaced_and_its_entry_discarded,
     BOOST_REQUIRE(new_leader.has_value());
     BOOST_CHECK_GT(f->term_of(*new_leader), old_term);
     auto fresh = raft_multi_node_fixture::put_command("k", "fresh");
-    auto r = f->submit_to(*new_leader, fresh, 3s);
+    // Through the fixture's leader-following submit, not to *new_leader: a
+    // leader the majority has just elected can still be deposed by a member
+    // whose election timer fired before the leader's first AppendEntries
+    // reached it. PreVote does not prevent that, because a voter that has
+    // only granted a vote has not yet heard from a leader. Raft allows the
+    // churn and a client retries through it (CI saw "term changed from 2 to
+    // 3" here). submit() only targets a leader of the highest term, so it
+    // never picks the stranded old leader.
+    auto r = f->submit(fresh, scaled_deadline(15000));
     BOOST_REQUIRE_MESSAGE(r.ok, r.error);
+    new_leader = f->get_leader(majority);
+    BOOST_REQUIRE(new_leader.has_value());
 
     f->heal();
     BOOST_CHECK(
@@ -226,8 +236,12 @@ BOOST_AUTO_TEST_CASE(even_split_commits_on_neither_side,
     for (auto id : f->get_node_ids()) {
         BOOST_CHECK_EQUAL(f->commit_index_of(id), commit_before[id]);
     }
+    // observed_leaders() covers the whole run, so it also holds the leaders
+    // of any term before old_term: a first election that a second one
+    // replaced before the split began. Only a term after old_term can have
+    // been won during the split.
     for (const auto& [term, leaders] : f->observed_leaders()) {
-        BOOST_CHECK_MESSAGE(term == old_term,
+        BOOST_CHECK_MESSAGE(term <= old_term,
                             "a leader was elected in term " << term << " during the split");
     }
 
