@@ -1322,6 +1322,10 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
     target_link_libraries(cache_chunk_fetcher_unit_test PRIVATE OpenSSL::Crypto)
     set_tests_properties(cache_chunk_fetcher_unit_test PROPERTIES
         LABELS "unit;redis;cache" TIMEOUT 300)
+    # Task 7: the disk budget and the voters' free-space floors.
+    add_raft_completion_test(cache_disk_guard_unit_test cache_disk_guard_unit_test.cpp)
+    set_tests_properties(cache_disk_guard_unit_test PROPERTIES
+        LABELS "unit;redis;cache" TIMEOUT 60)
     if(folly_FOUND)
         add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
         target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)

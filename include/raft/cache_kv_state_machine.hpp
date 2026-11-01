@@ -309,9 +309,12 @@ public:
           _index(std::move(other._index)),
           _pending(std::move(other._pending)),
           _pending_by_age(std::move(other._pending_by_age)),
+          _pending_size(std::move(other._pending_size)),
+          _pending_bytes(other._pending_bytes),
           _bytes(other._bytes),
           _expiring(other._expiring),
-          _last_applied_index(other._last_applied_index) {
+          _last_applied_index(other._last_applied_index),
+          _orphans_removed(other._orphans_removed) {
         other.clear_after_move();
     }
 
@@ -323,9 +326,12 @@ public:
             _index = std::move(other._index);
             _pending = std::move(other._pending);
             _pending_by_age = std::move(other._pending_by_age);
+            _pending_size = std::move(other._pending_size);
+            _pending_bytes = other._pending_bytes;
             _bytes = other._bytes;
             _expiring = other._expiring;
             _last_applied_index = other._last_applied_index;
+            _orphans_removed = other._orphans_removed;
             other.clear_after_move();
         }
         return *this;
@@ -386,8 +392,11 @@ public:
         _index = std::move(incoming);
         _pending = std::move(pending);
         _pending_by_age.clear();
+        _pending_size.clear();
+        _pending_bytes = 0;
         for (const auto& [sha, applied] : _pending) {
             _pending_by_age.emplace(applied, sha);
+            note_pending_size(sha, _refs->store().chunk_size(sha).value_or(0));
         }
         _bytes = 0;
         _expiring = 0;
@@ -492,6 +501,7 @@ public:
                 _pending.emplace(sha, applied);
                 _pending_by_age.emplace(applied, sha);
                 _refs->acquire(sha);
+                note_pending_size(sha, _refs->store().chunk_size(sha).value_or(0));
             } else if (applied > it->second) {
                 _pending_by_age.erase({it->second, sha});
                 it->second = applied;
@@ -540,6 +550,34 @@ public:
         return out;
     }
 
+    /// About how many bytes on this node's disk evicting `key` would free:
+    /// the share of its value held in chunks nothing else references. A
+    /// chunk still pending (inside the orphan grace, which a fresh write
+    /// is) or shared with another key or replica stays on disk, so it
+    /// counts nothing. Chunk sizes are not kept, so each chunk is counted
+    /// as an equal share of the value's length. 0 for a missing key.
+    [[nodiscard]] auto reclaimable_bytes(std::string_view key) const -> std::uint64_t {
+        auto it = _index.find(key);
+        if (it == _index.end()) {
+            return 0;
+        }
+        const auto chunks = it->second->chunks();
+        if (chunks.empty()) {
+            return 0;
+        }
+        std::unordered_map<chunk_sha, std::uint64_t, chunk_sha_hash> here;
+        for (const auto& sha : chunks) {
+            ++here[sha];
+        }
+        std::uint64_t freeable = 0;
+        for (const auto& sha : chunks) {
+            if (_refs->count(sha) <= here[sha]) {
+                ++freeable;
+            }
+        }
+        return it->second->_total_len * freeable / chunks.size();
+    }
+
     template<typename F> auto for_each_key(F&& f) const -> void {
         for (const auto& [key, m] : _index) {
             f(key, *m);
@@ -577,6 +615,16 @@ public:
     }
     [[nodiscard]] auto pending_chunk_count() const noexcept -> std::size_t {
         return _pending.size();
+    }
+    /// Bytes of the chunks still inside the orphan grace. No eviction frees
+    /// them until it runs out, so the disk budget leaves them out of what it
+    /// asks eviction to free (Requirement 6.1).
+    [[nodiscard]] auto pending_bytes() const noexcept -> std::uint64_t { return _pending_bytes; }
+    /// Pending chunks whose grace period ran out and whose file this
+    /// replica's release deleted (abandoned uploads), for `INFO`. Not part
+    /// of the replicated state.
+    [[nodiscard]] auto orphans_removed() const noexcept -> std::uint64_t {
+        return _orphans_removed;
     }
 
     [[nodiscard]] auto chunk_store() const -> const cache_chunk_store& { return _refs->store(); }
@@ -653,11 +701,24 @@ private:
         _index.clear();
         _pending.clear();
         _pending_by_age.clear();
+        _pending_size.clear();
+        _pending_bytes = 0;
         _bytes = 0;
         _expiring = 0;
     }
 
     // ---- pending -----------------------------------------------------------
+
+    void note_pending_size(const chunk_sha& sha, std::uint64_t size) {
+        _pending_size[sha] = size;
+        _pending_bytes += size;
+    }
+    void drop_pending_size(const chunk_sha& sha) {
+        if (auto it = _pending_size.find(sha); it != _pending_size.end()) {
+            _pending_bytes -= it->second;
+            _pending_size.erase(it);
+        }
+    }
 
     /// Drop pending chunks stored more than the grace period of entries ago.
     void expire_pending(LogIndex now) {
@@ -670,7 +731,10 @@ private:
             }
             _pending_by_age.erase(_pending_by_age.begin());
             _pending.erase(sha);
-            _refs->release(sha);
+            drop_pending_size(sha);
+            if (_refs->release(sha)) {
+                ++_orphans_removed;
+            }
         }
     }
 
@@ -793,6 +857,7 @@ private:
         _refs->put_and_acquire(c._sha, c._bytes, true);
         _pending.emplace(c._sha, index);
         _pending_by_age.emplace(index, c._sha);
+        note_pending_size(c._sha, c._bytes.size());
         return true;
     }
 
@@ -906,9 +971,16 @@ private:
     index_type _index;
     pending_type _pending;
     std::set<std::pair<LogIndex, chunk_sha>> _pending_by_age;
+    /// Each pending chunk's size and their sum, for `pending_bytes()`. Not
+    /// replicated: sizes come from the `put_chunk` bytes or, for pending
+    /// chunks taken on from a snapshot or a sibling, from the store (0 for
+    /// one not on disk yet).
+    std::unordered_map<chunk_sha, std::uint64_t, chunk_sha_hash> _pending_size;
+    std::uint64_t _pending_bytes = 0;
     std::size_t _bytes = 0;
     std::size_t _expiring = 0;
     LogIndex _last_applied_index{};
+    std::uint64_t _orphans_removed = 0;
 };
 
 static_assert(state_machine<cache_kv_state_machine<std::uint64_t>, std::uint64_t>,

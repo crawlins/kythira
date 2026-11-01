@@ -705,3 +705,29 @@ BOOST_AUTO_TEST_CASE(refcounts_in_bulk_and_forget, *boost::unit_test::timeout(10
     BOOST_CHECK(store.read(sha) == v);
     BOOST_CHECK(!refs.put_referenced(sha, v));
 }
+
+// Requirement 2.6: on start, every chunk no replica references goes, loose
+// and packed alike, and every referenced one stays.
+BOOST_AUTO_TEST_CASE(orphan_collection_keeps_only_referenced_chunks,
+                     *boost::unit_test::timeout(30)) {
+    temp_dir dir;
+    cache_chunk_store store(options_for(dir._path));
+    chunk_refcounts refs(store);
+    const auto kept_loose = make_bytes(200 * 1024, 70);
+    const auto kept_packed = make_bytes(1000, 71);
+    const auto orphan_loose = make_bytes(200 * 1024, 72);
+    const auto orphan_packed = make_bytes(1000, 73);
+    BOOST_CHECK(refs.put_and_acquire(sha256_of(kept_loose), kept_loose));
+    BOOST_CHECK(refs.put_and_acquire(sha256_of(kept_packed), kept_packed));
+    // Left behind by a crash, or by a replica that went away (`forget`).
+    BOOST_CHECK(store.put(sha256_of(orphan_loose), orphan_loose));
+    BOOST_CHECK(refs.put_and_acquire(sha256_of(orphan_packed), orphan_packed));
+    refs.forget(sha256_of(orphan_packed));
+
+    BOOST_CHECK_EQUAL(refs.collect_orphans(), 2U);
+    BOOST_CHECK(store.contains(sha256_of(kept_loose)));
+    BOOST_CHECK(store.contains(sha256_of(kept_packed)));
+    BOOST_CHECK(!store.contains(sha256_of(orphan_loose)));
+    BOOST_CHECK(!store.contains(sha256_of(orphan_packed)));
+    BOOST_CHECK_EQUAL(refs.collect_orphans(), 0U);
+}

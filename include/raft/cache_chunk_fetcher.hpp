@@ -195,6 +195,20 @@ public:
         _cv.notify_all();
     }
 
+    /// Replace the transport, for a daemon whose transport (the HTTP front
+    /// end) is built after the state machines that queue chunks. Only
+    /// before `start()`, or while stopped.
+    void set_fetch(fetch_fn fetch) {
+        const std::lock_guard lock(_mu);
+        if (!_threads.empty()) {
+            throw std::logic_error("cache_chunk_fetcher: set_fetch while running");
+        }
+        if (!fetch) {
+            throw std::invalid_argument("cache_chunk_fetcher: missing a collaborator");
+        }
+        _fetch = std::move(fetch);
+    }
+
     void start() {
         const std::lock_guard lock(_mu);
         if (!_threads.empty()) {
