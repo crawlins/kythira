@@ -57,11 +57,13 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -496,7 +498,12 @@ public:
     /// `plaintext_forwarding` opts the gateways into forwarding over
     /// plaintext loopback, which every case not about forwarding security
     /// relies on; it has no effect once `base._forward_tls` is set.
-    explicit cluster(redis_gateway_config base = {}, bool plaintext_forwarding = true) {
+    /// Runs on each gateway after it is built and before it starts: where
+    /// a case installs cache hooks.
+    using gateway_setup = std::function<void(node_id_t, gateway_type&)>;
+
+    explicit cluster(redis_gateway_config base = {}, bool plaintext_forwarding = true,
+                     const gateway_setup& setup = {}) {
         _acl.reload(acl_text());
         for (node_id_t id = 1; id <= k_node_count; ++id) {
             _hosts.push_back(std::make_unique<host_type>(make_config(id)));
@@ -531,6 +538,9 @@ public:
             };
             _gateways.push_back(
                 std::make_unique<gateway_type>(*_hosts[i], _acl, _logger, _metrics, cfg, resolver));
+            if (setup) {
+                setup(from, *_gateways.back());
+            }
         }
         for (auto& g : _gateways) {
             g->start();
@@ -1613,6 +1623,127 @@ BOOST_AUTO_TEST_CASE(tls_forwarding_without_a_ca_refuses_to_start, *boost::unit_
     gateway_type gw(host, acl, logger, metrics, gcfg, nullptr);
     BOOST_CHECK_THROW(gw.start(), std::runtime_error);
     BOOST_CHECK(!gw.is_running());
+}
+
+// ── cache hooks (.kiro/specs/disk-backed-build-cache/ task 7) ──────────────
+
+/// What the hooks below saw, shared by the three gateways.
+struct hook_log {
+    std::mutex _mu;
+    std::vector<std::string> _payloads;
+    std::atomic<bool> _refuse{false};
+    std::atomic<std::uint64_t> _excess{0};
+
+    auto payloads() -> std::vector<std::string> {
+        const std::lock_guard lock(_mu);
+        return _payloads;
+    }
+};
+
+auto hooks_into(const std::shared_ptr<hook_log>& log) -> cluster::gateway_setup {
+    return [log](node_id_t id, gateway_type& gw) {
+        gateway_type::cache_hooks h;
+        h._advisory = [id] { return "node-" + std::to_string(id); };
+        h._on_advisory = [log](std::string_view payload) {
+            const std::lock_guard lock(log->_mu);
+            log->_payloads.emplace_back(payload);
+        };
+        h._write_refusal = [log](const group_id_type&,
+                                 const std::vector<node_id_t>&) -> std::optional<std::string> {
+            if (log->_refuse.load()) {
+                return std::string("node 3 has 0 bytes free, below the floor of 1");
+            }
+            return std::nullopt;
+        };
+        h._excess_bytes = [log](const group_id_type&, const std::vector<node_id_t>&) {
+            return log->_excess.load();
+        };
+        gw.set_cache_hooks(std::move(h));
+    };
+}
+
+// Requirement 6.2: a read a follower serves moves the key to the front of
+// the leader's LRU, so the disk budget evicts what nobody reads.
+BOOST_AUTO_TEST_CASE(follower_reads_reach_the_leaders_lru, *boost::unit_test::timeout(120)) {
+    redis_gateway_config cfg;
+    cfg._read_consistency = redis_read_consistency::any_replica;
+    auto log = std::make_shared<hook_log>();
+    cluster c(cfg, true, hooks_into(log));
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto leader_id = c.leader_of(k_sccache_group);
+    const auto follower_id = c.a_follower_of(k_sccache_group);
+    resp_client leader(c.port(leader_id));
+    BOOST_REQUIRE_EQUAL(leader.auth("farm", "farm-secret"), "+OK\r\n");
+    // Written oldest first: "old" is the LRU's tail.
+    BOOST_CHECK_EQUAL(leader.call({"SET", "sccache/old", "o"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(leader.call({"SET", "sccache/new", "n"}), "+OK\r\n");
+
+    resp_client follower(c.port(follower_id));
+    BOOST_REQUIRE_EQUAL(follower.auth("farm", "farm-secret"), "+OK\r\n");
+    std::string got;
+    for (int i = 0; i < 100 && got != bulk("o"); ++i) {
+        got = follower.call({"GET", "sccache/old"});
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    BOOST_REQUIRE_EQUAL(got, bulk("o"));
+
+    // The follower's maintenance sends the read and its payload.
+    const auto received = c.gateway(leader_id).stats()._advisories_received.load();
+    (void)c.gateway(follower_id).run_maintenance();
+    BOOST_CHECK_GE(c.gateway(follower_id).stats()._advisories_sent.load(), 1U);
+    BOOST_CHECK_GT(c.gateway(leader_id).stats()._advisories_received.load(), received);
+    const auto payloads = log->payloads();
+    BOOST_CHECK(std::find(payloads.begin(), payloads.end(),
+                          "node-" + std::to_string(follower_id)) != payloads.end());
+
+    // One byte over the budget evicts one key: the tail, now "new".
+    log->_excess = 1;
+    BOOST_CHECK_GE(c.maintain(k_sccache_group), 1U);
+    log->_excess = 0;
+    BOOST_CHECK_EQUAL(leader.call({"GET", "sccache/new"}), "$-1\r\n");
+    BOOST_CHECK_EQUAL(leader.call({"GET", "sccache/old"}), bulk("o"));
+    BOOST_CHECK_EQUAL(c.gateway(leader_id).stats()._evictions.load(), 1U);
+}
+
+// Requirement 6.6: below a floor anywhere in the shard, SET is refused with
+// a retryable error, on the leader and through a follower's forward; DEL
+// still frees space and reads still work.
+BOOST_AUTO_TEST_CASE(a_space_refusal_stops_set_but_not_del, *boost::unit_test::timeout(120)) {
+    auto log = std::make_shared<hook_log>();
+    cluster c({}, true, hooks_into(log));
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto leader_id = c.leader_of(k_sccache_group);
+    resp_client leader(c.port(leader_id));
+    BOOST_REQUIRE_EQUAL(leader.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK_EQUAL(leader.call({"SET", "sccache/kept", "k"}), "+OK\r\n");
+
+    log->_refuse = true;
+    const auto refused = leader.call({"SET", "sccache/more", "m"});
+    BOOST_CHECK(is_retry_error(refused));
+    BOOST_CHECK(refused.find("bytes free") != std::string::npos);
+    resp_client follower(c.port(c.a_follower_of(k_sccache_group)));
+    BOOST_REQUIRE_EQUAL(follower.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK(is_retry_error(follower.call({"SET", "sccache/more", "m"})));
+    BOOST_CHECK_GE(c.gateway(leader_id).stats()._space_refusals.load(), 2U);
+    BOOST_CHECK_EQUAL(leader.call({"GET", "sccache/kept"}), bulk("k"));
+    BOOST_CHECK_EQUAL(leader.call({"DEL", "sccache/kept"}), ":1\r\n");
+
+    log->_refuse = false;
+    BOOST_CHECK_EQUAL(leader.call({"SET", "sccache/more", "m"}), "+OK\r\n");
+    resp_client ops(c.port(leader_id));
+    BOOST_REQUIRE_EQUAL(ops.auth("ops", "ops-secret"), "+OK\r\n");
+    const auto info = ops.call({"INFO"});
+    BOOST_CHECK(info.find("kythira_space_refusals:") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(only_peer_gateways_may_advise, *boost::unit_test::timeout(120)) {
+    auto log = std::make_shared<hook_log>();
+    cluster c({}, true, hooks_into(log));
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    resp_client client(c.port(c.leader_of(k_sccache_group)));
+    BOOST_REQUIRE_EQUAL(client.auth("ops", "ops-secret"), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ADVISE", "node-9;0,0,0"}).rfind("-NOPERM", 0), 0U);
+    BOOST_CHECK(log->payloads().empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

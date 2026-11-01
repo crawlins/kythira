@@ -80,6 +80,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <cstring>
 #include <functional>
 #include <list>
 #include <memory>
@@ -426,6 +427,12 @@ public:
     using endpoint_resolver = std::function<std::optional<std::string>(const node_id_type&)>;
     /// A chunk that failed its hash on read, for the fetcher to replace.
     using repair_callback = std::function<void(const group_id_type&, const chunk_sha&)>;
+    /// Why a write to a shard with these voters must be refused, for the
+    /// disk guard's view of the voters' floors (Requirement 6.6).
+    using write_refusal_fn = std::function<std::optional<std::string>(
+        const group_id_type&, const std::vector<node_id_type>&)>;
+    /// A key served or written (`false`) or deleted (`true`).
+    using access_fn = std::function<void(const std::string&, bool)>;
 
     cache_http_front_end(Host& host, const redis_acl& acl, Logger& logger,
                          std::shared_ptr<chunk_refcounts> refs, cache_http_config config,
@@ -464,6 +471,26 @@ public:
     [[nodiscard]] auto auth_cache() const noexcept -> const cache_http_auth_cache& {
         return _auth_cache;
     }
+
+    /// Checked on the leader before a `PUT` streams anything. Call before
+    /// `start()`.
+    void set_write_refusal(write_refusal_fn fn) { _write_refusal = std::move(fn); }
+    /// Lines appended to `/_metrics`, already in its `name value` form.
+    void set_metrics_extra(std::function<std::string()> fn) { _metrics_extra = std::move(fn); }
+    /// Told of each key this front end serves or writes (`removed` false)
+    /// and deletes (`removed` true), so the RESP gateway's least-recently-
+    /// read order sees HTTP traffic too (Requirement 6.1, 6.2). Called on
+    /// the I/O thread after the response is decided. Call before `start()`.
+    void set_access_hook(access_fn fn) { _on_access = std::move(fn); }
+
+    /// `GET /_chunk/<sha>` from `peer`'s front end with the internal
+    /// secret, over the transport forwarding uses: the chunk fetcher's
+    /// `fetch` in the daemon (design Component 5). The bytes as sent, or
+    /// `nullopt` if the peer is unknown, unreachable, or lacks the chunk.
+    /// The caller verifies them. Safe from any thread once `start()` has
+    /// returned.
+    [[nodiscard]] auto fetch_chunk(const node_id_type& peer, const chunk_sha& sha)
+        -> std::optional<std::vector<std::byte>>;
 
 private:
     using tcp = boost::asio::ip::tcp;
@@ -562,6 +589,9 @@ private:
     cache_http_config _config;
     endpoint_resolver _resolver;
     repair_callback _on_repair;
+    write_refusal_fn _write_refusal;
+    std::function<std::string()> _metrics_extra;
+    access_fn _on_access;
     cache_http_stats _stats;
     cache_http_auth_cache _auth_cache;
     redis_auth_limiter _auth_limiter;
@@ -1238,6 +1268,9 @@ auto cache_http_front_end<Host, Logger>::handle_get(connection& c, Stream& strea
         ++_stats._misses;
         return reply(c, stream, parser, http::status::not_found);
     }
+    if (_on_access) {
+        _on_access(key, false);
+    }
 
     const auto len = manifest->_total_len;
     byte_range range;
@@ -1388,6 +1421,15 @@ auto cache_http_front_end<Host, Logger>::handle_put(connection& c, Stream& strea
         }
         return reply(c, stream, parser, http::status::service_unavailable);
     }
+    if (_write_refusal) {
+        // A voter of the shard is below a floor (Requirement 6.6).
+        if (auto desc = _host.resolve(key)) {
+            if (auto refused = _write_refusal(desc->group_id(), desc->voters())) {
+                ++_stats._insufficient_storage;
+                return reply(c, stream, parser, http::status::insufficient_storage, *refused);
+            }
+        }
+    }
 
     if (boost::beast::iequals(req[http::field::expect], "100-continue")) {
         http::response<http::empty_body> cont{http::status::continue_, req.version()};
@@ -1504,6 +1546,9 @@ auto cache_http_front_end<Host, Logger>::handle_put(connection& c, Stream& strea
     }
     ++_stats._puts;
     _stats._put_bytes += total;
+    if (_on_access) {
+        _on_access(key, false);
+    }
     return reply(c, stream, parser, http::status::created);
 }
 
@@ -1546,6 +1591,9 @@ auto cache_http_front_end<Host, Logger>::handle_delete(connection& c, Stream& st
         return reply(c, stream, parser, http::status::service_unavailable);
     }
     ++_stats._deletes;
+    if (_on_access) {
+        _on_access(key, true);
+    }
     return reply(c, stream, parser, http::status::no_content);
 }
 
@@ -1639,6 +1687,9 @@ auto cache_http_front_end<Host, Logger>::handle_metrics(connection& c, Stream& s
     line("store_packed_chunks", store._packed_chunks);
     line("store_bytes_on_disk", store.bytes_on_disk());
     line("store_hash_failures", store._hash_failures);
+    if (_metrics_extra) {
+        out << _metrics_extra();
+    }
     return reply(c, stream, parser, http::status::ok, out.str());
 }
 
@@ -1708,6 +1759,81 @@ auto cache_http_front_end<Host, Logger>::forward(connection& c, Stream& stream,
         return after::close;  // the client already has part of an answer
     }
     return std::nullopt;
+}
+
+template<typename Host, typename Logger>
+auto cache_http_front_end<Host, Logger>::fetch_chunk(const node_id_type& peer, const chunk_sha& sha)
+    -> std::optional<std::vector<std::byte>> {
+    namespace beast = boost::beast;
+    namespace http = beast::http;
+    namespace ssl = boost::asio::ssl;
+    if (!_resolver || _config._internal_secret.empty() || peer == _host.node_id() ||
+        (!_config._forward_tls && !_config._allow_plaintext_forwarding) ||
+        (_config._forward_tls && !_forward_ssl_ctx)) {
+        return std::nullopt;
+    }
+    auto endpoint = _resolver(peer);
+    if (!endpoint) {
+        return std::nullopt;
+    }
+    std::pair<std::string, std::uint16_t> hp;
+    try {
+        hp = cache_http_detail::parse_listen(*endpoint);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    boost::asio::io_context ioc{1};
+    tcp::resolver resolver(ioc);
+    boost::system::error_code ec;
+    auto results = resolver.resolve(hp.first, std::to_string(hp.second), ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    plain_stream up(ioc);
+    up.expires_after(_config._io_timeout);
+    ec = cache_http_detail::drive(ioc, [&](auto h) { up.async_connect(results, std::move(h)); });
+    if (ec) {
+        return std::nullopt;
+    }
+    http::request<http::empty_body> req{http::verb::get, "/_chunk/" + to_hex(sha), 11};
+    req.set(http::field::host, hp.first);
+    req.set(http::field::authorization, "Bearer " + _config._internal_secret);
+    auto exchange = [&](auto& s) -> std::optional<std::vector<std::byte>> {
+        cache_http_detail::lowest(s).expires_after(_config._io_timeout);
+        auto wec =
+            cache_http_detail::drive(ioc, [&](auto h) { http::async_write(s, req, std::move(h)); });
+        if (wec) {
+            return std::nullopt;
+        }
+        beast::flat_buffer buf;
+        http::response_parser<http::string_body> res;
+        res.body_limit(_refs->store().options()._max_chunk_bytes);
+        cache_http_detail::lowest(s).expires_after(_config._io_timeout);
+        auto rec = cache_http_detail::drive(
+            ioc, [&](auto h) { http::async_read(s, buf, res, std::move(h)); });
+        if (rec || res.get().result() != http::status::ok) {
+            return std::nullopt;
+        }
+        const auto& body = res.get().body();
+        std::vector<std::byte> out(body.size());
+        if (!body.empty()) {
+            std::memcpy(out.data(), body.data(), body.size());
+        }
+        return out;
+    };
+    if (_config._forward_tls) {
+        beast::ssl_stream<plain_stream> tls_up(std::move(up), *_forward_ssl_ctx);
+        SSL_set_tlsext_host_name(tls_up.native_handle(), hp.first.c_str());
+        tls_up.set_verify_callback(ssl::host_name_verification(hp.first));
+        beast::get_lowest_layer(tls_up).expires_after(_config._handshake_timeout);
+        ec = cache_http_detail::drive(
+            ioc, [&](auto h) { tls_up.async_handshake(ssl::stream_base::client, std::move(h)); });
+        if (ec) {
+            return std::nullopt;
+        }
+        return exchange(tls_up);
+    }
+    return exchange(up);
 }
 
 /// Send `parser`'s request (header, then its body as it arrives from the

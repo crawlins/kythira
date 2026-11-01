@@ -874,6 +874,21 @@ auto redis_gateway<Host, Logger, Metrics>::authorize(session& s, std::string_vie
 template<typename Host, typename Logger, typename Metrics>
 auto redis_gateway<Host, Logger, Metrics>::touch_lru(group_id_type group, const std::string& key)
     -> void {
+    if (auto* node = _host.group_node(group); node != nullptr && !node->is_leader()) {
+        // A follower keeps no LRU of its own; the read is queued for the
+        // leader's (Requirement 6.2), and only when something will send it.
+        if (!_cache_hooks._advisory) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(_lru_mutex);
+        auto& queued = _remote_touches[group];
+        if (queued.size() >= max_queued_touches && !queued.contains(key)) {
+            ++_stats._touches_dropped;
+            return;
+        }
+        queued.insert(key);
+        return;
+    }
     std::lock_guard<std::mutex> lock(_lru_mutex);
     auto& lru = _lru[group];
     auto it = lru._index.find(key);
@@ -883,6 +898,20 @@ auto redis_gateway<Host, Logger, Metrics>::touch_lru(group_id_type group, const 
     }
     lru._order.push_front(key);
     lru._index.emplace(key, lru._order.begin());
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::note_access(const std::string& key) -> void {
+    if (auto desc = _host.resolve(key)) {
+        touch_lru(desc->group_id(), key);
+    }
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::note_removed(const std::string& key) -> void {
+    if (auto desc = _host.resolve(key)) {
+        forget_lru(desc->group_id(), key);
+    }
 }
 
 template<typename Host, typename Logger, typename Metrics>
@@ -1343,6 +1372,9 @@ auto redis_gateway<Host, Logger, Metrics>::execute(session& s, const resp_comman
     if (upper == "COMMAND") {
         return finish(handle_command(s, cmd));
     }
+    if (upper == "KYTHIRA.ADVISE") {
+        return finish(handle_advise(s, cmd));
+    }
 
     // Requirement 1.8: unknown commands are an error, not a disconnect.
     std::string args;
@@ -1705,6 +1737,12 @@ auto redis_gateway<Host, Logger, Metrics>::handle_set(session& s, const resp_com
         return error;
     }
 
+    if (auto refused = space_refusal(key)) {
+        ++_stats._space_refusals;
+        emit("redis.space_refusals", name);
+        return s._writer.error("ERR " + *refused + ", retry later");
+    }
+
     if (_config._immutable_values) {
         // sccache keys are content hashes, so a rewrite is either the same
         // bytes (sccache rewriting its `.sccache_check` probe) or a bug
@@ -1875,6 +1913,16 @@ auto redis_gateway<Host, Logger, Metrics>::handle_info(session& s) -> std::strin
         << "kythira_forward_failures:" << _stats._forward_failures.load() << "\r\n"
         << "kythira_shed:" << _stats._shed.load() << "\r\n"
         << "kythira_output_stalls:" << _stats._output_stalls.load() << "\r\n";
+    if (_cache_hooks._advisory || _cache_hooks._write_refusal) {
+        out << "kythira_space_refusals:" << _stats._space_refusals.load() << "\r\n"
+            << "kythira_advisories_sent:" << _stats._advisories_sent.load() << "\r\n"
+            << "kythira_advisory_failures:" << _stats._advisory_failures.load() << "\r\n"
+            << "kythira_advisories_received:" << _stats._advisories_received.load() << "\r\n"
+            << "kythira_touches_dropped:" << _stats._touches_dropped.load() << "\r\n";
+    }
+    if (_cache_hooks._info) {
+        out << "\r\n" << _cache_hooks._info();
+    }
     return s._writer.bulk(out.str());
 }
 
@@ -1971,7 +2019,11 @@ auto redis_gateway<Host, Logger, Metrics>::run_maintenance() -> std::size_t {
         auto [bytes, key_count] = node->with_state_machine([](auto& sm) {
             return std::pair{sm.approximate_size_bytes(), sm.approximate_key_count()};
         });
-        if (bytes <= _config._max_shard_bytes || key_count == 0) {
+        // The node disk budget (Requirement 6.1): bytes the fullest voter of
+        // this shard holds over it, to be freed from this shard.
+        const std::uint64_t excess =
+            _cache_hooks._excess_bytes ? _cache_hooks._excess_bytes(group, desc->voters()) : 0;
+        if ((bytes <= _config._max_shard_bytes && excess == 0) || key_count == 0) {
             continue;
         }
         ++_stats._over_budget_ticks;
@@ -1979,7 +2031,8 @@ auto redis_gateway<Host, Logger, Metrics>::run_maintenance() -> std::size_t {
         _logger.log(log_level::warning, "redis gateway: shard over budget, evicting",
                     {{"group", std::to_string(group)},
                      {"bytes", std::to_string(bytes)},
-                     {"budget", std::to_string(_config._max_shard_bytes)}});
+                     {"budget", std::to_string(_config._max_shard_bytes)},
+                     {"disk_excess", std::to_string(excess)}});
 
         std::vector<std::string> victims;
         {
@@ -1996,15 +2049,46 @@ auto redis_gateway<Host, Logger, Metrics>::run_maintenance() -> std::size_t {
                     });
                 });
             }
+            // Walk from the least recently read end. Against the shard budget
+            // every key counts its full size. Against the disk excess a key
+            // counts only the bytes evicting it frees on disk: a key whose
+            // chunks are still pending (a fresh write, inside the orphan
+            // grace) or shared frees nothing, so it is passed over rather
+            // than evicted for no gain. Without this a burst of writes over
+            // the budget would empty the shard and free nothing. The walk is
+            // capped so a shard of pinned keys costs a bounded scan per tick.
             std::size_t freed = 0;
-            while (!lru._order.empty() && victims.size() < _config._sweep_batch &&
-                   bytes - freed > _config._max_shard_bytes) {
-                const auto& key = lru._order.back();
-                auto entry = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
-                freed += key.size() + (entry ? value_access::size(*entry) : 0);
+            std::uint64_t disk_freed = 0;
+            std::size_t scanned = 0;
+            const std::size_t max_scan = _config._sweep_batch * evict_scan_factor;
+            auto it = lru._order.end();
+            while (it != lru._order.begin() && victims.size() < _config._sweep_batch &&
+                   scanned < max_scan) {
+                const bool shard_over = freed < bytes && bytes - freed > _config._max_shard_bytes;
+                if (!shard_over && disk_freed >= excess) {
+                    break;
+                }
+                --it;
+                ++scanned;
+                const std::string key = *it;
+                auto [size, reclaim] = node->with_state_machine([&key](auto& sm) {
+                    auto entry = sm.lookup(key);
+                    const std::uint64_t sz = key.size() + (entry ? value_access::size(*entry) : 0);
+                    if constexpr (requires { sm.reclaimable_bytes(key); }) {
+                        return std::pair<std::uint64_t, std::uint64_t>{sz,
+                                                                       sm.reclaimable_bytes(key)};
+                    } else {
+                        return std::pair<std::uint64_t, std::uint64_t>{sz, sz};
+                    }
+                });
+                if (!shard_over && reclaim == 0) {
+                    continue;
+                }
+                freed += size;
+                disk_freed += reclaim;
                 victims.push_back(key);
                 lru._index.erase(key);
-                lru._order.pop_back();
+                it = lru._order.erase(it);
             }
         }
         if (victims.empty()) {
@@ -2027,7 +2111,152 @@ auto redis_gateway<Host, Logger, Metrics>::run_maintenance() -> std::size_t {
                         {{"error", e.what()}});
         }
     }
+    send_advisories();
     return proposals;
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::space_refusal(const std::string& key)
+    -> std::optional<std::string> {
+    if (!_cache_hooks._write_refusal) {
+        return std::nullopt;
+    }
+    auto desc = _host.resolve(key);
+    if (!desc) {
+        return std::nullopt;
+    }
+    return _cache_hooks._write_refusal(desc->group_id(), desc->voters());
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::send_advisories() -> void {
+    if (!_cache_hooks._advisory || !_running.load() || _config._internal_secret.empty() ||
+        (!_config._forward_tls && !_config._allow_plaintext_forwarding)) {
+        return;
+    }
+    // Every leader of a shard this node follows hears from it, with the
+    // reads it served for that leader's shards.
+    std::map<node_id_type, std::vector<std::pair<group_id_type, std::vector<std::string>>>> batches;
+    std::map<group_id_type, std::set<std::string>> queued;
+    {
+        std::lock_guard<std::mutex> lock(_lru_mutex);
+        queued.swap(_remote_touches);
+    }
+    for (const auto& group : _host.group_ids()) {
+        auto* node = _host.group_node(group);
+        if (node == nullptr || node->is_leader()) {
+            continue;
+        }
+        auto leader = node->known_leader();
+        if (!leader || *leader == _host.node_id()) {
+            continue;
+        }
+        auto& batch = batches[*leader];
+        auto it = queued.find(group);
+        if (it != queued.end() && !it->second.empty()) {
+            batch.emplace_back(group,
+                               std::vector<std::string>(it->second.begin(), it->second.end()));
+        }
+    }
+    if (batches.empty()) {
+        return;
+    }
+    const auto payload = _cache_hooks._advisory();
+    const auto budget = _config._command_timeout.count() > 0
+                            ? std::chrono::steady_clock::duration{_config._command_timeout}
+                            : std::chrono::steady_clock::duration{std::chrono::seconds{5}};
+    for (auto& [leader, groups] : batches) {
+        auto endpoint = forward_endpoint(leader);
+        if (!endpoint) {
+            continue;
+        }
+        resp_writer w;
+        std::vector<std::string> parts{w.bulk("KYTHIRA.ADVISE"), w.bulk(payload)};
+        for (auto& [group, keys] : groups) {
+            const auto blob = encode_redis_kv_command(redis_kv_touch_command{std::move(keys)});
+            parts.push_back(w.bulk(std::to_string(group)));
+            parts.push_back(
+                w.bulk(std::string_view(reinterpret_cast<const char*>(blob.data()), blob.size())));
+        }
+        try {
+            auto sock = forward_socket(*endpoint, std::chrono::steady_clock::now() + budget);
+            auto wire = w.array(parts);
+            sock->write(boost::asio::buffer(wire));
+            std::string buf;
+            std::array<char, 512> chunk{};
+            std::size_t len = 0;
+            while ((len = resp_reply_length(buf)) == 0) {
+                if (buf.size() > 64u * 1024u) {
+                    throw std::runtime_error("oversized advisory reply");
+                }
+                auto n = sock->read_some(boost::asio::buffer(chunk));
+                buf.append(chunk.data(), n);
+            }
+            if (buf.rfind("+OK", 0) != 0) {
+                throw std::runtime_error("advisory refused: " + buf.substr(0, len));
+            }
+            return_forward_socket(*endpoint, std::move(sock));
+            ++_stats._advisories_sent;
+        } catch (const std::exception& e) {
+            ++_stats._advisory_failures;
+            _logger.log(log_level::debug, "redis gateway: advisory failed",
+                        {{"endpoint", *endpoint}, {"error", e.what()}});
+        }
+    }
+}
+
+/// `KYTHIRA.ADVISE <payload> [<group> <touch>]...` from a peer gateway: the
+/// reads it served for shards this node leads, and its cache hooks'
+/// payload. Internal connections only.
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::handle_advise(session& s, const resp_command& cmd)
+    -> std::string {
+    if (!s._internal) {
+        ++_stats._authz_denials;
+        return s._writer.error("NOPERM KYTHIRA.ADVISE is for peer gateways only");
+    }
+    if (cmd._argv.size() < 2 || cmd._argv.size() % 2 != 0) {
+        return s._writer.error("ERR wrong number of arguments for 'kythira.advise' command");
+    }
+    ++_stats._advisories_received;
+    for (std::size_t i = 2; i + 1 < cmd._argv.size(); i += 2) {
+        group_id_type group{};
+        try {
+            std::size_t used = 0;
+            group = static_cast<group_id_type>(std::stoull(cmd._argv[i], &used));
+            if (used != cmd._argv[i].size()) {
+                continue;
+            }
+        } catch (const std::exception&) {
+            continue;
+        }
+        auto* node = _host.group_node(group);
+        if (node == nullptr || !node->is_leader()) {
+            continue;
+        }
+        const auto& blob = cmd._argv[i + 1];
+        std::vector<std::string> keys;
+        try {
+            auto decoded = decode_redis_kv_command(std::as_bytes(std::span(blob)));
+            if (auto* touch = std::get_if<redis_kv_touch_command>(&decoded)) {
+                keys = std::move(touch->_keys);
+            }
+        } catch (const std::exception&) {
+            continue;
+        }
+        for (const auto& key : keys) {
+            // Only keys the shard still holds: a deleted key must not come
+            // back into the LRU as a victim that frees nothing.
+            auto entry = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
+            if (entry) {
+                touch_lru(group, key);
+            }
+        }
+    }
+    if (_cache_hooks._on_advisory) {
+        _cache_hooks._on_advisory(cmd._argv[1]);
+    }
+    return s._writer.simple_string("OK");
 }
 
 }  // namespace kythira

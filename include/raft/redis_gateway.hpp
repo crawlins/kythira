@@ -46,6 +46,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -189,6 +190,45 @@ struct redis_gateway_stats {
     /// reading replies (`_max_output_buffer_bytes`).
     std::atomic<std::uint64_t> _output_stalls{0};
     std::atomic<std::uint64_t> _over_budget_ticks{0};
+    /// Writes refused because this node or a voter of the shard is below a
+    /// free-space or free-inode floor (cache hooks, Requirement 6.6).
+    std::atomic<std::uint64_t> _space_refusals{0};
+    /// `KYTHIRA.ADVISE` batches sent to shard leaders, and received.
+    std::atomic<std::uint64_t> _advisories_sent{0};
+    std::atomic<std::uint64_t> _advisory_failures{0};
+    std::atomic<std::uint64_t> _advisories_received{0};
+    /// Follower-served reads dropped because a shard's touch queue was full.
+    std::atomic<std::uint64_t> _touches_dropped{0};
+};
+
+/// What a disk-backed node adds to the gateway
+/// (.kiro/specs/disk-backed-build-cache/ task 7). Every hook is optional;
+/// with none set the gateway behaves as it always has.
+///
+/// Reads a follower serves are queued per shard and sent to the shard's
+/// leader once per `run_maintenance()`, as a `KYTHIRA.ADVISE` command on the
+/// forwarding link, so eviction is not blind to traffic that never reached
+/// the leader (Requirement 6.2). The same message carries `_advisory()`'s
+/// payload, which in the daemon is this node's free space (Requirement 6.6).
+/// It is sent to every leader of a shard this node follows, even with no
+/// reads to report, and only internal connections may send it.
+template<typename NodeId, typename GroupId> struct redis_gateway_cache_hooks {
+    /// Why a write to `group`, whose voters are given, must be refused with
+    /// a retryable error; `nullopt` lets it go ahead. Asked on the leader,
+    /// just before it proposes a `SET`. `DEL` is never refused: it frees
+    /// space.
+    std::function<std::optional<std::string>(const GroupId&, const std::vector<NodeId>&)>
+        _write_refusal;
+    /// Bytes to free for `group`'s voters to fit the node disk budget. A
+    /// non-zero answer makes the leader evict that much from the shard's
+    /// least-recently-read keys, as an over-budget shard does.
+    std::function<std::uint64_t(const GroupId&, const std::vector<NodeId>&)> _excess_bytes;
+    /// The payload this node sends with each advisory.
+    std::function<std::string()> _advisory;
+    /// A payload a peer sent.
+    std::function<void(std::string_view)> _on_advisory;
+    /// Appended to `INFO`: whole `# Section\r\n` blocks.
+    std::function<std::string()> _info;
 };
 
 /// Resolves a peer node id to the `host:port` of that node's gateway for
@@ -213,6 +253,7 @@ public:
     using entry_handle = typename value_access::entry_handle;
     using entry_type = typename value_access::entry_type;
     using value_context = typename value_access::context;
+    using cache_hooks = redis_gateway_cache_hooks<node_id_type, group_id_type>;
 
     redis_gateway(Host& host, redis_acl& acl, Logger& logger, Metrics& metrics,
                   redis_gateway_config config, endpoint_resolver resolver);
@@ -238,6 +279,24 @@ public:
     /// the gateway adds no thread of its own (Requirement 6.3). Returns the
     /// number of proposals made.
     auto run_maintenance() -> std::size_t;
+
+    /// Install the disk-backed node's hooks. Call before `start()`.
+    auto set_cache_hooks(cache_hooks hooks) -> void { _cache_hooks = std::move(hooks); }
+
+    /// A read or write of `key` that reached its shard without this gateway
+    /// (the cache HTTP front end): it moves the key in the least-recently-
+    /// read order as a RESP access would, and on a follower is queued for
+    /// the leader's. Without it a key only HTTP clients touch would never
+    /// enter the order and never be evicted.
+    auto note_access(const std::string& key) -> void;
+    /// `key` was deleted without this gateway: drop it from the order.
+    auto note_removed(const std::string& key) -> void;
+
+    /// Most keys a shard's follower-read queue holds between advisories.
+    static constexpr std::size_t max_queued_touches = 4096;
+    /// One eviction pass looks at most this many times `_sweep_batch` keys,
+    /// passing over those whose eviction would free nothing on disk.
+    static constexpr std::size_t evict_scan_factor = 16;
 
     [[nodiscard]] auto stats() const noexcept -> const redis_gateway_stats& { return _stats; }
     [[nodiscard]] auto config() const noexcept -> const redis_gateway_config& { return _config; }
@@ -323,6 +382,12 @@ private:
     [[nodiscard]] auto is_expired(const entry_type& e) const -> bool;
     auto touch_lru(group_id_type group, const std::string& key) -> void;
     auto forget_lru(group_id_type group, const std::string& key) -> void;
+    auto handle_advise(session& s, const resp_command& cmd) -> std::string;
+    /// Send each shard leader the reads this node served for it and the
+    /// cache hooks' advisory payload.
+    auto send_advisories() -> void;
+    /// The write refusal for the shard owning `key`, if any.
+    auto space_refusal(const std::string& key) -> std::optional<std::string>;
 
     // ---- networking ------------------------------------------------------------
     auto accept_loop(std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor, bool tls) -> void;
@@ -380,6 +445,10 @@ private:
     };
     std::mutex _lru_mutex;
     std::map<group_id_type, lru_state> _lru;
+    /// Keys this node served as a follower, per shard, for its leader.
+    std::map<group_id_type, std::set<std::string>> _remote_touches;
+
+    cache_hooks _cache_hooks;
 
     std::mutex _forward_mutex;
     std::unordered_map<std::string, std::shared_ptr<forward_pool>> _forward_pools;

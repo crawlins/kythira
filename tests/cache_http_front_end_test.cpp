@@ -42,6 +42,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -50,6 +51,7 @@
 #include <map>
 #include <memory>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -516,6 +518,11 @@ public:
             };
             _front_ends.push_back(std::make_unique<front_end_type>(*_hosts[i], _acl, _logger,
                                                                    _stores[i], cfg, resolver));
+            _front_ends.back()->set_access_hook(
+                [this, id = static_cast<node_id_t>(i + 1)](const std::string& key, bool removed) {
+                    const std::lock_guard lock(_access_mu);
+                    _accesses.push_back({id, key, removed});
+                });
         }
         for (auto& f : _front_ends) {
             f->start();
@@ -552,6 +559,18 @@ public:
     auto operator=(const cluster&) -> cluster& = delete;
     cluster(cluster&&) = delete;
     auto operator=(cluster&&) -> cluster& = delete;
+
+    struct access {
+        node_id_t _node;
+        std::string _key;
+        bool _removed;
+        auto operator==(const access&) const -> bool = default;
+    };
+    /// What each front end's access hook was told, in order.
+    [[nodiscard]] auto accesses() -> std::vector<access> {
+        const std::lock_guard lock(_access_mu);
+        return _accesses;
+    }
 
     [[nodiscard]] auto host(node_id_t id) -> host_type& { return *_hosts.at(id - 1); }
     [[nodiscard]] auto front_end(node_id_t id) -> front_end_type& {
@@ -653,6 +672,8 @@ private:
     std::vector<std::shared_ptr<kythira::chunk_refcounts>> _stores;
     std::vector<std::unique_ptr<host_type>> _hosts;
     std::vector<std::unique_ptr<front_end_type>> _front_ends;
+    std::mutex _access_mu;
+    std::vector<access> _accesses;
     std::vector<std::thread> _drivers;
     std::atomic<bool> _running{false};
 };
@@ -1084,6 +1105,34 @@ BOOST_AUTO_TEST_CASE(https_and_tls_forwarding, *boost::unit_test::timeout(120)) 
         https_call(c.front_end(leader).tls_port(), pki.cert("ca"), http::verb::get, "/sccache/tls");
     BOOST_CHECK_EQUAL(get.result_int(), 200);
     BOOST_CHECK_EQUAL(get.body(), "secret");
+}
+
+// Requirement 6.1/6.2: HTTP traffic reaches the gateway's eviction order. A
+// write and a read report the key, a delete reports its removal, and a miss
+// or a refused write reports nothing. A follower's read is reported there,
+// for the advisory to carry to the leader.
+BOOST_AUTO_TEST_CASE(the_access_hook_sees_hits_writes_and_deletes,
+                     *boost::unit_test::timeout(120)) {
+    cluster c(3, small_chunks());
+    BOOST_REQUIRE(c.await_leaders(std::chrono::seconds{20}));
+    const auto leader = c.leader_of(k_sccache_group);
+    const node_id_t follower = leader == 1 ? 2 : 1;
+    http_client client(c.port(leader));
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/k")._status, 404);
+    BOOST_CHECK_EQUAL(client.call("PUT", "/sccache/k", "v")._status, 201);
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/k")._status, 200);
+    http_client other(c.port(follower));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (other.call("GET", "/sccache/k")._status != 200 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    BOOST_CHECK_EQUAL(client.call("DELETE", "/sccache/k")._status, 204);
+    using a = cluster::access;
+    const auto seen = c.accesses();
+    BOOST_CHECK(std::count(seen.begin(), seen.end(), a{leader, "sccache/k", false}) == 2);
+    BOOST_CHECK(std::count(seen.begin(), seen.end(), a{follower, "sccache/k", false}) >= 1);
+    BOOST_CHECK(std::count(seen.begin(), seen.end(), a{leader, "sccache/k", true}) == 1);
 }
 
 BOOST_AUTO_TEST_CASE(a_full_disk_refuses_puts_with_507, *boost::unit_test::timeout(120)) {

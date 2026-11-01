@@ -336,6 +336,22 @@ public:
         return std::filesystem::exists(loose_path(sha), ec);
     }
 
+    /// The chunk's size on disk, or `nullopt` if it is not stored.
+    [[nodiscard]] auto chunk_size(const chunk_sha& sha) const -> std::optional<std::uint64_t> {
+        {
+            const std::lock_guard lock(_mu);
+            if (auto it = _packed.find(sha); it != _packed.end()) {
+                return it->second._len;
+            }
+        }
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(loose_path(sha), ec);
+        if (ec) {
+            return std::nullopt;
+        }
+        return size;
+    }
+
     /// The chunk's bytes, hash-checked. `nullopt` if it is absent or its
     /// bytes do not hash to its name (counted in `_hash_failures`).
     [[nodiscard]] auto read(const chunk_sha& sha) const -> std::optional<std::vector<std::byte>> {
@@ -1184,6 +1200,28 @@ public:
         if (it->second == 0) {
             _counts.erase(it);
         }
+    }
+
+    /// Delete every stored chunk no replica on this node references
+    /// (Requirement 2.6). Run once the node's replicas have restored their
+    /// snapshots, so the counts are complete. It holds the mutex for the
+    /// whole walk, so no `put_and_acquire` can store a chunk between the
+    /// check and the delete. A chunk a later log entry still names is
+    /// written again when that entry is applied, since `put_chunk` carries
+    /// its bytes. Returns the number of chunks deleted.
+    auto collect_orphans() -> std::size_t {
+        const std::lock_guard lock(_mu);
+        std::vector<chunk_sha> orphans;
+        _store.for_each_chunk([&](const chunk_sha& sha, std::uint64_t) {
+            if (!_counts.contains(sha)) {
+                orphans.push_back(sha);
+            }
+        });
+        std::size_t removed = 0;
+        for (const auto& sha : orphans) {
+            removed += _store.remove(sha) ? 1 : 0;
+        }
+        return removed;
     }
 
     [[nodiscard]] auto count(const chunk_sha& sha) const -> std::uint64_t {

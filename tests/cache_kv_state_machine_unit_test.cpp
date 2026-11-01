@@ -290,6 +290,35 @@ BOOST_AUTO_TEST_CASE(committed_chunks_outlive_the_grace, *boost::unit_test::time
     BOOST_CHECK_EQUAL(node.chunks_on_disk(), 0U);
 }
 
+/// Requirement 6.1: disk eviction asks how much evicting a key frees. A fresh
+/// write's chunks are pinned by the grace; a chunk another key shares stays.
+BOOST_AUTO_TEST_CASE(reclaimable_bytes_counts_only_chunks_eviction_frees,
+                     *boost::unit_test::timeout(30)) {
+    node_fixture node;
+    auto sm = node.make_sm(5);
+    std::uint64_t idx = 0;
+    const auto v = pattern(2100, 21);  // three 700-byte chunks
+    apply_all(sm, idx, upload("k", v, 700));
+    BOOST_CHECK_EQUAL(sm.reclaimable_bytes("k"), 0U);  // all pending
+    BOOST_CHECK_EQUAL(sm.pending_bytes(), 2100U);
+    for (int i = 0; i < 10; ++i) {
+        apply_one(sm, idx, filler());
+    }
+    BOOST_CHECK_EQUAL(sm.pending_bytes(), 0U);
+    BOOST_CHECK_EQUAL(sm.reclaimable_bytes("k"), 2100U);
+    BOOST_CHECK_EQUAL(sm.reclaimable_bytes("absent"), 0U);
+    // A second key sharing the first chunk: that chunk no longer counts.
+    std::vector<std::byte> w(v.begin(), v.begin() + 700);
+    const auto tail = pattern(700, 22);
+    w.insert(w.end(), tail.begin(), tail.end());
+    apply_all(sm, idx, upload("j", w, 700));
+    for (int i = 0; i < 10; ++i) {
+        apply_one(sm, idx, filler());
+    }
+    BOOST_CHECK_EQUAL(sm.reclaimable_bytes("k"), 1400U);
+    BOOST_CHECK_EQUAL(sm.reclaimable_bytes("j"), 700U);
+}
+
 /// Requirement 4.1/4.3/4.4: a replica that restores a snapshot naming chunks
 /// it does not have serves nothing for those keys until they arrive.
 BOOST_AUTO_TEST_CASE(restore_on_an_empty_node_marks_keys_unservable,
