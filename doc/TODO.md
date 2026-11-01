@@ -1837,12 +1837,44 @@ unverified completion claim.
         `raft_heartbeat_based_read_state_property_test` (node 2's no-op could
         commit before the case looked; node 3's replies are now delayed and
         an already-closed gap is accepted, never a stale read).
-      All seven are off the allowlist. Still allowlisted and not touched:
-      `multi_raft_node_s3_process_test` (item U),
-      `membership_change_joint_safety_test`, `raft_multi_node_property_test`,
-      `raft_multi_node_partition_test`, `raft_batched_durable_writes_test`,
-      `coap_io_wait_mode_test`, `http_pre_vote_timeout_now_test` and
-      `ca_cluster_node_rpc_tls_test`.
+      All seven are off the allowlist.
+    - **Second pass, November 1, 2026**, over the last 30 `ci.yml` runs
+      (2026-10-28..11-01). Of the older allowlisted repeaters only
+      `raft_multi_node_partition_test` (3) and
+      `membership_change_joint_safety_test` (1) were rescued; the wider
+      survey added `leader_transfer_test` (1, allowlisted) and two that
+      were not allowlisted. One was a product bug:
+      - **TLS material subscribers, unsubscribing mid-notification.**
+        `basic_tls_material_source::publish` looped over the subscriber map
+        while calling each callback, and the registry mutex is recursive,
+        so a callback that dropped its own subscription erased the entry
+        the loop stood on. `++it` then read a freed node:
+        `tls_material_source_unit_test` died with a SIGSEGV at address 0
+        once, and in practice the walk restarted, calling earlier
+        subscribers twice. It now walks a snapshot of ids and calls a copy;
+        `a_callback_dropping_its_own_subscription_spares_the_others` fails
+        20/20 on the old code.
+      - Test-side, all one Raft behaviour: a just-elected leader can still be
+        deposed by a member whose timer fired before its first
+        AppendEntries arrived, since a voter that has only granted a vote
+        has not heard from a leader and so grants pre-votes.
+        `raft_multi_node_partition_test` counted a term before the split as
+        elected during it, and sent to a majority leader that churn then
+        replaced; `membership_change_joint_safety_test` expected the entry
+        overwriting the truncated configuration to carry the *latest*
+        majority leader's term (3 < 6), not just a newer one than the
+        joint entry; `leader_transfer_test` started a transfer from a leader
+        about to be deposed and waited out its deadline. And
+        `error_handler_exponential_backoff_unit_test`'s jitter check asked
+        five ~26 ms-sigma samples to differ by more than 10 ms from the
+        first (it now judges ten by their spread).
+      Those three are off the allowlist. Still allowlisted and untouched:
+      `multi_raft_node_s3_process_test` (item U), and, with no rescue in the
+      30 runs, `raft_multi_node_property_test`,
+      `raft_batched_durable_writes_test`, `coap_io_wait_mode_test`,
+      `http_pre_vote_timeout_now_test` and `ca_cluster_node_rpc_tls_test`.
+      `redis_gateway_disk_store_integration_test` (new on November 1) was
+      rescued once and is left to the disk-backed cache work.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`

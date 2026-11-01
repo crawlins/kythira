@@ -28,16 +28,13 @@ chaos_state_machine_safety_test                    1/54
 certificate_authority_property_test                1/54
 raft_commit_implies_replication_property_test      1/54, see its own TODO entry
 ca_test_fixture_unit_test                          1/54
-leader_transfer_test                               1/54
 multi_raft_driver_agreement_test                   1/54
 
 # Added 2026-10-28 from 78 ci.yml runs (2026-10-24..28): every test that
 # needed a retry in two or more jobs and is not fixed yet. Counts are jobs.
 # See the TODO.md entry "Re-measured October 28, 2026".
 raft_multi_node_property_test                      5 jobs, "no leader" after a disruption round
-membership_change_joint_safety_test                4 jobs, truncated_configuration_entry_is_reverted
 raft_batched_durable_writes_test                   2 jobs, no leader within 4 s
-raft_multi_node_partition_test                     2 jobs
 coap_io_wait_mode_test                             2 jobs
 http_pre_vote_timeout_now_test                     2 jobs
 ca_cluster_node_rpc_tls_test                       2 jobs
