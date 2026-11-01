@@ -1220,8 +1220,13 @@ add_raft_completion_test(txn_split_absorb_property_test txn_split_absorb_propert
 # proof that an unwrapped host logs exactly what it did before.
 add_raft_completion_test(multi_raft_txn_host_test multi_raft_txn_host_test.cpp)
 # Task 6: the transaction coordinator over in-process hosts: 1PC, 2PC,
-# conflicts, both read_committed modes, and a crash after every step.
+# conflicts, both read_committed modes, and a crash after every step. Task 7
+# adds the leader-side resolver and record cleanup cases.
 add_raft_completion_test(multi_raft_txn_test multi_raft_txn_test.cpp)
+# Task 8: the tier-1 bank workload. Concurrent transfers and crashed
+# coordinators under leader moves, splits and merges; the total is constant
+# and read_committed never sees an uncommitted value.
+add_raft_completion_test(multi_raft_txn_bank_test multi_raft_txn_bank_test.cpp)
 add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
 add_raft_completion_test(multi_raft_merge_integration_test
