@@ -386,13 +386,27 @@ BOOST_AUTO_TEST_CASE(property_leader_state_machine_waits_for_its_term,
     // know is committed. with_leader_state_machine() is the local-read
     // primitive the Redis gateway uses; it must refuse node 2 until node 2
     // has applied its election no-op, and then show the put.
+    //
+    // Node 2's no-op commits as soon as node 3 acknowledges it, and on an
+    // instant network that ack can land between node 2 turning leader and
+    // the checks below (once in ~90 CI jobs), closing the gap before the case
+    // looks. Delaying node 3's replies to node 2 keeps it open for over twice
+    // the 20 ms poll that notices the election, and the checks below accept
+    // a gap that closed anyway: what must never happen is a *served* read
+    // without the put. The RPC timeouts are raised so the delayed replies
+    // still count. (A longer delay makes node 2's election itself flaky.)
+    auto cfg = make_fast_config();
+    cfg._rpc_timeout = 2000ms;
+    cfg._append_entries_timeout = 2000ms;
+    constexpr auto node3_reply_delay = 50ms;
     outcome put;
-    cluster c;
+    cluster c(cfg);
     settle(c);
     c.submit("acknowledged-key", put);
     BOOST_REQUIRE(c.pump([&] { return put.done(); }));
     BOOST_REQUIRE(put.resolved.load());
     c.isolate(1);
+    c.slow(3, 2, node3_reply_delay);
     const auto put_index = c.leader().last_log_index();
     BOOST_REQUIRE_MESSAGE(commit_index(c.node(2)) < put_index,
                           "node 2 learned the commit before node 1 was cut off");
@@ -414,10 +428,17 @@ BOOST_AUTO_TEST_CASE(property_leader_state_machine_waits_for_its_term,
 
     // Leader, but nothing of its term applied yet: the plain accessor shows
     // state without the put, which is the stale read being refused here.
-    BOOST_TEST(!holds_put().has_value(), "a leader with nothing of its term applied was served");
-    BOOST_TEST(
-        !c.node(2).with_state_machine([](auto& sm) { return sm.contains("acknowledged-key"); }),
-        "node 2 already applied the put; the case no longer tests the gap");
+    // Sampled in this order so that a no-op committing in between can only
+    // make the second sample see the put, never the first serve without it.
+    const auto early = holds_put();
+    const bool applied =
+        c.node(2).with_state_machine([](auto& sm) { return sm.contains("acknowledged-key"); });
+    BOOST_TEST((!early.has_value() || *early), "a new leader served state without the put");
+    if (!applied) {
+        BOOST_TEST(!early.has_value(), "a leader with nothing of its term applied was served");
+    } else {
+        BOOST_TEST_MESSAGE("node 2 applied its no-op before the first check; gap not observed");
+    }
 
     std::optional<bool> served;
     BOOST_REQUIRE(wait_until(

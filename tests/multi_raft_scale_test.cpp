@@ -376,8 +376,15 @@ BOOST_AUTO_TEST_CASE(an_idle_population_hibernates_almost_completely,
 
     auto report = c.tick();
     const auto deadline = std::chrono::steady_clock::now() + k_hibernation_budget;
-    while (report._hibernating_count < k_groups * 9 / 10 &&
-           std::chrono::steady_clock::now() < deadline) {
+    // Wait for both checks below, not just the first. A tick that has
+    // exactly 900 of 1000 asleep can still count 100 groups ready, and
+    // stopping there failed the ready-count check once in ~90 CI jobs
+    // ("100 >= 100") on a population one tick from passing.
+    const auto settled = [&] {
+        return report._hibernating_count >= k_groups * 9 / 10 &&
+               report._ready_count < k_groups / 10;
+    };
+    while (!settled() && std::chrono::steady_clock::now() < deadline) {
         report = c.tick();
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }

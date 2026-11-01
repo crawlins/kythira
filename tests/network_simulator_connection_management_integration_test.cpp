@@ -14,7 +14,7 @@
 #include <thread>
 #include <memory>
 #include <future>
-#include <random>
+#include <atomic>
 
 using namespace network_simulator;
 
@@ -28,12 +28,14 @@ constexpr double network_reliability = 1.0;
 constexpr std::chrono::seconds test_timeout{5};
 constexpr const char* test_message = "Connection management test";
 
-// Helper to get unique port for each test - uses random to avoid conflicts
+// Hands out a port no earlier call in this process has returned. These used
+// to be random draws from 10000-60000, and two draws in one case could
+// collide: listener_management_integration binds six, and a repeat failed
+// its bind with PortInUseException in about one CI job in ninety. A counter
+// cannot repeat, and stays below the simulator's ephemeral range (49152+).
 unsigned short get_test_port() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<unsigned short> dist(10000, 60000);
-    return dist(gen);
+    static std::atomic<unsigned short> next{10000};
+    return next.fetch_add(1);
 }
 }
 

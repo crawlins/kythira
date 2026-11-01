@@ -77,16 +77,30 @@ BOOST_AUTO_TEST_CASE(bootstraps_and_elects_one_leader_at_3_5_7,
             // first leader should arrive within a handful of terms.
             BOOST_CHECK_LE(f->term_of(*leader), 5u);
 
-            BOOST_CHECK(kythira::test::wait_until(
-                [&] {
-                    for (auto id : f->get_node_ids()) {
-                        if (id != *leader && f->node(id).known_leader() != leader) {
+            // Every follower learns who leads. Re-read the leader each poll:
+            // on a loaded runner a 7-node cluster can hold a second election
+            // after wait_for_leader() returned (a follower's 150-300 ms timer
+            // beating the first heartbeats), and the followers then rightly
+            // name the new leader, which used to fail this check against the
+            // stale id (once in ~90 CI jobs). Election safety is still
+            // checked below over the whole run.
+            BOOST_CHECK_MESSAGE(
+                kythira::test::wait_until(
+                    [&] {
+                        auto current = f->get_leader();
+                        if (!current) {
                             return false;
                         }
-                    }
-                    return true;
-                },
-                scaled_deadline(3000)));
+                        for (auto id : f->get_node_ids()) {
+                            if (id != *current && f->node(id).known_leader() != current) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    },
+                    scaled_deadline(3000)),
+                "followers never agreed on a leader:\n"
+                    << f->cluster_summary());
 
             // The leader's no-op commits on every node.
             BOOST_CHECK(f->wait_for_convergence(scaled_deadline(3000), 1));

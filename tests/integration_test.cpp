@@ -25,7 +25,11 @@ constexpr const char* intermediate_node_id = "intermediate";
 constexpr unsigned short server_port = 8080;
 constexpr unsigned short client_port = 9090;
 constexpr std::chrono::milliseconds network_latency{10};
-constexpr double network_reliability = 0.99;
+// The connection test asserts every write and read arrives, so its edge must
+// not drop anything: at 0.99 the handshake plus four transfers lost one
+// message in ~3 % of CI jobs and the write timed out. Drop behaviour has its
+// own case below (reliability_based_message_drops).
+constexpr double network_reliability = 1.0;
 constexpr std::chrono::seconds test_timeout{5};
 constexpr const char* test_message = "Hello, Server!";
 constexpr const char* response_message = "Hello, Client!";
@@ -262,6 +266,9 @@ BOOST_AUTO_TEST_CASE(reliability_based_message_drops, *boost::unit_test::timeout
     auto client = sim.create_node(client_node_id);
     auto server = sim.create_node(server_node_id);
 
+    // A fixed seed makes the drop pattern reproducible, so the "at most 12 of
+    // 20 sends succeed" bound below cannot fail on an unlucky draw.
+    sim.seed_rng(20261101U);
     sim.start();
 
     // Send multiple messages and count successes
