@@ -36,6 +36,7 @@
 #include <raft/persistence.hpp>
 #include <raft/redis_gateway_impl.hpp>
 #include <raft/redis_kv_state_machine.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -132,7 +133,18 @@ template<typename Serializer> struct beast_stack {
 /// Values and Raft state in RAM: the gateway before the disk-backed cache.
 struct memory_storage {
     static constexpr bool on_disk = false;
+    // CONFIG_REDIS_GATEWAY_TRANSACTIONS=y wraps the KV state machine for
+    // cross-shard transactions (multi-raft-transactions task 9). A build
+    // choice, not a runtime one: the wrapper's snapshot format differs, so
+    // every node of a cluster must be built the same way. Only the in-memory
+    // store is wrapped; config.cpp refuses transactions with file persistence.
+#if defined(KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
+    using state_machine_type =
+        kythira::transactional_state_machine<kythira::redis_kv_state_machine<std::uint64_t>,
+                                             std::string, kythira::redis_kv_partitioner>;
+#else
     using state_machine_type = kythira::redis_kv_state_machine<std::uint64_t>;
+#endif
     using persistence_engine_type =
         kythira::memory_persistence_engine<kythira::host_node_id, std::uint64_t, std::uint64_t>;
 };

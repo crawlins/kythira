@@ -13,6 +13,8 @@ puts on the wire through OpenDAL and redis-rs — `GET SET SETEX DEL EXISTS
 STRLEN GETRANGE PING AUTH HELLO SELECT CLIENT SETINFO QUIT RESET` — plus the
 diagnostics an operator reaches for (`COMMAND`, `INFO`, `DBSIZE`, `TTL`,
 `ECHO`). Everything else is refused with Redis's own `unknown command` error.
+A build with the transaction adapter adds the multi-key commands of
+*Transactions* below, off unless asked for.
 The design, its requirements and its acceptance tests are in
 `.kiro/specs/redis-compatible-kv/`.
 
@@ -94,6 +96,10 @@ The Redis front end:
 | `KYTHIRA_REDIS_IO_THREADS` | `2` | Listener/IO threads |
 | `KYTHIRA_REDIS_WORKER_THREADS` | `8` | Command workers |
 | `KYTHIRA_REDIS_LOG_COMMANDS` | `false` | Log every command (keys, never values or secrets) at debug |
+| `KYTHIRA_REDIS_TRANSACTIONS` | `off` | Run `MSET`, multi-key `DEL`, `MGET` and `MULTI`/`EXEC`/`DISCARD` as cross-shard transactions; see *Transactions*. Refused at startup by a build without `CONFIG_REDIS_GATEWAY_TRANSACTIONS=y`, and with `KYTHIRA_CACHE_PERSISTENCE=file` |
+| `KYTHIRA_REDIS_TXN_ISOLATION` | `read_committed` | Each connection's isolation until it sends `KYTHIRA.ISOLATION`. A level the build cannot give refuses to start |
+| `KYTHIRA_REDIS_TXN_MAX_RETRIES` | `2` | Automatic retries of a transaction that met another one's lock, each under a fresh transaction id |
+| `KYTHIRA_REDIS_TXN_LOCK_TTL_MS` | `3000` | How long a prepared write stays locked without its coordinator's heartbeat before any party may abort the transaction |
 
 `KYTHIRA_RAFT_BIND` and the host part of the two listen addresses accept:
 
@@ -241,6 +247,70 @@ build with every gateway stopped still succeeds. It also asserts the read-only
 runner's builds succeed with a non-zero `cache_write_errors`, and that a user
 scoped to another prefix gets an uncached build rather than a failed one.
 
+## Transactions
+
+A daemon built with `CONFIG_REDIS_GATEWAY_TRANSACTIONS=y` and run with
+`KYTHIRA_REDIS_TRANSACTIONS=on` turns the multi-key commands into
+transactions across shards (`.kiro/specs/multi-raft-transactions/`, task 9).
+The build option wraps the key/value state machine in
+`transactional_state_machine`, which changes its snapshot format, so every
+node of a cluster must be built the same way. Only the in-memory store is
+wrapped: transactions need `KYTHIRA_CACHE_PERSISTENCE=memory`, and a node
+with file persistence refuses `KYTHIRA_REDIS_TRANSACTIONS=on` at startup.
+With the option off, or
+transactions off, nothing below exists: those commands answer `unknown
+command`, and `DEL` takes one key, as before.
+
+| Command | What it does |
+|---|---|
+| `MSET k v [k v ...]` | Every pair, all or none. Under `KYTHIRA_REDIS_IMMUTABLE_VALUES` a key that already holds the same bytes is left out, and one holding other bytes refuses the whole command |
+| `MGET k [k ...]` | Each key's committed value at the connection's isolation, or a null |
+| `DEL k [k ...]` | Deletes, in one transaction, every key that was present; replies with how many. `DEL` with one key is the plain single-key command |
+| `MULTI` ... `EXEC` | Queues `GET`, `MGET`, `EXISTS`, `SET`, `SETEX`, `MSET` and `DEL`, then runs them as one transaction. Reads run at `EXEC` and see the transaction's own earlier writes. If the commit does not commit, `EXEC` answers with that error and nothing applied. A command refused while queuing (unsupported, bad arguments, not permitted) makes `EXEC` answer `EXECABORT`, as in Redis |
+| `DISCARD` | Drops the queue |
+| `KYTHIRA.ISOLATION [level]` | Shows or sets this connection's isolation |
+| `WATCH`, `UNWATCH` | Refused: they need the multi-version build of tier 2 |
+
+Replies that are not Redis's own:
+
+- `-ERR transaction aborted: <why>; nothing applied, retry`: the transaction
+  met another one's lock (after `KYTHIRA_REDIS_TXN_MAX_RETRIES` automatic
+  retries), or its own locks expired first. Safe to retry.
+- `-ERR transaction <id> outcome unknown; it may have applied (...)`: the
+  commit point was proposed and its result was lost, for example to a leader
+  change. Read the keys before retrying a non-idempotent write.
+- `-ERR key is locked by transaction <id>, retry` on a plain `SET`, `SETEX`
+  or `DEL`: another transaction holds the key. The gateway first asks that
+  transaction's primary shard to finish it, which aborts it if its lock TTL
+  has passed, and tries once more; this is the answer when the lock is still
+  live.
+
+The coordinator runs on whichever gateway the client is connected to. Its
+messages to each shard go to the local replica when it leads, and otherwise
+over the forward link to the leader's gateway as an internal `KYTHIRA.TXN`
+command. A gateway accepts `KYTHIRA.TXN` only on a connection authenticated
+as `KYTHIRA_REDIS_INTERNAL_USER` and never forwards it again, so transactions
+need forwarding configured the same way plain forwarding does (an internal
+secret, and TLS or the plaintext opt-in). The host's background resolver uses
+the same link to finish transactions whose coordinator died.
+
+### Isolation levels
+
+Each level, and the anomaly it still allows. Every example uses a transfer
+that `MSET`s `a/alice` from 100 to 90 and `z/bob` from 0 to 10; the two keys
+are on different shards.
+
+| Level | Built | A read sees | Still allowed |
+|---|---|---|---|
+| `read_committed` (default) | always | The last committed value. A key locked by an in-flight transaction reads as its value before that transaction | **Read skew.** The transfer commits at the instant its record on `a/alice`'s shard commits; `z/bob` is rolled forward a moment later. An `MGET a/alice z/bob` in between returns `90` and `0`: the money is briefly nowhere. Also non-repeatable reads, lost updates (two read-modify-write clients) and write skew |
+| `read_committed_wait` | always | As above, but a read of a key another transaction holds waits until that transaction finishes (or resolves it once its TTL has passed), up to the command timeout | **Read skew** across reads that straddle a commit: the `MGET` above can no longer see `0` for `z/bob` once `a/alice` has committed, but if it reads `a/alice` before the transfer prepares and `z/bob` after it commits, it returns `100` and `10`. Also non-repeatable reads, lost updates and write skew |
+| `snapshot` | needs `mvcc::on` (not yet built) | Every read at one start timestamp | Write skew |
+| `serializable` | needs `mvcc::on` (not yet built) | As `snapshot`, with reads validated at commit | Nothing |
+
+Asking for a level the build does not offer is an error, at startup for
+`KYTHIRA_REDIS_TXN_ISOLATION` and from `KYTHIRA.ISOLATION` for a connection.
+It is never silently downgraded.
+
 ## Serializer
 
 `KYTHIRA_WIRE_SERIALIZER` defaults to `cbor` and should stay there for this
@@ -254,6 +324,9 @@ against 5 ms. The measurement is in the design document's serializer section.
 `INFO` (admin) reports the shards this node holds and leads, key and expiring
 key counts, approximate bytes, and counters for writes, deletes, value
 conflicts, oversize rejections, auth failures, authorization denials,
-forwards, forward failures and shed connections. `DBSIZE` counts keys in
+forwards, forward failures and shed connections. Transactions add metrics
+`redis.txn.committed`, `redis.txn.aborted` and `redis.txn.unknown` (each
+labelled with the isolation level) and `redis.txn.lock_resolves`; the host's
+own `kythira.multiraft.txn.*` metrics count resolver work. `DBSIZE` counts keys in
 this node's replicas — a follower may lag the leader by a few entries, so ask
 the leader when the exact number matters.

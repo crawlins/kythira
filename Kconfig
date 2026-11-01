@@ -137,6 +137,19 @@ config REDIS_GATEWAY
 	  that does not want them, not to gate a dependency. See
 	  .kiro/specs/redis-compatible-kv/.
 
+config REDIS_GATEWAY_TRANSACTIONS
+	bool "Cross-shard transactions in redis_gateway_node (MSET, MULTI/EXEC)"
+	default n
+	depends on REDIS_GATEWAY
+	help
+	  Builds redis_gateway_node with its KV state machine wrapped in
+	  transactional_state_machine, so KYTHIRA_REDIS_TRANSACTIONS=on can
+	  run MSET, multi-key DEL, MGET and MULTI/EXEC/DISCARD as cross-shard
+	  transactions. The wrapper changes the snapshot format, so every
+	  node of a cluster must be built the same way; plain commands are
+	  unchanged on the wire. See .kiro/specs/multi-raft-transactions/
+	  task 9 and doc/redis-gateway.md.
+
 config COAP_TRANSPORT
 	bool "CoAP transport"
 	default y

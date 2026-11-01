@@ -1624,6 +1624,53 @@ BOOST_AUTO_TEST_CASE(mtls_listener_maps_client_certificates_to_users,
     BOOST_CHECK_EQUAL(stranger.call({"GET", "sccache/mtls"}), bulk("v"));
 }
 
+BOOST_AUTO_TEST_CASE(multi_key_commands_keep_todays_behaviour_without_transactions,
+                     *boost::unit_test::timeout(120)) {
+    // multi-raft-transactions Requirement 11.2: with transactions off, the
+    // multi-key surface is exactly what it was before task 9.
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    resp_client client(c.port(c.leader_of(k_sccache_group)));
+    BOOST_REQUIRE_EQUAL(client.auth("ops", "ops-secret"), "+OK\r\n");
+    for (const auto& name : {"MSET", "MGET", "MULTI", "EXEC", "DISCARD", "WATCH",
+                             "KYTHIRA.ISOLATION", "KYTHIRA.TXN"}) {
+        auto reply = client.call({name, "sccache/a", "1"});
+        BOOST_CHECK_MESSAGE(reply.rfind(std::string("-ERR unknown command '") + name, 0) == 0,
+                            name << ": " << reply);
+    }
+    BOOST_CHECK_EQUAL(client.call({"DEL", "sccache/a", "sccache/b"}),
+                      "-ERR wrong number of arguments for 'del' command\r\n");
+    // ...and the single-key commands still work.
+    BOOST_CHECK_EQUAL(client.call({"SET", "sccache/a", "1"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"DEL", "sccache/a"}), ":1\r\n");
+}
+
+BOOST_AUTO_TEST_CASE(transactions_need_a_transactional_host, *boost::unit_test::timeout(60)) {
+    // Requirement 11.1: an unwrapped KV state machine has no lock table, so
+    // `--transactions on` is refused at start rather than half-working.
+    static_assert(!gateway_type::k_transactional);
+    redis_acl acl;
+    acl.reload(acl_text());
+    message_fabric fabric{1};
+    config_type cfg{
+        .node_id = 1,
+        .network_client = fabric_client{fabric, 1},
+        .network_server = fabric_server{fabric, 1},
+        .store_factory = [](const group_id_type&) { return host_types::persistence_engine_type{}; },
+    };
+    host_type host(std::move(cfg));
+    kythira::console_logger logger{kythira::log_level::error};
+    kythira::noop_metrics metrics;
+    redis_gateway_config gw_cfg;
+    gw_cfg._listen = "127.0.0.1:0";
+    gw_cfg._transactions = true;
+    gateway_type gateway(host, acl, logger, metrics, gw_cfg, nullptr);
+    BOOST_CHECK_EXCEPTION(gateway.start(), std::runtime_error, [](const std::runtime_error& e) {
+        return std::string(e.what()).find("transaction adapter") != std::string::npos;
+    });
+    BOOST_CHECK(!gateway.is_running());
+}
+
 BOOST_AUTO_TEST_CASE(tls_forwarding_without_a_ca_refuses_to_start, *boost::unit_test::timeout(60)) {
     message_fabric fabric{2};
     config_type cfg{

@@ -368,6 +368,34 @@ auto from_env() -> node_options {
         }
         g._read_consistency = *parsed;
     }
+    // Cross-shard transactions (multi-raft-transactions task 9). The state
+    // machine's type, and so its snapshot format, is fixed by the build;
+    // asking a build without the adapter for them fails here, before a port
+    // is bound, rather than at the gateway's start().
+    g._transactions =
+        to_bool("KYTHIRA_REDIS_TRANSACTIONS", get_opt("KYTHIRA_REDIS_TRANSACTIONS", "off"));
+#if !defined(KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
+    if (g._transactions) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_REDIS_TRANSACTIONS=on needs a build with "
+            "CONFIG_REDIS_GATEWAY_TRANSACTIONS=y");
+    }
+#endif
+    {
+        auto level = get_opt("KYTHIRA_REDIS_TXN_ISOLATION", "read_committed");
+        auto parsed = parse_txn_isolation(level);
+        if (!parsed) {
+            throw std::invalid_argument(
+                "redis_gateway_node: KYTHIRA_REDIS_TXN_ISOLATION must be read_committed, "
+                "read_committed_wait, snapshot or serializable, got '" +
+                level + "'");
+        }
+        g._txn_isolation = *parsed;
+    }
+    g._txn_lock_ttl =
+        to_ms("KYTHIRA_REDIS_TXN_LOCK_TTL_MS", get_opt("KYTHIRA_REDIS_TXN_LOCK_TTL_MS", "3000"));
+    g._txn_max_retries =
+        to_u64("KYTHIRA_REDIS_TXN_MAX_RETRIES", get_opt("KYTHIRA_REDIS_TXN_MAX_RETRIES", "2"));
     g._max_value_bytes = to_u64("KYTHIRA_REDIS_MAX_VALUE_BYTES",
                                 get_opt("KYTHIRA_REDIS_MAX_VALUE_BYTES", "8388608"));
     g._max_clients =
@@ -424,6 +452,14 @@ auto from_env() -> node_options {
         }
     }
     read_cache_options(o);
+    if (g._transactions && o._cache._persistence != cache_persistence::memory) {
+        // The disk-backed cache's state machine is not wrapped for
+        // transactions (its chunk-referencing snapshots are untested under
+        // the intent layer), so only the in-memory store offers them.
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_REDIS_TRANSACTIONS=on needs "
+            "KYTHIRA_CACHE_PERSISTENCE=memory");
+    }
     return o;
 }
 
@@ -466,6 +502,13 @@ auto usage() -> std::string {
            "  KYTHIRA_REDIS_ACL_FILE           ACL file (required unless ALLOW_ANONYMOUS)\n"
            "  KYTHIRA_REDIS_ALLOW_ANONYMOUS    run with no ACL; warns at every start  [false]\n"
            "  KYTHIRA_REDIS_READ_CONSISTENCY   leader | any_replica | linearizable    [leader]\n"
+           "  KYTHIRA_REDIS_TRANSACTIONS       MSET/MGET/multi-key DEL/MULTI as transactions "
+           "[off]\n"
+           "                                   (needs CONFIG_REDIS_GATEWAY_TRANSACTIONS=y)\n"
+           "  KYTHIRA_REDIS_TXN_ISOLATION      default level; KYTHIRA.ISOLATION per connection "
+           "[read_committed]\n"
+           "  KYTHIRA_REDIS_TXN_LOCK_TTL_MS    an unheartbeated intent's lifetime      [3000]\n"
+           "  KYTHIRA_REDIS_TXN_MAX_RETRIES    automatic retries after a conflict      [2]\n"
            "  KYTHIRA_REDIS_MAX_VALUE_BYTES                                            [8388608]\n"
            "  KYTHIRA_REDIS_MAX_CLIENTS                                                [1024]\n"
            "  KYTHIRA_REDIS_IDLE_TIMEOUT_MS                                            [300000]\n"

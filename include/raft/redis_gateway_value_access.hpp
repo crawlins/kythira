@@ -29,6 +29,7 @@
 
 #include <raft/cache_kv_state_machine.hpp>
 #include <raft/redis_kv_state_machine.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <cstddef>
 #include <cstring>
@@ -106,6 +107,21 @@ template<typename LogIndex> struct redis_gateway_value_access<cache_kv_state_mac
     [[nodiscard]] static auto equals(const entry_type& m, std::span<const std::byte> value)
         -> bool {
         return m._total_len == value.size() && sha256_of(value) == m._value_sha;
+    }
+};
+
+/// A state machine wrapped for cross-shard transactions
+/// (multi-raft-transactions task 9) reads its values exactly as the wrapped
+/// one does: entries come from `inner()`, and intents are invisible to plain
+/// reads (Requirement 5.1).
+template<typename SM, shard_key Key, typename P, mvcc Mvcc, typename KeyCodec>
+struct redis_gateway_value_access<transactional_state_machine<SM, Key, P, Mvcc, KeyCodec>>
+    : redis_gateway_value_access<SM> {
+    using redis_gateway_value_access<SM>::context_of;
+    [[nodiscard]] static auto context_of(
+        const transactional_state_machine<SM, Key, P, Mvcc, KeyCodec>& sm) ->
+        typename redis_gateway_value_access<SM>::context {
+        return redis_gateway_value_access<SM>::context_of(sm.inner());
     }
 };
 
