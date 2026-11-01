@@ -11,7 +11,7 @@
 namespace kythira::redis_node {
 
 auto run_json(const node_options& opt) -> int {
-    return run_host<kythira::json_rpc_serializer<std::vector<std::byte>>>(opt);
+    return run_host<kythira::json_rpc_serializer<std::vector<std::byte>>, memory_storage>(opt);
 }
 
 }  // namespace kythira::redis_node

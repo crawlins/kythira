@@ -116,6 +116,10 @@ auto main(int argc, char** argv) -> int {
     try {
         switch (opt._serializer) {
             case kythira::redis_node::wire_serializer::cbor:
+                // from_env() refuses file persistence on any other wire.
+                if (opt._cache._persistence == kythira::redis_node::cache_persistence::file) {
+                    return kythira::redis_node::run_cbor_file(opt);
+                }
                 return kythira::redis_node::run_cbor(opt);
             case kythira::redis_node::wire_serializer::json:
                 return kythira::redis_node::run_json(opt);

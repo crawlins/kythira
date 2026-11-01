@@ -1,11 +1,12 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 6/13 tasks complete
+## Status: 7/13 tasks complete
 
 **Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
 and the gateway over either machine; task 4: the binary persistence engine;
-task 5: the chunk fetcher; task 6: the HTTP front end and auth cache.
+task 5: the chunk fetcher; task 6: the HTTP front end and auth cache;
+task 7: the daemon's disk mode, the disk budget and the voter floors.
 Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
@@ -518,7 +519,7 @@ Choices the design left open:
   `accept()`. `stop()` now shuts the listening socket down to wake the
   thread, joins it, and only then closes the acceptor. ASan is clean.
 
-- [ ] 7. Daemon wiring, configuration and the disk budget
+- [x] 7. Daemon wiring, configuration and the disk budget
   - `cmd/redis_gateway_node`: `KYTHIRA_CACHE_*` parsing in `config.cpp`,
     selection of `memory` versus `file` in `run_host.hpp`, start-up orphan
     collection, eviction against `KYTHIRA_CACHE_MAX_DISK_BYTES`, the
@@ -528,6 +529,70 @@ Choices the design left open:
   - Existing `redis_gateway_node` tests must pass with
     `KYTHIRA_CACHE_PERSISTENCE=memory`.
   - _Requirements: 2.6, 5.2, 5.4, 6.1–6.6_
+
+### Task 7 results (2026-11-01)
+
+`KYTHIRA_CACHE_PERSISTENCE=file` (the default) runs the CBOR stack over
+`cache_kv_state_machine`, `binary_file_persistence_engine` under
+`DATA_DIR/raft/<group>`, the chunk fetcher and the HTTP front end, in its
+own translation unit (`run_cbor_file.cpp`). `memory` keeps today's daemon
+and refuses every disk-only variable. `include/raft/cache_disk_guard.hpp`
+holds the budget and the floors; the gateway gains `KYTHIRA.ADVISE` and a
+set of cache hooks the daemon fills.
+
+Checked on a local three-node daemon cluster:
+
+- **Restart (Requirement 5.2).** A RESP `SET` and a 3 MB HTTP `PUT` survive
+  all three nodes being killed and restarted, byte for byte.
+- **A voter's floor (6.6).** One node restarted with a free-space floor
+  above its disk's free space: `SET` on the leader is refused with
+  `-ERR node 2 has … bytes free, below the floor of …, retry later`, `PUT`
+  gets 507, and `GET` and `DEL` still work.
+- **The budget (6.1).** One follower with a 2.5 MB budget and a 3 MB
+  upload: nothing is evicted while the upload's chunks are inside the
+  orphan grace, then exactly that key is evicted once the grace passes,
+  every store drops to about 1 KB, and the keys read through the follower
+  survive.
+- **`INFO`** has a `# Cache` section with the fields of Requirement 6.5,
+  and the gateway's stats count refusals and advisories.
+
+Unit tests: `cache_disk_guard_unit_test` (12 cases), new cases in the chunk
+store, state machine, config and front-end tests, and three gateway
+integration cases (follower reads reach the leader's order, a refusal stops
+`SET` but not `DEL`, only peer gateways may advise) that run over both
+state machines. Choices the design left open, and what the cluster run
+turned up:
+
+- **Reports carry the sender's floors and budget.** Requirement 6.6 holds a
+  voter to *its* floor, so each report is `free,inodes,store,pinned,
+  min_free,min_inodes,max_disk`, and the leader judges the voter by the
+  voter's settings. A report older than 30 s is ignored: a voter that has
+  gone quiet is not applying, and holding writes for it would turn one
+  failure into an outage.
+- **Chunks inside the orphan grace are pinned.** A committed chunk stays
+  pending for the whole grace (task 3), so evicting a fresh key frees
+  nothing. The first cluster run emptied the shard chasing an excess it
+  could not free. Now each node reports its pinned bytes; a node whose
+  pinned bytes alone fill its budget asks for no eviction, and the
+  eviction walk skips keys whose eviction would free nothing on disk
+  (`cache_kv_state_machine::reclaimable_bytes`). The walk is capped at 16
+  times the sweep batch per tick.
+- **No double eviction on stale reports.** After a shard evicts for the
+  budget, reports taken before that eviction are ignored; they still count
+  the bytes it just freed.
+- **HTTP traffic reaches the eviction order.** The first run never evicted
+  an HTTP-only key: only RESP accesses entered the gateway's order. The
+  front end now reports hits, writes and deletes to the gateway
+  (`note_access`, `note_removed`), and a follower's are queued for the
+  leader like RESP reads.
+- **Start-up orphan collection runs after `host->start()`,** once every
+  group has restored its snapshot. Without a snapshot yet, that collects
+  every chunk and the log replay writes them again, since `put_chunk`
+  carries its bytes; the snapshot threshold in file mode is 256 MiB, so the
+  rewrite is bounded by it.
+- **Advisories are only for leaders' LRUs and the guard.** They travel on
+  the forwarding link under the internal secret, once per maintenance
+  tick, with at most 4096 keys per shard; overflow is counted, not queued.
 
 - [ ] 8. Container image and compose file
   - `docker/cache-cluster/` per design.md "Containers": non-root, a `/data`

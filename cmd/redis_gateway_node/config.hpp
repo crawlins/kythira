@@ -17,7 +17,9 @@
 #include <raft/redis_gateway.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -27,6 +29,45 @@ namespace kythira::redis_node {
 enum class wire_serializer : std::uint8_t {
     json = 0,
     cbor = 1,
+};
+
+/// `KYTHIRA_CACHE_PERSISTENCE`: where values and Raft state live.
+enum class cache_persistence : std::uint8_t {
+    /// Values in RAM, Raft state in RAM: the gateway as it was before the
+    /// disk-backed cache, for deployments that want exactly that.
+    memory = 0,
+    /// Values in the chunk store under `KYTHIRA_CACHE_DATA_DIR`, Raft state
+    /// in the binary segmented engine beside it.
+    file = 1,
+};
+
+/// The disk-backed cache's knobs (.kiro/specs/disk-backed-build-cache/
+/// design "Configuration"). Only `_persistence` applies in memory mode;
+/// the rest are refused there.
+struct cache_options {
+    cache_persistence _persistence{cache_persistence::file};
+    std::filesystem::path _data_dir;
+    std::size_t _chunk_bytes{std::size_t{4} * 1024 * 1024};
+    std::uint64_t _max_value_bytes{std::uint64_t{2} * 1024 * 1024 * 1024};
+    std::uint64_t _max_disk_bytes{0};
+    std::uint64_t _min_free_bytes{std::uint64_t{1} * 1024 * 1024 * 1024};
+    std::uint64_t _min_free_inodes{10000};
+    std::size_t _pack_threshold_bytes{std::size_t{64} * 1024};
+    std::uint64_t _orphan_grace_entries{100000};
+    std::uint64_t _fetch_bytes_per_sec{50000000};
+    /// Raft log bytes between snapshots. The log carries chunk bytes, so
+    /// Raft's 10 MB default would snapshot every few uploads.
+    std::size_t _snapshot_threshold_bytes{std::size_t{256} * 1024 * 1024};
+    std::string _http_listen;
+    std::string _https_listen;
+    bool _allow_plaintext_http{false};
+    std::string _tls_cert_path;
+    std::string _tls_key_path;
+    std::chrono::seconds _auth_cache_ttl{300};
+    /// Every voter's HTTP front end `host:port`, for chunk fetches and
+    /// relayed writes. Defaults to the peer's host with this node's own
+    /// HTTPS port when forwarding over TLS, else its HTTP port.
+    std::map<kythira::host_node_id, std::string> _peer_http;
 };
 
 struct node_options {
@@ -63,6 +104,9 @@ struct node_options {
     // ── the gateway side ─────────────────────────────────────────────────────
     std::string _acl_file;
     redis_gateway_config _gateway;
+
+    // ── the disk-backed cache ────────────────────────────────────────────────
+    cache_options _cache;
 };
 
 /// Read every variable in design Component 9's table, plus the Raft ones.

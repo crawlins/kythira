@@ -19,6 +19,7 @@ add_executable(redis_gateway_node
     main.cpp
     config.cpp
     run_cbor.cpp
+    run_cbor_file.cpp
     run_json.cpp
 )
 
