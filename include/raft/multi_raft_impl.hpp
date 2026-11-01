@@ -1787,8 +1787,13 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
         return failed_future(std::make_exception_ptr(
             shard_not_leader_exception<GroupId, node_id_type>{group, g->_node->known_leader()}));
     }
-    const auto admitted =
-        admit(*g, options._channel, shard_operation_state::splitting, options._override_cooldown);
+    // Exclusive on the proposal gate: every write already past its freeze
+    // check is in the log before the split entry can be.
+    const auto admitted = [&] {
+        std::unique_lock<std::shared_mutex> gate(g->_proposal_gate);
+        return admit(*g, options._channel, shard_operation_state::splitting,
+                     options._override_cooldown);
+    }();
     if (!admitted) {
         note_rejection(group, admitted._gate, options._channel, "split", admitted._preempted_by);
         return failed_future(std::make_exception_ptr(
@@ -2458,8 +2463,12 @@ auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const 
     // state gate is a transition rather than a check, so two channels racing in
     // the same interval cannot both proceed. Apply sets it again, idempotently,
     // on every replica.
-    const auto admitted =
-        admit(*source_state, channel, shard_operation_state::merging_source, false);
+    // Exclusive on the proposal gate, as for a split: every write already
+    // past its freeze check is in the source's log before `merge_prepare`.
+    const auto admitted = [&] {
+        std::unique_lock<std::shared_mutex> gate(source_state->_proposal_gate);
+        return admit(*source_state, channel, shard_operation_state::merging_source, false);
+    }();
     if (!admitted) {
         note_rejection(source, admitted._gate, channel, "merge", admitted._preempted_by);
         return failed_future(std::make_exception_ptr(
@@ -3231,8 +3240,34 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
         // read of state that is about to move. The client backs off and retries;
         // the retry either succeeds against the source again (the merge rolled
         // back) or is redirected by an epoch mismatch (it committed).
+        //
+        // A split in flight is a freeze for writes too. The split entry is in
+        // the log from the moment it is proposed, and a write appended after
+        // it applies after the cut: to the narrowed parent, for a key that
+        // may now be a child's, where nothing ever reads it again. Reads are
+        // unaffected until the split applies, so they are still served.
+        //
+        // A write holds `_proposal_gate` shared from this check until its
+        // entry is appended; see the member for why.
+        std::shared_lock<std::shared_mutex> gate;
+        if (!is_read) {
+            gate = std::shared_lock<std::shared_mutex>(local->_proposal_gate);
+        }
+        if (!is_read &&
+            local->_operation.load(std::memory_order_relaxed) == shard_operation_state::splitting) {
+            gate = {};
+            last_error = std::make_exception_ptr(
+                shard_busy_exception<GroupId>{desc->_group_id, "split in flight"});
+            if (attempt < _cfg.max_route_retries) {
+                std::this_thread::sleep_for(_cfg.route_retry_backoff);
+                refresh_map_from_local_groups();
+                continue;
+            }
+            break;
+        }
         if (local->_operation.load(std::memory_order_relaxed) ==
             shard_operation_state::merging_source) {
+            gate = {};
             GroupId merge_target{};
             {
                 std::lock_guard merge_lock(local->_merge_mutex);

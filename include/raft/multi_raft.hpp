@@ -1526,6 +1526,18 @@ private:
         /// the placement driver exactly once.
         std::atomic<std::uint64_t> _capacity_refusals{0};
 
+        /// Orders a write's admission against a split or merge claiming this
+        /// shard. A write holds it shared from the moment it checks
+        /// `_operation` until its entry is in the leader's log; `admit()` into
+        /// `splitting` or `merging_source` holds it exclusively. So every
+        /// write either reached the log before the split or merge could be
+        /// proposed, and applies before its fence entry, or saw the claim and
+        /// backed off. Without it, a write checked just before the claim could
+        /// be appended just after the fence entry and apply to a shard that no
+        /// longer owns its key: an acknowledged write, lost (found by the
+        /// multi-raft-transactions bank workload, task 8).
+        mutable std::shared_mutex _proposal_gate;
+
         // ── merge bookkeeping (design §5.5) ──────────────────────────────────
         //
         // Guarded by `_merge_mutex` rather than atomics: these move together,
