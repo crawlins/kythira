@@ -69,6 +69,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -121,6 +122,21 @@ struct txn_record_view {
     std::uint64_t _commit_ts{0};
 
     [[nodiscard]] auto operator==(const txn_record_view&) const -> bool = default;
+};
+
+/// @brief A transaction holding intents on this shard, as the leader-side
+///        resolver sees it (task 7).
+template<shard_key Key> struct txn_open_view {
+    txn_id _txn{};
+    Key _primary{};
+    /// Every key this shard holds locked for the transaction, in key order.
+    std::vector<Key> _keys{};
+    /// The earliest of their prepares' TTL deadlines. A heartbeat extends
+    /// only the primary's record, so on a secondary this is a hint to ask the
+    /// primary, not a verdict.
+    std::uint64_t _deadline_ms{0};
+
+    [[nodiscard]] auto operator==(const txn_open_view&) const -> bool = default;
 };
 
 /// @brief Wraps `SM` so its host can take part in cross-shard transactions.
@@ -304,6 +320,80 @@ public:
     }
 
     [[nodiscard]] auto intent_count() const -> std::size_t { return _intents.size(); }
+
+    // ── Resolver views (task 7, Requirements 4.6 and 4.7) ────────────────────
+    //
+    // Read-only, and read by the shard leader only: what they return decides
+    // which entries the leader proposes, and apply then re-checks everything
+    // against the state at that point in the log.
+
+    /// @brief Every transaction holding an intent here, ordered by txn id.
+    [[nodiscard]] auto open_transactions() const -> std::vector<txn_open_view<Key>> {
+        std::map<txn_id, txn_open_view<Key>> by_txn;
+        for (const auto& [k, in] : _intents) {
+            auto [it, fresh] = by_txn.try_emplace(in._txn);
+            auto& v = it->second;
+            if (fresh) {
+                v._txn = in._txn;
+                v._primary = in._primary;
+                v._deadline_ms = in._deadline_ms;
+            } else {
+                v._deadline_ms = std::min(v._deadline_ms, in._deadline_ms);
+            }
+            v._keys.push_back(k);  // _intents is ordered, so _keys is too
+        }
+        std::vector<txn_open_view<Key>> out;
+        out.reserve(by_txn.size());
+        for (auto& [id, v] : by_txn) {
+            out.push_back(std::move(v));
+        }
+        return out;
+    }
+
+    /// @brief Every transaction this shard has finished and still remembers:
+    ///        a `committed` or `aborted` record, or settled entries, and no
+    ///        intent left here. These are what `txn_cleanup` may drop once
+    ///        the retention has passed.
+    ///
+    /// Each item names the record's primary key when there is a record, or
+    /// else one of the settled keys; `txn_cleanup` drops the record at that
+    /// key and the transaction's settled entries everywhere on the shard.
+    [[nodiscard]] auto finished_transactions() const -> std::vector<txn_cleanup_item<Key>> {
+        // Transactions that are not finished here: holding a lock, or with a
+        // pending record.
+        std::set<txn_id> open;
+        for (const auto& [k, in] : _intents) {
+            open.insert(in._txn);
+        }
+        for (const auto& [primary, by_txn] : _records) {
+            for (const auto& [id, rec] : by_txn) {
+                if (rec._status == txn_record_status::pending) {
+                    open.insert(id);
+                }
+            }
+        }
+        std::map<txn_id, txn_cleanup_item<Key>> out_by_txn;
+        for (const auto& [primary, by_txn] : _records) {
+            for (const auto& [id, rec] : by_txn) {
+                if (!open.contains(id)) {
+                    out_by_txn.try_emplace(id, txn_cleanup_item<Key>{primary, id});
+                }
+            }
+        }
+        for (const auto& [k, by_txn] : _settled) {
+            for (const auto& [id, status] : by_txn) {
+                if (!open.contains(id)) {
+                    out_by_txn.try_emplace(id, txn_cleanup_item<Key>{k, id});
+                }
+            }
+        }
+        std::vector<txn_cleanup_item<Key>> out;
+        out.reserve(out_by_txn.size());
+        for (auto& [id, item] : out_by_txn) {
+            out.push_back(std::move(item));
+        }
+        return out;
+    }
     [[nodiscard]] auto oracle_high_water_mark() const -> std::uint64_t { return _oracle_hwm; }
 
 private:
@@ -461,9 +551,18 @@ private:
         return record_result(*rec);
     }
 
+    /// Drops each item's record and settled entries. A `pending` record is
+    /// never dropped, and its item is skipped whole: the leader proposes only
+    /// finished transactions, so a pending one here means the log moved on
+    /// between the proposal and this entry (Requirement 4.7: nothing is
+    /// removed that is not known to be finished).
     auto apply_op(const txn_cleanup<Key>& op, log_index_type) -> result_type {
         for (const auto& item : op._items) {
             if (auto it = _records.find(item._primary); it != _records.end()) {
+                if (const auto jt = it->second.find(item._txn);
+                    jt != it->second.end() && jt->second._status == txn_record_status::pending) {
+                    continue;
+                }
                 it->second.erase(item._txn);
                 if (it->second.empty()) {
                     _records.erase(it);

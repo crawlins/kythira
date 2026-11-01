@@ -13,6 +13,7 @@
 #include <raft/multi_raft.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <limits>
 #include <thread>
@@ -84,6 +85,9 @@ auto multi_raft<Types, Key, GroupId>::start() -> void {
         g->_node->start();
         note_activity(*g);
     }
+    if constexpr (is_transactional_state_machine_v<typename Types::state_machine_type>) {
+        start_resolver();
+    }
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -91,6 +95,10 @@ auto multi_raft<Types, Key, GroupId>::stop() -> void {
     if (!_running.exchange(false)) {
         return;
     }
+
+    // First, while every group still runs: a pass in flight may be waiting on
+    // an entry to commit.
+    stop_resolver();
 
     auto executor = current_executor();
 
@@ -745,6 +753,22 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                 std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - group_start));
         });
         report._apply_duration = clock::now() - t0;
+    }
+
+    // The leader-side transaction resolver (multi-raft-transactions task 7):
+    // the tick only says a pass is due. The pass itself proposes entries and
+    // waits for them to commit, so it runs on the resolver's own thread; a
+    // pass still running when the next falls due simply runs again after.
+    if constexpr (is_transactional_state_machine_v<typename Types::state_machine_type>) {
+        const auto now = clock::now();
+        if (now - _last_resolver_run >= _cfg.resolver_interval) {
+            _last_resolver_run = now;
+            {
+                std::lock_guard lock(_resolver_mutex);
+                _resolver_due = true;
+            }
+            _resolver_cv.notify_one();
+        }
     }
 
     // `_auto_align` merges waiting for colocation. Every tick, not every policy
@@ -3344,7 +3368,22 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
                 return submit_plain_enveloped(*local->_node, *command, timeout);
             }
         }
-        return local->_node->submit_command(*command, timeout);
+        if constexpr (is_transactional_state_machine_v<typename Types::state_machine_type>) {
+            // Every transaction op's result feeds Requirement 12's metrics.
+            // The op code is the envelope's third byte (magic, version, op).
+            const std::uint8_t op =
+                command->size() > 2 ? static_cast<std::uint8_t>((*command)[2]) : 0;
+            const auto started = std::chrono::steady_clock::now();
+            return local->_node->submit_command(*command, timeout)
+                .thenValue([this, op, started](std::vector<std::byte> bytes) {
+                    note_txn_result(op, bytes,
+                                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now() - started));
+                    return bytes;
+                });
+        } else {
+            return local->_node->submit_command(*command, timeout);
+        }
     }
 
     if (!last_error) {
@@ -3410,9 +3449,10 @@ auto multi_raft<Types, Key, GroupId>::submit_plain_enveloped(group_node_type& no
     const auto envelope =
         encode_txn_envelope<Key, codec_type>(txn_envelope<Key>{txn_plain{command}});
     return node.submit_command(envelope, timeout)
-        .thenValue([](std::vector<std::byte> bytes) -> std::vector<std::byte> {
+        .thenValue([this](std::vector<std::byte> bytes) -> std::vector<std::byte> {
             auto res = decode_txn_result<Key, codec_type>(bytes);
             if (res._status == txn_result_status::key_locked) {
+                emit_txn_metric("kythira.multiraft.txn.conflict", {{"kind", "key_locked"}}, 1);
                 const auto holder = res._holder.value_or(txn_lock_holder<Key>{});
                 throw key_locked_exception<Key>(res._key, holder._txn, holder._primary);
             }
@@ -3422,6 +3462,427 @@ auto multi_raft<Types, Key, GroupId>::submit_plain_enveloped(group_node_type& no
             }
             return std::move(res._payload);
         });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Leader-side transaction resolver (multi-raft-transactions task 7)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Each pass, on every group this host leads:
+//
+//   1. Read the shard's open and finished transactions (one hold of the
+//      node's lock, nothing proposed).
+//   2. For each open transaction whose earliest intent deadline has passed,
+//      oldest first and at most `resolver_batch`: propose
+//      `check_and_resolve(txn, primary, now)` on the primary's shard, here
+//      or through the forwarder. Its answer is the transaction's fate
+//      (Requirement 4.3): `committed` rolls this shard's intents forward with
+//      `commit_secondary`, `aborted` removes them with `abort`, `pending`
+//      means a live coordinator is heartbeating the record, so they stay
+//      (Requirement 4.5).
+//   3. For each finished transaction this leader has seen finished for
+//      `txn_record_retention`, propose `txn_cleanup` (Requirement 4.7).
+//
+// Bound (Requirement 4.6): an intent expires at its deadline; the resolver
+// next looks within one interval; the resolve's entries then commit within
+// the next. Hence TTL plus two intervals while the primary is reachable.
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::set_txn_forwarder(txn_forwarder forwarder) -> void {
+    std::lock_guard lock(_resolver_mutex);
+    _txn_forwarder = std::move(forwarder);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::txn_now_ms() const -> std::uint64_t {
+    if (_cfg.txn_clock_ms) {
+        return _cfg.txn_clock_ms();
+    }
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::txn_resolver_stats() const -> txn_resolver_counts {
+    return txn_resolver_counts{
+        ._passes = _resolver_passes.load(std::memory_order_relaxed),
+        ._committed = _resolved_committed.load(std::memory_order_relaxed),
+        ._aborted = _resolved_aborted.load(std::memory_order_relaxed),
+        ._pending = _resolved_pending.load(std::memory_order_relaxed),
+        ._unreachable = _resolve_unreachable.load(std::memory_order_relaxed),
+        ._cleaned = _txn_cleaned.load(std::memory_order_relaxed),
+    };
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::start_resolver() -> void {
+    std::lock_guard lock(_resolver_mutex);
+    if (_resolver_thread.joinable()) {
+        return;
+    }
+    _resolver_stopping = false;
+    _resolver_due = false;
+    _last_resolver_run = std::chrono::steady_clock::now();
+    _resolver_thread = std::thread([this] { resolver_loop(); });
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::stop_resolver() -> void {
+    std::thread worker;
+    {
+        std::lock_guard lock(_resolver_mutex);
+        _resolver_stopping = true;
+        worker = std::move(_resolver_thread);
+    }
+    _resolver_cv.notify_all();
+    if (worker.joinable()) {
+        worker.join();
+    }
+    // Leader-local memory: a restarted host relearns it, as a new leader does.
+    _resolver_memory.clear();
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::resolver_loop() -> void {
+    for (;;) {
+        {
+            std::unique_lock lock(_resolver_mutex);
+            _resolver_cv.wait(lock, [this] { return _resolver_stopping || _resolver_due; });
+            if (_resolver_stopping) {
+                return;
+            }
+            _resolver_due = false;
+        }
+        try {
+            resolver_pass();
+        } catch (const std::exception& e) {
+            // A pass is best effort: whatever it did not finish, the next
+            // one finds again.
+            _cfg.logger.warning("multi_raft: transaction resolver pass failed",
+                                {{"error", e.what()}});
+        }
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::resolver_pass() -> void {
+    _resolver_passes.fetch_add(1, std::memory_order_relaxed);
+    std::unordered_map<GroupId, resolver_group_memory> kept;
+    for (const auto& g : all_groups()) {
+        {
+            std::lock_guard lock(_resolver_mutex);
+            if (_resolver_stopping) {
+                return;
+            }
+        }
+        if (!g->_node->is_leader()) {
+            continue;
+        }
+        auto memory = std::move(_resolver_memory[g->_group_id]);
+        resolve_group(*g, memory);
+        kept.emplace(g->_group_id, std::move(memory));
+    }
+    // Groups this host no longer leads (or no longer has) forget theirs.
+    _resolver_memory = std::move(kept);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::resolve_group(group_state& g, resolver_group_memory& memory)
+    -> void {
+    using sm_type = typename Types::state_machine_type;
+    using codec_type = typename sm_type::key_codec_type;
+    using steady = std::chrono::steady_clock;
+
+    struct view {
+        std::vector<txn_open_view<Key>> _open;
+        std::vector<txn_cleanup_item<Key>> _finished;
+    };
+    // Only on a leader that has applied an entry of its own term: before
+    // that, its state can lack an intent or a record the old leader had.
+    auto seen = g._node->with_leader_state_machine(
+        [](sm_type& sm) { return view{sm.open_transactions(), sm.finished_transactions()}; });
+    if (!seen.has_value()) {
+        return;
+    }
+    const auto now = steady::now();
+    const auto now_ms = txn_now_ms();
+    const auto group = detail::describe_value(g._group_id);
+
+    // ── lock ages, and Requirement 12's held / oldest gauges ─────────────────
+    std::map<txn_id, steady::time_point> open_since;
+    std::chrono::milliseconds oldest{0};
+    for (const auto& t : seen->_open) {
+        const auto it = memory._open_since.find(t._txn);
+        const auto since = it == memory._open_since.end() ? now : it->second;
+        open_since.emplace(t._txn, since);
+        oldest =
+            std::max(oldest, std::chrono::duration_cast<std::chrono::milliseconds>(now - since));
+    }
+    memory._open_since = std::move(open_since);
+    std::size_t held = 0;
+    for (const auto& t : seen->_open) {
+        held += t._keys.size();
+    }
+    {
+        std::lock_guard lock(_txn_metrics_mutex);
+        _cfg.metrics.set_metric_name("kythira.multiraft.txn.intents.held");
+        _cfg.metrics.add_dimension("group", group);
+        _cfg.metrics.add_value(static_cast<double>(held));
+        _cfg.metrics.emit();
+        _cfg.metrics.set_metric_name("kythira.multiraft.txn.intents.oldest_age_ms");
+        _cfg.metrics.add_dimension("group", group);
+        _cfg.metrics.add_value(static_cast<double>(oldest.count()));
+        _cfg.metrics.emit();
+    }
+
+    // ── resolve expired intents ──────────────────────────────────────────────
+    std::vector<const txn_open_view<Key>*> due;
+    for (const auto& t : seen->_open) {
+        if (t._deadline_ms <= now_ms) {
+            due.push_back(&t);
+        }
+    }
+    std::sort(due.begin(), due.end(),
+              [](const auto* a, const auto* b) { return a->_deadline_ms < b->_deadline_ms; });
+    if (due.size() > _cfg.resolver_batch) {
+        due.resize(_cfg.resolver_batch);
+    }
+    const auto stopping = [this] {
+        std::lock_guard lock(_resolver_mutex);
+        return _resolver_stopping;
+    };
+    for (const auto* t : due) {
+        if (stopping()) {
+            return;
+        }
+        const auto resolve_outcome = [&](std::string_view outcome) {
+            emit_txn_metric("kythira.multiraft.txn.resolve",
+                            {{"group", group}, {"outcome", std::string{outcome}}}, 1);
+        };
+        txn_result<Key> fate;
+        try {
+            fate = decode_txn_result<Key, codec_type>(send_txn_op(
+                {t->_primary},
+                encode_txn_envelope<Key, codec_type>(
+                    txn_envelope<Key>{txn_check_and_resolve<Key>{t->_txn, t->_primary, now_ms}}),
+                true));
+        } catch (const std::exception& e) {
+            _resolve_unreachable.fetch_add(1, std::memory_order_relaxed);
+            resolve_outcome("unreachable");
+            _cfg.logger.debug("multi_raft: resolver could not reach a primary",
+                              {{"txn", t->_txn.to_string()},
+                               {"primary", detail::describe_value(t->_primary)},
+                               {"error", e.what()}});
+            continue;
+        }
+        if (fate._status != txn_result_status::record) {
+            continue;  // not an answer check_and_resolve gives; try next pass
+        }
+        try {
+            switch (fate._record) {
+                case txn_record_status::pending:
+                    _resolved_pending.fetch_add(1, std::memory_order_relaxed);
+                    resolve_outcome("pending");
+                    break;
+                case txn_record_status::committed:
+                    std::ignore = send_txn_op(
+                        t->_keys,
+                        encode_txn_envelope<Key, codec_type>(txn_envelope<Key>{
+                            txn_commit_secondary<Key>{t->_txn, t->_keys, fate._commit_ts}}),
+                        false);
+                    _resolved_committed.fetch_add(1, std::memory_order_relaxed);
+                    resolve_outcome("committed");
+                    break;
+                case txn_record_status::aborted: {
+                    std::ignore = send_txn_op(
+                        t->_keys,
+                        encode_txn_envelope<Key, codec_type>(
+                            txn_envelope<Key>{txn_abort<Key>{t->_txn, t->_primary, t->_keys}}),
+                        false);
+                    _resolved_aborted.fetch_add(1, std::memory_order_relaxed);
+                    resolve_outcome("aborted");
+                    emit_txn_metric("kythira.multiraft.txn.outcome",
+                                    {{"outcome", "aborted"}, {"reason", "expired"}}, 1);
+                    // Requirement 12.2: another coordinator's transaction is
+                    // gone, and its owner may still be waiting to hear why.
+                    const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - memory._open_since[t->_txn]);
+                    _cfg.logger.warning(
+                        "Transaction resolver aborted an expired transaction's locks",
+                        {{"txn", t->_txn.to_string()},
+                         {"primary", detail::describe_value(t->_primary)},
+                         {"group", group},
+                         {"keys", std::to_string(t->_keys.size())},
+                         {"lock_age_ms", std::to_string(age.count())},
+                         {"past_deadline_ms", std::to_string(now_ms - t->_deadline_ms)}});
+                    break;
+                }
+            }
+        } catch (const std::exception& e) {
+            // The fate is known and recorded on the primary; applying it here
+            // is retried next pass.
+            resolve_outcome("apply_failed");
+            _cfg.logger.debug("multi_raft: resolver could not apply a fate",
+                              {{"txn", t->_txn.to_string()}, {"error", e.what()}});
+        }
+    }
+
+    // ── clean up finished transactions past their retention ──────────────────
+    std::map<txn_id, steady::time_point> finished_since;
+    std::vector<txn_cleanup_item<Key>> ripe;
+    for (const auto& item : seen->_finished) {
+        const auto it = memory._finished_since.find(item._txn);
+        const auto since = it == memory._finished_since.end() ? now : it->second;
+        finished_since.emplace(item._txn, since);
+        if (now - since >= _cfg.txn_record_retention) {
+            ripe.push_back(item);
+        }
+    }
+    memory._finished_since = std::move(finished_since);
+    const std::size_t batch = std::max<std::size_t>(_cfg.resolver_batch, 1);
+    for (std::size_t i = 0; i < ripe.size() && !stopping(); i += batch) {
+        std::vector<txn_cleanup_item<Key>> items(
+            ripe.begin() + static_cast<std::ptrdiff_t>(i),
+            ripe.begin() + static_cast<std::ptrdiff_t>(std::min(ripe.size(), i + batch)));
+        std::vector<Key> keys;
+        keys.reserve(items.size());
+        for (const auto& item : items) {
+            keys.push_back(item._primary);
+        }
+        try {
+            std::ignore = send_txn_op(
+                keys,
+                encode_txn_envelope<Key, codec_type>(txn_envelope<Key>{txn_cleanup<Key>{items}}),
+                false);
+        } catch (const std::exception& e) {
+            _cfg.logger.debug("multi_raft: resolver cleanup failed; retrying next pass",
+                              {{"group", group}, {"error", e.what()}});
+            break;
+        }
+        _txn_cleaned.fetch_add(items.size(), std::memory_order_relaxed);
+        emit_txn_metric("kythira.multiraft.txn.cleanup", {{"group", group}},
+                        static_cast<std::int64_t>(items.size()));
+        for (const auto& item : items) {
+            memory._finished_since.erase(item._txn);
+        }
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::send_txn_op(const std::vector<Key>& keys,
+                                                  const std::vector<std::byte>& envelope,
+                                                  bool may_forward) -> std::vector<std::byte> {
+    const auto timeout = std::max(_cfg.resolver_interval, std::chrono::milliseconds{1000});
+    std::exception_ptr refused;
+    try {
+        auto f = submit_txn(keys, envelope, timeout);
+        if (!f.wait(timeout + std::chrono::milliseconds{100})) {
+            throw std::runtime_error("multi_raft: resolver entry did not commit in time");
+        }
+        return std::move(f).get();
+    } catch (const shard_not_leader_exception<GroupId, node_id_type>&) {
+        refused = std::current_exception();
+    } catch (const unknown_shard_exception<GroupId>&) {
+        refused = std::current_exception();
+    } catch (const shard_epoch_mismatch_exception<GroupId, Key, node_id_type>&) {
+        refused = std::current_exception();
+    } catch (const unrouted_key_exception<Key>&) {
+        refused = std::current_exception();
+    }
+    txn_forwarder forwarder;
+    if (may_forward) {
+        std::lock_guard lock(_resolver_mutex);
+        forwarder = _txn_forwarder;
+    }
+    if (!forwarder) {
+        std::rethrow_exception(refused);
+    }
+    return forwarder(keys, envelope, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::note_txn_result(std::uint8_t op_code,
+                                                      const std::vector<std::byte>& bytes,
+                                                      std::chrono::nanoseconds elapsed) -> void {
+    using sm_type = typename Types::state_machine_type;
+    using codec_type = typename sm_type::key_codec_type;
+    txn_result<Key> res;
+    try {
+        res = decode_txn_result<Key, codec_type>(bytes);
+    } catch (const std::exception&) {
+        return;  // not ours to diagnose here; the caller decodes it too
+    }
+    // The op codes are the envelope variant's index plus one.
+    static constexpr std::array<std::string_view, 12> op_names{"unknown",
+                                                               "plain",
+                                                               "one_phase",
+                                                               "prepare",
+                                                               "commit_primary",
+                                                               "commit_secondary",
+                                                               "abort",
+                                                               "heartbeat",
+                                                               "check_and_resolve",
+                                                               "cleanup",
+                                                               "gc",
+                                                               "oracle_reserve"};
+    static constexpr std::array<std::string_view, 7> status_names{"ok",
+                                                                  "write_conflict",
+                                                                  "key_locked",
+                                                                  "record",
+                                                                  "read_conflict",
+                                                                  "snapshot_too_old",
+                                                                  "already_aborted"};
+    const auto op = op_code < op_names.size() ? op_names[op_code] : op_names[0];
+    const auto status_index = static_cast<std::size_t>(res._status);
+    const auto status = status_index < status_names.size() ? status_names[status_index]
+                                                           : std::string_view{"unknown"};
+    {
+        std::lock_guard lock(_txn_metrics_mutex);
+        _cfg.metrics.set_metric_name("kythira.multiraft.txn.op");
+        _cfg.metrics.add_dimension("op", op);
+        _cfg.metrics.add_dimension("result", status);
+        _cfg.metrics.add_count(1);
+        _cfg.metrics.emit();
+        // Commit latency by phase: each op's propose-to-apply time.
+        _cfg.metrics.set_metric_name("kythira.multiraft.txn.op.latency");
+        _cfg.metrics.add_dimension("op", op);
+        _cfg.metrics.add_duration(elapsed);
+        _cfg.metrics.emit();
+    }
+    const bool one_phase = op == "one_phase";
+    if (res._status == txn_result_status::write_conflict ||
+        res._status == txn_result_status::already_aborted ||
+        res._status == txn_result_status::read_conflict) {
+        emit_txn_metric("kythira.multiraft.txn.conflict", {{"kind", std::string{status}}}, 1);
+        if (one_phase) {
+            emit_txn_metric("kythira.multiraft.txn.outcome",
+                            {{"outcome", "aborted"}, {"path", "one_phase"}}, 1);
+        }
+        return;
+    }
+    if (one_phase && res._status == txn_result_status::ok) {
+        emit_txn_metric("kythira.multiraft.txn.outcome",
+                        {{"outcome", "committed"}, {"path", "one_phase"}}, 1);
+    } else if (op == "commit_primary") {
+        const bool committed = res._status == txn_result_status::ok;
+        emit_txn_metric("kythira.multiraft.txn.outcome",
+                        {{"outcome", committed ? "committed" : "aborted"}, {"path", "two_phase"}},
+                        1);
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::emit_txn_metric(
+    std::string_view name, std::initializer_list<std::pair<std::string_view, std::string>> dims,
+    std::int64_t count) -> void {
+    std::lock_guard lock(_txn_metrics_mutex);
+    _cfg.metrics.set_metric_name(name);
+    for (const auto& [k, v] : dims) {
+        _cfg.metrics.add_dimension(k, v);
+    }
+    _cfg.metrics.add_count(count);
+    _cfg.metrics.emit();
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
