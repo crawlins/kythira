@@ -1,9 +1,11 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 3/13 tasks complete
+## Status: 4/13 tasks complete
 
 **Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
-node-wide reference counts; task 4: the binary persistence engine. Task 1 was measured on October 27. The spec was
+node-wide reference counts; task 3: the cache state machine, codec version 2
+and the gateway over either machine; task 4: the binary persistence engine.
+Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
 
@@ -269,7 +271,7 @@ green). Each job's log was fetched with
 - 100,000 64-byte `put`s make one pack file (four files in the data
   directory in all), each fsynced, in about 20 s on the sandbox's disk.
 
-- [ ] 3. `cache_kv_state_machine` and codec version 2
+- [x] 3. `cache_kv_state_machine` and codec version 2
   - Add `put_chunk`, `commit` and `touch` to `redis_kv_commands.hpp` under
     format `0x02`, keeping `0x01` decodable.
   - `include/raft/cache_kv_state_machine.hpp` per Component 3: index,
@@ -282,11 +284,7 @@ green). Each job's log was fetched with
     100,000 keys for Requirement 2.2.
   - _Requirements: 2.1–2.4, 2.6, 2.7, 3.1–3.7, 4.1, 4.2, 4.4_
 
-### Task 3 progress (2026-11-01)
-
-Done: the codec and the state machine. Still open: making `redis_gateway` a
-template on its state machine and running the existing gateway tests over
-both (Requirement 2.7).
+### Task 3 results (2026-11-01)
 
 `include/raft/cache_kv_state_machine.hpp`, the format 0x02 records in
 `redis_kv_commands.hpp`, and `tests/cache_kv_state_machine_unit_test.cpp`.
@@ -333,6 +331,36 @@ the new records. Departures from the design, and choices it left open:
 - `chunk_refcounts` gained bulk `acquire`/`release`, `forget` and
   `put_referenced`, and `cache_chunk_store` gained `put_verified`, so a chunk
   `apply` has already hashed is not hashed twice.
+
+**The gateway over either machine (Requirement 2.7).** `redis_gateway` takes
+its state machine from `Host::types::state_machine_type` rather than a new
+template parameter, so no call site changes. It reads entries through
+`redis_gateway_value_access<StateMachine>`
+(`include/raft/redis_gateway_value_access.hpp`): length, servability, bytes
+and equality, plus a context taken under the node lock (the node-wide
+`chunk_refcounts` for the cache) so the bytes are read after the lock is
+released. `tests/redis_gateway_integration_test.cpp` builds a second time as
+`redis_gateway_disk_store_integration_test`, with each host's groups sharing
+one chunk store as a real node's do. All 25 cases pass over both machines
+locally (boost future backend), and the disk build adds a 26th:
+
+- **An unservable entry is not served here.** `read_local` checks the
+  `has_all` bit for every read, so `EXISTS`, `STRLEN` and `TTL` agree with
+  what `GET` would return. A follower forwards to the leader; a leader
+  answers a miss rather than wait (design Component 3).
+- **A chunk that fails after `lookup` is a miss**, and its manifest's
+  `has_all` bit is cleared so the fetcher (task 5) picks it up.
+- **The immutable-values check compares length and sha256** on the disk
+  store instead of reading the old value back. The value sha is already in
+  the manifest, and keys there are content-addressed.
+- **`cache_kv_state_machine` is default-constructible**, as an unbound
+  placeholder that throws on `apply` and restore. `raft`'s node
+  configuration default-constructs its state machine before `multi_raft`
+  moves the factory's over it.
+- The disk variant is its own source file that defines
+  `KYTHIRA_GATEWAY_TEST_DISK_STORE` and includes the original, so it can
+  keep reusing the shared precompiled header. clang rejects a PCH when the
+  target adds its own `-D`.
 
 - [x] 4. `binary_file_persistence_engine`
   - `include/raft/binary_file_persistence.hpp` per Component 4: an atomically

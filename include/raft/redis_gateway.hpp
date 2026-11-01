@@ -27,6 +27,7 @@
 #include <raft/redis_auth_limiter.hpp>
 #include <raft/redis_forward_link.hpp>
 #include <raft/redis_kv_commands.hpp>
+#include <raft/redis_gateway_value_access.hpp>
 #include <raft/redis_kv_state_machine.hpp>
 #include <raft/resp_protocol.hpp>
 #include <raft/shard_exceptions.hpp>
@@ -197,14 +198,21 @@ template<typename NodeId>
 using redis_endpoint_resolver = std::function<std::optional<std::string>(const NodeId&)>;
 
 /// `Host` is a `multi_raft<Types, std::string, std::uint64_t>` whose state
-/// machine is `redis_kv_state_machine`. `Logger` and `Metrics` satisfy the
-/// project's `logger` and `metrics` concepts.
+/// machine is `redis_kv_state_machine` (values in RAM) or
+/// `cache_kv_state_machine` (values in the node's chunk store); the gateway
+/// reads it through `redis_gateway_value_access`. `Logger` and `Metrics`
+/// satisfy the project's `logger` and `metrics` concepts.
 template<typename Host, typename Logger, typename Metrics> class redis_gateway {
 public:
     using node_id_type = typename Host::node_id_type;
     using group_id_type = typename Host::group_id_type;
     using group_node_type = typename Host::group_node_type;
     using endpoint_resolver = redis_endpoint_resolver<node_id_type>;
+    using state_machine_type = typename Host::types::state_machine_type;
+    using value_access = redis_gateway_value_access<state_machine_type>;
+    using entry_handle = typename value_access::entry_handle;
+    using entry_type = typename value_access::entry_type;
+    using value_context = typename value_access::context;
 
     redis_gateway(Host& host, redis_acl& acl, Logger& logger, Metrics& metrics,
                   redis_gateway_config config, endpoint_resolver resolver);
@@ -288,9 +296,12 @@ private:
 
     // ---- read/write plumbing ---------------------------------------------------
     /// Outcome of a local lookup: the handle, or a reason it could not be
-    /// served here (in which case `_forward_to` may name a leader).
+    /// served here (in which case `_forward_to` may name a leader). The
+    /// context, taken under the same lock, lets the bytes be read after it is
+    /// released.
     struct read_result {
-        typename redis_kv_state_machine<std::uint64_t>::entry_handle _entry;
+        entry_handle _entry;
+        value_context _context{};
         std::string _error;  ///< encoded reply if the read failed
         std::optional<node_id_type> _forward_to;
     };
@@ -309,7 +320,7 @@ private:
     auto emit_duration(std::string_view name, std::string_view command, std::chrono::nanoseconds d)
         -> void;
     [[nodiscard]] static auto now_ms() -> std::uint64_t;
-    [[nodiscard]] auto is_expired(const redis_kv_value_entry& e) const -> bool;
+    [[nodiscard]] auto is_expired(const entry_type& e) const -> bool;
     auto touch_lru(group_id_type group, const std::string& key) -> void;
     auto forget_lru(group_id_type group, const std::string& key) -> void;
 

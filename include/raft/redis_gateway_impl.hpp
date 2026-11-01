@@ -807,7 +807,7 @@ auto redis_gateway<Host, Logger, Metrics>::now_ms() -> std::uint64_t {
 }
 
 template<typename Host, typename Logger, typename Metrics>
-auto redis_gateway<Host, Logger, Metrics>::is_expired(const redis_kv_value_entry& e) const -> bool {
+auto redis_gateway<Host, Logger, Metrics>::is_expired(const entry_type& e) const -> bool {
     return e._expire_at_ms != 0 && e._expire_at_ms <= now_ms();
 }
 
@@ -995,22 +995,40 @@ auto redis_gateway<Host, Logger, Metrics>::read_local(session& s, const std::str
             return r;
         }
     }
+    auto lookup = [&key](auto& sm) {
+        return std::pair{sm.lookup(key), value_access::context_of(sm)};
+    };
     if (_config._read_consistency == redis_read_consistency::any_replica) {
-        r._entry = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
-        return r;
-    }
-    // A leader elected a moment ago may not have applied every write its
-    // predecessor acknowledged yet; answering from that state would report
-    // an acknowledged SET as missing. Retry until it has.
-    auto entry = node->with_leader_state_machine([&key](auto& sm) { return sm.lookup(key); });
-    if (!entry) {
-        if (!node->is_leader()) {
-            r._forward_to = node->known_leader();  // stepped down since the check above
+        std::tie(r._entry, r._context) = node->with_state_machine(lookup);
+    } else {
+        // A leader elected a moment ago may not have applied every write its
+        // predecessor acknowledged yet; answering from that state would
+        // report an acknowledged SET as missing. Retry until it has.
+        auto entry = node->with_leader_state_machine(lookup);
+        if (!entry) {
+            if (!node->is_leader()) {
+                r._forward_to = node->known_leader();  // stepped down since the check above
+            }
+            r._error = s._writer.error("ERR shard has no reachable leader, retry");
+            return r;
         }
-        r._error = s._writer.error("ERR shard has no reachable leader, retry");
-        return r;
+        std::tie(r._entry, r._context) = std::move(*entry);
     }
-    r._entry = std::move(*entry);
+    // A disk-backed entry whose chunks are not all here yet (a follower, or a
+    // leader, still fetching) is unservable on this node. A follower hands
+    // the read to the leader; a leader answers it as a miss rather than wait.
+    // Every read path goes through here, so EXISTS, STRLEN and TTL agree
+    // with what GET would serve.
+    if (r._entry && !value_access::servable(*r._entry)) {
+        if (!node->is_leader()) {
+            if (auto leader = node->known_leader()) {
+                r._forward_to = leader;
+                r._error = s._writer.error("ERR value not yet replicated here, retry");
+                return r;
+            }
+        }
+        r._entry = nullptr;
+    }
     return r;
 }
 
@@ -1498,12 +1516,19 @@ auto redis_gateway<Host, Logger, Metrics>::handle_get(session& s, const resp_com
         emit("redis.misses", "GET");
         return s._writer.null();
     }
+    auto bytes = value_access::read(r._context, *r._entry);
+    if (!bytes) {
+        // A chunk vanished or failed its hash after the lookup.
+        ++_stats._misses;
+        emit("redis.misses", "GET");
+        return s._writer.null();
+    }
     ++_stats._hits;
     emit("redis.hits", "GET");
     if (auto desc = _host.resolve(key)) {
         touch_lru(desc->group_id(), key);
     }
-    return s._writer.bulk(r._entry->_value);
+    return s._writer.bulk(bytes->view());
 }
 
 template<typename Host, typename Logger, typename Metrics>
@@ -1544,7 +1569,8 @@ auto redis_gateway<Host, Logger, Metrics>::handle_strlen(session& s, const resp_
         return r._error;
     }
     bool present = r._entry && !is_expired(*r._entry);
-    return s._writer.integer(present ? static_cast<std::int64_t>(r._entry->_value.size()) : 0);
+    return s._writer.integer(present ? static_cast<std::int64_t>(value_access::size(*r._entry))
+                                     : 0);
 }
 
 template<typename Host, typename Logger, typename Metrics>
@@ -1583,7 +1609,7 @@ auto redis_gateway<Host, Logger, Metrics>::handle_getrange(session& s, const res
     }
     // Redis semantics: negative indexes count from the end, both ends are
     // inclusive, and out-of-range bounds clamp rather than error.
-    const auto len = static_cast<std::int64_t>(r._entry->_value.size());
+    const auto len = static_cast<std::int64_t>(value_access::size(*r._entry));
     if (start < 0) {
         start = std::max<std::int64_t>(0, len + start);
     }
@@ -1596,9 +1622,12 @@ auto redis_gateway<Host, Logger, Metrics>::handle_getrange(session& s, const res
     if (len == 0 || start > end || start >= len) {
         return s._writer.bulk("");
     }
-    auto span =
-        std::span<const std::byte>(r._entry->_value)
-            .subspan(static_cast<std::size_t>(start), static_cast<std::size_t>(end - start + 1));
+    auto bytes = value_access::read(r._context, *r._entry);
+    if (!bytes) {
+        return s._writer.bulk("");
+    }
+    auto span = bytes->view().subspan(static_cast<std::size_t>(start),
+                                      static_cast<std::size_t>(end - start + 1));
     return s._writer.bulk(span);
 }
 
@@ -1688,10 +1717,7 @@ auto redis_gateway<Host, Logger, Metrics>::handle_set(session& s, const resp_com
         }
         const auto& existing = *looked_up;
         if (existing && !is_expired(*existing)) {
-            bool same = existing->_value.size() == value.size() &&
-                        (value.empty() ||
-                         std::memcmp(existing->_value.data(), value.data(), value.size()) == 0);
-            if (same) {
+            if (value_access::equals(*existing, std::as_bytes(std::span(value)))) {
                 return s._writer.simple_string("OK");
             }
             ++_stats._value_conflicts;
@@ -1964,7 +1990,7 @@ auto redis_gateway<Host, Logger, Metrics>::run_maintenance() -> std::size_t {
                 // proceed. Key order is arbitrary as an LRU, which is fine —
                 // any order beats refusing to evict.
                 node->with_state_machine([&](auto& sm) {
-                    sm.for_each_key([&](const std::string& key, const redis_kv_value_entry&) {
+                    sm.for_each_key([&](const std::string& key, const entry_type&) {
                         lru._order.push_back(key);
                         lru._index.emplace(key, std::prev(lru._order.end()));
                     });
@@ -1975,7 +2001,7 @@ auto redis_gateway<Host, Logger, Metrics>::run_maintenance() -> std::size_t {
                    bytes - freed > _config._max_shard_bytes) {
                 const auto& key = lru._order.back();
                 auto entry = node->with_state_machine([&key](auto& sm) { return sm.lookup(key); });
-                freed += key.size() + (entry ? entry->_value.size() : 0);
+                freed += key.size() + (entry ? value_access::size(*entry) : 0);
                 victims.push_back(key);
                 lru._index.erase(key);
                 lru._order.pop_back();

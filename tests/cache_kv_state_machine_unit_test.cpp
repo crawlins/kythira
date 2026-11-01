@@ -160,6 +160,28 @@ BOOST_AUTO_TEST_CASE(upload_commit_and_read_back, *boost::unit_test::timeout(30)
     BOOST_CHECK_EQUAL(sm.last_applied_index(), idx);
 }
 
+// `raft`'s node configuration default-constructs the state machine before
+// `multi_raft` moves the factory's over it. The placeholder holds nothing,
+// refuses to apply rather than lose chunks, and is replaced cleanly.
+BOOST_AUTO_TEST_CASE(a_default_constructed_machine_is_an_unbound_placeholder,
+                     *boost::unit_test::timeout(30)) {
+    node_fixture node;
+    sm_type placeholder;
+    BOOST_CHECK_EQUAL(placeholder.approximate_key_count(), 0U);
+    BOOST_CHECK(placeholder.lookup("k") == nullptr);
+    std::uint64_t idx = 0;
+    const auto entries = upload("k", pattern(100, 7), 4096);
+    BOOST_CHECK_THROW(placeholder.apply(entries.front(), 1), std::logic_error);
+    BOOST_CHECK_THROW(placeholder.restore_from_snapshot(placeholder.get_state(), 1),
+                      std::logic_error);
+
+    placeholder = node.make_sm();
+    for (const auto& e : entries) {
+        apply_one(placeholder, idx, e);
+    }
+    BOOST_CHECK(value_of(node, placeholder, "k") == pattern(100, 7));
+}
+
 BOOST_AUTO_TEST_CASE(resp_set_is_one_entry_and_dedupes, *boost::unit_test::timeout(60)) {
     node_fixture node;
     auto sm = node.make_sm();

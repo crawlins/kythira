@@ -1320,6 +1320,14 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
         add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
         target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         set_tests_properties(redis_gateway_integration_test PROPERTIES LABELS "multi-raft;redis" TIMEOUT 600)
+        # The same cases over the disk-backed cache_kv_state_machine
+        # (.kiro/specs/disk-backed-build-cache/ Requirement 2.7).
+        add_raft_completion_test(redis_gateway_disk_store_integration_test
+                                 redis_gateway_disk_store_integration_test.cpp)
+        target_link_libraries(redis_gateway_disk_store_integration_test PRIVATE
+                              OpenSSL::SSL OpenSSL::Crypto)
+        set_tests_properties(redis_gateway_disk_store_integration_test PROPERTIES
+            LABELS "multi-raft;redis;cache" TIMEOUT 600)
     else()
         message(STATUS "redis_gateway_integration_test: skipped (requires folly)")
     endif()
