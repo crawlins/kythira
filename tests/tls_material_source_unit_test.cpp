@@ -265,6 +265,44 @@ BOOST_AUTO_TEST_CASE(unsubscribe_waits_for_an_in_flight_callback) {
     BOOST_TEST(self_calls.load() == 1);
 }
 
+// A callback that drops its own subscription, between two others, must not
+// disturb the walk over the subscribers: the walk stood on the erased entry,
+// so the old loop then stepped from a freed map node (a SIGSEGV in CI). The
+// subscribers on either side are still called once each, and the dropped
+// one is never called again.
+BOOST_AUTO_TEST_CASE(a_callback_dropping_its_own_subscription_spares_the_others) {
+    raft::testing::certificate_authority ca;
+    const auto& roots = ca.root_certificate_pem();
+    auto a = issue(ca, "node-a");
+    auto b = issue(ca, "node-b");
+    temp_material_dir files;
+    files.write(material_of(a, roots));
+    kythira::file_tls_material_source source(files.paths());
+
+    std::atomic<int> before{0};
+    std::atomic<int> dropper{0};
+    std::atomic<int> after{0};
+    auto first = source.subscribe([&](auto, auto) { ++before; });
+    kythira::tls_material_source::subscription self;
+    self = source.subscribe([&](auto, auto) {
+        ++dropper;
+        self.reset();
+    });
+    auto last = source.subscribe([&](auto, auto) { ++after; });
+
+    files.write(material_of(b, roots));
+    source.refresh();
+    BOOST_TEST(before.load() == 1);
+    BOOST_TEST(dropper.load() == 1);
+    BOOST_TEST(after.load() == 1);
+
+    files.write(material_of(a, roots));
+    source.refresh();
+    BOOST_TEST(before.load() == 2);
+    BOOST_TEST(dropper.load() == 1);
+    BOOST_TEST(after.load() == 2);
+}
+
 // A subscription may outlive its source.
 BOOST_AUTO_TEST_CASE(subscription_outliving_its_source_is_safe) {
     raft::testing::certificate_authority ca;
