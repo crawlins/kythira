@@ -329,6 +329,10 @@ jobs:
         if: success() || failure()
         run: cmake --build build --target docker-sccache-e2e-tests -j"$(nproc)"
 
+      - name: docker-cache-cluster-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-cache-cluster-tests -j"$(nproc)"
+
       - name: Podman service log
         if: always() && matrix.runtime == 'podman'
         run: tail -n 200 "$RUNNER_TEMP/podman-service.log" || true

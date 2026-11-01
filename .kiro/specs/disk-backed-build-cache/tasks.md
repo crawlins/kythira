@@ -1,12 +1,13 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 7/13 tasks complete
+## Status: 8/13 tasks complete
 
 **Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
 and the gateway over either machine; task 4: the binary persistence engine;
 task 5: the chunk fetcher; task 6: the HTTP front end and auth cache;
-task 7: the daemon's disk mode, the disk budget and the voter floors.
+task 7: the daemon's disk mode, the disk budget and the voter floors;
+task 8: the container image and compose file.
 Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
@@ -594,13 +595,46 @@ turned up:
   the forwarding link under the internal secret, once per maintenance
   tick, with at most 4096 keys per shard; overflow is counted, not queued.
 
-- [ ] 8. Container image and compose file
+- [x] 8. Container image and compose file
   - `docker/cache-cluster/` per design.md "Containers": non-root, a `/data`
     volume, three services addressed by name, no static IPs.
   - It must come up under Docker and under rootless Podman
     (`kythira-rootless-podman-sandbox-recipe` in project memory has the
     sandbox steps).
   - _Requirements: 11.1–11.3_
+
+### Task 8 results (2026-11-01)
+
+`docker/cache-cluster/Dockerfile`, `compose.yml` and `acl.txt`, with
+`tests/docker_chaos/cache_cluster_test.cpp` and the CMake targets
+`docker-cache-cluster-image` and `docker-cache-cluster-tests`, run by the
+container-tests workflow under both runtimes.
+
+- **The image** is the gateway image's recipe: the host-built daemon on
+  Ubuntu 24.04 with `ca-certificates` only, `USER 10001:10001`, and
+  `VOLUME /data`, created and owned by that user before the `VOLUME` line
+  so a fresh named volume starts out writable by it. File mode and
+  `DATA_DIR=/data` are the image's defaults.
+- **The compose file** starts `cache-1` to `cache-3`, each with its own
+  named volume, addressed by service name for Raft, forwarding and the
+  chunk fetcher; no static addresses, capabilities, or host networking.
+  RESP and HTTP are published on the loopback (1639n and 1809n). The
+  budget and floor are compose variables so a scenario can shrink them.
+- **The scenario test** checks that every node runs as uid 10001 in file
+  mode, that a RESP `SET` and a 3 MB HTTP `PUT` on one node read back on
+  all three, that a `read_only` user gets 403 on `PUT`, and that data
+  survives restarting every node.
+
+All three cases pass under Docker in the sandbox, with the daemon built
+against Folly as CI builds it. The sandbox cannot pull from Docker Hub, so
+the local run used a stand-in base made from the host's runtime libraries;
+the Dockerfile itself is exercised by the container-tests workflow. The
+Podman leg runs there as well.
+
+A daemon built on the Boost future backend crashes (SIGSEGV in a pre-vote
+retry posting to a freed strand) as soon as peers are given by host name
+and are not yet up. It happens in memory mode too, so it predates this
+spec; Folly builds, which every image uses, are unaffected.
 
 - [ ] 9. End-to-end test with the real clients
   - A container test: build a small CMake project twice through sccache
