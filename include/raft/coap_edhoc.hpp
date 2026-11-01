@@ -49,6 +49,20 @@ inline auto to_lakers_bytes(const std::vector<std::byte>& v) -> const std::uint8
     return reinterpret_cast<const std::uint8_t*>(v.data());
 }
 
+/// Make the label-3 id differ from the label-2 id. The two are independent
+/// one-byte exporter outputs, so one handshake in 256 derived the same byte
+/// for both, and oscore::security_context (rightly, RFC 8613 Section 3.3)
+/// refused a context whose Sender and Recipient IDs are equal: both ends
+/// threw after a successful EDHOC exchange, which the libnyoci server
+/// answered with 5.00 (seen as a retry-rescued flake in CI). Both ends apply
+/// this to the same two values, `a` being label 2's and `b` label 3's
+/// whatever their role, so the ids still mirror.
+inline auto separate_ids(const std::vector<std::byte>& a, std::vector<std::byte>& b) -> void {
+    if (!b.empty() && a == b) {
+        b.back() ^= std::byte{0x01};
+    }
+}
+
 // Grows buf to `len` bytes without changing capacity semantics elsewhere.
 inline auto resize_bytes(std::vector<std::byte>& buf, std::size_t len) -> void {
     buf.resize(len);
@@ -169,6 +183,7 @@ inline auto run_edhoc_handshake(const edhoc_params& params, edhoc_transport& tra
                                       kConnIdLen) != LAKERS_OK) {
             return fail("exporter failed");
         }
+        detail::separate_ids(result.sender_id, result.recipient_id);
     } else {
         LakersResponder* h = lakers_responder_new(
             detail::to_lakers_bytes(params.identity_private_key),
@@ -226,6 +241,7 @@ inline auto run_edhoc_handshake(const edhoc_params& params, edhoc_transport& tra
                                       kConnIdLen) != LAKERS_OK) {
             return fail("exporter failed");
         }
+        detail::separate_ids(result.recipient_id, result.sender_id);
     }
 
     return result;

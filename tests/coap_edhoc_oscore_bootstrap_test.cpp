@@ -18,6 +18,9 @@
 #define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_edhoc.hpp>
+#ifdef LAKERS_AVAILABLE
+#include <raft/oscore.hpp>
+#endif
 
 #include <chrono>
 #include <condition_variable>
@@ -228,6 +231,58 @@ BOOST_AUTO_TEST_CASE(matching_credentials_derive_mirrored_oscore_context,
     BOOST_CHECK(initiator_result.sender_id == responder_result.recipient_id);
     BOOST_CHECK(initiator_result.recipient_id == responder_result.sender_id);
     BOOST_CHECK(!initiator_result.master_secret.empty());
+}
+
+// The two one-byte OSCORE ids come from independent exporter outputs, so
+// before detail::separate_ids one handshake in 256 derived equal Sender and
+// Recipient IDs and oscore::security_context refused the result. 600
+// handshakes hit that at least once with probability ~90 %; every one must
+// now produce distinct, mirrored ids that a security context accepts.
+BOOST_AUTO_TEST_CASE(every_handshake_derives_distinct_sender_and_recipient_ids,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(300))) {
+    edhoc_params initiator_params;
+    initiator_params.is_initiator = true;
+    initiator_params.identity_credential = cred_i();
+    initiator_params.identity_private_key = i_key();
+    initiator_params.peer_credential = cred_r();
+
+    edhoc_params responder_params;
+    responder_params.is_initiator = false;
+    responder_params.identity_credential = cred_r();
+    responder_params.identity_private_key = r_key();
+    responder_params.peer_credential = cred_i();
+
+    constexpr int handshakes = 600;
+    int failures = 0;
+    for (int i = 0; i < handshakes && failures < 5; ++i) {
+        blocking_queue i_to_r;
+        blocking_queue r_to_i;
+        channel_transport initiator_transport(i_to_r, r_to_i);
+        channel_transport responder_transport(r_to_i, i_to_r);
+        std::exception_ptr responder_error;
+        oscore_credentials responder_result;
+        std::thread responder_thread([&] {
+            try {
+                responder_result = run_edhoc_handshake(responder_params, responder_transport);
+            } catch (...) {
+                responder_error = std::current_exception();
+            }
+        });
+        auto initiator_result = run_edhoc_handshake(initiator_params, initiator_transport);
+        responder_thread.join();
+        if (responder_error) {
+            std::rethrow_exception(responder_error);
+        }
+        const bool ok = initiator_result.sender_id != initiator_result.recipient_id &&
+                        initiator_result.sender_id == responder_result.recipient_id &&
+                        initiator_result.recipient_id == responder_result.sender_id;
+        if (!ok) {
+            ++failures;
+        }
+        BOOST_TEST(ok, "handshake " << i << " derived colliding or unmirrored OSCORE ids");
+        BOOST_CHECK_NO_THROW(oscore::security_context{initiator_result});
+        BOOST_CHECK_NO_THROW(oscore::security_context{responder_result});
+    }
 }
 
 BOOST_AUTO_TEST_CASE(mismatched_peer_credential_fails_handshake,
