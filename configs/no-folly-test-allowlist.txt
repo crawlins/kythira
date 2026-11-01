@@ -27,6 +27,7 @@ boost_backend_migration_guide_example_test examples/ is added only when folly_FO
 ca_cluster_node_rpc_tls_restart_test cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
 ca_cluster_node_rpc_tls_test cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
 ca_cluster_node_test cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
+cache_http_front_end_test drives the front end over a multi_raft host with folly futures: gated on folly_FOUND in tests/CMakeLists.txt, like the gateway tests
 cbor_serializer_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 chaos_commit_recovery_test tests/chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
 chaos_ctl_unit_tests tests/docker_chaos/ is added only inside tests/CMakeLists.txt's `if(TARGET Folly::folly)` block (beside future_backend_benchmark_test)
