@@ -1,0 +1,114 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# A three-node disk-backed build cache (.kiro/specs/disk-backed-build-cache/
+# task 8, Requirement 11): sccache over WebDAV and vcpkg's `http` binary
+# source on port 8080, RESP on 6379, all three nodes serving every key.
+#
+# CLAUDE.md's container rules, as they apply here:
+#
+#   * **No static IPs.** No `ipam`, no `ipv4_address`; rootless Podman drops
+#     them silently. Raft peers, gateway forwarding and the chunk fetcher all
+#     address each other by **service name**, and the daemon resolves names
+#     when it connects.
+#   * **No runtime named anywhere.** The scenario tests drive this file
+#     through `container_runtime()` / `compose_prefix()`
+#     (tests/docker_chaos/os_faults.hpp), honouring
+#     $KYTHIRA_CONTAINER_RUNTIME and $KYTHIRA_COMPOSE_COMMAND.
+#   * **No capabilities, no privileged or host networking.** The image runs
+#     as uid 10001 and writes only to its `/data` volume.
+#
+# Each node has its own named volume, so `stop`/`start` and `restart` keep
+# the chunk store and the Raft state (Requirement 5.2), and `down -v` is a
+# clean slate. The ports are published on the loopback so a scenario test on
+# the host can probe readiness and talk to every node.
+#
+# Plaintext everywhere: Raft, forwarding and HTTP each need their opt-in,
+# given here because this network is private to the test. A real deployment
+# sets the TLS variables instead. The internal secret and the ACL are test
+# fixtures; see acl.txt for the users.
+#
+# KYTHIRA_CACHE_MAX_DISK_BYTES and the floors are small so a scenario can
+# reach them with little data. Set KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES and
+# KYTHIRA_CACHE_CLUSTER_MIN_FREE_BYTES to override them for every node.
+
+x-node: &node
+  image: kythira-cache-cluster:dev
+  networks:
+    - cache_cluster_net
+
+x-node-env: &node-env
+  KYTHIRA_PEERS: "1=http://cache-1:7000,2=http://cache-2:7000,3=http://cache-3:7000"
+  KYTHIRA_RAFT_PORT: "7000"
+  KYTHIRA_ALLOW_PLAINTEXT_RAFT: "true"
+  # Two shards: sccache's keys and vcpkg's land on different groups, so
+  # with three nodes the leaders usually differ and forwarding is exercised.
+  KYTHIRA_SHARD_CUTS: "sccache/8"
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "150"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "300"
+  KYTHIRA_HEARTBEAT_INTERVAL_MS: "50"
+  KYTHIRA_POLICY_INTERVAL_MS: "1000"
+  KYTHIRA_REDIS_LISTEN: "0.0.0.0:6379"
+  KYTHIRA_REDIS_ACL_FILE: "/etc/kythira/acl.txt"
+  KYTHIRA_REDIS_INTERNAL_SECRET: "cache-cluster-internal"
+  KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING: "true"
+  KYTHIRA_REDIS_PEER_GATEWAYS: "1=cache-1:6379,2=cache-2:6379,3=cache-3:6379"
+  KYTHIRA_CACHE_PERSISTENCE: "file"
+  KYTHIRA_CACHE_DATA_DIR: "/data"
+  KYTHIRA_CACHE_MAX_DISK_BYTES: "${KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES:-4294967296}"
+  KYTHIRA_CACHE_MIN_FREE_BYTES: "${KYTHIRA_CACHE_CLUSTER_MIN_FREE_BYTES:-268435456}"
+  KYTHIRA_CACHE_HTTP_LISTEN: "0.0.0.0:8080"
+  KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP: "true"
+  KYTHIRA_CACHE_PEER_HTTP: "1=cache-1:8080,2=cache-2:8080,3=cache-3:8080"
+
+services:
+  cache-1:
+    <<: *node
+    container_name: cache-cluster-1
+    hostname: cache-1
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "1"
+    volumes:
+      - ./acl.txt:/etc/kythira/acl.txt:ro
+      - cache-1-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16391:6379"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:18091:8080"
+
+  cache-2:
+    <<: *node
+    container_name: cache-cluster-2
+    hostname: cache-2
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "2"
+    volumes:
+      - ./acl.txt:/etc/kythira/acl.txt:ro
+      - cache-2-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16392:6379"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:18092:8080"
+
+  cache-3:
+    <<: *node
+    container_name: cache-cluster-3
+    hostname: cache-3
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "3"
+    volumes:
+      - ./acl.txt:/etc/kythira/acl.txt:ro
+      - cache-3-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16393:6379"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:18093:8080"
+
+volumes:
+  cache-1-data:
+  cache-2-data:
+  cache-3-data:
+
+networks:
+  cache_cluster_net:
+    driver: bridge

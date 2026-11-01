@@ -1,0 +1,16 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+#
+# Test-only ACL for docker/cache-cluster/compose.yml. The secrets are the
+# user names with "-secret" appended (ci-main -> "ci-main-secret", and so
+# on) and are of course not secret; the records are docker/sccache_e2e's,
+# made with `redis_gateway_node --hash-secret 10000`. The forwarding user
+# is not here: the daemon appends it from KYTHIRA_REDIS_INTERNAL_SECRET.
+# The same users serve RESP and HTTP (Basic or Bearer).
+#
+# ci-main   populates the cache: sccache over WebDAV and vcpkg's http source
+# ci-pr     may only read it
+# ops       is what the scenario tests use for readiness (INFO)
+user ci-main pbkdf2-sha256$10000$pKrfevzmRlAMynH8hjauHg==$rma30dAAHtgbxOn+JtukLSV/VUkdBxufjDohSsdZrQQ= read_write sccache/ vcpkg/
+user ci-pr pbkdf2-sha256$10000$yQj2SGB3a6MfZvQwO7ZcpQ==$dhfXdHhPKjHNZtTDlr1x2stuIJiD1ouWwl6hf/HA3/k= read_only sccache/ vcpkg/
+user ops pbkdf2-sha256$10000$S7/6htTEmS3NS+ziEjosWw==$T2tgLLRkSNWJDvgv1qLlIoMHGjIrYAEHtIX6Zuyw4DY= admin *

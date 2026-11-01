@@ -60,6 +60,7 @@ docker/poco_discovery_node/dist/
 docker/dns_discovery_node/dist/
 docker/dns_sd_discovery_node/dist/
 docker/redis_gateway_node/dist/
+docker/cache-cluster/dist/
 docker/mtls_chaos/dist/
 docker/cairn/tool_server/dist/
 
