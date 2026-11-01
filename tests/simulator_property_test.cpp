@@ -7,6 +7,8 @@
 #include <network_simulator/network_simulator.hpp>
 
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <random>
 #include <set>
 #include <string>
@@ -265,7 +267,11 @@ BOOST_AUTO_TEST_CASE(property_latency_application) {
  * the proportion of successfully delivered messages SHALL approximate R within statistical bounds.
  */
 BOOST_AUTO_TEST_CASE(property_reliability_application) {
-    std::mt19937 rng(std::random_device{}());
+    // The seed is printed so a failure can be replayed; each iteration also
+    // seeds the simulator's own drop RNG from it.
+    const auto seed = std::random_device{}();
+    BOOST_TEST_MESSAGE("property_reliability_application seed " << seed);
+    std::mt19937 rng(seed);
 
     std::size_t failures = 0;
 
@@ -280,9 +286,12 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
 
         // Create simulator with edge having the specified reliability
         TestNetworkSimulator sim;
+        sim.seed_rng(static_cast<std::uint32_t>(rng()));
         sim.start();
 
-        NetworkEdge edge(std::chrono::milliseconds{10}, expected_reliability);
+        // Zero latency: this property is about drops, and a 10 ms sleep per
+        // delivered message is what capped the sample at 50 sends.
+        NetworkEdge edge(std::chrono::milliseconds{0}, expected_reliability);
         sim.add_edge(addr1, addr2, edge);
 
         // Create nodes
@@ -291,7 +300,7 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
 
         try {
             // Send a large number of messages to get statistical significance
-            constexpr std::size_t message_count = 50;  // Reduced for faster testing
+            constexpr std::size_t message_count = 1000;
             std::size_t successful_sends = 0;
 
             for (std::size_t j = 0; j < message_count; ++j) {
@@ -310,10 +319,13 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
             double actual_reliability =
                 static_cast<double>(successful_sends) / static_cast<double>(message_count);
 
-            // Verify that actual reliability is within reasonable bounds of expected reliability
-            // Use generous bounds to account for random variation in statistical tests
-            // With only 50 messages, allow ±50% relative error to handle statistical outliers
-            double tolerance = 0.50 * expected_reliability;
+            // The success count is Binomial(n, R). Allow five standard
+            // deviations: a correct simulator lands outside that about once
+            // in 1.7 million iterations. The old bound (+-50 % of R with 50
+            // sends) was about 2.3 sigma at R = 0.3 and failed ~3 % of runs.
+            // At n = 1000 five sigma is at most 0.08, tighter than before.
+            double tolerance = 5.0 * std::sqrt(expected_reliability * (1.0 - expected_reliability) /
+                                               static_cast<double>(message_count));
 
             double lower_bound = expected_reliability - tolerance;
             double upper_bound = expected_reliability + tolerance;
