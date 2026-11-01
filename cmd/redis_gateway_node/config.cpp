@@ -123,6 +123,117 @@ auto port_of(const std::string& listen) -> std::string {
     return p == std::string::npos ? "6379" : listen.substr(p + 1);
 }
 
+auto is_set(const char* name) -> bool {
+    const char* v = std::getenv(name);
+    return v != nullptr && *v != '\0';
+}
+
+/// `KYTHIRA_CACHE_*` (.kiro/specs/disk-backed-build-cache/ design
+/// "Configuration"). Runs after the gateway's own variables, whose TLS and
+/// forwarding choices it follows.
+void read_cache_options(node_options& o) {
+    auto& c = o._cache;
+    const auto mode = get_opt("KYTHIRA_CACHE_PERSISTENCE", "file");
+    if (mode == "memory") {
+        c._persistence = cache_persistence::memory;
+        // Requirement 5.4's old deployment, exactly. Anything that needs a
+        // data directory is a sign the operator meant `file`.
+        for (const char* name :
+             {"KYTHIRA_CACHE_DATA_DIR", "KYTHIRA_CACHE_MAX_DISK_BYTES", "KYTHIRA_CACHE_HTTP_LISTEN",
+              "KYTHIRA_CACHE_HTTPS_LISTEN", "KYTHIRA_CACHE_PEER_HTTP"}) {
+            if (is_set(name)) {
+                throw std::invalid_argument(std::string("redis_gateway_node: ") + name +
+                                            " needs KYTHIRA_CACHE_PERSISTENCE=file");
+            }
+        }
+        return;
+    }
+    if (mode != "file") {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_PERSISTENCE must be file or memory, got '" + mode +
+            "'");
+    }
+    c._persistence = cache_persistence::file;
+    if (o._serializer != wire_serializer::cbor) {
+        // One multi_raft stack per translation unit; the disk-backed one is
+        // built for the default wire only.
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_PERSISTENCE=file needs "
+            "KYTHIRA_WIRE_SERIALIZER=cbor");
+    }
+    c._data_dir = get_required("KYTHIRA_CACHE_DATA_DIR");
+    c._max_disk_bytes =
+        to_u64("KYTHIRA_CACHE_MAX_DISK_BYTES", get_required("KYTHIRA_CACHE_MAX_DISK_BYTES"));
+    if (c._max_disk_bytes == 0) {
+        throw std::invalid_argument("redis_gateway_node: KYTHIRA_CACHE_MAX_DISK_BYTES must be > 0");
+    }
+    constexpr std::uint64_t max_chunk = std::uint64_t{16} * 1024 * 1024;
+    c._chunk_bytes =
+        to_u64("KYTHIRA_CACHE_CHUNK_BYTES", get_opt("KYTHIRA_CACHE_CHUNK_BYTES", "4194304"));
+    if (c._chunk_bytes == 0 || c._chunk_bytes > max_chunk) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_CHUNK_BYTES must be between 1 and 16777216");
+    }
+    c._max_value_bytes = to_u64("KYTHIRA_CACHE_MAX_VALUE_BYTES",
+                                get_opt("KYTHIRA_CACHE_MAX_VALUE_BYTES", "2147483648"));
+    c._min_free_bytes = to_u64("KYTHIRA_CACHE_MIN_FREE_BYTES",
+                               get_opt("KYTHIRA_CACHE_MIN_FREE_BYTES", "1073741824"));
+    c._min_free_inodes =
+        to_u64("KYTHIRA_CACHE_MIN_FREE_INODES", get_opt("KYTHIRA_CACHE_MIN_FREE_INODES", "10000"));
+    c._pack_threshold_bytes = to_u64("KYTHIRA_CACHE_PACK_THRESHOLD_BYTES",
+                                     get_opt("KYTHIRA_CACHE_PACK_THRESHOLD_BYTES", "65536"));
+    if (c._pack_threshold_bytes > max_chunk) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_PACK_THRESHOLD_BYTES must be at most 16777216");
+    }
+    c._orphan_grace_entries = to_u64("KYTHIRA_CACHE_ORPHAN_GRACE_ENTRIES",
+                                     get_opt("KYTHIRA_CACHE_ORPHAN_GRACE_ENTRIES", "100000"));
+    c._fetch_bytes_per_sec = to_u64("KYTHIRA_CACHE_FETCH_BYTES_PER_SEC",
+                                    get_opt("KYTHIRA_CACHE_FETCH_BYTES_PER_SEC", "50000000"));
+    c._snapshot_threshold_bytes =
+        to_u64("KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES",
+               get_opt("KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES", "268435456"));
+    c._auth_cache_ttl = std::chrono::seconds{static_cast<std::int64_t>(to_u64(
+        "KYTHIRA_CACHE_AUTH_CACHE_SECONDS", get_opt("KYTHIRA_CACHE_AUTH_CACHE_SECONDS", "300")))};
+
+    // A RESP SET is one log entry and lands as one chunk.
+    if (o._gateway._max_value_bytes > max_chunk) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_REDIS_MAX_VALUE_BYTES must be at most 16777216 with "
+            "KYTHIRA_CACHE_PERSISTENCE=file (a SET is stored as one chunk); larger values go "
+            "over HTTP");
+    }
+
+    c._http_listen = get_opt("KYTHIRA_CACHE_HTTP_LISTEN", "");
+    c._https_listen = get_opt("KYTHIRA_CACHE_HTTPS_LISTEN", "");
+    c._allow_plaintext_http = to_bool("KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP",
+                                      get_opt("KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP", "false"));
+    if (!c._http_listen.empty() && !c._allow_plaintext_http) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_HTTP_LISTEN serves credentials and values "
+            "unencrypted; set KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP=true to allow it, or use "
+            "KYTHIRA_CACHE_HTTPS_LISTEN");
+    }
+    c._tls_cert_path = get_opt("KYTHIRA_CACHE_HTTPS_CERT", o._gateway._tls_cert_path.c_str());
+    c._tls_key_path = get_opt("KYTHIRA_CACHE_HTTPS_KEY", o._gateway._tls_key_path.c_str());
+    if (!c._https_listen.empty() && (c._tls_cert_path.empty() || c._tls_key_path.empty())) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_HTTPS_LISTEN needs KYTHIRA_CACHE_HTTPS_CERT and "
+            "KYTHIRA_CACHE_HTTPS_KEY (or KYTHIRA_REDIS_TLS_CERT and KYTHIRA_REDIS_TLS_KEY)");
+    }
+    if (auto ph = get_opt("KYTHIRA_CACHE_PEER_HTTP", ""); !ph.empty()) {
+        c._peer_http = parse_id_map("KYTHIRA_CACHE_PEER_HTTP", ph);
+    } else {
+        // Each peer's front end of the kind this node forwards over.
+        const auto& listener = o._gateway._forward_tls ? c._https_listen : c._http_listen;
+        if (!listener.empty()) {
+            for (const auto& [id, url] : o._peers) {
+                c._peer_http[id] = host_of(url) + ":" + port_of(listener);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 auto is_loopback_address(const std::string& address) -> bool {
@@ -312,6 +423,7 @@ auto from_env() -> node_options {
             o._peer_gateways[id] = host_of(url) + ":" + port_of(listener);
         }
     }
+    read_cache_options(o);
     return o;
 }
 
@@ -375,6 +487,33 @@ auto usage() -> std::string {
            "  KYTHIRA_REDIS_PEER_GATEWAYS      id=host:port,... of every peer's gateway [peer host "
            "+ LISTEN port, or TLS_LISTEN port when forwarding over TLS]\n"
            "  KYTHIRA_REDIS_IO_THREADS, KYTHIRA_REDIS_WORKER_THREADS, KYTHIRA_REDIS_LOG_COMMANDS\n"
+           "\n"
+           "\n"
+           "Disk-backed cache (environment; .kiro/specs/disk-backed-build-cache/):\n"
+           "  KYTHIRA_CACHE_PERSISTENCE        file | memory (values and Raft state in RAM) "
+           "[file]\n"
+           "  KYTHIRA_CACHE_DATA_DIR           chunk store and Raft state (required for file)\n"
+           "  KYTHIRA_CACHE_MAX_DISK_BYTES     chunk-store budget per node; evicts above it "
+           "(required for file)\n"
+           "  KYTHIRA_CACHE_MIN_FREE_BYTES     refuse writes below this free space   "
+           "[1073741824]\n"
+           "  KYTHIRA_CACHE_MIN_FREE_INODES    refuse writes below this many inodes  [10000]\n"
+           "  KYTHIRA_CACHE_CHUNK_BYTES        at most 16777216                      [4194304]\n"
+           "  KYTHIRA_CACHE_MAX_VALUE_BYTES    largest value over HTTP               "
+           "[2147483648]\n"
+           "  KYTHIRA_CACHE_PACK_THRESHOLD_BYTES  smaller chunks go to pack files   [65536]\n"
+           "  KYTHIRA_CACHE_ORPHAN_GRACE_ENTRIES  log entries an unbound chunk lives [100000]\n"
+           "  KYTHIRA_CACHE_FETCH_BYTES_PER_SEC   peer chunk fetch rate              "
+           "[50000000]\n"
+           "  KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES  Raft log bytes per snapshot    "
+           "[268435456]\n"
+           "  KYTHIRA_CACHE_HTTPS_LISTEN       HTTP/WebDAV front end over TLS\n"
+           "  KYTHIRA_CACHE_HTTPS_CERT / _KEY                        [REDIS_TLS_CERT / _KEY]\n"
+           "  KYTHIRA_CACHE_HTTP_LISTEN        plaintext front end; needs the opt-in below\n"
+           "  KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP                                     [false]\n"
+           "  KYTHIRA_CACHE_AUTH_CACHE_SECONDS successful-auth cache lifetime         [300]\n"
+           "  KYTHIRA_CACHE_PEER_HTTP          id=host:port,... of every peer's front end [peer "
+           "host + this node's front-end port]\n"
            "\n"
            "ACL file lines: user <name> <pbkdf2-record|nopass|disabled> "
            "<read_only|read_write|admin> [prefix...|*] "

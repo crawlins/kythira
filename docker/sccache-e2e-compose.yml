@@ -58,6 +58,9 @@ x-gateway-env: &gateway-env
   # Small on purpose: a whole test run is a few hundred KiB, and the log
   # dump on failure should stay readable.
   KYTHIRA_REDIS_MAX_VALUE_BYTES: "8388608"
+  # Values and Raft state in RAM, the deployment these tests were written
+  # for. The disk-backed default needs a data volume and a disk budget.
+  KYTHIRA_CACHE_PERSISTENCE: "memory"
 
 services:
   kv1:
