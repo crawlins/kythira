@@ -45,6 +45,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace kythira {
 
@@ -289,7 +290,24 @@ protected:
         auto latest = current();
         auto latest_gen = generation();
         _current_notified = latest_gen;
-        for (auto& [id, cb] : _registry->callbacks) {
+        // Not a loop over `callbacks` itself: a callback may reset its own
+        // subscription, or another one, and the registry mutex is recursive,
+        // so that erase lands here mid-iteration. Erasing the element the loop
+        // stands on left `++it` reading a freed map node (a SIGSEGV in CI, in
+        // unsubscribe_waits_for_an_in_flight_callback), and destroyed the
+        // std::function that was still running. So walk a snapshot of the
+        // ids, skip any unsubscribed since, and call a copy.
+        std::vector<std::uint64_t> ids;
+        ids.reserve(_registry->callbacks.size());
+        for (const auto& [id, cb] : _registry->callbacks) {
+            ids.push_back(id);
+        }
+        for (const auto id : ids) {
+            const auto it = _registry->callbacks.find(id);
+            if (it == _registry->callbacks.end()) {
+                continue;
+            }
+            const callback cb = it->second;
             try {
                 cb(latest, latest_gen);
             } catch (const std::exception& e) {
