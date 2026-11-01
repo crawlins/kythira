@@ -72,6 +72,10 @@ struct gateway_env {
         "KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP",
         "KYTHIRA_CACHE_PEER_HTTP",
         "KYTHIRA_CACHE_MIN_FREE_BYTES",
+        "KYTHIRA_REDIS_TRANSACTIONS",
+        "KYTHIRA_REDIS_TXN_ISOLATION",
+        "KYTHIRA_REDIS_TXN_LOCK_TTL_MS",
+        "KYTHIRA_REDIS_TXN_MAX_RETRIES",
     };
     gateway_env(const gateway_env&) = delete;
     auto operator=(const gateway_env&) -> gateway_env& = delete;
@@ -302,4 +306,36 @@ BOOST_AUTO_TEST_CASE(https_takes_the_resp_certificate_by_default) {
     BOOST_TEST(opt._cache._tls_key_path == "/etc/kythira/kv.key");
     // Forwarding is over TLS, so peers' front ends are their HTTPS ones.
     BOOST_TEST(opt._cache._peer_http.at(2) == "kv2:8443");
+}
+
+// multi-raft-transactions task 9: the transaction knobs. This test links
+// config.cpp without the adapter, so asking for transactions is refused.
+BOOST_AUTO_TEST_CASE(transaction_settings) {
+    gateway_env env;
+    ::setenv("KYTHIRA_RAFT_BIND", "127.0.0.1", 1);
+    auto defaults = from_env();
+    BOOST_TEST(!defaults._gateway._transactions);
+    BOOST_TEST((defaults._gateway._txn_isolation == kythira::txn_isolation::read_committed));
+    BOOST_TEST(defaults._gateway._txn_lock_ttl.count() == 3000);
+    BOOST_TEST(defaults._gateway._txn_max_retries == 2u);
+
+    ::setenv("KYTHIRA_REDIS_TXN_ISOLATION", "read-committed-wait", 1);
+    ::setenv("KYTHIRA_REDIS_TXN_LOCK_TTL_MS", "750", 1);
+    auto set = from_env();
+    BOOST_TEST((set._gateway._txn_isolation == kythira::txn_isolation::read_committed_wait));
+    BOOST_TEST(set._gateway._txn_lock_ttl.count() == 750);
+
+    ::setenv("KYTHIRA_REDIS_TXN_ISOLATION", "eventual", 1);
+    BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
+    ::unsetenv("KYTHIRA_REDIS_TXN_ISOLATION");
+
+    ::setenv("KYTHIRA_REDIS_TRANSACTIONS", "on", 1);
+#if defined(KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
+    BOOST_TEST(from_env()._gateway._transactions);
+#else
+    BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
+#endif
+    // Only the in-memory store is wrapped for transactions.
+    file_mode();
+    BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
 }

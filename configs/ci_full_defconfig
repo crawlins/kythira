@@ -84,6 +84,9 @@ CONFIG_BOOST_FUTURE_BACKEND=y
 CONFIG_BOOST_BEAST_TRANSPORT=y
 CONFIG_PROXYGEN_TRANSPORT=y
 CONFIG_REDIS_GATEWAY=y
+# Compile redis_gateway_node with the transaction adapter here, so CI builds
+# both daemon variants (the other defconfigs keep the unwrapped one).
+CONFIG_REDIS_GATEWAY_TRANSACTIONS=y
 # Protobuf is always available — `grpc` is an unconditional vcpkg.json
 # dependency and pulls it in — so unlike ion-c this is safe to select. It was
 # missing from this list while CONFIG_PROTOBUF_SERIALIZER was inert (the

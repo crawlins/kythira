@@ -111,10 +111,17 @@ enum class acl_decision : std::uint8_t {
         upper_name == "GETRANGE" || upper_name == "TTL" || upper_name == "PING" ||
         upper_name == "ECHO" || upper_name == "SELECT" || upper_name == "CLIENT" ||
         upper_name == "COMMAND" || upper_name == "QUIT" || upper_name == "RESET" ||
-        upper_name == "AUTH" || upper_name == "HELLO" || upper_name == "DBSIZE") {
+        upper_name == "AUTH" || upper_name == "HELLO" || upper_name == "DBSIZE" ||
+        upper_name == "MGET" || upper_name == "MULTI" || upper_name == "EXEC" ||
+        upper_name == "DISCARD" || upper_name == "KYTHIRA.ISOLATION") {
         return redis_role::read_only;
     }
-    if (upper_name == "SET" || upper_name == "SETEX" || upper_name == "DEL") {
+    // MULTI/EXEC/DISCARD need nothing themselves: every queued command is
+    // authorized on its own when it is queued. KYTHIRA.TXN is the
+    // transaction coordinator's internal hop (multi-raft-transactions
+    // task 9); the gateway also refuses it from any non-internal session.
+    if (upper_name == "SET" || upper_name == "SETEX" || upper_name == "DEL" ||
+        upper_name == "MSET" || upper_name == "KYTHIRA.TXN") {
         return redis_role::read_write;
     }
     if (upper_name == "INFO") {

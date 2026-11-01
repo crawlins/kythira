@@ -254,7 +254,7 @@ Question 1 (gateway default) must be answered before task 9, and question 3
         apply-time range check, which `node` does not offer for normal
         entries.
 
-- [ ] 9. Redis gateway: tier-1 surface
+- [x] 9. Redis gateway: tier-1 surface
   - `--transactions`, `--txn-isolation`, `KYTHIRA.ISOLATION`; `MSET`,
     multi-key `DEL`, `MGET`, `MULTI`/`EXEC`/`DISCARD`
   - `KYTHIRA.TXN` internal commands over the forward link, refused from
@@ -264,6 +264,29 @@ Question 1 (gateway default) must be answered before task 9, and question 3
   - Tests: gateway integration suite, with transactions off proving today's
     behaviour unchanged
   - _Requirements: 2.2, 11.1, 11.2, 11.3, 11.5, 11.6_
+  - Done November 1, 2026. Notes:
+    - The daemon reads environment variables, not flags, so `--transactions`
+      and `--txn-isolation` are `KYTHIRA_REDIS_TRANSACTIONS` and
+      `KYTHIRA_REDIS_TXN_ISOLATION` (plus `_TXN_LOCK_TTL_MS` and
+      `_TXN_MAX_RETRIES`). The adapter is `CONFIG_REDIS_GATEWAY_TRANSACTIONS`
+      (default n; on in `ci_full_defconfig` so CI builds both daemons),
+      because the wrapper changes the snapshot format.
+    - Default isolation is `read_committed` (design open question 1); the
+      choice was put to Clark and the default is one line to change.
+    - The gateway's participant client sends synchronously on the command's
+      worker thread, so a multi-shard prepare runs shard by shard. The
+      protocol does not need the prepares to overlap; latency is the sum.
+    - `KYTHIRA.TXN SEND <envelope> <key>...` and `KYTHIRA.TXN READ <key>`.
+      A routing refusal comes back as `-KYTHIRA.MOVED`, which the client
+      turns into a re-partition. The gateway also installs itself as the
+      host's `txn_forwarder`, so the resolver reaches remote primaries.
+    - `MULTI` reads see the transaction's own buffered writes (the gateway
+      overlays them), as Redis users expect; `WATCH` is refused until
+      `mvcc::on`.
+    - Expiry sweeps and evictions skip keys a transaction holds.
+    - Tests: `tests/redis_gateway_txn_test.cpp` (6 cases), plus two cases
+      in the integration suite for transactions off and for an unwrapped
+      host refusing `_transactions`.
 
 ### Tier 2: timestamp oracle, MVCC, snapshot isolation
 

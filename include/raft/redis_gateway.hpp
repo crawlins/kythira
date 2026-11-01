@@ -30,16 +30,22 @@
 #include <raft/redis_gateway_value_access.hpp>
 #include <raft/redis_kv_state_machine.hpp>
 #include <raft/resp_protocol.hpp>
+#include <raft/future_default.hpp>
 #include <raft/shard_exceptions.hpp>
+#include <raft/txn_coordinator.hpp>
+#include <raft/txn_envelope.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <list>
 #include <map>
@@ -76,6 +82,22 @@ enum class redis_read_consistency : std::uint8_t {
     }
     if (s == "linearizable") {
         return redis_read_consistency::linearizable;
+    }
+    return std::nullopt;
+}
+
+/// `--txn-isolation` and `KYTHIRA.ISOLATION` spellings: the level names of
+/// `to_string(txn_isolation)`, with `-` accepted for `_`.
+[[nodiscard]] inline auto parse_txn_isolation(std::string_view s) -> std::optional<txn_isolation> {
+    std::string norm(s);
+    for (auto& c : norm) {
+        c = c == '-' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    for (auto level : {txn_isolation::read_committed, txn_isolation::read_committed_wait,
+                       txn_isolation::snapshot, txn_isolation::serializable}) {
+        if (norm == to_string(level)) {
+            return level;
+        }
     }
     return std::nullopt;
 }
@@ -161,6 +183,22 @@ struct redis_gateway_config {
     bool _log_commands = false;
 
     resp_parser_limits _parser_limits{};
+
+    /// Multi-key commands as cross-shard transactions
+    /// (.kiro/specs/multi-raft-transactions/ task 9): `MSET`, multi-key
+    /// `DEL`, `MGET` and `MULTI`/`EXEC`/`DISCARD`. Off by default, and
+    /// refused at `start()` unless the host's state machine is wrapped in
+    /// `transactional_state_machine` (Requirement 11.1). Off, those commands
+    /// keep today's behaviour (Requirement 11.2).
+    bool _transactions = false;
+    /// A connection's isolation until it sends `KYTHIRA.ISOLATION`. A level
+    /// the build cannot give is refused at `start()`, never downgraded.
+    txn_isolation _txn_isolation = txn_isolation::read_committed;
+    /// How long a prepared intent lives without a heartbeat before any party
+    /// may abort its transaction.
+    std::chrono::milliseconds _txn_lock_ttl{3000};
+    /// Automatic retries of a transaction that met a conflict.
+    std::size_t _txn_max_retries = 2;
 };
 
 /// Counters the gateway keeps for INFO and for the metrics back-end.
@@ -199,6 +237,12 @@ struct redis_gateway_stats {
     std::atomic<std::uint64_t> _advisories_received{0};
     /// Follower-served reads dropped because a shard's touch queue was full.
     std::atomic<std::uint64_t> _touches_dropped{0};
+    /// Transactions by outcome (task 9).
+    std::atomic<std::uint64_t> _txn_committed{0};
+    std::atomic<std::uint64_t> _txn_aborted{0};
+    std::atomic<std::uint64_t> _txn_unknown{0};
+    /// Plain writes that met a transaction's lock and resolved it.
+    std::atomic<std::uint64_t> _txn_lock_resolves{0};
 };
 
 /// What a disk-backed node adds to the gateway
@@ -254,6 +298,10 @@ public:
     using entry_type = typename value_access::entry_type;
     using value_context = typename value_access::context;
     using cache_hooks = redis_gateway_cache_hooks<node_id_type, group_id_type>;
+
+    /// Whether the host's state machine takes part in transactions; decided
+    /// by the build, as the snapshot format follows it.
+    static constexpr bool k_transactional = is_transactional_state_machine_v<state_machine_type>;
 
     redis_gateway(Host& host, redis_acl& acl, Logger& logger, Metrics& metrics,
                   redis_gateway_config config, endpoint_resolver resolver);
@@ -335,7 +383,43 @@ private:
         std::string _lib_name;
         std::string _lib_version;
         bool _closing = false;
+        /// `KYTHIRA.ISOLATION`; unset means the configured default.
+        std::optional<txn_isolation> _isolation;
+        /// Inside `MULTI`: commands queued for `EXEC`.
+        bool _in_multi = false;
+        /// A command was refused while queuing, so `EXEC` aborts (Redis's
+        /// EXECABORT).
+        bool _multi_failed = false;
+        std::vector<resp_command> _queued;
     };
+
+    /// The coordinator's view of the shards (`txn_participant_client`):
+    /// sends go to the local replica when it leads, and otherwise over the
+    /// forward link to the leader's gateway as `KYTHIRA.TXN`. Every send
+    /// blocks on the calling worker thread and returns a ready future, so
+    /// a multi-shard prepare runs shard by shard; the protocol does not
+    /// depend on the prepares overlapping.
+    class txn_client {
+    public:
+        using group_id_type = typename Host::group_id_type;
+        using send_future = future_default<std::vector<std::byte>>;
+
+        explicit txn_client(redis_gateway& gateway) : _gateway(gateway) {}
+
+        [[nodiscard]] auto resolve(const std::string& key) -> std::optional<group_id_type>;
+        [[nodiscard]] auto send(const std::vector<std::string>& keys,
+                                const std::vector<std::byte>& envelope,
+                                std::chrono::milliseconds timeout) -> send_future;
+        [[nodiscard]] auto refresh(std::exception_ptr error) -> bool;
+        [[nodiscard]] auto read(const std::string& key, std::chrono::milliseconds timeout)
+            -> txn_read_result<std::string>;
+        [[nodiscard]] auto now_ms() const -> std::uint64_t;
+
+    private:
+        redis_gateway& _gateway;
+    };
+    friend class txn_client;
+    using coordinator_type = transaction_coordinator<txn_client, std::string>;
 
     // ---- command dispatch ----------------------------------------------------
     auto execute(session& s, const resp_command& cmd) -> std::string;
@@ -353,6 +437,42 @@ private:
     auto handle_command(session& s, const resp_command& cmd) -> std::string;
     auto handle_dbsize(session& s) -> std::string;
 
+    // ---- transactions (multi-raft-transactions task 9) -------------------------
+    /// Whether a command is one the transaction surface owns. Off, they fall
+    /// through to today's dispatch (unknown command, or single-key only).
+    [[nodiscard]] auto is_txn_command(std::string_view upper, const resp_command& cmd) const
+        -> bool;
+    auto execute_txn_command(session& s, std::string_view upper, const resp_command& cmd)
+        -> std::string;
+    auto handle_mset(session& s, const resp_command& cmd) -> std::string;
+    auto handle_mget(session& s, const resp_command& cmd) -> std::string;
+    auto handle_multi_del(session& s, const resp_command& cmd) -> std::string;
+    auto handle_exec(session& s) -> std::string;
+    auto handle_isolation(session& s, const resp_command& cmd) -> std::string;
+    auto handle_internal_txn(session& s, const resp_command& cmd) -> std::string;
+    /// Queue one command inside `MULTI`, or refuse it (and doom the `EXEC`).
+    auto queue_in_multi(session& s, std::string_view upper, const resp_command& cmd) -> std::string;
+    [[nodiscard]] auto isolation_of(const session& s) const -> txn_isolation;
+    [[nodiscard]] auto make_options(const session& s) const -> txn_options;
+    /// Reply for a commit that did not commit, or empty when it did.
+    auto outcome_error(session& s, const txn_outcome<std::string>& outcome) -> std::string;
+    /// A `SET` command for `value`, with SETEX's deadline resolved now.
+    [[nodiscard]] auto set_command(const std::string& key, std::string_view value,
+                                   std::uint64_t expire_at_ms) const -> std::vector<std::byte>;
+    /// Send one envelope to the shard owning `keys`; the encoded result.
+    auto txn_send(const std::vector<std::string>& keys, const std::vector<std::byte>& envelope,
+                  std::chrono::milliseconds timeout) -> std::vector<std::byte>;
+    auto txn_read(const std::string& key, std::chrono::milliseconds timeout)
+        -> txn_read_result<std::string>;
+    /// The read on this replica, or nullopt when it does not lead the shard.
+    auto txn_read_local(const std::string& key) -> std::optional<txn_read_result<std::string>>;
+    /// Who to ask about `key`'s shard when this replica does not lead it.
+    auto txn_leader_of(const std::string& key) -> std::optional<node_id_type>;
+    /// A plain write met `holder`'s lock: finish that transaction if its
+    /// time is up. True when the key may now be free.
+    auto resolve_lock(const std::string& key, const txn_id& holder, const std::string& primary)
+        -> bool;
+
     // ---- read/write plumbing ---------------------------------------------------
     /// Outcome of a local lookup: the handle, or a reason it could not be
     /// served here (in which case `_forward_to` may name a leader). The
@@ -369,6 +489,11 @@ private:
                 std::string& error_reply, std::optional<node_id_type>& forward_to) -> bool;
     auto forward(session& s, const resp_command& cmd, const node_id_type& to)
         -> std::optional<std::string>;
+    /// The forward link itself, with none of `forward()`'s one-hop and
+    /// session checks: `KYTHIRA.TXN` is one hop by construction, as the
+    /// receiving gateway never forwards it again.
+    auto forward_argv(const std::vector<std::string>& argv, const node_id_type& to,
+                      std::string_view what) -> std::optional<std::string>;
     auto forward_endpoint(const node_id_type& to) -> std::optional<std::string>;
     auto locate(const std::string& key, std::string& error_reply,
                 std::optional<node_id_type>& forward_to) -> group_node_type*;

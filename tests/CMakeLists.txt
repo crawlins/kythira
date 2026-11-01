@@ -1349,6 +1349,11 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
         target_link_libraries(cache_http_front_end_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         set_tests_properties(cache_http_front_end_test PROPERTIES
             LABELS "multi-raft;redis;cache" TIMEOUT 900)
+        # .kiro/specs/multi-raft-transactions/ task 9: the gateway's
+        # transaction surface over a wrapped KV state machine.
+        add_raft_completion_test(redis_gateway_txn_test redis_gateway_txn_test.cpp)
+        target_link_libraries(redis_gateway_txn_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        set_tests_properties(redis_gateway_txn_test PROPERTIES LABELS "multi-raft;redis;txn" TIMEOUT 600)
     else()
         message(STATUS "redis_gateway_integration_test: skipped (requires folly)")
     endif()

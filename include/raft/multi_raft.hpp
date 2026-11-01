@@ -874,6 +874,7 @@ public:
     using log_index_type = typename Types::log_index_type;
     using log_entry_type = typename Types::log_entry_type;
     using future_type = typename Types::future_type;
+    using state_machine_type = typename Types::state_machine_type;
 
     using shared_client_type = typename Types::network_client_type;
     using shared_server_type = typename Types::network_server_type;

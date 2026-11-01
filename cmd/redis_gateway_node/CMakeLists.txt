@@ -40,6 +40,12 @@ target_link_libraries(redis_gateway_node PRIVATE
 )
 
 target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_BENCH_HAS_BEAST)
+# Cross-shard transactions (.kiro/specs/multi-raft-transactions/ task 9):
+# the KV state machine is wrapped, which changes its snapshot format, so it
+# is a build choice. Off unless Kconfig turns it on explicitly.
+if(KCONFIG_REDIS_GATEWAY_TRANSACTIONS)
+    target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
+endif()
 target_compile_features(redis_gateway_node PRIVATE cxx_std_23)
 
 set_target_properties(redis_gateway_node PROPERTIES
