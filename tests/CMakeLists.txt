@@ -1284,6 +1284,18 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
                    "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node/config.cpp")
     target_include_directories(redis_gateway_node_config_unit_test PRIVATE
                                "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node")
+    # .kiro/specs/disk-backed-build-cache/ task 2: the per-node chunk store and
+    # its pack files. The crash and write-failure cases need libfiu's control
+    # API; without it they compile away and the rest still run.
+    add_raft_completion_test(cache_chunk_store_unit_test cache_chunk_store_unit_test.cpp)
+    target_link_libraries(cache_chunk_store_unit_test PRIVATE OpenSSL::Crypto)
+    set_tests_properties(cache_chunk_store_unit_test PROPERTIES
+        LABELS "unit;redis;cache" TIMEOUT 600)
+    if(FIU_FOUND)
+        target_compile_definitions(cache_chunk_store_unit_test PRIVATE FIU_ENABLE)
+        target_link_libraries(cache_chunk_store_unit_test PRIVATE ${FIU_LDFLAGS})
+        target_include_directories(cache_chunk_store_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+    endif()
     if(folly_FOUND)
         add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
         target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
