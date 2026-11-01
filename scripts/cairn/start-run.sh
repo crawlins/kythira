@@ -92,8 +92,17 @@ fi
 # A fresh run directory, made current for chaos_http.py.
 run_dir="/runs/$project-$(date -u +%Y%m%dT%H%M%SZ)"
 image_id="$("$runtime" image inspect --format '{{.Id}}' "$node_image")"
-"$runtime" exec "$tool" chaos_ctl init --layout cairn --seed "$seed" --image-id "$image_id" \
-    --run-dir "$run_dir" > /dev/null || fail "chaos_ctl init failed"
+# The tool server's image has no git checkout, so chaos_ctl cannot find the
+# commit itself and every schedule-log line would say "unknown" (as all of
+# M1's did). The image is built from this tree, so record its HEAD, marked
+# when the tree has uncommitted changes.
+kythira_commit="$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$kythira_commit" != unknown ] && ! git -C "$repo" diff --quiet HEAD -- 2>/dev/null; then
+    kythira_commit="$kythira_commit-dirty"
+fi
+"$runtime" exec -e KYTHIRA_COMMIT="$kythira_commit" "$tool" chaos_ctl init --layout cairn \
+    --seed "$seed" --image-id "$image_id" --run-dir "$run_dir" > /dev/null \
+    || fail "chaos_ctl init failed"
 "$runtime" exec "$tool" ln -sfn "$run_dir" /runs/current
 
 status=""
