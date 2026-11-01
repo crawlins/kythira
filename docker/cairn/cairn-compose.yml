@@ -222,6 +222,7 @@ services:
     environment:
       LLM_SSH_TARGET: "${CAIRN_LLM_SSH:-}"
       LLM_REMOTE_PORT: "${CAIRN_LLM_REMOTE_PORT:-8080}"
+      JSON_REPAIR: "${CAIRN_LLM_JSON_REPAIR:-on}"
     volumes:
       - ${CAIRN_LLM_SSH_KEY:-/dev/null}:/run/llm-key:ro
     networks:

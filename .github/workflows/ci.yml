@@ -3616,12 +3616,15 @@ jobs:
       # side. docker/cairn/tool_server/chaos_http.py is the agents' only
       # door to chaos_ctl; its tests check it calls nothing chaos_ctl does
       # not list, and drive the workers' `chaos` client (Node) through it.
-      # Standard library only; a few seconds.
+      # docker/cairn/llm_tunnel/json_repair.py sits in the model path and
+      # unwraps a final answer's JSON; its tests check tool calls and prose
+      # pass through untouched. Standard library only; a few seconds.
       - name: Test the container API and egress proxies and the chaos front
         run: |
           python3 -m unittest discover -s docker/container_api_proxy -p '*_test.py' -v
           python3 -m unittest discover -s docker/cairn/egress_proxy -p '*_test.py' -v
           python3 -m unittest discover -s docker/cairn/tool_server -p '*_test.py' -v
+          python3 -m unittest discover -s docker/cairn/llm_tunnel -p '*_test.py' -v
 
       - name: Setup GitHub Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

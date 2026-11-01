@@ -638,6 +638,20 @@ compatibility").
     is not bare JSON, and timing luck. Constrained JSON decoding for the
     bootstrap reply only would address the first; a longer limit or a
     stronger model the second. A re-run is Clark's call.
+  - Third campaign (approved November 1: the kept AMI on a g5.xlarge,
+    $15 cap). Instead of constrained decoding, which Cairn and Pi would
+    have to ask for, the llm-tunnel now runs
+    `docker/cairn/llm_tunnel/json_repair.py` in the model path. It
+    unwraps a final answer whose JSON object is plainly there (a
+    `<think>` block, a code fence, or prose before a trailing object)
+    and logs the text of any final answer that is still not bare JSON.
+    That log is needed because the dispatcher's "bootstrap parse failed"
+    preview is cut off at the prompt echo, before the reply. The driver
+    and host setup are now in the repo: `scripts/cairn/m1-campaign.sh`
+    (bootstrap restarts, early abort, per-run summary; it now saves the
+    logs of a failed bootstrap, and counts tokens per run, not as a
+    running total) and `scripts/cairn/llm-gpu-setup.sh` (the serve flags
+    that gave bare JSON, cost guards, pre-warming a restored volume).
 
 ## M2-M5
 
