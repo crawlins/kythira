@@ -293,6 +293,14 @@ private:
         return changed;
     }
 
+    /// The disk-backed store's records (`cache_kv_state_machine`). The
+    /// in-memory gateway never proposes them, so they are no-ops here: a
+    /// pure function of the entry, as every apply must be, rather than an
+    /// exception that would stop the replica.
+    auto apply_one(const redis_kv_put_chunk_command&) -> bool { return false; }
+    auto apply_one(const redis_kv_commit_command&) -> bool { return false; }
+    auto apply_one(const redis_kv_touch_command&) -> bool { return false; }
+
     auto apply_one(const redis_kv_evict_command& c) -> bool {
         bool changed = false;
         for (const auto& k : c._keys) {

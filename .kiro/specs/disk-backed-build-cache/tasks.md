@@ -282,6 +282,58 @@ green). Each job's log was fetched with
     100,000 keys for Requirement 2.2.
   - _Requirements: 2.1–2.4, 2.6, 2.7, 3.1–3.7, 4.1, 4.2, 4.4_
 
+### Task 3 progress (2026-11-01)
+
+Done: the codec and the state machine. Still open: making `redis_gateway` a
+template on its state machine and running the existing gateway tests over
+both (Requirement 2.7).
+
+`include/raft/cache_kv_state_machine.hpp`, the format 0x02 records in
+`redis_kv_commands.hpp`, and `tests/cache_kv_state_machine_unit_test.cpp`.
+That test has 14 cases, including properties 1-4 as seeded random trials
+(20, 10, 20 and 30 trials). `redis_kv_commands_unit_test` gains 5 cases for
+the new records. Departures from the design, and choices it left open:
+
+- **`put_chunk` carries the uploading key.** design.md left it empty, but
+  `multi_raft` routes every proposal through `redis_kv_partitioner`, and
+  cross-shard admission refuses an empty routing key. The key is routing
+  only; `apply` ignores it.
+- **Each opcode has exactly one version.** 0x01-0x04 stay under 0x01, so the
+  in-memory gateway's entries are byte-identical to today's. 0x05-0x07 are
+  valid only under 0x02. `redis_kv_state_machine` treats the new opcodes as
+  no-ops.
+- **`commit` requires every chunk to be pending**, not merely referenced.
+  Pending-ness is replicated state, so the check cannot diverge. It does
+  require the front end (task 6) to propose `put_chunk` for every chunk of
+  every upload, including chunks already stored, which also restarts their
+  grace.
+- **A pending chunk stays pending for the whole grace period**, even after a
+  `commit` binds it. Another upload of the same bytes may be in flight, and
+  the manifest's own reference keeps the chunk alive afterwards.
+- **RESP `SET` cuts values into fixed 4 MiB pieces**, not the configured
+  chunk size. The chunk list is replicated state, and a node configured
+  differently would otherwise build a different manifest from the same entry.
+- **No per-replica chunk counts are kept.** Each occurrence in a manifest,
+  and each pending chunk, holds one reference in the node-wide
+  `chunk_refcounts` directly. A restore computes the before/after difference
+  from the two indexes and adjusts by it (acquires first, then releases).
+  A replica that is destroyed (shutdown, or the source of a merge) `forget`s
+  its references without deleting files. Start-up orphan collection (task 7)
+  removes whatever that leaves unreferenced.
+- **Requirement 2.2, measured:** 100,000 sccache-shaped keys (78-byte keys,
+  one chunk each) cost **318 bytes per key**, against a budget of 334
+  (256 + key), node-wide reference counts included. The first draft cost
+  508. What got it under:
+  - an intrusive handle (`cache_manifest_ptr`) instead of `shared_ptr`;
+  - a one-chunk value stores no chunk list, because its chunk is the value;
+  - longer chunk lists live in the manifest's own allocation;
+  - the `has_all` bit is packed into the count word, so a manifest is
+    56 bytes;
+  - the per-replica count map is dropped (see above).
+- `chunk_refcounts` gained bulk `acquire`/`release`, `forget` and
+  `put_referenced`, and `cache_chunk_store` gained `put_verified`, so a chunk
+  `apply` has already hashed is not hashed twice.
+
 - [x] 4. `binary_file_persistence_engine`
   - `include/raft/binary_file_persistence.hpp` per Component 4: an atomically
     rewritten `meta`, CRC'd log segments, prefix truncation by segment, torn
