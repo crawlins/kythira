@@ -1,11 +1,11 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 0/13 tasks complete
+## Status: 2/13 tasks complete
 
-**Last Updated**: October 15, 2026 (spec written, then amended the same day
-for inode limits (a free-inode floor, small-value pack files, voter
-free-space reports and an inode chaos case) and for a full-tree sccache
-WebDAV measurement against the OCI cache's numbers; nothing implemented).
+**Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
+node-wide reference counts. Task 1 was measured on October 27. The spec was
+written on October 15 and amended the same day for inode limits and the
+full-tree WebDAV measurement).
 
 ## Overview
 
@@ -219,7 +219,7 @@ green). Each job's log was fetched with
   many tree-cache misses a run has. It would be ≈ 0 on a fully warm run, and
   about 1.1 GiB more for each additional leg that misses.
 
-- [ ] 2. `cache_chunk_store` and `chunk_refcounts`
+- [x] 2. `cache_chunk_store` and `chunk_refcounts`
   - `include/raft/cache_chunk_store.hpp` per design.md Components 1 and 1a:
     the two-level layout, temp-write-fsync-rename, idempotent `put`, streaming
     `verify`, a `tmp/` wipe on open, and pack files for chunks under the pack
@@ -232,6 +232,42 @@ green). Each job's log was fetched with
     mid-compaction leaving no lost or resurrected chunk, and 100,000 small
     `put`s creating a bounded number of files.
   - _Requirements: 2.1, 2.5, 3.3, 6.7, 6.8, 10.1_
+
+### Task 2 results (2026-11-01)
+
+`include/raft/cache_chunk_store.hpp` (with `include/raft/crc32.hpp`) and
+`tests/cache_chunk_store_unit_test.cpp`, 20 cases, all passing locally
+(16 without libfiu). Choices the design left open:
+
+- **`link` instead of `rename`** for a loose chunk. `link` fails with
+  `EEXIST` when the name exists, so exactly one of several concurrent writers
+  of a chunk is told it created it, and the file and byte counters stay
+  exact. The temporary name is unlinked either way.
+- **`put` checks the bytes against the name.** One SHA-256 next to an fsync
+  is cheap, and it keeps "a name is its content's hash" unconditional.
+- **The `.dead` sidecar records offsets, not hashes.** A chunk removed and
+  stored again can have a dead and a live record in the same pack.
+- **Duplicates found by the open scan are written to the sidecar.** A crash
+  mid-compaction leaves each live chunk in two packs. The lower-numbered copy
+  wins, and the other is marked dead on disk, so a later `remove` of that
+  chunk cannot be undone by the copy surviving a restart.
+- **A bad CRC ends the pack wherever it is**, not only at the tail. Chunks
+  after it become absent, which the state machine already treats as "fetch
+  from a peer" (Requirement 2.6). A fatal error would turn one bad sector
+  into a node that cannot start.
+- **`chunk_refcounts` serialises create and delete** under one mutex
+  (`put_and_acquire`, `release`), so one shard cannot remove a chunk between
+  another shard's write of the same bytes and its reference. That holds the
+  mutex across a large chunk's fsync; chunk writes on one disk contend
+  anyway.
+- **Compaction is a call, `compact()`**, for task 7's policy tick to make. It
+  holds the store mutex while it copies one pack (64 MiB at most).
+- **Fault points** (`raft/cache/chunk_store/write`, `.../before_rename`,
+  `.../compact_before_unlink`, `raft/cache/statvfs_low_bytes`,
+  `raft/cache/statvfs_low_inodes`) are there for task 10's chaos scenarios as
+  well as the unit tests.
+- 100,000 64-byte `put`s make one pack file (four files in the data
+  directory in all), each fsynced, in about 20 s on the sandbox's disk.
 
 - [ ] 3. `cache_kv_state_machine` and codec version 2
   - Add `put_chunk`, `commit` and `touch` to `redis_kv_commands.hpp` under
