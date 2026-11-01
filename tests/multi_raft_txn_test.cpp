@@ -41,6 +41,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -174,10 +175,18 @@ auto kv_value_of(const kv_sm& sm, const key_type& k) -> std::optional<std::vecto
 /// Three hosts over one fabric, each driven by its own thread.
 class cluster {
 public:
-    cluster() {
+    using tweak_fn = std::function<void(config_type&)>;
+
+    /// `tweak` adjusts every host's config before it is built; the resolver
+    /// cases shorten its interval and retention with it.
+    explicit cluster(const tweak_fn& tweak = {}) {
         const std::vector<node_id_t> voters{1, 2, 3};
         for (node_id_t id = 1; id <= k_node_count; ++id) {
-            _hosts.push_back(std::make_unique<host_type>(make_config(id)));
+            auto cfg = make_config(id);
+            if (tweak) {
+                tweak(cfg);
+            }
+            _hosts.push_back(std::make_unique<host_type>(std::move(cfg)));
             _hosts.back()->create_group(descriptor_type{
                 ._group_id = 1,
                 ._range = shard_range<key_type>{._start = std::nullopt, ._end = key_type{"m"}},
@@ -206,6 +215,15 @@ public:
             raw.push_back(h.get());
         }
         _client = std::make_unique<client_type>(std::move(raw), kv_value_of);
+        // A resolver whose host does not lead the primary's shard reaches it
+        // through the client, as a deployment's own RPC client would.
+        for (auto& h : _hosts) {
+            h->set_txn_forwarder([this](const std::vector<key_type>& keys,
+                                        const std::vector<std::byte>& env,
+                                        std::chrono::milliseconds timeout) {
+                return _client->send(keys, env, timeout).get();
+            });
+        }
     }
 
     ~cluster() {
@@ -241,6 +259,37 @@ public:
 
     [[nodiscard]] auto intent_on(const key_type& key) -> bool {
         return _client->read(key, std::chrono::seconds{2})._intent.has_value();
+    }
+
+    /// Every host's resolver counts, summed.
+    [[nodiscard]] auto resolver_stats() -> host_type::txn_resolver_counts {
+        host_type::txn_resolver_counts sum;
+        for (auto& h : _hosts) {
+            const auto s = h->txn_resolver_stats();
+            sum._passes += s._passes;
+            sum._committed += s._committed;
+            sum._aborted += s._aborted;
+            sum._pending += s._pending;
+            sum._unreachable += s._unreachable;
+            sum._cleaned += s._cleaned;
+        }
+        return sum;
+    }
+
+    /// Whether the leader of `group` remembers any finished transaction.
+    [[nodiscard]] auto remembers_finished(group_id_type group) -> bool {
+        for (auto& h : _hosts) {
+            auto* n = h->group_node(group);
+            if (n == nullptr) {
+                continue;
+            }
+            const auto seen = n->with_leader_state_machine(
+                [](txn_sm& sm) { return !sm.finished_transactions().empty(); });
+            if (seen.has_value()) {
+                return *seen;
+            }
+        }
+        return true;  // no settled leader yet: assume it does
     }
 
 private:
@@ -400,8 +449,11 @@ BOOST_AUTO_TEST_CASE(a_stale_route_is_repaired_and_the_keys_re_partitioned,
 BOOST_AUTO_TEST_CASE(a_conflict_aborts_and_leaves_nothing_behind, *boost::unit_test::timeout(60)) {
     cluster c;
     BOOST_REQUIRE(c.await_leaders());
-    // Another transaction holds "zebra": prepared, never committed.
-    coordinator_type holder(c.client(), fast_options());
+    // Another transaction holds "zebra": prepared, never committed. A long
+    // TTL, so the resolver leaves the lock alone while the test runs.
+    kythira::txn_options held = fast_options();
+    held.lock_ttl = std::chrono::seconds{30};
+    coordinator_type holder(c.client(), held);
     holder.set_crash_hook([](txn_step s) {
         if (s == txn_step::prepared) {
             throw coordinator_crashed{};
@@ -527,6 +579,168 @@ BOOST_AUTO_TEST_CASE(every_crash_point_is_all_or_nothing_after_resolution,
             }
         }
     }
+}
+
+/// The resolver cases: a 200 ms resolver interval, and no reader ever meets
+/// the locks, so only the resolver can clear them.
+constexpr auto k_resolver_interval = std::chrono::milliseconds{200};
+
+auto fast_resolver(config_type& cfg) -> void {
+    cfg.resolver_interval = k_resolver_interval;
+}
+
+/// Polls until no key in `keys` holds an intent; returns how long that took.
+auto wait_for_no_intents(cluster& c, const std::vector<std::string>& keys,
+                         std::chrono::steady_clock::time_point since,
+                         std::chrono::milliseconds give_up)
+    -> std::optional<std::chrono::milliseconds> {
+    while (std::chrono::steady_clock::now() - since < give_up) {
+        bool any = false;
+        for (const auto& k : keys) {
+            any = any || c.intent_on(k);
+        }
+        if (!any) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - since);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    return std::nullopt;
+}
+
+BOOST_AUTO_TEST_CASE(an_abandoned_transaction_clears_within_ttl_plus_two_intervals,
+                     *boost::unit_test::timeout(120)) {
+    // Before the commit point the resolver aborts; after it, it rolls the
+    // secondaries forward. Either way nobody but the resolver acts.
+    for (const auto step : {txn_step::prepared, txn_step::primary_committed}) {
+        BOOST_TEST_CONTEXT("crash after step " << static_cast<int>(step)) {
+            cluster c(fast_resolver);
+            BOOST_REQUIRE(c.await_leaders());
+            const auto options = fast_options();
+            coordinator_type writer(c.client(), options);
+            writer.set_crash_hook([step](txn_step s) {
+                if (s == step) {
+                    throw coordinator_crashed{};
+                }
+            });
+            writer.begin();
+            writer.put("apple", kv_put("apple", "v"));
+            writer.put("mango", kv_put("mango", "v"));
+            writer.put("zebra", kv_put("zebra", "v"));
+            // The TTL deadline is stamped during commit(), so measuring from
+            // just before it is measuring from no later than the deadline
+            // minus the TTL.
+            const auto started = std::chrono::steady_clock::now();
+            BOOST_CHECK_THROW(writer.commit(), coordinator_crashed);
+            writer.drain();
+            BOOST_REQUIRE(c.intent_on("zebra") || c.intent_on("apple"));
+
+            // Requirement 4.6: TTL plus two resolver intervals.
+            const auto bound = options.lock_ttl + 2 * k_resolver_interval;
+            const auto took = wait_for_no_intents(c, {"apple", "mango", "zebra"}, started,
+                                                  std::chrono::seconds{10});
+            BOOST_REQUIRE(took.has_value());
+            BOOST_TEST(took->count() <= bound.count(), "locks cleared after "
+                                                           << took->count() << " ms; bound "
+                                                           << bound.count() << " ms");
+
+            const bool committed = step == txn_step::primary_committed;
+            for (const auto* k : {"apple", "mango", "zebra"}) {
+                BOOST_TEST(c.value(k) ==
+                           (committed ? std::optional<std::string>("v") : std::nullopt));
+            }
+            const auto stats = c.resolver_stats();
+            BOOST_TEST((committed ? stats._committed : stats._aborted) >= 1U);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_heartbeating_transaction_is_left_alone, *boost::unit_test::timeout(60)) {
+    // A secondary's intent keeps its prepare's deadline; only the primary's
+    // record is extended by heartbeats. So the resolver on the secondary's
+    // shard sees an "expired" intent, must ask the primary, find it pending,
+    // and leave the lock: never abort a live transaction. Driven op by op,
+    // as a coordinator that is slow but alive would.
+    using kythira::encode_txn_envelope;
+    using env_type = kythira::txn_envelope<key_type>;
+    cluster c(fast_resolver);
+    BOOST_REQUIRE(c.await_leaders());
+    auto& client = c.client();
+    const auto send = [&](const std::vector<key_type>& keys, const env_type& e) {
+        return kythira::decode_txn_result<key_type>(
+            client.send(keys, encode_txn_envelope<key_type>(e), std::chrono::seconds{5}).get());
+    };
+    const txn_id id{7, 7};
+    const auto ttl = std::uint64_t{300};
+    const auto deadline = client.now_ms() + ttl;
+    BOOST_REQUIRE(
+        send({"zebra"},
+             kythira::txn_prepare<key_type>{
+                 id, "apple", {{"zebra", kv_put("zebra", "live")}}, {}, 0, deadline, false})
+            ._status == kythira::txn_result_status::ok);
+    BOOST_REQUIRE(
+        send({"apple"},
+             kythira::txn_prepare<key_type>{
+                 id, "apple", {{"apple", kv_put("apple", "live")}}, {}, 0, deadline, true})
+            ._status == kythira::txn_result_status::ok);
+
+    // Heartbeat for well past the TTL and several resolver intervals.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{1500};
+    while (std::chrono::steady_clock::now() < until) {
+        std::ignore =
+            send({"apple"}, kythira::txn_heartbeat<key_type>{id, "apple", client.now_ms() + ttl});
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+    BOOST_TEST(c.intent_on("zebra"));
+    BOOST_TEST(c.resolver_stats()._pending >= 1U);
+    BOOST_TEST(c.resolver_stats()._aborted == 0U);
+
+    // The coordinator commits; the resolver then rolls the secondary forward
+    // without being asked.
+    BOOST_REQUIRE(send({"apple"}, kythira::txn_commit_primary<key_type>{id, "apple", 0})._status ==
+                  kythira::txn_result_status::ok);
+    const auto cleared = wait_for_no_intents(c, {"zebra"}, std::chrono::steady_clock::now(),
+                                             std::chrono::seconds{5});
+    BOOST_TEST(cleared.has_value());
+    BOOST_TEST(c.value("apple") == std::optional<std::string>("live"));
+    BOOST_TEST(c.value("zebra") == std::optional<std::string>("live"));
+}
+
+BOOST_AUTO_TEST_CASE(finished_records_are_cleaned_up_after_retention,
+                     *boost::unit_test::timeout(60)) {
+    constexpr auto retention = std::chrono::milliseconds{1000};
+    cluster c([&](config_type& cfg) {
+        fast_resolver(cfg);
+        cfg.txn_record_retention = retention;
+    });
+    BOOST_REQUIRE(c.await_leaders());
+    coordinator_type txn(c.client(), fast_options());
+    const auto id = txn.begin();
+    txn.put("apple", kv_put("apple", "a"));
+    txn.put("zebra", kv_put("zebra", "z"));
+    const auto finished_at = std::chrono::steady_clock::now();
+    BOOST_REQUIRE(txn.commit()._kind == txn_outcome_kind::committed);
+    txn.drain();
+
+    // Kept through the retention: a retried commit still finds its record.
+    BOOST_TEST(txn.transaction_status(id, "apple") == txn_record_status::committed);
+    BOOST_TEST(c.remembers_finished(1));
+    BOOST_TEST(c.remembers_finished(2));
+
+    // Then dropped, on the primary's shard (the record) and the secondary's
+    // (the settled entry) alike.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while ((c.remembers_finished(1) || c.remembers_finished(2)) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    BOOST_TEST(!c.remembers_finished(1));
+    BOOST_TEST(!c.remembers_finished(2));
+    BOOST_TEST((std::chrono::steady_clock::now() - finished_at >= retention));
+    BOOST_TEST(c.resolver_stats()._cleaned >= 2U);
+    // The data stays.
+    BOOST_TEST(c.value("apple") == std::optional<std::string>("a"));
+    BOOST_TEST(c.value("zebra") == std::optional<std::string>("z"));
 }
 
 BOOST_AUTO_TEST_CASE(an_isolation_the_build_lacks_is_refused_at_begin) {
