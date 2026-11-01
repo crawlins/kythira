@@ -353,6 +353,36 @@ BOOST_AUTO_TEST_CASE(a_run_keeps_append_concurrency_puts_in_flight) {
     BOOST_TEST(engine.get_last_log_index() == 12U);
 }
 
+// The first run into an empty log sends its first object alone. The load
+// path keeps the chain from the lowest log object it finds, so if log/2..4
+// could land while log/1 failed, a restart (here: an engine built over the
+// store without the failed one's stray cleanup) would load a log starting
+// at index 2, with nothing below it. Seen in CI as a crash-injection case
+// loading "log [3..4]" after one request of a concurrent segmented append.
+BOOST_AUTO_TEST_CASE(a_run_into_an_empty_log_sends_its_first_object_before_the_rest) {
+    store_t store;
+    kythira::object_persistence_options opts;
+    opts.append_concurrency = 4;
+    {
+        auto engine = make_object_engine(store, opts);
+        store.fail_puts_for_key(log_key(1));
+        store.clear_requests();
+        BOOST_CHECK_THROW(engine.append_log_entries(make_run(1, 1, 8)), std::exception);
+        // Only log/1 was sent (the engine retries a failed PUT once).
+        BOOST_TEST(store.count_requests("PUT") == store.count_requests("PUT " + log_key(1)));
+    }
+    store.fail_puts_for_key("");
+    auto restarted = make_object_engine(store, opts);
+    BOOST_TEST(restarted.get_last_log_index() == 0U);
+
+    // Once the log has a first object, the next run goes out concurrently.
+    restarted.append_log_entries(make_run(1, 1, 1));
+    store.state()->put_delay = std::chrono::milliseconds{20};
+    restarted.append_log_entries(make_run(1, 2, 8));
+    BOOST_TEST(store.state()->max_puts_in_flight > 1U);
+    BOOST_TEST(restarted.get_last_log_index() == 9U);
+}
+
 BOOST_AUTO_TEST_CASE(a_store_that_does_not_declare_concurrency_gets_one_put_at_a_time) {
     store_t inner;
     kythira::object_persistence_options opts;
