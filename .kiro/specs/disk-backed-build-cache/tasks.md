@@ -1,9 +1,9 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 2/13 tasks complete
+## Status: 3/13 tasks complete
 
 **Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
-node-wide reference counts. Task 1 was measured on October 27. The spec was
+node-wide reference counts; task 4: the binary persistence engine. Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
 
@@ -282,7 +282,7 @@ green). Each job's log was fetched with
     100,000 keys for Requirement 2.2.
   - _Requirements: 2.1–2.4, 2.6, 2.7, 3.1–3.7, 4.1, 4.2, 4.4_
 
-- [ ] 4. `binary_file_persistence_engine`
+- [x] 4. `binary_file_persistence_engine`
   - `include/raft/binary_file_persistence.hpp` per Component 4: an atomically
     rewritten `meta`, CRC'd log segments, prefix truncation by segment, torn
     tail recovery, and the snapshot file.
@@ -290,6 +290,48 @@ green). Each job's log was fetched with
     `tests/file_persistence_unit_test.cpp` to it, and add a kill-mid-append
     test.
   - _Requirements: 5.1, 5.3_
+
+### Task 4 results (2026-11-01)
+
+`include/raft/binary_file_persistence.hpp` and
+`tests/binary_file_persistence_unit_test.cpp`: the 21 cases of
+`file_persistence_unit_test.cpp` ported unchanged apart from the engine type,
+plus 14 of its own (35 with libfiu), all passing locally, under ASan/UBSan,
+and the barrier cases under TSan. Choices the design left open:
+
+- **Records carry the entry type** (`u8` after the term), which design.md's
+  record layout left out. Configuration and no-op entries must reload as
+  what they were.
+- **RAM holds each entry's location, not its command.** About 40 bytes per
+  entry; commands are read back with `pread`. Holding chunk-carrying commands
+  until compaction would make memory follow bytes written (Requirement 2.1).
+- **The log is one contiguous run.** An append at a held index with the same
+  term is a no-op, with a different term it truncates first (Raft's conflict
+  rule), and a gap throws. The memory engine's map would accept a gap; Raft
+  never asks for one, so the engine refuses it instead of persisting a log
+  that cannot be reloaded in order.
+- **`meta` also records the first live index** (`log_start`).
+  `delete_log_entries_before` writes it before deleting segments, so a crash
+  in between leaves dead records the load ignores, and dead whole segments it
+  deletes. An append to an empty log first deletes whatever dead segments
+  remain, so lowering `log_start` cannot bring old records back.
+- **`truncate_log` syncs before returning**, deleting later segments newest
+  first, so a crash leaves a prefix. A truncated entry from an old term that
+  came back after a crash would contradict what this node had already
+  answered.
+- **Only the last segment may have a torn tail.** A bad record in an earlier
+  segment, or a bad `meta` or `snapshot` CRC, throws on open: those files
+  were complete and synced before anything later was written.
+- **The barrier follows `file_persistence_engine`'s rule**: sample, unlock,
+  fsync the segments written since the last barrier (and the directory if
+  one was created), relock, publish. 200 appends from 8 threads took 48
+  fsyncs in the coalescing test.
+- The kill test forks a writer that appends and barriers in a loop and
+  reports each durable index on a pipe; after `SIGKILL` every reported index
+  reloads and the log is one valid run (5 rounds).
+- `batched_persistence_engine` (`begin_batch` / `commit_batch`) is not
+  implemented. Nothing on the node's append path calls it, and the barrier
+  already coalesces.
 
 - [ ] 5. Chunk fetcher
   - `include/raft/cache_chunk_fetcher.hpp` per Component 5: a queue, a
