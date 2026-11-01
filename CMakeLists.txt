@@ -2019,8 +2019,12 @@ endif()
 # the pool's comment above, and tests/CMakeLists.txt's first section). It
 # depends on nothing in tests/, and tests/ reaches its headers by path, not by
 # target. Its sibling multi_raft_bench stays below with the other cmd/ tools.
+# cmd/chaos_node follows it for the same reason: its six run_node_*.cpp files
+# are `heavy_tu` members too (cmd/chaos_node/CMakeLists.txt), and declared
+# after tests/ they would be the last six links of the pooled chain.
 if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
     add_subdirectory(cmd/multi_raft_node)
+    add_subdirectory(cmd/chaos_node)
 endif()
 if(Boost_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
     add_subdirectory(tests)
@@ -2029,7 +2033,7 @@ elseif(Boost_FOUND)
 endif()
 if(NOT ENABLE_COVERAGE)
     if(KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
-        add_subdirectory(cmd/chaos_node)
+        # cmd/chaos_node is added above, before tests/ (see there).
         # Ships in chaos_node's image (docker-chaos-image), so it shares its gate.
         add_subdirectory(cmd/chaos_workload)
         # The cairn tool server's logic; drives chaos_node's image from the host.
