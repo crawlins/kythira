@@ -454,6 +454,67 @@ BOOST_AUTO_TEST_CASE(a_split_produces_children_carrying_exactly_the_parents_memb
     BOOST_CHECK(!leader->shard_map_snapshot().check_tiling().has_value());
 }
 
+BOOST_AUTO_TEST_CASE(a_write_racing_a_split_is_never_lost, *boost::unit_test::timeout(180)) {
+    // Writes to the right child's range, acknowledged while a split of their
+    // shard is proposed and applied. Each must end up in the shard that owns
+    // its key. Before the split counted as a write freeze, a write appended
+    // after the split entry applied to the narrowed parent instead, where no
+    // read ever reaches it: acknowledged, and gone (found by the
+    // multi-raft-transactions bank workload).
+    split_cluster c;
+    BOOST_REQUIRE(c.await_leader(1, std::chrono::seconds{20}));
+    for (const auto& k : workload_keys()) {
+        BOOST_REQUIRE(c.put(k, "v"));
+    }
+
+    std::atomic<bool> stop{false};
+    std::mutex acked_mutex;
+    std::vector<std::string> acked;
+    std::vector<std::thread> writers;
+    for (int w = 0; w < 3; ++w) {
+        writers.emplace_back([&, w] {
+            for (int i = 0; !stop.load(); ++i) {
+                // "x..." sorts after "echo": the right child's range.
+                const auto key = "x" + std::to_string(w) + "-" + std::to_string(i);
+                if (c.put(key, "v", std::chrono::milliseconds{3000})) {
+                    std::lock_guard lock(acked_mutex);
+                    acked.push_back(key);
+                }
+            }
+        });
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    auto* leader = c.leader_of(1);
+    BOOST_REQUIRE(leader != nullptr);
+    BOOST_REQUIRE(settle(leader->split_shard(1, {"echo"}, std::chrono::milliseconds{8000})) ==
+                  nullptr);
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    stop = true;
+    for (auto& t : writers) {
+        t.join();
+    }
+
+    BOOST_REQUIRE(!acked.empty());
+    const auto right = leader->resolve("x");
+    BOOST_REQUIRE(right.has_value());
+    BOOST_REQUIRE(right->_group_id != 1);
+    BOOST_REQUIRE(c.await_leader(right->_group_id, std::chrono::seconds{10}));
+    auto* right_leader = c.leader_of(right->_group_id);
+    BOOST_REQUIRE(right_leader != nullptr);
+    std::size_t missing = 0;
+    right_leader->group_node(right->_group_id)
+        ->with_state_machine([&](host_types::state_machine_type& sm) {
+            for (const auto& k : acked) {
+                if (!sm.contains(k)) {
+                    ++missing;
+                }
+            }
+            return 0;
+        });
+    BOOST_TEST(missing == 0U, missing << " of " << acked.size()
+                                      << " acknowledged writes are missing from their shard");
+}
+
 BOOST_AUTO_TEST_CASE(a_vetoed_key_falls_back_to_the_state_machines_suggestion,
                      *boost::unit_test::timeout(180)) {
     // Requirement 9.4: a policy that says "split at K" cannot cut through an
