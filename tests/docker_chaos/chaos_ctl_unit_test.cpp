@@ -3,12 +3,14 @@
 
 // cmd/chaos_ctl (cairn-chaos-testing task 7): the tools over the
 // CmdExecutor/HttpGet stubs, the schedule log's ordering, and replay's
-// ddmin and reproduction counting over a stub attempt.
+// ddmin and reproduction counting over a stub attempt, and the reporter's
+// cuts and output (task 12).
 
 #define BOOST_TEST_MODULE chaos_ctl_unit_test
 #include <boost/test/unit_test.hpp>
 
 #include "replay.hpp"
+#include "report.hpp"
 #include "run_state.hpp"
 #include "schedule_log.hpp"
 #include "tools.hpp"
@@ -712,6 +714,236 @@ BOOST_AUTO_TEST_CASE(replay_skips_read_only_views) {
     BOOST_TEST(chaos_ctl::replay::replayable(rec(1, "check.run", 0)));
     BOOST_TEST(!chaos_ctl::replay::droppable(rec(1, "check.run", 0)));
     BOOST_TEST(chaos_ctl::replay::droppable(rec(1, "run.reset", 0)));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Reporter (task 12) ───────────────────────────────────────────────────────
+
+namespace {
+
+auto failed(std::int64_t seq, std::string tool, std::int64_t mono, std::string error,
+            std::vector<std::string> violated = {}) -> call_record {
+    auto r = rec(seq, std::move(tool), mono, std::move(violated));
+    r.status = "error";
+    r.error = std::move(error);
+    return r;
+}
+
+/// A log as a Cairn run leaves it: views, refusals, a finding, and calls
+/// after it.
+auto m1_like_log() -> std::vector<call_record> {
+    std::vector<call_record> all{
+        rec(1, "cluster.status", 1000),
+        failed(2, "fault.failpoint", 2000,
+               "failpoint 'vote' is not in docker/cairn/failpoints.allowlist"),
+        rec(3, "workload.start", 3000),
+        failed(4, "fault.partition", 4000,
+               "command failed (exit 1): docker exec n2 iptables -A CHAOS -s 10.0.0.4 -j DROP"),
+        rec(5, "fault.kill", 5000),
+        rec(6, "workload.history", 6000),
+        failed(7, "fault.failpoint", 61000,
+               "failpoint 'candidate_term_seed' is not in docker/cairn/failpoints.allowlist",
+               {"election_safety"}),
+        rec(8, "fault.restart", 62000, {"log_matching"}),
+        rec(9, "run.reset", 63000),
+    };
+    all[6].violations[0].as_object()["detail"] = "2 nodes won term 26";
+    for (auto& c : all) {
+        c.started_line["wall"] = "2026-10-30T19:26:18.000Z";
+        c.started_line["image_id"] = "e0b023e457105c54a3c11a9c9c45da1e";
+        c.started_line["kythira_commit"] = "unknown";
+        c.started_line["seed"] = 1;
+        c.done_line = boost::json::object{{"seq", c.seq},
+                                          {"status", c.status},
+                                          {"result", boost::json::object{{"big", "x"}}},
+                                          {"violations", c.violations},
+                                          {"wall", "2026-10-30T19:27:18.036Z"}};
+    }
+    return all;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(report)
+
+// The reporter drops a refused call on the strength of its error text, so
+// every refusal it matches must really have reached nothing.
+BOOST_FIXTURE_TEST_CASE(refused_calls_reach_nothing_and_are_classified_refused, fixture) {
+    using boost::json::array;
+    const std::string fp = "raft/persistence/save_current_term";
+    const std::vector<std::pair<std::string, boost::json::object>> bad{
+        {"fault.failpoint", {{"node", 1}, {"name", "vote"}, {"mode", "off"}}},
+        {"fault.failpoint", {{"node", 1}}},
+        {"fault.failpoint", {{"node", 1}, {"name", fp}, {"mode", "sometimes"}}},
+        {"fault.failpoint", {{"node", 1}, {"name", fp}, {"mode", "random"}, {"probability", 2}}},
+        {"fault.kill", {{"node", 9}}},
+        {"fault.restart", {{"node", "two"}}},
+        {"fault.partition", {}},
+        {"fault.partition", {{"groups", array{array{1}, array{2}}}}},
+        {"fault.partition", {{"groups", array{array{1, 2}, array{2, 3}}}}},
+        {"fault.partition", {{"groups", array{array{1}, array{}}}}},
+        {"fault.partition", {{"groups", array{array{"a"}, array{2, 3}}}}},
+        {"fault.delay", {{"node", 1}, {"delay_ms", 70000}}},
+        {"fault.clock_skew", {{"node", 1}, {"offset_ms", 500}}},
+        {"cluster.add_member", {{"node", 9}}},
+        {"workload.start", {{"concurrency", 99}}},
+        {"check.run", {{"checks", "raft_safety"}}},
+        {"check.run", {{"checks", array{"nope"}}}},
+    };
+    for (const auto& [tool, a] : bad) {
+        auto out = chaos_ctl::call(ctx, tool, a);
+        BOOST_TEST(out.at("status").as_string() != "ok", tool << " " << boost::json::serialize(a));
+    }
+    BOOST_TEST(fake.commands.empty());
+    BOOST_TEST(fiu.empty());
+    BOOST_TEST(spawned_env.empty());
+    for (const auto& c : chaos_ctl::read_calls(ctx.paths.schedule().string())) {
+        BOOST_TEST(chaos_ctl::report::refused(c), c.tool << ": " << c.error);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_call_that_failed_part_way_or_succeeded_is_not_refused) {
+    BOOST_TEST(!chaos_ctl::report::refused(rec(1, "fault.kill", 0)));
+    BOOST_TEST(!chaos_ctl::report::refused(
+        failed(1, "fault.unpause", 0, "command failed (exit 1): docker unpause n3")));
+    BOOST_TEST(!chaos_ctl::report::refused(failed(1, "cluster.add_member", 0, "timed out")));
+}
+
+BOOST_AUTO_TEST_CASE(cut_keeps_the_finding_and_drops_views_refusals_and_later_calls) {
+    const auto all = m1_like_log();
+    const auto* v = chaos_ctl::report::first_violation(all);
+    BOOST_REQUIRE(v != nullptr);
+    BOOST_TEST(v->seq == 7);
+    auto c = chaos_ctl::report::cut(all, v->seq);
+    std::vector<std::int64_t> kept;
+    for (const auto& r : c.calls) {
+        kept.push_back(r.seq);
+    }
+    // 4 failed part way and stays; 7 was refused but saw the violation.
+    BOOST_TEST(kept == (std::vector<std::int64_t>{3, 4, 5, 7}));
+    BOOST_TEST(c.read_only == 2u);
+    BOOST_TEST(c.refused == 1u);
+    BOOST_TEST(c.after_violation == 2u);
+
+    auto everything =
+        chaos_ctl::report::cut(all, v->seq, {.keep_refused = true, .keep_after_violation = true});
+    BOOST_TEST(everything.calls.size() == 7u);  // views still go: replay skips them
+}
+
+BOOST_AUTO_TEST_CASE(attempts_follow_the_measured_reproduction_rate) {
+    using chaos_ctl::report::default_attempts;
+    using chaos_ctl::report::replay_summary;
+    BOOST_TEST(default_attempts(std::nullopt) == 3);
+    BOOST_TEST(default_attempts(replay_summary{3, 3}) == 1);
+    BOOST_TEST(default_attempts(replay_summary{3, 1}) == 6);  // 1-(2/3)^6 > 0.9
+    BOOST_TEST(default_attempts(replay_summary{3, 0}) == 10);
+    BOOST_TEST(default_attempts(replay_summary{20, 9}) == 4);
+}
+
+BOOST_AUTO_TEST_CASE(replay_result_is_found_inside_a_driver_log) {
+    const std::string text =
+        "[2026-10-30T23:49:47Z] replay run-1 start\nreplay rc=1\n"
+        R"({"attempts":3,"reproduced":1,"recorded_invariants":["election_safety"]})"
+        "\n\"reproduced\":1\n";
+    auto r = chaos_ctl::report::parse_replay_result(text);
+    BOOST_REQUIRE(r.has_value());
+    BOOST_TEST(r->attempts == 3);
+    BOOST_TEST(r->reproduced == 1);
+    BOOST_TEST(!chaos_ctl::report::parse_replay_result("no result\n{\"x\":1}\n").has_value());
+}
+
+BOOST_AUTO_TEST_CASE(build_names_dates_and_times_the_finding) {
+    const auto all = m1_like_log();
+    chaos_ctl::report::options o{.source_log = "run-2/schedule.jsonl",
+                                 .image = "kythira-chaos-node:seeded-vote-term",
+                                 .replay = chaos_ctl::report::replay_summary{3, 1}};
+    auto f = chaos_ctl::report::build(all, o);
+    BOOST_TEST(f.id == "2026-10-30-election-safety-7");
+    BOOST_TEST(f.invariants == std::set<std::string>{"election_safety"});
+    BOOST_TEST(f.later_violating_calls == 1u);
+    BOOST_TEST(f.minutes_to_violation == 1.0);
+    BOOST_TEST(f.kythira_commit == "unknown");
+    BOOST_TEST(f.seed == 1u);
+    BOOST_TEST(f.attempts == 6);
+    BOOST_TEST(f.span_ms() == 58000);
+
+    o.kythira_commit = "4e0cb49";
+    o.id = "m1-run-2";
+    BOOST_TEST(chaos_ctl::report::build(all, o).kythira_commit == "4e0cb49");
+    o.id = "Bad Id";
+    BOOST_CHECK_THROW(static_cast<void>(chaos_ctl::report::build(all, o)), std::invalid_argument);
+    BOOST_CHECK_THROW(static_cast<void>(chaos_ctl::report::build({rec(1, "fault.kill", 0)}, {})),
+                      std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(draft_test_encodes_the_cut_schedule) {
+    const auto all = m1_like_log();
+    auto f = chaos_ctl::report::build(
+        all, {.source_log = "s.jsonl", .image = "kythira-chaos-node:seeded-vote-term"});
+    const auto t = chaos_ctl::report::render_test(f, "2026");
+    BOOST_TEST(
+        t.starts_with("// Copyright (c) 2026 Clark Rawlins\n"
+                      "// SPDX-License-Identifier: Apache-2.0\n\n"));
+    BOOST_TEST(t.find("#define BOOST_TEST_MODULE finding_2026_10_30_election_safety_7\n") !=
+               std::string::npos);
+    BOOST_TEST(t.find(R"(    {0, 3, "workload.start", R"json({})json"},)") != std::string::npos);
+    BOOST_TEST(t.find(R"(    {58000, 7, "fault.failpoint",)") != std::string::npos);
+    BOOST_TEST(t.find("\"fault.restart\"") == std::string::npos);  // after the finding
+    BOOST_TEST(t.find(".invariants = {\"election_safety\"}") != std::string::npos);
+    BOOST_TEST(t.find(".attempts = 3,") != std::string::npos);
+    BOOST_TEST(t.find("KYTHIRA_CHAOS_NODE_IMAGE=kythira-chaos-node:seeded-vote-term") !=
+               std::string::npos);
+
+    using chaos_ctl::report::cpp_literal;
+    BOOST_TEST(cpp_literal(R"({"a":1})") == R"(R"json({"a":1})json")");
+    // A JSON string ending in `)json` would close the raw literal early.
+    BOOST_TEST(cpp_literal(R"({"a":")json"})") == R"("{\"a\":\")json\"}")");
+}
+
+BOOST_AUTO_TEST_CASE(replay_file_reads_back_as_the_cut_schedule) {
+    const auto all = m1_like_log();
+    auto f = chaos_ctl::report::build(all, {.source_log = "s.jsonl"});
+    const auto p = fs::temp_directory_path() / ("chaos_report_" + std::to_string(::getpid()));
+    {
+        std::ofstream out(p);
+        out << chaos_ctl::report::render_replay_file(f);
+    }
+    const auto back = chaos_ctl::read_calls(p.string());
+    fs::remove(p);
+    BOOST_REQUIRE_EQUAL(back.size(), f.schedule.calls.size());
+    BOOST_TEST(chaos_ctl::violated(back) == f.invariants);
+    BOOST_TEST(back.front().started_mono_ms == 3000);
+}
+
+// Requirement 6.1: date, invariant, minimized schedule, log excerpt, Kythira
+// commit and Cairn version.
+BOOST_AUTO_TEST_CASE(findings_entry_holds_what_requirement_6_1_lists) {
+    const auto all = m1_like_log();
+    auto f = chaos_ctl::report::build(all, {.source_log = "s.jsonl",
+                                            .image = "kythira-chaos-node:seeded-vote-term",
+                                            .note = "Seeded bug.",
+                                            .replay = chaos_ctl::report::replay_summary{3, 1}});
+    const auto e = chaos_ctl::report::render_entry(f, "r.jsonl", "t_test.cpp");
+    for (const auto* needle : {
+             "\n## 2026-10-30-election-safety-7: election_safety\n",
+             "| Date | 2026-10-30 19:27:18Z, 1.0 min into the run |",
+             "| Invariant | `election_safety`: 2 nodes won term 26 |",
+             "| Kythira commit | unknown |",
+             "| Cairn version | v0.2.1 (e0ef2f85) |",
+             "| Replay | 1 of 3 replays of the run's log reproduced it |",
+             "| Draft test | `t_test.cpp`, 6 attempt(s) |",
+             "\nSeeded bug.\n",
+             "keeps 4 of them",
+             "Cut: 2 after the finding, 2 read-only views, and 1 refused by the tool server",
+             "#7     fault.failpoint",
+             "[error]",
+             "**Log excerpt.**",
+             R"("violations":[{"invariant":"election_safety","detail":"2 nodes won term 26"}])",
+         }) {
+        BOOST_TEST(e.find(needle) != std::string::npos, needle);
+    }
+    BOOST_TEST(e.find("\"big\"") == std::string::npos);  // the result is left out
 }
 
 BOOST_AUTO_TEST_SUITE_END()

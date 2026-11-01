@@ -134,6 +134,24 @@ add_docker_chaos_scenario_test(docker_chaos_five_node_test
 add_docker_chaos_scenario_test(docker_chaos_chaos_ctl_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/chaos_ctl_scenario_test.cpp")
 
+# ── Chaos findings (cairn-chaos-testing task 12) ─────────────────────────────
+# `chaos_ctl report` writes one draft test per finding into findings/; each
+# is built like a scenario test, from a glob so a reviewed draft needs no
+# edit here. They replay a Cairn run's schedule in real time (half an hour
+# or more each), so only the docker-chaos-findings target below runs them.
+
+file(GLOB _chaos_finding_sources CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/findings/*_test.cpp")
+set(_chaos_finding_tests "")
+foreach(_src IN LISTS _chaos_finding_sources)
+    get_filename_component(_finding "${_src}" NAME_WE)
+    set(_target "chaos_finding_${_finding}")
+    add_docker_chaos_scenario_test(${_target} "${_src}")
+    target_include_directories(${_target} PRIVATE "${CMAKE_SOURCE_DIR}/cmd/chaos_ctl")
+    target_compile_definitions(${_target} PRIVATE KYTHIRA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    list(APPEND _chaos_finding_tests ${_target})
+endforeach()
+
 # ── Quorum healing Docker scenario tests (Req 19) ────────────────────────────
 
 add_docker_chaos_scenario_test(quorum_healing_tests
@@ -506,6 +524,31 @@ if(_RUNTIME_EXE)
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             USES_TERMINAL
         )
+
+        # Every finding test, against the image docker-chaos-image builds:
+        # kythira-chaos-node:dev, where each must pass once its bug is
+        # fixed, or the seeded-bug tag in a KYTHIRA_CHAOS_SEEDED_BUG build,
+        # where the M1 findings must fail (Requirement 6.3).
+        if(_chaos_finding_tests)
+            set(_chaos_finding_commands "")
+            foreach(_t IN LISTS _chaos_finding_tests)
+                list(APPEND _chaos_finding_commands
+                    COMMAND ${CMAKE_COMMAND} -E env
+                            ${_RT_ENV}
+                            KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
+                            KYTHIRA_CHAOS_NODE_IMAGE=${_CHAOS_IMAGE_TAG}
+                            KYTHIRA_CHAOS_WORKLOAD=$<TARGET_FILE:chaos_workload>
+                            $<TARGET_FILE:${_t}>
+                            --log_level=message)
+            endforeach()
+            add_custom_target(docker-chaos-findings
+                ${_chaos_finding_commands}
+                DEPENDS docker-chaos-image chaos_workload ${_chaos_finding_tests}
+                COMMENT "Replaying every chaos finding on ${_CHAOS_IMAGE_TAG} (runtime: ${CONTAINER_RUNTIME})"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                USES_TERMINAL
+            )
+        endif()
     endif()
 
     add_custom_target(quorum-healing-tests
