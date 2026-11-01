@@ -52,6 +52,9 @@ NOT_REACHED = {
         "the in-memory persistence engine; chaos_node uses file persistence",
     "include/raft/object_store_persistence.hpp":
         "object-store persistence; chaos_node uses file persistence (M4 adds it)",
+    "include/raft/binary_file_persistence.hpp":
+        "the binary segmented engine the disk-backed build cache runs on; chaos_node "
+        "uses file persistence",
 }
 
 # Names in a reached header that the allowlisted modes cannot drive.
@@ -68,7 +71,7 @@ REQUIRED_INCLUDES = (
     "raft/tcp_rpc.hpp",
     "raft/tls_tcp_rpc.hpp",
 )
-FORBIDDEN_INCLUDES = ("raft/object_store_persistence.hpp",)
+FORBIDDEN_INCLUDES = ("raft/object_store_persistence.hpp", "raft/binary_file_persistence.hpp")
 
 HEADER = """\
 # Copyright (c) 2026 Clark Rawlins

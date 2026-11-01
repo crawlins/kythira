@@ -712,6 +712,19 @@ add_raft_completion_test(persistence_round_trip_property_test persistence_round_
 # New component unit tests (file_persistence_engine + tcp_rpc)
 add_raft_completion_test(file_persistence_unit_test file_persistence_unit_test.cpp)
 
+# .kiro/specs/disk-backed-build-cache/ task 4: the binary, segmented engine the
+# cache daemon uses. It runs the file engine's cases plus its own (torn tails,
+# segments, a writer killed mid-append). The torn-append and failed-barrier
+# cases need libfiu's control API and compile away without it.
+add_raft_completion_test(binary_file_persistence_unit_test binary_file_persistence_unit_test.cpp)
+set_tests_properties(binary_file_persistence_unit_test PROPERTIES
+    LABELS "unit;persistence" TIMEOUT 300)
+if(FIU_FOUND)
+    target_compile_definitions(binary_file_persistence_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(binary_file_persistence_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(binary_file_persistence_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+
 # .kiro/specs/durable-append-barrier/ — the barrier-coverage, crash, group-commit
 # and ordering tests. Drives a real `node<Types>` over a file-backed engine, so
 # it is registered beside file_persistence_unit_test rather than with the
