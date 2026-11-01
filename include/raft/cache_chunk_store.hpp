@@ -1153,6 +1153,21 @@ public:
         return verified ? _store.put_verified(sha, bytes) : _store.put(sha, bytes);
     }
 
+    /// Store fetched `bytes` only if some replica on this node still
+    /// references the chunk, atomically with respect to `release`. Returns
+    /// false, writing nothing, when the last reference went while the fetch
+    /// was in flight: storing it then would leave an orphan for start-up
+    /// collection to find.
+    auto put_if_referenced(const chunk_sha& sha, std::span<const std::byte> bytes,
+                           bool verified = false) -> bool {
+        const std::lock_guard lock(_mu);
+        if (!_counts.contains(sha)) {
+            return false;
+        }
+        (void)(verified ? _store.put_verified(sha, bytes) : _store.put(sha, bytes));
+        return true;
+    }
+
     /// Drop `n` references without removing the chunk at zero. For a replica
     /// that is going away (destroyed on shutdown, or absorbed by a sibling)
     /// rather than deleting the keys it held: its chunks are still needed by

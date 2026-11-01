@@ -1316,6 +1316,12 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
     target_link_libraries(cache_kv_state_machine_unit_test PRIVATE OpenSSL::Crypto)
     set_tests_properties(cache_kv_state_machine_unit_test PROPERTIES
         LABELS "unit;redis;cache" TIMEOUT 600)
+    # Task 5: the chunk fetcher, with in-process nodes whose stores the fetch
+    # callback reads directly.
+    add_raft_completion_test(cache_chunk_fetcher_unit_test cache_chunk_fetcher_unit_test.cpp)
+    target_link_libraries(cache_chunk_fetcher_unit_test PRIVATE OpenSSL::Crypto)
+    set_tests_properties(cache_chunk_fetcher_unit_test PROPERTIES
+        LABELS "unit;redis;cache" TIMEOUT 300)
     if(folly_FOUND)
         add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
         target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)

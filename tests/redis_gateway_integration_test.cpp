@@ -36,6 +36,7 @@
 #include <raft/redis_gateway_impl.hpp>
 #include <raft/redis_kv_state_machine.hpp>
 #if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
+#include <raft/cache_chunk_fetcher.hpp>
 #include <raft/cache_kv_state_machine.hpp>
 #endif
 
@@ -999,6 +1000,63 @@ BOOST_AUTO_TEST_CASE(a_value_whose_chunks_are_not_here_is_not_served_here,
     BOOST_CHECK_EQUAL(leader.call({"GET", "sccache/far"}), "$-1\r\n");
     BOOST_CHECK_EQUAL(leader.call({"EXISTS", "sccache/far"}), ":0\r\n");
     BOOST_CHECK_EQUAL(leader.call({"TTL", "sccache/far"}), ":-2\r\n");
+}
+
+// Task 5's acceptance at the gateway: a follower that lost a chunk forwards
+// reads of its key to the leader until the fetcher brings the chunk back
+// from a peer, then serves them itself (Requirements 4.3 and 4.4).
+BOOST_AUTO_TEST_CASE(a_fetch_moves_reads_from_forwarded_to_local, *boost::unit_test::timeout(120)) {
+    redis_gateway_config cfg;
+    cfg._read_consistency = redis_read_consistency::any_replica;
+    cluster c(cfg);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto leader_id = c.leader_of(k_sccache_group);
+    const auto follower_id = c.a_follower_of(k_sccache_group);
+    BOOST_REQUIRE_NE(follower_id, 0u);
+    resp_client leader(c.port(leader_id));
+    BOOST_REQUIRE_EQUAL(leader.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK_EQUAL(leader.call({"SET", "sccache/fetch", "from a peer"}), "+OK\r\n");
+
+    auto* follower_node = c.host(follower_id).group_node(k_sccache_group);
+    auto* leader_node = c.host(leader_id).group_node(k_sccache_group);
+    auto look = [](auto* node) {
+        return node->with_state_machine(
+            [](auto& sm) { return std::pair{sm.lookup("sccache/fetch"), sm.refcounts()}; });
+    };
+    for (int i = 0; i < 100 && !look(follower_node).first; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    auto [manifest, refs] = look(follower_node);
+    BOOST_REQUIRE(manifest);
+    const auto sha = manifest->chunks().front();
+    // Lose the chunk on the follower, as a disk swap or a restore would.
+    BOOST_REQUIRE(refs->store().remove(sha));
+    follower_node->with_state_machine([](auto& sm) { return sm.refresh_has_all(); });
+    BOOST_REQUIRE(!manifest->has_all());
+
+    resp_client follower(c.port(follower_id));
+    BOOST_REQUIRE_EQUAL(follower.auth("farm", "farm-secret"), "+OK\r\n");
+    auto forwards = c.gateway(follower_id).stats()._forwards.load();
+    BOOST_CHECK_EQUAL(follower.call({"GET", "sccache/fetch"}), bulk("from a peer"));
+    BOOST_CHECK_EQUAL(c.gateway(follower_id).stats()._forwards.load(), forwards + 1);
+
+    auto leader_refs = look(leader_node).second;
+    kythira::cache_chunk_fetcher<node_id_t> fetcher(
+        refs, [leader_id](const group_id_type&) { return std::vector<node_id_t>{leader_id}; },
+        [leader_refs](const node_id_t&, const kythira::chunk_sha& want) {
+            return leader_refs->store().read(want);
+        },
+        [follower_node](const group_id_type&) {
+            follower_node->with_state_machine([](auto& sm) { return sm.refresh_has_all(); });
+        });
+    fetcher.want(k_sccache_group, {sha});
+    BOOST_REQUIRE(fetcher.run_once());
+    BOOST_CHECK_EQUAL(fetcher.stats()._fetched.load(), 1u);
+    BOOST_CHECK(manifest->has_all());
+
+    forwards = c.gateway(follower_id).stats()._forwards.load();
+    BOOST_CHECK_EQUAL(follower.call({"GET", "sccache/fetch"}), bulk("from a peer"));
+    BOOST_CHECK_EQUAL(c.gateway(follower_id).stats()._forwards.load(), forwards);
 }
 #endif
 

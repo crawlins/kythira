@@ -57,6 +57,7 @@
 #include <raft/types.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -243,6 +244,12 @@ private:
 struct cache_kv_options {
     /// Log entries an unbound chunk survives (`KYTHIRA_CACHE_ORPHAN_GRACE_ENTRIES`).
     std::uint64_t _orphan_grace_entries = 100000;
+    /// Told which chunks this replica references but the node's store lacks,
+    /// after a restore or absorb, or a commit that binds one (design
+    /// Component 5). The daemon binds the group into it and hands the list
+    /// to the chunk fetcher. Called under the node lock: it must only
+    /// enqueue, never block or call back into the node.
+    std::function<void(std::vector<chunk_sha>)> _on_missing_chunks;
 };
 
 /// Read a whole value back from the store, checking each chunk against its
@@ -287,7 +294,7 @@ public:
     /// by every replica on the node.
     explicit cache_kv_state_machine(std::shared_ptr<chunk_refcounts> refs,
                                     cache_kv_options options = {})
-        : _refs(std::move(refs)), _options(options) {
+        : _refs(std::move(refs)), _options(std::move(options)) {
         if (!_refs) {
             throw std::invalid_argument("cache_kv_state_machine: no chunk_refcounts");
         }
@@ -298,7 +305,7 @@ public:
 
     cache_kv_state_machine(cache_kv_state_machine&& other) noexcept
         : _refs(std::move(other._refs)),
-          _options(other._options),
+          _options(std::move(other._options)),
           _index(std::move(other._index)),
           _pending(std::move(other._pending)),
           _pending_by_age(std::move(other._pending_by_age)),
@@ -312,7 +319,7 @@ public:
         if (this != &other) {
             forget_all();
             _refs = std::move(other._refs);
-            _options = other._options;
+            _options = std::move(other._options);
             _index = std::move(other._index);
             _pending = std::move(other._pending);
             _pending_by_age = std::move(other._pending_by_age);
@@ -390,6 +397,15 @@ public:
             refresh_has_all(*m);
         }
         _last_applied_index = index;
+        if (_options._on_missing_chunks) {
+            std::vector<chunk_sha> missing;
+            for (const auto& [sha, n] : after) {
+                if (!_refs->store().contains(sha)) {
+                    missing.push_back(sha);
+                }
+            }
+            report_missing(std::move(missing));
+        }
     }
 
     [[nodiscard]] auto last_applied_index() const noexcept -> LogIndex {
@@ -482,13 +498,22 @@ public:
                 _pending_by_age.emplace(applied, sha);
             }
         }
+        std::vector<chunk_sha> missing;
+        for (const auto& [sha, applied] : pending) {
+            if (!_refs->store().contains(sha)) {
+                missing.push_back(sha);
+            }
+        }
         for (auto& [key, m] : incoming) {
             for (const auto& sha : m->chunks()) {
                 _refs->acquire(sha);
             }
-            refresh_has_all(*m);
+            if (!refresh_has_all(*m)) {
+                collect_missing(*m, missing);
+            }
             bind(key, std::move(m));
         }
+        report_missing(std::move(missing));
     }
 
     // ---- read path ---------------------------------------------------------
@@ -580,6 +605,26 @@ private:
             ++out[sha];
         }
         return out;
+    }
+
+    void collect_missing(const cache_manifest& m, std::vector<chunk_sha>& out) const {
+        if (!_options._on_missing_chunks) {
+            return;
+        }
+        for (const auto& sha : m.chunks()) {
+            if (!_refs->store().contains(sha)) {
+                out.push_back(sha);
+            }
+        }
+    }
+
+    void report_missing(std::vector<chunk_sha> missing) const {
+        if (missing.empty() || !_options._on_missing_chunks) {
+            return;
+        }
+        std::sort(missing.begin(), missing.end());
+        missing.erase(std::unique(missing.begin(), missing.end()), missing.end());
+        _options._on_missing_chunks(std::move(missing));
     }
 
     void require_bound() const {
@@ -767,7 +812,12 @@ private:
         for (const auto& sha : m->chunks()) {
             _refs->acquire(sha);
         }
-        refresh_has_all(*m);
+        if (!refresh_has_all(*m)) {
+            // Its pending chunks came in a snapshot, without their bytes.
+            std::vector<chunk_sha> missing;
+            collect_missing(*m, missing);
+            report_missing(std::move(missing));
+        }
         bind(c._key, std::move(m));
         return true;
     }
