@@ -26,26 +26,25 @@
 
 chaos_state_machine_safety_test                    1/54
 certificate_authority_property_test                1/54
-simulator_property_test                            1/54
 raft_commit_implies_replication_property_test      1/54, see its own TODO entry
-multi_raft_scale_test                              1/54
 ca_test_fixture_unit_test                          1/54
 leader_transfer_test                               1/54
-integration_test                                   1/54
 multi_raft_driver_agreement_test                   1/54
 
 # Added 2026-10-28 from 78 ci.yml runs (2026-10-24..28): every test that
 # needed a retry in two or more jobs and is not fixed yet. Counts are jobs.
 # See the TODO.md entry "Re-measured October 28, 2026".
 raft_multi_node_property_test                      5 jobs, "no leader" after a disruption round
-coap_cantcoap_integration_test                     4 jobs, EDHOC re-bootstrap after a server restart
 membership_change_joint_safety_test                4 jobs, truncated_configuration_entry_is_reverted
-coap_cantcoap_interop_test                         3 jobs
 raft_batched_durable_writes_test                   2 jobs, no leader within 4 s
 raft_multi_node_partition_test                     2 jobs
-raft_multi_node_fixture_test                       2 jobs
 coap_io_wait_mode_test                             2 jobs
-coap_libnyoci_interop_test                         2 jobs
 http_pre_vote_timeout_now_test                     2 jobs
 ca_cluster_node_rpc_tls_test                       2 jobs
 multi_raft_node_s3_process_test                    17 jobs, a REAL lost write (1 of ~2000 after a leader SIGKILL), not a timing flake; see TODO.md
+
+# Removed 2026-11-01, root-caused and fixed (see the TODO.md entry
+# "Re-measured November 1"): integration_test, simulator_property_test,
+# multi_raft_scale_test, raft_multi_node_fixture_test, and the three EDHOC
+# repeaters coap_cantcoap_integration_test, coap_cantcoap_interop_test and
+# coap_libnyoci_interop_test (one handshake in 256 derived equal OSCORE ids).

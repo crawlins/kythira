@@ -1801,6 +1801,48 @@ unverified completion claim.
     - With those fixes and entries, 13 of the 78 runs (17%) would still have
       failed strict mode, every one on a test seen once. That is too many to
       set `CTEST_STRICT_RETRIES` yet; re-survey after a week on these fixes.
+    - **Re-measured November 1, 2026** over the 8 `ci.yml` runs since #645
+      (2026-10-29..31): 13 rescues in 11 tests. Every repeater, plus the
+      allowlisted EDHOC ones, was traced to its first-attempt failure and
+      fixed. Two were product bugs:
+      - **Object-store engine, a hole at the start of the log.** The load
+        path keeps the chain from the *lowest* log object. A concurrent
+        append into an empty log could land a later segment before the
+        first one, so a crash in between loaded `[3..4]` with nothing at
+        1..2 (`object_store_batched_layout_unit_test`'s crash case, once).
+        The first object of a run into an empty log now goes alone, before
+        the rest; pinned by `batched_durable_writes_unit_test`'s
+        `a_run_into_an_empty_log_sends_its_first_object_before_the_rest`,
+        which fails on the old code.
+      - **EDHOC, colliding OSCORE ids.** `run_edhoc_handshake` exports the
+        one-byte Sender and Recipient IDs independently, so one handshake in
+        256 derived equal ids and `oscore::security_context` refused them
+        after a successful exchange. Every EDHOC flake read in the logs
+        (`coap_cantcoap_integration_test` 4, `coap_cantcoap_interop_test` 4,
+        `coap_libnyoci_interop_test` 2, `coap_libnyoci_oscore_test` 1) is
+        this. The label-3 id is now flipped when it equals label 2's, on
+        both ends; `coap_edhoc_oscore_bootstrap_test` runs 600 handshakes.
+        Side finding, not changed: the libnyoci server's EDHOC and OSCORE
+        refusals return `NYOCI_STATUS_UNAUTHORIZED`, which libnyoci maps to
+        5.00, not the 4.01 its comments intend.
+      - Test-side: `integration_test` (a 0.99-reliability edge under a case
+        that asserts delivery), `simulator_property_test` (a +-50 % band
+        that was 2.3 sigma; now 5 sigma over 1000 seeded sends),
+        `network_simulator_connection_management_integration_test` (random
+        ports could repeat within a case), `raft_multi_node_fixture_test`
+        (a second election after `wait_for_leader()` returned left the check
+        comparing against a stale leader id; 3 jobs, all the same line),
+        `multi_raft_scale_test` (the hibernation loop stopped on its first
+        condition with the second at exactly its bound, "100 >= 100"), and
+        `raft_heartbeat_based_read_state_property_test` (node 2's no-op could
+        commit before the case looked; node 3's replies are now delayed and
+        an already-closed gap is accepted, never a stale read).
+      All seven are off the allowlist. Still allowlisted and not touched:
+      `multi_raft_node_s3_process_test` (item U),
+      `membership_change_joint_safety_test`, `raft_multi_node_property_test`,
+      `raft_multi_node_partition_test`, `raft_batched_durable_writes_test`,
+      `coap_io_wait_mode_test`, `http_pre_vote_timeout_now_test` and
+      `ca_cluster_node_rpc_tls_test`.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`
