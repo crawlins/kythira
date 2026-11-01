@@ -166,6 +166,7 @@ proxygen_textual_node_id_test the proxygen transport depends on Folly (Kconfig: 
 proxygen_transport_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 proxygen_transport_test the proxygen transport depends on Folly (Kconfig: PROXYGEN_TRANSPORT depends on FOLLY)
 raft_submit_command_timeout_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
+redis_gateway_disk_store_integration_test the disk-store twin of `redis_gateway_integration_test`: gated on folly_FOUND in tests/CMakeLists.txt
 redis_gateway_integration_test gated on folly_FOUND in tests/CMakeLists.txt, like cmd/redis_gateway_node
 semi_promise_concept_requirements_property_test uses Folly directly (`folly::Unit`, `folly::exception_wrapper`)
 single_serializer_regression_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly

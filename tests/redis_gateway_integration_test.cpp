@@ -13,6 +13,14 @@
 /// the test names and compares exactly the bytes that come back, so a reply
 /// that redis-rs would tolerate but the spec forbids still fails. The real
 /// sccache acceptance lives under tests/docker_chaos/sccache_e2e/.
+///
+/// Built twice (Requirement 2.7 of .kiro/specs/disk-backed-build-cache/):
+/// as `redis_gateway_integration_test` over `redis_kv_state_machine`, and
+/// through redis_gateway_disk_store_integration_test.cpp, which defines
+/// `KYTHIRA_GATEWAY_TEST_DISK_STORE`, as
+/// `redis_gateway_disk_store_integration_test` over
+/// `cache_kv_state_machine`, each host with its own chunk store under a
+/// per-process temporary directory. Every case runs unchanged over both.
 
 #define BOOST_TEST_MODULE redis_gateway_integration_test
 #include <boost/test/unit_test.hpp>
@@ -27,6 +35,9 @@
 #include <raft/persistence.hpp>
 #include <raft/redis_gateway_impl.hpp>
 #include <raft/redis_kv_state_machine.hpp>
+#if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
+#include <raft/cache_kv_state_machine.hpp>
+#endif
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
@@ -115,7 +126,11 @@ struct host_types {
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+#if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
+    using state_machine_type = kythira::cache_kv_state_machine<log_index_type>;
+#else
     using state_machine_type = kythira::redis_kv_state_machine<log_index_type>;
+#endif
 
     using configuration_type = kythira::raft_configuration;
 
@@ -142,6 +157,54 @@ using host_type = multi_raft<host_types, key_type, group_id_type>;
 using config_type = multi_raft_config<host_types, key_type, group_id_type>;
 using descriptor_type = shard_descriptor<group_id_type, key_type, node_id_t>;
 using gateway_type = redis_gateway<host_type, kythira::console_logger, kythira::noop_metrics>;
+
+#if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
+/// Every chunk store this process makes lives under one directory, removed
+/// when the process exits.
+auto disk_store_root() -> const std::filesystem::path& {
+    struct root {
+        std::filesystem::path _path = std::filesystem::temp_directory_path() /
+                                      ("kythira-gw-disk-" + std::to_string(::getpid()));
+        root() {
+            std::filesystem::remove_all(_path);
+            std::filesystem::create_directories(_path);
+        }
+        ~root() {
+            std::error_code ec;
+            std::filesystem::remove_all(_path, ec);
+        }
+    };
+    static const root r;
+    return r._path;
+}
+#endif
+
+/// Give a host its state machines. The in-memory machine needs nothing; the
+/// disk-backed one gets one chunk store per host, shared by its groups, as
+/// a real node has.
+auto with_state_machines(config_type& cfg) -> void {
+#if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
+    static std::atomic<std::uint64_t> next{0};
+    auto dir = disk_store_root() / ("host-" + std::to_string(next.fetch_add(1)));
+    kythira::cache_chunk_store_options opts;
+    opts._data_dir = dir;
+    // A node owns its store and the counts over it; the aliasing pointer
+    // keeps both alive for as long as any replica holds the counts.
+    struct node_store {
+        explicit node_store(kythira::cache_chunk_store_options o)
+            : _store(std::move(o)), _refs(_store) {}
+        kythira::cache_chunk_store _store;
+        kythira::chunk_refcounts _refs;
+    };
+    auto owner = std::make_shared<node_store>(std::move(opts));
+    std::shared_ptr<kythira::chunk_refcounts> refs(owner, &owner->_refs);
+    cfg.state_machine_factory = [refs](const group_id_type&) {
+        return host_types::state_machine_type(refs);
+    };
+#else
+    (void)cfg;
+#endif
+}
 
 constexpr std::size_t k_node_count = 3;
 constexpr std::size_t k_shard_count = 2;
@@ -598,6 +661,7 @@ private:
         cfg.hibernation = hibernation_mode::off;
         cfg.executor_stripes = 2;
         cfg.partitioner = kythira::make_partitioner<key_type>(kythira::redis_kv_partitioner{});
+        with_state_machines(cfg);
         return cfg;
     }
 
@@ -888,6 +952,56 @@ BOOST_AUTO_TEST_CASE(any_replica_reads_serve_locally, *boost::unit_test::timeout
     BOOST_CHECK_EQUAL(c.gateway(c.a_follower_of(k_sccache_group)).stats()._forwards.load(), 0u);
 }
 
+#if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
+// Design Component 3, "Missing chunks on read": a replica whose `has_all`
+// bit is clear (the fetcher has not brought every chunk yet) does not serve
+// the value. A follower hands the read to the leader; a leader answers a
+// miss rather than wait.
+BOOST_AUTO_TEST_CASE(a_value_whose_chunks_are_not_here_is_not_served_here,
+                     *boost::unit_test::timeout(120)) {
+    redis_gateway_config cfg;
+    cfg._read_consistency = redis_read_consistency::any_replica;
+    cluster c(cfg);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto leader_id = c.leader_of(k_sccache_group);
+    const auto follower_id = c.a_follower_of(k_sccache_group);
+    BOOST_REQUIRE_NE(follower_id, 0u);
+    resp_client leader(c.port(leader_id));
+    BOOST_REQUIRE_EQUAL(leader.auth("farm", "farm-secret"), "+OK\r\n");
+    BOOST_CHECK_EQUAL(leader.call({"SET", "sccache/far", "fetched elsewhere"}), "+OK\r\n");
+
+    // Mark the entry unservable on one node, as a restore that named chunks
+    // the store lacks would. Returns whether the node held the key.
+    auto clear_has_all = [&](node_id_t id) {
+        return c.host(id).group_node(k_sccache_group)->with_state_machine([](auto& sm) {
+            auto m = sm.lookup("sccache/far");
+            if (m) {
+                m->set_has_all(false);
+            }
+            return static_cast<bool>(m);
+        });
+    };
+    bool held = false;
+    for (int i = 0; i < 100 && !(held = clear_has_all(follower_id)); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    BOOST_REQUIRE(held);
+
+    resp_client follower(c.port(follower_id));
+    BOOST_REQUIRE_EQUAL(follower.auth("farm", "farm-secret"), "+OK\r\n");
+    const auto forwards_before = c.gateway(follower_id).stats()._forwards.load();
+    BOOST_CHECK_EQUAL(follower.call({"GET", "sccache/far"}), bulk("fetched elsewhere"));
+    BOOST_CHECK_EQUAL(follower.call({"STRLEN", "sccache/far"}), ":17\r\n");
+    BOOST_CHECK_GE(c.gateway(follower_id).stats()._forwards.load(), forwards_before + 2);
+
+    // The leader itself still fetching: a miss, consistently across reads.
+    BOOST_REQUIRE(clear_has_all(leader_id));
+    BOOST_CHECK_EQUAL(leader.call({"GET", "sccache/far"}), "$-1\r\n");
+    BOOST_CHECK_EQUAL(leader.call({"EXISTS", "sccache/far"}), ":0\r\n");
+    BOOST_CHECK_EQUAL(leader.call({"TTL", "sccache/far"}), ":-2\r\n");
+}
+#endif
+
 BOOST_AUTO_TEST_CASE(linearizable_reads_go_through_the_log, *boost::unit_test::timeout(120)) {
     redis_gateway_config cfg;
     cfg._read_consistency = redis_read_consistency::linearizable;
@@ -1148,6 +1262,7 @@ BOOST_AUTO_TEST_CASE(empty_acl_refuses_to_start_unless_anonymous, *boost::unit_t
         .store_factory = [](const group_id_type&) { return host_types::persistence_engine_type{}; },
     };
     cfg.partitioner = kythira::make_partitioner<key_type>(kythira::redis_kv_partitioner{});
+    with_state_machines(cfg);
     host_type host(std::move(cfg));
     redis_acl acl;
     kythira::console_logger logger{kythira::log_level::error};
@@ -1427,6 +1542,7 @@ BOOST_AUTO_TEST_CASE(tls_forwarding_without_a_ca_refuses_to_start, *boost::unit_
         .store_factory = [](const group_id_type&) { return host_types::persistence_engine_type{}; },
     };
     cfg.partitioner = kythira::make_partitioner<key_type>(kythira::redis_kv_partitioner{});
+    with_state_machines(cfg);
     host_type host(std::move(cfg));
     redis_acl acl;
     acl.reload(acl_text());

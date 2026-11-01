@@ -275,6 +275,14 @@ public:
     using entry_handle = cache_manifest_ptr;
     using index_type = std::map<key_type, entry_handle, std::less<>>;
 
+    /// Unbound: holds nothing and refuses to apply or restore. `raft`'s node
+    /// configuration default-constructs its state machine before
+    /// `multi_raft` moves the `state_machine_factory`'s over it, so the type
+    /// has to be default-constructible. A group that reaches `apply` with an
+    /// unbound one was configured without a factory, and that throws rather
+    /// than drop chunks on the floor.
+    cache_kv_state_machine() = default;
+
     /// `refs` is the node-wide count over the node's one chunk store, shared
     /// by every replica on the node.
     explicit cache_kv_state_machine(std::shared_ptr<chunk_refcounts> refs,
@@ -324,6 +332,7 @@ public:
     // ---- kythira::state_machine -------------------------------------------
 
     auto apply(const std::vector<std::byte>& command, LogIndex index) -> std::vector<std::byte> {
+        require_bound();
         _last_applied_index = index;
         expire_pending(index);
         auto decoded = decode_redis_kv_command(command);
@@ -345,6 +354,7 @@ public:
     /// waiting for them (Requirement 4.3).
     auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, LogIndex index)
         -> void {
+        require_bound();
         index_type incoming;
         pending_type pending;
         deserialize(snapshot_data, incoming, pending);
@@ -456,6 +466,7 @@ public:
     /// both hold keeps the later index.
     auto absorb(const std::vector<std::byte>& other_state,
                 [[maybe_unused]] const shard_range<key_type>& range) -> void {
+        require_bound();
         index_type incoming;
         pending_type pending;
         deserialize(other_state, incoming, pending);
@@ -569,6 +580,13 @@ private:
             ++out[sha];
         }
         return out;
+    }
+
+    void require_bound() const {
+        if (!_refs) {
+            throw std::logic_error(
+                "cache_kv_state_machine: unbound (configure a state_machine_factory)");
+        }
     }
 
     void forget_all() noexcept {
@@ -834,7 +852,7 @@ private:
     }
 
     std::shared_ptr<chunk_refcounts> _refs;
-    cache_kv_options _options;
+    cache_kv_options _options{};
     index_type _index;
     pending_type _pending;
     std::set<std::pair<LogIndex, chunk_sha>> _pending_by_age;
