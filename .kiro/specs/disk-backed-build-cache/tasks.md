@@ -1,10 +1,11 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 4/13 tasks complete
+## Status: 5/13 tasks complete
 
 **Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
-and the gateway over either machine; task 4: the binary persistence engine.
+and the gateway over either machine; task 4: the binary persistence engine;
+task 5: the chunk fetcher.
 Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
@@ -413,13 +414,47 @@ and the barrier cases under TSan. Choices the design left open:
   implemented. Nothing on the node's append path calls it, and the barrier
   already coalesces.
 
-- [ ] 5. Chunk fetcher
+- [x] 5. Chunk fetcher
   - `include/raft/cache_chunk_fetcher.hpp` per Component 5: a queue, a
     leader-first peer order, verify then `put`, the token bucket, and
     `has_all` refresh.
   - A test with two in-process nodes: restore a manifest on an empty store,
     fetch completes, reads move from forwarded to local.
   - _Requirements: 4.3, 4.5, 4.6, 10.1_
+
+### Task 5 results (2026-11-01)
+
+`include/raft/cache_chunk_fetcher.hpp` and
+`tests/cache_chunk_fetcher_unit_test.cpp` (8 cases, clean under ASan/UBSan
+and TSan), plus a gateway case in the disk-store build of
+`redis_gateway_integration_test.cpp`: a follower that lost a chunk forwards
+`GET` to the leader, the fetcher brings the chunk back from the leader's
+store, and the next `GET` is served locally with no forward. Choices the
+design left open:
+
+- **The transport is a callback.** `GET /_chunk/<sha>` belongs to the HTTP
+  front end (task 6); task 7 wires the fetcher to it. The tests read another
+  node's store directly.
+- **The state machine reports what it lacks.**
+  `cache_kv_options::_on_missing_chunks` is called after a restore or an
+  absorb, and after a `commit` that binds pending chunks a snapshot brought
+  without their bytes. It runs under the node lock, so the fetcher's `want`
+  only queues.
+- **One queue per node, keyed by chunk.** A chunk several shards want is
+  fetched once, and each of those shards is refreshed when its last
+  outstanding chunk is done (and at most once a second while a long fetch
+  runs, so keys become servable as their chunks land).
+- **`chunk_refcounts::put_if_referenced`** stores a fetched chunk only if
+  something on the node still references it, under the same mutex as
+  `release`. A key deleted while its chunk was in flight leaves no orphan.
+- **A chunk no peer supplies is retried** after 250 ms, doubling to a 30 s
+  cap, and dropped once nothing references it. A peer that sends bytes
+  whose hash is wrong counts as a miss, and the next peer is asked.
+- **The token bucket charges after each fetch**, because a chunk's size is
+  known only when it arrives; the next fetch waits out the debt. With
+  several workers, up to one chunk per worker can overshoot the rate.
+- ASan caught a worker waiting on a reference to a queue entry's deadline
+  that another worker then erased; the deadline is copied before the wait.
 
 - [ ] 6. HTTP front end and auth cache
   - `include/raft/cache_http_front_end.hpp` per Components 6 and 7: the method
