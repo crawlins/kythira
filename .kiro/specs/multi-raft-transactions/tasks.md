@@ -142,18 +142,117 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     route repaired and re-partitioned, every crash point all-or-nothing
     after resolution, and an isolation the build lacks refused at `begin`.
 
-- [ ] 7. Leader-side resolver, cleanup, metrics
+- [x] 7. Leader-side resolver, cleanup, metrics
   - Resolver, record cleanup and their rate limits in the tick's apply phase
   - Requirement 12's metrics and the resolve log line
   - Tests: an abandoned transaction's locks clear within TTL + two
     intervals; records cleaned up after resolution or retention
   - _Requirements: 4.5, 4.6, 4.7, 12.1, 12.2_
+  - Done. The tick marks a pass due every `resolver_interval`. The pass
+    runs on a resolver thread the host starts and joins with itself,
+    because resolving means proposing entries and waiting for them to
+    commit, which the tick must never do.
+    - **Each pass, per led group:** the pass reads the wrapper's new
+      `open_transactions()` and `finished_transactions()` views through
+      `with_leader_state_machine`. That way a new leader that has not yet
+      applied its own term's entry acts on nothing.
+    - **Expired intents:** for each transaction whose earliest intent
+      deadline has passed (oldest first, at most `resolver_batch`), it
+      proposes `check_and_resolve` on the primary's shard. That happens
+      locally, or through `set_txn_forwarder` when another host leads it.
+      It then applies the fate here: `commit_secondary` or `abort`.
+      `pending` leaves the lock, because a secondary's intent keeps its
+      prepare's deadline and only the primary's record is heartbeated.
+    - **Cleanup:** finished transactions get one `txn_cleanup` per batch
+      once this leader has seen them finished for `txn_record_retention`
+      (default 10 minutes, counted per leader, so it restarts on a leader
+      change). Cleanup apply now skips an item whose record is still
+      pending.
+    - **Metrics:**
+      - `kythira.multiraft.txn.op{op,result}` and `.op.latency{op}` (commit
+        latency by phase);
+      - `txn.outcome{outcome,path}` (1PC versus 2PC);
+      - `txn.conflict{kind}`;
+      - `txn.resolve{group,outcome}`;
+      - `txn.intents.held{group}` and `txn.intents.oldest_age_ms{group}`;
+      - `txn.cleanup{group}`.
+    - **Log line:** every resolver abort logs a warning with the txn id,
+      primary, lock age and time past deadline.
+    - **Clock:** `multi_raft_config::txn_clock_ms` (default system clock)
+      is the transaction clock; `multi_raft_txn_client::now_ms()` now reads
+      it from the host, so deadlines are stamped and judged on one clock.
+    - **Deviations:**
+      - Isolation is not a metric dimension, because the host never sees
+        it: the envelope does not carry it.
+      - A lock's age is measured from when the current leader first saw
+        it, a lower bound after a leader change, because intents carry no
+        prepare time and adding one would change the snapshot format.
+      - Records are dropped by retention only. "Every intent known
+        resolved" would need the primary to hear from every secondary.
+        That is why retention must comfortably exceed the TTL plus the
+        resolve time: a committed record cleaned up while a crashed
+        coordinator's secondary still holds its intent would be answered
+        `aborted`.
+      - Resolves by a coordinator's own `read_committed_wait` reader are
+        logged by neither side yet.
+    - **Tests:**
+      - `tests/txn_state_machine_test.cpp`: both views, and that cleanup
+        never drops a pending record.
+      - `tests/multi_raft_txn_test.cpp`, with nobody but the resolver
+        acting:
+        - a coordinator crashed before and after its commit point has all
+          locks cleared within TTL + two intervals, ending all-absent and
+          all-committed respectively;
+        - a transaction kept alive by heartbeats past its TTL keeps its
+          secondary's lock (`pending`), and is rolled forward by the
+          resolver once it commits;
+        - a finished transaction's record and settled entries are kept
+          through the retention and dropped after it.
 
-- [ ] 8. Bank workload, tier 1
+- [x] 8. Bank workload, tier 1
   - `tests/multi_raft_txn_bank_test.cpp`: concurrent transfers with leader
     transfers, splits and merges mid-run; constant committed total; no
     uncommitted read under `read_committed`
   - _Requirements: 6.1, 6.3, 13.4_
+  - Done.
+    - **Setup:** sixteen accounts over two shards and three hosts. Four
+      workers transfer between random pairs while a chaos thread, every
+      250 ms, moves a shard's leadership, or splits the lower shard and
+      then merges the child back. The run lasts at least 8 s, and until
+      each kind of chaos has happened twice.
+    - **Transfers are commutative `add` commands.** They come from
+      `bank_sm`, a splittable wrapper over the key/value test machine.
+      Read-then-put transfers would lose updates under tier 1 by design,
+      since read validation is tier 3.
+    - **Poison transactions:** every eighth transaction writes a marker
+      and credits an account with money that does not exist, then its
+      coordinator dies at `prepared`. The resolver must abort it. A
+      `read_committed` reader polls the markers and must never see one,
+      and a poison credit that ever landed would break the total.
+    - **Typical run:** about 650 committed, 900 aborted (mostly
+      conflicts), 40 poison, 11 leader moves, 10 splits and 10 merges.
+    - **Bug found and fixed in the host.** The first runs lost money, 3 of
+      4 times. `route_and_run` refused writes to a merging source, but
+      not to a shard with a split in flight. A write accepted after the
+      split was proposed was appended after the split entry, so it
+      applied to the narrowed parent after the cut, for a key the child
+      now owns. It was acknowledged and never read again; a merge back
+      overwrote it. This was not specific to transactions: any plain
+      write could be lost.
+      - **The fix:** a write now backs off while its shard is
+        `splitting`, as it already did for `merging_source`. A per-group
+        `_proposal_gate` (shared across a write's check and append,
+        exclusive across `admit()` into `splitting` or `merging_source`)
+        closes the window between a write's check and the claim.
+      - **Regression test:**
+        `multi_raft_split_integration_test/a_write_racing_a_split_is_never_lost`
+        lost 1-3 of about 250 acknowledged plain writes on every run
+        before the fix, and none after.
+      - **Residual:** a leader elected while an uncommitted split entry
+        is in its log has not admitted the split itself, so it still
+        accepts writes until that entry applies. Closing that needs an
+        apply-time range check, which `node` does not offer for normal
+        entries.
 
 - [ ] 9. Redis gateway: tier-1 surface
   - `--transactions`, `--txn-isolation`, `KYTHIRA.ISOLATION`; `MSET`,
