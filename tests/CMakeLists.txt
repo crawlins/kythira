@@ -1334,6 +1334,12 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
                               OpenSSL::SSL OpenSSL::Crypto)
         set_tests_properties(redis_gateway_disk_store_integration_test PROPERTIES
             LABELS "multi-raft;redis;cache" TIMEOUT 600)
+        # Task 6: the cache's HTTP front end over three in-process hosts,
+        # including a 1 GiB PUT whose peak RSS must stay under 64 MiB.
+        add_raft_completion_test(cache_http_front_end_test cache_http_front_end_test.cpp)
+        target_link_libraries(cache_http_front_end_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        set_tests_properties(cache_http_front_end_test PROPERTIES
+            LABELS "multi-raft;redis;cache" TIMEOUT 900)
     else()
         message(STATUS "redis_gateway_integration_test: skipped (requires folly)")
     endif()

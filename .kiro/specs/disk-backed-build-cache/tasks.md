@@ -1,11 +1,11 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 5/13 tasks complete
+## Status: 6/13 tasks complete
 
 **Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
 and the gateway over either machine; task 4: the binary persistence engine;
-task 5: the chunk fetcher.
+task 5: the chunk fetcher; task 6: the HTTP front end and auth cache.
 Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
@@ -456,7 +456,7 @@ design left open:
 - ASan caught a worker waiting on a reference to a queue entry's deadline
   that another worker then erased; the deadline is copied before the wait.
 
-- [ ] 6. HTTP front end and auth cache
+- [x] 6. HTTP front end and auth cache
   - `include/raft/cache_http_front_end.hpp` per Components 6 and 7: the method
     table, streaming `PUT` with two chunks in flight, `Range` `GET`, the
     abort on mid-body hash mismatch, forwarding of writes, `/_chunk/` and
@@ -468,6 +468,55 @@ design left open:
     disconnect mid-`PUT` leaves the old value; a `read_only` `PUT` gives 403
     and no log entry; a 413 above the maximum.
   - _Requirements: 3.4, 7.1–7.8, 8.1–8.5, 10.2_
+
+### Task 6 results (2026-11-01)
+
+`include/raft/cache_http_front_end.hpp`, `include/raft/cache_http_auth.hpp`
+and `tests/cache_http_front_end_test.cpp` (13 cases over three in-process
+hosts, each with its own chunk store). The four the task names:
+
+- **A 1 GiB `PUT`** on a one-node cluster (one Raft log in the process,
+  snapshotting every 8 MB) peaked at **47 MiB** of RSS above the baseline,
+  against the 64 MiB bound, and took about 20 s over loopback.
+- **A disconnect mid-`PUT`** leaves the old value and counts one aborted
+  put.
+- **A `read_only` `PUT`, `DELETE`, `MKCOL` or `PROPFIND`** gets 403, and the
+  shard's last log index does not move.
+- **413** on a declared length over the maximum, and on a chunked body that
+  grows past it.
+
+The others cover `GET`, `HEAD`, `Range` across a chunk boundary, 416, empty
+values, `DELETE`, chunked uploads with `Expect: 100-continue`, follower
+relays, the WebDAV replies, `/_chunk/` and `/_metrics` access, 507 below the
+free-space floor, the plaintext opt-in, and HTTPS with TLS between front ends.
+Choices the design left open:
+
+- **One thread per connection**, each with a private `io_context`. Every
+  socket operation is asynchronous with a Beast deadline, driven to
+  completion before the handler moves on. A Raft proposal therefore blocks
+  only its own connection, and the connection gate caps the threads.
+- **Relays carry the client's own `Authorization`**, not the internal secret,
+  so the leader authorizes the same identity and the ACL is checked where
+  the write lands. A relayed request is marked `X-Kythira-Forwarded` and is
+  never relayed twice. The internal secret opens `/_chunk/` and nothing else.
+- **`PROPFIND` is `read_write`**, per the design, so a `read_only` client is
+  refused it. sccache in read-only mode never sends one.
+- **The free-space floor is local only.** Voters' free space arrives with the
+  advisory batches of task 7; until then a leader checks its own disk.
+- **The auth cache holds the ACL table it was filled from.** A reload
+  installs a new table, and the next lookup sees a different one and
+  empties the cache. Holding the old table stops its address being reused,
+  which would otherwise hide a reload.
+- **Refusals drain small bodies.** A 401, 403 or 507 for a request whose
+  declared body is at most 64 KiB reads and drops that body, so the client's
+  connection survives. Larger bodies, and every 413, close the connection.
+  Closes linger for up to a second, reading and discarding, so the kernel
+  does not reset the connection before the client has read its 413.
+- Beast can report a chunked body's limit while still reading the header,
+  when the first chunks arrive in the same read. That path answers 413 too.
+- TSan caught `stop()` closing an acceptor while its thread was still in
+  `accept()`. `stop()` now shuts the listening socket down to wake the
+  thread, joins it, and only then closes the acceptor. ASan is clean.
 
 - [ ] 7. Daemon wiring, configuration and the disk budget
   - `cmd/redis_gateway_node`: `KYTHIRA_CACHE_*` parsing in `config.cpp`,
