@@ -1046,9 +1046,32 @@ BOOST_AUTO_TEST_CASE(a_fetch_moves_reads_from_forwarded_to_local, *boost::unit_t
 
     resp_client follower(c.port(follower_id));
     BOOST_REQUIRE_EQUAL(follower.auth("farm", "farm-secret"), "+OK\r\n");
+    // A follower that does not know a leader has nowhere to forward and
+    // answers a miss. On a loaded CI runner a heartbeat can be late enough
+    // for the follower to start a pre-vote and forget its leader, so wait
+    // until it knows one again. A miss with no forward is what CI run
+    // 41350889106 saw; the log was too long to keep the election lines,
+    // and this is the only path that answers that way on a follower.
+    auto knows_leader = [&] {
+        return !follower_node->is_leader() && follower_node->known_leader();
+    };
+    for (int i = 0; i < 500 && !knows_leader(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    BOOST_REQUIRE(knows_leader());
     auto forwards = c.gateway(follower_id).stats()._forwards.load();
-    BOOST_CHECK_EQUAL(follower.call({"GET", "sccache/fetch"}), bulk("from a peer"));
-    BOOST_CHECK_EQUAL(c.gateway(follower_id).stats()._forwards.load(), forwards + 1);
+    std::string reply;
+    for (int i = 0; i < 50; ++i) {
+        reply = follower.call({"GET", "sccache/fetch"});
+        if (reply == bulk("from a peer")) {
+            break;
+        }
+        // The follower lost its leader again between the check and the
+        // read: try again once it has had a moment to hear from one.
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+    BOOST_CHECK_EQUAL(reply, bulk("from a peer"));
+    BOOST_CHECK_GE(c.gateway(follower_id).stats()._forwards.load(), forwards + 1);
 
     auto leader_refs = look(leader_node).second;
     kythira::cache_chunk_fetcher<node_id_t> fetcher(
