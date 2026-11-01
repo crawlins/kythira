@@ -1369,10 +1369,13 @@ private:
         _flush_running = true;
         const std::size_t workers =
             concurrent_key_object_store<Store> ? _opts.append_concurrency : 1;
+        // Read under `_mu`: whether this run starts the log (see
+        // put_log_objects).
+        const bool starts_log = _log.empty();
         std::vector<put_outcome> outcomes;
         lock.unlock();
         try {
-            outcomes = put_log_objects(keys, bodies, workers);
+            outcomes = put_log_objects(keys, bodies, workers, starts_log);
         } catch (...) {
             lock.lock();
             _flush_running = false;
@@ -1561,7 +1564,7 @@ public:
 
         const std::size_t workers =
             extends && concurrent_key_object_store<Store> ? _opts.append_concurrency : 1;
-        auto outcomes = put_log_objects(keys, bodies, workers);
+        auto outcomes = put_log_objects(keys, bodies, workers, _log.empty());
 
         const put_outcome* first_failure = nullptr;
         for (const auto& outcome : outcomes) {
@@ -2131,12 +2134,30 @@ private:
     /// is going to throw, so sending the rest would only make more strays — but
     /// the ones already in flight finish. One worker is the sequential path, on
     /// the calling thread. Callers hold `_mu`; the workers never take it.
+    ///
+    /// `starts_log` says the store holds no log object yet (the mirror is
+    /// empty: a fresh prefix, or one a truncation or compaction emptied). The
+    /// first object then goes alone, before any other is sent. The load path
+    /// keeps the chain from the *lowest* log object it finds, so over an
+    /// empty log a crash that let a later object land without the first
+    /// would load that object as the start of the log: entries [3..4] with
+    /// nothing at 1..2, a hole `node`'s positional log cannot represent.
+    /// Over a non-empty log no ordering is needed, because the chain from
+    /// the existing objects stops at the first gap. Costs one serial round
+    /// trip, and only on a log's first write.
     auto put_log_objects(const std::vector<std::string>& keys,
-                         const std::vector<std::string>& bodies, std::size_t workers) const
-        -> std::vector<put_outcome> {
+                         const std::vector<std::string>& bodies, std::size_t workers,
+                         bool starts_log) const -> std::vector<put_outcome> {
         std::vector<put_outcome> outcomes(keys.size());
         std::atomic<std::size_t> next{0};
         std::atomic<bool> failed{false};
+        if (starts_log && workers > 1 && keys.size() > 1) {
+            outcomes[0] = put_log_object(keys[0], bodies[0]);
+            if (outcomes[0].state != put_state::ok) {
+                return outcomes;
+            }
+            next.store(1);
+        }
         auto work = [&] {
             while (!failed.load()) {
                 const std::size_t i = next.fetch_add(1);
