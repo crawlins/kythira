@@ -15,6 +15,10 @@
 //                    [--workload-binary P] [--allow-image-mismatch] [--keep-cluster]
 //   chaos_ctl minimize [--repeat N] [--keep 3,7,9] [--out F] [--layout L --compose F]
 //                      [--workload-binary P] [--allow-image-mismatch]
+//   chaos_ctl report [--log F | --run-dir D] [--replay-result F] [--id ID] [--image I]
+//                    [--kythira-commit C] [--cairn-version V] [--note TEXT]
+//                    [--source-dir R] [--minimized] [--keep-refused]
+//                    [--keep-after-violation] [--clang-format P]
 //
 // The cairn layout is the cluster of docker/cairn/cairn-compose.yml, driven
 // from the tool server inside the fence: nodes by service name, the runtime
@@ -24,7 +28,12 @@
 // run on the host: a cairn run replays there with --layout chaos3, the same
 // image and settings on published ports.
 //
-// Every command takes --run-dir D (default $KYTHIRA_CHAOS_RUN_DIR) and
+// `report` (task 12, report.hpp) turns a log's first violation into a
+// replay file, a draft test and a doc/chaos-findings.md entry under the
+// source tree R (default: the current directory). It writes files only and
+// refuses to overwrite a finding that is already there.
+//
+// Every other command takes --run-dir D (default $KYTHIRA_CHAOS_RUN_DIR) and
 // --failpoints F (default $KYTHIRA_CAIRN_FAILPOINTS, else the allowlist the
 // build copies next to this binary). Output is one JSON object on stdout.
 //
@@ -32,7 +41,9 @@
 // or replay/minimize reproduced the violation; 2 bad usage or a failure of
 // chaos_ctl itself.
 
+#include "attempt.hpp"
 #include "replay.hpp"
+#include "report.hpp"
 #include "run_state.hpp"
 #include "schedule_log.hpp"
 #include "tools.hpp"
@@ -42,8 +53,10 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <map>
@@ -67,7 +80,9 @@ struct cli {
     std::set<std::string> flags;
 };
 
-const std::set<std::string> k_flag_opts{"--start", "--allow-image-mismatch", "--keep-cluster"};
+const std::set<std::string> k_flag_opts{"--start",        "--allow-image-mismatch",
+                                        "--keep-cluster", "--minimized",
+                                        "--keep-refused", "--keep-after-violation"};
 
 auto parse(int argc, char** argv) -> cli {
     cli c;
@@ -144,10 +159,6 @@ auto kythira_commit() -> std::string {
     return r.code == 0 ? trimmed(r.out) : std::string{"unknown"};
 }
 
-void real_fiu_send(docker_chaos::ChaosNode& n, const std::string& cmd) {
-    docker_chaos::fiu::send_fiu_cmd(n.host(), n.fiu_port(), cmd);
-}
-
 /// Sets cfg's node table and compose file from --layout and --compose.
 void apply_layout(run_config& cfg, const std::string& layout,
                   const std::optional<std::string>& compose) {
@@ -174,20 +185,6 @@ auto reachable_from_host(const run_config& cfg) -> bool {
 
 void print(const boost::json::value& v) {
     std::cout << boost::json::serialize(v) << '\n';
-}
-
-/// Points every compose call this process makes at the run's image. The
-/// compose files read it as ${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev},
-/// so a run on the seeded image (cairn-chaos-testing task 9) replays on it
-/// rather than on whatever :dev happens to be.
-void use_image(const run_config& cfg) {
-    ::setenv("KYTHIRA_CHAOS_NODE_IMAGE", cfg.image.c_str(), 1);
-}
-
-void start_cluster(docker_chaos::ChaosCluster& cluster) {
-    cluster.stop();
-    cluster.start();
-    cluster.wait_for_leader(std::chrono::seconds{30});
 }
 
 auto cmd_init(const cli& c) -> int {
@@ -259,55 +256,6 @@ auto cmd_tool(const cli& c) -> int {
     auto out = call(ctx, c.command, std::move(args));
     print(out);
     return out.at("status").as_string() == "ok" ? 0 : 1;
-}
-
-/// One replay attempt in its own run directory under `out_dir`.
-auto real_attempt(const run_config& cfg, const fs::path& out_dir, const std::set<std::string>& fps,
-                  bool keep_cluster) -> replay::attempt_fn {
-    return [=](const std::vector<call_record>& calls, std::int64_t base, int attempt) {
-        run_paths paths{out_dir / ("attempt-" + std::to_string(attempt))};
-        fs::remove_all(paths.dir);
-        fs::create_directories(paths.dir);
-        write_json_file(paths.config(), to_json(cfg));
-        use_image(cfg);
-        docker_chaos::ChaosCluster cluster(cfg.compose_file, cfg.nodes, std::chrono::seconds{60});
-        start_cluster(cluster);
-        if (keep_cluster) {
-            // The next attempt's start takes it down.
-            cluster.detach();
-        }
-        context ctx{.paths = paths,
-                    .cfg = cfg,
-                    .cluster = cluster,
-                    .fiu_send = real_fiu_send,
-                    .procs = real_process_ops(),
-                    .mono_ms = real_mono_ms,
-                    .wall = real_wall,
-                    .failpoints = fps};
-        const auto t0 = real_mono_ms();
-        for (const auto& rec : calls) {
-            if (!replay::replayable(rec)) {
-                continue;
-            }
-            const auto due = t0 + (rec.started_mono_ms - base);
-            if (const auto wait = due - real_mono_ms(); wait > 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds{wait});
-            }
-            static_cast<void>(call(ctx, rec.tool, rec.args));
-        }
-        // The same end as a scripted case: stop the workload, heal, and run
-        // every checker.
-        static_cast<void>(call(ctx, "workload.stop", {}));
-        static_cast<void>(call(ctx, "run.reset", {}));
-        static_cast<void>(
-            call(ctx, "check.run",
-                 {{"checks", boost::json::array{"raft_safety", "linearizability", "liveness"}}}));
-        const auto replayed = read_calls(paths.schedule().string());
-        replay::attempt_outcome out;
-        out.violated = violated(replayed);
-        out.summary = {{"run_dir", paths.dir.string()}, {"calls", replayed.size()}};
-        return out;
-    };
 }
 
 void check_image(const run_config& cfg, const cli& c) {
@@ -426,6 +374,120 @@ auto cmd_minimize(const cli& c) -> int {
     return r.reproduced_in_full ? 1 : 0;
 }
 
+auto read_file(const fs::path& p) -> std::string {
+    std::ifstream in(p);
+    if (!in) {
+        throw usage_error("cannot read " + p.string());
+    }
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+void write_new_file(const fs::path& p, const std::string& text) {
+    if (fs::exists(p)) {
+        throw usage_error(p.string() + " exists; pass another --id or remove it");
+    }
+    fs::create_directories(p.parent_path());
+    std::ofstream out(p, std::ios::trunc);
+    out << text;
+    if (!out) {
+        throw std::runtime_error("write to " + p.string() + " failed");
+    }
+}
+
+auto current_year() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto ymd = std::chrono::year_month_day{std::chrono::floor<std::chrono::days>(now)};
+    return std::to_string(static_cast<int>(ymd.year()));
+}
+
+auto cmd_report(const cli& c) -> int {
+    std::optional<run_paths> paths;
+    if (auto d = opt(c, "--run-dir", "KYTHIRA_CHAOS_RUN_DIR")) {
+        paths = run_paths{fs::absolute(*d)};
+    }
+    report::options o;
+    o.minimized = c.flags.contains("--minimized");
+    if (auto l = opt(c, "--log")) {
+        o.source_log = *l;
+    } else if (paths) {
+        const auto minimized = paths->dir / "minimized.jsonl";
+        o.minimized = o.minimized || fs::exists(minimized);
+        o.source_log = (fs::exists(minimized) ? minimized : paths->schedule()).string();
+    } else {
+        throw usage_error("report needs --log or --run-dir");
+    }
+    if (paths && fs::exists(paths->config())) {
+        o.image = load_config(*paths).image;
+    }
+    o.image = opt(c, "--image").value_or(o.image);
+    o.id = opt(c, "--id").value_or("");
+    o.kythira_commit = opt(c, "--kythira-commit").value_or("");
+    o.cairn_version = opt(c, "--cairn-version").value_or(std::string(report::k_cairn_version));
+    o.note = opt(c, "--note").value_or("");
+    o.cut.keep_refused = c.flags.contains("--keep-refused");
+    o.cut.keep_after_violation = c.flags.contains("--keep-after-violation");
+    if (auto r = opt(c, "--replay-result")) {
+        o.replay = report::parse_replay_result(read_file(*r));
+        if (!o.replay) {
+            throw usage_error(*r + " holds no chaos_ctl replay result");
+        }
+    }
+
+    const auto calls = read_calls(o.source_log);
+    if (calls.empty()) {
+        throw usage_error(o.source_log + " holds no calls");
+    }
+    report::finding f;
+    try {
+        f = report::build(calls, o);
+    } catch (const std::invalid_argument& e) {
+        throw usage_error(e.what());
+    }
+
+    const fs::path root = fs::absolute(opt(c, "--source-dir").value_or(".")).lexically_normal();
+    const std::string replay_rel = "tests/docker_chaos/findings/" + f.id + ".jsonl";
+    const std::string test_rel = "tests/docker_chaos/findings/" + f.id + "_test.cpp";
+    const fs::path doc = root / "doc" / "chaos-findings.md";
+    std::string doc_text = fs::exists(doc) ? read_file(doc) : report::doc_header();
+    if (doc_text.find("\n## " + f.id + ":") != std::string::npos) {
+        throw usage_error(doc.string() + " already has finding " + f.id);
+    }
+    write_new_file(root / replay_rel, report::render_replay_file(f));
+    write_new_file(root / test_rel, report::render_test(f, current_year()));
+    // The format-check target covers tests/, so the draft is formatted with
+    // the tree's own .clang-format when a clang-format is at hand.
+    const auto clang_format = opt(c, "--clang-format", "CLANG_FORMAT").value_or("clang-format");
+    const bool formatted = docker_chaos::os::real_exec(
+                               {clang_format, "-i", "--style=file", (root / test_rel).string()})
+                               .code == 0;
+    doc_text += report::render_entry(f, replay_rel, test_rel);
+    {
+        std::ofstream out(doc, std::ios::trunc);
+        out << doc_text;
+    }
+
+    boost::json::array inv;
+    for (const auto& i : f.invariants) {
+        inv.emplace_back(i);
+    }
+    print(boost::json::object{
+        {"id", f.id},
+        {"invariants", std::move(inv)},
+        {"seq", f.violation->seq},
+        {"calls_in_log", f.total_calls},
+        {"calls_kept", f.schedule.calls.size()},
+        {"cut", boost::json::object{{"after_violation", f.schedule.after_violation},
+                                    {"read_only", f.schedule.read_only},
+                                    {"refused", f.schedule.refused}}},
+        {"attempts", f.attempts},
+        {"replay_file", (root / replay_rel).string()},
+        {"draft_test", (root / test_rel).string()},
+        {"findings_doc", doc.string()},
+        {"draft_formatted", formatted},
+        {"committed", false}});
+    return 0;
+}
+
 auto cmd_tools() -> int {
     boost::json::array out;
     for (const auto& t : tools()) {
@@ -451,6 +513,9 @@ int main(int argc, char** argv) {
         }
         if (c.command == "minimize") {
             return cmd_minimize(c);
+        }
+        if (c.command == "report") {
+            return cmd_report(c);
         }
         if (find_tool(c.command) == nullptr) {
             throw usage_error("unknown command '" + c.command + "'; try: chaos_ctl tools");
