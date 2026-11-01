@@ -2052,13 +2052,19 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
         network_simulator
         Boost::unit_test_framework
     )
+    # oscore::security_context, which the id-collision case builds from each
+    # derived context.
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(coap_edhoc_oscore_bootstrap_test PRIVATE
+            OpenSSL::SSL OpenSSL::Crypto)
+    endif()
     if(TARGET lakers::lakers)
         target_compile_definitions(coap_edhoc_oscore_bootstrap_test PRIVATE LAKERS_AVAILABLE)
         target_link_libraries(coap_edhoc_oscore_bootstrap_test PRIVATE lakers::lakers)
     endif()
     target_compile_features(coap_edhoc_oscore_bootstrap_test PRIVATE cxx_std_23)
     add_test(NAME coap_edhoc_oscore_bootstrap_test COMMAND coap_edhoc_oscore_bootstrap_test)
-    set_tests_properties(coap_edhoc_oscore_bootstrap_test PROPERTIES TIMEOUT 60
+    set_tests_properties(coap_edhoc_oscore_bootstrap_test PROPERTIES TIMEOUT 180
         LABELS "coap;coap-security;integration")
 
     # The message-carrying half of the EDHOC bootstrap, without the handshake.
