@@ -194,6 +194,15 @@ Two caveats are part of the design, not footnotes:
   `chaos_ctl` judges each one, so an agent can never declare a minimal
   schedule that does not reproduce.
 
+`chaos_ctl report` (task 12) turns a log's first violation into the three
+artifacts of Requirement 6.1: a replay file, a draft test in
+`tests/docker_chaos/findings/` whose runner (`chaos_finding.hpp`) is the
+same attempt `replay` makes, and a `doc/chaos-findings.md` entry. It cuts
+the log without replaying anything, so it only drops calls that cannot
+have contributed: those after the violation, the read-only views, and the
+calls the tool server refused before acting. Anything subtler is
+`minimize`'s job, and the entry says which of the two the schedule had.
+
 ## 5. Cairn layer: `docker/cairn/`
 
 - `cairn-compose.yml`: the engine (Cairn v0.2.1 built unmodified from its

@@ -1,8 +1,8 @@
 # Cairn Chaos Testing — Implementation Plan
 
-## Status: In progress (10/14 tasks: 1-10)
+## Status: In progress (11/14 tasks: 1-10, 12)
 
-**Last Updated**: October 31, 2026. The spec was written from Clark's doc
+**Last Updated**: November 1, 2026. The spec was written from Clark's doc
 "Cairn × Kythira: AI-Driven Chaos Testing Spec" and checked against `main`
 at `7f4f25b`.
 
@@ -609,13 +609,16 @@ compatibility").
 
     | run | found | minutes to violation | chaos calls | tokens | GPU minutes |
     |-----|-------|----------------------|-------------|--------|-------------|
-    | 1 | yes | 29 | 737 | ~155k | 29 |
-    | 2 | yes | 35 | 865 | ~273k | 35 |
-    | 3 | yes | 72 | 2,748 | ~541k | 72 |
+    | 1 | yes | 29 | 369 | ~155k | 29 |
+    | 2 | yes | 35 | 433 | ~273k | 35 |
+    | 3 | yes | 72 | 1,374 | ~541k | 72 |
     | 4 | no | - | - | ~940k | 120 |
     | 5 | no | - | 2 | - | 21 |
 
-    Tokens are prompt plus completion, taken from llama-server's
+    Chaos calls are counted from each schedule log's highest `seq`. (This
+    table first gave the log's line count, 737, 865 and 2,748, which is
+    two lines per call; corrected with task 12.) Each run stopped one call
+    after its violation. Tokens are prompt plus completion, taken from llama-server's
     cumulative log, so they are per campaign run rather than per role
     (Pi was the only role). Run 4 bootstrapped and explored for the full
     two hours without producing the double vote. Run 5 failed bootstrap
@@ -627,9 +630,9 @@ compatibility").
     (that attempt also tripped leader completeness, linearizability, log
     matching and state-machine safety); a low rate is expected, since
     task 9's hand-written schedule reproduced in 9 of 20 replays. Run 3:
-    reproduced 3 of 3 (about 6 hours of replay for 2,748 calls).
-    Minimization was skipped: replays wait out each recorded fault, so
-    ddmin would take many hours on tikhov.
+    reproduced 3 of 3 (about 3.6 hours for the three). Minimization was
+    skipped: replays wait out each recorded fault, so ddmin would take many
+    hours on tikhov.
   - Cost: about $9 for the second campaign; about $30 for all of M1,
     including an availability-zone move when us-east-1a had no g5
     capacity (a snapshot-restored volume reads cold blocks at about
@@ -655,9 +658,61 @@ compatibility").
 
 ## M2-M5
 
-- [ ] **12. Reporter and `doc/chaos-findings.md`.** (Requirement 6.)
-  - [ ] Replay file, draft `ChaosCluster` test and findings entry per
+- [x] **12. Reporter and `doc/chaos-findings.md`.** (Requirement 6.)
+  - [x] Replay file, draft `ChaosCluster` test and findings entry per
         finding. Nothing is committed automatically.
+  - Done November 1, 2026. `chaos_ctl report` (`cmd/chaos_ctl/report.hpp`)
+    takes a schedule log, or a run directory (its `minimized.jsonl` if
+    `chaos_ctl minimize` left one), and the output of `chaos_ctl replay`,
+    and writes three things into the working tree, refusing to overwrite a
+    finding already there:
+    - `tests/docker_chaos/findings/<id>.jsonl`, a replay file that
+      `chaos_ctl replay --log` runs;
+    - `tests/docker_chaos/findings/<id>_test.cpp`, a draft test holding the
+      schedule as a table and calling `chaos_finding::check()`
+      (`tests/docker_chaos/chaos_finding.hpp`), which replays it with the
+      same `chaos_ctl::real_attempt` as `chaos_ctl replay` (moved to
+      `cmd/chaos_ctl/attempt.hpp` so the two cannot drift) and fails if any
+      attempt breaks the finding's invariant again. Attempts default to
+      enough for a 90 % chance of a reproduction at the measured replay
+      rate. The draft is clang-formatted with the tree's style, since
+      `format-check` covers `tests/`;
+    - an entry in `doc/chaos-findings.md` with the date, invariant,
+      schedule, the violating call's log line, Kythira commit and Cairn
+      version.
+  - The finding is the log's first violating call. The schedule written
+    out drops what cannot matter: calls after the finding, read-only views
+    (replay skips them anyway), and calls the tool server refused before
+    acting, which changed nothing and on a replay might be accepted and do
+    something the run never did. Refusals are matched on the text of
+    `tools.hpp`'s pre-side-effect errors, and a unit test drives each of
+    those through `call()` and checks nothing reached a node. A call that
+    failed part way ("command failed ...") is kept, and so is the
+    finding's own call even if refused, since its post-step check is where
+    the run saw the violation. This is a cut, not minimization: each entry
+    says the replay rate it quotes is for the uncut log.
+  - `tests/docker_chaos/CMakeLists.txt` builds every `findings/*_test.cpp`
+    from a glob, and `docker-chaos-findings` runs them on the image
+    `docker-chaos-image` builds: `:dev`, or `:seeded-vote-term` in a
+    `KYTHIRA_CHAOS_SEEDED_BUG=vote_term` build. They replay in real time,
+    so no CI job runs them.
+  - The three M1 finds are the first entries. The cuts are large: of 369,
+    433 and 1,374 logged calls the drafts keep 35, 8 and 205; most of the
+    rest are `fault.failpoint` calls with names not on the allowlist
+    (293, 414 and 1,021 refusals). Run 2's double vote needed only a
+    workload, one partition, three resets and time.
+  - Requirement 6.3 for the M1 drafts is open. The run-1 draft ran all 35
+    of its calls on a seeded image built in a cloud sandbox (Docker, the
+    Boost future backend) and did not reproduce (0 of 1), and neither did
+    a `chaos_ctl replay` of run 1's uncut log there (0 of 1), against 3 of
+    3 on tikhov. So that sandbox does not reproduce this race, and the cut
+    was not what lost it. The drafts' fail-on-seeded check belongs on
+    tikhov (`KYTHIRA_CHAOS_SEEDED_BUG=vote_term` build, then
+    `docker-chaos-findings`).
+  - Found on the way: every M1 log line says `"kythira_commit":"unknown"`,
+    because the tool server's image has no git checkout. `start-run.sh`
+    now passes the host tree's HEAD (marked `-dirty` for uncommitted
+    changes) to `chaos_ctl init`.
 
 - [ ] **13. M2: first real hunt.** Every invariant project against current
   `main` in Docker. Triage and minimize anything found. Each confirmed
