@@ -384,6 +384,11 @@ public:
 
     [[nodiscard]] auto null() const -> std::string { return _version >= 3 ? "_\r\n" : "$-1\r\n"; }
 
+    /// The null array: an `EXEC` whose watched keys changed.
+    [[nodiscard]] auto null_array() const -> std::string {
+        return _version >= 3 ? "_\r\n" : "*-1\r\n";
+    }
+
     [[nodiscard]] auto array(const std::vector<std::string>& encoded_elements) const
         -> std::string {
         std::string out = "*" + std::to_string(encoded_elements.size()) + "\r\n";

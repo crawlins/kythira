@@ -404,6 +404,11 @@ private:
         /// EXECABORT).
         bool _multi_failed = false;
         std::vector<resp_command> _queued;
+        /// `WATCH` (snapshot build): the keys, and the oracle timestamp the
+        /// first `WATCH` took. `EXEC` validates them from that timestamp;
+        /// `EXEC`, `DISCARD` and `UNWATCH` clear them.
+        std::set<std::string> _watched;
+        std::uint64_t _watch_ts{0};
     };
 
     /// The coordinator's view of the shards (`txn_participant_client`):
@@ -471,6 +476,7 @@ private:
     auto handle_multi_del(session& s, const resp_command& cmd) -> std::string;
     auto handle_exec(session& s) -> std::string;
     auto handle_isolation(session& s, const resp_command& cmd) -> std::string;
+    auto handle_watch(session& s, const resp_command& cmd) -> std::string;
     auto handle_internal_txn(session& s, const resp_command& cmd) -> std::string;
     /// Queue one command inside `MULTI`, or refuse it (and doom the `EXEC`).
     auto queue_in_multi(session& s, std::string_view upper, const resp_command& cmd) -> std::string;

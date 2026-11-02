@@ -113,7 +113,8 @@ enum class acl_decision : std::uint8_t {
         upper_name == "COMMAND" || upper_name == "QUIT" || upper_name == "RESET" ||
         upper_name == "AUTH" || upper_name == "HELLO" || upper_name == "DBSIZE" ||
         upper_name == "MGET" || upper_name == "MULTI" || upper_name == "EXEC" ||
-        upper_name == "DISCARD" || upper_name == "KYTHIRA.ISOLATION") {
+        upper_name == "DISCARD" || upper_name == "KYTHIRA.ISOLATION" || upper_name == "WATCH" ||
+        upper_name == "UNWATCH") {
         return redis_role::read_only;
     }
     // MULTI/EXEC/DISCARD need nothing themselves: every queued command is

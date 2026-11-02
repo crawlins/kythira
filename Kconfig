@@ -157,8 +157,8 @@ config REDIS_GATEWAY_SNAPSHOT_ISOLATION
 	help
 	  Builds redis_gateway_node's KV state machine multi-versioned
 	  (redis_kv_mvcc_state_machine under mvcc::on), with a timestamp
-	  oracle group on every node, so KYTHIRA_REDIS_TXN_ISOLATION=snapshot
-	  and KYTHIRA.ISOLATION snapshot are accepted and MGET reads one
+	  oracle group on every node, so the snapshot and serializable
+	  isolation levels and WATCH/UNWATCH are accepted, and MGET reads one
 	  point in time across shards. Every write then takes two Raft rounds
 	  and an oracle timestamp, and the snapshot format changes again, so
 	  every node of a cluster must be built the same way. See

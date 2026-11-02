@@ -2719,6 +2719,11 @@ auto redis_gateway<Host, Logger, Metrics>::outcome_error(session& s,
                 case txn_abort_reason::snapshot_too_old:
                     why = "its snapshot is older than a shard's safe point";
                     break;
+                case txn_abort_reason::read_conflict:
+                    why = "a key it read changed after it started" +
+                          (outcome._conflict_key ? " ('" + *outcome._conflict_key + "')"
+                                                 : std::string{});
+                    break;
                 default:
                     why = "a shard did not prepare" +
                           (outcome._detail.empty() ? std::string{} : " (" + outcome._detail + ")");
@@ -2753,12 +2758,9 @@ auto redis_gateway<Host, Logger, Metrics>::execute_txn_command(session& s, std::
     }
     if (upper == "WATCH" || upper == "UNWATCH") {
         // Requirement 11.4: only under mvcc::on, which needs the timestamp
-        // oracle of tier 2. Even there it waits for read-set validation
-        // (task 16): a WATCH checked against versions without it could pass
-        // a key another transaction rewrites before this one commits.
+        // oracle of tier 2 and the read validation of tier 3.
         if constexpr (k_snapshot) {
-            return s._writer.error("ERR " + std::string(upper) +
-                                   " is not available yet (it needs read-set validation)");
+            return handle_watch(s, cmd);
         } else {
             return s._writer.error("ERR " + std::string(upper) +
                                    " needs a build with mvcc::on (multi-version transactions)");
@@ -2786,6 +2788,8 @@ auto redis_gateway<Host, Logger, Metrics>::execute_txn_command(session& s, std::
         s._in_multi = false;
         s._multi_failed = false;
         s._queued.clear();
+        s._watched.clear();  // as Redis: DISCARD unwatches
+        s._watch_ts = 0;
         return s._writer.simple_string("OK");
     }
     if (upper == "EXEC") {
@@ -2796,6 +2800,8 @@ auto redis_gateway<Host, Logger, Metrics>::execute_txn_command(session& s, std::
         if (s._multi_failed) {
             s._multi_failed = false;
             s._queued.clear();
+            s._watched.clear();
+            s._watch_ts = 0;
             return s._writer.error("EXECABORT Transaction discarded because of previous errors.");
         }
         return handle_exec(s);
@@ -2840,6 +2846,53 @@ auto redis_gateway<Host, Logger, Metrics>::handle_isolation(session& s, const re
                                isolation_unsupported_exception(*level, offered).what());
     }
     s._isolation = level;
+    return s._writer.simple_string("OK");
+}
+
+/// `WATCH key [key ...]` and `UNWATCH` on the snapshot build (task 16).
+///
+/// The first `WATCH` takes an oracle timestamp; the next `EXEC` runs as a
+/// serializable transaction started there, with every watched key in its
+/// read set, so it commits only if none of them has a version newer than
+/// that timestamp (and none is held by another transaction) when it
+/// prepares. A later `WATCH` adds keys under the same timestamp, which is
+/// stricter than Redis (a change between the two `WATCH`es also counts).
+/// The reads queued in the `MULTI` are at that timestamp too, and an
+/// `EXEC` with no writes is a read-only transaction: it commits without a
+/// prepare, its reads one consistent snapshot as of the `WATCH`.
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::handle_watch(session& s, const resp_command& cmd)
+    -> std::string {
+    const auto upper = resp_to_upper(cmd._argv[0]);
+    if (upper == "UNWATCH") {
+        if (cmd._argv.size() != 1) {
+            return s._writer.error("ERR wrong number of arguments for 'unwatch' command");
+        }
+        if (auto e = authorize(s, "UNWATCH", {})) {
+            return *e;
+        }
+        s._watched.clear();
+        s._watch_ts = 0;
+        return s._writer.simple_string("OK");
+    }
+    if (cmd._argv.size() < 2) {
+        return s._writer.error("ERR wrong number of arguments for 'watch' command");
+    }
+    std::vector<std::string_view> keys(cmd._argv.begin() + 1, cmd._argv.end());
+    if (auto e = authorize(s, "WATCH", keys)) {
+        return *e;
+    }
+    if (s._watch_ts == 0) {
+        try {
+            s._watch_ts = txn_allocate_timestamps(1, _config._command_timeout)._first;
+        } catch (const std::exception& e) {
+            return s._writer.error(std::string("ERR WATCH could not take a timestamp: ") +
+                                   e.what() + ", retry");
+        }
+    }
+    for (std::size_t i = 1; i < cmd._argv.size(); ++i) {
+        s._watched.insert(cmd._argv[i]);
+    }
     return s._writer.simple_string("OK");
 }
 
@@ -3067,13 +3120,29 @@ template<typename Host, typename Logger, typename Metrics>
 auto redis_gateway<Host, Logger, Metrics>::handle_exec(session& s) -> std::string {
     auto queued = std::move(s._queued);
     s._queued.clear();
+    // EXEC unwatches whatever its outcome, as in Redis.
+    const auto watched = std::exchange(s._watched, {});
+    const auto watch_ts = std::exchange(s._watch_ts, 0);
     if constexpr (!k_transactional) {
         return s._writer.error("ERR transactions are not built in");
     } else {
         try {
             txn_client client(*this);
             coordinator_type coordinator(client);
-            coordinator.begin(make_options(s));
+            auto options = make_options(s);
+            if (!watched.empty()) {
+                // The whole EXEC runs as a serializable transaction that
+                // started at the first WATCH: its reads are at that point,
+                // and its commit fails validation if a watched key changed
+                // since (task 16). Not retried: the watch is what failed.
+                options.isolation = txn_isolation::serializable;
+                options.start_ts = watch_ts;
+                options.max_retries = 0;
+            }
+            coordinator.begin(options);
+            for (const auto& key : watched) {
+                coordinator.watch(key);
+            }
             // The transaction's own view: a buffered write, or a deletion.
             std::map<std::string, std::optional<std::string>> mine;
             auto view = [&](const std::string& key) -> std::optional<std::string> {
@@ -3162,6 +3231,14 @@ auto redis_gateway<Host, Logger, Metrics>::handle_exec(session& s) -> std::strin
                 }
             }
             auto outcome = coordinator.commit();
+            if (!watched.empty() && outcome._kind == txn_outcome_kind::aborted &&
+                outcome._reason == txn_abort_reason::read_conflict) {
+                // Redis's answer for a watched key that changed: a null
+                // array, nothing applied.
+                ++_stats._txn_aborted;
+                emit("redis.txn.aborted", "watch");
+                return s._writer.null_array();
+            }
             if (auto e = outcome_error(s, outcome); !e.empty()) {
                 return e;
             }

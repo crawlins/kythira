@@ -13,6 +13,8 @@
 /// plain or not, takes an oracle timestamp, so a gateway whose host does not
 /// lead the oracle reaches its leader over `KYTHIRA.TXN TS`; a snapshot read
 /// on a shard this host does not lead goes over `KYTHIRA.TXN READAT`.
+/// `WATCH` (task 16) makes the next `EXEC` a serializable transaction that
+/// started at the `WATCH`.
 
 #define BOOST_TEST_MODULE redis_gateway_snapshot_test
 #include <boost/test/unit_test.hpp>
@@ -370,11 +372,71 @@ BOOST_AUTO_TEST_CASE(snapshot_is_offered_and_is_the_default, *boost::unit_test::
     BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ISOLATION"}), bulk("snapshot"));
     BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ISOLATION", "read_committed"}), "+OK\r\n");
     BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ISOLATION", "snapshot"}), "+OK\r\n");
-    auto serializable = client.call({"KYTHIRA.ISOLATION", "serializable"});
-    BOOST_CHECK(starts_with(serializable, "-ERR isolation serializable is not available"));
-    BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ISOLATION"}), bulk("snapshot"));
-    // WATCH waits for read-set validation (task 16).
-    BOOST_CHECK(starts_with(client.call({"WATCH", "a/w"}), "-ERR WATCH is not available yet"));
+    BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ISOLATION", "serializable"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ISOLATION"}), bulk("serializable"));
+    BOOST_CHECK_EQUAL(client.call({"MSET", "a/s", "1", "z/s", "2"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(client.call({"MGET", "a/s", "z/s"}), "*2\r\n" + bulk("1") + bulk("2"));
+}
+
+BOOST_AUTO_TEST_CASE(watch_aborts_an_exec_when_a_watched_key_changed,
+                     *boost::unit_test::timeout(180)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    for (node_id_t id = 1; id <= k_node_count; ++id) {
+        const auto n = std::to_string(id);
+        resp_client client(c.port(id));
+        resp_client other(c.port((id % k_node_count) + 1));
+        BOOST_REQUIRE_EQUAL(client.call({"AUTH", "ops", "ops-secret"}), "+OK\r\n");
+        BOOST_REQUIRE_EQUAL(other.call({"AUTH", "ops", "ops-secret"}), "+OK\r\n");
+
+        // Changed after the WATCH, on another gateway: a null array, and
+        // nothing the EXEC queued applies.
+        BOOST_CHECK_EQUAL(client.call({"WATCH", "a/w" + n}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(other.call({"SET", "a/w" + n, "theirs"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"SET", "z/w" + n, "mine"}), "+QUEUED\r\n");
+        BOOST_CHECK_EQUAL(client.call({"EXEC"}), "*-1\r\n");
+        BOOST_CHECK_EQUAL(client.call({"GET", "z/w" + n}), "$-1\r\n");
+
+        // EXEC unwatched it: the same transaction again commits.
+        BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"SET", "z/w" + n, "mine"}), "+QUEUED\r\n");
+        BOOST_CHECK_EQUAL(client.call({"EXEC"}), "*1\r\n+OK\r\n");
+
+        // Unchanged: it commits, writing the watched key itself.
+        BOOST_CHECK_EQUAL(client.call({"WATCH", "a/v" + n, "z/v" + n}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"GET", "a/v" + n}), "+QUEUED\r\n");
+        BOOST_CHECK_EQUAL(client.call({"SET", "a/v" + n, "1"}), "+QUEUED\r\n");
+        BOOST_CHECK_EQUAL(client.call({"EXEC"}), "*2\r\n$-1\r\n+OK\r\n");
+        BOOST_CHECK_EQUAL(other.call({"GET", "a/v" + n}), bulk("1"));
+
+        // UNWATCH forgets: a change after it does not abort.
+        BOOST_CHECK_EQUAL(client.call({"WATCH", "a/u" + n}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"UNWATCH"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(other.call({"SET", "a/u" + n, "theirs"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"SET", "z/u" + n, "mine"}), "+QUEUED\r\n");
+        BOOST_CHECK_EQUAL(client.call({"EXEC"}), "*1\r\n+OK\r\n");
+
+        // A read-only EXEC reads as of the WATCH and commits.
+        BOOST_CHECK_EQUAL(client.call({"WATCH", "a/r" + n}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(other.call({"SET", "a/r" + n, "later"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"GET", "a/r" + n}), "+QUEUED\r\n");
+        BOOST_CHECK_EQUAL(client.call({"EXEC"}), "*1\r\n$-1\r\n");
+
+        // Not inside MULTI.
+        BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
+        BOOST_CHECK(starts_with(client.call({"WATCH", "a/x"}), "-ERR"));
+        BOOST_CHECK(starts_with(client.call({"EXEC"}), "-EXECABORT"));
+    }
+
+    // The key scope applies to WATCH as to a read.
+    resp_client farm(c.port(1));
+    BOOST_REQUIRE_EQUAL(farm.call({"AUTH", "farm", "farm-secret"}), "+OK\r\n");
+    BOOST_CHECK_EQUAL(farm.call({"WATCH", "z/1"}), "-NOPERM No permissions to access a key\r\n");
+    BOOST_CHECK_EQUAL(farm.call({"WATCH", "a/1"}), "+OK\r\n");
 }
 
 BOOST_AUTO_TEST_CASE(every_gateway_writes_and_reads_under_snapshot,
