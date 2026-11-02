@@ -18,7 +18,11 @@
 /// - of two snapshot transactions writing one key, the first to commit wins
 ///   and the other is not retried;
 /// - a reader waits for an intent whose holder started at or below its read
-///   point, and ignores one whose holder started later.
+///   point, and ignores one whose holder started later;
+/// - (task 16) under `serializable` a read or watched key written after the
+///   start aborts the commit with `read_conflict`, so the write skew that
+///   `snapshot` allows is refused, and a read-only transaction commits
+///   without a prepare.
 
 #define BOOST_TEST_MODULE multi_raft_txn_snapshot_test
 #include <boost/test/unit_test.hpp>
@@ -294,6 +298,98 @@ BOOST_AUTO_TEST_CASE(split_children_keep_the_safe_point_and_absorb_takes_the_hig
     left.absorb(right.get_state(),
                 kythira::shard_range<key_type>{._start = key_type{"m"}, ._end = std::nullopt});
     BOOST_TEST(left.safe_point() == 8U);
+}
+
+// ── Tier 3: read intents (task 16, Requirement 9.2) ───────────────────────
+
+auto prepare_reads(wrapper_fixture& f, const txn_id& id, const std::string& primary,
+                   std::vector<write> writes, std::vector<std::string> reads,
+                   std::uint64_t start_ts) -> result {
+    return f.run(env{kythira::txn_prepare<key_type>{id, primary, std::move(writes),
+                                                    std::move(reads), start_ts, 1'000'000, true}});
+}
+
+BOOST_AUTO_TEST_CASE(a_read_key_written_after_the_start_fails_validation) {
+    wrapper_fixture f;
+    BOOST_REQUIRE(f.prepare(txn_id{1, 1}, "r", "one", 5)._status == txn_result_status::ok);
+    BOOST_REQUIRE(f.commit(txn_id{1, 1}, "r", 9)._status == txn_result_status::ok);
+
+    // Read "r" at 7, write "w": "r" has a version at 9.
+    const auto stale =
+        prepare_reads(f, txn_id{2, 2}, "w", {write{"w", set_cmd("w", "x")}}, {"r"}, 7);
+    BOOST_TEST(stale._status == txn_result_status::read_conflict);
+    BOOST_TEST(stale._key == "r");
+    BOOST_TEST(!stale._holder.has_value());
+    // Nothing installed, write or read.
+    BOOST_TEST(f.sm.intent_count() == 0U);
+
+    // Read at 9 or later validates.
+    BOOST_TEST(
+        prepare_reads(f, txn_id{3, 3}, "w", {write{"w", set_cmd("w", "x")}}, {"r"}, 9)._status ==
+        txn_result_status::ok);
+    BOOST_TEST(f.sm.intent_count() == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(a_read_intent_blocks_writers_but_not_readers) {
+    wrapper_fixture f;
+    BOOST_REQUIRE(
+        prepare_reads(f, txn_id{1, 1}, "w", {write{"w", set_cmd("w", "x")}}, {"r"}, 5)._status ==
+        txn_result_status::ok);
+    // Invisible to reads: there is no value it could commit.
+    BOOST_TEST(!f.sm.intent_on("r").has_value());
+    BOOST_TEST(f.sm.intent_on("w").has_value());
+
+    // A transactional writer meets the holder.
+    const auto blocked = f.prepare(txn_id{2, 2}, "r", "y", 6);
+    BOOST_TEST(blocked._status == txn_result_status::write_conflict);
+    BOOST_TEST(blocked._holder.has_value());
+    BOOST_TEST((blocked._holder->_txn == txn_id{1, 1}));
+    // So does a plain write.
+    const auto plain = f.run(env{kythira::txn_plain{set_cmd("r", "z")}});
+    BOOST_TEST(plain._status == txn_result_status::key_locked);
+    // Another serializable reader of "r" fails validation on the holder.
+    const auto second =
+        prepare_reads(f, txn_id{3, 3}, "v", {write{"v", set_cmd("v", "x")}}, {"r"}, 6);
+    BOOST_TEST(second._status == txn_result_status::read_conflict);
+    BOOST_TEST(second._holder.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(a_commit_releases_read_intents_and_writes_nothing_for_them) {
+    wrapper_fixture f;
+    BOOST_REQUIRE(f.prepare(txn_id{1, 1}, "r", "old", 1)._status == txn_result_status::ok);
+    BOOST_REQUIRE(f.commit(txn_id{1, 1}, "r", 2)._status == txn_result_status::ok);
+    BOOST_REQUIRE(
+        prepare_reads(f, txn_id{2, 2}, "w", {write{"w", set_cmd("w", "x")}}, {"r", "absent"}, 3)
+            ._status == txn_result_status::ok);
+    BOOST_TEST(f.sm.intent_count() == 3U);
+
+    // The snapshot keeps a read intent as one (an empty command).
+    txn_sm restored;
+    restored.restore_from_snapshot(f.sm.get_state(), f.index);
+    BOOST_TEST(restored.get_state() == f.sm.get_state());
+    BOOST_TEST(!restored.intent_on("r").has_value());
+
+    BOOST_TEST(f.commit(txn_id{2, 2}, "w", 4)._status == txn_result_status::ok);
+    BOOST_TEST(f.sm.intent_count() == 0U);
+    BOOST_TEST(f.sm.inner().latest_commit_ts("r") == std::optional<std::uint64_t>(2));
+    BOOST_TEST(!f.sm.inner().latest_commit_ts("absent").has_value());
+    BOOST_TEST(f.at("w", 4) == std::optional<std::string>("x"));
+    // And a writer may now take "r".
+    BOOST_TEST(f.prepare(txn_id{3, 3}, "r", "new", 4)._status == txn_result_status::ok);
+}
+
+BOOST_AUTO_TEST_CASE(an_abort_releases_read_intents) {
+    wrapper_fixture f;
+    BOOST_REQUIRE(
+        prepare_reads(f, txn_id{1, 1}, "w", {write{"w", set_cmd("w", "x")}}, {"r"}, 3)._status ==
+        txn_result_status::ok);
+    std::ignore = f.run(env{kythira::txn_abort<key_type>{txn_id{1, 1}, "w", {"w", "r"}}});
+    BOOST_TEST(f.sm.intent_count() == 0U);
+    BOOST_TEST(f.prepare(txn_id{2, 2}, "r", "y", 4)._status == txn_result_status::ok);
+    // A late copy of the aborted prepare installs nothing.
+    BOOST_TEST(
+        prepare_reads(f, txn_id{1, 1}, "w", {write{"w", set_cmd("w", "x")}}, {"r"}, 3)._status ==
+        txn_result_status::already_aborted);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -809,6 +905,115 @@ BOOST_AUTO_TEST_CASE(old_versions_are_collected_and_old_snapshots_refused,
     fresh.begin();
     BOOST_TEST(as_string(fresh.get("apple")) == std::optional<std::string>("3"));
     fresh.rollback();
+}
+
+BOOST_AUTO_TEST_CASE(serializable_is_offered_and_a_stale_read_aborts_the_commit,
+                     *boost::unit_test::timeout(60)) {
+    const auto offered = coordinator_type::offered_isolations();
+    BOOST_TEST(
+        (std::find(offered.begin(), offered.end(), txn_isolation::serializable) != offered.end()));
+    cluster c;
+    BOOST_REQUIRE(c.await_leaders());
+    BOOST_REQUIRE(commit_all(c, {{"apple", "1"}, {"zebra", "1"}})._kind ==
+                  txn_outcome_kind::committed);
+
+    // Write skew, refused: each reads both and writes the other's key.
+    auto o = options(txn_isolation::serializable);
+    o.max_retries = 3;  // a read conflict must not use them
+    coordinator_type left(c.client(), o);
+    coordinator_type right(c.client(), o);
+    left.begin();
+    right.begin();
+    BOOST_TEST(as_string(left.get("apple")) == std::optional<std::string>("1"));
+    BOOST_TEST(as_string(left.get("zebra")) == std::optional<std::string>("1"));
+    BOOST_TEST(as_string(right.get("apple")) == std::optional<std::string>("1"));
+    BOOST_TEST(as_string(right.get("zebra")) == std::optional<std::string>("1"));
+    left.put("apple", set_cmd("apple", "0"));
+    right.put("zebra", set_cmd("zebra", "0"));
+    const auto won = left.commit();
+    left.drain();
+    BOOST_TEST(won._kind == txn_outcome_kind::committed);
+    const auto lost = right.commit();
+    right.drain();
+    BOOST_TEST(lost._kind == txn_outcome_kind::aborted);
+    BOOST_TEST(lost._reason == txn_abort_reason::read_conflict);
+    BOOST_TEST(lost._conflict_key == std::optional<std::string>("apple"));
+    BOOST_TEST(c.value("zebra") == std::optional<std::string>("1"));
+    // Every read intent is gone with both transactions.
+    BOOST_TEST(c.plain_set(1, "apple", "after") != nullptr);
+    BOOST_TEST(c.plain_set(2, "zebra", "after") != nullptr);
+
+    // Under snapshot the same pair both commit: the skew is allowed there.
+    coordinator_type a(c.client(), options(txn_isolation::snapshot));
+    coordinator_type b(c.client(), options(txn_isolation::snapshot));
+    a.begin();
+    b.begin();
+    std::ignore = a.get("apple");
+    std::ignore = a.get("zebra");
+    std::ignore = b.get("apple");
+    std::ignore = b.get("zebra");
+    a.put("apple", set_cmd("apple", "0"));
+    b.put("zebra", set_cmd("zebra", "0"));
+    BOOST_TEST(a.commit()._kind == txn_outcome_kind::committed);
+    BOOST_TEST(b.commit()._kind == txn_outcome_kind::committed);
+    a.drain();
+    b.drain();
+}
+
+BOOST_AUTO_TEST_CASE(a_read_only_serializable_transaction_commits_without_a_prepare,
+                     *boost::unit_test::timeout(60)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_leaders());
+    BOOST_REQUIRE(commit_all(c, {{"apple", "1"}})._kind == txn_outcome_kind::committed);
+    coordinator_type reader(c.client(), options(txn_isolation::serializable));
+    reader.begin();
+    BOOST_TEST(as_string(reader.get("apple")) == std::optional<std::string>("1"));
+    // A write after the start does not touch the reader: its reads were one
+    // snapshot, serializable at the start timestamp.
+    c.plain_set(1, "apple", "2");
+    const auto out = reader.commit();
+    BOOST_TEST(out._kind == txn_outcome_kind::committed);
+    BOOST_TEST(!out._primary.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(a_watched_key_written_after_the_start_aborts_the_commit,
+                     *boost::unit_test::timeout(60)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_leaders());
+    const auto watch_ts = c.client().allocate_timestamps(1, k_timeout)._first;
+    c.plain_set(2, "zebra", "changed");
+
+    auto o = options(txn_isolation::serializable);
+    o.start_ts = watch_ts;
+    coordinator_type txn(c.client(), o);
+    txn.begin();
+    BOOST_TEST(txn.start_ts() == watch_ts);
+    txn.watch("zebra");
+    txn.put("apple", set_cmd("apple", "x"));
+    const auto out = txn.commit();
+    txn.drain();
+    BOOST_TEST(out._kind == txn_outcome_kind::aborted);
+    BOOST_TEST(out._reason == txn_abort_reason::read_conflict);
+    BOOST_TEST(!c.value("apple").has_value());
+
+    // Watched from a timestamp after the change: it commits.
+    o.start_ts = c.client().allocate_timestamps(1, k_timeout)._first;
+    coordinator_type again(c.client(), o);
+    again.begin();
+    again.watch("zebra");
+    again.put("apple", set_cmd("apple", "x"));
+    BOOST_TEST(again.commit()._kind == txn_outcome_kind::committed);
+    again.drain();
+    BOOST_TEST(c.value("apple") == std::optional<std::string>("x"));
+
+    // A start timestamp below snapshot is refused, as is watch().
+    coordinator_type rc(c.client(), options(txn_isolation::read_committed));
+    auto bad = options(txn_isolation::read_committed);
+    bad.start_ts = watch_ts;
+    BOOST_CHECK_THROW(rc.begin(bad), std::invalid_argument);
+    rc.begin();
+    BOOST_CHECK_THROW(rc.watch("zebra"), std::logic_error);
+    rc.rollback();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

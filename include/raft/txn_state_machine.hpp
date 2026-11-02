@@ -104,6 +104,10 @@ struct txn_options {
     std::chrono::milliseconds timeout{std::chrono::seconds{10}};
     /// Automatic retries after a conflict; zero hands every conflict back.
     std::size_t max_retries{0};
+    /// `snapshot` and `serializable` only: the start timestamp to use, from
+    /// an earlier oracle allocation (a Redis `WATCH` takes it when the watch
+    /// begins). Zero takes a fresh one at `begin()`.
+    std::uint64_t start_ts{0};
 };
 
 /// @brief An intent as a read path sees it (Requirement 5.5).
@@ -324,9 +328,12 @@ public:
     [[nodiscard]] auto inner() -> SM& { return _inner; }
     [[nodiscard]] auto inner() const -> const SM& { return _inner; }
 
+    /// @brief The write intent on `k`, if any. A read intent (tier 3) is not
+    ///        reported: it holds no value a reader could miss, so no read
+    ///        need wait for it. Writers still meet it as a conflict.
     [[nodiscard]] auto intent_on(const Key& k) const -> std::optional<intent_view<Key>> {
         const auto it = _intents.find(k);
-        if (it == _intents.end()) {
+        if (it == _intents.end() || it->second.is_read()) {
             return std::nullopt;
         }
         return intent_view<Key>{it->second._txn, it->second._primary, it->second._deadline_ms,
@@ -439,9 +446,14 @@ private:
     struct intent {
         txn_id _txn{};
         Key _primary{};
+        /// Empty for a read intent (tier 3): no write is pending, but writers
+        /// are blocked until the holder finishes (Requirement 9.2). A write
+        /// command is never empty, so the snapshot format needs no flag.
         std::vector<std::byte> _command{};
         std::uint64_t _deadline_ms{0};
         std::uint64_t _start_ts{0};
+
+        [[nodiscard]] auto is_read() const -> bool { return _command.empty(); }
     };
 
     using record_map = std::map<Key, std::map<txn_id, txn_record_view>>;
@@ -492,6 +504,12 @@ private:
     auto apply_op(const txn_prepare<Key>& op, log_index_type) -> result_type {
         // Tier 3's read keys never arrive under mvcc::off: a serializable
         // transaction is refused at begin() on such a host (Requirement 10.2).
+        // Refuse them anyway rather than lock keys no version can validate.
+        if constexpr (Mvcc == mvcc::off) {
+            if (!op._read_keys.empty()) {
+                return status_only(txn_result_status::read_conflict);
+            }
+        }
         if (op._is_primary) {
             if (const auto* rec = find_record(op._primary, op._txn); rec != nullptr) {
                 if (rec->_status == txn_record_status::aborted) {
@@ -509,6 +527,24 @@ private:
                            : status_only(txn_result_status::already_aborted);
             }
         }
+        // Tier 3: only the keys read and not written; a written key's write
+        // intent already holds it, and its newer-version check is the same.
+        std::vector<Key> reads;
+        for (const auto& k : op._read_keys) {
+            if (std::none_of(op._writes.begin(), op._writes.end(),
+                             [&](const auto& w) { return w._key == k; })) {
+                reads.push_back(k);
+            }
+        }
+        std::sort(reads.begin(), reads.end());
+        reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
+        for (const auto& k : reads) {
+            if (const auto s = settled_status(k, op._txn); s.has_value()) {
+                return *s == txn_record_status::committed
+                           ? result_type{}
+                           : status_only(txn_result_status::already_aborted);
+            }
+        }
         if (auto old = too_old(op._start_ts); old.has_value()) {
             return *old;
         }
@@ -521,9 +557,30 @@ private:
                 return *newer;
             }
         }
+        // Requirement 9.2: a read key fails validation if a version committed
+        // after the start timestamp, or another transaction holds it.
+        for (const auto& k : reads) {
+            if (auto conflict = conflict_on(k, &op._txn); conflict.has_value()) {
+                conflict->_status = txn_result_status::read_conflict;
+                return *conflict;
+            }
+            if (auto newer = newer_version_on(k, op._start_ts); newer.has_value()) {
+                newer->_status = txn_result_status::read_conflict;
+                return *newer;
+            }
+        }
         for (const auto& w : op._writes) {
             _intents.insert_or_assign(w._key, intent{op._txn, op._primary, w._command,
                                                      op._ttl_deadline_ms, op._start_ts});
+        }
+        // A read intent is an intent with no command: it blocks writers as a
+        // write intent does, and rolls forward to nothing. A key this
+        // transaction already holds (a retried prepare) keeps its intent.
+        for (const auto& k : reads) {
+            if (const auto it = _intents.find(k); it == _intents.end()) {
+                _intents.emplace(
+                    k, intent{op._txn, op._primary, {}, op._ttl_deadline_ms, op._start_ts});
+            }
         }
         if (op._is_primary) {
             auto& rec = _records[op._primary][op._txn];
@@ -772,7 +829,10 @@ private:
         if (it == _intents.end() || it->second._txn != txn) {
             return std::nullopt;  // already resolved, or never prepared here
         }
-        auto payload = apply_inner(it->second._command, commit_ts, index);
+        std::optional<std::vector<std::byte>> payload;
+        if (!it->second.is_read()) {
+            payload = apply_inner(it->second._command, commit_ts, index);
+        }
         _intents.erase(it);
         _settled[key][txn] = txn_record_status::committed;
         return payload;

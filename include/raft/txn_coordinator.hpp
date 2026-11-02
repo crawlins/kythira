@@ -52,6 +52,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -135,6 +136,11 @@ enum class txn_abort_reason : std::uint8_t {
     /// The start timestamp fell below a shard's garbage-collection safe
     /// point (Requirement 8.6): begin again for a fresh one.
     snapshot_too_old,
+    /// Under `serializable`, a key the transaction read was written after
+    /// its start timestamp, or is held by another transaction
+    /// (Requirement 9.2). Never retried: the reads are stale, so begin
+    /// again and read afresh.
+    read_conflict,
 };
 
 template<shard_key Key> struct txn_outcome {
@@ -198,7 +204,7 @@ public:
     [[nodiscard]] static auto offered_isolations() -> std::vector<txn_isolation> {
         if constexpr (k_mvcc) {
             return {txn_isolation::read_committed, txn_isolation::read_committed_wait,
-                    txn_isolation::snapshot};
+                    txn_isolation::snapshot, txn_isolation::serializable};
         } else {
             return {txn_isolation::read_committed, txn_isolation::read_committed_wait};
         }
@@ -218,14 +224,21 @@ public:
         if (std::find(offered.begin(), offered.end(), options.isolation) == offered.end()) {
             throw isolation_unsupported_exception(options.isolation, offered);
         }
+        if (options.start_ts != 0 && !is_versioned(options.isolation)) {
+            throw std::invalid_argument(
+                "transaction_coordinator: a start timestamp needs snapshot or serializable");
+        }
         _options = options;
         _writes.clear();
+        _reads.clear();
         _start_ts = 0;
         if constexpr (k_mvcc) {
-            if (options.isolation == txn_isolation::snapshot) {
+            if (is_versioned(options.isolation)) {
                 // Every read of the transaction is at this timestamp, and
                 // its writes conflict with anything committed after it.
-                _start_ts = _client.allocate_timestamps(1, options.timeout)._first;
+                _start_ts = options.start_ts != 0
+                                ? options.start_ts
+                                : _client.allocate_timestamps(1, options.timeout)._first;
             }
         }
         _txn = fresh_id();
@@ -233,8 +246,24 @@ public:
         return _txn;
     }
 
-    /// @brief The snapshot transaction's start timestamp; zero otherwise.
+    /// @brief The snapshot or serializable transaction's start timestamp;
+    ///        zero otherwise.
     [[nodiscard]] auto start_ts() const -> std::uint64_t { return _start_ts; }
+
+    /// @brief Under `serializable`, validate `key` at commit as if it had
+    ///        been read, without reading it (a Redis `WATCH`): the commit
+    ///        aborts with `read_conflict` if a version of it committed after
+    ///        the start timestamp, or another transaction holds it.
+    ///
+    /// @throws std::logic_error below `serializable`, where nothing would
+    ///         validate it.
+    auto watch(const Key& key) -> void {
+        require_open("watch");
+        if (_options.isolation != txn_isolation::serializable) {
+            throw std::logic_error("transaction_coordinator: watch needs serializable");
+        }
+        _reads.insert(key);
+    }
 
     /// @brief Buffer a write. Nothing reaches a shard before `commit()`
     ///        (Requirement 3.1); a second write to a key replaces the first.
@@ -266,11 +295,14 @@ public:
         require_open("get");
         const auto deadline = std::chrono::steady_clock::now() + _options.timeout;
         auto backoff = std::chrono::milliseconds{5};
+        if (_options.isolation == txn_isolation::serializable) {
+            _reads.insert(key);  // validated at commit (Requirement 9.1)
+        }
         for (;;) {
             auto read = read_once(key, deadline);
             const bool waits = _options.isolation == txn_isolation::read_committed_wait ||
-                               (_options.isolation == txn_isolation::snapshot &&
-                                read._intent.has_value() && read._intent->_start_ts <= _start_ts);
+                               (is_versioned(_options.isolation) && read._intent.has_value() &&
+                                read._intent->_start_ts <= _start_ts);
             if (!waits || !read._intent.has_value() || read._intent->_txn == _txn) {
                 return std::move(read._value);
             }
@@ -294,13 +326,17 @@ public:
         require_open("commit");
         _open = false;
         if (_writes.empty()) {
+            // Requirement 9.3: a read-only transaction commits without a
+            // prepare, at every level. Its reads were one snapshot, which is
+            // serializable at the start timestamp on its own.
             return outcome_type{._txn = _txn};
         }
         for (std::size_t attempt = 0;; ++attempt) {
             auto out = attempt_commit();
             // A newer committed version (no holder) is not retried: the
             // writes were made against a snapshot that is now stale, and
-            // retrying them later would be a lost update.
+            // retrying them later would be a lost update. A read conflict is
+            // not retried either (it is not a write_conflict).
             const bool version_conflict = out._reason == txn_abort_reason::write_conflict &&
                                           !out._holder.has_value() && _start_ts != 0;
             if (out._kind != txn_outcome_kind::aborted ||
@@ -318,6 +354,7 @@ public:
     auto rollback() -> void {
         require_open("rollback");
         _writes.clear();
+        _reads.clear();
         _open = false;
     }
 
@@ -384,14 +421,20 @@ private:
         std::chrono::milliseconds{}));
     using write_map = std::map<Key, std::vector<std::byte>>;
 
+    /// One shard's share: its writes and, under `serializable`, the keys
+    /// it validates and read-locks without writing.
     struct group_writes {
         std::vector<txn_write<Key>> _writes;
+        std::vector<Key> _read_keys;
+        /// Every key the shard holds for the transaction: what the send is
+        /// routed and admitted by, and what a commit or abort releases.
         [[nodiscard]] auto keys() const -> std::vector<Key> {
             std::vector<Key> out;
-            out.reserve(_writes.size());
+            out.reserve(_writes.size() + _read_keys.size());
             for (const auto& w : _writes) {
                 out.push_back(w._key);
             }
+            out.insert(out.end(), _read_keys.begin(), _read_keys.end());
             return out;
         }
     };
@@ -428,10 +471,14 @@ private:
         return f.wait(remaining(until));
     }
 
+    [[nodiscard]] static auto is_versioned(txn_isolation level) -> bool {
+        return level == txn_isolation::snapshot || level == txn_isolation::serializable;
+    }
+
     /// One read at the transaction's isolation.
     auto read_once(const Key& key, clock::time_point deadline) -> txn_read_result<Key> {
         if constexpr (k_mvcc) {
-            if (_options.isolation == txn_isolation::snapshot) {
+            if (is_versioned(_options.isolation)) {
                 return _client.read_at(key, _start_ts, remaining(deadline));
             }
         }
@@ -456,8 +503,8 @@ private:
         return decode_txn_result<Key, KeyCodec>(bytes, _codec);
     }
 
-    /// Group `writes` by the shard each key resolves to now.
-    auto partition(const std::vector<txn_write<Key>>& writes)
+    /// Group `writes` and `reads` by the shard each key resolves to now.
+    auto partition(const std::vector<txn_write<Key>>& writes, const std::vector<Key>& reads = {})
         -> std::optional<std::map<group_id_type, group_writes>> {
         std::map<group_id_type, group_writes> out;
         for (const auto& w : writes) {
@@ -466,6 +513,25 @@ private:
                 return std::nullopt;
             }
             out[*g]._writes.push_back(w);
+        }
+        for (const auto& k : reads) {
+            auto g = _client.resolve(k);
+            if (!g.has_value()) {
+                return std::nullopt;
+            }
+            out[*g]._read_keys.push_back(k);
+        }
+        return out;
+    }
+
+    /// The keys read (or watched) and not written: the ones whose
+    /// validation needs a read intent of their own.
+    [[nodiscard]] auto read_only_keys() const -> std::vector<Key> {
+        std::vector<Key> out;
+        for (const auto& k : _reads) {
+            if (!_writes.contains(k)) {
+                out.push_back(k);
+            }
         }
         return out;
     }
@@ -530,7 +596,7 @@ private:
 
     auto attempt_commit() -> outcome_type {
         const auto deadline = clock::now() + _options.timeout;
-        auto groups = partition(all_writes());
+        auto groups = partition(all_writes(), read_only_keys());
         if (!groups.has_value()) {
             return aborted(txn_abort_reason::unroutable);
         }
@@ -545,7 +611,7 @@ private:
             }
             // A split moved a key off the shard: fall through to two phases
             // over the refreshed map.
-            groups = partition(all_writes());
+            groups = partition(all_writes(), read_only_keys());
             if (!groups.has_value()) {
                 return aborted(txn_abort_reason::unroutable);
             }
@@ -592,6 +658,12 @@ private:
             }
             case txn_result_status::already_aborted:
                 return aborted(txn_abort_reason::expired, std::move(primary));
+            case txn_result_status::read_conflict: {
+                auto out = aborted(txn_abort_reason::read_conflict, std::move(primary));
+                out._conflict_key = res._key;
+                out._holder = res._holder;
+                return out;
+            }
             case txn_result_status::snapshot_too_old: {
                 auto out = aborted(txn_abort_reason::snapshot_too_old, std::move(primary));
                 out._detail = "start timestamp " + std::to_string(_start_ts) +
@@ -613,10 +685,15 @@ private:
         }
     }
 
+    /// The smallest written key of the shard with the most writes. Always a
+    /// written key: a shard that only validates reads holds no record.
     [[nodiscard]] static auto primary_of(const std::map<group_id_type, group_writes>& groups)
         -> Key {
         const group_writes* largest = nullptr;
         for (const auto& [g, gw] : groups) {
+            if (gw._writes.empty()) {
+                continue;
+            }
             if (largest == nullptr || gw._writes.size() > largest->_writes.size()) {
                 largest = &gw;
             }
@@ -630,8 +707,8 @@ private:
 
     auto send_prepare(const group_writes& group, const Key& primary, bool is_primary,
                       std::uint64_t ttl_deadline, clock::time_point deadline) -> pending_prepare {
-        const auto bytes = encode(txn_prepare<Key>{
-            _txn, primary, group._writes, {}, _start_ts, ttl_deadline, is_primary});
+        const auto bytes = encode(txn_prepare<Key>{_txn, primary, group._writes, group._read_keys,
+                                                   _start_ts, ttl_deadline, is_primary});
         return pending_prepare{group, is_primary,
                                _client.send(group.keys(), bytes, remaining(deadline))};
     }
@@ -693,7 +770,7 @@ private:
                 const auto error = std::current_exception();
                 sent.pop_back();
                 if (_client.refresh(error) && clock::now() < deadline) {
-                    auto regrouped = partition(p._group._writes);
+                    auto regrouped = partition(p._group._writes, p._group._read_keys);
                     if (regrouped.has_value()) {
                         for (const auto& [g, gw] : *regrouped) {
                             const bool has_primary =
@@ -801,9 +878,11 @@ private:
     bool _open{false};
     txn_options _options{};
     txn_id _txn{};
-    /// `snapshot` only; zero otherwise.
+    /// `snapshot` and `serializable` only; zero otherwise.
     std::uint64_t _start_ts{0};
     write_map _writes;
+    /// `serializable` only: the keys read or watched, validated at commit.
+    std::set<Key> _reads;
     std::function<void(txn_step)> _crash_hook;
     /// Sends nobody waits on, kept so `drain()` can wait for them.
     std::vector<send_future> _in_flight;
