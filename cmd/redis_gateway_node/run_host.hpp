@@ -605,8 +605,11 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
                 }
                 return it->second;
             },
-            // A chunk that failed its hash on a read is fetched again.
-            [fetcher](const std::uint64_t& g, const kythira::chunk_sha& sha) {
+            // A chunk that failed its hash on a read is dropped and fetched
+            // again. Dropped first: while the bad copy is stored the fetcher
+            // counts the chunk as present and would never replace it.
+            [fetcher, refs = disk->_refs](const std::uint64_t& g, const kythira::chunk_sha& sha) {
+                refs->store().drop_if_corrupt(sha);
                 fetcher->want(g, {sha});
             });
         front_end->set_write_refusal(refusal);

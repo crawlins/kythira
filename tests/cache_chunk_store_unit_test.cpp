@@ -383,6 +383,57 @@ BOOST_AUTO_TEST_CASE(corrupted_chunks_fail_verify_and_read, *boost::unit_test::t
     BOOST_CHECK(!store.verify(sha256_of(large)));
 }
 
+// design.md "Hash mismatch on read": drop the chunk and queue a repair. Until
+// it is dropped the bad copy counts as present and a put of the good bytes
+// does not replace it.
+BOOST_AUTO_TEST_CASE(a_corrupt_chunk_is_dropped_so_a_repair_can_store_it,
+                     *boost::unit_test::timeout(10)) {
+    temp_dir dir;
+    cache_chunk_store store(options_for(dir._path));
+    const auto large = make_bytes(4096, 14);
+    const auto small = make_bytes(64, 15);
+    const auto large_sha = sha256_of(large);
+    const auto small_sha = sha256_of(small);
+    store.put(large_sha, large);
+    store.put(small_sha, small);
+
+    // A good or absent chunk is left alone.
+    BOOST_CHECK(!store.drop_if_corrupt(large_sha));
+    BOOST_CHECK(!store.drop_if_corrupt(sha256_of(make_bytes(10, 16))));
+    BOOST_CHECK(store.read(large_sha).has_value());
+
+    auto flip = [](const fs::path& path, std::streamoff at) {
+        std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+        f.seekg(at);
+        const auto old = static_cast<char>(f.get());
+        f.seekp(at);
+        f.put(static_cast<char>(old ^ 0x01));
+    };
+    flip(store.loose_path(large_sha), 100);
+    flip(pack_files(dir._path).at(0),
+         static_cast<std::streamoff>(cache_chunk_store::pack_header_bytes + 10));
+    BOOST_CHECK(!store.read(large_sha));
+    BOOST_CHECK(!store.read(small_sha));
+    BOOST_CHECK_EQUAL(store.stats()._hash_failures, 2U);
+
+    // The bad copy blocks a repair until it is dropped.
+    store.put(large_sha, large);
+    BOOST_CHECK(!store.read(large_sha));
+
+    BOOST_CHECK(store.drop_if_corrupt(large_sha));
+    BOOST_CHECK(store.drop_if_corrupt(small_sha));
+    BOOST_CHECK(!store.contains(large_sha));
+    BOOST_CHECK(!store.contains(small_sha));
+    // Dropping counts nothing: still the three failed reads.
+    BOOST_CHECK_EQUAL(store.stats()._hash_failures, 3U);
+
+    store.put(large_sha, large);
+    store.put(small_sha, small);
+    BOOST_CHECK(store.read(large_sha) == std::optional(large));
+    BOOST_CHECK(store.read(small_sha) == std::optional(small));
+    BOOST_CHECK(!store.drop_if_corrupt(large_sha));
+}
+
 BOOST_AUTO_TEST_CASE(torn_pack_tail_is_truncated_on_open, *boost::unit_test::timeout(30)) {
     temp_dir dir;
     std::vector<std::vector<std::byte>> values;
