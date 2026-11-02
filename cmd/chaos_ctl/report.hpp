@@ -380,12 +380,6 @@ struct finding {
     return s;
 }
 
-[[nodiscard]] inline auto timeout_s(const finding& f) -> std::int64_t {
-    // Each attempt: the schedule, plus starting the cluster, healing and the
-    // checkers.
-    return f.attempts * (f.span_ms() / 1000 + 300);
-}
-
 /// The draft test, as its own translation unit.
 [[nodiscard]] inline auto render_test(const finding& f, std::string_view year) -> std::string {
     std::ostringstream o;
@@ -441,8 +435,12 @@ struct finding {
       << "    .found_on_image = \"" << f.image << "\",\n"
       << "};\n\n"
       << "}  // namespace\n\n"
-      << "BOOST_AUTO_TEST_CASE(" << test_ident(f) << ", *boost::unit_test::timeout(" << timeout_s(f)
-      << ")) {\n"
+      // No boost::unit_test::timeout: Boost turns it into microseconds in 32
+      // bits, so anything over 4294 s wraps (run 3's 4579 s became 284 s and
+      // killed the replay), and one replay of a long finding already takes
+      // longer than that. Bound a stuck run from outside the test instead
+      // (the CI job's limit, or timeout(1) around docker-chaos-findings).
+      << "BOOST_AUTO_TEST_CASE(" << test_ident(f) << ") {\n"
       << "    chaos_finding::check(k_finding, k_schedule);\n"
       << "}\n";
     return o.str();

@@ -894,6 +894,11 @@ BOOST_AUTO_TEST_CASE(draft_test_encodes_the_cut_schedule) {
     BOOST_TEST(t.find(".attempts = 3,") != std::string::npos);
     BOOST_TEST(t.find("KYTHIRA_CHAOS_NODE_IMAGE=kythira-chaos-node:seeded-vote-term") !=
                std::string::npos);
+    // No Boost timeout decorator: its microsecond count is 32 bits, so a long
+    // finding's limit wrapped and killed the replay early.
+    BOOST_TEST(t.find("BOOST_AUTO_TEST_CASE(finding_2026_10_30_election_safety_7) {") !=
+               std::string::npos);
+    BOOST_TEST(t.find("unit_test::timeout") == std::string::npos);
 
     using chaos_ctl::report::cpp_literal;
     BOOST_TEST(cpp_literal(R"({"a":1})") == R"(R"json({"a":1})json")");
