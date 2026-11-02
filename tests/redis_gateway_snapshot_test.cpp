@@ -403,6 +403,16 @@ BOOST_AUTO_TEST_CASE(watch_aborts_an_exec_when_a_watched_key_changed,
         BOOST_CHECK_EQUAL(client.call({"SET", "z/w" + n, "mine"}), "+QUEUED\r\n");
         BOOST_CHECK_EQUAL(client.call({"EXEC"}), "*1\r\n+OK\r\n");
 
+        // Changed, and the EXEC writes that key itself: first-committer-
+        // wins refuses it before read validation does, and the answer is
+        // still the null array, not an error.
+        BOOST_CHECK_EQUAL(client.call({"WATCH", "a/s" + n}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(other.call({"SET", "a/s" + n, "theirs"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(client.call({"SET", "a/s" + n, "mine"}), "+QUEUED\r\n");
+        BOOST_CHECK_EQUAL(client.call({"EXEC"}), "*-1\r\n");
+        BOOST_CHECK_EQUAL(client.call({"GET", "a/s" + n}), bulk("theirs"));
+
         // Unchanged: it commits, writing the watched key itself.
         BOOST_CHECK_EQUAL(client.call({"WATCH", "a/v" + n, "z/v" + n}), "+OK\r\n");
         BOOST_CHECK_EQUAL(client.call({"MULTI"}), "+OK\r\n");
