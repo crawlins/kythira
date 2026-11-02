@@ -524,6 +524,51 @@ behind fifteen other operations, so the "consensus core" residual is largely
 `concurrency ÷ throughput`. What is real is that transport plus serialization
 fell 21x between the two machines while the total fell 3.6x.
 
+### Transactions
+
+`.kiro/specs/multi-raft-transactions/` Requirement 13.6. The `transactions`
+axis measures what a cross-shard transaction costs at each tier, Tier A
+(three hosts over the in-process fabric, memory persistence), so what is left
+is the protocol's own rounds rather than a socket's. Every worker owns its
+keys, so nothing here measures contention. 128 B values, 4 in flight unless
+stated.
+
+```sh
+./build-default/tests/multi_raft_performance_report --axis transactions
+```
+
+**First numbers, indicative only.** Taken November 2, 2026 in a 4 vCPU cloud
+sandbox that was not quiet, with an unoptimised (`-O0`) Boost future backend
+build. Rows marked UNSTABLE spread more than 10% and must not enter a
+comparison table. The ratios between rows are what this run supports.
+
+| scenario | what one transaction does | ops/sec | p50 | verdict |
+|---|---|---:|---:|---|
+| `read_committed/1pc/1shard` | 2 keys, one `one_phase` entry | 724.3 | 5.3 ms | UNSTABLE |
+| `read_committed/2pc/2shards` | 2 keys, prepare + primary commit | 166.5 | 17.3 ms | stable |
+| `read_committed/2pc/4shards` | 4 keys over 4 shards | 68.8 | 41.0 ms | stable |
+| `snapshot/2pc/2shards` | as above, plus start and commit timestamps | 125.1 | 25.2 ms | stable |
+| `snapshot/2pc/4shards` | 4 keys over 4 shards | 62.4 | 49.9 ms | stable |
+| `snapshot/read/2shards/1` | read-only, 2 keys, 1 in flight | 246.7 | 3.9 ms | UNSTABLE |
+| `snapshot/read/2shards/8` | 8 in flight | 372.0 | 20.3 ms | UNSTABLE |
+| `snapshot/read/2shards/64` | 64 in flight | 391.7 | 155.2 ms | stable |
+
+What the rows say:
+
+- Two-phase commit over two shards costs about 3.3x a one-phase commit's
+  p50, and four shards cost about 2.4x two. Most of that is serial: the
+  coordinator waits for every prepare, then commits the primary, and each
+  step is a Raft commit on its shard.
+- Snapshot isolation adds about 45% to the two-shard p50 (two oracle
+  timestamps per transaction, and two phases even where one shard would
+  have done). At four shards the gap is about 20%, because the extra
+  timestamps are a fixed cost against a larger total.
+- A read-only snapshot transaction takes one oracle timestamp and reads
+  each key at it through its shard leader's linearizable path, with no
+  prepare. It is the cheapest transaction, and it stops scaling at about
+  400 ops/sec by 8 in flight: every read pays a heartbeat round for read
+  index, and nothing batches those rounds across transactions.
+
 ## Known structural asymmetries
 
 These are properties of the implementation that any comparison has to be read

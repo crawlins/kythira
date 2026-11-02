@@ -1641,6 +1641,18 @@ target_link_libraries(multi_raft_bench_rows PUBLIC kythira_test_pch)
 target_precompile_headers(multi_raft_bench_rows REUSE_FROM kythira_test_pch)
 target_include_directories(multi_raft_bench_rows PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 kythira_wire_multi_raft_bench(multi_raft_bench_rows PUBLIC)
+# .kiro/specs/multi-raft-transactions/ Requirement 13.6: the transaction rows,
+# one translation unit per wrapper tier. They run over the Redis KV state
+# machines, so they are gated with the gateway like every other user of them
+# (Requirement 16.4 of redis-compatible-kv), and the catalog drops them by name
+# when they are absent.
+if(KYTHIRA_BUILD_REDIS_GATEWAY)
+    target_sources(multi_raft_bench_rows PRIVATE
+        bench_rows/txn_fabric.cpp
+        bench_rows/txn_snapshot_fabric.cpp
+    )
+    target_compile_definitions(multi_raft_bench_rows PUBLIC KYTHIRA_BENCH_HAS_TXN)
+endif()
 
 add_raft_completion_test(multi_raft_http_benchmark_test multi_raft_http_benchmark_test.cpp)
 set_tests_properties(multi_raft_http_benchmark_test PROPERTIES
@@ -1783,6 +1795,20 @@ set_tests_properties(multi_raft_performance_report_smoke PROPERTIES
     LABELS "performance;benchmark;multi-raft;report"
     TIMEOUT 600
 )
+
+# The transaction rows (.kiro/specs/multi-raft-transactions/ Requirement
+# 13.6), at a fifth of their budget: a liveness check of 1PC, 2PC over two
+# and four shards and snapshot reads, labelled like the smoke entry above so
+# it runs where the report runs and not on every CI leg.
+if(KYTHIRA_BUILD_REDIS_GATEWAY)
+    add_test(NAME multi_raft_performance_report_transactions
+        COMMAND multi_raft_performance_report --axis transactions --budget-scale 0.2
+                --out-dir "${CMAKE_BINARY_DIR}/tests/report_transactions")
+    set_tests_properties(multi_raft_performance_report_transactions PROPERTIES
+        LABELS "performance;benchmark;multi-raft;report;transactions"
+        TIMEOUT 900
+    )
+endif()
 
 # Task 32 of .kiro/specs/multi-raft/: crash-and-recover at each split/merge
 # fault point. Needs libfiu's CONTROL API (fiu_enable/fiu_disable) as well as

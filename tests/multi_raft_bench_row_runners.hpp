@@ -77,6 +77,51 @@ using smoke_runner = auto (*)(const row_observer&) -> void;
 
 auto write_fabric(const write_row_spec& spec, const row_observer& observer) -> repeated_result;
 
+// ── transactions (in-process fabric) ─────────────────────────────────────────
+//
+// `.kiro/specs/multi-raft-transactions/` Requirement 13.6. The rows and their
+// cluster are in `multi_raft_txn_bench_rows.hpp`; the spec is here so the
+// report's catalog can build one without including that header.
+
+}  // namespace kythira::testing::rows
+
+namespace kythira::testing {
+
+/// @brief What a transaction row does in each operation.
+enum class txn_row_kind : std::uint8_t {
+    /// Begin, write one key on each of `_keys_per_txn` keys, commit.
+    write,
+    /// Begin a snapshot, read `_keys_per_txn` keys, commit (read-only: no
+    /// prepare). Needs a versioned state machine.
+    snapshot_read,
+};
+
+/// @brief Everything that distinguishes one transaction row from another.
+struct txn_row_spec {
+    txn_row_kind _kind{txn_row_kind::write};
+    /// How many data shards the cluster has. The keys of one transaction are
+    /// spread over all of them, round robin, so `_shards = 1` is the
+    /// one-shard (one-phase, under `mvcc::off`) row.
+    std::size_t _shards{1};
+    /// Keys per transaction.
+    std::size_t _keys_per_txn{2};
+    std::size_t _operations{200};
+    std::size_t _in_flight{4};
+    std::size_t _value_bytes{128};
+};
+
+/// @brief One transaction row: `k_required_repetitions` measurements.
+using txn_runner = auto (*)(const txn_row_spec&, const row_observer&) -> repeated_result;
+
+}  // namespace kythira::testing
+
+namespace kythira::testing::rows {
+
+/// The tier-1 rows: `read_committed` over `mvcc::off` (one-phase on one shard).
+auto txn_fabric(const txn_row_spec& spec, const row_observer& observer) -> repeated_result;
+/// The tier-2 rows: `snapshot` over `mvcc::on`, with an oracle group.
+auto txn_snapshot_fabric(const txn_row_spec& spec, const row_observer& observer) -> repeated_result;
+
 // ── cpp-httplib ──────────────────────────────────────────────────────────────
 
 auto write_httplib_json(const write_row_spec& spec, const row_observer& observer)
