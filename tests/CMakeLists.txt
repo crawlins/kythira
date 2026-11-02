@@ -1296,6 +1296,8 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
     add_raft_completion_test(resp_protocol_unit_test resp_protocol_unit_test.cpp)
     add_raft_completion_test(redis_kv_commands_unit_test redis_kv_commands_unit_test.cpp)
     add_raft_completion_test(redis_kv_state_machine_unit_test redis_kv_state_machine_unit_test.cpp)
+    # multi-raft-transactions task 11: the multi-version variant.
+    add_raft_completion_test(redis_kv_mvcc_state_machine_test redis_kv_mvcc_state_machine_test.cpp)
     add_raft_completion_test(redis_acl_unit_test redis_acl_unit_test.cpp)
     target_link_libraries(redis_acl_unit_test PRIVATE OpenSSL::Crypto)
     add_raft_completion_test(redis_auth_limiter_unit_test redis_auth_limiter_unit_test.cpp)
