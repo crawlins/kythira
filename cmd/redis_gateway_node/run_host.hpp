@@ -104,15 +104,18 @@ template<typename Serializer> struct beast_stack {
         // not resolve, e.g. right after the gateways restart at new
         // addresses under rootless Podman (see bounded_resolver.hpp).
         // The Raft client learns the peer's Raft address; the forward link
-        // dials the peer's gateway listener on another port, so that address
-        // is learned here from the same sighting.
-        _server.set_peer_seen_handler(
-            [raft = _client.peer_seen_handler(), gateways = opt._peer_gateways](
-                const kythira::host_node_id& id, const sockaddr_storage& from, socklen_t len) {
-                raft(id, from, len);
-                auto it = gateways.find(id);
-                if (it == gateways.end()) {
-                    return;
+        // dials the peer's gateway listener, and the cache's HTTP front end
+        // its HTTP listener, on other ports, so those addresses are learned
+        // here from the same sighting.
+        _server.set_peer_seen_handler([raft = _client.peer_seen_handler(),
+                                       gateways = opt._peer_gateways, http = opt._cache._peer_http](
+                                          const kythira::host_node_id& id,
+                                          const sockaddr_storage& from, socklen_t len) {
+            raft(id, from, len);
+            for (const auto* specs : {&gateways, &http}) {
+                auto it = specs->find(id);
+                if (it == specs->end()) {
+                    continue;
                 }
                 try {
                     auto [host, port] = kythira::redis_gateway_detail::parse_listen(it->second);
@@ -121,10 +124,11 @@ template<typename Serializer> struct beast_stack {
                         kythira::net_resolve::learn(host, std::to_string(port), SOCK_STREAM, *addr);
                     }
                 } catch (const std::exception&) {
-                    // A malformed peer gateway spec is reported when it is
-                    // forwarded to; a sighting is not the place to fail.
+                    // A malformed peer spec is reported when it is
+                    // dialled; a sighting is not the place to fail.
                 }
-            });
+            }
+        });
         const auto threads = std::max(2U, std::thread::hardware_concurrency() / 2);
         for (unsigned i = 0; i < threads; ++i) {
             _io_threads.emplace_back([this] { _ioc->run(); });
