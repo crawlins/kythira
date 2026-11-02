@@ -7891,10 +7891,24 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
         if (!need_snapshot) {
             auto max_entries = _config.max_entries_per_append();
+            // A byte cap too, where the configuration has one (see
+            // raft_configuration::_max_append_bytes); the first entry always
+            // goes so an oversized one cannot stall replication.
+            std::size_t max_bytes = 0;
+            if constexpr (requires { _config.max_append_bytes(); }) {
+                max_bytes = _config.max_append_bytes();
+            }
+            std::size_t batch_bytes = 0;
             for (log_index_type idx = next_idx;
                  idx <= last_log_idx && entries_to_send.size() < max_entries; ++idx) {
                 auto entry = get_log_entry(idx);
                 if (entry.has_value()) {
+                    const auto size = entry->command().size();
+                    if (max_bytes != 0 && !entries_to_send.empty() &&
+                        batch_bytes + size > max_bytes) {
+                        break;
+                    }
+                    batch_bytes += size;
                     entries_to_send.push_back(entry.value());
                 } else {
                     _logger.error(

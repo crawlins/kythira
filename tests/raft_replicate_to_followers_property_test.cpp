@@ -442,6 +442,50 @@ BOOST_AUTO_TEST_CASE(property_replicate_respects_batch_size_limit, *boost::unit_
     BOOST_TEST((shape(c.node(3)) == shape(c.leader())));
 }
 
+BOOST_AUTO_TEST_CASE(property_replicate_respects_batch_byte_limit, *boost::unit_test::timeout(60)) {
+    BOOST_TEST_MESSAGE("Property 88.10b: Replicate respects the batch byte limit");
+
+    // Room for three of the longest puts below ("k10".."k22") and no more,
+    // so no batch carries a fourth whatever the mix of key lengths.
+    const auto entry = sm_t::make_put_command("k10", "v").size();
+    auto cfg = make_fast_config();
+    cfg._max_append_bytes = 3 * entry;
+    cluster c{cfg};
+    settle(c);
+    c.isolate(3);
+    const auto last = commit_puts(c, "k", 23);
+    c.reconnect(3);
+    BOOST_REQUIRE(c.pump([&] { return match_of(c.leader(), 3) >= last; }));
+    std::uint64_t largest = 0;
+    for (const auto& r : records_where(c.logs(1), "Sending AppendEntries", "target", "3")) {
+        largest = std::max(largest, num(r, "num_entries"));
+    }
+    BOOST_TEST(largest == 3u);
+    BOOST_TEST((shape(c.node(3)) == shape(c.leader())));
+}
+
+BOOST_AUTO_TEST_CASE(property_replicate_sends_an_entry_larger_than_the_byte_limit,
+                     *boost::unit_test::timeout(60)) {
+    BOOST_TEST_MESSAGE("Property 88.10c: An entry over the byte limit still replicates, alone");
+
+    // Every entry is over a one-byte cap. Each still goes, one per
+    // AppendEntries, instead of the follower never catching up.
+    auto cfg = make_fast_config();
+    cfg._max_append_bytes = 1;
+    cluster c{cfg};
+    settle(c);
+    c.isolate(3);
+    const auto last = commit_puts(c, "k", 6);
+    c.reconnect(3);
+    BOOST_REQUIRE(c.pump([&] { return match_of(c.leader(), 3) >= last; }));
+    std::uint64_t largest = 0;
+    for (const auto& r : records(c.logs(1), "Sending AppendEntries")) {
+        largest = std::max(largest, num(r, "num_entries"));
+    }
+    BOOST_TEST(largest == 1u);
+    BOOST_TEST((shape(c.node(3)) == shape(c.leader())));
+}
+
 BOOST_AUTO_TEST_CASE(property_replicate_includes_leader_commit_index,
                      *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Property 88.11: Replicate includes leader commit index");
