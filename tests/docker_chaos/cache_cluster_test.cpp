@@ -10,6 +10,8 @@
 
 #include <raft/resp_protocol.hpp>
 
+#include <boost/json.hpp>
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -21,10 +23,12 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <initializer_list>
 #include <iostream>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -40,8 +44,15 @@
 // each other by service name: a write on one node reads back on every
 // other, over both protocols.
 //
-// The real-client end-to-end tests (task 9) and the chaos scenarios
-// (task 10) build on this file's fixture.
+// Task 9 adds the real clients (Requirements 9.1, 12.1 and 12.2). The
+// compose file's `client` service, behind the `client` profile, is
+// docker/cache-cluster/client/: upstream sccache 0.17.0 and vcpkg at the
+// pinned baseline. Each case is one `run --rm -T client <mode>`, and
+// client/run.sh prints KYTHIRA_* key=value lines that `run_client` parses.
+// The assertions are on what the clients themselves report: sccache's
+// `--show-stats`, and vcpkg's own build-or-restore output.
+//
+// The chaos scenarios (task 10) build on this file's fixture.
 
 using namespace std::chrono_literals;
 namespace os = docker_chaos::os;
@@ -299,6 +310,101 @@ std::string node_logs() {
     return all;
 }
 
+// ── the client container's report ─────────────────────────────────────────────
+
+/// One KYTHIRA_<tag> line as its key=value fields; a `{`-led tail (sccache's
+/// JSON stats) is kept whole under "json".
+using fields = std::map<std::string, std::string>;
+
+struct client_report {
+    int exit_code{-1};
+    std::map<std::string, std::vector<fields>> lines;  // by tag
+
+    [[nodiscard]] auto all(const std::string& tag) const -> std::vector<fields> {
+        auto it = lines.find(tag);
+        return it == lines.end() ? std::vector<fields>{} : it->second;
+    }
+};
+
+client_report run_client(const std::string& mode,
+                         const std::vector<std::pair<std::string, std::string>>& env = {}) {
+    // -T: no pseudo-TTY, so the output is what run.sh printed.
+    std::vector<std::string> cmd = compose_cmd({"run", "--rm", "-T"});
+    for (const auto& [k, v] : env) {
+        cmd.push_back("-e");
+        cmd.push_back(k + "=" + v);
+    }
+    cmd.push_back("client");
+    cmd.push_back(mode);
+    auto [code, out] = os::real_exec(cmd);
+    BOOST_TEST_MESSAGE("client " << mode << " exit " << code << ":\n" << out);
+
+    client_report r;
+    r.exit_code = code;
+    std::istringstream in(out);
+    std::string line;
+    while (std::getline(in, line)) {
+        while (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.rfind("KYTHIRA_", 0) != 0) {
+            continue;
+        }
+        const auto sp = line.find(' ');
+        const auto tag = line.substr(8, sp == std::string::npos ? std::string::npos : sp - 8);
+        fields f;
+        std::string rest = sp == std::string::npos ? std::string{} : line.substr(sp + 1);
+        if (auto brace = rest.find('{'); brace != std::string::npos) {
+            f["json"] = rest.substr(brace);
+            rest.erase(brace);
+        }
+        std::istringstream words(rest);
+        std::string word;
+        while (words >> word) {
+            if (auto eq = word.find('='); eq != std::string::npos) {
+                f[word.substr(0, eq)] = word.substr(eq + 1);
+            }
+        }
+        r.lines[tag].push_back(std::move(f));
+    }
+    return r;
+}
+
+long field_num(const fields& f, const std::string& key) {
+    auto it = f.find(key);
+    return it == f.end() || it->second.empty() ? -1 : std::stol(it->second);
+}
+
+struct sccache_counts {
+    long requests{0};
+    long hits{0};
+    long misses{0};
+    long writes{0};
+    long write_errors{0};
+};
+
+sccache_counts sccache_stats(const fields& f) {
+    const auto stats = boost::json::parse(f.at("json")).at("stats");
+    auto sum = [&](const char* key) {
+        long total = 0;
+        if (const auto* counts = stats.at(key).as_object().if_contains("counts")) {
+            for (const auto& kv : counts->as_object()) {
+                total += kv.value().to_number<long>();
+            }
+        }
+        return total;
+    };
+    return {stats.at("compile_requests").to_number<long>(), sum("cache_hits"), sum("cache_misses"),
+            stats.at("cache_writes").to_number<long>(),
+            stats.at("cache_write_errors").to_number<long>()};
+}
+
+/// A fresh sccache key set per case; see project/CMakeLists.txt.
+std::string next_salt() {
+    static long salt = static_cast<long>(std::time(nullptr) % 100000) * 10;
+    return std::to_string(++salt);
+}
+
 }  // namespace
 
 struct NodeLogsOnFailure : boost::unit_test::test_observer {
@@ -399,4 +505,93 @@ BOOST_AUTO_TEST_CASE(data_survives_restarting_every_node, *boost::unit_test::tim
             return r.status == 200 && r.body == "kept";
         }));
     }
+}
+
+// Requirement 12.1: a clean build through sccache's WebDAV backend misses
+// and writes every compile, and a second clean build hits every one.
+BOOST_AUTO_TEST_CASE(sccache_misses_then_hits_through_webdav, *boost::unit_test::timeout(600)) {
+    auto r = run_client("sccache", {{"KYTHIRA_SALT", next_salt()}});
+    BOOST_REQUIRE_EQUAL(r.exit_code, 0);
+    const auto mode = r.all("MODE");
+    BOOST_REQUIRE_EQUAL(mode.size(), 1u);
+    BOOST_REQUIRE_EQUAL(mode[0].at("launcher"), "sccache");
+    const auto stats = r.all("STATS");
+    BOOST_REQUIRE_EQUAL(stats.size(), 2u);
+
+    const auto cold = sccache_stats(stats[0]);
+    BOOST_TEST(cold.requests >= 5);
+    BOOST_TEST(cold.hits == 0);
+    BOOST_TEST(cold.misses == cold.requests);
+    BOOST_TEST(cold.writes == cold.misses);
+    BOOST_TEST(cold.write_errors == 0);
+
+    const auto warm = sccache_stats(stats[1]);
+    BOOST_TEST(warm.requests == cold.requests);
+    BOOST_TEST(warm.hits == cold.misses);
+    BOOST_TEST(warm.misses == 0);
+}
+
+// Requirement 12.2: vcpkg's `http` binary source builds zlib and uploads
+// it, then a fresh tree restores it instead of building.
+BOOST_AUTO_TEST_CASE(vcpkg_builds_then_restores_through_http, *boost::unit_test::timeout(1200)) {
+    auto r = run_client("vcpkg");
+    BOOST_REQUIRE_EQUAL(r.exit_code, 0);
+    const auto installs = r.all("VCPKG");
+    BOOST_REQUIRE_EQUAL(installs.size(), 2u);
+    BOOST_TEST(installs[0].at("status") == "ok");
+    BOOST_TEST(field_num(installs[0], "built") == 1);
+    BOOST_TEST(field_num(installs[0], "submitted") >= 1);
+    BOOST_TEST(installs[1].at("status") == "ok");
+    BOOST_TEST(field_num(installs[1], "built") == 0);
+    BOOST_TEST(field_num(installs[1], "restored") >= 1);
+}
+
+// design.md Risks: a 500 MB PUT to one node and a GET of it from another,
+// timed. The numbers are recorded in tasks.md; the assertion is only that
+// the object arrives whole. The GET may wait for the other node to apply the
+// commit first (run.sh reports that wait separately).
+BOOST_AUTO_TEST_CASE(a_500_mb_object_round_trips, *boost::unit_test::timeout(900)) {
+    auto r = run_client("throughput", {{"KYTHIRA_MB", "500"}});
+    const auto ops = r.all("THROUGHPUT");
+    BOOST_REQUIRE_EQUAL(ops.size(), 2u);
+    for (const auto& op : ops) {
+        const double bytes = std::stod(op.at("bytes"));
+        const double seconds = std::stod(op.at("seconds"));
+        BOOST_TEST_MESSAGE(op.at("op")
+                           << " " << bytes / 1048576.0 << " MiB in " << seconds
+                           << " s = " << (bytes / 1048576.0) / seconds << " MiB/s"
+                           << (op.contains("waited") ? ", after " + op.at("waited") +
+                                                           " s for the follower to apply it"
+                                                     : std::string{}));
+    }
+    BOOST_TEST(ops[0].at("status") == "201");
+    BOOST_TEST(ops[1].at("status") == "200");
+    BOOST_TEST(ops[1].at("match") == "1");
+    BOOST_TEST(r.exit_code == 0);
+}
+
+// Requirement 9.1: with every node stopped both clients still build. CI's
+// own gate (start-sccache.sh) turns sccache off, and vcpkg builds from
+// source after its requests are refused. Last, because it stops the
+// cluster.
+BOOST_AUTO_TEST_CASE(builds_pass_with_every_node_stopped, *boost::unit_test::timeout(1200)) {
+    os::checked_exec(os::real_exec, compose_cmd({"stop", "cache-1", "cache-2", "cache-3"}));
+
+    auto sc = run_client("sccache", {{"KYTHIRA_SALT", next_salt()}});
+    BOOST_TEST(sc.exit_code == 0);
+    const auto mode = sc.all("MODE");
+    BOOST_REQUIRE_EQUAL(mode.size(), 1u);
+    BOOST_TEST(mode[0].at("launcher") == "none");
+    const auto builds = sc.all("BUILD");
+    BOOST_REQUIRE_EQUAL(builds.size(), 2u);
+    for (const auto& b : builds) {
+        BOOST_TEST(b.at("status") == "ok");
+    }
+
+    auto vc = run_client("vcpkg", {{"KYTHIRA_INSTALLS", "1"}});
+    BOOST_TEST(vc.exit_code == 0);
+    const auto installs = vc.all("VCPKG");
+    BOOST_REQUIRE_EQUAL(installs.size(), 1u);
+    BOOST_TEST(installs[0].at("status") == "ok");
+    BOOST_TEST(field_num(installs[0], "built") == 1);
 }

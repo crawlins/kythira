@@ -28,6 +28,9 @@
 # sets the TLS variables instead. The internal secret and the ACL are test
 # fixtures; see acl.txt for the users.
 #
+# The `client` service is the CI job of task 9's end-to-end test, built from
+# client/Dockerfile.
+#
 # KYTHIRA_CACHE_MAX_DISK_BYTES and the floors are small so a scenario can
 # reach them with little data. Set KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES and
 # KYTHIRA_CACHE_CLUSTER_MIN_FREE_BYTES to override them for every node.
@@ -44,9 +47,12 @@ x-node-env: &node-env
   # Two shards: sccache's keys and vcpkg's land on different groups, so
   # with three nodes the leaders usually differ and forwarding is exercised.
   KYTHIRA_SHARD_CUTS: "sccache/8"
-  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "150"
-  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "300"
-  KYTHIRA_HEARTBEAT_INTERVAL_MS: "50"
+  # Longer than the RESP-only clusters' 150-300 ms. A follower persists
+  # each 4 MiB chunk entry before it answers; on a slow CI disk that alone
+  # can pass 300 ms, and an election mid-upload fails the PUT with a 503.
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "1000"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "2000"
+  KYTHIRA_HEARTBEAT_INTERVAL_MS: "100"
   KYTHIRA_POLICY_INTERVAL_MS: "1000"
   KYTHIRA_REDIS_LISTEN: "0.0.0.0:6379"
   KYTHIRA_REDIS_ACL_FILE: "/etc/kythira/acl.txt"
@@ -103,6 +109,17 @@ services:
     ports:
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16393:6379"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:18093:8080"
+
+  # The CI job (task 9): real sccache and vcpkg, run once per scenario with
+  # `run --rm -T client <sccache|vcpkg|throughput>`. The `client` profile
+  # keeps `up` from starting it. It reaches the nodes by service name, like
+  # everything else here; see client/run.sh for what each mode does.
+  client:
+    image: kythira-cache-client:dev
+    profiles:
+      - client
+    networks:
+      - cache_cluster_net
 
 volumes:
   cache-1-data:
