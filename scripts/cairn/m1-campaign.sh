@@ -7,9 +7,19 @@
 # after another, and writes a per-run summary. It is the driver that ran
 # the second Qwen3.8 campaign, with its two logging bugs fixed.
 #
+# It also drives M2 (task 13) through scripts/cairn/m2-hunt.sh, which
+# passes --projects and --violation any.
+#
 # Usage: m1-campaign.sh --out DIR [--runs N] [--hours H] [--deadline EPOCH]
+#                       [--projects P1,P2,...] [--violation NAME|any]
 #   --out       where run-<i>/ directories, driver.log and SUMMARY.csv go
-#   --runs      projects to run, default 5
+#   --runs      projects to run, default 5 (ignored with --projects)
+#   --projects  comma-separated project names under docker/cairn/projects/,
+#               one run each, in order; default election-safety --runs times
+#   --violation the checker whose violation counts as a find, as the
+#               schedule log names it (election_safety, log_matching, ...),
+#               or "any" for any non-empty violations list; default
+#               election_safety
 #   --hours     each run's wall-clock limit, default 2
 #   --deadline  epoch second the model host must be released by (its cost
 #               cap); a run is not started with less than --hours left
@@ -21,8 +31,8 @@
 #      minutes pass, the stack is killed and the project started again, up
 #      to three attempts. A run that never bootstraps ends the campaign
 #      (the model is not usable as served, so further runs only bill).
-#   2. Explore, polling every 30 s, until the schedule log holds an
-#      election_safety violation, the project completes, or --hours pass.
+#   2. Explore, polling every 30 s, until the schedule log holds a
+#      matching violation, the project completes, or --hours pass.
 #   3. Save the schedule log, the timeline export, the dispatcher log and
 #      the llm-tunnel log (which carries json_repair.py's notes, including
 #      the text of every final answer that was not bare JSON), count the
@@ -45,18 +55,30 @@ tool="$CAIRN_RUN-tool-server"
 disp="$CAIRN_RUN-dispatcher"
 tunnel="$CAIRN_RUN-llm-tunnel"
 
-out="" runs=5 hours=2 deadline=""
+out="" runs=5 hours=2 deadline="" projects="" want=election_safety
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) out="$2"; shift 2 ;;
         --runs) runs="$2"; shift 2 ;;
         --hours) hours="$2"; shift 2 ;;
         --deadline) deadline="$2"; shift 2 ;;
+        --projects) projects="$2"; shift 2 ;;
+        --violation) want="$2"; shift 2 ;;
         *) echo "m1-campaign.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
 [ -n "$out" ] || { echo "m1-campaign.sh: --out is required" >&2; exit 2; }
 limit=$((hours * 3600))
+if [ -n "$projects" ]; then
+    IFS=, read -r -a plan <<< "$projects"
+else
+    plan=()
+    for _ in $(seq 1 "$runs"); do plan+=(election-safety); done
+fi
+for name in "${plan[@]}"; do
+    [ -f "$repo/docker/cairn/projects/$name.json" ] ||
+        { echo "m1-campaign.sh: no project $name" >&2; exit 2; }
+done
 mkdir -p "$out"
 cd "$repo" || exit 1
 
@@ -75,16 +97,27 @@ advanced() {
 
 project_of() { awk '/^project:/{print $2}' "$1"; }
 
+# Prints the checkers named by the first call whose violations list is not
+# empty and matches $want, and succeeds; fails if there is none.
 violation() {
-    python3 - "$1" <<'PY'
+    python3 - "$1" "$want" <<'PY'
 import json, sys
+path, want = sys.argv[1], sys.argv[2]
 try:
-    for line in open(sys.argv[1]):
+    for line in open(path):
         try:
-            text = json.dumps(json.loads(line))
+            rec = json.loads(line)
         except ValueError:
             continue
-        if '"violations"' in text and '"election_safety"' in text:
+        v = rec.get("violations") if isinstance(rec, dict) else None
+        if not v:
+            continue
+        text = json.dumps(v)
+        if want == "any" or '"%s"' % want in text:
+            names = sorted({str(x.get("invariant") or x.get("check")
+                                 or "violation")
+                            if isinstance(x, dict) else str(x) for x in v})
+            print("+".join(names))
             sys.exit(0)
 except FileNotFoundError:
     pass
@@ -112,8 +145,9 @@ save_logs() {
     "$runtime" logs "$tunnel" > "$1/llm-tunnel.log" 2>&1 || true
 }
 
-echo "run,found,first_violation_min,chaos_calls,bootstrap_restarts,run_min,tokens,final_status" > "$out/SUMMARY.csv"
-for i in $(seq 1 "$runs"); do
+echo "run,project,found,first_violation_min,chaos_calls,bootstrap_restarts,run_min,tokens,final_status,violations" > "$out/SUMMARY.csv"
+for i in $(seq 1 "${#plan[@]}"); do
+    proj="${plan[$((i - 1))]}"
     if [ -n "$deadline" ] && [ $((deadline - $(date +%s))) -lt "$limit" ]; then
         log "BUDGET: less than ${hours}h to the deadline; not starting run $i"
         break
@@ -124,7 +158,7 @@ for i in $(seq 1 "$runs"); do
     tok0=$(model_tokens)
     boot_ok=0 restarts=0 p=""
     for attempt in 1 2 3; do
-        scripts/cairn/start-run.sh election-safety --hours "$hours" --seed "$i" \
+        scripts/cairn/start-run.sh "$proj" --hours "$hours" --seed "$i" \
             > "$rd/start-$attempt.out" 2>&1
         p=$(project_of "$rd/start-$attempt.out")
         if [ -z "$p" ]; then
@@ -133,7 +167,7 @@ for i in $(seq 1 "$runs"); do
             restarts=$((restarts + 1))
             continue
         fi
-        log "RUN $i attempt $attempt: project=$p"
+        log "RUN $i ($proj) attempt $attempt: project=$p"
         while [ $(($(date +%s) - run0)) -lt 1200 ]; do
             advanced "$p" && { boot_ok=1; break; }
             if [ "$(parse_failures "$p")" -ge 3 ]; then
@@ -153,18 +187,18 @@ for i in $(seq 1 "$runs"); do
     if [ "$boot_ok" != 1 ]; then
         log "RUN $i: could not bootstrap after three attempts; ending the campaign"
         tok1=$(model_tokens)
-        echo "$i,0,NA,0,$restarts,$((($(date +%s) - run0) / 60)),$((${tok1:-0} - ${tok0:-0})),BOOTSTRAP_FAIL" >> "$out/SUMMARY.csv"
+        echo "$i,$proj,0,NA,0,$restarts,$((($(date +%s) - run0) / 60)),$((${tok1:-0} - ${tok0:-0})),BOOTSTRAP_FAIL," >> "$out/SUMMARY.csv"
         stop_stack
         break
     fi
     log "RUN $i: bootstrapped (restarts=$restarts); exploring"
-    found=0 fvmin=""
+    found=0 fvmin="" vnames=""
     while true; do
         el=$(($(date +%s) - run0))
         "$runtime" exec "$tool" cat /runs/current/schedule.jsonl > "$rd/schedule.jsonl" 2>/dev/null || true
-        if violation "$rd/schedule.jsonl"; then
+        if vnames=$(violation "$rd/schedule.jsonl"); then
             found=1 fvmin=$((el / 60))
-            log "RUN $i: election_safety FOUND at about ${fvmin}m"
+            log "RUN $i ($proj): violation $vnames FOUND at about ${fvmin}m"
             break
         fi
         st=$(curl -fsS "$panel/projects/$p" 2>/dev/null |
@@ -178,7 +212,13 @@ for i in $(seq 1 "$runs"); do
     done
     run_min=$((($(date +%s) - run0) / 60))
     "$runtime" exec "$tool" cat /runs/current/schedule.jsonl > "$rd/schedule.jsonl" 2>/dev/null || true
-    calls=$(grep -c . "$rd/schedule.jsonl" 2>/dev/null || echo 0)
+    # Two lines per call; the highest seq is the call count.
+    calls=$(python3 -c 'import json,sys
+m=0
+for l in open(sys.argv[1]):
+    try: m=max(m,int(json.loads(l).get("seq",0)))
+    except Exception: pass
+print(m)' "$rd/schedule.jsonl" 2>/dev/null || echo 0)
     curl -fsS "$panel/projects/$p/export?format=timeline" -o "$rd/timeline.json" 2>/dev/null || true
     save_logs "$rd"
     tok1=$(model_tokens)
@@ -187,7 +227,7 @@ for i in $(seq 1 "$runs"); do
     status=nofind
     [ "$found" = 1 ] && status=FOUND
     log "RUN $i DONE found=$found first_violation_min=${fvmin:-NA} calls=$calls restarts=$restarts run_min=$run_min tokens=$tokens"
-    echo "$i,$found,${fvmin:-NA},$calls,$restarts,$run_min,$tokens,$status" >> "$out/SUMMARY.csv"
+    echo "$i,$proj,$found,${fvmin:-NA},$calls,$restarts,$run_min,$tokens,$status,$vnames" >> "$out/SUMMARY.csv"
     stop_stack
     sleep 5
 done
