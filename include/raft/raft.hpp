@@ -896,6 +896,22 @@ private:
     };
     std::unordered_map<node_id_type, append_sent> _last_append_sent;
 
+    // The AppendEntries carrying entries that is in flight to each follower:
+    // the next index it was built from, and when it went. While one is
+    // outstanding and younger than an election timeout, a further send to
+    // that follower goes as a heartbeat (no entries) instead of a second copy
+    // of the same range. Every client command triggers a replication round,
+    // so without this a follower that falls behind during a burst of large
+    // entries (125 x 4 MiB chunks for a 500 MB upload) is sent the same
+    // megabytes once per command, each copy retried, until it runs out of
+    // connections and can only catch up by retries. Cleared on election and
+    // by the RPC's own completion; held for one election timeout at most.
+    struct append_in_flight {
+        log_index_type _next_index;
+        std::chrono::steady_clock::time_point _at;
+    };
+    std::unordered_map<node_id_type, append_in_flight> _append_in_flight;
+
     // Track unresponsive followers for monitoring
     std::unordered_set<node_id_type> _unresponsive_followers;
 
@@ -7434,6 +7450,7 @@ auto node<Types>::become_leader() -> void {
 
     // Initialize leader-specific state
     _last_append_sent.clear();
+    _append_in_flight.clear();
     auto last_log_idx = get_last_log_index();
     auto init_peer = [&](const node_id_type& peer_id) {
         if (peer_id != _node_id) {
@@ -7863,6 +7880,7 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
     append_entries_request_type request;
     std::chrono::milliseconds timeout;
     bool need_snapshot = false;
+    bool heartbeat_only = false;  // a stand-in while a batch is in flight
 
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -7889,8 +7907,23 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
             }
         }
 
+        // One entry-carrying AppendEntries in flight per follower; see
+        // _append_in_flight. The hold lasts one election timeout at most:
+        // a reply that is late, queued behind others or lost then costs
+        // that long, never the RPC's whole retry budget, and the range is
+        // resent at most once per election timeout instead of once per
+        // command.
+        if (const auto busy = _append_in_flight.find(target); busy != _append_in_flight.end()) {
+            const auto hold = _config.election_timeout_max();
+            const auto now = std::chrono::steady_clock::now();
+            heartbeat_only = busy->second._next_index == next_idx && now - busy->second._at < hold;
+            if (!heartbeat_only) {
+                _append_in_flight.erase(busy);
+            }
+        }
+
         if (!need_snapshot) {
-            auto max_entries = _config.max_entries_per_append();
+            auto max_entries = heartbeat_only ? std::size_t{0} : _config.max_entries_per_append();
             // A byte cap too, where the configuration has one (see
             // raft_configuration::_max_append_bytes); the first entry always
             // goes so an oversized one cannot stall replication.
@@ -7920,6 +7953,10 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
             request = append_entries_request_type{_current_term, _node_id,        prev_log_index,
                                                   prev_log_term, entries_to_send, _commit_index};
+            if (!entries_to_send.empty()) {
+                _append_in_flight[target] =
+                    append_in_flight{next_idx, std::chrono::steady_clock::now()};
+            }
             _last_append_sent[target] =
                 append_sent{prev_log_index + entries_to_send.size(), _commit_index,
                             std::chrono::steady_clock::now()};
@@ -7978,6 +8015,14 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     return;
                 }
                 std::unique_lock<std::mutex> lock(_mutex);
+
+                // This RPC's slot, if it held one and nothing replaced it.
+                if (!entries_to_send.empty()) {
+                    if (const auto it = _append_in_flight.find(target);
+                        it != _append_in_flight.end() && it->second._next_index == next_idx) {
+                        _append_in_flight.erase(it);
+                    }
+                }
 
                 // Calculate RPC latency (including retry delays)
                 auto end_time = std::chrono::steady_clock::now();
@@ -8090,6 +8135,15 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
                     // Try to advance commit index
                     advance_commit_index();
+
+                    // Still behind: send the next batch now rather than at the
+                    // next tick or command, so a lagging follower is fed one
+                    // batch after another with one in flight (_append_in_flight).
+                    if (!entries_to_send.empty() && _state == kythira::server_state::leader &&
+                        _next_index[target] <= get_last_log_index()) {
+                        lock.unlock();
+                        send_append_entries_to(target);
+                    }
                 } else {
                     // A rejection of a request sent from a next_index that has
                     // since moved is stale: a newer reply already moved it on
