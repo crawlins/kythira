@@ -15,6 +15,7 @@
 #include "config.hpp"
 
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -65,6 +66,7 @@ struct gateway_env {
         "KYTHIRA_CACHE_DATA_DIR",
         "KYTHIRA_CACHE_MAX_DISK_BYTES",
         "KYTHIRA_CACHE_CHUNK_BYTES",
+        "KYTHIRA_REDIS_MAX_SHARD_BYTES",
         "KYTHIRA_CACHE_HTTP_LISTEN",
         "KYTHIRA_CACHE_HTTPS_LISTEN",
         "KYTHIRA_CACHE_HTTPS_CERT",
@@ -270,6 +272,18 @@ BOOST_AUTO_TEST_CASE(chunk_size_and_resp_values_are_bounded_by_one_chunk) {
     // A SET is one log entry stored as one chunk.
     ::setenv("KYTHIRA_REDIS_MAX_VALUE_BYTES", "33554432", 1);
     BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
+}
+
+// Requirement 6.1: in file mode the disk budget bounds the values, not the
+// memory mode's per-shard budget, unless the operator sets that too.
+BOOST_AUTO_TEST_CASE(the_memory_shard_budget_applies_in_file_mode_only_when_set) {
+    gateway_env env;
+    ::setenv("KYTHIRA_RAFT_BIND", "127.0.0.1", 1);
+    BOOST_TEST(from_env()._gateway._max_shard_bytes == 1073741824U);
+    file_mode();
+    BOOST_TEST(from_env()._gateway._max_shard_bytes == std::numeric_limits<std::size_t>::max());
+    ::setenv("KYTHIRA_REDIS_MAX_SHARD_BYTES", "2147483648", 1);
+    BOOST_TEST(from_env()._gateway._max_shard_bytes == 2147483648U);
 }
 
 BOOST_AUTO_TEST_CASE(file_persistence_needs_the_cbor_wire) {
