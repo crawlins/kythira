@@ -336,7 +336,14 @@ inline auto failpoint(context& ctx, const boost::json::object& a, call_state& /*
     auto& n = args::node(ctx, a);
     const auto name = args::string(a, "name");
     if (!ctx.failpoints.contains(name)) {
-        throw tool_error("failpoint '" + name + "' is not in docker/cairn/failpoints.allowlist");
+        // List the allowed names: a worker that is only told "no" keeps
+        // guessing (M2 run 1 spent 180 of 303 calls on refused names).
+        std::string allowed;
+        for (const auto& f : ctx.failpoints) {
+            allowed += (allowed.empty() ? "" : ", ") + f;
+        }
+        throw tool_error("failpoint '" + name +
+                         "' is not in docker/cairn/failpoints.allowlist; allowed: " + allowed);
     }
     const auto mode = args::string(a, "mode");
     std::string cmd;

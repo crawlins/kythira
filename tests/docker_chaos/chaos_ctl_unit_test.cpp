@@ -333,7 +333,11 @@ BOOST_FIXTURE_TEST_CASE(failpoint_outside_allowlist_is_refused, fixture) {
         chaos_ctl::call(ctx, "fault.failpoint",
                         {{"node", 1}, {"name", "raft/objstore/put_object"}, {"mode", "always"}});
     BOOST_TEST(out.at("status").as_string() == "error");
-    BOOST_TEST(std::string(out.at("error").as_string()).find("allowlist") != std::string::npos);
+    const std::string err(out.at("error").as_string());
+    BOOST_TEST(err.find("allowlist") != std::string::npos);
+    // The refusal names what is allowed, so a worker can pick a real one.
+    BOOST_TEST(err.find("allowed: raft/persistence/save_current_term, "
+                        "raft/state_machine/apply") != std::string::npos);
     BOOST_TEST(fiu.empty());
     BOOST_TEST(lines().size() == 2u);  // still on record
 }
