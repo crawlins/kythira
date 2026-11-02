@@ -1,10 +1,11 @@
 # Implementation Plan — mold Linker Adoption
 
-## Status: 7/8 tasks complete
+## Status: 8/9 tasks complete
 
-**Last Updated**: October 19, 2026 (task 1 measured; gate waived by the
+**Last Updated**: November 2, 2026 (task 1 measured; gate waived by the
 maintainer; tasks 2-5 and 8 merged in PR #545; task 6 confirmed on `main`;
-task 7, the soak, runs to November 2).
+task 7's soak found no linker-attributed failure; task 9, the CA Docker
+builders, is open).
 
 ## Overview
 
@@ -221,10 +222,47 @@ Reference material to read before starting:
       link RSS doesn't relieve the compile memory that binds this leg.
   - _Requirements: 1.3, 5.3_
 
-- [ ] 7. Soak and Docker follow-up decision
+- [x] 7. Soak and Docker follow-up decision
   - Two weeks after task 6, list any CI failure attributed to the linker. If
     there are none, open a follow-up spec or task for installing mold in the
     `docker/ca_cluster_node` and `docker/ca_service` builder stages
     (Requirement 8.1); if there are, record them here and leave the builders
     on ld.bfd.
+  - _Requirements: 8.1_
+  - Result (November 2, 2026): **no linker-attributed failure** in the soak
+    window (October 19 to November 2).
+    - Every failed run since October 19 was checked, on every branch, in
+      `ci.yml` (11), `real-cloud-tests.yml` (18) and `container-tests.yml`
+      (3). `arm64-docker-smoke-test.yml`, `perf-cloud.yml` and
+      `coap-flake-measure.yml` had none. No "Assert ... linked by mold" step
+      failed anywhere. No failed job's log has a `mold: error`, `undefined
+      reference`, `collect2` or "linker command failed" line.
+    - The seven `main` failures in `ci.yml` were all runner losses: five
+      "Full suite (stdexec future backend)" Build steps that ended in "The
+      runner has received a shutdown signal" (41357157780, 41325638804,
+      40739614163, 40732800384, 40713323589), one more on that leg
+      (40554430253) and one arm64 Build & Test (40046455959). Both of those
+      had expired logs, and their annotations read "The hosted runner lost
+      communication with the server".
+    - The five stdexec logs each stall with three or four targets left after
+      the last examples link. In a green run of the same leg (41395253335),
+      those last targets are the `redis_gateway_node` `run_*.cpp` compiles at
+      4-9 minutes each. That is the compile-memory pressure task 6 found
+      binds this leg, not the link.
+    - Follow-up: task 9.
+
+- [ ] 9. mold in the CA Docker builder stages
+  - Requirement 8.1's gate is met (task 7): mold has been the CI linker for
+    two weeks with no linker-attributed failure.
+  - Add `mold` to the builder stage's `apt-get install` in
+    `docker/ca_cluster_node/Dockerfile` and `docker/ca_service/Dockerfile`.
+    `KYTHIRA_LINKER=auto` then picks it up with no other change, and the
+    runtime stages stay as they are.
+  - Run `scripts/check-linker.sh` on the built binary inside the builder
+    stage, so an image that silently fell back to ld.bfd fails its build.
+  - These binaries ship on the CA AMI (`packer/ca_cluster_node` builds from
+    this Dockerfile), so prove one AMI build plus the CA real-cloud bundle
+    (`aws_bundle_ca_cluster`) on the change before merge. Those need
+    Clark's go for the spend.
+  - Amend Requirement 8.1 from a non-goal to done when this lands.
   - _Requirements: 8.1_
