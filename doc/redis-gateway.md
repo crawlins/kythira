@@ -269,7 +269,7 @@ command`, and `DEL` takes one key, as before.
 | `MULTI` ... `EXEC` | Queues `GET`, `MGET`, `EXISTS`, `SET`, `SETEX`, `MSET` and `DEL`, then runs them as one transaction. Reads run at `EXEC` and see the transaction's own earlier writes. If the commit does not commit, `EXEC` answers with that error and nothing applied. A command refused while queuing (unsupported, bad arguments, not permitted) makes `EXEC` answer `EXECABORT`, as in Redis |
 | `DISCARD` | Drops the queue |
 | `KYTHIRA.ISOLATION [level]` | Shows or sets this connection's isolation |
-| `WATCH`, `UNWATCH` | Refused: they need the multi-version build of tier 2 |
+| `WATCH`, `UNWATCH` | Refused. The tier-1 build cannot give them; the snapshot build will once commits validate their reads (multi-raft-transactions task 16) |
 
 Replies that are not Redis's own:
 
@@ -294,6 +294,38 @@ need forwarding configured the same way plain forwarding does (an internal
 secret, and TLS or the plaintext opt-in). The host's background resolver uses
 the same link to finish transactions whose coordinator died.
 
+### Snapshot isolation
+
+A daemon built with `CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION=y` as well
+keeps every value multi-versioned (`redis_kv_mvcc_state_machine` under
+`mvcc::on`, tasks 11 to 14) and runs a timestamp oracle group on every node
+beside the shards. `KYTHIRA_REDIS_TXN_ISOLATION=snapshot` and
+`KYTHIRA.ISOLATION snapshot` are then accepted, and an `MGET` (or the reads
+of a `MULTI`) under `snapshot` reads every key at one start timestamp, so
+the transfer above can never show up half done.
+
+What changes with the build:
+
+- **Every write takes two Raft rounds and a timestamp.** A plain `SET`,
+  `SETEX` or `DEL` is a prepare, an oracle timestamp, and a commit, as is a
+  single-shard transaction. A node that does not lead the oracle group asks
+  its leader's gateway for timestamps over `KYTHIRA.TXN TS`.
+- **Snapshot reads go to each shard's leader** after a read-index round, over
+  `KYTHIRA.TXN READAT` when this node does not lead it. A key held by a
+  transaction that started at or below the read's timestamp waits for that
+  transaction (or resolves it once its lock TTL has passed); one that started
+  later is invisible to the read.
+- **Old versions are collected.** Each shard keeps versions newer than its
+  safe point, an oracle timestamp at least ten minutes old. A snapshot older
+  than that fails with `snapshot ... is older than the safe point`; retry it.
+- **The snapshot format changes again**, so every node of a cluster must be
+  built the same way, and a tier-1 cluster cannot be upgraded to this build
+  in place.
+- **Write-write conflicts are first committer wins**: a transaction that
+  writes a key someone else committed after it started aborts with a write
+  conflict, and is not retried automatically, since a retry would be a lost
+  update.
+
 ### Isolation levels
 
 Each level, and the anomaly it still allows. Every example uses a transfer
@@ -304,7 +336,7 @@ are on different shards.
 |---|---|---|---|
 | `read_committed` (default) | always | The last committed value. A key locked by an in-flight transaction reads as its value before that transaction | **Read skew.** The transfer commits at the instant its record on `a/alice`'s shard commits; `z/bob` is rolled forward a moment later. An `MGET a/alice z/bob` in between returns `90` and `0`: the money is briefly nowhere. Also non-repeatable reads, lost updates (two read-modify-write clients) and write skew |
 | `read_committed_wait` | always | As above, but a read of a key another transaction holds waits until that transaction finishes (or resolves it once its TTL has passed), up to the command timeout | **Read skew** across reads that straddle a commit: the `MGET` above can no longer see `0` for `z/bob` once `a/alice` has committed, but if it reads `a/alice` before the transfer prepares and `z/bob` after it commits, it returns `100` and `10`. Also non-repeatable reads, lost updates and write skew |
-| `snapshot` | needs `mvcc::on` (not yet built) | Every read at one start timestamp | Write skew |
+| `snapshot` | `CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION=y` | Every read at one start timestamp | **Write skew.** Two transactions that each read both keys and write a different one both commit. Lost updates are not allowed: first committer wins |
 | `serializable` | needs `mvcc::on` (not yet built) | As `snapshot`, with reads validated at commit | Nothing |
 
 Asking for a level the build does not offer is an error, at startup for

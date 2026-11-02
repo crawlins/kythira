@@ -1365,6 +1365,11 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
         add_raft_completion_test(redis_gateway_txn_test redis_gateway_txn_test.cpp)
         target_link_libraries(redis_gateway_txn_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         set_tests_properties(redis_gateway_txn_test PROPERTIES LABELS "multi-raft;redis;txn" TIMEOUT 600)
+        # Tier 2 (task 14): the gateway over a multi-versioned KV and an
+        # oracle group, as CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION builds it.
+        add_raft_completion_test(redis_gateway_snapshot_test redis_gateway_snapshot_test.cpp)
+        target_link_libraries(redis_gateway_snapshot_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        set_tests_properties(redis_gateway_snapshot_test PROPERTIES LABELS "multi-raft;redis;txn" TIMEOUT 600)
     else()
         message(STATUS "redis_gateway_integration_test: skipped (requires folly)")
     endif()

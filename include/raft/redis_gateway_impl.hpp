@@ -13,12 +13,14 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstring>
 #include <exception>
 #include <map>
 #include <set>
 #include <span>
 #include <sstream>
+#include <system_error>
 #include <thread>
 #include <tuple>
 
@@ -621,6 +623,7 @@ public:
     auto u32() -> std::uint32_t { return static_cast<std::uint32_t>(be(take(4))); }
     auto u64() -> std::uint64_t { return be(take(8)); }
     auto str() -> std::string { return std::string(take(u32())); }
+    [[nodiscard]] auto empty() const -> bool { return _in.empty(); }
 
 private:
     auto take(std::size_t n) -> std::string_view {
@@ -641,6 +644,45 @@ private:
     std::string_view _in;
 };
 
+/// The `KYTHIRA.TXN TS` reply body: the range's first timestamp and count.
+inline auto encode_timestamp_range(const timestamp_range& r) -> std::string {
+    std::string out;
+    put_u64(out, r._first);
+    put_u64(out, r._count);
+    return out;
+}
+
+inline auto decode_timestamp_range(std::string_view in) -> timestamp_range {
+    txn_read_cursor c(in);
+    timestamp_range r;
+    r._first = c.u64();
+    r._count = c.u64();
+    return r;
+}
+
+/// A peer's `KYTHIRA.TXN READAT` refusal below its shard's safe point:
+/// `KYTHIRA.TOOOLD <start_ts> <safe_point>`.
+inline constexpr std::string_view k_too_old_prefix = "KYTHIRA.TOOOLD ";
+
+inline auto parse_too_old(std::string_view body) -> std::optional<snapshot_too_old_exception> {
+    if (body.rfind(k_too_old_prefix, 0) != 0) {
+        return std::nullopt;
+    }
+    body.remove_prefix(k_too_old_prefix.size());
+    std::uint64_t start = 0;
+    std::uint64_t safe = 0;
+    const auto space = body.find(' ');
+    if (space == std::string_view::npos) {
+        return std::nullopt;
+    }
+    auto r1 = std::from_chars(body.data(), body.data() + space, start);
+    auto r2 = std::from_chars(body.data() + space + 1, body.data() + body.size(), safe);
+    if (r1.ec != std::errc{} || r2.ec != std::errc{}) {
+        return std::nullopt;
+    }
+    return snapshot_too_old_exception(start, safe);
+}
+
 /// The `KYTHIRA.TXN READ` reply body: the committed value and any intent.
 inline auto encode_txn_read(const txn_read_result<std::string>& r) -> std::string {
     std::string out;
@@ -656,6 +698,9 @@ inline auto encode_txn_read(const txn_read_result<std::string>& r) -> std::strin
         put_u32(out, static_cast<std::uint32_t>(r._intent->_primary.size()));
         out += r._intent->_primary;
         put_u64(out, r._intent->_deadline_ms);
+        // Tier 2: the holder's start timestamp, after the tier-1 fields so a
+        // tier-1 decoder, which ignores what follows, still reads the rest.
+        put_u64(out, r._intent->_start_ts);
     }
     return out;
 }
@@ -672,6 +717,9 @@ inline auto decode_txn_read(std::string_view in) -> txn_read_result<std::string>
         v._txn._lo = c.u64();
         v._primary = c.str();
         v._deadline_ms = c.u64();
+        if (!c.empty()) {
+            v._start_ts = c.u64();
+        }
         r._intent = std::move(v);
     }
     return r;
@@ -707,6 +755,15 @@ auto redis_gateway<Host, Logger, Metrics>::start() -> void {
                                            std::chrono::milliseconds timeout) {
                 return txn_send(keys, envelope, timeout);
             });
+            if constexpr (k_snapshot) {
+                // Under mvcc::on every plain write needs a commit timestamp;
+                // a host that does not lead the oracle asks its leader's
+                // gateway for one.
+                _host.set_timestamp_forwarder(
+                    [this](std::size_t n, std::chrono::milliseconds timeout) {
+                        return txn_allocate_timestamps(n, timeout);
+                    });
+            }
         }
     }
     if (_acl.empty()) {
@@ -2245,6 +2302,170 @@ auto redis_gateway<Host, Logger, Metrics>::txn_client::now_ms() const -> std::ui
 }
 
 template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::txn_client::allocate_timestamps(
+    std::size_t n, std::chrono::milliseconds timeout) -> timestamp_range
+requires k_snapshot
+{
+    return _gateway.txn_allocate_timestamps(n, timeout);
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::txn_client::read_at(const std::string& key,
+                                                               std::uint64_t ts,
+                                                               std::chrono::milliseconds timeout)
+    -> txn_read_result<std::string>
+requires k_snapshot
+{
+    return _gateway.txn_read_at(key, ts, timeout);
+}
+
+/// The host's oracle when it leads the oracle group, else the leader's
+/// gateway over `KYTHIRA.TXN TS`, which serves it from its own host and
+/// never forwards again. Also the host's timestamp forwarder, so a plain
+/// write on a node that does not lead the oracle gets its commit timestamp.
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::txn_allocate_timestamps(
+    std::size_t n, std::chrono::milliseconds timeout) -> timestamp_range {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto left = [&deadline] {
+        return std::max(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            deadline - std::chrono::steady_clock::now()),
+                        std::chrono::milliseconds{1});
+    };
+    std::string last = "no reachable timestamp oracle";
+    for (;;) {
+        std::optional<node_id_type> hint;
+        try {
+            return _host.allocate_timestamps(n, left()).get();
+        } catch (const shard_not_leader_exception<group_id_type, node_id_type>& e) {
+            hint = e.leader_hint();
+        } catch (const timestamp_oracle_unavailable_exception& e) {
+            last = e.what();
+        }
+        if (hint && *hint != _host.node_id()) {
+            if (auto reply =
+                    forward_argv({"KYTHIRA.TXN", "TS", std::to_string(n)}, *hint, "KYTHIRA.TXN")) {
+                auto parsed = redis_gateway_detail::parse_peer_reply(*reply);
+                using kind = redis_gateway_detail::peer_reply::kind;
+                if (parsed._kind == kind::bulk) {
+                    return redis_gateway_detail::decode_timestamp_range(parsed._body);
+                }
+                if (parsed._kind != kind::error ||
+                    parsed._body.find("retry") == std::string::npos) {
+                    throw timestamp_oracle_unavailable_exception(
+                        "peer gateway refused a timestamp request: " + parsed._body);
+                }
+                last = parsed._body;
+            }
+        }
+        if (!_running.load() || std::chrono::steady_clock::now() >= deadline) {
+            throw timestamp_oracle_unavailable_exception("redis gateway: " + last);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::txn_read_at_local(const std::string& key,
+                                                             std::uint64_t ts,
+                                                             std::chrono::milliseconds timeout)
+    -> std::optional<txn_read_result<std::string>> {
+    if constexpr (!k_snapshot) {
+        return std::nullopt;
+    } else {
+        auto desc = _host.resolve(key);
+        if (!desc) {
+            return std::nullopt;
+        }
+        const auto group = desc->group_id();
+        if (auto* node = _host.group_node(group); node == nullptr || !node->is_leader()) {
+            return std::nullopt;
+        }
+        try {
+            // Every entry committed before the read began is applied here
+            // when this returns, so a commit at or below `ts` shows as a
+            // version or as its intent (Requirement 8.5). Through the host,
+            // which holds the group alive for the round.
+            (void)_host.read_state(key, timeout).get();
+            auto looked = _host.with_group_state_machine(
+                group,
+                [&](state_machine_type& sm, const auto& d)
+                    -> std::optional<
+                        std::pair<entry_handle, std::optional<intent_view<std::string>>>> {
+                    if (!d._range.contains(key)) {
+                        return std::nullopt;  // a split or merge moved it
+                    }
+                    if (ts < sm.safe_point()) {
+                        // Versions this read needs may be gone.
+                        throw snapshot_too_old_exception(ts, sm.safe_point());
+                    }
+                    return std::pair{sm.inner().read_at(key, ts), sm.intent_on(key)};
+                });
+            if (!looked || !*looked) {
+                return std::nullopt;
+            }
+            auto& [entry, intent] = **looked;
+            txn_read_result<std::string> out;
+            out._intent = std::move(intent);
+            // As a plain GET: a version whose TTL has run out is a miss.
+            if (entry && !is_expired(*entry)) {
+                const auto view = value_access::read({}, *entry)->view();
+                out._value = std::vector<std::byte>(view.begin(), view.end());
+            }
+            return out;
+        } catch (const snapshot_too_old_exception&) {
+            throw;
+        } catch (const std::exception&) {
+            // Lost leadership mid-read: the caller finds the new leader.
+            return std::nullopt;
+        }
+    }
+}
+
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::txn_read_at(const std::string& key, std::uint64_t ts,
+                                                       std::chrono::milliseconds timeout)
+    -> txn_read_result<std::string> {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto left = [&deadline] {
+        return std::max(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            deadline - std::chrono::steady_clock::now()),
+                        std::chrono::milliseconds{1});
+    };
+    std::string last = "no reachable leader for the key's shard";
+    for (;;) {
+        if (auto local = txn_read_at_local(key, ts, left())) {
+            return std::move(*local);
+        }
+        if (auto to = txn_leader_of(key); to && *to != _host.node_id()) {
+            if (auto reply = forward_argv({"KYTHIRA.TXN", "READAT", std::to_string(ts), key}, *to,
+                                          "KYTHIRA.TXN")) {
+                auto parsed = redis_gateway_detail::parse_peer_reply(*reply);
+                using kind = redis_gateway_detail::peer_reply::kind;
+                if (parsed._kind == kind::bulk) {
+                    return redis_gateway_detail::decode_txn_read(parsed._body);
+                }
+                if (parsed._kind == kind::error) {
+                    if (auto too_old = redis_gateway_detail::parse_too_old(parsed._body)) {
+                        throw *too_old;
+                    }
+                }
+                if (parsed._kind != kind::error ||
+                    parsed._body.find("retry") == std::string::npos) {
+                    throw std::runtime_error("peer gateway refused a transaction read: " +
+                                             parsed._body);
+                }
+                last = parsed._body;
+            }
+        }
+        if (!_running.load() || std::chrono::steady_clock::now() >= deadline) {
+            throw std::runtime_error("redis gateway: " + last);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+}
+
+template<typename Host, typename Logger, typename Metrics>
 auto redis_gateway<Host, Logger, Metrics>::txn_leader_of(const std::string& key)
     -> std::optional<node_id_type> {
     auto desc = _host.resolve(key);
@@ -2495,6 +2716,9 @@ auto redis_gateway<Host, Logger, Metrics>::outcome_error(session& s,
                 case txn_abort_reason::unroutable:
                     why = "a key is owned by no shard";
                     break;
+                case txn_abort_reason::snapshot_too_old:
+                    why = "its snapshot is older than a shard's safe point";
+                    break;
                 default:
                     why = "a shard did not prepare" +
                           (outcome._detail.empty() ? std::string{} : " (" + outcome._detail + ")");
@@ -2529,9 +2753,16 @@ auto redis_gateway<Host, Logger, Metrics>::execute_txn_command(session& s, std::
     }
     if (upper == "WATCH" || upper == "UNWATCH") {
         // Requirement 11.4: only under mvcc::on, which needs the timestamp
-        // oracle of tier 2.
-        return s._writer.error("ERR " + std::string(upper) +
-                               " needs a build with mvcc::on (multi-version transactions)");
+        // oracle of tier 2. Even there it waits for read-set validation
+        // (task 16): a WATCH checked against versions without it could pass
+        // a key another transaction rewrites before this one commits.
+        if constexpr (k_snapshot) {
+            return s._writer.error("ERR " + std::string(upper) +
+                                   " is not available yet (it needs read-set validation)");
+        } else {
+            return s._writer.error("ERR " + std::string(upper) +
+                                   " needs a build with mvcc::on (multi-version transactions)");
+        }
     }
     if (upper == "MULTI") {
         if (cmd._argv.size() != 1) {
@@ -2971,6 +3202,45 @@ auto redis_gateway<Host, Logger, Metrics>::handle_internal_txn(session& s, const
                 return s._writer.error("ERR shard has no reachable leader, retry");
             }
             return s._writer.bulk(redis_gateway_detail::encode_txn_read(*local));
+        }
+        if (sub == "TS") {
+            // Tier 2: timestamps from this host's oracle, never forwarded.
+            std::size_t n = 0;
+            const auto& arg = cmd._argv[2];
+            if (cmd._argv.size() != 3 ||
+                std::from_chars(arg.data(), arg.data() + arg.size(), n).ec != std::errc{} ||
+                n == 0) {
+                return s._writer.error("ERR wrong arguments for 'kythira.txn ts'");
+            }
+            try {
+                auto range = _host.allocate_timestamps(n, _config._command_timeout).get();
+                return s._writer.bulk(redis_gateway_detail::encode_timestamp_range(range));
+            } catch (const shard_not_leader_exception<group_id_type, node_id_type>&) {
+                return s._writer.error("ERR not the timestamp oracle's leader, retry");
+            } catch (const std::exception& e) {
+                return s._writer.error(std::string("ERR timestamp oracle: ") + e.what() +
+                                       ", retry");
+            }
+        }
+        if (sub == "READAT") {
+            // Tier 2: `READAT <ts> <key>`, on this replica only.
+            std::uint64_t ts = 0;
+            const auto& arg = cmd._argv[2];
+            if (cmd._argv.size() != 4 ||
+                std::from_chars(arg.data(), arg.data() + arg.size(), ts).ec != std::errc{}) {
+                return s._writer.error("ERR wrong arguments for 'kythira.txn readat'");
+            }
+            try {
+                auto local = txn_read_at_local(cmd._argv[3], ts, _config._command_timeout);
+                if (!local) {
+                    return s._writer.error("ERR shard has no reachable leader, retry");
+                }
+                return s._writer.bulk(redis_gateway_detail::encode_txn_read(*local));
+            } catch (const snapshot_too_old_exception& e) {
+                return s._writer.error(std::string(redis_gateway_detail::k_too_old_prefix) +
+                                       std::to_string(e.start_ts()) + " " +
+                                       std::to_string(e.safe_point()));
+            }
         }
         if (sub == "SEND") {
             if (cmd._argv.size() < 4) {

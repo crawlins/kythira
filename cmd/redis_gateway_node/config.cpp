@@ -518,6 +518,8 @@ auto usage() -> std::string {
            "                                   (needs CONFIG_REDIS_GATEWAY_TRANSACTIONS=y)\n"
            "  KYTHIRA_REDIS_TXN_ISOLATION      default level; KYTHIRA.ISOLATION per connection "
            "[read_committed]\n"
+           "                                   (snapshot needs "
+           "CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION=y)\n"
            "  KYTHIRA_REDIS_TXN_LOCK_TTL_MS    an unheartbeated intent's lifetime      [3000]\n"
            "  KYTHIRA_REDIS_TXN_MAX_RETRIES    automatic retries after a conflict      [2]\n"
            "  KYTHIRA_REDIS_MAX_VALUE_BYTES                                            [8388608]\n"

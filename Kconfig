@@ -150,6 +150,21 @@ config REDIS_GATEWAY_TRANSACTIONS
 	  unchanged on the wire. See .kiro/specs/multi-raft-transactions/
 	  task 9 and doc/redis-gateway.md.
 
+config REDIS_GATEWAY_SNAPSHOT_ISOLATION
+	bool "Snapshot isolation in redis_gateway_node (versioned KV, oracle)"
+	default n
+	depends on REDIS_GATEWAY_TRANSACTIONS
+	help
+	  Builds redis_gateway_node's KV state machine multi-versioned
+	  (redis_kv_mvcc_state_machine under mvcc::on), with a timestamp
+	  oracle group on every node, so KYTHIRA_REDIS_TXN_ISOLATION=snapshot
+	  and KYTHIRA.ISOLATION snapshot are accepted and MGET reads one
+	  point in time across shards. Every write then takes two Raft rounds
+	  and an oracle timestamp, and the snapshot format changes again, so
+	  every node of a cluster must be built the same way. See
+	  .kiro/specs/multi-raft-transactions/ task 14 and
+	  doc/redis-gateway.md.
+
 config COAP_TRANSPORT
 	bool "CoAP transport"
 	default y

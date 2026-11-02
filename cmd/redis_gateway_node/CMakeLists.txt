@@ -46,6 +46,10 @@ target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_BENCH_HAS_BEAST)
 if(KCONFIG_REDIS_GATEWAY_TRANSACTIONS)
     target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
 endif()
+# Tier 2 (task 14): a multi-versioned KV and a timestamp oracle group.
+if(KCONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
+    target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
+endif()
 target_compile_features(redis_gateway_node PRIVATE cxx_std_23)
 
 set_target_properties(redis_gateway_node PROPERTIES
