@@ -1,13 +1,14 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 8/13 tasks complete
+## Status: 9/13 tasks complete
 
-**Last Updated**: November 1, 2026 (task 2: the chunk store, pack files and
+**Last Updated**: November 2, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
 and the gateway over either machine; task 4: the binary persistence engine;
 task 5: the chunk fetcher; task 6: the HTTP front end and auth cache;
 task 7: the daemon's disk mode, the disk budget and the voter floors;
-task 8: the container image and compose file.
+task 8: the container image and compose file. November 2: task 9, the
+real-client end-to-end test, and the three faults it found.
 Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
@@ -636,13 +637,72 @@ retry posting to a freed strand) as soon as peers are given by host name
 and are not yet up. It happens in memory mode too, so it predates this
 spec; Folly builds, which every image uses, are unaffected.
 
-- [ ] 9. End-to-end test with the real clients
+- [x] 9. End-to-end test with the real clients
   - A container test: build a small CMake project twice through sccache
     WebDAV (misses, then hits), and install one small vcpkg port twice
     through the `http` source (build, then restore). Repeat with every node
     stopped and show the builds still pass.
   - Record the throughput of a 500 MB `PUT` and `GET` (design.md Risks).
   - _Requirements: 9.1, 9.2, 12.1, 12.2_
+
+### Task 9 results (2026-11-02)
+
+`docker/cache-cluster/client/` is the CI job: sccache 0.17.0 (the release
+tarball and checksums `oci-build-cache` pins), vcpkg at vcpkg.json's
+baseline `9a7f7340`, CI's own `start-sccache.sh`, a five-file CMake project
+and `run.sh`. Everything that needs the internet happens when the image is
+built, including zlib's source (`--only-downloads`), so a stopped cluster
+leaves the client nothing to reach. The compose file runs it as the
+`client` service behind a profile; four new cases in `cache_cluster_test.cpp`
+drive it.
+
+| Case | Result (sandbox, 3 host processes, 4 cores) |
+|---|---|
+| sccache WebDAV, two clean builds | 5 misses and 5 writes, then 5 hits and 0 misses; 7.5 s then 0.5 s |
+| vcpkg `http`, two fresh trees | zlib built and both packages submitted (3.6 s), then restored, not built (0.6 s) |
+| every node stopped | `start-sccache.sh` turns sccache off and both builds pass; vcpkg's requests are refused and it builds zlib, rc 0 |
+| 500 MB `PUT` then `GET` from another node | `PUT` 201 in 27-33 s (15-19 MiB/s); `GET` 200 in 2.0-2.4 s (210-250 MiB/s), hash-equal, four runs, no election |
+
+The `PUT` rate is the sandbox's disk: every node writes each chunk to its
+Raft log and to its chunk store, each with an `fsync`. Task 11's hardware
+gives the figure that matters. The `GET` can need a moment for the other
+node to apply the commit (a 201 means committed, not applied everywhere);
+`run.sh` waits and reports it separately, 0.01-0.02 s here.
+
+**Three faults, found only by large uploads and fixed here.**
+
+1. **A multi-chunk `PUT` never committed.** The leader packed up to 100
+   entries into one AppendEntries with no byte limit, so two 4 MiB chunk
+   entries exceeded the Raft listener's 10 MB request limit. The follower
+   closed the connection, every retry carried the same batch, and the
+   upload timed out with 503 after ~16 MB. Raft now has
+   `raft_configuration::_max_append_bytes` (default 4 MiB, at least one
+   entry always sent), and the daemon sets it to its largest entry (chunk
+   size or RESP value limit) and sizes the Raft listener's body limit to fit.
+2. **File mode evicted at 1 GiB per shard.** `KYTHIRA_REDIS_MAX_SHARD_BYTES`
+   is the memory mode's RAM bound, and its 1 GiB default still applied with
+   values on disk: two 500 MB archives in one shard and the leader evicted
+   keys while the 4 GiB disk budget was half empty. In file mode it now
+   applies only when set; the disk budget governs (Requirement 6.1).
+3. **A lagging follower was flooded.** Every proposal triggers a
+   replication round, and each round sent a behind follower the same range
+   again: 125 chunk proposals per 500 MB, each copy up to the batch limit
+   and each retried. The follower's Raft listener hit its 100-connection
+   cap and reset connections, and it caught up at ~1 MB/s. The leader now
+   keeps one entry-carrying AppendEntries in flight per follower, for at
+   most one election timeout, sends heartbeats meanwhile, and sends the next
+   batch as soon as a success comes back. The first version held the slot
+   for the whole retry budget, and one Raft property test
+   (`property_replicate_tracks_follower_lag`) failed 4 runs in 8, against 0
+   in 8 on `main`; with the election-timeout hold it passes 10 of 10.
+
+The compose file's election timeouts went from 150-300 ms to 1-2 s. A
+follower persists each 4 MiB entry before answering, which on a slow disk
+alone passes 300 ms, and an election mid-upload is a 503.
+
+The sandbox cannot pull the Ubuntu base image, so the clients ran as host
+processes against three host daemons with the compose file's settings; the
+container-tests workflow runs the real images under Docker and Podman.
 
 - [ ] 10. Chaos scenarios
   - Kill the leader during a 100 MB `PUT`. Stop and restart all three nodes.

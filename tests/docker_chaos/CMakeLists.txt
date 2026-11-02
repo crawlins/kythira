@@ -294,6 +294,7 @@ if(_RUNTIME_EXE)
     set(_SCCACHE_E2E_COMPOSE_FILE        "${CMAKE_SOURCE_DIR}/docker/sccache-e2e-compose.yml")
     set(_CACHE_CLUSTER_DOCKERFILE        "${CMAKE_SOURCE_DIR}/docker/cache-cluster/Dockerfile")
     set(_CACHE_CLUSTER_COMPOSE_FILE      "${CMAKE_SOURCE_DIR}/docker/cache-cluster/compose.yml")
+    set(_CACHE_CLIENT_DOCKERFILE         "${CMAKE_SOURCE_DIR}/docker/cache-cluster/client/Dockerfile")
     set(_PROMETHEUS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-metrics-compose.yml")
     set(_PROMETHEUS_REMOTE_WRITE_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-remote-write-compose.yml")
     set(_VICTORIAMETRICS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/victoriametrics-metrics-compose.yml")
@@ -789,13 +790,25 @@ if(_RUNTIME_EXE)
             )
         endif()
 
+        # Task 9's CI job: upstream sccache 0.17.0 and vcpkg at the pinned
+        # baseline, nothing from this project. Needs the internet to build
+        # (GitHub), none to run.
+        add_custom_target(docker-cache-client-image
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
+                    --file "${_CACHE_CLIENT_DOCKERFILE}"
+                    --tag kythira-cache-client:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Building kythira-cache-client:dev image (upstream sccache + vcpkg)"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+
         add_custom_target(docker-cache-cluster-tests
             COMMAND ${CMAKE_COMMAND} -E env
                     ${_RT_ENV}
                     KYTHIRA_CACHE_CLUSTER_COMPOSE_FILE=${_CACHE_CLUSTER_COMPOSE_FILE}
                     $<TARGET_FILE:docker_cache_cluster_test>
                     --log_level=message
-            DEPENDS docker-cache-cluster-image docker_cache_cluster_test
+            DEPENDS docker-cache-cluster-image docker-cache-client-image docker_cache_cluster_test
             COMMENT "Running the disk-backed cache cluster container tests (runtime: ${CONTAINER_RUNTIME})"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         )
@@ -900,12 +913,14 @@ if(_RUNTIME_EXE)
     if(KYTHIRA_BUILD_REDIS_GATEWAY)
         message(STATUS
             "Container runtime: docker-redis-gateway-image, docker-sccache-runner-image, "
-            "docker-sccache-e2e-tests targets available")
+            "docker-sccache-e2e-tests, docker-cache-cluster-image, docker-cache-client-image, "
+            "docker-cache-cluster-tests targets available")
     endif()
 else()
     if(KYTHIRA_BUILD_REDIS_GATEWAY)
         list(APPEND _redis_docker_targets
-            docker-redis-gateway-image docker-sccache-runner-image docker-sccache-e2e-tests)
+            docker-redis-gateway-image docker-sccache-runner-image docker-sccache-e2e-tests
+            docker-cache-cluster-image docker-cache-client-image docker-cache-cluster-tests)
     endif()
     foreach(_t
         ${_redis_docker_targets}
