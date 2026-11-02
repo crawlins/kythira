@@ -263,6 +263,6 @@ const chaos_finding::finding k_finding{
 
 }  // namespace
 
-BOOST_AUTO_TEST_CASE(finding_2026_10_30_election_safety_1373, *boost::unit_test::timeout(4579)) {
+BOOST_AUTO_TEST_CASE(finding_2026_10_30_election_safety_1373) {
     chaos_finding::check(k_finding, k_schedule);
 }
