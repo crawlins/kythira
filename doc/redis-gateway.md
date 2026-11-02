@@ -269,7 +269,7 @@ command`, and `DEL` takes one key, as before.
 | `MULTI` ... `EXEC` | Queues `GET`, `MGET`, `EXISTS`, `SET`, `SETEX`, `MSET` and `DEL`, then runs them as one transaction. Reads run at `EXEC` and see the transaction's own earlier writes. If the commit does not commit, `EXEC` answers with that error and nothing applied. A command refused while queuing (unsupported, bad arguments, not permitted) makes `EXEC` answer `EXECABORT`, as in Redis |
 | `DISCARD` | Drops the queue |
 | `KYTHIRA.ISOLATION [level]` | Shows or sets this connection's isolation |
-| `WATCH`, `UNWATCH` | Refused. The tier-1 build cannot give them; the snapshot build will once commits validate their reads (multi-raft-transactions task 16) |
+| `WATCH k [k ...]`, `UNWATCH` | Snapshot build only (refused on the tier-1 build). The next `EXEC` commits only if no watched key changed since the first `WATCH`; otherwise it answers a null array and applies nothing. `EXEC`, `DISCARD` and `UNWATCH` clear the watch. See below |
 
 Replies that are not Redis's own:
 
@@ -325,6 +325,20 @@ What changes with the build:
   writes a key someone else committed after it started aborts with a write
   conflict, and is not retried automatically, since a retry would be a lost
   update.
+- **`serializable` is offered too** (task 16). Every key a transaction reads
+  is validated when it commits: if a version of it committed after the start
+  timestamp, or another transaction holds it, the commit aborts with
+  `a key it read changed after it started` and applies nothing. Validated
+  keys stay read-locked until the commit finishes, so a writer meeting one
+  waits or retries as it would for a write lock. A read-only transaction (an
+  `MGET`) commits without any of this.
+- **`WATCH`** takes an oracle timestamp at the first `WATCH`, and the next
+  `EXEC` runs as a `serializable` transaction started there, with every
+  watched key validated. Unlike Redis, a key changed between two `WATCH`
+  commands also aborts the `EXEC` (they share the first timestamp), and the
+  reads queued in the `MULTI` see the data as of the `WATCH`, not as of the
+  `EXEC`. An `EXEC` with no writes therefore never aborts: its reads are
+  one consistent snapshot taken at the `WATCH`.
 
 ### Isolation levels
 
@@ -337,7 +351,7 @@ are on different shards.
 | `read_committed` (default) | always | The last committed value. A key locked by an in-flight transaction reads as its value before that transaction | **Read skew.** The transfer commits at the instant its record on `a/alice`'s shard commits; `z/bob` is rolled forward a moment later. An `MGET a/alice z/bob` in between returns `90` and `0`: the money is briefly nowhere. Also non-repeatable reads, lost updates (two read-modify-write clients) and write skew |
 | `read_committed_wait` | always | As above, but a read of a key another transaction holds waits until that transaction finishes (or resolves it once its TTL has passed), up to the command timeout | **Read skew** across reads that straddle a commit: the `MGET` above can no longer see `0` for `z/bob` once `a/alice` has committed, but if it reads `a/alice` before the transfer prepares and `z/bob` after it commits, it returns `100` and `10`. Also non-repeatable reads, lost updates and write skew |
 | `snapshot` | `CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION=y` | Every read at one start timestamp | **Write skew.** Two transactions that each read both keys and write a different one both commit. Lost updates are not allowed: first committer wins |
-| `serializable` | needs `mvcc::on` (not yet built) | As `snapshot`, with reads validated at commit | Nothing |
+| `serializable` | `CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION=y` | As `snapshot`, with reads validated at commit | Nothing |
 
 Asking for a level the build does not offer is an error, at startup for
 `KYTHIRA_REDIS_TXN_ISOLATION` and from `KYTHIRA.ISOLATION` for a connection.

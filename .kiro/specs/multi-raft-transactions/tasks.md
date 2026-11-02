@@ -448,12 +448,29 @@ Question 1 (gateway default) must be answered before task 9, and question 3
 
 ### Tier 3: serializable
 
-- [ ] 16. Read-set validation
+- [x] 16. Read-set validation
   - `read_keys` in `prepare`, read intents, `read_conflict`, and read-only
     commit without prepare
   - Gateway `WATCH`/`UNWATCH` on the snapshot build, validated this way
     (moved from task 14)
   - _Requirements: 9.1, 9.2, 9.3_
+  - Done (November 2, 2026), ahead of task 15, whose gateway bank workload
+    needs `WATCH` for its read-modify-write transfers. The wrapper validates
+    each read-only key at prepare (a version newer than the start
+    timestamp, or another transaction's intent, is `read_conflict`) and
+    installs a read intent: an intent with an empty command, so the
+    snapshot format is unchanged. Read intents block writers, are invisible
+    to `intent_on` (no reader need wait for them), and roll forward to
+    nothing. The coordinator offers `serializable` over versioned shards,
+    records reads, sends read keys with each shard's prepare (a shard with
+    only reads gets one too, never the primary), never retries a read
+    conflict, and gains `watch(key)` and `txn_options::start_ts`. The
+    gateway's `WATCH` takes an oracle timestamp at the first `WATCH`; `EXEC`
+    runs serializable from it and answers a null array on a read conflict.
+    Tests: four wrapper cases and three cluster cases in
+    `multi_raft_txn_snapshot_test` (write skew refused under `serializable`
+    and allowed under `snapshot`), and a `WATCH` case on every gateway in
+    `redis_gateway_snapshot_test`.
 
 - [ ] 17. Write-skew workload
   - Two-account minimum-balance invariant under `serializable` (and shown
