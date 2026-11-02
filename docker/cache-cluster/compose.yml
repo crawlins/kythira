@@ -32,8 +32,20 @@
 # client/Dockerfile.
 #
 # KYTHIRA_CACHE_MAX_DISK_BYTES and the floors are small so a scenario can
-# reach them with little data. Set KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES and
-# KYTHIRA_CACHE_CLUSTER_MIN_FREE_BYTES to override them for every node.
+# reach them with little data. Set KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES,
+# KYTHIRA_CACHE_CLUSTER_MIN_FREE_BYTES and
+# KYTHIRA_CACHE_CLUSTER_MIN_FREE_INODES to override them for every node.
+#
+# cache-3 also mounts a small tmpfs volume at /data-small with few inodes,
+# for task 10's inode-floor scenario (Requirement 12.6). It is unused unless
+# KYTHIRA_CACHE_3_DATA_DIR=/data-small points the node at it; its inode count
+# is KYTHIRA_CACHE_3_SMALL_INODES, fixed when the volume is created, so
+# change it with `down -v`. A tmpfs, not a loop-mounted filesystem, because
+# mounting one needs privileges the container rules forbid. A named volume
+# with the local driver's tmpfs options, not the service's `tmpfs:` key,
+# because Podman rejects `nr_inodes` there ("unknown mount option") while
+# both runtimes pass it through as a volume option; the scenario checks the
+# count it got. Mode 1777 because the runtimes differ on honouring uid=.
 
 x-node: &node
   image: kythira-cache-cluster:dev
@@ -63,6 +75,10 @@ x-node-env: &node-env
   KYTHIRA_CACHE_DATA_DIR: "/data"
   KYTHIRA_CACHE_MAX_DISK_BYTES: "${KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES:-4294967296}"
   KYTHIRA_CACHE_MIN_FREE_BYTES: "${KYTHIRA_CACHE_CLUSTER_MIN_FREE_BYTES:-268435456}"
+  KYTHIRA_CACHE_MIN_FREE_INODES: "${KYTHIRA_CACHE_CLUSTER_MIN_FREE_INODES:-10000}"
+  # 64 MiB rather than 256: a scenario can force a snapshot, and so a
+  # snapshot-plus-fetch catch-up, with tens of MB.
+  KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES: "${KYTHIRA_CACHE_CLUSTER_SNAPSHOT_THRESHOLD_BYTES:-67108864}"
   KYTHIRA_CACHE_HTTP_LISTEN: "0.0.0.0:8080"
   KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP: "true"
   KYTHIRA_CACHE_PEER_HTTP: "1=cache-1:8080,2=cache-2:8080,3=cache-3:8080"
@@ -103,9 +119,11 @@ services:
     environment:
       <<: *node-env
       KYTHIRA_NODE_ID: "3"
+      KYTHIRA_CACHE_DATA_DIR: "${KYTHIRA_CACHE_3_DATA_DIR:-/data}"
     volumes:
       - ./acl.txt:/etc/kythira/acl.txt:ro
       - cache-3-data:/data
+      - cache-3-small:/data-small
     ports:
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16393:6379"
       - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:18093:8080"
@@ -125,6 +143,12 @@ volumes:
   cache-1-data:
   cache-2-data:
   cache-3-data:
+  cache-3-small:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=1g,nr_inodes=${KYTHIRA_CACHE_3_SMALL_INODES:-4000},mode=1777"
 
 networks:
   cache_cluster_net:
