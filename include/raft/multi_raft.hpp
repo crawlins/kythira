@@ -1025,6 +1025,32 @@ public:
 
     /// @brief The group's `node`, or `nullptr`. For tests and host-internal use.
     [[nodiscard]] auto group_node(const GroupId& group) -> group_node_type*;
+
+    /// @brief Call `f(state_machine, descriptor)` under the group's node
+    ///        lock, holding the group alive for the call; empty if this host
+    ///        has no live replica of `group`.
+    ///
+    /// Unlike `group_node(group)->with_state_machine(...)`, a merge that
+    /// destroys the group concurrently cannot free it during the call. The
+    /// descriptor is the replica's own, read under the same lock the apply
+    /// path narrows it under, so it always matches the state `f` sees.
+    template<typename F>
+    auto with_group_state_machine(const GroupId& group, F&& f) -> std::optional<
+        std::invoke_result_t<F&, typename Types::state_machine_type&, const descriptor_type&>> {
+        auto g = find_group(group);
+        if (!g || g->_destroyed.load(std::memory_order_acquire)) {
+            return std::nullopt;
+        }
+        return g->_node->with_state_machine(
+            [&](typename Types::state_machine_type& sm)
+                -> std::optional<std::invoke_result_t<F&, typename Types::state_machine_type&,
+                                                      const descriptor_type&>> {
+                if (g->_destroyed.load(std::memory_order_acquire)) {
+                    return std::nullopt;
+                }
+                return f(sm, g->_descriptor);
+            });
+    }
     /// @}
 
     /// @name Client surface (Requirement 16)

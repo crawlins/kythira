@@ -135,10 +135,19 @@ public:
         -> txn_read_result<Key> {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         do {
-            if (auto* node = leader_node_for(key); node != nullptr) {
-                return node->with_state_machine([&](state_machine_type& sm) {
-                    return txn_read_result<Key>{_value_of(sm.inner(), key), sm.intent_on(key)};
-                });
+            if (const auto r = leader_replica_for(key); r.has_value()) {
+                auto out = r->_host->with_group_state_machine(
+                    r->_group,
+                    [&](state_machine_type& sm,
+                        const auto& desc) -> std::optional<txn_read_result<Key>> {
+                        if (!desc._range.contains(key)) {
+                            return std::nullopt;  // a split or merge moved it
+                        }
+                        return txn_read_result<Key>{_value_of(sm.inner(), key), sm.intent_on(key)};
+                    });
+                if (out.has_value() && out->has_value()) {
+                    return std::move(**out);
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         } while (std::chrono::steady_clock::now() < deadline);
@@ -189,20 +198,31 @@ public:
         }
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         do {
-            if (auto* node = leader_node_for(key); node != nullptr) {
+            if (const auto r = leader_replica_for(key); r.has_value()) {
                 try {
                     // Every entry committed before the read began is applied
                     // here when this returns, so a commit at or below `ts`
-                    // shows as a version or as its intent.
-                    (void)node->read_state(remaining(deadline)).get();
-                    return node->with_state_machine([&](state_machine_type& sm) {
-                        if (ts < sm.safe_point()) {
-                            // Versions this read needs may be gone.
-                            throw snapshot_too_old_exception(ts, sm.safe_point());
-                        }
-                        return txn_read_result<Key>{_value_at(sm.inner(), key, ts),
-                                                    sm.intent_on(key)};
-                    });
+                    // shows as a version or as its intent. Through the host,
+                    // which holds the group alive for the round: a merge can
+                    // destroy it meanwhile.
+                    (void)r->_host->read_state(key, remaining(deadline)).get();
+                    auto out = r->_host->with_group_state_machine(
+                        r->_group,
+                        [&](state_machine_type& sm,
+                            const auto& desc) -> std::optional<txn_read_result<Key>> {
+                            if (!desc._range.contains(key)) {
+                                return std::nullopt;  // a split or merge moved it
+                            }
+                            if (ts < sm.safe_point()) {
+                                // Versions this read needs may be gone.
+                                throw snapshot_too_old_exception(ts, sm.safe_point());
+                            }
+                            return txn_read_result<Key>{_value_at(sm.inner(), key, ts),
+                                                        sm.intent_on(key)};
+                        });
+                    if (out.has_value() && out->has_value()) {
+                        return std::move(**out);
+                    }
                 } catch (const snapshot_too_old_exception&) {
                     throw;
                 } catch (const std::exception&) {
@@ -226,7 +246,17 @@ private:
     using not_leader = shard_not_leader_exception<GroupId, node_id_type>;
     using no_replica = unknown_shard_exception<GroupId>;
 
-    auto leader_node_for(const Key& key) -> typename host_type::group_node_type* {
+    /// A leading replica the routing map names for a key. The map can lag
+    /// the replica: a split narrows the parent's range as its entry applies,
+    /// so a reader checks the replica's own range under the state machine's
+    /// lock, where the range and the state cannot disagree, rather than
+    /// trusting the map.
+    struct leader_replica {
+        host_type* _host;
+        GroupId _group;
+    };
+
+    auto leader_replica_for(const Key& key) -> std::optional<leader_replica> {
         for (auto* h : _hosts) {
             const auto desc = h->resolve(key);
             if (!desc.has_value()) {
@@ -234,10 +264,10 @@ private:
             }
             auto* node = h->group_node(desc->_group_id);
             if (node != nullptr && node->is_leader()) {
-                return node;
+                return leader_replica{h, desc->_group_id};
             }
         }
-        return nullptr;
+        return std::nullopt;
     }
 
     /// Try each host in turn until one leads the group, then wait for its
