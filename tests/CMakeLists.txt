@@ -1227,6 +1227,10 @@ add_raft_completion_test(multi_raft_txn_test multi_raft_txn_test.cpp)
 # coordinators under leader moves, splits and merges; the total is constant
 # and read_committed never sees an uncommitted value.
 add_raft_completion_test(multi_raft_txn_bank_test multi_raft_txn_bank_test.cpp)
+# Task 10: the timestamp oracle. Unique, increasing values under concurrent
+# callers, across leader changes and a whole-cluster restart (Raft state on
+# disk), none from a deposed leader; the oracle group is not a shard.
+add_raft_completion_test(raft_timestamp_oracle_test raft_timestamp_oracle_test.cpp)
 add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
 add_raft_completion_test(multi_raft_merge_integration_test

@@ -42,6 +42,7 @@
 #include <raft/shard_placement_driver.hpp>
 #include <raft/shard_types.hpp>
 #include <raft/striped_executor.hpp>
+#include <raft/raft_timestamp_oracle.hpp>
 #include <raft/txn_state_machine.hpp>
 
 #include <array>
@@ -846,6 +847,31 @@ struct multi_raft_config {
     /// "expired" is another's "fresh"; `multi_raft::txn_now_ms()` is the
     /// accessor clients use.
     std::function<std::uint64_t()> txn_clock_ms{};
+
+    // ── timestamp oracle (multi-raft-transactions tier 2, Requirement 7) ────
+
+    /// @brief The id of the group that replicates the timestamp oracle's
+    ///        high-water mark, or none.
+    ///
+    /// The group is created with `multi_raft::create_oracle_group()` on every
+    /// host that holds a replica of it. It owns no keys: it never enters the
+    /// routing map, and split, merge, the policy, placement reports and
+    /// operators all pass it over. The id must not collide with any shard's,
+    /// which `allocate_group_ids` must also respect. Needs a
+    /// `transactional_state_machine`.
+    std::optional<GroupId> oracle_group{};
+
+    /// @brief How many timestamps the oracle's leader reserves per Raft
+    ///        entry (Requirement 7.3).
+    std::uint64_t oracle_window{10'000};
+
+    /// @brief A deployment's own oracle (Requirement 7.6).
+    ///
+    /// When set, `multi_raft::allocate_timestamps` calls it instead of the
+    /// in-host oracle group, as `allocate_shard_ids` replaces a static
+    /// allocator. It returns at least `n` consecutive non-zero timestamps
+    /// and throws when it cannot.
+    std::function<timestamp_range(std::size_t)> allocate_timestamps{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1089,6 +1115,32 @@ public:
         std::uint64_t _cleaned{0};
     };
     [[nodiscard]] auto txn_resolver_stats() const -> txn_resolver_counts;
+    /// @}
+
+    /// @name Timestamp oracle (multi-raft-transactions task 10)
+    /// @{
+
+    /// @brief Create this host's replica of the oracle group.
+    ///
+    /// @throws std::logic_error if `multi_raft_config::oracle_group` is
+    ///         unset.
+    auto create_oracle_group(const std::vector<node_id_type>& voters) -> void
+    requires is_transactional_state_machine_v<typename Types::state_machine_type>;
+
+    /// @brief Whether `group` is the configured oracle group.
+    [[nodiscard]] auto is_oracle_group(const GroupId& group) const -> bool;
+
+    /// @brief `n` timestamps from the configured oracle: the
+    ///        `allocate_timestamps` hook when set, else the in-host oracle
+    ///        group, which only the host leading it can serve (others fail
+    ///        with `shard_not_leader_exception` and the leader hint).
+    ///
+    /// Blocks for its batch; the future is ready on return.
+    auto allocate_timestamps(std::size_t n, std::chrono::milliseconds timeout)
+        -> future_default<timestamp_range>;
+
+    /// @brief The in-host oracle's counters; zero with no oracle group.
+    [[nodiscard]] auto oracle_stats() const -> timestamp_oracle_counts;
     /// @}
 
     /// @brief Linearisable read against the shard owning `key`.
@@ -1986,6 +2038,8 @@ private:
     bool _resolver_stopping{false};
     bool _resolver_due{false};
     txn_forwarder _txn_forwarder;
+    /// The in-host oracle, when `oracle_group` is set and no hook is.
+    std::unique_ptr<raft_timestamp_oracle<multi_raft>> _oracle;
     std::chrono::steady_clock::time_point _last_resolver_run{};
     std::unordered_map<GroupId, resolver_group_memory> _resolver_memory;
     std::mutex _txn_metrics_mutex;
