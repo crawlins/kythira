@@ -410,10 +410,13 @@ BOOST_AUTO_TEST_CASE(property_replicate_batches_log_entries, *boost::unit_test::
     BOOST_TEST_MESSAGE("Property 88.9: Replicate batches log entries");
 
     // Node 3 misses thirty commits and gets them back in one AppendEntries.
+    // The sends made while it was cut off are waited out first: one still
+    // retrying would carry only the entries that existed when it was built.
     cluster c;
     settle(c);
     c.isolate(3);
     const auto last = commit_puts(c, "k", 30);
+    quiesce(c, 1);
     c.reconnect(3);
     BOOST_REQUIRE(c.pump([&] { return match_of(c.leader(), 3) >= last; }));
     std::uint64_t largest = 0;

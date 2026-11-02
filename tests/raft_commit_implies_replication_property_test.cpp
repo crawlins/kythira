@@ -445,6 +445,18 @@ BOOST_AUTO_TEST_CASE(no_commit_without_majority_replication,
             const auto rejoined = (leader + 1) % cluster_size;
             cluster.connect(leader, rejoined);
             BOOST_REQUIRE(cluster.replicate_until_committed(leader, index));
+            cluster.check_commit_implies_replication();
+            // The simulator relays through `rejoined`, so the third node is
+            // back too, and its copy can make the majority first: the leader
+            // keeps one AppendEntries in flight per follower, and the one it
+            // sent `rejoined` into the void holds that range until it is
+            // retried or answered. The entry still has to arrive.
+            const auto deadline =
+                std::chrono::steady_clock::now() + kythira::testing::scaled_deadline(5000);
+            while (!entry_at(*cluster.nodes[rejoined], index).has_value() &&
+                   std::chrono::steady_clock::now() < deadline) {
+                cluster.heartbeat_rounds(leader, 1);
+            }
             BOOST_CHECK(entry_at(*cluster.nodes[rejoined], index).has_value());
             cluster.check_commit_implies_replication();
         }

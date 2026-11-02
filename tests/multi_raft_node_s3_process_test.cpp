@@ -580,9 +580,31 @@ BOOST_AUTO_TEST_CASE(survives_a_full_restart_and_refuses_a_duplicate_host) {
             cluster.wait_ready();
             require_readable(cluster, acked);
 
+            // Wait for the cluster to go quiet before the window opens. A
+            // follower that restarted behind can still be catching up after
+            // the reads above: the leader keeps one AppendEntries batch in
+            // flight per follower and holds the rest for up to an election
+            // timeout (600 ms here) while a reply is outstanding, and each
+            // caught-up entry is a PUT. Quiet means no PUT for 2 s.
+            auto puts_before = mock.put_log().size();
+            {
+                const auto deadline = std::chrono::steady_clock::now() + 30s;
+                auto quiet_since = std::chrono::steady_clock::now();
+                while (std::chrono::steady_clock::now() - quiet_since < 2s) {
+                    BOOST_REQUIRE_MESSAGE(
+                        std::chrono::steady_clock::now() < deadline,
+                        "the cluster never went quiet: " << mock.put_log().size() - puts_before
+                                                         << " PUTs in 30 s");
+                    std::this_thread::sleep_for(100ms);
+                    if (const auto now = mock.put_log().size(); now != puts_before) {
+                        puts_before = now;
+                        quiet_since = std::chrono::steady_clock::now();
+                    }
+                }
+            }
+
             // Requirement 10.4 / 11.6: a fourth process under node 1's id,
             // with its own ports, against the same bucket and prefix.
-            const auto puts_before = mock.put_log().size();
             host_ports dup{free_port(), free_port(), free_port()};
             host_process duplicate(cluster.args(1, dup), "duplicate");
             const auto status = duplicate.wait_exit(30s);
@@ -595,7 +617,14 @@ BOOST_AUTO_TEST_CASE(survives_a_full_restart_and_refuses_a_duplicate_host) {
             BOOST_TEST(contains(out, "run/nodes/1/groups/1/owner"), out);
             // It refused at the owner claim and wrote nothing. The cluster is
             // idle, so any PUT in this window would be the duplicate's.
-            BOOST_TEST(mock.put_log().size() == puts_before);
+            {
+                const auto log = mock.put_log();
+                std::string extra;
+                for (auto i = puts_before; i < log.size(); ++i) {
+                    extra += " " + log[i];
+                }
+                BOOST_TEST(log.size() == puts_before, "PUTs in the window:" << extra);
+            }
             // And host 1 still serves.
             BOOST_TEST((cluster.get(kythira::testing::kv_key(7)) == value_for(7)));
             BOOST_TEST(cluster.describe(1).at("fenced_groups").as_array().empty());
