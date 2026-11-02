@@ -370,6 +370,26 @@ public:
     /// Stream the chunk through SHA-256 without holding all of it. `false` if
     /// it is absent or corrupt.
     [[nodiscard]] auto verify(const chunk_sha& sha) const -> bool {
+        return verify_counting(sha, true);
+    }
+
+    /// Drop the stored copy of a chunk whose bytes no longer hash to its
+    /// name, so that a repair fetch can store a good one (design.md "Hash
+    /// mismatch on read": drop the chunk and queue a repair). Until it is
+    /// dropped the chunk counts as present: the fetcher skips it as already
+    /// stored and `put` keeps the bad file. A good or absent chunk is left
+    /// alone, so a reader that saw the bad copy after a repair replaced it
+    /// cannot remove the good one. Not counted as another hash failure; the
+    /// read that found it already was. Returns whether a copy was dropped.
+    auto drop_if_corrupt(const chunk_sha& sha) -> bool {
+        if (!contains(sha) || verify_counting(sha, false)) {
+            return false;
+        }
+        return remove(sha);
+    }
+
+private:
+    [[nodiscard]] auto verify_counting(const chunk_sha& sha, bool count) const -> bool {
         std::optional<pack_location> where;
         {
             const std::lock_guard lock(_mu);
@@ -424,11 +444,14 @@ public:
         if (ok && got == sha) {
             return true;
         }
-        const std::lock_guard lock(_mu);
-        ++_stats._hash_failures;
+        if (count) {
+            const std::lock_guard lock(_mu);
+            ++_stats._hash_failures;
+        }
         return false;
     }
 
+public:
     /// Remove the chunk. Returns `false` if it was not stored. Only the state
     /// machine's `apply` (through `chunk_refcounts`) and start-up orphan
     /// collection call this (design Component 1).
