@@ -256,6 +256,60 @@ auto build_catalog(const selection& sel) -> catalog {
     add_write("smoke", "fabric/none/128B/4", deployment_tier::a_fabric, rows::write_fabric,
               write_row_spec{._operations = 40, ._in_flight = 4});
 
+#if defined(KYTHIRA_BENCH_HAS_TXN)
+    // `.kiro/specs/multi-raft-transactions/` Requirement 13.6: what each
+    // transaction tier costs. Tier A on purpose, so what is measured is the
+    // protocol's own rounds (prepare, oracle timestamp, primary commit) and
+    // not a socket's. Outside the Beast guard because nothing here is HTTP.
+    const auto add_txn = [&](std::string scenario, kythira::testing::txn_runner run,
+                             kythira::testing::txn_row_spec spec) {
+        spec._operations = scaled(spec._operations, spec._in_flight, scale);
+        out._entries.push_back(catalog_entry{
+            ._axis = "transactions",
+            ._scenario = std::move(scenario),
+            ._tier = deployment_tier::a_fabric,
+            ._run = [spec, run](const row_observer& observer) { return run(spec, observer); }});
+    };
+    using kythira::testing::txn_row_kind;
+    using kythira::testing::txn_row_spec;
+    // Tier 1: every key on one shard is one `one_phase` entry (1PC); keys
+    // over two or four shards take prepare + primary commit (2PC).
+    add_txn("fabric/read_committed/1pc/1shard", rows::txn_fabric,
+            txn_row_spec{._shards = 1, ._keys_per_txn = 2});
+    add_txn("fabric/read_committed/2pc/2shards", rows::txn_fabric,
+            txn_row_spec{._shards = 2, ._keys_per_txn = 2});
+    add_txn("fabric/read_committed/2pc/4shards", rows::txn_fabric,
+            txn_row_spec{._shards = 4, ._keys_per_txn = 4});
+    // Tier 2: under `mvcc::on` even one shard takes two phases, and every
+    // transaction takes a start and a commit timestamp from the oracle.
+    add_txn("fabric/snapshot/2pc/2shards", rows::txn_snapshot_fabric,
+            txn_row_spec{._shards = 2, ._keys_per_txn = 2});
+    add_txn("fabric/snapshot/2pc/4shards", rows::txn_snapshot_fabric,
+            txn_row_spec{._shards = 4, ._keys_per_txn = 4});
+    // Snapshot reads: a read-only transaction over two shards, one oracle
+    // timestamp and a read at it per key, and no prepare. At 1, 8 and 64 in
+    // flight, the design's three points, because the oracle serves
+    // timestamps in batches and concurrency is what fills a batch.
+    for (std::size_t in_flight : {std::size_t{1}, std::size_t{8}, std::size_t{64}}) {
+        add_txn("fabric/snapshot/read/2shards/" + std::to_string(in_flight),
+                rows::txn_snapshot_fabric,
+                txn_row_spec{._kind = txn_row_kind::snapshot_read,
+                             ._shards = 2,
+                             ._keys_per_txn = 2,
+                             ._operations = in_flight >= 64 ? std::size_t{640} : std::size_t{200},
+                             ._in_flight = in_flight});
+    }
+#else
+    for (const auto* scenario :
+         {"fabric/read_committed/1pc/1shard", "fabric/read_committed/2pc/2shards",
+          "fabric/read_committed/2pc/4shards", "fabric/snapshot/2pc/2shards",
+          "fabric/snapshot/2pc/4shards", "fabric/snapshot/read/2shards/1",
+          "fabric/snapshot/read/2shards/8", "fabric/snapshot/read/2shards/64"}) {
+        drop("transactions", scenario,
+             "KYTHIRA_BENCH_HAS_TXN undefined (requires KYTHIRA_BUILD_REDIS_GATEWAY)");
+    }
+#endif
+
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
     add_write("transport", "cpp-httplib/json/128B/4", deployment_tier::b_loopback,
               rows::write_httplib_json, write_row_spec{._operations = 24, ._in_flight = 4});
