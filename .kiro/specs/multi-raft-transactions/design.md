@@ -191,7 +191,12 @@ has.
   and `_records` holds `aborted` for this txn, return `already_aborted`.
   Otherwise install every intent (and read intent, tier 3) and, if
   `is_primary`, the `pending` record with its deadline. A repeated prepare
-  for intents already held by the same txn returns `ok`.
+  for intents already held by the same txn returns `ok`. *(Task 16:)* a
+  read key not also written fails with `read_conflict` if another txn
+  holds it or it has a version newer than start_ts; its read intent is an
+  intent with an empty command, which blocks writers, is not shown to
+  readers, and rolls forward to nothing, so the snapshot format is
+  unchanged.
 - `commit_primary`: `pending` becomes `committed` (with commit_ts), and this
   txn's intents in the primary's shard are applied and removed. `committed` returns `ok`.
   `aborted` returns `record{aborted}`; the coordinator then reports
