@@ -21,14 +21,22 @@
 #
 # Written against -DKYTHIRA_KCONFIG_STRICT=ON, on the same edhoc-feature
 # image as ci_full_defconfig, so every other line below must match that
-# file — see its header for why each symbol is on or off. Keep the two in
-# sync.
+# file (save the redis gateway variant noted below) — see its header for why
+# each symbol is on or off. Keep the two in sync.
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y
 CONFIG_BOOST_BEAST_TRANSPORT=y
 CONFIG_PROXYGEN_TRANSPORT=y
 CONFIG_REDIS_GATEWAY=y
+# The one deliberate difference from ci_full_defconfig besides the node id
+# kind: ci_full builds redis_gateway_node's tier-1 transaction variant, and
+# this file its snapshot-isolation variant (multi-raft-transactions task 14),
+# so CI compiles all three daemon variants. Building only the host binaries
+# is the check that variant needs: its behaviour is tested in-process by
+# redis_gateway_snapshot_test.
+CONFIG_REDIS_GATEWAY_TRANSACTIONS=y
+CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION=y
 CONFIG_PROTOBUF_SERIALIZER=y
 CONFIG_KYTHIRA_NODE_ID_NUMERIC=y
 # CONFIG_GCP_SDK is not set

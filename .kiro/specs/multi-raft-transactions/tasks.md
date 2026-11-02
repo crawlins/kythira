@@ -404,7 +404,7 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     - The safe point travels in the wrapper's snapshot (version 3 under
       `mvcc::on`). Split children keep it, and absorb takes the higher.
 
-- [ ] 14. Bank workload, tier 2, and gateway `WATCH`
+- [x] 14. Bank workload, tier 2, and gateway `WATCH`
   - Snapshot invariant: every all-accounts read sums to the total
   - Gateway built with `mvcc::on`: `WATCH`/`UNWATCH`, snapshot `MGET`
   - _Requirements: 11.4, 13.4_
@@ -422,7 +422,21 @@ Question 1 (gateway default) must be answered before task 9, and question 3
       continuation reading freed memory (a SIGSEGV in about 1 run in 5).
       Reads now go through the host's key-routed `read_state`, which holds
       the group alive, and the new `multi_raft::with_group_state_machine`.
-    Gateway `WATCH` and snapshot `MGET` remain.
+  - Gateway built with `mvcc::on` done (November 2, 2026):
+    `CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION` builds `redis_gateway_node`
+    over `redis_kv_mvcc_state_machine` with an oracle group (fixed id) on
+    every node. The gateway's `txn_client` offers `snapshot` through
+    `KYTHIRA.TXN TS` (oracle timestamps from its leader's gateway, also the
+    host's timestamp forwarder for plain writes) and `KYTHIRA.TXN READAT`
+    (a read at a timestamp on the shard leader; below the safe point it
+    answers `KYTHIRA.TOOOLD`). The `READ` reply now carries the intent's
+    start timestamp after the tier-1 fields. Tested by
+    `tests/redis_gateway_snapshot_test.cpp`, including a writer and readers
+    on every gateway that never see an `MGET` pair torn.
+    **Deviation:** `WATCH`/`UNWATCH` move to task 16. Checked against
+    versions alone, a watched key could be rewritten between the check and
+    the commit; read-set validation at commit is what closes that, so they
+    stay refused until then (with a message saying so).
 
 - [ ] 15. Chaos and performance
   - `docker/txn-chaos-compose.yml`, `tests/docker_chaos/txn_bank_chaos_test.cpp`
@@ -437,6 +451,8 @@ Question 1 (gateway default) must be answered before task 9, and question 3
 - [ ] 16. Read-set validation
   - `read_keys` in `prepare`, read intents, `read_conflict`, and read-only
     commit without prepare
+  - Gateway `WATCH`/`UNWATCH` on the snapshot build, validated this way
+    (moved from task 14)
   - _Requirements: 9.1, 9.2, 9.3_
 
 - [ ] 17. Write-skew workload

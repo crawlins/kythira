@@ -28,6 +28,7 @@
 /// as a miss rather than serve bytes it cannot vouch for.
 
 #include <raft/cache_kv_state_machine.hpp>
+#include <raft/redis_kv_mvcc_state_machine.hpp>
 #include <raft/redis_kv_state_machine.hpp>
 #include <raft/txn_state_machine.hpp>
 
@@ -76,6 +77,18 @@ template<typename LogIndex> struct redis_gateway_value_access<redis_kv_state_mac
         return e._value.size() == value.size() &&
                (value.empty() || std::memcmp(e._value.data(), value.data(), value.size()) == 0);
     }
+};
+
+/// The multi-version KV (multi-raft-transactions task 11) hands out the same
+/// entries, one per version; a plain read sees the newest (`lookup`).
+template<typename LogIndex>
+struct redis_gateway_value_access<redis_kv_mvcc_state_machine<LogIndex>>
+    : redis_gateway_value_access<redis_kv_state_machine<LogIndex>> {
+    using state_machine_type = redis_kv_mvcc_state_machine<LogIndex>;
+    using entry_handle = typename state_machine_type::entry_handle;
+    using typename redis_gateway_value_access<redis_kv_state_machine<LogIndex>>::context;
+
+    [[nodiscard]] static auto context_of(const state_machine_type&) -> context { return {}; }
 };
 
 template<typename LogIndex> struct redis_gateway_value_access<cache_kv_state_machine<LogIndex>> {

@@ -35,6 +35,7 @@
 #include <raft/multi_raft_impl.hpp>
 #include <raft/persistence.hpp>
 #include <raft/redis_gateway_impl.hpp>
+#include <raft/redis_kv_mvcc_state_machine.hpp>
 #include <raft/redis_kv_state_machine.hpp>
 #include <raft/txn_state_machine.hpp>
 
@@ -85,6 +86,13 @@ inline auto raft_server_config(const node_options& opt) -> kythira::boost_beast_
     c.max_request_body_size = raft_request_body_limit(opt);
     return c;
 }
+
+#if defined(KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
+/// The timestamp oracle group's id (multi-raft-transactions task 14). Fixed,
+/// so every node of a cluster names the same group; far above the shard ids,
+/// which count up from 1 once per `--shard-cut`.
+inline constexpr std::uint64_t k_oracle_group = 0xFFFF'FFFF'FFFF'FF00ULL;
+#endif
 
 template<typename Serializer> struct beast_stack {
     using bundle = kythira::testing::harness_transport_types<Serializer>;
@@ -164,7 +172,14 @@ struct memory_storage {
     // choice, not a runtime one: the wrapper's snapshot format differs, so
     // every node of a cluster must be built the same way. Only the in-memory
     // store is wrapped; config.cpp refuses transactions with file persistence.
-#if defined(KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
+#if defined(KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
+    // Tier 2 (task 14): every value versioned, every write timestamped by
+    // the oracle group the node bootstrap creates beside the shards.
+    using state_machine_type =
+        kythira::transactional_state_machine<kythira::redis_kv_mvcc_state_machine<std::uint64_t>,
+                                             std::string, kythira::redis_kv_partitioner,
+                                             kythira::mvcc::on>;
+#elif defined(KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
     using state_machine_type =
         kythira::transactional_state_machine<kythira::redis_kv_state_machine<std::uint64_t>,
                                              std::string, kythira::redis_kv_partitioner>;
@@ -435,6 +450,15 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
     cfg.executor_stripes = opt._executor_stripes;
     cfg.policy_interval = opt._policy_interval;
     cfg.partitioner = kythira::make_partitioner<std::string>(kythira::redis_kv_partitioner{});
+#if defined(KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
+    // The timestamp oracle's group, on every node, with an id no shard's
+    // tiling below can reach (shards count up from 1). Only the in-memory
+    // store is transactional; config.cpp refuses transactions with file
+    // persistence, and the file stack has no wrapper to hold the oracle.
+    if constexpr (!Storage::on_disk) {
+        cfg.oracle_group = k_oracle_group;
+    }
+#endif
 
     auto host = std::make_unique<host_type>(std::move(cfg));
     host_ptr = host.get();
@@ -455,6 +479,11 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
             ._voters = voters});
         start = end;
     }
+#if defined(KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
+    if constexpr (!Storage::on_disk) {
+        host->create_oracle_group(voters);
+    }
+#endif
 
     // Each group restores its snapshot inside start(), so once it returns
     // the node-wide counts are complete and any chunk they do not name is

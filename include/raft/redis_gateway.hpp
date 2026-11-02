@@ -31,6 +31,7 @@
 #include <raft/redis_kv_state_machine.hpp>
 #include <raft/resp_protocol.hpp>
 #include <raft/future_default.hpp>
+#include <raft/raft_timestamp_oracle.hpp>
 #include <raft/shard_exceptions.hpp>
 #include <raft/txn_coordinator.hpp>
 #include <raft/txn_envelope.hpp>
@@ -56,6 +57,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -286,6 +288,13 @@ using redis_endpoint_resolver = std::function<std::optional<std::string>(const N
 /// `cache_kv_state_machine` (values in the node's chunk store); the gateway
 /// reads it through `redis_gateway_value_access`. `Logger` and `Metrics`
 /// satisfy the project's `logger` and `metrics` concepts.
+namespace redis_gateway_detail {
+template<typename SM, bool = is_transactional_state_machine_v<SM>>
+struct is_mvcc : std::false_type {};
+template<typename SM> struct is_mvcc<SM, true> : std::bool_constant<SM::k_mvcc == mvcc::on> {};
+template<typename SM> inline constexpr bool is_mvcc_v = is_mvcc<SM>::value;
+}  // namespace redis_gateway_detail
+
 template<typename Host, typename Logger, typename Metrics> class redis_gateway {
 public:
     using node_id_type = typename Host::node_id_type;
@@ -302,6 +311,10 @@ public:
     /// Whether the host's state machine takes part in transactions; decided
     /// by the build, as the snapshot format follows it.
     static constexpr bool k_transactional = is_transactional_state_machine_v<state_machine_type>;
+    /// Whether the wrapped state machine keeps versions (`mvcc::on`,
+    /// CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION): then the gateway offers
+    /// `snapshot`, and every write takes an oracle timestamp.
+    static constexpr bool k_snapshot = redis_gateway_detail::is_mvcc_v<state_machine_type>;
 
     redis_gateway(Host& host, redis_acl& acl, Logger& logger, Metrics& metrics,
                   redis_gateway_config config, endpoint_resolver resolver);
@@ -414,6 +427,15 @@ private:
         [[nodiscard]] auto read(const std::string& key, std::chrono::milliseconds timeout)
             -> txn_read_result<std::string>;
         [[nodiscard]] auto now_ms() const -> std::uint64_t;
+        /// Tier 2 (task 14): the oracle, and a read at a timestamp, through
+        /// this gateway or the leader's over `KYTHIRA.TXN TS` / `READAT`.
+        [[nodiscard]] auto allocate_timestamps(std::size_t n, std::chrono::milliseconds timeout)
+            -> timestamp_range
+        requires k_snapshot;
+        [[nodiscard]] auto read_at(const std::string& key, std::uint64_t ts,
+                                   std::chrono::milliseconds timeout)
+            -> txn_read_result<std::string>
+        requires k_snapshot;
 
     private:
         redis_gateway& _gateway;
@@ -466,6 +488,20 @@ private:
         -> txn_read_result<std::string>;
     /// The read on this replica, or nullopt when it does not lead the shard.
     auto txn_read_local(const std::string& key) -> std::optional<txn_read_result<std::string>>;
+    /// `n` timestamps from the host's oracle, or from the oracle leader's
+    /// gateway over `KYTHIRA.TXN TS` (tier 2).
+    auto txn_allocate_timestamps(std::size_t n, std::chrono::milliseconds timeout)
+        -> timestamp_range;
+    /// The newest version of `key` at or below `ts`, and any intent, from
+    /// the shard leader after a read-index round (tier 2).
+    /// @throws snapshot_too_old_exception below the shard's safe point.
+    auto txn_read_at(const std::string& key, std::uint64_t ts, std::chrono::milliseconds timeout)
+        -> txn_read_result<std::string>;
+    /// That read on this replica, or nullopt when it does not lead the
+    /// shard (or lost it, or the key moved, during the read).
+    auto txn_read_at_local(const std::string& key, std::uint64_t ts,
+                           std::chrono::milliseconds timeout)
+        -> std::optional<txn_read_result<std::string>>;
     /// Who to ask about `key`'s shard when this replica does not lead it.
     auto txn_leader_of(const std::string& key) -> std::optional<node_id_type>;
     /// A plain write met `holder`'s lock: finish that transaction if its
