@@ -408,6 +408,21 @@ Question 1 (gateway default) must be answered before task 9, and question 3
   - Snapshot invariant: every all-accounts read sums to the total
   - Gateway built with `mvcc::on`: `WATCH`/`UNWATCH`, snapshot `MGET`
   - _Requirements: 11.4, 13.4_
+  - Bank workload done (November 2, 2026):
+    `tests/multi_raft_txn_snapshot_bank_test.cpp`. Transfers are real
+    read-modify-writes under `snapshot`, so first-committer-wins alone
+    keeps the total; two readers sum all sixteen accounts in one snapshot
+    throughout leader moves, splits, merges and poisoned coordinators. It
+    found two bugs in `multi_raft_txn_client`'s reads, both fixed:
+    - A read could reach a parent shard just narrowed by a split (the
+      routing map lags the replica) and answer "no value". Reads now check
+      the replica's own range under its state-machine lock and retry.
+    - A snapshot read's read-index round went through a raw node pointer,
+      so a merge that destroyed the shard meanwhile left the round's
+      continuation reading freed memory (a SIGSEGV in about 1 run in 5).
+      Reads now go through the host's key-routed `read_state`, which holds
+      the group alive, and the new `multi_raft::with_group_state_machine`.
+    Gateway `WATCH` and snapshot `MGET` remain.
 
 - [ ] 15. Chaos and performance
   - `docker/txn-chaos-compose.yml`, `tests/docker_chaos/txn_bank_chaos_test.cpp`
