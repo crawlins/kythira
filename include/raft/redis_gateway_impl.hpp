@@ -3231,8 +3231,19 @@ auto redis_gateway<Host, Logger, Metrics>::handle_exec(session& s) -> std::strin
                 }
             }
             auto outcome = coordinator.commit();
-            if (!watched.empty() && outcome._kind == txn_outcome_kind::aborted &&
-                outcome._reason == txn_abort_reason::read_conflict) {
+            // A watched key that changed fails one of two ways: read
+            // validation (`read_conflict`), or, when the MULTI also writes
+            // that key, first-committer-wins finding a version newer than
+            // the WATCH (`write_conflict` with no holder). Both mean what
+            // Redis means by a null array: a watched key changed, nothing
+            // applied. A conflict with a live holder is not this: that is
+            // a lock, already retried, and keeps its error.
+            const bool watched_changed =
+                outcome._reason == txn_abort_reason::read_conflict ||
+                (outcome._reason == txn_abort_reason::write_conflict &&
+                 !outcome._holder.has_value() && outcome._conflict_key.has_value() &&
+                 watched.contains(*outcome._conflict_key));
+            if (!watched.empty() && outcome._kind == txn_outcome_kind::aborted && watched_changed) {
                 // Redis's answer for a watched key that changed: a null
                 // array, nothing applied.
                 ++_stats._txn_aborted;
