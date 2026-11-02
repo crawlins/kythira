@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdlib>
 #include <functional>
 #include <map>
@@ -145,9 +146,24 @@ inline std::string path_of(const std::string& url) {
     return (slash == std::string::npos) ? std::string("/") : rest.substr(slash);
 }
 
+// cpp-httplib sends with CPPHTTPLIB_SEND_FLAGS, which is 0 on Linux, so a
+// request written to a node that has just closed or reset the connection
+// raises SIGPIPE and kills the whole scenario binary. That is exactly what
+// a node does while it is being killed or restarted, which these tests do
+// on purpose. Ignore SIGPIPE once so the write fails with EPIPE instead and
+// the call reports "connection failed" like any other unreachable node.
+inline void ignore_sigpipe() {
+    static const bool done = [] {
+        std::signal(SIGPIPE, SIG_IGN);
+        return true;
+    }();
+    (void)done;
+}
+
 }  // namespace detail
 
 inline HttpResult real_http_get(const std::string& url) {
+    detail::ignore_sigpipe();
     auto [host, port] = detail::split_host_port(url);
     httplib::Client cli(host, port);
     cli.set_connection_timeout(2);
@@ -160,6 +176,7 @@ inline HttpResult real_http_get(const std::string& url) {
 }
 
 inline HttpResult real_http_post(const std::string& url, const std::string& body) {
+    detail::ignore_sigpipe();
     auto [host, port] = detail::split_host_port(url);
     httplib::Client cli(host, port);
     cli.set_connection_timeout(2);
