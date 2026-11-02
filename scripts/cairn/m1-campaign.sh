@@ -28,8 +28,8 @@
 #   1. Bootstrap. start-run.sh starts the project; it counts as bootstrapped
 #      once the dispatcher reports a reason/explore step for it. If the
 #      dispatcher logs "bootstrap parse failed" three times for it, or 20
-#      minutes pass, the stack is killed and the project started again, up
-#      to three attempts. A run that never bootstraps ends the campaign
+#      minutes pass on that attempt, the stack is killed and the project
+#      started again, up to three attempts. A run that never bootstraps ends the campaign
 #      (the model is not usable as served, so further runs only bill).
 #   2. Explore, polling every 30 s, until the schedule log holds a
 #      matching violation, the project completes, or --hours pass.
@@ -168,7 +168,8 @@ for i in $(seq 1 "${#plan[@]}"); do
             continue
         fi
         log "RUN $i ($proj) attempt $attempt: project=$p"
-        while [ $(($(date +%s) - run0)) -lt 1200 ]; do
+        att0=$(date +%s)
+        while [ $(($(date +%s) - att0)) -lt 1200 ]; do
             advanced "$p" && { boot_ok=1; break; }
             if [ "$(parse_failures "$p")" -ge 3 ]; then
                 log "RUN $i attempt $attempt: bootstrap parse failed x3; restarting"
