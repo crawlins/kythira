@@ -462,7 +462,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1324,7 +1324,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1609,7 +1609,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -1872,7 +1872,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -2107,7 +2107,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -2864,7 +2864,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -3307,7 +3307,7 @@ jobs:
       # to `run:` steps. This re-exports them so the vcpkg invocation below can
       # reach the cache.
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -3827,7 +3827,7 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Export Actions cache credentials for vcpkg
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
