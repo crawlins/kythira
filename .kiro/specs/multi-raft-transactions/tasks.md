@@ -290,7 +290,7 @@ Question 1 (gateway default) must be answered before task 9, and question 3
 
 ### Tier 2: timestamp oracle, MVCC, snapshot isolation
 
-- [ ] 10. Timestamp oracle
+- [x] 10. Timestamp oracle
   - `timestamp_oracle` concept, `raft_timestamp_oracle`, `oracle_reserve` in
     the wrapper, the reserved group (empty range; skipped by routing, the
     policy and operators), `allocate_timestamps` hook
@@ -298,6 +298,26 @@ Question 1 (gateway default) must be answered before task 9, and question 3
   - Tests: `tests/raft_timestamp_oracle_test.cpp`: monotonic across leader
     changes and restarts, never served twice, deposed leader refused
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6_
+  - Done (November 2, 2026). Open question 3 is settled as the design
+    proposed: the oracle is an in-host group (`multi_raft_config::
+    oracle_group`, created with `create_oracle_group()`), and the
+    `allocate_timestamps` hook replaces it for a deployment with its own.
+    Notes:
+    - `allocate()` blocks for its batch and returns a ready future, as the
+      gateway's transaction client does. Callers that arrive while a batch
+      runs form the next one, so they share its heartbeat round and at
+      most one reserve.
+    - Only the host leading the oracle group serves; others refuse with
+      `shard_not_leader_exception` and the leader hint. Reaching the leader
+      from another process is the caller's job (task 14 wires the
+      gateway).
+    - The group is created unpublished, so it never enters the routing map
+      (whose rows are keyed by start bound, where an empty range would
+      collide with a real shard's row). The policy, `split_shard`,
+      `merge_shards`, placement reports and operators pass it over.
+    - Zero is never a timestamp. A window is reserved from the applied
+      high-water mark after the heartbeat round, which has applied every
+      entry an earlier leader committed.
 
 - [ ] 11. Multi-version Redis KV state machine
   - `multi_version_state_machine` concept;

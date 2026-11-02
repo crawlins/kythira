@@ -59,6 +59,13 @@ multi_raft<Types, Key, GroupId>::multi_raft(config_type cfg)
     _demux.set_unknown_group_handler(
         [this](const GroupId& g) { return this->handle_unknown_group(g); });
 
+    if constexpr (is_transactional_state_machine_v<typename Types::state_machine_type>) {
+        if (_cfg.oracle_group.has_value() && !_cfg.allocate_timestamps) {
+            _oracle = std::make_unique<raft_timestamp_oracle<multi_raft>>(*this, *_cfg.oracle_group,
+                                                                          _cfg.oracle_window);
+        }
+    }
+
     _automatic_enabled.store(_cfg.automatic_split_merge_enabled);
     _last_policy_run = std::chrono::steady_clock::now();
 }
@@ -165,6 +172,11 @@ auto multi_raft<Types, Key, GroupId>::create_group_impl(
     const std::function<void(typename Types::persistence_engine_type&)>& seed, bool publish)
     -> void {
     const auto& group = descriptor._group_id;
+    // The oracle group owns no keys: it never enters the routing map
+    // (multi-raft-transactions Requirement 7.2).
+    if (is_oracle_group(group)) {
+        publish = false;
+    }
 
     {
         std::shared_lock lock(_registry_mutex);
@@ -949,6 +961,9 @@ auto multi_raft<Types, Key, GroupId>::evaluate_policy(const std::vector<group_pt
     }
 
     for (const auto& g : ready) {
+        if (is_oracle_group(g->_group_id)) {
+            continue;  // never split or merged (Requirement 7.2)
+        }
         if (!g->_node || g->_destroyed.load(std::memory_order_acquire) || !g->_node->is_leader()) {
             // Leader-only. The policy's answer is frozen into the entry every
             // replica applies, so exactly one replica may decide — and the
@@ -1804,6 +1819,10 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
         return failed_future(
             std::make_exception_ptr(unknown_shard_exception<GroupId>{group, "no local replica"}));
     }
+    if (is_oracle_group(group)) {
+        return failed_future(std::make_exception_ptr(
+            unknown_shard_exception<GroupId>{group, "the timestamp oracle group is not a shard"}));
+    }
 
     // ── step 1: gate ─────────────────────────────────────────────────────────
     if (!g->_node->is_leader()) {
@@ -2407,6 +2426,12 @@ auto multi_raft<Types, Key, GroupId>::merge_shards(const GroupId& source, const 
     const auto channel = options._channel;
     auto source_state = find_group(source);
     auto target_state = find_group(target);
+    for (const auto& id : {source, target}) {
+        if (is_oracle_group(id)) {
+            return failed_future(std::make_exception_ptr(
+                unknown_shard_exception<GroupId>{id, "the timestamp oracle group is not a shard"}));
+        }
+    }
     if (!source_state) {
         return failed_future(std::make_exception_ptr(
             unknown_shard_exception<GroupId>{source, "no local replica of the source"}));
@@ -3122,6 +3147,9 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::refresh_map_from_local_groups() -> bool {
     std::vector<descriptor_type> rows;
     for (const auto& g : all_groups()) {
+        if (is_oracle_group(g->_group_id)) {
+            continue;
+        }
         rows.push_back(g->_descriptor);
     }
     std::unique_lock lock(_map_mutex);
@@ -3491,6 +3519,52 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::set_txn_forwarder(txn_forwarder forwarder) -> void {
     std::lock_guard lock(_resolver_mutex);
     _txn_forwarder = std::move(forwarder);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::create_oracle_group(const std::vector<node_id_type>& voters)
+    -> void
+requires is_transactional_state_machine_v<typename Types::state_machine_type>
+{
+    if (!_cfg.oracle_group.has_value()) {
+        throw std::logic_error("multi_raft: create_oracle_group needs config oracle_group");
+    }
+    // An empty range: the group owns no keys. It is never published, so the
+    // range only matters to anything that reads the local descriptor.
+    create_group_impl(descriptor_type{._group_id = *_cfg.oracle_group,
+                                      ._range = shard_range<Key>{._start = Key{}, ._end = Key{}},
+                                      ._epoch = shard_epoch{},
+                                      ._voters = voters,
+                                      ._learners = {},
+                                      ._leader_hint = std::nullopt},
+                      {}, false);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::is_oracle_group(const GroupId& group) const -> bool {
+    return _cfg.oracle_group.has_value() && *_cfg.oracle_group == group;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::allocate_timestamps(std::size_t n,
+                                                          std::chrono::milliseconds timeout)
+    -> future_default<timestamp_range> {
+    if (_cfg.allocate_timestamps) {
+        return hook_timestamp_oracle{_cfg.allocate_timestamps}.allocate(n);
+    }
+    if (!_oracle) {
+        promise_default<timestamp_range> p;
+        auto f = p.getFuture();
+        p.setException(std::make_exception_ptr(timestamp_oracle_unavailable_exception(
+            "multi_raft: no timestamp oracle (set oracle_group or allocate_timestamps)")));
+        return f;
+    }
+    return _oracle->allocate(n, timeout);
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::oracle_stats() const -> timestamp_oracle_counts {
+    return _oracle ? _oracle->stats() : timestamp_oracle_counts{};
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -3965,6 +4039,9 @@ auto multi_raft<Types, Key, GroupId>::build_shard_reports() const
     -> std::vector<shard_report_type> {
     std::vector<shard_report_type> out;
     for (const auto& g : all_groups()) {
+        if (is_oracle_group(g->_group_id)) {
+            continue;  // not a shard: the placement driver never sees it
+        }
         if (!g->_node || g->_destroyed.load(std::memory_order_acquire) || !g->_node->is_leader()) {
             continue;
         }
@@ -4087,7 +4164,7 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::apply_operator(const shard_operation_type& op)
     -> operator_outcome {
     auto g = find_group(op.group_id());
-    if (!g || !g->_node) {
+    if (!g || !g->_node || is_oracle_group(op.group_id())) {
         return note_skipped_operator(op, skipped_operator_reason::unknown_shard);
     }
 

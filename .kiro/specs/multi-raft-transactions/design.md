@@ -351,6 +351,8 @@ state machine is untouched; the gateway picks one at compile time.
 3. **Oracle placement.** In-host reserved group (proposed) versus requiring
    an external control plane. The in-host group keeps a single-binary
    deployment working; the hook keeps the other option open.
+   *Settled in task 10 (November 2, 2026) as proposed: the in-host group,
+   with `allocate_timestamps` as the escape hatch.*
 4. **Tier 3 scope.** Read intents block writers for the transaction's
    lifetime. If write skew protection is wanted only for specific keys, a
    cheaper `SELECT ... FOR UPDATE`-style explicit lock on read could replace
