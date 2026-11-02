@@ -351,8 +351,18 @@ state machine is untouched; the gateway picks one at compile time.
   `docker/txn-chaos-compose.yml`)**: the bank workload through
   `redis_gateway_node`. Peers by service name, `container_runtime()` and
   `compose_prefix()` only, and no privileged features (`CLAUDE.md`).
+  *As built (task 15): the faults are partitions, freezes and one permanent
+  kill, never a kill and restart, because the transactional daemon keeps its
+  state in memory and a voter that restarts empty is outside what Raft
+  survives.*
+- **Write skew (`tests/multi_raft_txn_write_skew_test.cpp`)**: task 17's
+  two-account minimum balance, broken under `snapshot` as a control and
+  held under `serializable` while leaders move.
 - **Performance**: new rows in `multi-raft-performance` (1PC, 2PC across 2
   and 4 shards, and snapshot reads at 1/8/64 concurrency).
+  *As built (task 15): the `transactions` axis of
+  `multi_raft_performance_report`, Tier A, with a snapshot 2PC row at 2 and
+  4 shards as well, so the tier-2 cost of a write is a number too.*
 
 ## Open Questions
 
