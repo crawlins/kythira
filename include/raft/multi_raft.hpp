@@ -46,15 +46,20 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -806,8 +811,41 @@ struct multi_raft_config {
     txn_options txn_defaults{};
 
     /// @brief How often a shard leader looks for intents past their TTL and
-    ///        resolves them (task 7).
+    ///        resolves them, and for finished records to clean up (task 7).
+    ///
+    /// No intent outlives its TTL plus two of these while its primary shard
+    /// is reachable (Requirement 4.6): one interval until the resolver next
+    /// looks, and one for the resolve itself to commit.
     std::chrono::milliseconds resolver_interval{std::chrono::seconds{1}};
+
+    /// @brief How long a shard leader keeps a finished transaction's record
+    ///        and settled entries before proposing their cleanup
+    ///        (Requirement 4.7).
+    ///
+    /// Counted from when this leader first saw the transaction finished, so
+    /// a new leader starts the count again: retention can run long after a
+    /// leader change, never short. It must comfortably exceed the longest
+    /// transaction timeout. A record is what turns a prepare or commit
+    /// retried after the transaction finished into a no-op, and once it is
+    /// gone such a retry is answered as if the transaction were unknown.
+    std::chrono::milliseconds txn_record_retention{std::chrono::minutes{10}};
+
+    /// @brief The most transactions one resolver pass resolves per group,
+    ///        and the most records one cleanup entry drops.
+    ///
+    /// Bounds the work a backlog can put on one pass; the rest wait for the
+    /// next interval.
+    std::size_t resolver_batch{64};
+
+    /// @brief The transaction clock, in milliseconds: what stamps TTL
+    ///        deadlines and the resolver's `now_ms`.
+    ///
+    /// Unset means `std::chrono::system_clock`. Every party that stamps or
+    /// compares a deadline (each host's resolver, and the coordinator through
+    /// its client's `now_ms()`) must read the same clock, or one host's
+    /// "expired" is another's "fresh"; `multi_raft::txn_now_ms()` is the
+    /// accessor clients use.
+    std::function<std::uint64_t()> txn_clock_ms{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1005,6 +1043,52 @@ public:
     auto submit_txn(const std::vector<Key>& keys, const std::vector<std::byte>& envelope,
                     std::chrono::milliseconds timeout) -> future_type
     requires is_transactional_state_machine_v<typename Types::state_machine_type>;
+
+    /// @name Leader-side resolver (multi-raft-transactions task 7)
+    /// @{
+
+    /// @brief Sends a transaction op to whichever host leads the shard owning
+    ///        `keys`, and returns its encoded `txn_result`. Blocking; may
+    ///        throw.
+    using txn_forwarder = std::function<std::vector<std::byte>(
+        const std::vector<Key>& keys, const std::vector<std::byte>& envelope,
+        std::chrono::milliseconds timeout)>;
+
+    /// @brief How the resolver reaches a primary shard this host does not
+    ///        lead.
+    ///
+    /// The resolver asks the primary's shard for a transaction's fate with a
+    /// `check_and_resolve` entry. When this host leads that shard too, it
+    /// proposes the entry itself; otherwise it hands it to the forwarder,
+    /// which is the deployment's own client (in process,
+    /// `multi_raft_txn_client::send`). With no forwarder, such intents wait
+    /// until the primary's leader moves here or a reader resolves them, and
+    /// each attempt is counted as `unreachable`.
+    auto set_txn_forwarder(txn_forwarder forwarder) -> void;
+
+    /// @brief The transaction clock (`multi_raft_config::txn_clock_ms`).
+    [[nodiscard]] auto txn_now_ms() const -> std::uint64_t;
+
+    /// @brief What the resolver has done since `start()`, for tests and
+    ///        operators. Each count is also a metric.
+    struct txn_resolver_counts {
+        /// Resolver passes run.
+        std::uint64_t _passes{0};
+        /// Expired intents whose primary had committed, rolled forward here.
+        std::uint64_t _committed{0};
+        /// Expired intents whose primary had aborted (or was aborted by this
+        /// resolve), removed here.
+        std::uint64_t _aborted{0};
+        /// Expired intents whose primary is still pending: a live
+        /// coordinator heartbeating it.
+        std::uint64_t _pending{0};
+        /// Resolves that could not reach the primary's leader.
+        std::uint64_t _unreachable{0};
+        /// Records and settled entries dropped by cleanup entries.
+        std::uint64_t _cleaned{0};
+    };
+    [[nodiscard]] auto txn_resolver_stats() const -> txn_resolver_counts;
+    /// @}
 
     /// @brief Linearisable read against the shard owning `key`.
     auto read_state(const Key& key, std::chrono::milliseconds timeout) -> future_type;
@@ -1526,6 +1610,18 @@ private:
         /// the placement driver exactly once.
         std::atomic<std::uint64_t> _capacity_refusals{0};
 
+        /// Orders a write's admission against a split or merge claiming this
+        /// shard. A write holds it shared from the moment it checks
+        /// `_operation` until its entry is in the leader's log; `admit()` into
+        /// `splitting` or `merging_source` holds it exclusively. So every
+        /// write either reached the log before the split or merge could be
+        /// proposed, and applies before its fence entry, or saw the claim and
+        /// backed off. Without it, a write checked just before the claim could
+        /// be appended just after the fence entry and apply to a shard that no
+        /// longer owns its key: an acknowledged write, lost (found by the
+        /// multi-raft-transactions bank workload, task 8).
+        mutable std::shared_mutex _proposal_gate;
+
         // ── merge bookkeeping (design §5.5) ──────────────────────────────────
         //
         // Guarded by `_merge_mutex` rather than atomics: these move together,
@@ -1850,6 +1946,54 @@ private:
     std::mutex _driver_reports_mutex;
     std::vector<pending_driver_report> _driver_reports;
     std::chrono::steady_clock::time_point _last_policy_run{};
+
+    // ── leader-side transaction resolver (multi-raft-transactions task 7) ────
+    //
+    // The tick decides when a pass is due; a pass runs on its own thread,
+    // because resolving means proposing entries and waiting for them to
+    // commit, which the tick must never do. Only that thread touches
+    // `_resolver_memory`.
+
+    /// What one group's leader remembers between passes. Leader-local and
+    /// lost on a leader change, which only restarts its clocks.
+    struct resolver_group_memory {
+        /// When this leader first saw each open transaction: the lock age the
+        /// metrics and the abort log report (a lower bound after a leader
+        /// change).
+        std::map<txn_id, std::chrono::steady_clock::time_point> _open_since;
+        /// When this leader first saw each finished transaction; cleanup
+        /// waits `txn_record_retention` from here.
+        std::map<txn_id, std::chrono::steady_clock::time_point> _finished_since;
+    };
+
+    auto start_resolver() -> void;
+    auto stop_resolver() -> void;
+    auto resolver_loop() -> void;
+    auto resolver_pass() -> void;
+    auto resolve_group(group_state& g, resolver_group_memory& memory) -> void;
+    auto send_txn_op(const std::vector<Key>& keys, const std::vector<std::byte>& envelope,
+                     bool may_forward) -> std::vector<std::byte>;
+    auto note_txn_result(std::uint8_t op_code, const std::vector<std::byte>& bytes,
+                         std::chrono::nanoseconds elapsed) -> void;
+    auto emit_txn_metric(std::string_view name,
+                         std::initializer_list<std::pair<std::string_view, std::string>> dims,
+                         std::int64_t count) -> void;
+
+    std::mutex _resolver_mutex;
+    std::condition_variable _resolver_cv;
+    std::thread _resolver_thread;
+    bool _resolver_stopping{false};
+    bool _resolver_due{false};
+    txn_forwarder _txn_forwarder;
+    std::chrono::steady_clock::time_point _last_resolver_run{};
+    std::unordered_map<GroupId, resolver_group_memory> _resolver_memory;
+    std::mutex _txn_metrics_mutex;
+    std::atomic<std::uint64_t> _resolver_passes{0};
+    std::atomic<std::uint64_t> _resolved_committed{0};
+    std::atomic<std::uint64_t> _resolved_aborted{0};
+    std::atomic<std::uint64_t> _resolved_pending{0};
+    std::atomic<std::uint64_t> _resolve_unreachable{0};
+    std::atomic<std::uint64_t> _txn_cleaned{0};
     std::atomic<std::uint64_t> _applied_splits{0};
     std::atomic<std::uint64_t> _applied_merges{0};
     std::atomic<std::uint64_t> _rolled_back_merges{0};

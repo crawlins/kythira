@@ -373,6 +373,66 @@ BOOST_AUTO_TEST_CASE(cleanup_forgets_records_and_settled_entries) {
     BOOST_TEST(h.sm.get_state() == fresh.sm.get_state());
 }
 
+BOOST_AUTO_TEST_CASE(cleanup_never_drops_a_pending_record) {
+    harness h;
+    BOOST_TEST(h.prepare(t1, "a", {w("a", "1")}, true)._status == txn_result_status::ok);
+    const auto before = h.sm.get_state();
+    BOOST_TEST(h.run(kythira::txn_cleanup<std::string>{{{"a", t1}}})._status ==
+               txn_result_status::ok);
+    BOOST_TEST(h.sm.get_state() == before);
+    BOOST_TEST(h.sm.record_of("a", t1)->_status == txn_record_status::pending);
+}
+
+BOOST_AUTO_TEST_CASE(open_transactions_group_intents_by_txn) {
+    harness h;
+    BOOST_TEST(h.prepare(t1, "a", {w("c", "1"), w("a", "1")}, true, 500)._status ==
+               txn_result_status::ok);
+    BOOST_TEST(h.prepare(t2, "z", {w("b", "2")}, false, 300)._status == txn_result_status::ok);
+    // A second prepare of t1's on this shard, with a later deadline: the view
+    // keeps the earliest, the one the resolver must act on.
+    BOOST_TEST(h.prepare(t1, "a", {w("d", "1")}, false, 900)._status == txn_result_status::ok);
+    const auto open = h.sm.open_transactions();
+    BOOST_REQUIRE(open.size() == 2U);
+    BOOST_TEST(open[0]._txn == t1);
+    BOOST_TEST(open[0]._primary == std::string("a"));
+    BOOST_TEST(open[0]._keys == (std::vector<std::string>{"a", "c", "d"}),
+               boost::test_tools::per_element());
+    BOOST_TEST(open[0]._deadline_ms == 500U);
+    BOOST_TEST(open[1]._txn == t2);
+    BOOST_TEST(open[1]._primary == std::string("z"));
+    BOOST_TEST(open[1]._deadline_ms == 300U);
+    BOOST_TEST(h.sm.finished_transactions().empty());
+}
+
+BOOST_AUTO_TEST_CASE(finished_transactions_are_terminal_and_hold_no_lock) {
+    const txn_id t3{0, 3};
+    const txn_id t4{0, 4};
+    harness h;
+    // t1: committed primary, finished.
+    BOOST_TEST(h.prepare(t1, "a", {w("a", "1")}, true)._status == txn_result_status::ok);
+    BOOST_TEST(h.commit_primary(t1, "a")._status == txn_result_status::ok);
+    // t2: a secondary here, committed: settled entries only, named by key.
+    BOOST_TEST(h.prepare(t2, "q", {w("b", "2")}, false)._status == txn_result_status::ok);
+    BOOST_TEST(h.commit_secondary(t2, {"b"})._status == txn_result_status::ok);
+    // t3: pending on its primary: not finished.
+    BOOST_TEST(h.prepare(t3, "c", {w("c", "3")}, true)._status == txn_result_status::ok);
+    // t4: aborted by a resolver before any prepare: a rollback marker.
+    BOOST_TEST(h.check(t4, "e", 50)._status == txn_result_status::record);
+    const auto finished = h.sm.finished_transactions();
+    BOOST_REQUIRE(finished.size() == 3U);
+    BOOST_TEST((finished[0] == kythira::txn_cleanup_item<std::string>{"a", t1}));
+    BOOST_TEST((finished[1] == kythira::txn_cleanup_item<std::string>{"b", t2}));
+    BOOST_TEST((finished[2] == kythira::txn_cleanup_item<std::string>{"e", t4}));
+
+    // Cleaning all of them leaves only t3 and the data.
+    BOOST_TEST(h.run(kythira::txn_cleanup<std::string>{finished})._status == txn_result_status::ok);
+    BOOST_TEST(h.sm.finished_transactions().empty());
+    BOOST_TEST(!h.sm.record_of("a", t1).has_value());
+    BOOST_TEST(!h.sm.record_of("e", t4).has_value());
+    BOOST_TEST(h.sm.record_of("c", t3)->_status == txn_record_status::pending);
+    BOOST_TEST(h.sm.inner().get_value("b") == std::optional<std::string>("2"));
+}
+
 BOOST_AUTO_TEST_CASE(snapshot_round_trips_locks_records_and_data) {
     harness h;
     BOOST_TEST(h.plain(put("z", "0"))._status == txn_result_status::ok);

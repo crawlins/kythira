@@ -131,11 +131,7 @@ public:
         throw std::runtime_error("multi_raft_txn_client: no leader for the key's shard");
     }
 
-    [[nodiscard]] auto now_ms() const -> std::uint64_t {
-        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                              std::chrono::steady_clock::now().time_since_epoch())
-                                              .count());
-    }
+    [[nodiscard]] auto now_ms() const -> std::uint64_t { return _hosts.front()->txn_now_ms(); }
 
 private:
     using node_id_type = typename Types::node_id_type;
