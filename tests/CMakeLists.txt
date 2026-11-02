@@ -1303,6 +1303,9 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
     # Task 14: the tier-2 bank workload (snapshot reads always sum to the total).
     add_raft_completion_test(multi_raft_txn_snapshot_bank_test
                              multi_raft_txn_snapshot_bank_test.cpp)
+    # Task 17: write skew breaks a two-account minimum balance under
+    # snapshot and never under serializable.
+    add_raft_completion_test(multi_raft_txn_write_skew_test multi_raft_txn_write_skew_test.cpp)
     add_raft_completion_test(redis_acl_unit_test redis_acl_unit_test.cpp)
     target_link_libraries(redis_acl_unit_test PRIVATE OpenSSL::Crypto)
     add_raft_completion_test(redis_auth_limiter_unit_test redis_auth_limiter_unit_test.cpp)
