@@ -10,6 +10,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -202,6 +203,16 @@ void read_cache_options(node_options& o) {
             "redis_gateway_node: KYTHIRA_REDIS_MAX_VALUE_BYTES must be at most 16777216 with "
             "KYTHIRA_CACHE_PERSISTENCE=file (a SET is stored as one chunk); larger values go "
             "over HTTP");
+    }
+
+    // Values live on disk here, and the disk budget is what bounds them
+    // (Requirement 6.1). KYTHIRA_REDIS_MAX_SHARD_BYTES is the memory mode's
+    // RAM bound; left at its 1 GiB default it evicted a shard's keys once
+    // its values passed 1 GiB, whatever KYTHIRA_CACHE_MAX_DISK_BYTES said.
+    // Two 500 MB vcpkg archives were enough. So in file mode it applies
+    // only when set explicitly.
+    if (const char* v = std::getenv("KYTHIRA_REDIS_MAX_SHARD_BYTES"); v == nullptr || *v == '\0') {
+        o._gateway._max_shard_bytes = std::numeric_limits<std::size_t>::max();
     }
 
     c._http_listen = get_opt("KYTHIRA_CACHE_HTTP_LISTEN", "");
@@ -513,7 +524,7 @@ auto usage() -> std::string {
            "  KYTHIRA_REDIS_MAX_CLIENTS                                                [1024]\n"
            "  KYTHIRA_REDIS_IDLE_TIMEOUT_MS                                            [300000]\n"
            "  KYTHIRA_REDIS_COMMAND_TIMEOUT_MS                                         [5000]\n"
-           "  KYTHIRA_REDIS_MAX_SHARD_BYTES                                            "
+           "  KYTHIRA_REDIS_MAX_SHARD_BYTES    memory mode; file mode only if set     "
            "[1073741824]\n"
            "  KYTHIRA_REDIS_SWEEP_BATCH                                                [1024]\n"
            "  KYTHIRA_REDIS_IMMUTABLE_VALUES                                           [true]\n"
