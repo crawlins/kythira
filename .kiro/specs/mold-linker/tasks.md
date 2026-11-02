@@ -1,10 +1,11 @@
 # Implementation Plan — mold Linker Adoption
 
-## Status: 7/8 tasks complete
+## Status: 8/9 tasks complete (task 9, the CA Docker builders, open)
 
-**Last Updated**: October 19, 2026 (task 1 measured; gate waived by the
+**Last Updated**: November 2, 2026 (task 1 measured; gate waived by the
 maintainer; tasks 2-5 and 8 merged in PR #545; task 6 confirmed on `main`;
-task 7, the soak, runs to November 2).
+task 7's two-week soak found no linker-attributed failure, so task 9 now
+moves the CA Docker builders to mold).
 
 ## Overview
 
@@ -221,10 +222,49 @@ Reference material to read before starting:
       link RSS doesn't relieve the compile memory that binds this leg.
   - _Requirements: 1.3, 5.3_
 
-- [ ] 7. Soak and Docker follow-up decision
+- [x] 7. Soak and Docker follow-up decision
   - Two weeks after task 6, list any CI failure attributed to the linker. If
     there are none, open a follow-up spec or task for installing mold in the
     `docker/ca_cluster_node` and `docker/ca_service` builder stages
     (Requirement 8.1); if there are, record them here and leave the builders
     on ld.bfd.
+  - Result (November 2, 2026): **no linker-attributed failure.** Between
+    October 19 and November 2, 233 `ci.yml`, 32 `container-tests.yml` and
+    33 `real-cloud-tests.yml` runs completed; 32 of them failed, in 48
+    jobs. No failing step was a link, a mold `.comment` check, or a
+    duplicate or undefined symbol. The failures were cloud-test and
+    leak-audit steps, container chaos scenarios, monitoring-config
+    tests, and runner losses. One recurring failure is worth naming
+    because it lands in Build: the Full suite (stdexec) leg was killed
+    in Build seven times from October 27 (exit 143 or a lost runner).
+    The log of run 41357157780 shows every link finished and the build
+    then sat for 57 minutes on its last three heavy compiles. That is
+    the compile-memory limit described in `ci.yml`'s `-j3` comment, not
+    the linker.
+  - Requirement 8.1's condition is met, so the follow-up is task 9 below.
   - _Requirements: 8.1_
+
+- [ ] 9. Link the CA Docker builders with mold (follow-up to task 7)
+  - In `docker/ca_cluster_node/Dockerfile` and `docker/ca_service/Dockerfile`,
+    add `mold` to the builder stage's `apt-get install` and pass
+    `-DKYTHIRA_LINKER=mold` to configure. Name the linker rather than relying
+    on `auto`, so a builder image that lost the package fails at configure
+    (Requirement 5.2) instead of falling back to ld.bfd.
+  - After the build in each builder stage, run
+    `scripts/check-linker.sh mold build/<binary>` against the shipped binary
+    (`ca_cluster_node`, `ca_service`), and against `chaos_node` when
+    `EXTRA_TARGETS` builds it. `COPY . .` already brings the script in.
+  - The runtime stages are unchanged: mold adds no runtime dependency. Check
+    `DT_NEEDED`, PIE, RELRO, BIND_NOW, `GNU_STACK` and build-id on the new
+    `ca_cluster_node` against the ld.bfd one, as task 1 did for the CI
+    binaries. Expect the only difference to be `DF_STATIC_TLS`.
+  - Verify with the `Build ca_cluster_node AMI` jobs of one dispatched
+    `real-cloud-tests.yml` run on x64 and arm64. Those jobs build through
+    `packer/ca_cluster_node/scripts/extract-binary.sh`. Run the cheapest AWS
+    bundle that boots the AMI. Set every other provider and bundle input to
+    false, and only dispatch with the maintainer's go-ahead, because it
+    costs cloud money. Build `ca_service` locally or in CI with
+    `docker build --target builder`.
+  - Leave the vcpkg ports on ld.bfd (Requirement 8.2). The builders
+    stay on GCC, so the clang VTT/COMDAT mismatch of task 1 does not apply.
+  - _Requirements: 8.1, 5.2, 5.3_
