@@ -52,6 +52,7 @@
 
 #include <raft/asio_listeners.hpp>
 #include <raft/cache_chunk_store.hpp>
+#include <raft/bounded_resolver.hpp>
 #include <raft/cache_http_auth.hpp>
 #include <raft/cache_kv_state_machine.hpp>
 #include <raft/http_connection_gate.hpp>
@@ -125,6 +126,9 @@ struct cache_http_config {
     /// Each body read or response write must make progress within this.
     std::chrono::seconds _io_timeout{60};
     std::chrono::seconds _handshake_timeout{10};
+    /// One connect to a peer when forwarding or fetching a chunk; there are
+    /// at most two per request (see cache_http_detail::dial).
+    std::chrono::milliseconds _connect_timeout{3000};
     std::chrono::milliseconds _command_timeout{10000};
 
     /// `KYTHIRA_CACHE_AUTH_CACHE_SECONDS` (Requirement 8.4).
@@ -368,6 +372,55 @@ template<typename Start> auto drive(asio::io_context& ioc, Start&& start) -> bea
     while (!done && ioc.run_one() != 0) {
     }
     return done ? result : beast::error_code(asio::error::operation_aborted);
+}
+
+/// Connect `up` to a peer's HTTP listener. Through the bounded resolver,
+/// not Asio's, for the reasons redis_forward_link::connect gives: under
+/// rootless Podman a restarted peer sits at a new address, and once a node
+/// has looked up a killed peer's name, aardvark-dns can answer that node
+/// nothing for 40 s, the peer's new address included. A plain getaddrinfo()
+/// then blocks a forwarded request for longer than any client waits. The
+/// resolver caps the wait, and answers from the address the peer's Raft
+/// traffic last came from while DNS has nothing usable.
+///
+/// Each connect is bounded by `connect_timeout`, not the I/O timeout: a dial
+/// of an address nobody holds any more otherwise waits out the full minute.
+/// A failed dial tells the resolver, which retires the address, and the
+/// second attempt gets whatever replaced it: the peer's newer Raft address
+/// (it heartbeats far more often than a dial takes), or a fresh lookup. One
+/// retry only, so a peer that is really gone costs two connect timeouts.
+inline auto dial(asio::io_context& ioc, beast::tcp_stream& up, const std::string& host,
+                 std::uint16_t port, std::chrono::milliseconds connect_timeout)
+    -> beast::error_code {
+    const auto service = std::to_string(port);
+    beast::error_code ec = asio::error::host_not_found;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto dialled_at = std::chrono::steady_clock::now();
+        auto addresses = net_resolve::resolve(host, service, SOCK_STREAM, connect_timeout);
+        if (!addresses || addresses->empty()) {
+            ec = asio::error::host_not_found;
+            continue;
+        }
+        std::vector<asio::ip::tcp::endpoint> endpoints;
+        endpoints.reserve(addresses->size());
+        for (const auto& a : *addresses) {
+            asio::ip::tcp::endpoint ep;
+            if (a.len > ep.capacity()) {
+                continue;
+            }
+            std::memcpy(ep.data(), &a.addr, a.len);
+            ep.resize(a.len);
+            endpoints.push_back(ep);
+        }
+        up.expires_after(connect_timeout);
+        ec = drive(ioc, [&](auto h) { up.async_connect(endpoints, std::move(h)); });
+        if (!ec) {
+            return ec;
+        }
+        net_resolve::mark_unreachable(host, service, SOCK_STREAM, dialled_at);
+        up.close();
+    }
+    return ec;
 }
 
 /// The lowest layer of either stream type, for deadlines and shutdown.
@@ -1722,15 +1775,8 @@ auto cache_http_front_end<Host, Logger>::forward(connection& c, Stream& stream,
     } catch (const std::exception&) {
         return fail();
     }
-    tcp::resolver resolver(c._ioc);
-    boost::system::error_code ec;
-    auto results = resolver.resolve(hp.first, std::to_string(hp.second), ec);
-    if (ec) {
-        return fail();
-    }
     plain_stream up(c._ioc);
-    up.expires_after(_config._io_timeout);
-    ec = cache_http_detail::drive(c._ioc, [&](auto h) { up.async_connect(results, std::move(h)); });
+    auto ec = cache_http_detail::dial(c._ioc, up, hp.first, hp.second, _config._connect_timeout);
     if (ec) {
         return fail();
     }
@@ -1783,15 +1829,8 @@ auto cache_http_front_end<Host, Logger>::fetch_chunk(const node_id_type& peer, c
         return std::nullopt;
     }
     boost::asio::io_context ioc{1};
-    tcp::resolver resolver(ioc);
-    boost::system::error_code ec;
-    auto results = resolver.resolve(hp.first, std::to_string(hp.second), ec);
-    if (ec) {
-        return std::nullopt;
-    }
     plain_stream up(ioc);
-    up.expires_after(_config._io_timeout);
-    ec = cache_http_detail::drive(ioc, [&](auto h) { up.async_connect(results, std::move(h)); });
+    auto ec = cache_http_detail::dial(ioc, up, hp.first, hp.second, _config._connect_timeout);
     if (ec) {
         return std::nullopt;
     }
