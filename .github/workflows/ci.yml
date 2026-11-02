@@ -229,7 +229,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -701,7 +701,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -896,7 +896,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1109,7 +1109,7 @@ jobs:
       # this job shares that leg's clang-built tree rather than keeping
       # another copy of it.
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1421,7 +1421,7 @@ jobs:
       # skip the install and leave both libraries missing (which strict mode
       # would then report as a configure failure, not a cache problem).
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1682,7 +1682,7 @@ jobs:
       # tree is theirs with one more port in it. On a miss, every port but
       # poco-dnssd comes from the shared vcpkg binary cache.
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -1880,7 +1880,7 @@ jobs:
       # this job shares that leg's clang-built tree rather than keeping
       # another copy of it.
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -2118,7 +2118,7 @@ jobs:
       # vcpkg_cxx), so this job shares their tree rather than keeping another
       # copy of it.
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -2295,7 +2295,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -2697,7 +2697,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
@@ -3063,7 +3063,7 @@ jobs:
           region: ${{ vars.OCI_CI_REGION }}
 
       - name: Cache vcpkg packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: vcpkg-cache
         with:
           path: vcpkg_installed
