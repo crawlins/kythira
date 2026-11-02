@@ -78,7 +78,7 @@ inline constexpr std::string_view k_cairn_version = "v0.2.1 (e0ef2f85)";
                  R"(^argument '[^']*' must be )",
                  R"(^no node -?[0-9]+ in this run$)",
                  R"(^no node reports itself leader$)",
-                 R"(^failpoint '.*' is not in docker/cairn/failpoints\.allowlist$)",
+                 R"(^failpoint '.*' is not in docker/cairn/failpoints\.allowlist(;|$))",
                  R"(^probability must be in )",
                  R"(^mode must be always, random, once or off$)",
                  R"(^groups must list at least two groups)",

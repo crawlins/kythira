@@ -488,10 +488,25 @@ auto cmd_report(const cli& c) -> int {
     return 0;
 }
 
-auto cmd_tools() -> int {
+auto cmd_tools(const cli& c) -> int {
+    // fault.failpoint's summary names the allowlist; give the names too, so
+    // a worker does not have to guess them. Without a readable allowlist
+    // the static summary stands.
+    std::string allowed;
+    try {
+        for (const auto& f : failpoints_of(c)) {
+            allowed += (allowed.empty() ? "" : ", ") + f;
+        }
+    } catch (const std::exception&) {
+        allowed.clear();
+    }
     boost::json::array out;
     for (const auto& t : tools()) {
-        out.emplace_back(boost::json::object{{"name", t.name}, {"summary", t.summary}});
+        auto summary = t.summary;
+        if (t.name == "fault.failpoint" && !allowed.empty()) {
+            summary += " Allowed names: " + allowed + ".";
+        }
+        out.emplace_back(boost::json::object{{"name", t.name}, {"summary", summary}});
     }
     print(out);
     return 0;
@@ -503,7 +518,7 @@ int main(int argc, char** argv) {
     try {
         const auto c = parse(argc, argv);
         if (c.command == "tools") {
-            return cmd_tools();
+            return cmd_tools(c);
         }
         if (c.command == "init") {
             return cmd_init(c);
