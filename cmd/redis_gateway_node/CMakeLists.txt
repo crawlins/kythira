@@ -56,3 +56,37 @@ set_target_properties(redis_gateway_node PROPERTIES
     JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+
+# The snapshot-isolation variant for the transaction chaos image
+# (.kiro/specs/multi-raft-transactions/ task 15), whatever Kconfig selects
+# for redis_gateway_node above: docker/txn-chaos/Dockerfile copies it.
+# EXCLUDE_FROM_ALL, so only that image's target pays for its compile.
+add_executable(redis_gateway_node_snapshot EXCLUDE_FROM_ALL
+    main.cpp
+    config.cpp
+    run_cbor.cpp
+    run_cbor_file.cpp
+    run_json.cpp
+)
+target_include_directories(redis_gateway_node_snapshot PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node"
+    "${CMAKE_SOURCE_DIR}/tests"
+)
+target_link_libraries(redis_gateway_node_snapshot PRIVATE
+    network_simulator
+    boost_json
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    kythira_host_node_id
+)
+target_compile_definitions(redis_gateway_node_snapshot PRIVATE
+    KYTHIRA_BENCH_HAS_BEAST
+    KYTHIRA_REDIS_GATEWAY_TRANSACTIONS
+    KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION
+)
+target_compile_features(redis_gateway_node_snapshot PRIVATE cxx_std_23)
+set_target_properties(redis_gateway_node_snapshot PROPERTIES
+    JOB_POOL_COMPILE heavy_tu
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)

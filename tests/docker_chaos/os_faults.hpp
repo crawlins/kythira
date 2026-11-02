@@ -203,6 +203,22 @@ inline std::vector<std::string> docker_start_cmd(const std::string& container) {
     return {container_runtime(), "start", container};
 }
 
+// Detaches a container from a network: every peer on it loses the node at
+// once, with no capability needed, so rootless Podman can do it too.
+inline std::vector<std::string> network_disconnect_cmd(const std::string& network,
+                                                       const std::string& container) {
+    return {container_runtime(), "network", "disconnect", network, container};
+}
+
+// Re-attaches it. A compose service is reached by its service name, which is
+// an alias of the original endpoint; pass it again or peers cannot resolve
+// the node after it returns.
+inline std::vector<std::string> network_connect_cmd(const std::string& network,
+                                                    const std::string& container,
+                                                    const std::string& alias) {
+    return {container_runtime(), "network", "connect", "--alias", alias, network, container};
+}
+
 // Freezes every process in the container (cgroup freezer); unpause thaws it.
 // Unlike kill or stop, the node keeps its sockets and in-memory state, so on
 // thaw it acts on whatever it believed before: the case a paused GC or a
