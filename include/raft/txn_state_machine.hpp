@@ -58,6 +58,7 @@
 /// wrapper cannot pre-check an opaque command.
 
 #include <raft/exceptions.hpp>
+#include <raft/multi_version_state_machine.hpp>
 #include <raft/shard_types.hpp>
 #include <raft/splittable_state_machine.hpp>
 #include <raft/txn_envelope.hpp>
@@ -111,6 +112,9 @@ template<shard_key Key> struct intent_view {
     Key _primary{};
     /// The prepare's TTL deadline, for the resolver (task 7).
     std::uint64_t _deadline_ms{0};
+    /// The holder's start timestamp; zero below tier 2. A snapshot read at
+    /// or above it must wait for or resolve the holder (Requirement 8.4).
+    std::uint64_t _start_ts{0};
 
     [[nodiscard]] auto operator==(const intent_view&) const -> bool = default;
 };
@@ -148,19 +152,26 @@ template<shard_key Key> struct txn_open_view {
 ///                  key a plain command writes. Stated as a requires-clause
 ///                  rather than with `partitioner<P, Key>` from
 ///                  `multi_raft.hpp`, which will include this header.
-/// @tparam Mvcc     `mvcc::on` arrives with tier 2 (tasks 11-12).
+/// @tparam Mvcc     `mvcc::on` needs `SM` to be a
+///                  `multi_version_state_machine` (task 12). Every write is
+///                  then applied at its transaction's commit timestamp, and
+///                  a prepare or one-phase commit with a start timestamp
+///                  fails with `write_conflict` if a written key has a
+///                  version newer than it (first committer wins,
+///                  Requirement 8.3). Nothing sends a one-phase entry
+///                  then: it carries no intent, so a reader that takes a
+///                  later start timestamp could read the shard before the
+///                  entry applies and then see it appear below its read
+///                  point. Writes go through prepare, then a commit
+///                  timestamp taken after it, then commit.
 /// @tparam KeyCodec How keys are written into envelopes and snapshots.
 template<typename SM, shard_key Key, typename P, mvcc Mvcc = mvcc::off,
          shard_key_codec<Key> KeyCodec = default_shard_key_codec<Key>>
 requires state_machine<SM, std::uint64_t> && std::default_initializable<P> &&
          requires(const P& p, const std::vector<std::byte>& command) {
              { p.key_of(command) } -> std::same_as<Key>;
-         }
+         } && (Mvcc == mvcc::off || multi_version_state_machine<SM, Key>)
 class transactional_state_machine {
-    static_assert(Mvcc == mvcc::off,
-                  "transactional_state_machine: mvcc::on needs the multi-version state "
-                  "machine of multi-raft-transactions tasks 11-12");
-
 public:
     using inner_type = SM;
     using key_type = Key;
@@ -168,11 +179,14 @@ public:
     using log_index_type = std::uint64_t;
     using envelope_type = txn_envelope<Key>;
     using result_type = txn_result<Key>;
+    static constexpr mvcc k_mvcc = Mvcc;
 
     /// @brief The snapshot header, distinct from any unwrapped format
     /// (Requirement 1.4).
     static constexpr std::string_view k_snapshot_magic = "kythira-txn-sm";
-    static constexpr std::uint8_t k_snapshot_version = 1;
+    /// Version 2 adds each intent's start timestamp. `mvcc::off` still
+    /// writes version 1, byte for byte as before; both read either.
+    static constexpr std::uint8_t k_snapshot_version = Mvcc == mvcc::on ? 2 : 1;
 
     transactional_state_machine() = default;
     explicit transactional_state_machine(SM inner, P partitioner = P{}, KeyCodec codec = KeyCodec{})
@@ -307,7 +321,19 @@ public:
         if (it == _intents.end()) {
             return std::nullopt;
         }
-        return intent_view<Key>{it->second._txn, it->second._primary, it->second._deadline_ms};
+        return intent_view<Key>{it->second._txn, it->second._primary, it->second._deadline_ms,
+                                it->second._start_ts};
+    }
+
+    /// @brief What a snapshot read at `ts` sees on `key` (Requirement 8.4):
+    ///        the newest version at or below `ts`, and any intent. The
+    ///        caller must not use the value while the intent's start
+    ///        timestamp is at or below `ts`: the holder may yet commit
+    ///        below it.
+    [[nodiscard]] auto read_at(const Key& k, std::uint64_t ts) const
+    requires(Mvcc == mvcc::on)
+    {
+        return std::pair{_inner.read_at(k, ts), intent_on(k)};
     }
 
     [[nodiscard]] auto record_of(const Key& primary, const txn_id& txn) const
@@ -402,6 +428,7 @@ private:
         Key _primary{};
         std::vector<std::byte> _command{};
         std::uint64_t _deadline_ms{0};
+        std::uint64_t _start_ts{0};
     };
 
     using record_map = std::map<Key, std::map<txn_id, txn_record_view>>;
@@ -435,9 +462,12 @@ private:
                 conflict->_status = txn_result_status::write_conflict;
                 return *conflict;
             }
+            if (auto newer = newer_version_on(w._key, op._start_ts); newer.has_value()) {
+                return *newer;
+            }
         }
         for (const auto& w : sorted_by_key(op._writes)) {
-            std::ignore = _inner.apply(w._command, index);
+            std::ignore = apply_inner(w._command, op._commit_ts, index);
             _settled[w._key][op._txn] = txn_record_status::committed;
         }
         return {};
@@ -468,10 +498,13 @@ private:
                 conflict->_status = txn_result_status::write_conflict;
                 return *conflict;
             }
+            if (auto newer = newer_version_on(w._key, op._start_ts); newer.has_value()) {
+                return *newer;
+            }
         }
         for (const auto& w : op._writes) {
-            _intents.insert_or_assign(
-                w._key, intent{op._txn, op._primary, w._command, op._ttl_deadline_ms});
+            _intents.insert_or_assign(w._key, intent{op._txn, op._primary, w._command,
+                                                     op._ttl_deadline_ms, op._start_ts});
         }
         if (op._is_primary) {
             auto& rec = _records[op._primary][op._txn];
@@ -492,17 +525,25 @@ private:
         if (rec->_status == txn_record_status::aborted) {
             return record_result(*rec);
         }
+        result_type res;
         if (rec->_status == txn_record_status::pending) {
             rec->_status = txn_record_status::committed;
             rec->_commit_ts = op._commit_ts;
-            roll_forward_all(op._txn, index);
+            // The primary's own write first: its reply is the commit's
+            // payload, which a host's plain write under mvcc::on (a one-key
+            // transaction) hands back to its caller.
+            if (auto payload = roll_forward(op._primary, op._txn, op._commit_ts, index);
+                payload.has_value()) {
+                res._payload = std::move(*payload);
+            }
+            roll_forward_all(op._txn, op._commit_ts, index);
         }
-        return {};
+        return res;
     }
 
     auto apply_op(const txn_commit_secondary<Key>& op, log_index_type index) -> result_type {
         for (const auto& k : sorted_keys(op._keys)) {
-            roll_forward(k, op._txn, index);
+            std::ignore = roll_forward(k, op._txn, op._commit_ts, index);
         }
         return {};
     }
@@ -576,9 +617,14 @@ private:
         return {};
     }
 
-    /// Tier 2. Nothing is versioned under mvcc::off, so there is nothing to
-    /// collect.
-    auto apply_op(const txn_gc&, log_index_type) -> result_type { return {}; }
+    /// Tier 2: drop versions no read at or above the safe point can see.
+    /// Nothing is versioned under mvcc::off, so there is nothing to collect.
+    auto apply_op(const txn_gc& op, log_index_type) -> result_type {
+        if constexpr (Mvcc == mvcc::on) {
+            std::ignore = _inner.collect_garbage(op._safe_point);
+        }
+        return {};
+    }
 
     auto apply_op(const txn_oracle_reserve& op, log_index_type) -> result_type {
         _oracle_hwm = std::max(_oracle_hwm, op._new_hwm);
@@ -615,6 +661,39 @@ private:
         return res;
     }
 
+    /// First committer wins (Requirement 8.3): under `mvcc::on`, a write
+    /// conflicts with any version of its key committed after the writer's
+    /// start timestamp. A zero start timestamp (tier 1, or a plain write)
+    /// asks for no such check.
+    [[nodiscard]] auto newer_version_on(const Key& key, std::uint64_t start_ts) const
+        -> std::optional<result_type> {
+        if constexpr (Mvcc == mvcc::on) {
+            if (start_ts != 0) {
+                if (const auto ts = _inner.latest_commit_ts(key);
+                    ts.has_value() && *ts > start_ts) {
+                    // No holder: a version, not a lock, so retrying cannot
+                    // help.
+                    result_type res = status_only(txn_result_status::write_conflict);
+                    res._key = key;
+                    return res;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// Apply one write to the wrapped state machine: at `commit_ts` under
+    /// `mvcc::on` when there is one, else as a plain apply.
+    auto apply_inner(const std::vector<std::byte>& command, std::uint64_t commit_ts,
+                     log_index_type index) -> std::vector<std::byte> {
+        if constexpr (Mvcc == mvcc::on) {
+            if (commit_ts != 0) {
+                return _inner.apply_at(command, commit_ts, index);
+            }
+        }
+        return _inner.apply(command, index);
+    }
+
     [[nodiscard]] auto settled_status(const Key& key, const txn_id& txn) const
         -> std::optional<txn_record_status> {
         const auto it = _settled.find(key);
@@ -642,15 +721,18 @@ private:
         return const_cast<transactional_state_machine*>(this)->find_record(primary, txn);
     }
 
-    /// Apply and release `txn`'s intent on `key`, if it still holds one.
-    auto roll_forward(const Key& key, const txn_id& txn, log_index_type index) -> void {
+    /// Apply and release `txn`'s intent on `key`, if it still holds one;
+    /// the wrapped state machine's reply when it did.
+    auto roll_forward(const Key& key, const txn_id& txn, std::uint64_t commit_ts,
+                      log_index_type index) -> std::optional<std::vector<std::byte>> {
         const auto it = _intents.find(key);
         if (it == _intents.end() || it->second._txn != txn) {
-            return;  // already resolved, or never prepared here
+            return std::nullopt;  // already resolved, or never prepared here
         }
-        std::ignore = _inner.apply(it->second._command, index);
+        auto payload = apply_inner(it->second._command, commit_ts, index);
         _intents.erase(it);
         _settled[key][txn] = txn_record_status::committed;
+        return payload;
     }
 
     auto roll_back(const Key& key, const txn_id& txn) -> void {
@@ -673,9 +755,10 @@ private:
         return keys;
     }
 
-    auto roll_forward_all(const txn_id& txn, log_index_type index) -> void {
+    auto roll_forward_all(const txn_id& txn, std::uint64_t commit_ts, log_index_type index)
+        -> void {
         for (const auto& k : keys_held_by(txn)) {
-            roll_forward(k, txn, index);
+            std::ignore = roll_forward(k, txn, commit_ts, index);
         }
     }
 
@@ -746,6 +829,9 @@ private:
             write_key(out, in._primary, _codec);
             write_blob(out, in._command, k_txn_max_command_bytes, "intent command");
             write_u64(out, in._deadline_ms);
+            if constexpr (k_snapshot_version >= 2) {
+                write_u64(out, in._start_ts);
+            }
         }
 
         std::size_t record_count = 0;
@@ -807,8 +893,9 @@ private:
         const std::vector<std::byte> body(
             data.begin() + static_cast<std::ptrdiff_t>(k_snapshot_magic.size()), data.end());
         reader r{body, "kythira-txn-sm snapshot"};
-        if (const auto v = r.u8(); v != k_snapshot_version) {
-            r.fail("unknown kythira-txn-sm snapshot version " + std::to_string(v));
+        const auto version = r.u8();
+        if (version != 1 && version != 2) {
+            r.fail("unknown kythira-txn-sm snapshot version " + std::to_string(version));
         }
 
         decoded_state out;
@@ -822,6 +909,9 @@ private:
             in._primary = read_key<Key>(r, _codec);
             in._command = r.blob(k_txn_max_command_bytes, "intent command");
             in._deadline_ms = r.u64();
+            if (version >= 2) {
+                in._start_ts = r.u64();
+            }
             out._intents.insert_or_assign(std::move(k), std::move(in));
         }
 

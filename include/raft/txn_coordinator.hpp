@@ -38,6 +38,7 @@
 
 #include <raft/shard_types.hpp>
 #include <concepts/future.hpp>
+#include <raft/raft_timestamp_oracle.hpp>
 #include <raft/txn_envelope.hpp>
 #include <raft/txn_state_machine.hpp>
 
@@ -90,6 +91,26 @@ concept txn_participant_client =
         { c.now_ms() } -> std::same_as<std::uint64_t>;
     };
 
+/// @brief A client of shards whose state machines keep versions
+///        (`mvcc::on`, tier 2), which a coordinator needs for timestamps and
+///        snapshot reads.
+///
+/// - `allocate_timestamps(n, timeout)`: `n` timestamps from the cluster's
+///   oracle (Requirement 7).
+/// - `read_at(key, ts, timeout)`: the newest version at or below `ts` and
+///   any intent, from the group's leader after a read-index confirmation
+///   (Requirement 8.5).
+///
+/// With such a client every write the coordinator sends carries a commit
+/// timestamp, whatever the transaction's isolation level.
+template<typename C, typename Key>
+concept txn_snapshot_client =
+    txn_participant_client<C, Key> &&
+    requires(C& c, const Key& k, std::size_t n, std::uint64_t ts, std::chrono::milliseconds t) {
+        { c.allocate_timestamps(n, t) } -> std::same_as<timestamp_range>;
+        { c.read_at(k, ts, t) } -> std::same_as<txn_read_result<Key>>;
+    };
+
 /// @brief How `commit()` ended (Requirement 3.8).
 enum class txn_outcome_kind : std::uint8_t {
     committed,
@@ -101,7 +122,9 @@ enum class txn_outcome_kind : std::uint8_t {
 
 enum class txn_abort_reason : std::uint8_t {
     none,
-    /// Another transaction held a key (no-wait locking).
+    /// Another transaction held a key (no-wait locking), or, under
+    /// `snapshot`, committed a newer version of one after this
+    /// transaction's start timestamp (first committer wins; no holder).
     write_conflict,
     /// A resolver aborted the record before the commit point.
     expired,
@@ -163,10 +186,19 @@ public:
     /// @brief Waits for the secondary commits still in flight.
     ~transaction_coordinator() = default;
 
-    /// @brief The isolation levels this coordinator can give: tier 1 only
-    ///        until the multi-version state machine lands (tasks 11-12).
+    /// Whether the shards keep versions, so every write needs a commit
+    /// timestamp and `snapshot` can be offered.
+    static constexpr bool k_mvcc = txn_snapshot_client<Client, Key>;
+
+    /// @brief The isolation levels this coordinator can give: tier 1, plus
+    ///        `snapshot` over shards that keep versions (task 12).
     [[nodiscard]] static auto offered_isolations() -> std::vector<txn_isolation> {
-        return {txn_isolation::read_committed, txn_isolation::read_committed_wait};
+        if constexpr (k_mvcc) {
+            return {txn_isolation::read_committed, txn_isolation::read_committed_wait,
+                    txn_isolation::snapshot};
+        } else {
+            return {txn_isolation::read_committed, txn_isolation::read_committed_wait};
+        }
     }
 
     /// @brief Start a transaction with the client's defaults.
@@ -185,10 +217,21 @@ public:
         }
         _options = options;
         _writes.clear();
+        _start_ts = 0;
+        if constexpr (k_mvcc) {
+            if (options.isolation == txn_isolation::snapshot) {
+                // Every read of the transaction is at this timestamp, and
+                // its writes conflict with anything committed after it.
+                _start_ts = _client.allocate_timestamps(1, options.timeout)._first;
+            }
+        }
         _txn = fresh_id();
         _open = true;
         return _txn;
     }
+
+    /// @brief The snapshot transaction's start timestamp; zero otherwise.
+    [[nodiscard]] auto start_ts() const -> std::uint64_t { return _start_ts; }
 
     /// @brief Buffer a write. Nothing reaches a shard before `commit()`
     ///        (Requirement 3.1); a second write to a key replaces the first.
@@ -207,14 +250,23 @@ public:
     ///
     /// @throws std::runtime_error under `read_committed_wait` if the key is
     ///         still held when the timeout runs out.
+    ///
+    /// Under `snapshot` the read is at the start timestamp, through the
+    /// shard leader's linearizable path, and an intent whose holder started
+    /// at or below it is waited for or resolved as `read_committed_wait`
+    /// does: that holder may yet commit below the read point
+    /// (Requirement 8.4). A holder that started later cannot, and is
+    /// ignored.
     auto get(const Key& key) -> std::optional<std::vector<std::byte>> {
         require_open("get");
         const auto deadline = std::chrono::steady_clock::now() + _options.timeout;
         auto backoff = std::chrono::milliseconds{5};
         for (;;) {
-            auto read = _client.read(key, remaining(deadline));
-            if (_options.isolation != txn_isolation::read_committed_wait ||
-                !read._intent.has_value() || read._intent->_txn == _txn) {
+            auto read = read_once(key, deadline);
+            const bool waits = _options.isolation == txn_isolation::read_committed_wait ||
+                               (_options.isolation == txn_isolation::snapshot &&
+                                read._intent.has_value() && read._intent->_start_ts <= _start_ts);
+            if (!waits || !read._intent.has_value() || read._intent->_txn == _txn) {
                 return std::move(read._value);
             }
             if (_client.now_ms() >= read._intent->_deadline_ms) {
@@ -241,8 +293,13 @@ public:
         }
         for (std::size_t attempt = 0;; ++attempt) {
             auto out = attempt_commit();
+            // A newer committed version (no holder) is not retried: the
+            // writes were made against a snapshot that is now stale, and
+            // retrying them later would be a lost update.
+            const bool version_conflict = out._reason == txn_abort_reason::write_conflict &&
+                                          !out._holder.has_value() && _start_ts != 0;
             if (out._kind != txn_outcome_kind::aborted ||
-                out._reason != txn_abort_reason::write_conflict ||
+                out._reason != txn_abort_reason::write_conflict || version_conflict ||
                 attempt >= _options.max_retries) {
                 return out;
             }
@@ -366,6 +423,26 @@ private:
         return f.wait(remaining(until));
     }
 
+    /// One read at the transaction's isolation.
+    auto read_once(const Key& key, clock::time_point deadline) -> txn_read_result<Key> {
+        if constexpr (k_mvcc) {
+            if (_options.isolation == txn_isolation::snapshot) {
+                return _client.read_at(key, _start_ts, remaining(deadline));
+            }
+        }
+        return _client.read(key, remaining(deadline));
+    }
+
+    /// A commit timestamp from the oracle over versioned shards; zero
+    /// otherwise.
+    auto commit_timestamp(clock::time_point deadline) -> std::uint64_t {
+        if constexpr (k_mvcc) {
+            return _client.allocate_timestamps(1, remaining(deadline))._first;
+        } else {
+            return 0;
+        }
+    }
+
     [[nodiscard]] auto encode(const txn_envelope<Key>& env) const -> std::vector<std::byte> {
         return encode_txn_envelope<Key, KeyCodec>(env, _codec);
     }
@@ -452,7 +529,11 @@ private:
         if (!groups.has_value()) {
             return aborted(txn_abort_reason::unroutable);
         }
-        if (groups->size() == 1) {
+        // Over versioned shards even one shard takes two phases: the commit
+        // timestamp must be taken after the writes are visible as intents,
+        // or a reader that starts after it could read the shard before a
+        // one-phase entry applies and miss a write below its read point.
+        if (!k_mvcc && groups->size() == 1) {
             auto one = commit_one_phase(groups->begin()->second, deadline);
             if (one.has_value()) {
                 return *one;
@@ -538,8 +619,8 @@ private:
 
     auto send_prepare(const group_writes& group, const Key& primary, bool is_primary,
                       std::uint64_t ttl_deadline, clock::time_point deadline) -> pending_prepare {
-        const auto bytes =
-            encode(txn_prepare<Key>{_txn, primary, group._writes, {}, 0, ttl_deadline, is_primary});
+        const auto bytes = encode(txn_prepare<Key>{
+            _txn, primary, group._writes, {}, _start_ts, ttl_deadline, is_primary});
         return pending_prepare{group, is_primary,
                                _client.send(group.keys(), bytes, remaining(deadline))};
     }
@@ -628,9 +709,20 @@ private:
         }
         hook(txn_step::prepared);
 
+        // Taken after every prepare succeeded, so it is above the start
+        // timestamp of any snapshot that could have missed these intents.
+        std::uint64_t commit_ts = 0;
+        try {
+            commit_ts = commit_timestamp(deadline);
+        } catch (const std::exception& e) {
+            abort_groups(sent, primary, deadline);
+            auto out = aborted(txn_abort_reason::prepare_failed, primary);
+            out._detail = std::string("no commit timestamp: ") + e.what();
+            return out;
+        }
         std::string why;
-        const auto committed =
-            send_and_wait({primary}, txn_commit_primary<Key>{_txn, primary, 0}, deadline, &why);
+        const auto committed = send_and_wait(
+            {primary}, txn_commit_primary<Key>{_txn, primary, commit_ts}, deadline, &why);
         if (!committed.has_value()) {
             return outcome_type{._kind = txn_outcome_kind::unknown,
                                 ._txn = _txn,
@@ -638,6 +730,9 @@ private:
                                 ._detail = why};
         }
         auto out = from_result(*committed, primary);
+        if (out._kind == txn_outcome_kind::committed && out._commit_ts == 0) {
+            out._commit_ts = commit_ts;
+        }
         if (out._kind != txn_outcome_kind::committed) {
             // The resolver aborted the record first; clear what is left.
             abort_groups(sent, primary, deadline);
@@ -651,7 +746,7 @@ private:
             if (std::find(keys.begin(), keys.end(), primary) != keys.end()) {
                 continue;
             }
-            auto env = encode(txn_commit_secondary<Key>{_txn, keys, 0});
+            auto env = encode(txn_commit_secondary<Key>{_txn, keys, out._commit_ts});
             _in_flight.push_back(_client.send(keys, env, _options.timeout));
         }
         hook(txn_step::secondaries_sent);
@@ -695,6 +790,8 @@ private:
     bool _open{false};
     txn_options _options{};
     txn_id _txn{};
+    /// `snapshot` only; zero otherwise.
+    std::uint64_t _start_ts{0};
     write_map _writes;
     std::function<void(txn_step)> _crash_hook;
     /// Sends nobody waits on, kept so `drain()` can wait for them.

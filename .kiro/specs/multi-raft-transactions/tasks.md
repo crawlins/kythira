@@ -343,12 +343,39 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     - The snapshot carries the shard's newest commit timestamp, and every
       split child inherits it.
 
-- [ ] 12. Wrapper and coordinator under `mvcc::on`
+- [x] 12. Wrapper and coordinator under `mvcc::on`
   - Timestamps on every write (plain as 1PC); first-committer-wins at
     prepare; snapshot reads at start_ts through the linearizable path;
     waiting on or resolving lower-timestamp intents
   - `isolation_unsupported_exception` on `mvcc::off`
   - _Requirements: 8.2, 8.3, 8.4, 8.5, 10.2_
+  - Done (November 2, 2026), tested by
+    `tests/multi_raft_txn_snapshot_test.cpp`. Notes:
+    - **Deviation: no one-phase commit under `mvcc::on`.** A one-phase
+      entry carries no intent. A reader whose start timestamp is above the
+      entry's commit timestamp could read the shard before the entry
+      applies, and then see the write appear below its read point. So a
+      transaction on one shard takes two phases, and a plain write is a
+      one-key transaction: prepare, then a commit timestamp taken after the
+      intent is visible, then `commit_primary`. That costs a second Raft
+      round per plain write; a per-shard read-timestamp fence (as TiKV's
+      `max_ts`) could restore one-phase commits later. `mvcc::off` is
+      unchanged.
+    - A plain write's intent lives until the write's own timeout, so a
+      write lost with its host blocks the key at most that long. Its record
+      and settled entry are dropped by the usual retention cleanup.
+    - A host that does not lead the oracle group gets a plain write's
+      timestamp through `set_timestamp_forwarder` (in process,
+      `multi_raft_txn_client::allocate_timestamps`).
+    - `commit_primary` returns the primary write's reply as its payload,
+      which the host hands back for a plain write.
+    - A version conflict (`write_conflict` with no holder) is never
+      retried: the transaction read a snapshot that is now stale.
+    - A snapshot read waits for or resolves an intent whose holder started
+      at or below the read point, tier-1 holders (start 0) included, and
+      ignores one that started above it.
+    - The wrapper's snapshot is version 2 under `mvcc::on` (each intent's
+      start timestamp); `mvcc::off` still writes version 1.
 
 - [ ] 13. Garbage collection and `snapshot_too_old`
   - Safe-point computation, leader-proposed `gc` entries, rejection of old

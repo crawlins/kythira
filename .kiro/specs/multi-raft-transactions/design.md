@@ -104,9 +104,19 @@ through `multi_raft_config::allocate_timestamps`, the same way
 Under snapshot isolation a plain single-key write that bypassed the oracle
 would have no commit timestamp, and a snapshot read could not place it before
 or after its read point. Under `mvcc::on` a plain write therefore becomes a
-1PC transaction with an oracle timestamp. That costs one oracle round trip per
-write, amortised by batching. That cost is why `mvcc` is a compile-time
+one-key transaction with an oracle timestamp. That costs one oracle round trip
+per write, amortised by batching. That cost is why `mvcc` is a compile-time
 choice and not a per-transaction one.
+
+Correction (task 12, November 2, 2026): the write takes two phases, not one.
+The commit timestamp must be taken after the write is visible as an intent.
+Otherwise a reader that takes a later start timestamp can read the shard
+before a one-phase entry applies, and then see the write appear below its
+read point. Percolator gets this ordering from prepare-then-commit, so under
+`mvcc::on` every write uses it, on one shard too: prepare, timestamp, then
+`commit_primary`. That costs a second Raft round per write. A per-shard fence
+on the highest read timestamp served (TiKV's `max_ts`) would allow one-phase
+commits again, and is left for later.
 
 ## Components and Interfaces
 

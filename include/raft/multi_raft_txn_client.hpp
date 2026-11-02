@@ -53,11 +53,25 @@ public:
     /// value encoding is the application's, so the application supplies it.
     using value_reader =
         std::function<std::optional<std::vector<std::byte>>(const inner_type&, const Key&)>;
+    /// `value_reader` at a timestamp, for a multi-version state machine.
+    using versioned_value_reader = std::function<std::optional<std::vector<std::byte>>(
+        const inner_type&, const Key&, std::uint64_t)>;
 
     using send_future = future_default<std::vector<std::byte>>;
 
     multi_raft_txn_client(std::vector<host_type*> hosts, value_reader value_of)
         : _hosts(std::move(hosts)), _value_of(std::move(value_of)) {
+        if (_hosts.empty()) {
+            throw std::invalid_argument("multi_raft_txn_client: no hosts");
+        }
+    }
+
+    /// Over hosts whose state machines keep versions (`mvcc::on`): reads at
+    /// a timestamp, and timestamps from whichever host serves the oracle.
+    multi_raft_txn_client(std::vector<host_type*> hosts, value_reader value_of,
+                          versioned_value_reader value_at)
+    requires(state_machine_type::k_mvcc == mvcc::on)
+        : _hosts(std::move(hosts)), _value_of(std::move(value_of)), _value_at(std::move(value_at)) {
         if (_hosts.empty()) {
             throw std::invalid_argument("multi_raft_txn_client: no hosts");
         }
@@ -133,7 +147,72 @@ public:
 
     [[nodiscard]] auto now_ms() const -> std::uint64_t { return _hosts.front()->txn_now_ms(); }
 
+    /// @brief `n` timestamps from the first host that serves them: the one
+    ///        leading the oracle group, or any, with an
+    ///        `allocate_timestamps` hook.
+    [[nodiscard]] auto allocate_timestamps(std::size_t n, std::chrono::milliseconds timeout)
+        -> timestamp_range
+    requires(state_machine_type::k_mvcc == mvcc::on)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        std::exception_ptr last;
+        do {
+            for (auto* h : _hosts) {
+                try {
+                    return h->allocate_timestamps(n, remaining(deadline)).get();
+                } catch (const not_leader&) {
+                    last = std::current_exception();
+                } catch (const timestamp_oracle_unavailable_exception&) {
+                    last = std::current_exception();
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        } while (std::chrono::steady_clock::now() < deadline);
+        if (last) {
+            std::rethrow_exception(last);
+        }
+        throw timestamp_oracle_unavailable_exception("multi_raft_txn_client: no oracle served");
+    }
+
+    /// @brief The newest version of `key` at or below `ts`, and any intent,
+    ///        from the shard leader after a read-index round
+    ///        (Requirement 8.5).
+    [[nodiscard]] auto read_at(const Key& key, std::uint64_t ts, std::chrono::milliseconds timeout)
+        -> txn_read_result<Key>
+    requires(state_machine_type::k_mvcc == mvcc::on)
+    {
+        if (!_value_at) {
+            throw std::logic_error("multi_raft_txn_client: read_at needs a versioned value reader");
+        }
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            if (auto* node = leader_node_for(key); node != nullptr) {
+                try {
+                    // Every entry committed before the read began is applied
+                    // here when this returns, so a commit at or below `ts`
+                    // shows as a version or as its intent.
+                    (void)node->read_state(remaining(deadline)).get();
+                    return node->with_state_machine([&](state_machine_type& sm) {
+                        return txn_read_result<Key>{_value_at(sm.inner(), key, ts),
+                                                    sm.intent_on(key)};
+                    });
+                } catch (const std::exception&) {
+                    // Lost leadership mid-read: find the new leader.
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("multi_raft_txn_client: no leader for the key's shard");
+    }
+
 private:
+    [[nodiscard]] static auto remaining(std::chrono::steady_clock::time_point deadline)
+        -> std::chrono::milliseconds {
+        return std::max(std::chrono::duration_cast<std::chrono::milliseconds>(
+                            deadline - std::chrono::steady_clock::now()),
+                        std::chrono::milliseconds{1});
+    }
+
     using node_id_type = typename Types::node_id_type;
     using not_leader = shard_not_leader_exception<GroupId, node_id_type>;
     using no_replica = unknown_shard_exception<GroupId>;
@@ -199,6 +278,7 @@ private:
 
     std::vector<host_type*> _hosts;
     value_reader _value_of;
+    versioned_value_reader _value_at;
     std::mutex _senders_mutex;
     std::list<sender> _senders;
 };
