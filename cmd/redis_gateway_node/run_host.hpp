@@ -60,6 +60,32 @@
 
 namespace kythira::redis_node {
 
+/// The largest single Raft command this node proposes: an HTTP chunk
+/// (`put_chunk`) or a whole RESP value, whichever limit is higher.
+inline auto largest_entry_bytes(const node_options& opt) -> std::size_t {
+    return std::max<std::size_t>(opt._cache._chunk_bytes,
+                                 static_cast<std::size_t>(opt._gateway._max_value_bytes));
+}
+
+/// The Raft listener's request-body limit. The transport default of 10 MB
+/// is too small for a 16 MiB chunk, and for an 8 MiB RESP value once the
+/// JSON serializer base64-encodes it. An AppendEntries carries at most
+/// raft_configuration::_max_append_bytes of commands (set to the same
+/// largest entry below) or one entry larger than that, so 4/3 of the
+/// largest entry plus 1 MiB for framing and the small entries around it
+/// always fits.
+inline auto raft_request_body_limit(const node_options& opt) -> std::size_t {
+    constexpr std::size_t framing = std::size_t{1024} * 1024;
+    return std::max<std::size_t>(std::size_t{10} * 1024 * 1024,
+                                 largest_entry_bytes(opt) / 3 * 4 + framing);
+}
+
+inline auto raft_server_config(const node_options& opt) -> kythira::boost_beast_server_config {
+    kythira::boost_beast_server_config c;
+    c.max_request_body_size = raft_request_body_limit(opt);
+    return c;
+}
+
 template<typename Serializer> struct beast_stack {
     using bundle = kythira::testing::harness_transport_types<Serializer>;
     using client_type = kythira::boost_beast_client<bundle, kythira::host_node_id>;
@@ -67,7 +93,7 @@ template<typename Serializer> struct beast_stack {
 
     explicit beast_stack(const node_options& opt)
         : _work(boost::asio::make_work_guard(*_ioc)),
-          _server(*_ioc, opt._bind_address, opt._raft_port, kythira::boost_beast_server_config{},
+          _server(*_ioc, opt._bind_address, opt._raft_port, raft_server_config(opt),
                   kythira::noop_metrics{}),
           _client(*_ioc,
                   std::unordered_map<kythira::host_node_id, std::string>{opt._peers.begin(),
@@ -402,6 +428,9 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
     cfg.config._election_timeout_max = opt._election_timeout_max;
     cfg.config._heartbeat_interval = opt._heartbeat_interval;
     cfg.config._rpc_timeout = opt._rpc_timeout;
+    // One chunk per AppendEntries at most, so the batch fits the listener's
+    // limit above (raft_request_body_limit).
+    cfg.config._max_append_bytes = largest_entry_bytes(opt);
     cfg.hibernation = kythira::hibernation_mode::off;
     cfg.executor_stripes = opt._executor_stripes;
     cfg.policy_interval = opt._policy_interval;
