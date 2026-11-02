@@ -319,13 +319,29 @@ Question 1 (gateway default) must be answered before task 9, and question 3
       high-water mark after the heartbeat round, which has applied every
       entry an earlier leader committed.
 
-- [ ] 11. Multi-version Redis KV state machine
+- [x] 11. Multi-version Redis KV state machine
   - `multi_version_state_machine` concept;
     `redis_kv_mvcc_state_machine` with versioned values, tombstones,
     versioned expiry sweeps, `collect_garbage`, and split/absorb
   - Tests: version reads, GC keeps the newest at or below the safe point,
     and the split/absorb round-trip law
   - _Requirements: 8.1, 8.6_
+  - Done (November 2, 2026): `include/raft/multi_version_state_machine.hpp`
+    and `include/raft/redis_kv_mvcc_state_machine.hpp`, tested by
+    `tests/redis_kv_mvcc_state_machine_test.cpp`. Notes:
+    - `apply` without a timestamp (the `state_machine` concept, and an
+      unwrapped host) applies at the newest timestamp the shard has
+      applied, replacing a version at that same timestamp. Under
+      `mvcc::on` the wrapper calls `apply_at` instead (task 12).
+    - `apply_at(command, ts, index)` also records the log index, for the
+      wrapper.
+    - A delete, sweep or evict of a key that is not live at the timestamp
+      writes no version.
+    - `collect_garbage` also drops a key whose only remaining version is a
+      deletion at or below the safe point. It returns how many versions
+      went.
+    - The snapshot carries the shard's newest commit timestamp, and every
+      split child inherits it.
 
 - [ ] 12. Wrapper and coordinator under `mvcc::on`
   - Timestamps on every write (plain as 1PC); first-committer-wins at
