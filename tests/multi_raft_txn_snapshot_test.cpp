@@ -44,6 +44,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -98,7 +99,7 @@ using kv_sm = kythira::redis_kv_mvcc_state_machine<std::uint64_t>;
 using txn_sm =
     kythira::transactional_state_machine<kv_sm, key_type, kythira::redis_kv_partitioner, mvcc::on>;
 
-static_assert(txn_sm::k_snapshot_version == 2);
+static_assert(txn_sm::k_snapshot_version == 3);
 
 auto bytes_of(const std::string& s) -> std::vector<std::byte> {
     std::vector<std::byte> out(s.size());
@@ -230,6 +231,71 @@ BOOST_AUTO_TEST_CASE(the_snapshot_keeps_each_intents_start_timestamp) {
     BOOST_TEST(text_of(restored.inner().read_at("k", 9)) == std::optional<std::string>("one"));
 }
 
+auto dropped_count(const result& r) -> std::uint64_t {
+    std::uint64_t n = 0;
+    for (std::size_t i = 0; i < r._payload.size() && i < 8; ++i) {
+        n |= static_cast<std::uint64_t>(r._payload[i]) << (8 * i);
+    }
+    return n;
+}
+
+BOOST_AUTO_TEST_CASE(a_start_below_the_safe_point_is_refused) {
+    wrapper_fixture f;
+    for (std::uint64_t i = 1; i <= 3; ++i) {
+        const txn_id id{i, i};
+        BOOST_REQUIRE(f.prepare(id, "k", "v" + std::to_string(i), 2 * i)._status ==
+                      txn_result_status::ok);
+        BOOST_REQUIRE(f.commit(id, "k", (2 * i) + 1)._status == txn_result_status::ok);
+    }
+    // Versions at 3, 5 and 7; collecting to 6 keeps 5 (the newest at or
+    // below it) and 7.
+    const auto gc = f.run(env{kythira::txn_gc{6}});
+    BOOST_TEST(gc._status == txn_result_status::ok);
+    BOOST_TEST(dropped_count(gc) == 1U);
+    BOOST_TEST(f.sm.safe_point() == 6U);
+    BOOST_TEST(f.at("k", 6) == std::optional<std::string>("v2"));
+
+    const auto old = f.prepare(txn_id{9, 9}, "k", "late", 4);
+    BOOST_TEST(old._status == txn_result_status::snapshot_too_old);
+    BOOST_TEST(old._safe_point == 6U);
+    BOOST_TEST(!f.sm.intent_on("k").has_value());
+    // At the safe point, and tier 1's zero, are fine.
+    BOOST_TEST(f.prepare(txn_id{10, 10}, "j", "x", 6)._status == txn_result_status::ok);
+    BOOST_TEST(f.prepare(txn_id{11, 11}, "i", "x", 0)._status == txn_result_status::ok);
+
+    // A lower or equal safe point changes nothing.
+    BOOST_TEST(f.run(env{kythira::txn_gc{5}})._payload.empty());
+    BOOST_TEST(f.sm.safe_point() == 6U);
+
+    // The snapshot carries it.
+    txn_sm restored;
+    restored.restore_from_snapshot(f.sm.get_state(), f.index);
+    BOOST_TEST(restored.safe_point() == 6U);
+}
+
+BOOST_AUTO_TEST_CASE(split_children_keep_the_safe_point_and_absorb_takes_the_higher) {
+    wrapper_fixture f;
+    BOOST_REQUIRE(f.prepare(txn_id{1, 1}, "a", "x", 1)._status == txn_result_status::ok);
+    BOOST_REQUIRE(f.commit(txn_id{1, 1}, "a", 2)._status == txn_result_status::ok);
+    BOOST_REQUIRE(f.prepare(txn_id{2, 2}, "z", "x", 3)._status == txn_result_status::ok);
+    BOOST_REQUIRE(f.commit(txn_id{2, 2}, "z", 4)._status == txn_result_status::ok);
+    std::ignore = f.run(env{kythira::txn_gc{3}});
+
+    const auto parts = f.sm.split_state({"m"});
+    BOOST_REQUIRE(parts.size() == 2U);
+    txn_sm left;
+    txn_sm right;
+    left.restore_from_snapshot(parts[0], f.index);
+    right.restore_from_snapshot(parts[1], f.index);
+    BOOST_TEST(left.safe_point() == 3U);
+    BOOST_TEST(right.safe_point() == 3U);
+
+    right.apply(kythira::encode_txn_envelope<key_type>(env{kythira::txn_gc{8}}), f.index + 1);
+    left.absorb(right.get_state(),
+                kythira::shard_range<key_type>{._start = key_type{"m"}, ._end = std::nullopt});
+    BOOST_TEST(left.safe_point() == 8U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ── Three hosts ──────────────────────────────────────────────────────────
@@ -303,10 +369,16 @@ auto value_at(const kv_sm& sm, const key_type& k, std::uint64_t ts)
 /// Three hosts over one fabric, each driven by its own thread.
 class cluster {
 public:
-    cluster() {
+    using tweak_fn = std::function<void(config_type&)>;
+
+    explicit cluster(const tweak_fn& tweak = {}) {
         const std::vector<node_id_t> voters{1, 2, 3};
         for (node_id_t id = 1; id <= k_node_count; ++id) {
-            _hosts.push_back(std::make_unique<host_type>(make_config(id)));
+            auto cfg = make_config(id);
+            if (tweak) {
+                tweak(cfg);
+            }
+            _hosts.push_back(std::make_unique<host_type>(std::move(cfg)));
             auto& h = *_hosts.back();
             h.create_group(descriptor_type{
                 ._group_id = 1,
@@ -420,6 +492,20 @@ public:
             ->with_leader_state_machine(
                 [&](txn_sm& sm) { return sm.inner().latest_commit_ts(key); })
             .value_or(std::nullopt);
+    }
+
+    /// The shard leader's safe point and how many versions `key` keeps.
+    [[nodiscard]] auto gc_state(group_id_type shard, const key_type& key)
+        -> std::pair<std::uint64_t, std::size_t> {
+        auto* h = leader_of(shard);
+        if (h == nullptr) {
+            return {0, 0};
+        }
+        return h->group_node(shard)
+            ->with_leader_state_machine([&](txn_sm& sm) {
+                return std::pair{sm.safe_point(), sm.inner().versions_of(key).size()};
+            })
+            .value_or(std::pair<std::uint64_t, std::size_t>{0, 0});
     }
 
 private:
@@ -677,6 +763,52 @@ BOOST_AUTO_TEST_CASE(a_reader_ignores_an_intent_that_started_above_its_read_poin
 
     // A plain write on the held key is refused, as under tier 1.
     BOOST_CHECK_THROW(c.plain_set(2, "zebra", "plain"), kythira::key_locked_exception<key_type>);
+}
+
+BOOST_AUTO_TEST_CASE(old_versions_are_collected_and_old_snapshots_refused,
+                     *boost::unit_test::timeout(90)) {
+    cluster c([](config_type& cfg) {
+        cfg.txn_gc_lifetime = std::chrono::milliseconds{400};
+        cfg.txn_gc_interval = std::chrono::milliseconds{0};
+        cfg.resolver_interval = std::chrono::milliseconds{50};
+    });
+    BOOST_REQUIRE(c.await_leaders());
+
+    // A snapshot that will outlive the lifetime, holding one key.
+    coordinator_type old(c.client(), options(txn_isolation::snapshot));
+    old.begin();
+    for (int i = 1; i <= 3; ++i) {
+        BOOST_REQUIRE(commit_all(c, {{"apple", std::to_string(i)}})._kind ==
+                      txn_outcome_kind::committed);
+    }
+
+    // Wait for a leader-proposed gc past the snapshot's start, and for
+    // apple's history to shrink to its newest version.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+    auto state = c.gc_state(1, "apple");
+    while ((state.first <= old.start_ts() || state.second != 1) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        state = c.gc_state(1, "apple");
+    }
+    BOOST_TEST_MESSAGE("safe point " << state.first << ", start " << old.start_ts());
+    BOOST_REQUIRE(state.first > old.start_ts());
+    BOOST_TEST(state.second == 1U);
+
+    // The old snapshot can neither read nor write.
+    BOOST_CHECK_THROW(old.get("apple"), kythira::snapshot_too_old_exception);
+    old.put("apple", set_cmd("apple", "late"));
+    const auto out = old.commit();
+    old.drain();
+    BOOST_TEST(out._kind == txn_outcome_kind::aborted);
+    BOOST_TEST(out._reason == txn_abort_reason::snapshot_too_old);
+    BOOST_TEST(c.value("apple") == std::optional<std::string>("3"));
+
+    // A fresh one reads the newest version, which gc kept.
+    coordinator_type fresh(c.client(), options(txn_isolation::snapshot));
+    fresh.begin();
+    BOOST_TEST(as_string(fresh.get("apple")) == std::optional<std::string>("3"));
+    fresh.rollback();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
