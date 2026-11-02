@@ -3474,22 +3474,133 @@ auto multi_raft<Types, Key, GroupId>::submit_plain_enveloped(group_node_type& no
     static_assert(std::same_as<typename sm_type::key_type, Key>,
                   "multi_raft: a transactional_state_machine's Key must be the host's Key");
 
-    const auto envelope =
-        encode_txn_envelope<Key, codec_type>(txn_envelope<Key>{txn_plain{command}});
-    return node.submit_command(envelope, timeout)
-        .thenValue([this](std::vector<std::byte> bytes) -> std::vector<std::byte> {
-            auto res = decode_txn_result<Key, codec_type>(bytes);
-            if (res._status == txn_result_status::key_locked) {
-                emit_txn_metric("kythira.multiraft.txn.conflict", {{"kind", "key_locked"}}, 1);
-                const auto holder = res._holder.value_or(txn_lock_holder<Key>{});
-                throw key_locked_exception<Key>(res._key, holder._txn, holder._primary);
+    const auto decode_checked = [this](std::vector<std::byte> bytes) -> txn_result<Key> {
+        auto res = decode_txn_result<Key, codec_type>(bytes);
+        if (res._status == txn_result_status::write_conflict && res._holder.has_value()) {
+            // A prepare's answer to a held key.
+            res._status = txn_result_status::key_locked;
+        }
+        if (res._status == txn_result_status::key_locked) {
+            emit_txn_metric("kythira.multiraft.txn.conflict", {{"kind", "key_locked"}}, 1);
+            const auto holder = res._holder.value_or(txn_lock_holder<Key>{});
+            throw key_locked_exception<Key>(res._key, holder._txn, holder._primary);
+        }
+        return res;
+    };
+
+    if constexpr (sm_type::k_mvcc == mvcc::on) {
+        // Every write carries a commit timestamp under mvcc::on (design "all
+        // writes carry timestamps"), and the timestamp must be taken after
+        // the write is visible as an intent: a reader whose start timestamp
+        // is later then finds the intent and waits, where a one-phase entry
+        // could still be in flight when it reads. So a plain write is a
+        // one-key transaction: prepare, timestamp, commit.
+        if (!_cfg.partitioner) {
+            return failed_future(std::make_exception_ptr(std::logic_error(
+                "multi_raft: a plain write under mvcc::on needs config partitioner")));
+        }
+        try {
+            const auto deadline = std::chrono::steady_clock::now() + timeout;
+            const auto left = [deadline] {
+                return std::max(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    deadline - std::chrono::steady_clock::now()),
+                                std::chrono::milliseconds{1});
+            };
+            const Key key = _cfg.partitioner(command);
+            thread_local std::mt19937_64 rng{std::random_device{}()};
+            const txn_id id{rng(), rng()};
+            const auto encode = [](const txn_envelope<Key>& env) {
+                return encode_txn_envelope<Key, codec_type>(env);
+            };
+
+            // The intent lives until the deadline, so a write lost with this
+            // host is aborted by a resolver once the caller has given up.
+            const auto ttl_deadline = txn_now_ms() + static_cast<std::uint64_t>(timeout.count());
+            auto prepared = decode_checked(
+                node.submit_command(
+                        encode(txn_envelope<Key>{txn_prepare<Key>{
+                            id, key, {txn_write<Key>{key, command}}, {}, 0, ttl_deadline, true}}),
+                        left())
+                    .get());
+            if (prepared._status != txn_result_status::ok) {
+                throw std::logic_error("multi_raft: a plain write's prepare returned status " +
+                                       std::to_string(static_cast<int>(prepared._status)));
             }
-            if (res._status != txn_result_status::ok) {
-                throw std::logic_error("multi_raft: a plain command returned transaction status " +
-                                       std::to_string(static_cast<int>(res._status)));
+
+            std::uint64_t commit_ts = 0;
+            try {
+                commit_ts = plain_write_timestamp(left());
+            } catch (...) {
+                // Best effort: a resolver aborts it at the deadline anyway.
+                try {
+                    std::ignore =
+                        node.submit_command(
+                                encode(txn_envelope<Key>{txn_abort<Key>{id, key, {key}}}), left())
+                            .get();
+                } catch (...) {
+                }
+                throw;
             }
-            return std::move(res._payload);
-        });
+
+            auto committed = decode_checked(
+                node.submit_command(
+                        encode(txn_envelope<Key>{txn_commit_primary<Key>{id, key, commit_ts}}),
+                        left())
+                    .get());
+            if (committed._status != txn_result_status::ok) {
+                // A resolver aborted it first: the caller outlived its own
+                // timeout. Nothing was written.
+                throw std::runtime_error(
+                    "multi_raft: a plain write was aborted before its "
+                    "commit (status " +
+                    std::to_string(static_cast<int>(committed._status)) + ")");
+            }
+            promise_default<std::vector<std::byte>> p;
+            auto f = p.getFuture();
+            p.setValue(std::move(committed._payload));
+            return f;
+        } catch (...) {
+            return failed_future(std::current_exception());
+        }
+    } else {
+        const auto envelope =
+            encode_txn_envelope<Key, codec_type>(txn_envelope<Key>{txn_plain{command}});
+        return node.submit_command(envelope, timeout)
+            .thenValue([decode_checked](std::vector<std::byte> bytes) -> std::vector<std::byte> {
+                auto res = decode_checked(std::move(bytes));
+                if (res._status != txn_result_status::ok) {
+                    throw std::logic_error(
+                        "multi_raft: a plain command returned transaction status " +
+                        std::to_string(static_cast<int>(res._status)));
+                }
+                return std::move(res._payload);
+            });
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::plain_write_timestamp(std::chrono::milliseconds timeout)
+    -> std::uint64_t {
+    try {
+        return allocate_timestamps(1, timeout).get()._first;
+    } catch (const shard_not_leader_exception<GroupId, node_id_type>&) {
+        timestamp_forwarder forwarder;
+        {
+            std::lock_guard lock(_resolver_mutex);
+            forwarder = _timestamp_forwarder;
+        }
+        if (!forwarder) {
+            throw;
+        }
+        return forwarder(1, timeout)._first;
+    }
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::set_timestamp_forwarder(timestamp_forwarder forwarder)
+    -> void {
+    std::lock_guard lock(_resolver_mutex);
+    _timestamp_forwarder = std::move(forwarder);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

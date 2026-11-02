@@ -57,6 +57,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
@@ -1093,6 +1094,23 @@ public:
     /// each attempt is counted as `unreachable`.
     auto set_txn_forwarder(txn_forwarder forwarder) -> void;
 
+    /// @brief Where a plain write under `mvcc::on` gets its commit
+    ///        timestamp when this host cannot serve one.
+    using timestamp_forwarder =
+        std::function<timestamp_range(std::size_t n, std::chrono::milliseconds timeout)>;
+
+    /// @brief How a plain write reaches the oracle from a host that does not
+    ///        lead the oracle group.
+    ///
+    /// Under `mvcc::on` every plain write needs a commit timestamp. With an
+    /// `allocate_timestamps` hook, or on the host leading the oracle group,
+    /// the host takes it itself; elsewhere it asks the forwarder, which is
+    /// the deployment's own client (in process,
+    /// `multi_raft_txn_client::allocate_timestamps`). With no forwarder such
+    /// a write fails with `shard_not_leader_exception` naming the oracle
+    /// group's leader.
+    auto set_timestamp_forwarder(timestamp_forwarder forwarder) -> void;
+
     /// @brief The transaction clock (`multi_raft_config::txn_clock_ms`).
     [[nodiscard]] auto txn_now_ms() const -> std::uint64_t;
 
@@ -1944,6 +1962,9 @@ private:
     ///        (Requirement 2.1, 2.2).
     auto submit_plain_enveloped(group_node_type& node, const std::vector<std::byte>& command,
                                 std::chrono::milliseconds timeout) -> future_type;
+    /// A plain write's commit timestamp: this host's oracle, else the
+    /// timestamp forwarder.
+    auto plain_write_timestamp(std::chrono::milliseconds timeout) -> std::uint64_t;
 
     [[nodiscard]] static auto failed_future(std::exception_ptr error) -> future_type;
 
@@ -2038,6 +2059,7 @@ private:
     bool _resolver_stopping{false};
     bool _resolver_due{false};
     txn_forwarder _txn_forwarder;
+    timestamp_forwarder _timestamp_forwarder;
     /// The in-host oracle, when `oracle_group` is set and no hook is.
     std::unique_ptr<raft_timestamp_oracle<multi_raft>> _oracle;
     std::chrono::steady_clock::time_point _last_resolver_run{};
