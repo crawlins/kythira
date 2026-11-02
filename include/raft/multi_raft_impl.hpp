@@ -3754,6 +3754,18 @@ template<raft_types Types, shard_key Key, raft_group_id GroupId>
 auto multi_raft<Types, Key, GroupId>::resolver_pass() -> void {
     _resolver_passes.fetch_add(1, std::memory_order_relaxed);
     std::unordered_map<GroupId, resolver_group_memory> kept;
+    std::optional<std::uint64_t> safe_point;
+    if constexpr (is_transactional_state_machine_v<typename Types::state_machine_type>) {
+        if constexpr (Types::state_machine_type::k_mvcc == mvcc::on) {
+            // Only a host that leads a shard proposes gc, so only it samples.
+            const bool leads_a_shard = std::ranges::any_of(all_groups(), [this](const auto& g) {
+                return !is_oracle_group(g->_group_id) && g->_node->is_leader();
+            });
+            if (leads_a_shard) {
+                safe_point = gc_safe_point();
+            }
+        }
+    }
     for (const auto& g : all_groups()) {
         {
             std::lock_guard lock(_resolver_mutex);
@@ -3766,10 +3778,79 @@ auto multi_raft<Types, Key, GroupId>::resolver_pass() -> void {
         }
         auto memory = std::move(_resolver_memory[g->_group_id]);
         resolve_group(*g, memory);
+        if (safe_point.has_value() && !is_oracle_group(g->_group_id)) {
+            collect_group(*g, memory, *safe_point);
+        }
         kept.emplace(g->_group_id, std::move(memory));
     }
     // Groups this host no longer leads (or no longer has) forget theirs.
     _resolver_memory = std::move(kept);
+}
+
+// Garbage collection (multi-raft-transactions task 13, Requirement 8.6).
+//
+// The safe point is "the oracle's current value minus the lifetime", but the
+// oracle counts, it does not tell time. So each pass on a host that leads a
+// shard takes one timestamp and remembers when; the safe point is the newest
+// sample at least `txn_gc_lifetime` old. Any transaction that started after
+// that sample was taken has a larger start timestamp, so a transaction
+// younger than the lifetime is never below the safe point. Hosts sample
+// independently: a safe point is only ever a real oracle value from at least
+// one lifetime ago, whichever host proposes it, and the wrapper ignores one
+// that does not raise its own.
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::gc_safe_point() -> std::optional<std::uint64_t> {
+    using steady = std::chrono::steady_clock;
+    const auto now = steady::now();
+    try {
+        const auto ts =
+            plain_write_timestamp(std::max(_cfg.resolver_interval, std::chrono::milliseconds{100}));
+        _gc_samples.push_back(gc_sample{now, ts});
+    } catch (const std::exception& e) {
+        // No oracle reachable this pass; older samples still count.
+        _cfg.logger.debug("multi_raft: gc could not sample the oracle", {{"error", e.what()}});
+    }
+    const auto cutoff = now - _cfg.txn_gc_lifetime;
+    while (_gc_samples.size() >= 2 && _gc_samples[1]._at <= cutoff) {
+        _gc_samples.pop_front();
+    }
+    if (_gc_samples.empty() || _gc_samples.front()._at > cutoff) {
+        return std::nullopt;
+    }
+    return _gc_samples.front()._ts;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::collect_group(group_state& g, resolver_group_memory& memory,
+                                                    std::uint64_t safe_point) -> void {
+    using sm_type = typename Types::state_machine_type;
+    using codec_type = typename sm_type::key_codec_type;
+    const auto now = std::chrono::steady_clock::now();
+    if (safe_point <= memory._gc_proposed ||
+        (memory._gc_proposed != 0 && now - memory._gc_at < _cfg.txn_gc_interval)) {
+        return;
+    }
+    const auto group = detail::describe_value(g._group_id);
+    try {
+        const auto res = decode_txn_result<Key, codec_type>(
+            g._node
+                ->submit_command(
+                    encode_txn_envelope<Key, codec_type>(txn_envelope<Key>{txn_gc{safe_point}}),
+                    std::max(_cfg.resolver_interval, std::chrono::milliseconds{100}))
+                .get());
+        std::uint64_t dropped = 0;
+        for (std::size_t i = 0; i < res._payload.size() && i < 8; ++i) {
+            dropped |= static_cast<std::uint64_t>(res._payload[i]) << (8 * i);
+        }
+        memory._gc_proposed = safe_point;
+        memory._gc_at = now;
+        emit_txn_metric("kythira.multiraft.txn.gc.versions", {{"group", group}},
+                        static_cast<std::int64_t>(dropped));
+    } catch (const std::exception& e) {
+        _cfg.logger.debug("multi_raft: gc entry failed; retrying next pass",
+                          {{"group", group}, {"error", e.what()}});
+    }
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>

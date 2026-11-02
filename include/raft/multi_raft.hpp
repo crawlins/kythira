@@ -56,6 +56,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <deque>
 #include <optional>
 #include <random>
 #include <shared_mutex>
@@ -831,6 +832,22 @@ struct multi_raft_config {
     /// retried after the transaction finished into a no-op, and once it is
     /// gone such a retry is answered as if the transaction were unknown.
     std::chrono::milliseconds txn_record_retention{std::chrono::minutes{10}};
+
+    /// @brief How long a version stays readable after it is overwritten,
+    ///        under `mvcc::on` (Requirement 8.6).
+    ///
+    /// The safe point is the oracle timestamp this host took at least this
+    /// long ago: the oracle is a counter, not a clock, so each host samples
+    /// it once per resolver pass and remembers when. Versions older than the
+    /// newest one at or below the safe point are collected, and a snapshot
+    /// read or transaction that started below it fails with
+    /// `snapshot_too_old`. It must comfortably exceed the longest snapshot
+    /// transaction. A host that has run for less than this collects nothing.
+    std::chrono::milliseconds txn_gc_lifetime{std::chrono::minutes{10}};
+
+    /// @brief The least time between two `gc` entries a shard leader
+    ///        proposes for one shard, under `mvcc::on`.
+    std::chrono::milliseconds txn_gc_interval{std::chrono::minutes{1}};
 
     /// @brief The most transactions one resolver pass resolves per group,
     ///        and the most records one cleanup entry drops.
@@ -2038,6 +2055,16 @@ private:
         /// When this leader first saw each finished transaction; cleanup
         /// waits `txn_record_retention` from here.
         std::map<txn_id, std::chrono::steady_clock::time_point> _finished_since;
+        /// Under `mvcc::on`: the safe point this leader last proposed, and
+        /// when.
+        std::uint64_t _gc_proposed{0};
+        std::chrono::steady_clock::time_point _gc_at{};
+    };
+
+    /// One oracle timestamp and when this host took it (`txn_gc_lifetime`).
+    struct gc_sample {
+        std::chrono::steady_clock::time_point _at;
+        std::uint64_t _ts;
     };
 
     auto start_resolver() -> void;
@@ -2045,6 +2072,12 @@ private:
     auto resolver_loop() -> void;
     auto resolver_pass() -> void;
     auto resolve_group(group_state& g, resolver_group_memory& memory) -> void;
+    /// Under `mvcc::on`: sample the oracle, and return the safe point once
+    /// a sample is `txn_gc_lifetime` old.
+    auto gc_safe_point() -> std::optional<std::uint64_t>;
+    /// Under `mvcc::on`: propose `gc` on a shard this host leads.
+    auto collect_group(group_state& g, resolver_group_memory& memory, std::uint64_t safe_point)
+        -> void;
     auto send_txn_op(const std::vector<Key>& keys, const std::vector<std::byte>& envelope,
                      bool may_forward) -> std::vector<std::byte>;
     auto note_txn_result(std::uint8_t op_code, const std::vector<std::byte>& bytes,
@@ -2064,6 +2097,8 @@ private:
     std::unique_ptr<raft_timestamp_oracle<multi_raft>> _oracle;
     std::chrono::steady_clock::time_point _last_resolver_run{};
     std::unordered_map<GroupId, resolver_group_memory> _resolver_memory;
+    /// Oldest first; touched only by the resolver thread.
+    std::deque<gc_sample> _gc_samples;
     std::mutex _txn_metrics_mutex;
     std::atomic<std::uint64_t> _resolver_passes{0};
     std::atomic<std::uint64_t> _resolved_committed{0};

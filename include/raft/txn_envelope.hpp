@@ -343,6 +343,25 @@ private:
     Key _primary;
 };
 
+/// @brief A snapshot read or transaction started below the shard's
+///        garbage-collection safe point, so versions it needs may be gone
+///        (Requirement 8.6). Retry with a fresh start timestamp.
+class snapshot_too_old_exception : public raft_exception {
+public:
+    snapshot_too_old_exception(std::uint64_t start_ts, std::uint64_t safe_point)
+        : raft_exception("snapshot at " + std::to_string(start_ts) +
+                         " is older than the safe point " + std::to_string(safe_point)),
+          _start_ts(start_ts),
+          _safe_point(safe_point) {}
+
+    [[nodiscard]] auto start_ts() const -> std::uint64_t { return _start_ts; }
+    [[nodiscard]] auto safe_point() const -> std::uint64_t { return _safe_point; }
+
+private:
+    std::uint64_t _start_ts;
+    std::uint64_t _safe_point;
+};
+
 /// @brief A transaction asked for an isolation level the build cannot give
 /// (Requirement 10.2). Thrown at `begin()`; never a silent downgrade.
 class isolation_unsupported_exception : public raft_exception {

@@ -184,9 +184,11 @@ public:
     /// @brief The snapshot header, distinct from any unwrapped format
     /// (Requirement 1.4).
     static constexpr std::string_view k_snapshot_magic = "kythira-txn-sm";
-    /// Version 2 adds each intent's start timestamp. `mvcc::off` still
-    /// writes version 1, byte for byte as before; both read either.
-    static constexpr std::uint8_t k_snapshot_version = Mvcc == mvcc::on ? 2 : 1;
+    /// Version 2 adds each intent's start timestamp, and version 3 the
+    /// garbage-collection safe point. `mvcc::on` writes version 3;
+    /// `mvcc::off` still writes version 1, byte for byte as before. Every
+    /// version reads.
+    static constexpr std::uint8_t k_snapshot_version = Mvcc == mvcc::on ? 3 : 1;
 
     transactional_state_machine() = default;
     explicit transactional_state_machine(SM inner, P partitioner = P{}, KeyCodec codec = KeyCodec{})
@@ -208,7 +210,8 @@ public:
     }
 
     [[nodiscard]] auto get_state() const -> std::vector<std::byte> {
-        return encode_state(_intents, _records, _settled, _oracle_hwm, _inner.get_state());
+        return encode_state(_intents, _records, _settled, _oracle_hwm, _safe_point,
+                            _inner.get_state());
     }
 
     /// @throws serialization_exception for a snapshot in any other format,
@@ -221,6 +224,7 @@ public:
         _records = std::move(decoded._records);
         _settled = std::move(decoded._settled);
         _oracle_hwm = decoded._oracle_hwm;
+        _safe_point = decoded._safe_point;
     }
 
     // ── splittable_state_machine, exactly when SM is (Requirement 1.3) ──────
@@ -257,7 +261,8 @@ public:
     /// @brief Cut every map at the same keys as the wrapped state machine
     /// (Requirement 6.1). Intents and settled entries go with their own key,
     /// records with their primary key, and the oracle high-water mark with
-    /// the leftmost child (it is zero outside the oracle group).
+    /// the leftmost child (it is zero outside the oracle group). Every child
+    /// keeps the safe point: their versions below it are gone too.
     [[nodiscard]] auto split_state(const std::vector<Key>& keys)
         -> std::vector<std::vector<std::byte>>
     requires splittable_state_machine<SM, Key>
@@ -281,7 +286,7 @@ public:
             const Key* hi = i == cuts.size() ? nullptr : &cuts[i];
             out.push_back(encode_state(slice(_intents, lo, hi), slice(_records, lo, hi),
                                        slice(_settled, lo, hi), i == 0 ? _oracle_hwm : 0,
-                                       inner_parts[i]));
+                                       _safe_point, inner_parts[i]));
         }
         return out;
     }
@@ -309,6 +314,9 @@ public:
             }
         }
         _oracle_hwm = std::max(_oracle_hwm, decoded._oracle_hwm);
+        // Versions below either side's safe point may be gone from that
+        // side, so the merged shard can only promise reads above both.
+        _safe_point = std::max(_safe_point, decoded._safe_point);
     }
 
     // ── Read paths (Requirement 5.5) ─────────────────────────────────────────
@@ -422,6 +430,11 @@ public:
     }
     [[nodiscard]] auto oracle_high_water_mark() const -> std::uint64_t { return _oracle_hwm; }
 
+    /// @brief The highest safe point a `gc` entry has collected to: reads
+    ///        and transactions below it fail with `snapshot_too_old`
+    ///        (Requirement 8.6). Zero until the first `gc`.
+    [[nodiscard]] auto safe_point() const -> std::uint64_t { return _safe_point; }
+
 private:
     struct intent {
         txn_id _txn{};
@@ -456,6 +469,9 @@ private:
                            ? result_type{}
                            : status_only(txn_result_status::already_aborted);
             }
+        }
+        if (auto old = too_old(op._start_ts); old.has_value()) {
+            return *old;
         }
         for (const auto& w : sorted_by_key(op._writes)) {
             if (auto conflict = conflict_on(w._key, &op._txn); conflict.has_value()) {
@@ -492,6 +508,9 @@ private:
                            ? result_type{}
                            : status_only(txn_result_status::already_aborted);
             }
+        }
+        if (auto old = too_old(op._start_ts); old.has_value()) {
+            return *old;
         }
         for (const auto& w : sorted_by_key(op._writes)) {
             if (auto conflict = conflict_on(w._key, &op._txn); conflict.has_value()) {
@@ -618,12 +637,23 @@ private:
     }
 
     /// Tier 2: drop versions no read at or above the safe point can see.
-    /// Nothing is versioned under mvcc::off, so there is nothing to collect.
+    /// The payload is the number dropped, as eight little-endian bytes, for
+    /// the host's metric. A safe point at or below the current one changes
+    /// nothing. Nothing is versioned under mvcc::off, so there is nothing to
+    /// collect.
     auto apply_op(const txn_gc& op, log_index_type) -> result_type {
+        result_type res;
         if constexpr (Mvcc == mvcc::on) {
-            std::ignore = _inner.collect_garbage(op._safe_point);
+            if (op._safe_point > _safe_point) {
+                _safe_point = op._safe_point;
+                const auto dropped =
+                    static_cast<std::uint64_t>(_inner.collect_garbage(op._safe_point));
+                for (int i = 0; i < 8; ++i) {
+                    res._payload.push_back(static_cast<std::byte>((dropped >> (8 * i)) & 0xFF));
+                }
+            }
         }
-        return {};
+        return res;
     }
 
     auto apply_op(const txn_oracle_reserve& op, log_index_type) -> result_type {
@@ -659,6 +689,19 @@ private:
         res._key = key;
         res._holder = txn_lock_holder<Key>{it->second._txn, it->second._primary};
         return res;
+    }
+
+    /// Requirement 8.6: a transaction that started below the safe point may
+    /// have read versions that are gone, so it may not write either.
+    [[nodiscard]] auto too_old(std::uint64_t start_ts) const -> std::optional<result_type> {
+        if constexpr (Mvcc == mvcc::on) {
+            if (start_ts != 0 && start_ts < _safe_point) {
+                result_type res = status_only(txn_result_status::snapshot_too_old);
+                res._safe_point = _safe_point;
+                return res;
+            }
+        }
+        return std::nullopt;
     }
 
     /// First committer wins (Requirement 8.3): under `mvcc::on`, a write
@@ -807,11 +850,13 @@ private:
         record_map _records;
         settled_map _settled;
         std::uint64_t _oracle_hwm{0};
+        std::uint64_t _safe_point{0};
         std::vector<std::byte> _inner;
     };
 
     [[nodiscard]] auto encode_state(const intent_map& intents, const record_map& records,
                                     const settled_map& settled, std::uint64_t hwm,
+                                    std::uint64_t safe_point,
                                     const std::vector<std::byte>& inner) const
         -> std::vector<std::byte> {
         using namespace txn_wire;
@@ -821,6 +866,9 @@ private:
         }
         write_u8(out, k_snapshot_version);
         write_u64(out, hwm);
+        if constexpr (k_snapshot_version >= 3) {
+            write_u64(out, safe_point);
+        }
 
         write_u64(out, intents.size());
         for (const auto& [k, in] : intents) {
@@ -894,12 +942,15 @@ private:
             data.begin() + static_cast<std::ptrdiff_t>(k_snapshot_magic.size()), data.end());
         reader r{body, "kythira-txn-sm snapshot"};
         const auto version = r.u8();
-        if (version != 1 && version != 2) {
+        if (version < 1 || version > 3) {
             r.fail("unknown kythira-txn-sm snapshot version " + std::to_string(version));
         }
 
         decoded_state out;
         out._oracle_hwm = r.u64();
+        if (version >= 3) {
+            out._safe_point = r.u64();
+        }
 
         const auto intents = r.count(4 * sizeof(std::uint64_t), "intent table", body.size());
         for (std::size_t i = 0; i < intents; ++i) {
@@ -953,6 +1004,8 @@ private:
     record_map _records;
     settled_map _settled;
     std::uint64_t _oracle_hwm{0};
+    /// Tier 2: the highest `gc` safe point applied.
+    std::uint64_t _safe_point{0};
 };
 
 /// @brief Whether `SM` is a `transactional_state_machine`, for the host's

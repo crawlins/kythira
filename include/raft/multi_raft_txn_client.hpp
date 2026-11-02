@@ -177,6 +177,9 @@ public:
     /// @brief The newest version of `key` at or below `ts`, and any intent,
     ///        from the shard leader after a read-index round
     ///        (Requirement 8.5).
+    ///
+    /// @throws snapshot_too_old_exception if `ts` is below the shard's
+    ///         safe point (Requirement 8.6).
     [[nodiscard]] auto read_at(const Key& key, std::uint64_t ts, std::chrono::milliseconds timeout)
         -> txn_read_result<Key>
     requires(state_machine_type::k_mvcc == mvcc::on)
@@ -193,9 +196,15 @@ public:
                     // shows as a version or as its intent.
                     (void)node->read_state(remaining(deadline)).get();
                     return node->with_state_machine([&](state_machine_type& sm) {
+                        if (ts < sm.safe_point()) {
+                            // Versions this read needs may be gone.
+                            throw snapshot_too_old_exception(ts, sm.safe_point());
+                        }
                         return txn_read_result<Key>{_value_at(sm.inner(), key, ts),
                                                     sm.intent_on(key)};
                     });
+                } catch (const snapshot_too_old_exception&) {
+                    throw;
                 } catch (const std::exception&) {
                     // Lost leadership mid-read: find the new leader.
                 }

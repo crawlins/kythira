@@ -377,10 +377,32 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     - The wrapper's snapshot is version 2 under `mvcc::on` (each intent's
       start timestamp); `mvcc::off` still writes version 1.
 
-- [ ] 13. Garbage collection and `snapshot_too_old`
+- [x] 13. Garbage collection and `snapshot_too_old`
   - Safe-point computation, leader-proposed `gc` entries, rejection of old
     start timestamps
   - _Requirements: 8.6, 12.1_
+  - Done (November 2, 2026), tested in
+    `tests/multi_raft_txn_snapshot_test.cpp`. Notes:
+    - **The safe point is sampled, not subtracted.** Requirement 8.6 says
+      "the oracle's current value minus a configurable lifetime", but the
+      oracle counts and does not tell time. Each host that leads a shard
+      takes one oracle timestamp per resolver pass and remembers when; the
+      safe point is the newest sample at least `txn_gc_lifetime` (default
+      10 minutes) old. A transaction younger than the lifetime started
+      after that sample, so it is never below it. A host that has run for
+      less than the lifetime collects nothing.
+    - The shard leader proposes `gc` at most every `txn_gc_interval`
+      (default 1 minute). The wrapper keeps the highest safe point applied
+      and ignores a lower one, so leaders that sampled at different times
+      cannot move it back. The entry's reply is the number of versions
+      dropped, which feeds `kythira.multiraft.txn.gc.versions`.
+    - A prepare or one-phase entry whose start timestamp is below the safe
+      point fails with `snapshot_too_old` (the coordinator's
+      `txn_abort_reason::snapshot_too_old`, not retried). A snapshot read
+      below it throws `snapshot_too_old_exception`. The `txn.op` metric
+      already counts `snapshot_too_old` results.
+    - The safe point travels in the wrapper's snapshot (version 3 under
+      `mvcc::on`). Split children keep it, and absorb takes the higher.
 
 - [ ] 14. Bank workload, tier 2, and gateway `WATCH`
   - Snapshot invariant: every all-accounts read sums to the total

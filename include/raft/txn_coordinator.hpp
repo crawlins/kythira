@@ -132,6 +132,9 @@ enum class txn_abort_reason : std::uint8_t {
     prepare_failed,
     /// A key resolved to no shard.
     unroutable,
+    /// The start timestamp fell below a shard's garbage-collection safe
+    /// point (Requirement 8.6): begin again for a fresh one.
+    snapshot_too_old,
 };
 
 template<shard_key Key> struct txn_outcome {
@@ -250,6 +253,8 @@ public:
     ///
     /// @throws std::runtime_error under `read_committed_wait` if the key is
     ///         still held when the timeout runs out.
+    /// @throws snapshot_too_old_exception under `snapshot` if the start
+    ///         timestamp is below the shard's safe point (Requirement 8.6).
     ///
     /// Under `snapshot` the read is at the start timestamp, through the
     /// shard leader's linearizable path, and an intent whose holder started
@@ -587,6 +592,12 @@ private:
             }
             case txn_result_status::already_aborted:
                 return aborted(txn_abort_reason::expired, std::move(primary));
+            case txn_result_status::snapshot_too_old: {
+                auto out = aborted(txn_abort_reason::snapshot_too_old, std::move(primary));
+                out._detail = "start timestamp " + std::to_string(_start_ts) +
+                              " is below the safe point " + std::to_string(res._safe_point);
+                return out;
+            }
             case txn_result_status::record:
                 if (res._record == txn_record_status::committed) {
                     return outcome_type{
