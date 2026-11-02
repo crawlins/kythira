@@ -196,7 +196,9 @@ forcing a leader election (`.kiro/specs/grpc-tls-reload/`).
   chunk that exceeds the limit surfaces to the caller as `RESOURCE_EXHAUSTED`.
 - **`RESOURCE_EXHAUSTED` on AppendEntries.** Too many/too-large entries in one
   RPC. Size `max_receive_message_size` consistently with
-  `raft_configuration::_max_entries_per_append`.
+  `raft_configuration::_max_entries_per_append` and `_max_append_bytes` (the
+  soft cap on command bytes per AppendEntries, 4 MiB by default; one entry
+  larger than it is still sent alone).
 
 ## Behavioral notes
 

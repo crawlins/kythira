@@ -773,6 +773,15 @@ struct raft_configuration {
 
     // ── Log and snapshot ──────────────────────────────────────────────────────
     std::size_t _max_entries_per_append{100};  ///< Maximum entries in one AppendEntries RPC.
+    /// Soft cap on the command bytes in one AppendEntries RPC; 0 means no
+    /// cap. The leader stops adding entries once the next would take the
+    /// batch over it, but always sends at least one, so an entry larger
+    /// than the cap still goes, alone. Without it a batch of large entries
+    /// (the disk-backed cache's 4 MiB chunks) can exceed what the
+    /// receiving transport accepts, and the follower refuses every retry
+    /// of the same batch: the log never commits. The default sits well
+    /// under the HTTP transports' 10 MB request limit, base64 included.
+    std::size_t _max_append_bytes{4 * 1024 * 1024};
     /// Command bytes applied since the last snapshot at which the node
     /// snapshots its state machine and compacts the log on its own. Every
     /// replica, leader or follower, counts and snapshots independently.
@@ -903,6 +912,7 @@ struct raft_configuration {
     [[nodiscard]] auto max_entries_per_append() const -> std::size_t {
         return _max_entries_per_append;
     }
+    [[nodiscard]] auto max_append_bytes() const -> std::size_t { return _max_append_bytes; }
     [[nodiscard]] auto snapshot_threshold_bytes() const -> std::size_t {
         return _snapshot_threshold_bytes;
     }

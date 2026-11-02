@@ -373,6 +373,7 @@ config.heartbeat_interval = std::chrono::milliseconds(50);
 config.rpc_timeout = std::chrono::milliseconds(100);
 config.snapshot_threshold = 10000;  // entries
 config.max_entries_per_append = 100;
+config.max_append_bytes = 4 * 1024 * 1024;  // command bytes per AppendEntries; keep under the transport's request limit
 ```
 
 ### Timeout Guidelines
