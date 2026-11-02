@@ -1,6 +1,6 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 9/13 tasks complete
+## Status: 10/13 tasks complete
 
 **Last Updated**: November 2, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
@@ -8,7 +8,8 @@ and the gateway over either machine; task 4: the binary persistence engine;
 task 5: the chunk fetcher; task 6: the HTTP front end and auth cache;
 task 7: the daemon's disk mode, the disk budget and the voter floors;
 task 8: the container image and compose file. November 2: task 9, the
-real-client end-to-end test, and the three faults it found.
+real-client end-to-end test, and the three faults it found; task 10, the
+chaos scenarios, and the corrupt-chunk repair they found broken.
 Task 1 was measured on October 27. The spec was
 written on October 15 and amended the same day for inode limits and the
 full-tree WebDAV measurement).
@@ -704,7 +705,7 @@ The sandbox cannot pull the Ubuntu base image, so the clients ran as host
 processes against three host daemons with the compose file's settings; the
 container-tests workflow runs the real images under Docker and Podman.
 
-- [ ] 10. Chaos scenarios
+- [x] 10. Chaos scenarios
   - Kill the leader during a 100 MB `PUT`. Stop and restart all three nodes.
     Replace a node with an empty volume. Flip a byte in a stored chunk
     (libfiu). Fill a small-inode volume with small RESP values: a
@@ -715,6 +716,64 @@ container-tests workflow runs the real images under Docker and Podman.
     that runtime instead. Each scenario asserts what Requirements 10.3 and
     12.3–12.6 state.
   - _Requirements: 10.3, 12.3–12.6_
+
+### Task 10 results (2026-11-02)
+
+Five cases in `tests/docker_chaos/cache_cluster_test.cpp`, run by the
+container-tests workflow under both runtimes with the task 8 and 9 cases.
+
+| Case | Requirement | What it shows (sandbox run, Docker) |
+|---|---|---|
+| Leader of the vcpkg shard killed (`SIGKILL`) once 8 MB of a 100 MB `PUT` through a follower is stored | 12.3 | The client's connection drops; after the node is started again all three nodes answer 404, so the key is absent, not partial. A 201 would have required it whole on every node. |
+| `compose stop` of all three nodes, then `start` | 12.4 | 20 RESP keys and two 9 MB objects read back whole from every node. |
+| One byte flipped in two stored chunks on cache-2: the only chunk of a 100 KB object and the last of an 8.5 MB one | 10.1-10.3 | Bad first chunk: a miss (404, or the leader's copy where the node is a follower and forwards). Bad last chunk: 200, then the connection aborted after 8,388,608 of 8,488,615 bytes. Both chunks are then repaired from a peer and served whole. |
+| cache-3's container and volume removed and the service brought back up empty, after 73 MB of objects | 12.5 | The new node gets a snapshot and fetches 45 chunks; meanwhile every GET on every node is a whole object or, on the new node before it has the key, a 404 miss; no 5xx, no wrong body. |
+| cache-3 on a tmpfs of 4,000 inodes, floor 2,500, 70 KiB RESP values | 12.6 | 703 values written, then `-ERR node 3 has 2353 inodes free, below the floor of 2500, retry later`, and refused again a moment later; sampled values read back on every node; all three containers running. |
+
+Choices and deviations:
+
+- **The byte is flipped in the file, not with libfiu.** The image's daemon is
+  a release build without libfiu and has no fault-control socket; changing
+  the stored file through `exec` corrupts exactly what a disk would and
+  exercises the read path's hash check end to end. The libfiu coverage of the
+  store's own fault points stays in `cache_chunk_store_unit_test`.
+- **The inode floor uses a tmpfs with `nr_inodes`**, a named volume with the
+  local driver's tmpfs options mounted on cache-3 at `/data-small` by
+  `compose.yml` and selected with `KYTHIRA_CACHE_3_DATA_DIR`. Not the
+  service's `tmpfs:` key: Podman 4.9 rejects `nr_inodes` there ("unknown
+  mount option"), which failed the first Podman run, while both runtimes
+  accept it as a volume option. The case checks the runtime honoured the
+  option (`stat -f` reports 4,000 inodes) and fails if it did not. Values are 70 KiB, just over the 64 KiB pack threshold, so each is
+  one file: smaller values share pack files (Requirement 6.7) and barely use
+  inodes at all. Mode 1777 instead of `uid=`, which the runtimes treat
+  differently.
+- **Forwarding and chunk fetches dial through the bounded resolver.** The
+  first rootless Podman run failed the kill, stop-all and byte-flip cases:
+  each time a follower forwarded to a leader that had just restarted, the
+  request hung past the client's 10 s and the follower answered nothing or
+  503. The HTTP front end resolved peers with a plain getaddrinfo(), and
+  once a node has looked up a killed peer, aardvark-dns answers it nothing
+  for 40 s or more (`bounded_resolver.hpp`). It now dials as the RESP
+  forward link does: a capped lookup, the address the peer's Raft traffic
+  last came from when DNS has nothing, a 3 s connect, and one retry after a
+  failed dial retires the address. Docker never showed it, because its
+  embedded DNS answers at once.
+- **The test cluster snapshots every 64 MiB** (`compose.yml`, was the 256 MiB
+  default). With the default the replaced node caught up from the log, which
+  carries the chunk bytes, and fetched nothing; the case would not have
+  tested the fetch at all.
+- **The leader is found by forwarding:** a one-byte `PUT` to a follower is
+  forwarded (`/_metrics` `forwards` goes up) and to the leader it is not.
+
+**A fault, found by the byte-flip case and fixed here.** A chunk that failed
+its hash on a read was never repaired. The front end queued a repair fetch,
+but the bad file was still stored, so the fetcher counted the chunk as
+present and skipped it, and a `put` of the good bytes would have kept the
+bad file anyway (a chunk's name is its hash, and `link` refuses a taken
+name). Every later GET of that object failed the same way. The store now has
+`drop_if_corrupt`, which removes a stored copy only if it still fails its
+hash, and the daemon calls it before queueing the repair, as design.md's
+error table always said ("drop the chunk and queue a repair").
 
 - [ ] 11. Full-tree sccache measurement in WebDAV mode
   - Per Requirement 13. Point sccache 0.17.0's WebDAV backend at the
