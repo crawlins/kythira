@@ -438,13 +438,48 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     the commit; read-set validation at commit is what closes that, so they
     stay refused until then (with a message saying so).
 
-- [ ] 15. Chaos and performance
+- [x] 15. Chaos and performance
   - `docker/txn-chaos-compose.yml`, `tests/docker_chaos/txn_bank_chaos_test.cpp`
     through `redis_gateway_node`, with peers by service name, under Docker and
     rootless Podman
   - `multi-raft-performance` rows: 1PC, 2PC over 2 and 4 shards, and
     snapshot reads
   - _Requirements: 13.5, 13.6_
+  - Chaos done (November 2, 2026). `docker/txn-chaos-compose.yml` starts
+    three `redis_gateway_node`s built for snapshot isolation (the new
+    `redis_gateway_node_snapshot` target, whatever Kconfig selects), peers by
+    service name. Eight accounts over two shards; one client per node moves
+    money with `WATCH`/`MGET`/`MULTI`/`EXEC`, and a reader checks that every
+    `MGET` of all accounts sums to the total. The faults cut each node off
+    the network (`network disconnect`, reconnected with its alias), freeze
+    it (`pause`), and finally kill one for good. The `docker-txn-chaos-tests`
+    target runs it in the container-tests workflow. Locally under Docker,
+    3 of 3 runs passed: 790 to 1360 transfers committed and 215 to 385
+    refused by `WATCH` per run, no torn read, and both survivors hold the
+    total.
+    - **Deviation:** the task's file list said only the compose file and
+      the test; the image is `docker/txn-chaos/` (Dockerfile and ACL).
+    - **Deviation:** no node is killed and restarted. The transactional
+      daemon is memory-only, so a restarted voter rejoins with no log and
+      no vote, and Raft is not safe against that (the cluster's rule is to
+      remove such a node and re-add it as new). The first draft did kill
+      and restart, and the books went from 800 to 959. Crashes are covered
+      by the permanent kill, which takes in-flight coordinators with it, and
+      by the freezes, which outlive lock TTLs.
+    - Found on the way: an `EXEC` that wrote a watched key someone had
+      changed answered `-ERR ... write conflict` instead of a null array,
+      because first-committer-wins refuses it before read validation does.
+      A version conflict on a watched key now answers the null array too
+      (`redis_gateway_snapshot_test` checks it).
+  - Performance done (November 2, 2026): a `transactions` axis in
+    `multi_raft_performance_report`, Tier A over the in-process fabric, from
+    `tests/multi_raft_txn_bench_rows.hpp` and one translation unit per
+    wrapper tier (`tests/bench_rows/txn_fabric.cpp`,
+    `txn_snapshot_fabric.cpp`). Rows: `read_committed` 1PC on one shard and
+    2PC over two and four; `snapshot` 2PC over two and four; and read-only
+    snapshot transactions over two shards at 1, 8 and 64 in flight. Workers
+    own their keys, so the rows measure the protocol, not contention.
+    `doc/multi_raft_performance_comparison.md` has the first numbers.
 
 ### Tier 3: serializable
 
@@ -472,10 +507,22 @@ Question 1 (gateway default) must be answered before task 9, and question 3
     and allowed under `snapshot`), and a `WATCH` case on every gateway in
     `redis_gateway_snapshot_test`.
 
-- [ ] 17. Write-skew workload
+- [x] 17. Write-skew workload
   - Two-account minimum-balance invariant under `serializable` (and shown
     violable under `snapshot`, so the test proves it can fail)
   - _Requirements: 13.4_
+  - Done (November 2, 2026): `tests/multi_raft_txn_write_skew_test.cpp`.
+    Account pairs, one account on each of two shards, open at 50 each; the
+    invariant is `x + y >= 0`. In each round two workers read both accounts
+    in one transaction, a barrier holds both until both have read, and then
+    each withdraws 60 from its own account if the sum it read covers it. A
+    fresh snapshot then checks the pair and resets it.
+    - The control, under `snapshot`: 10 of 10 rounds broke the invariant
+      (sum -20) in every run, so the workload can fail.
+    - Under `serializable`, four pairs and 25 rounds each while shard
+      leaders move: no round broke it. Read validation refused the loser
+      as a `read_conflict`, or its write met the winner's read intent as a
+      `write_conflict`. 5 of 5 runs passed.
 
 ## Notes
 
