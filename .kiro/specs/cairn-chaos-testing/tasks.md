@@ -701,14 +701,29 @@ compatibility").
     rest are `fault.failpoint` calls with names not on the allowlist
     (293, 414 and 1,021 refusals). Run 2's double vote needed only a
     workload, one partition, three resets and time.
-  - Requirement 6.3 for the M1 drafts is open. The run-1 draft ran all 35
-    of its calls on a seeded image built in a cloud sandbox (Docker, the
-    Boost future backend) and did not reproduce (0 of 1), and neither did
-    a `chaos_ctl replay` of run 1's uncut log there (0 of 1), against 3 of
-    3 on tikhov. So that sandbox does not reproduce this race, and the cut
-    was not what lost it. The drafts' fail-on-seeded check belongs on
-    tikhov (`KYTHIRA_CHAOS_SEEDED_BUG=vote_term` build, then
-    `docker-chaos-findings`).
+  - Requirement 6.3 for the M1 drafts, checked on tikhov on 2026-11-02
+    (main 62b23be8, rootless Podman 5.7). A cloud-sandbox seeded build
+    (Docker, the Boost future backend) had replayed run 1's draft and
+    its uncut log 0 of 1 each, so the check moved there.
+    - Run 1 (368): confirmed. It fails on `seeded-vote-term`
+      (e0b023e45710, attempt 1, 1,791 s) and passes on a fresh `:dev`
+      (86527e9d0ec7, 0 of 1, 1,806 s).
+    - Run 3 (1373): fails on the seeded image (1 of 1, 4,305 s). The
+      `:dev` pass is not yet run.
+    - Run 2 (432): not yet run.
+    - Bug found by the check: the drafts carried
+      `boost::unit_test::timeout(N)`, and Boost holds N in microseconds
+      in 32 bits, so any N over 4,294 wraps. Run 3's 4,579 s became
+      284 s and killed the replay at 285 s on every image; run 2's
+      14,304 s became about 1,419 s. The reporter no longer writes the
+      decorator and the three drafts dropped it; a stuck run is bounded
+      from outside the test.
+    - What the check does not show: the runner matches the invariant
+      name, not the term (368 was term 43 in the run; the replay also
+      flagged term 1). Replayed calls that return errors (2 to 3 of 38
+      for 368, 28 of 208 for 1373: faults aimed at stopped nodes,
+      `podman unpause`/`start` and `iptables` failures) are not treated
+      as test failures.
   - Found on the way: every M1 log line says `"kythira_commit":"unknown"`,
     because the tool server's image has no git checkout. `start-run.sh`
     now passes the host tree's HEAD (marked `-dirty` for uncommitted
