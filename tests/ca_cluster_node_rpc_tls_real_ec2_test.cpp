@@ -909,7 +909,10 @@ BOOST_FIXTURE_TEST_CASE(bootstrap_and_cutover_survives_bootstrap_credential_dele
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
-    cfg.cluster_name = "ca-cluster-rpc-tls-real-ec2-test";
+    // Unique per run, as in ca_cluster_node_real_ec2_test: the numeric-id
+    // claim token depends only on "<cluster>/<id>", and EC2 refuses a
+    // reused token long after its instance is gone.
+    cfg.cluster_name = "ca-cluster-rpc-tls-" + uuid.substr(4, 8);
     cfg.image_id = ami;
     cfg.node_port = 7000;
     cfg.aws.region = region();
@@ -1020,7 +1023,7 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
-    cfg.cluster_name = "ca-cluster-rpc-tls-staggered-test";
+    cfg.cluster_name = "ca-cluster-rpc-tls-staggered-" + uuid.substr(4, 8);
     cfg.image_id = ami;
     cfg.node_port = 7000;
     cfg.aws.region = region();
@@ -1137,7 +1140,7 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
-    cfg.cluster_name = "ca-cluster-rpc-tls-restart-test";
+    cfg.cluster_name = "ca-cluster-rpc-tls-restart-" + uuid.substr(4, 8);
     cfg.image_id = ami;
     cfg.node_port = 7000;
     cfg.aws.region = region();
@@ -1303,7 +1306,7 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
-    cfg.cluster_name = "ca-cluster-rpc-tls-isolation-test";
+    cfg.cluster_name = "ca-cluster-rpc-tls-isolation-" + uuid.substr(4, 8);
     cfg.image_id = ami;
     cfg.node_port = 7000;
     cfg.aws.region = region();
