@@ -303,22 +303,12 @@ BOOST_AUTO_TEST_CASE(toolset_is_exactly_requirement_3_1) {
     for (const auto& t : chaos_ctl::tools()) {
         names.insert(t.name);
     }
-    const std::set<std::string> expected{"fault.failpoint",
-                                         "fault.partition",
-                                         "fault.delay",
-                                         "fault.drop",
-                                         "fault.kill",
-                                         "fault.pause",
-                                         "fault.restart",
-                                         "fault.clock_skew",
-                                         "cluster.status",
-                                         "cluster.add_member",
-                                         "cluster.remove_member",
-                                         "workload.start",
-                                         "workload.stop",
-                                         "workload.history",
-                                         "check.run",
-                                         "run.reset"};
+    const std::set<std::string> expected{
+        "fault.failpoint", "fault.partition", "fault.delay",        "fault.drop",
+        "fault.kill",      "fault.pause",     "fault.restart",      "fault.clock_skew",
+        "fault.s3",        "cluster.status",  "cluster.add_member", "cluster.remove_member",
+        "workload.start",  "workload.stop",   "workload.history",   "check.run",
+        "run.reset"};
     BOOST_TEST(names == expected);
 }
 
@@ -591,6 +581,71 @@ BOOST_FIXTURE_TEST_CASE(reset_snapshots_and_restarts_a_dead_node, fixture) {
     BOOST_TEST(started);
 }
 
+// cairn-chaos-testing task 14.4.
+BOOST_FIXTURE_TEST_CASE(s3_fault_is_unsupported_on_a_disk_cluster, fixture) {
+    auto out = chaos_ctl::call(ctx, "fault.s3", {{"delay_ms", 100}});
+    BOOST_TEST(out.at("status").as_string() == "unsupported");
+}
+
+BOOST_FIXTURE_TEST_CASE(s3_fault_drives_the_mock_control_api, fixture) {
+    ctx.cfg.nodes = dc::k_node_map;
+    ctx.cfg.s3_control = "s3mock:9001";
+    std::vector<std::pair<std::string, std::string>> posts;
+    ctx.http_post = [&](const std::string& url, const std::string& body) {
+        posts.emplace_back(url, body);
+        return dc::HttpResult{200, R"({"ok":true})"};
+    };
+
+    BOOST_TEST(chaos_ctl::call(ctx, "fault.s3", {{"delay_ms", 250}}).at("status").as_string() ==
+               "ok");
+    BOOST_TEST(chaos_ctl::call(ctx, "fault.s3", {{"fail_puts", 3}, {"node", 2}})
+                   .at("status")
+                   .as_string() == "ok");
+    BOOST_TEST(chaos_ctl::call(ctx, "fault.s3", {{"fail_puts", 1}}).at("status").as_string() ==
+               "ok");
+    BOOST_TEST(chaos_ctl::call(ctx, "fault.s3", {{"clear", true}}).at("status").as_string() ==
+               "ok");
+    BOOST_REQUIRE(posts.size() == 4u);
+    BOOST_TEST(posts[0].first == "http://s3mock:9001/control/put_delay");
+    BOOST_TEST(boost::json::parse(posts[0].second).at("ms").as_int64() == 250);
+    BOOST_TEST(posts[1].first == "http://s3mock:9001/control/fail_puts");
+    BOOST_TEST(boost::json::parse(posts[1].second).at("prefix").as_string() == "nodes/2/");
+    BOOST_TEST(boost::json::parse(posts[1].second).at("count").as_int64() == 3);
+    BOOST_TEST(boost::json::parse(posts[2].second).at("prefix").as_string() == "");
+    BOOST_TEST(posts[3].first == "http://s3mock:9001/control/reset");
+
+    // Exactly one fault per call, each in range; refusals reach nothing.
+    for (const auto& bad :
+         {boost::json::object{}, boost::json::object{{"delay_ms", 1}, {"fail_puts", 1}},
+          boost::json::object{{"delay_ms", 60001}}, boost::json::object{{"fail_puts", 0}},
+          boost::json::object{{"fail_puts", 1}, {"node", 9}}}) {
+        BOOST_TEST(chaos_ctl::call(ctx, "fault.s3", bad).at("status").as_string() == "error");
+    }
+    BOOST_TEST(posts.size() == 4u);
+
+    // A mock that does not answer is an error, not a fault that took effect.
+    ctx.http_post = [](const std::string&, const std::string&) {
+        return dc::HttpResult{0, "connection failed"};
+    };
+    auto out = chaos_ctl::call(ctx, "fault.s3", {{"delay_ms", 5}});
+    BOOST_TEST(out.at("status").as_string() == "error");
+    BOOST_TEST(std::string(out.at("error").as_string()).find("answered nothing") !=
+               std::string::npos);
+}
+
+BOOST_FIXTURE_TEST_CASE(reset_clears_the_s3_store_faults, fixture) {
+    ctx.cfg.nodes = dc::k_node_map;
+    ctx.cfg.s3_control = "localhost:19001";
+    std::vector<std::string> urls;
+    ctx.http_post = [&](const std::string& url, const std::string&) {
+        urls.push_back(url);
+        return dc::HttpResult{200, R"({"reset":true})"};
+    };
+    BOOST_TEST(chaos_ctl::call(ctx, "run.reset", {}).at("status").as_string() == "ok");
+    BOOST_REQUIRE(urls.size() == 1u);
+    BOOST_TEST(urls[0] == "http://localhost:19001/control/reset");
+}
+
 BOOST_AUTO_TEST_CASE(config_round_trips) {
     chaos_ctl::run_config c;
     c.nodes = dc::chaos5_node_table("x");
@@ -617,6 +672,13 @@ BOOST_AUTO_TEST_CASE(config_round_trips) {
         n.as_object().erase("host");
     }
     BOOST_TEST(chaos_ctl::config_from_json(old).nodes.at(1).host == "localhost");
+
+    c.s3_control = "s3mock:9001";
+    BOOST_TEST(chaos_ctl::config_from_json(chaos_ctl::to_json(c)).s3_control == "s3mock:9001");
+    // A run.json written before the S3 layouts has no store.
+    old = chaos_ctl::to_json(c);
+    old.erase("s3_control");
+    BOOST_TEST(chaos_ctl::config_from_json(old).s3_control.empty());
 }
 
 BOOST_AUTO_TEST_CASE(checked_in_allowlist_holds_only_names_chaos_node_reaches) {

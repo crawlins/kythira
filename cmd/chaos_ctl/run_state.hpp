@@ -60,6 +60,10 @@ struct run_config {
     std::int64_t election_timeout_max_ms{300};
     /// chaos_workload, which workload.start runs.
     std::string workload_binary;
+    /// host:port of chaos_s3_mock's control API when the nodes keep their
+    /// state in it (PERSISTENCE=s3, cairn-chaos-testing task 14); empty
+    /// for a cluster on disk, where fault.s3 is unsupported.
+    std::string s3_control;
 };
 
 [[nodiscard]] inline auto to_json(const run_config& c) -> boost::json::object {
@@ -79,7 +83,8 @@ struct run_config {
             {"image_id", c.image_id},
             {"kythira_commit", c.kythira_commit},
             {"election_timeout_max_ms", c.election_timeout_max_ms},
-            {"workload_binary", c.workload_binary}};
+            {"workload_binary", c.workload_binary},
+            {"s3_control", c.s3_control}};
 }
 
 [[nodiscard]] inline auto config_from_json(const boost::json::object& o) -> run_config {
@@ -107,6 +112,10 @@ struct run_config {
     c.kythira_commit = std::string(o.at("kythira_commit").as_string());
     c.election_timeout_max_ms = o.at("election_timeout_max_ms").to_number<std::int64_t>();
     c.workload_binary = std::string(o.at("workload_binary").as_string());
+    // Absent from run directories written before the S3 layouts.
+    if (const auto* s3 = o.if_contains("s3_control"); s3 != nullptr && s3->is_string()) {
+        c.s3_control = std::string(s3->as_string());
+    }
     return c;
 }
 

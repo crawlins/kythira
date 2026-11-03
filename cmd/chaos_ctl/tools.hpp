@@ -70,6 +70,9 @@ struct context {
     std::function<std::string()> wall = real_wall;
     /// docker/cairn/failpoints.allowlist.
     std::set<std::string> failpoints;
+    /// POSTs to chaos_s3_mock's control API (fault.s3, run.reset).
+    std::function<docker_chaos::HttpResult(const std::string& url, const std::string& body)>
+        http_post = docker_chaos::real_http_post;
 };
 
 /// What one call accumulates besides its result.
@@ -519,6 +522,60 @@ inline auto clock_skew(context& /*ctx*/, const boost::json::object& /*a*/, call_
         "which rootless Podman cannot grant (design section 6)");
 }
 
+/// One POST to chaos_s3_mock's control API; a non-200 answer is an error.
+inline auto s3_control_post(context& ctx, const std::string& path, const boost::json::object& body)
+    -> boost::json::value {
+    const auto r =
+        ctx.http_post("http://" + ctx.cfg.s3_control + path, boost::json::serialize(body));
+    if (r.status != 200) {
+        throw std::runtime_error(
+            "chaos_s3_mock " + path + " answered " +
+            (r.status == 0 ? std::string("nothing") : std::to_string(r.status)) + ": " + r.body);
+    }
+    boost::system::error_code ec;
+    auto v = boost::json::parse(r.body, ec);
+    return ec ? boost::json::value(r.body) : v;
+}
+
+/// Faults in the S3 store the nodes keep their Raft state in
+/// (cairn-chaos-testing task 14.4). Exactly one of: delay_ms (every PUT
+/// waits that long, 0 clears it); fail_puts (the next N PUTs answer 500
+/// and store nothing, only node's own if node is given); clear: true.
+inline auto s3(context& ctx, const boost::json::object& a, call_state& /*st*/)
+    -> boost::json::value {
+    if (ctx.cfg.s3_control.empty()) {
+        throw tool_unsupported(
+            "fault.s3: this run's nodes keep their state on disk; only a run started with an "
+            "S3 project (PERSISTENCE=s3) has a store to fault");
+    }
+    const int given = static_cast<int>(args::has(a, "delay_ms")) +
+                      static_cast<int>(args::has(a, "fail_puts")) +
+                      static_cast<int>(args::flag(a, "clear"));
+    if (given != 1) {
+        throw tool_error("give exactly one of delay_ms, fail_puts or clear: true");
+    }
+    if (args::flag(a, "clear")) {
+        return s3_control_post(ctx, "/control/reset", {});
+    }
+    if (args::has(a, "delay_ms")) {
+        const auto ms = args::integer(a, "delay_ms");
+        if (ms < 0 || ms > 60'000) {
+            throw tool_error("delay_ms must be in [0, 60000]");
+        }
+        return s3_control_post(ctx, "/control/put_delay", {{"ms", ms}});
+    }
+    const auto count = args::integer(a, "fail_puts");
+    if (count < 1 || count > 10'000) {
+        throw tool_error("fail_puts must be in [1, 10000]");
+    }
+    // chaos_node's default S3_PREFIX is nodes/<NODE_ID>.
+    std::string prefix;
+    if (args::has(a, "node")) {
+        prefix = "nodes/" + std::to_string(args::node(ctx, a).id()) + "/";
+    }
+    return s3_control_post(ctx, "/control/fail_puts", {{"prefix", prefix}, {"count", count}});
+}
+
 inline auto status(context& ctx, const boost::json::object& /*a*/, call_state& /*st*/)
     -> boost::json::value {
     boost::json::array nodes;
@@ -723,6 +780,14 @@ inline auto reset(context& ctx, const boost::json::object& /*a*/, call_state& st
         }
     }
     docker_chaos::heal_all(ctx.cluster, [&st](const std::string& s) { st.note(s); });
+    if (!ctx.cfg.s3_control.empty()) {
+        // The store's faults too; its objects stay, as a disk's would.
+        try {
+            s3_control_post(ctx, "/control/reset", {});
+        } catch (const std::exception& e) {
+            st.note(std::string("could not clear the S3 store's faults: ") + e.what());
+        }
+    }
     return boost::json::object{{"healed", true}};
 }
 
@@ -777,6 +842,14 @@ inline auto reset(context& ctx, const boost::json::object& /*a*/, call_state& st
          true,
          tool::restart,
          {}},
+        {"fault.s3",
+         "Fault the S3 store the nodes keep their Raft state in (S3 projects only). Args, "
+         "exactly one of: delay_ms (every PUT waits this long; 0 clears it), fail_puts (the next "
+         "N PUTs fail and store nothing; add node to fail only that node's), clear: true.",
+         true,
+         false,
+         tool::s3,
+         {}},
         {"fault.clock_skew",
          "Unsupported in the Docker phase; always reports why.",
          false,
@@ -825,8 +898,8 @@ inline auto reset(context& ctx, const boost::json::object& /*a*/, call_state& st
          tool::check_run,
          {}},
         {"run.reset",
-         "Heal every fault: unpause, clear netem and iptables, disarm failpoints, restart any "
-         "node that is down.",
+         "Heal every fault: unpause, clear netem and iptables, disarm failpoints, clear S3 "
+         "store faults, restart any node that is down.",
          true,
          false,
          tool::reset,

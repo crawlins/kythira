@@ -7,7 +7,7 @@
 // and does nothing else.
 //
 //   chaos_ctl tools
-//   chaos_ctl init [--compose F] [--layout chaos3|chaos5|cairn] [--seed N]
+//   chaos_ctl init [--compose F] [--layout chaos3|chaos3-s3|chaos5|cairn|cairn-s3] [--seed N]
 //                  [--election-timeout-max-ms N] [--image I] [--image-id ID]
 //                  [--workload-binary P] [--start]
 //   chaos_ctl <tool> [JSON | -]          e.g. chaos_ctl fault.kill '{"node":2}'
@@ -26,7 +26,10 @@
 // (--image-id or $KYTHIRA_IMAGE_ID) rather than asking the runtime, and
 // does not start the cluster. Replay and minimize start clusters, so they
 // run on the host: a cairn run replays there with --layout chaos3, the same
-// image and settings on published ports.
+// image and settings on published ports. The -s3 layouts are the same
+// clusters with their Raft state in chaos_s3_mock (cairn-chaos-testing task
+// 14): cairn-s3 inside the fence, chaos3-s3 (docker/chaos-s3-compose.yml) on
+// the host, where a cairn-s3 run must replay.
 //
 // `report` (task 12, report.hpp) turns a log's first violation into a
 // replay file, a draft test and a doc/chaos-findings.md entry under the
@@ -163,15 +166,25 @@ auto kythira_commit() -> std::string {
 void apply_layout(run_config& cfg, const std::string& layout,
                   const std::optional<std::string>& compose) {
     std::string default_compose = "docker/docker-compose.yml";
+    cfg.s3_control.clear();
     if (layout == "chaos3") {
         cfg.nodes = docker_chaos::k_node_map;
     } else if (layout == "chaos5") {
         cfg.nodes = docker_chaos::chaos5_node_table(docker_chaos::chaos5_cluster_name());
-    } else if (layout == "cairn") {
+    } else if (layout == "chaos3-s3") {
+        // docker/chaos-s3-compose.yml: chaos3's nodes and ports, with their
+        // state in chaos_s3_mock, whose control API it publishes on 19001.
+        cfg.nodes = docker_chaos::k_node_map;
+        default_compose = "docker/chaos-s3-compose.yml";
+        cfg.s3_control = "localhost:19001";
+    } else if (layout == "cairn" || layout == "cairn-s3") {
         cfg.nodes = docker_chaos::cairn_node_table(docker_chaos::cairn_run_name());
         default_compose = "docker/cairn/cairn-compose.yml";
+        if (layout == "cairn-s3") {
+            cfg.s3_control = "s3mock:9001";
+        }
     } else {
-        throw usage_error("--layout must be chaos3, chaos5 or cairn");
+        throw usage_error("--layout must be chaos3, chaos3-s3, chaos5, cairn or cairn-s3");
     }
     cfg.compose_file = fs::absolute(compose.value_or(default_compose));
 }
@@ -282,13 +295,20 @@ auto positive_int(const std::optional<std::string>& v, int fallback) -> int {
 /// names, if given, so a run from inside a stack replays on the host.
 auto replay_config(const run_paths& paths, const cli& c) -> run_config {
     auto cfg = load_config(paths);
+    const bool recorded_s3 = !cfg.s3_control.empty();
     if (auto layout = opt(c, "--layout")) {
         apply_layout(cfg, *layout, opt(c, "--compose"));
+    }
+    // A run on S3 replayed on disk would answer every fault.s3 "unsupported"
+    // and test a different engine.
+    if (recorded_s3 && cfg.s3_control.empty()) {
+        throw usage_error("this run kept its state in S3; replay it with --layout chaos3-s3");
     }
     if (!reachable_from_host(cfg)) {
         throw usage_error(
             "this run's nodes are reached inside its stack; replay it on the host with "
-            "--layout chaos3");
+            "--layout chaos3" +
+            std::string(recorded_s3 ? "-s3" : ""));
     }
     // A run recorded in the tool server names the workload binary at its
     // path in that image.
