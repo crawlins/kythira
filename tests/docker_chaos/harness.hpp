@@ -248,6 +248,16 @@ inline boost::json::object parse_kv_read(const HttpResult& r) {
 // Like parse_command_response, a refusal is returned rather than thrown: 409
 // (another change pending) and 503 are outcomes a scenario asserts on.
 inline boost::json::object parse_membership_response(const HttpResult& r) {
+    // Status 0 is real_http_post's "no response": the node did not answer
+    // within the read timeout. /membership blocks until the change commits,
+    // and a learner catching up can take minutes, so the change may still
+    // complete after this. Say so, rather than handing "connection failed"
+    // to the JSON parser and reporting a syntax error.
+    if (r.status == 0) {
+        throw std::runtime_error(
+            "POST /membership: no answer before the read timeout; the change may still "
+            "complete (check cluster.status before retrying)");
+    }
     if (r.body.empty()) {
         throw std::runtime_error("POST /membership: empty response, HTTP " +
                                  std::to_string(r.status));

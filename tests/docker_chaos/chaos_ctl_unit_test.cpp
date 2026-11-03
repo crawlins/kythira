@@ -342,6 +342,30 @@ BOOST_FIXTURE_TEST_CASE(failpoint_outside_allowlist_is_refused, fixture) {
     BOOST_TEST(lines().size() == 2u);  // still on record
 }
 
+// libfiu answers -1 to disabling a name that is not enabled, as after a
+// restart or run.reset; turning off what is off is an ok call with a note,
+// while any other fiu failure still fails the call.
+BOOST_FIXTURE_TEST_CASE(failpoint_off_when_not_armed_is_ok, fixture) {
+    const std::string fp = "raft/persistence/save_current_term";
+    ctx.fiu_send = [](dc::ChaosNode&, const std::string& cmd) {
+        throw std::runtime_error("fiu: '" + cmd + "' failed with code -1");
+    };
+    auto off =
+        chaos_ctl::call(ctx, "fault.failpoint", {{"node", 1}, {"name", fp}, {"mode", "off"}});
+    BOOST_TEST(off.at("status").as_string() == "ok");
+    BOOST_TEST(off.at("result").at("was_armed").as_bool() == false);
+    BOOST_TEST(!off.at("notes").as_array().empty());
+    auto on =
+        chaos_ctl::call(ctx, "fault.failpoint", {{"node", 1}, {"name", fp}, {"mode", "always"}});
+    BOOST_TEST(on.at("status").as_string() == "error");
+    ctx.fiu_send = [](dc::ChaosNode&, const std::string&) {
+        throw std::runtime_error("fiu: no reply from n1:9100");
+    };
+    auto unreachable =
+        chaos_ctl::call(ctx, "fault.failpoint", {{"node", 1}, {"name", fp}, {"mode", "off"}});
+    BOOST_TEST(unreachable.at("status").as_string() == "error");
+}
+
 BOOST_FIXTURE_TEST_CASE(failpoint_modes_build_fiu_commands, fixture) {
     const std::string fp = "raft/persistence/save_current_term";
     for (const auto* mode : {"always", "once", "off"}) {
