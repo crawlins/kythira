@@ -1127,6 +1127,12 @@ docker compose -f docker/docker-compose.yml down
 | `HEARTBEAT_INTERVAL_MS` | `50` | Heartbeat interval (ms) |
 | `RPC_TIMEOUT_MS` | `100` | Per-RPC deadline (ms) |
 | `RPC_TLS_CERT` / `RPC_TLS_KEY` / `RPC_TLS_CA` | unset | Mutual TLS on Raft RPC: this node's certificate and key, and the root peers must chain to. All three or none. A peer must also carry its `PEERS` host name as a DNS SAN, and may speak only for that node's id. Not combinable with `JOIN`, a telemetry backend or `QUORUM_MANAGER` |
+| `PERSISTENCE` | `file` | `s3` keeps term, vote and log in an S3-compatible store instead of `DATA_DIR` (fenced object-store engine, combined hard state, segmented log). Needs a build with the AWS SDK. Not combinable with `RPC_TLS_*`, a telemetry backend or `QUORUM_MANAGER`. `docker/chaos-s3-compose.yml` runs three nodes on `chaos_s3_mock` |
+| `S3_ENDPOINT` | required under `s3` | Store endpoint, addressed path-style, e.g. `http://s3mock:9000` |
+| `S3_BUCKET` / `S3_PREFIX` | `kythira-chaos` / `nodes/<NODE_ID>` | Where this node's objects live |
+| `S3_REGION` | `us-east-1` | Signing region |
+| `S3_WRITE_BEHIND` | `1` | Stage entries and flush them in batches behind a durability barrier (`0`: one synchronous PUT per write) |
+| `S3_TIMEOUT_S` | `10` | Per-request timeout (s) |
 
 ### Port layout
 

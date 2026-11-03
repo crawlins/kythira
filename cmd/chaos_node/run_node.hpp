@@ -113,7 +113,7 @@ template<typename RaftTypes> int run_node(node_config cfg, kythira::node_config<
 #define CHAOS_NODE_FOR_EACH_TLS_BUNDLE(X)
 #endif
 #ifdef KYTHIRA_HAS_AWS_SDK
-#define CHAOS_NODE_FOR_EACH_AWS_BUNDLE(X) X(tcp_raft_types_with_aws_qm)
+#define CHAOS_NODE_FOR_EACH_AWS_BUNDLE(X) X(tcp_raft_types_with_aws_qm) X(tcp_raft_types_with_s3)
 #else
 #define CHAOS_NODE_FOR_EACH_AWS_BUNDLE(X)
 #endif

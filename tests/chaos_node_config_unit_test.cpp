@@ -48,6 +48,13 @@ constexpr const char* k_vars[] = {
     "RPC_TLS_CA",
     "QUORUM_MANAGER",
     "OTLP_ENDPOINT",
+    "PERSISTENCE",
+    "S3_ENDPOINT",
+    "S3_BUCKET",
+    "S3_PREFIX",
+    "S3_REGION",
+    "S3_WRITE_BEHIND",
+    "S3_TIMEOUT_S",
 };
 
 // Clears every variable under test, and again on destruction.
@@ -318,6 +325,74 @@ BOOST_FIXTURE_TEST_CASE(rpc_tls_refuses_combinations_it_cannot_honour, clean_env
     BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
     ::unsetenv("OTLP_ENDPOINT");
 
+    BOOST_CHECK_NO_THROW(node_config::from_env());
+}
+
+// PERSISTENCE=s3 (cairn-chaos-testing task 14.1).
+BOOST_FIXTURE_TEST_CASE(file_persistence_is_the_default, clean_env) {
+    ::setenv("NODE_ID", "1", 1);
+    ::setenv("PEERS", "2:b:7000", 1);
+    BOOST_TEST(!node_config::from_env().s3_persistence);
+
+    // An S3_* variable without PERSISTENCE=s3 is named, not ignored.
+    ::setenv("S3_ENDPOINT", "http://s3mock:9000", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+    ::unsetenv("S3_ENDPOINT");
+
+    ::setenv("PERSISTENCE", "disk", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+}
+
+BOOST_FIXTURE_TEST_CASE(s3_persistence_defaults, clean_env) {
+    ::setenv("NODE_ID", "3", 1);
+    ::setenv("PEERS", "1:a:7000", 1);
+    ::setenv("PERSISTENCE", "s3", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);  // no S3_ENDPOINT
+
+    ::setenv("S3_ENDPOINT", "http://s3mock:9000", 1);
+    auto cfg = node_config::from_env();
+    BOOST_TEST(cfg.s3_persistence);
+    BOOST_TEST(cfg.s3_endpoint == "http://s3mock:9000");
+    BOOST_TEST(cfg.s3_bucket == "kythira-chaos");
+    BOOST_TEST(cfg.s3_prefix == "nodes/3");
+    BOOST_TEST(cfg.s3_region == "us-east-1");
+    BOOST_TEST(cfg.s3_write_behind);
+    BOOST_TEST(cfg.s3_timeout.count() == 10);
+
+    ::setenv("S3_BUCKET", "b", 1);
+    ::setenv("S3_PREFIX", "run-7/n3", 1);
+    ::setenv("S3_WRITE_BEHIND", "0", 1);
+    ::setenv("S3_TIMEOUT_S", "3", 1);
+    cfg = node_config::from_env();
+    BOOST_TEST(cfg.s3_bucket == "b");
+    BOOST_TEST(cfg.s3_prefix == "run-7/n3");
+    BOOST_TEST(!cfg.s3_write_behind);
+    BOOST_TEST(cfg.s3_timeout.count() == 3);
+
+    ::setenv("S3_WRITE_BEHIND", "yes", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+    ::setenv("S3_WRITE_BEHIND", "1", 1);
+    ::setenv("S3_TIMEOUT_S", "0", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+}
+
+BOOST_FIXTURE_TEST_CASE(s3_persistence_is_refused_beside_other_modes, clean_env) {
+    ::setenv("NODE_ID", "1", 1);
+    ::setenv("PEERS", "2:b:7000", 1);
+    ::setenv("PERSISTENCE", "s3", 1);
+    ::setenv("S3_ENDPOINT", "http://s3mock:9000", 1);
+
+    ::setenv("QUORUM_MANAGER", "docker", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+    ::unsetenv("QUORUM_MANAGER");
+
+    ::setenv("OTLP_ENDPOINT", "http://collector:4318", 1);
+    BOOST_CHECK_THROW(node_config::from_env(), std::invalid_argument);
+    ::unsetenv("OTLP_ENDPOINT");
+
+    // JOIN stays available: the S3 bundle is the joinable default path.
+    ::setenv("JOIN", "1", 1);
+    ::setenv("SELF_ADDRESS", "node1:7000", 1);
     BOOST_CHECK_NO_THROW(node_config::from_env());
 }
 

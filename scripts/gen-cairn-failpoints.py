@@ -44,6 +44,13 @@ REACHED = {
     "include/raft/test_state_machine.hpp": "chaos_node's state machine",
     "include/raft/tcp_rpc.hpp": "chaos_node's plaintext RPC transport",
     "include/raft/tls_tcp_rpc.hpp": "chaos_node's mutual-TLS RPC transport (RPC_TLS_*)",
+    # Like the TLS transport, reached only in one mode: under PERSISTENCE=s3
+    # (cairn-chaos-testing task 14) the raft/objstore/* names are live and
+    # the raft/persistence/* ones file persistence declares are not, and the
+    # other way round on disk. One allowlist serves both, as it does for
+    # the two transports.
+    "include/raft/object_store_persistence.hpp":
+        "chaos_node's persistence engine under PERSISTENCE=s3",
 }
 
 # Headers that declare names in the families but whose code chaos_node never
@@ -54,8 +61,6 @@ NOT_REACHED = {
         "evaluates the same raft/network/* names",
     "include/raft/persistence.hpp":
         "the in-memory persistence engine; chaos_node uses file persistence",
-    "include/raft/object_store_persistence.hpp":
-        "object-store persistence; chaos_node uses file persistence (M4 adds it)",
     "include/raft/binary_file_persistence.hpp":
         "the binary segmented engine the disk-backed build cache runs on; chaos_node "
         "uses file persistence",
@@ -74,8 +79,9 @@ REQUIRED_INCLUDES = (
     "raft/test_state_machine.hpp",
     "raft/tcp_rpc.hpp",
     "raft/tls_tcp_rpc.hpp",
+    "raft/object_store_persistence.hpp",
 )
-FORBIDDEN_INCLUDES = ("raft/object_store_persistence.hpp", "raft/binary_file_persistence.hpp")
+FORBIDDEN_INCLUDES = ("raft/binary_file_persistence.hpp",)
 
 HEADER = """\
 # Copyright (c) 2026 Clark Rawlins

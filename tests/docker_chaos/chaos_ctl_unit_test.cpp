@@ -625,10 +625,10 @@ BOOST_AUTO_TEST_CASE(checked_in_allowlist_holds_only_names_chaos_node_reaches) {
     BOOST_TEST(fps.contains("raft/persistence/save_current_term"));
     BOOST_TEST(fps.contains("raft/state_machine/apply"));
     // tcp_rpc and tls_tcp_rpc evaluate the network names chaos_node sends
-    // through; object-store persistence is not chaos_node's engine.
+    // through; object-store persistence is its engine under PERSISTENCE=s3.
     BOOST_TEST(fps.contains("raft/network/send_request_vote"));
     BOOST_TEST(fps.contains("raft/network/send_append_entries"));
-    BOOST_TEST(!fps.contains("raft/objstore/put_object"));
+    BOOST_TEST(fps.contains("raft/objstore/put_object"));
     for (const auto& n : fps) {
         BOOST_TEST(n.starts_with("raft/"), n);
     }

@@ -35,6 +35,11 @@
 #include <raft/tls_tcp_rpc.hpp>
 #endif
 
+#ifdef KYTHIRA_HAS_AWS_SDK
+#include <raft/aws_s3_client.hpp>
+#include <raft/object_store_persistence.hpp>
+#endif
+
 #include <string>
 #include <type_traits>
 
@@ -69,6 +74,16 @@ struct tcp_raft_types_with_docker_qm : tcp_raft_types_joinable {
 // QUORUM_MANAGER=aws: the leader provisions and terminates EC2 instances.
 struct tcp_raft_types_with_aws_qm : tcp_raft_types_joinable {
     using quorum_manager_type = kythira::aws_ec2_quorum_manager<node_id_type, std::string>;
+};
+
+// PERSISTENCE=s3 (cairn-chaos-testing task 14.1): the default path with its
+// raft state in an S3-compatible store. Fenced, as multi_raft_node's
+// --persistence s3 is by default, so a second process on the same prefix is
+// refused rather than interleaved.
+struct tcp_raft_types_with_s3 : tcp_raft_types_joinable {
+    using persistence_engine_type =
+        kythira::fenced_object_store_persistence_engine<kythira::aws_s3_client, node_id_type,
+                                                        std::uint64_t, std::uint64_t>;
 };
 #endif
 
