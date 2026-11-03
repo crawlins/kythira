@@ -272,12 +272,13 @@ those jobs were tuned for.
 
 #### Acceptance Criteria
 
-1. The `docker/ca_cluster_node` and `docker/ca_service` builder stages SHALL
-   NOT install mold in this spec. They produce the binaries that ship on the
-   CA AMI; changing their linker waits until mold has been the CI linker for
-   at least two weeks with no linker-attributed failure, and is a follow-up.
-   Because those builders do not install mold, `KYTHIRA_LINKER=auto` already
-   leaves them on ld.bfd with no change to their Dockerfiles.
+1. ~~The `docker/ca_cluster_node` and `docker/ca_service` builder stages
+   SHALL NOT install mold in this spec.~~ **Done (task 9, November 3, 2026).**
+   These builders produce the binaries that ship on the CA AMI, so their
+   linker change waited until mold had been the CI linker for at least two
+   weeks with no linker-attributed failure (task 7, met November 2). They now
+   install mold, pin `-DKYTHIRA_LINKER=mold`, and fail their build if
+   `scripts/check-linker.sh` does not find mold in the shipped binary.
 2. vcpkg ports SHALL NOT be relinked with mold (Requirement 3).
 3. LTO, `--gc-sections`, `--icf` and split DWARF SHALL NOT be introduced.
    They interact with the linker choice and are each worth measuring, but

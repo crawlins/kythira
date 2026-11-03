@@ -1,11 +1,11 @@
 # Implementation Plan — mold Linker Adoption
 
-## Status: 8/9 tasks complete
+## Status: 9/9 tasks complete
 
-**Last Updated**: November 2, 2026 (task 1 measured; gate waived by the
+**Last Updated**: November 3, 2026 (task 1 measured; gate waived by the
 maintainer; tasks 2-5 and 8 merged in PR #545; task 6 confirmed on `main`;
-task 7's soak found no linker-attributed failure; task 9, the CA Docker
-builders, is open).
+task 7's soak found no linker-attributed failure; task 9 moved the CA
+Docker builders to mold in PR #673).
 
 ## Overview
 
@@ -251,18 +251,28 @@ Reference material to read before starting:
       binds this leg, not the link.
     - Follow-up: task 9.
 
-- [ ] 9. mold in the CA Docker builder stages
+- [x] 9. mold in the CA Docker builder stages
+  - Status: done in PR #673. Real Cloud Tests run 41495312145 built both
+    CA AMIs from the changed Dockerfile, and `check-linker.sh` printed
+    `build/ca_cluster_node: linked by mold 2.30.0` in each builder
+    (amd64 ami-0cf090a925d698f87, arm64 ami-042d97fe7eac23a93). Run
+    41576507189 then passed the `aws_bundle_ca_cluster` bundle on those
+    AMIs. The first bundle run, 41512618836, failed before launching
+    anything: the test's fixed cluster name made its numeric node-id
+    claims collide with earlier runs' ClientTokens. That failure was also
+    red on `main`, and PR #673 gives each run its own cluster name.
   - Requirement 8.1's gate is met (task 7): mold has been the CI linker for
     two weeks with no linker-attributed failure.
   - Add `mold` to the builder stage's `apt-get install` in
     `docker/ca_cluster_node/Dockerfile` and `docker/ca_service/Dockerfile`.
-    `KYTHIRA_LINKER=auto` then picks it up with no other change, and the
-    runtime stages stay as they are.
+    The builders pin `-DKYTHIRA_LINKER=mold` rather than relying on
+    `auto`, so an image that lost mold fails to configure instead of
+    silently linking with ld.bfd. The runtime stages stay as they are.
   - Run `scripts/check-linker.sh` on the built binary inside the builder
     stage, so an image that silently fell back to ld.bfd fails its build.
   - These binaries ship on the CA AMI (`packer/ca_cluster_node` builds from
     this Dockerfile), so prove one AMI build plus the CA real-cloud bundle
     (`aws_bundle_ca_cluster`) on the change before merge. Those need
     Clark's go for the spend.
-  - Amend Requirement 8.1 from a non-goal to done when this lands.
+  - Requirement 8.1 is amended from a non-goal to done.
   - _Requirements: 8.1_
