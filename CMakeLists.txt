@@ -2025,6 +2025,8 @@ endif()
 if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
     add_subdirectory(cmd/multi_raft_node)
     add_subdirectory(cmd/chaos_node)
+    # The S3 mock as a container for the cairn M3 stack (chaos_node's image).
+    add_subdirectory(cmd/chaos_s3_mock)
 endif()
 if(Boost_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
     add_subdirectory(tests)
@@ -2082,7 +2084,8 @@ endif()
 # a second time. Each is added only when its own gate above admitted it.
 add_custom_target(host_binaries)
 foreach(_kythira_host_binary
-        ca_service ca_cluster_node chaos_node chaos_workload chaos_ctl poco_discovery_node
+        ca_service ca_cluster_node chaos_node chaos_workload chaos_ctl chaos_s3_mock
+        poco_discovery_node
         multi_raft_node multi_raft_bench redis_gateway_node dns_discovery_node
         dns_sd_discovery_node oci_heartbeat_writer_node raft_object_backup)
     if(TARGET ${_kythira_host_binary})

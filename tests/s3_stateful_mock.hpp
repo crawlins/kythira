@@ -66,7 +66,12 @@ public:
         std::string etag;  ///< Quoted, as S3 sends it.
     };
 
-    s3_stateful_mock() {
+    s3_stateful_mock() : s3_stateful_mock("localhost", 0) {}
+
+    /// Binds `host`:`port` instead of an ephemeral port on `localhost`, for
+    /// `cmd/chaos_s3_mock`, which serves a container network under a fixed
+    /// port. Port 0 still picks a free one.
+    s3_stateful_mock(const std::string& host, int port) {
         // Three hosts with several groups each, every group with up to
         // `append_concurrency` PUTs in flight, outnumber cpp-httplib's
         // default pool; a queued request would read as S3 latency.
@@ -85,9 +90,14 @@ public:
                        [this](const httplib::Request& req, httplib::Response& res) {
                            handle_delete(req, res);
                        });
-        _port = _server.bind_to_any_port("localhost");
+        if (port == 0) {
+            _port = _server.bind_to_any_port(host);
+        } else {
+            _port = _server.bind_to_port(host, port) ? port : -1;
+        }
         if (_port <= 0) {
-            throw std::runtime_error("s3_stateful_mock: cannot bind localhost");
+            throw std::runtime_error("s3_stateful_mock: cannot bind " + host + ":" +
+                                     std::to_string(port));
         }
         _thread = std::thread([this] { _server.listen_after_bind(); });
         _server.wait_until_ready();
