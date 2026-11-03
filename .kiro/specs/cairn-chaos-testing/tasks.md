@@ -738,3 +738,34 @@ compatibility").
   failing scenario and try to make it fail on demand. M4 (EC2, Requirement
   9.5) and M5 (monthly routine) get their own follow-up spec once this is
   done.
+  - Target (Clark, 2026-11-03): the S3 write-behind lost write. CI's
+    `multi_raft_node_s3_process_test` lost 1 of about 2,000 acknowledged
+    writes after a leader SIGKILL in 17 jobs (October 25-28; it is on
+    `.github/ctest-retry-allowlist.txt`). PR #646 fixed a barrier race
+    that is a candidate cause, not a confirmed one. The Real Cloud Tests
+    runs have been green since, so this is the failing scenario that
+    still matters. It runs in Docker against an S3 mock, so M3 needs no
+    cloud account. GPU time comes from the $25 Clark set for M2 and M3.
+  - Why the M2 stack cannot reach it: `chaos_node` persists to files
+    only. The lost write needs the object-store engine's write-behind
+    path (puts in flight, a durability barrier, a leader killed between
+    the ack and the put).
+  - [ ] 14.1 `chaos_node --persistence s3`: the object-store engine over
+        `aws_s3_client` with a path-style endpoint, built only where the
+        AWS SDK is found (as `multi_raft_node`'s S3 arm is), plus a
+        `kythira-chaos-node:s3` image tag.
+  - [ ] 14.2 `cmd/chaos_s3_mock`: `tests/s3_stateful_mock.hpp` as a
+        standalone server in its own container, with its test knobs
+        (PUT delay, fail-next-N by key prefix) on a small control
+        endpoint.
+  - [ ] 14.3 `docker/chaos-s3-compose.yml`: three `chaos_node`s and the
+        mock, wired by service name (no static IPs, Docker and rootless
+        Podman).
+  - [ ] 14.4 `chaos_ctl` tool `fault.s3`: set or clear the mock's PUT
+        delay and failure rule, logged and replayed like any other call.
+  - [ ] 14.5 Project `docker/cairn/projects/s3-lost-write.json`
+        (invariant: linearizability, a lost acknowledged write), with
+        hints from the CI failure: slow PUTs, leader SIGKILL right after
+        acks, a leader change while a barrier is pending.
+  - [ ] 14.6 Runs: up to five 2-hour runs on the kept AMI within the
+        remaining budget, then triage, replay and draft tests as in M2.
