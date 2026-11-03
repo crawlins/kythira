@@ -4,9 +4,13 @@
 # Stage 1 — build ca_cluster_node
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 AS builder
 
+# mold links the binary (.kiro/specs/mold-linker task 9). The build pins
+# -DKYTHIRA_LINKER=mold rather than relying on auto, so a missing mold fails
+# configure, and check-linker.sh then fails the stage if the binary's
+# .comment does not name mold.
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        g++ cmake ninja-build pkg-config libssl-dev && \
+        g++ cmake ninja-build pkg-config libssl-dev mold && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -35,8 +39,10 @@ RUN case "$(uname -m)" in \
     cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DKYTHIRA_NODE_ID_KIND=numeric \
+        -DKYTHIRA_LINKER=mold \
         -DCMAKE_PREFIX_PATH=/src/vcpkg_installed/$TRIPLET && \
-    cmake --build build --target ca_cluster_node ${EXTRA_TARGETS}
+    cmake --build build --target ca_cluster_node ${EXTRA_TARGETS} && \
+    scripts/check-linker.sh mold build/ca_cluster_node
 
 # Stage 2 — runtime
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
