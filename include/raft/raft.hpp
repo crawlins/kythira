@@ -8883,24 +8883,23 @@ auto node<Types>::apply_committed_entries() -> void {
         _metrics.emit();
     }
 
-    // Determine batch size based on lag
-    // For small lags, apply all entries
-    // For large lags, apply in batches to prevent blocking
+    // Apply at most max_batch_size entries per call, so one call never holds
+    // `_mutex` for an unbounded stretch; the rest is picked up by the next
+    // AppendEntries or heartbeat. There is deliberately no sleep between
+    // entries: every caller holds `_mutex`, so a pause here (it used to be
+    // 10 ms per entry once the lag passed 50) stopped this node answering
+    // AppendEntries and votes for about a second per batch. A follower that
+    // fell behind then applied 100 entries a second, its leader's RPCs to it
+    // timed out, and with one voter down that lost the group its quorum.
     constexpr log_index_type max_batch_size = 100;
-    constexpr log_index_type rate_limit_threshold = 50;
 
     auto batch_size = std::min(lag, max_batch_size);
     auto entries_to_apply = batch_size;
 
-    // Rate limiting: if lag is large, add small delays between batches
-    bool should_rate_limit = lag > rate_limit_threshold;
-    constexpr auto rate_limit_delay = std::chrono::milliseconds(10);
-
     _logger.debug("Starting entry application",
                   {{"node_id", node_id_to_string(_node_id)},
                    {"entries_to_apply", std::to_string(entries_to_apply)},
-                   {"total_lag", std::to_string(lag)},
-                   {"rate_limited", should_rate_limit ? "true" : "false"}});
+                   {"total_lag", std::to_string(lag)}});
 
     auto catchup_start_time = std::chrono::steady_clock::now();
     log_index_type entries_applied_in_batch = 0;
@@ -9281,11 +9280,6 @@ auto node<Types>::apply_committed_entries() -> void {
                 // Continue to next entry (dangerous - can lead to inconsistency)
                 continue;
             }
-        }
-
-        // Rate limiting: add small delay between entries if needed
-        if (should_rate_limit && entries_applied_in_batch < entries_to_apply) {
-            std::this_thread::sleep_for(rate_limit_delay);
         }
     }
 
