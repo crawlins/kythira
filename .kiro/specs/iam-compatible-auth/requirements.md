@@ -148,9 +148,14 @@ without any stored cloud keys.
    publish the discovery document and JWKS to an object-store bucket
    (`--oidc-publish-url`). The leader SHALL republish after every key change
    and SHALL log an error and raise a metric if a publish fails.
-10. Followers SHALL serve discovery and JWKS from their replica. Only the
-    leader SHALL sign tokens; a follower SHALL proxy the token request to the
-    leader or answer 503 with `no_known_leader`, as the other `/v1/*` routes do.
+10. Any member SHALL answer discovery and JWKS requests: the leader from
+    the replicated state, and a follower with a 308 redirect to the leader
+    (or 503 with `no_known_leader`), as `/v1/root-ca` does. A follower has no
+    local read of its replica, only the leader-served linearisable read.
+    Where a relying party will not follow the redirect, the operator uses
+    `--oidc-publish-url` (criterion 9). Only the leader SHALL sign tokens; a
+    follower SHALL proxy the token request to the leader or answer 503 with
+    `no_known_leader`, as the other `/v1/*` routes do.
 
 ### Requirement 2: Cloud credential exchange
 

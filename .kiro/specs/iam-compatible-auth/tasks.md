@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 0/25 tasks complete
+## Status: 1/25 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -80,7 +80,7 @@ because each has a zero-spend fallback.
 
 ### Phase A — OIDC issuer and outbound federation
 
-- [ ] 1. Issuer signing keys and discovery
+- [x] 1. Issuer signing keys and discovery
   - `include/raft/jwt.hpp`: base64url and compact JWS sign and verify for
     RS256 and ES256, with the ES256 DER↔raw conversion. Unit tests use
     RFC 7515 and RFC 7520 vectors.
@@ -95,6 +95,21 @@ because each has a zero-spend fallback.
       retain the old key after its last use;
     - determinism across a snapshot restore.
   - _Requirements: 1.1–1.5, 1.10_
+  - Done November 3, 2026. Notes from the implementation:
+    - `include/raft/oidc_issuer.hpp` holds the key record and a pure
+      rotation planner (`plan_oidc_rotation`), so the timeline test runs a
+      year of hourly ticks against the real state machine in milliseconds.
+    - The commands carry a leader-stamped `now`, and the state keeps the
+      latest one (`oidc_clock`) so a leader with a trailing clock cannot move
+      time back. A snapshot that drops a key is accepted only if that key
+      was retiring and the snapshot's clock has passed its `retire_after`.
+    - The JWKS filters out keys past `retire_after` itself, because the
+      replicated state only prunes them at the next OIDC command, which is
+      usually the next rotation.
+    - The `kid` is the RFC 7638 thumbprint of the public key.
+    - Followers redirect discovery and JWKS to the leader (Requirement 1.10
+      amended): `node<Types>` has no local read, only the linearisable
+      `read_state()`, which followers cannot serve.
 
 - [ ] 2. Token endpoint and bucket publishing
   - `POST /v1/oidc/token`:

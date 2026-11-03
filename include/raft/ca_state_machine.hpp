@@ -20,6 +20,7 @@
 
 #include <raft/certificate_serial.hpp>
 #include <raft/composite_node_id.hpp>
+#include <raft/oidc_issuer.hpp>
 #include <raft/types.hpp>
 
 #include <boost/json.hpp>
@@ -57,6 +58,12 @@ enum class ca_command_type : std::uint8_t {
     record_revocation = 2,
     noop = 3,
     record_rpc_tls_ready = 4,
+    // OIDC issuer signing keys (`.kiro/specs/iam-compatible-auth/`,
+    // Requirement 1.4-1.5). Both carry a leader-stamped "now"; apply() first
+    // drops every retiring key whose retire_after is at or before it, so key
+    // expiry is driven by the log, never by a replica's clock.
+    record_oidc_key = 5,
+    retire_oidc_key = 6,
 };
 
 struct ca_ledger_entry {
@@ -513,6 +520,33 @@ requires kythira::node_id_traits<NodeId>::is_textual
     return ca_state_machine_detail::bytes_from_json(obj);
 }
 
+/// Encodes a `record_oidc_key` command. `key.sealed_private_key` SHALL
+/// already be the output of `encrypt_ca_private_key()`; `key.retire_after`
+/// must be unset. `now` is the leader's clock when it proposes the command.
+[[nodiscard]] inline auto encode_record_oidc_key_command(const kythira::oidc::oidc_key_record& key,
+                                                         std::int64_t now)
+    -> std::vector<std::byte> {
+    auto obj = kythira::oidc::key_record_to_json(key);
+    obj.erase("retire_after");
+    obj["type"] = static_cast<int>(ca_command_type::record_oidc_key);
+    obj["now"] = now;
+    return ca_state_machine_detail::bytes_from_json(obj);
+}
+
+/// Encodes a `retire_oidc_key` command: `kid` stops signing now and leaves
+/// the JWKS once a command stamped at or after `retire_after` applies.
+[[nodiscard]] inline auto encode_retire_oidc_key_command(std::string_view kid,
+                                                         std::int64_t retire_after,
+                                                         std::int64_t now)
+    -> std::vector<std::byte> {
+    boost::json::object obj;
+    obj["type"] = static_cast<int>(ca_command_type::retire_oidc_key);
+    obj["kid"] = kid;
+    obj["retire_after"] = retire_after;
+    obj["now"] = now;
+    return ca_state_machine_detail::bytes_from_json(obj);
+}
+
 /// Replicated CA state: root material (encrypted key + plaintext cert, the
 /// cert being public by nature) plus the full issuance/revocation ledger.
 /// Satisfies `kythira::state_machine<ca_state_machine, std::uint64_t>` so it
@@ -524,9 +558,13 @@ public:
 
     /// Dispatches on the command's `ca_command_type`. Returns an empty byte
     /// vector on success. Returns a boost::json `{"error": "..."}` payload
-    /// (as bytes) — without throwing and without mutating state — for the two
-    /// deterministic business-logic rejections: a duplicate `bootstrap_ca`,
-    /// or a `record_revocation` naming a serial not present in the ledger.
+    /// (as bytes) — without throwing — for the deterministic business-logic
+    /// rejections: a duplicate `bootstrap_ca`, a `record_revocation` naming a
+    /// serial not present in the ledger, a `record_oidc_key` reusing a kid,
+    /// and a `retire_oidc_key` naming an unknown or already-retiring kid.
+    /// None of these changes state, except that an OIDC command's "now"
+    /// still advances the OIDC clock (and so prunes expired keys) — every
+    /// replica does the same, so they stay identical.
     /// Throws `std::invalid_argument` only for structurally malformed command
     /// bytes, which should never occur in practice since the leader
     /// validates everything before proposing (Requirement 17.1).
@@ -594,6 +632,34 @@ public:
                 _rpc_tls_ready_textual.emplace(text);
                 return {};
             }
+            case ca_command_type::record_oidc_key: {
+                auto key = kythira::oidc::key_record_from_json(obj);
+                if (key.retire_after) {
+                    throw std::invalid_argument(
+                        "ca_state_machine: record_oidc_key with retire_after set");
+                }
+                advance_oidc_clock(obj.at("now").to_number<std::int64_t>());
+                if (std::ranges::any_of(_oidc_keys,
+                                        [&](const auto& k) { return k.kid == key.kid; })) {
+                    return error_result("duplicate_kid");
+                }
+                _oidc_keys.push_back(std::move(key));
+                return {};
+            }
+            case ca_command_type::retire_oidc_key: {
+                const std::string kid(obj.at("kid").as_string());
+                const auto retire_after = obj.at("retire_after").to_number<std::int64_t>();
+                advance_oidc_clock(obj.at("now").to_number<std::int64_t>());
+                auto it = std::ranges::find(_oidc_keys, kid, &kythira::oidc::oidc_key_record::kid);
+                if (it == _oidc_keys.end()) {
+                    return error_result("kid_not_found");
+                }
+                if (it->retire_after) {
+                    return error_result("already_retiring");
+                }
+                it->retire_after = retire_after;
+                return {};
+            }
         }
         throw std::invalid_argument("ca_state_machine: unknown command type");
     }
@@ -621,6 +687,16 @@ public:
             }
             obj["rpc_tls_ready_textual"] = std::move(textual);
         }
+        // Likewise only once the issuer has been used, so clusters without
+        // --oidc-issuer-url keep their snapshot format.
+        if (!_oidc_keys.empty() || _oidc_clock != 0) {
+            boost::json::array keys;
+            for (const auto& k : _oidc_keys) {
+                keys.emplace_back(kythira::oidc::key_record_to_json(k));
+            }
+            obj["oidc_keys"] = std::move(keys);
+            obj["oidc_clock"] = _oidc_clock;
+        }
         return ca_state_machine_detail::bytes_from_json(obj);
     }
 
@@ -642,7 +718,11 @@ public:
     ///   - same root certificate and encrypted key, still bootstrapped;
     ///   - every current ledger entry still present with the same
     ///     certificate, and no revocation cleared;
-    ///   - every recorded rpc_tls_ready node still recorded.
+    ///   - every recorded rpc_tls_ready node still recorded;
+    ///   - the OIDC key clock not moved backwards, and every current OIDC
+    ///     signing key either still present unchanged (apart from gaining a
+    ///     retire_after) or retiring with a retire_after the snapshot's clock
+    ///     has reached, which is the only way apply() drops one.
     /// Anything else throws std::invalid_argument WITHOUT modifying state
     /// (node<Types> restores before touching its log, so the rejection
     /// leaves the replica exactly as it was). A fresh, unbootstrapped replica
@@ -654,6 +734,8 @@ public:
         std::vector<ca_ledger_entry> ledger;
         std::set<std::uint64_t> rpc_tls_ready;
         std::set<std::string> rpc_tls_ready_textual;
+        std::vector<kythira::oidc::oidc_key_record> oidc_keys;
+        std::int64_t oidc_clock = 0;
 
         if (!snapshot.empty()) {
             auto obj = ca_state_machine_detail::json_from_bytes(snapshot).as_object();
@@ -675,6 +757,16 @@ public:
                 for (const auto& e : v->as_array()) {
                     rpc_tls_ready_textual.emplace(e.as_string());
                 }
+            }
+            // Snapshots from before the OIDC issuer have neither field: no
+            // keys, and the leader creates the first one after election.
+            if (auto* v = obj.if_contains("oidc_keys")) {
+                for (const auto& e : v->as_array()) {
+                    oidc_keys.push_back(kythira::oidc::key_record_from_json(e.as_object()));
+                }
+            }
+            if (auto* v = obj.if_contains("oidc_clock")) {
+                oidc_clock = v->to_number<std::int64_t>();
             }
         }
 
@@ -715,6 +807,27 @@ public:
                     reject("it drops rpc_tls_ready for node " + id);
                 }
             }
+            if (oidc_clock < _oidc_clock) {
+                reject("it moves the OIDC key clock backwards");
+            }
+            for (const auto& current : _oidc_keys) {
+                auto it =
+                    std::ranges::find(oidc_keys, current.kid, &kythira::oidc::oidc_key_record::kid);
+                if (it == oidc_keys.end()) {
+                    if (!current.retire_after || *current.retire_after > oidc_clock) {
+                        reject("it drops OIDC key " + current.kid + " before its retirement");
+                    }
+                    continue;
+                }
+                auto unretired = *it;
+                unretired.retire_after = current.retire_after;
+                if (unretired != current) {
+                    reject("it alters OIDC key " + current.kid);
+                }
+                if (current.retire_after && it->retire_after != current.retire_after) {
+                    reject("it changes the retirement of OIDC key " + current.kid);
+                }
+            }
         }
 
         _last_applied_index = index;
@@ -724,6 +837,8 @@ public:
         _ledger = std::move(ledger);
         _rpc_tls_ready = std::move(rpc_tls_ready);
         _rpc_tls_ready_textual = std::move(rpc_tls_ready_textual);
+        _oidc_keys = std::move(oidc_keys);
+        _oidc_clock = oidc_clock;
     }
 
     // Not part of the state_machine concept; used by ca_cluster_node's HTTP layer.
@@ -762,7 +877,24 @@ public:
         }
     }
 
+    /// The OIDC issuer's signing keys, retiring ones included (they stay in
+    /// the JWKS until pruned). Private keys are sealed.
+    [[nodiscard]] auto oidc_keys() const -> const std::vector<kythira::oidc::oidc_key_record>& {
+        return _oidc_keys;
+    }
+    /// The latest leader-stamped time any OIDC command carried.
+    [[nodiscard]] auto oidc_clock() const -> std::int64_t { return _oidc_clock; }
+
 private:
+    // Moves the OIDC clock forward to `now` (never back: a new leader's clock
+    // may trail the old one's) and drops keys whose retirement has passed.
+    void advance_oidc_clock(std::int64_t now) {
+        _oidc_clock = std::max(_oidc_clock, now);
+        std::erase_if(_oidc_keys, [this](const kythira::oidc::oidc_key_record& k) {
+            return k.retire_after && *k.retire_after <= _oidc_clock;
+        });
+    }
+
     [[nodiscard]] static auto error_result(std::string_view error) -> std::vector<std::byte> {
         boost::json::object obj;
         obj["error"] = boost::json::string(error);
@@ -775,6 +907,8 @@ private:
     std::vector<ca_ledger_entry> _ledger;
     std::set<std::uint64_t> _rpc_tls_ready;
     std::set<std::string> _rpc_tls_ready_textual;
+    std::vector<kythira::oidc::oidc_key_record> _oidc_keys;
+    std::int64_t _oidc_clock{0};
     log_index_t _last_applied_index{0};
 };
 
