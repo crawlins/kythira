@@ -863,7 +863,12 @@ BOOST_FIXTURE_TEST_CASE(three_az_cluster_survives_instance_loss_and_replacement,
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
-    cfg.cluster_name = "ca-cluster-real-ec2-test";
+    // Unique per run. The numeric-id claim is a RunInstances ClientToken
+    // derived from "<cluster>/<id>" alone, and EC2 keeps refusing a token
+    // for long after the instance it launched is gone. A fixed name made
+    // every run after the first collide on ids 1..5 and fail before
+    // launching anything.
+    cfg.cluster_name = "ca-cluster-" + uuid.substr(4, 8);
     cfg.image_id = ami;
     cfg.node_port = 7000;
     cfg.aws.region = region();
