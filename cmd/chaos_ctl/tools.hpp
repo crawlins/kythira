@@ -331,7 +331,7 @@ inline auto run_liveness(context& ctx, call_state& st, unsigned k) -> boost::jso
 
 namespace tool {
 
-inline auto failpoint(context& ctx, const boost::json::object& a, call_state& /*st*/)
+inline auto failpoint(context& ctx, const boost::json::object& a, call_state& st)
     -> boost::json::value {
     auto& n = args::node(ctx, a);
     const auto name = args::string(a, "name");
@@ -361,6 +361,25 @@ inline auto failpoint(context& ctx, const boost::json::object& a, call_state& /*
         cmd = docker_chaos::fiu::build_disable_cmd(name);
     } else {
         throw tool_error("mode must be always, random, once or off");
+    }
+    if (mode == "off") {
+        // libfiu's disable answers -1 for a name that is not enabled, which
+        // fiu_send reports as a failure. Turning off what is already off is
+        // not a failure: a restart, kill or run.reset disarms every
+        // failpoint on that node, and workers routinely disarm afterwards.
+        try {
+            ctx.fiu_send(n, cmd);
+        } catch (const std::runtime_error& e) {
+            if (std::string_view(e.what()).ends_with("failed with code -1")) {
+                st.note("failpoint " + name + " was not armed on node " + std::to_string(n.id()) +
+                        " (a restart, kill or run.reset disarms every failpoint)");
+                return boost::json::object{
+                    {"node", n.id()}, {"name", name}, {"mode", mode}, {"was_armed", false}};
+            }
+            throw;
+        }
+        return boost::json::object{
+            {"node", n.id()}, {"name", name}, {"mode", mode}, {"was_armed", true}};
     }
     ctx.fiu_send(n, cmd);
     return boost::json::object{{"node", n.id()}, {"name", name}, {"mode", mode}};

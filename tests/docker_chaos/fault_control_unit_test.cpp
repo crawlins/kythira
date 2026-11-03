@@ -178,6 +178,13 @@ BOOST_AUTO_TEST_CASE(parse_membership_response_keeps_refusals) {
     BOOST_TEST(busy["error"].as_string() == "change_in_progress");
     BOOST_TEST(busy["http_status"].as_int64() == 409);
     BOOST_CHECK_THROW(docker_chaos::parse_membership_response({0, ""}), std::runtime_error);
+    // A timed-out POST says so, not "syntax error" from the JSON parser.
+    try {
+        (void)docker_chaos::parse_membership_response({0, "connection failed"});
+        BOOST_FAIL("expected a throw");
+    } catch (const std::runtime_error& e) {
+        BOOST_TEST(std::string(e.what()).find("may still complete") != std::string::npos);
+    }
 }
 
 // The CAS body is built with boost::json, so a key or value with a quote in it
