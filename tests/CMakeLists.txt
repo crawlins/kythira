@@ -5298,6 +5298,24 @@ set_tests_properties(oidc_issuer_unit_test PROPERTIES
     LABELS "unit;certificate_authority;ca;oidc;iam;state_machine"
 )
 
+# IAM spec task 6: server-side SigV4 verification, run against every case of
+# AWS's signing test suite (vendored, Apache-2.0, under sigv4_suite/).
+add_executable(sigv4_verifier_test sigv4_verifier_test.cpp)
+target_link_libraries(sigv4_verifier_test PRIVATE
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_definitions(sigv4_verifier_test PRIVATE
+    SIGV4_SUITE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/sigv4_suite/v4")
+target_compile_features(sigv4_verifier_test PRIVATE cxx_std_23)
+add_test(NAME sigv4_verifier_test COMMAND sigv4_verifier_test)
+set_tests_properties(sigv4_verifier_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;sigv4;aws;iam"
+)
+
 # Guarded on httplib_FOUND: acme_test_server.hpp (this trio's shared mock
 # ACME server) uses httplib directly, and these three were previously
 # unconditional here even though every other httplib::httplib-using target

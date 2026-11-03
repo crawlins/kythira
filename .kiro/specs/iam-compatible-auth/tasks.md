@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 1/25 tasks complete
+## Status: 2/25 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -164,7 +164,7 @@ because each has a zero-spend fallback.
 
 ### Phase B — IAM core
 
-- [ ] 6. SigV4 parsing and verification
+- [x] 6. SigV4 parsing and verification
   - `include/raft/sigv4_verifier.hpp`:
     - header and presigned forms;
     - the service rules (including the S3 path rules);
@@ -176,6 +176,24 @@ because each has a zero-spend fallback.
     its licence. CLAUDE.md treats it as third-party, so it gets no header.
     Every case must pass.
   - _Requirements: 3.1–3.3, 3.5–3.7_
+  - Done November 3, 2026. Notes from the implementation:
+    - The suite is AWS's current copy, from `awslabs/aws-c-auth`
+      (`tests/aws-signing-test-suite/v4`, 38 cases), vendored with its
+      LICENSE and NOTICE. Each case is checked in both its header and
+      presigned forms: canonical request, string to sign and signature.
+    - `"normalize": false` cases run under `s3_path_rules`. That flag now
+      covers only the path rule; the other S3 behaviours (content hash
+      header required, presigned `UNSIGNED-PAYLOAD`, signed session token)
+      follow `error_protocol::s3`.
+    - The session token may be unsigned outside S3, as AWS documents and
+      the suite's `post-sts-header-after` case shows. For the presigned form
+      the verifier also accepts the signature over the query without the
+      token, computing both candidates every time.
+    - For an unknown key, the JSON protocol answers
+      `UnrecognizedClientException`, as Kinesis and DynamoDB do, rather than
+      `InvalidClientTokenId` (Requirement 3.7's fidelity rule wins).
+    - The result type is a small `parse_result`, not `std::expected`, which
+      clang 18 over libstdc++ 13 lacks.
 
 - [ ] 7. Streaming payloads and failure rate limiting
   - `sigv4_chunk_decoder`: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, the
