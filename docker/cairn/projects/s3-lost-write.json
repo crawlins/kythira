@@ -1,0 +1,13 @@
+{
+  "title": "Kythira chaos: S3 write-behind lost write",
+  "invariant": "linearizability",
+  "persistence": "s3",
+  "goal": "Make the cluster lose a write it acknowledged while its nodes keep their Raft state in S3 with write-behind: a key whose acknowledged write a later linearizable read does not see. Run the workload while faults are in place. Done when `chaos check.run '{\"checks\":[\"linearizability\"]}'` reports a violation; report that output and the chaos calls that led to it. Stale `local` reads are expected and do not count.",
+  "hints": [
+    "Slow store, then kill the leader: with fault.s3 delay_ms set (50 to 500), each node stages entries and flushes them in batches behind its acknowledgements. A leader killed (fault.kill) while writes are being acknowledged and its last batch is still in flight is the CI failure this project chases: one acknowledged write in about 2000 went missing after the leader was SIGKILLed.",
+    "A leader change while a barrier is pending: a follower answers AppendEntries only after its staged entries are durable. If a new leader appears (partition the old leader away, or pause it) while that wait is in progress, an answer can arrive in the wrong term or for entries the new leader has truncated.",
+    "Failed flushes: fault.s3 fail_puts makes the next N writes fail, optionally only one node's. A node must never acknowledge an entry whose flush failed; failures that land just before a kill or a leader change are the interesting ones.",
+    "Restart and catch up: a node restarted after a kill reloads its log from the store. Writes it acknowledged before the kill must all be there, and a log that ends mid-batch must not be mistaken for a shorter but complete one."
+  ],
+  "hints_by_feature": {}
+}

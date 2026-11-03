@@ -345,7 +345,7 @@ if(_RUNTIME_EXE)
     endif()
     if(NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
         add_custom_target(docker-chaos-image
-            DEPENDS chaos_node chaos_workload
+            DEPENDS chaos_node chaos_workload chaos_s3_mock
             COMMAND ${CMAKE_COMMAND} -E make_directory
                     "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist"
             COMMAND ${CMAKE_COMMAND} -E copy
@@ -354,6 +354,11 @@ if(_RUNTIME_EXE)
             COMMAND ${CMAKE_COMMAND} -E copy
                     "$<TARGET_FILE:chaos_workload>"
                     "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist/chaos_workload"
+            # The S3 store of the -s3 layouts (cairn-chaos-testing task 14)
+            # runs from this image too, with chaos_s3_mock as its entrypoint.
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:chaos_s3_mock>"
+                    "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist/chaos_s3_mock"
             COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_CHAOS_DOCKERFILE}"
                     --tag ${_CHAOS_IMAGE_TAG}

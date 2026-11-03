@@ -3,6 +3,17 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (November 3, 2026)
+
+- **The chaos cluster can keep its Raft state in S3.** `chaos_node` takes
+  `PERSISTENCE=s3`: the write-behind object-store engine over a store at
+  `S3_ENDPOINT`. `chaos_s3_mock` serves that store from the node image, with
+  a control API that slows or fails its PUTs, and `chaos_ctl` drives it with
+  a new tool, `fault.s3`. `docker/chaos-s3-compose.yml` and the cairn
+  stack's `s3` profile wire them up, and the `s3-lost-write` Cairn project
+  points the agents at the lost write `multi_raft_node_s3_process_test`
+  showed in CI (cairn-chaos-testing M3).
+
 ### What Changed (October 29, 2026)
 
 - **A follower no longer acknowledges entries a newer leader has already

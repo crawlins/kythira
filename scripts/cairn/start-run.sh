@@ -26,7 +26,9 @@
 # CAIRN_TARGET_FEATURES (comma-separated: peer2peer, object_store) adds the
 # seed hints that apply only to a target built with those features; the
 # Docker chaos_node has neither, so by default only the snapshot and
-# joint-consensus hints are given (design §5).
+# joint-consensus hints are given (design §5). A project with
+# "persistence": "s3" (s3-lost-write) also starts the `s3` profile's store
+# and puts the nodes' Raft state in it.
 # Uses $KYTHIRA_CONTAINER_RUNTIME and $KYTHIRA_COMPOSE_COMMAND as kill.sh
 # does; for rootless Podman set CONTAINER_SOCKET to its API socket. Prints
 # the project id, the run directory and the panel URL last.
@@ -67,6 +69,16 @@ while [ $# -gt 0 ]; do
 done
 spec="$repo/docker/cairn/projects/$project.json"
 [ -f "$spec" ] || fail "no project $spec"
+# A project whose "persistence" is "s3" runs its nodes on chaos_s3_mock
+# (cairn-chaos-testing task 14): the compose file's `s3` profile and
+# chaos_ctl's cairn-s3 layout, which gives the run fault.s3.
+persistence="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("persistence","file"))' "$spec")"
+layout=cairn
+case "$persistence" in
+    file) export CAIRN_PERSISTENCE=file CAIRN_S3_ENDPOINT= ;;
+    s3) export CAIRN_PERSISTENCE=s3 CAIRN_S3_ENDPOINT=http://s3mock:9000; layout=cairn-s3 ;;
+    *) fail "$spec: persistence must be file or s3, got $persistence" ;;
+esac
 
 # dispatch.yaml names the worker image and network for the default run;
 # the dispatch proxy refuses anything else, so render a copy that matches.
@@ -80,6 +92,7 @@ export CAIRN_DISPATCH_CONFIG="$dispatch_config"
 export KYTHIRA_CHAOS_NODE_IMAGE="$node_image"
 
 profiles=(--profile engine)
+[ "$persistence" = s3 ] && profiles+=(--profile s3)
 if [ -n "${CAIRN_LLM_SSH:-}" ]; then
     [ -r "${CAIRN_LLM_SSH_KEY:-}" ] || fail "CAIRN_LLM_SSH is set but CAIRN_LLM_SSH_KEY is not a readable key"
     profiles+=(--profile llm)
@@ -100,7 +113,7 @@ kythira_commit="$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
 if [ "$kythira_commit" != unknown ] && ! git -C "$repo" diff --quiet HEAD -- 2>/dev/null; then
     kythira_commit="$kythira_commit-dirty"
 fi
-"$runtime" exec -e KYTHIRA_COMMIT="$kythira_commit" "$tool" chaos_ctl init --layout cairn \
+"$runtime" exec -e KYTHIRA_COMMIT="$kythira_commit" "$tool" chaos_ctl init --layout "$layout" \
     --seed "$seed" --image-id "$image_id" --run-dir "$run_dir" > /dev/null \
     || fail "chaos_ctl init failed"
 "$runtime" exec "$tool" ln -sfn "$run_dir" /runs/current
@@ -149,6 +162,14 @@ Nothing outside the chaos command is reachable from here, by design.
 
 The cluster as it started (cluster.status):
 {json.dumps(status, indent=2)}"""
+if spec.get("persistence") == "s3":
+    origin += """
+
+The nodes keep their Raft state (term, vote and log) in an S3-compatible
+object store rather than on disk, writing it behind their acknowledgements
+and waiting on a barrier before answering. fault.s3 slows or fails that
+store's writes; run.reset clears those faults but keeps its objects, as a
+disk would."""
 hints = list(spec["hints"])
 for feature in filter(None, (f.strip() for f in features.split(","))):
     if feature not in spec["hints_by_feature"]:

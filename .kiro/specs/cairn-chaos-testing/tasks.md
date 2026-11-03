@@ -750,22 +750,38 @@ compatibility").
     only. The lost write needs the object-store engine's write-behind
     path (puts in flight, a durability barrier, a leader killed between
     the ack and the put).
-  - [ ] 14.1 `chaos_node --persistence s3`: the object-store engine over
-        `aws_s3_client` with a path-style endpoint, built only where the
-        AWS SDK is found (as `multi_raft_node`'s S3 arm is), plus a
-        `kythira-chaos-node:s3` image tag.
-  - [ ] 14.2 `cmd/chaos_s3_mock`: `tests/s3_stateful_mock.hpp` as a
-        standalone server in its own container, with its test knobs
-        (PUT delay, fail-next-N by key prefix) on a small control
-        endpoint.
-  - [ ] 14.3 `docker/chaos-s3-compose.yml`: three `chaos_node`s and the
-        mock, wired by service name (no static IPs, Docker and rootless
-        Podman).
-  - [ ] 14.4 `chaos_ctl` tool `fault.s3`: set or clear the mock's PUT
-        delay and failure rule, logged and replayed like any other call.
-  - [ ] 14.5 Project `docker/cairn/projects/s3-lost-write.json`
-        (invariant: linearizability, a lost acknowledged write), with
-        hints from the CI failure: slow PUTs, leader SIGKILL right after
-        acks, a leader change while a barrier is pending.
+  - [x] 14.1 `chaos_node` `PERSISTENCE=s3`: the fenced object-store
+        engine over `aws_s3_client` (path-style through `S3_ENDPOINT`),
+        set up as `multi_raft_node_s3_process_test` runs it: combined
+        hard state, segmented log, write-behind on (`S3_WRITE_BEHIND`).
+        Its own bundle (`tcp_raft_types_with_s3`) and instantiation file
+        (`run_node_s3.cpp`), built only where the AWS SDK is found, on the
+        default quorum-manager path only (refused beside `RPC_TLS_*`,
+        telemetry and `QUORUM_MANAGER`). No separate `:s3` image tag after
+        all: `:dev` already links the SDK wherever it is found, so the
+        image is the same and a build without the SDK refuses the mode
+        at startup. Placeholder credentials when none are set (the mock
+        checks no signature, and the fence gives no container real ones);
+        the first load retries for 30 s while the store starts.
+  - [x] 14.2 `cmd/chaos_s3_mock`: `tests/s3_stateful_mock.hpp` as a
+        standalone server (S3 on :9000), with its test knobs (PUT delay,
+        fail-next-N by key prefix) on a control API (:9001). Shipped in
+        the `kythira-chaos-node` image, run with it as the entrypoint.
+  - [x] 14.3 `docker/chaos-s3-compose.yml` (host, `chaos_ctl --layout
+        chaos3-s3`, control API on 127.0.0.1:19001) and the `s3` profile
+        of `docker/cairn/cairn-compose.yml` (`--layout cairn-s3`): three
+        `chaos_node`s and the mock, wired by service name. The mock in the
+        fence carries no run label, so the container proxy cannot kill
+        it. A cairn-s3 run replays only with `--layout chaos3-s3`.
+  - [x] 14.4 `chaos_ctl` tool `fault.s3`: `delay_ms`, `fail_puts`
+        (optionally one node's prefix) or `clear`, logged and replayed like
+        any other call; `run.reset` clears the store's faults and keeps its
+        objects. Unsupported on a run whose nodes are on disk.
+  - [x] 14.5 Project `docker/cairn/projects/s3-lost-write.json`
+        (invariant: linearizability, `"persistence": "s3"`, which
+        `start-run.sh` turns into the `s3` profile and the `cairn-s3`
+        layout), with hints from the CI failure: slow PUTs then a leader
+        SIGKILL, a leader change while a barrier is pending, failed
+        flushes, restart and reload.
   - [ ] 14.6 Runs: up to five 2-hour runs on the kept AMI within the
         remaining budget, then triage, replay and draft tests as in M2.

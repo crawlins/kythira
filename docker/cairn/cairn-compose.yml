@@ -7,7 +7,7 @@
 # egress proxy that is the only way out, and the Cairn engine with its
 # dispatcher, which starts the worker containers the agents run in.
 #
-#   raft_net     internal  node1-3, tool-server
+#   raft_net     internal  node1-3, tool-server, s3mock (profile s3)
 #   control_net  internal  tool-server, container-api-proxy
 #   dispatch_net internal  dispatcher, dispatch-api-proxy
 #   engine_net   internal  engine, dispatcher
@@ -43,7 +43,7 @@
 # directories here; the engine is Cairn v0.2.1 built unmodified from its
 # pinned commit by scripts/cairn/build-engine.sh. Profiles: `engine` runs
 # Cairn's server, `dispatch` its dispatcher, `llm` the tunnel to
-# llama.cpp, `probe` fence-probe.
+# llama.cpp, `probe` fence-probe, `s3` the S3 store of an S3 project.
 #
 # Start a run:  scripts/cairn/start-run.sh <project> (see its header)
 # Cluster only: <runtime> compose -f docker/cairn/cairn-compose.yml up -d
@@ -66,6 +66,11 @@ x-chaos-node-env: &chaos-node-env
   ELECTION_TIMEOUT_MIN_MS: "150"
   ELECTION_TIMEOUT_MAX_MS: "300"
   HEARTBEAT_INTERVAL_MS: "50"
+  # file, or s3 with the `s3` profile (start-run.sh sets both for a project
+  # whose "persistence" is "s3"; cairn-chaos-testing task 14). Empty
+  # S3_ENDPOINT is ignored under file.
+  PERSISTENCE: "${CAIRN_PERSISTENCE:-file}"
+  S3_ENDPOINT: "${CAIRN_S3_ENDPOINT:-}"
 
 services:
   # The same nodes as docker/docker-compose.yml, unpublished. A run made
@@ -97,6 +102,29 @@ services:
       <<: *chaos-node-env
       NODE_ID: "3"
       PEERS: "1:node1:7000,2:node2:7000"
+
+  # The S3 store of an S3 project's nodes (profile `s3`): chaos_s3_mock
+  # from the node image, on raft_net only, where the nodes reach S3 on
+  # :9000 and the tool server its control API on :9001 (fault.s3,
+  # run.reset; chaos_ctl --layout cairn-s3). It carries no
+  # kythira.cairn.run label, so container-api-proxy will not kill or pause
+  # it: its objects live in memory and are the whole cluster's state. The
+  # nodes do not depend on it (a dependency on a profiled service breaks
+  # every run without the profile); chaos_node retries its first load for
+  # 30 s instead.
+  s3mock:
+    profiles: ["s3"]
+    image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
+    container_name: ${CAIRN_RUN:-kythira-cairn}-s3mock
+    hostname: s3mock
+    entrypoint: ["/usr/local/bin/chaos_s3_mock"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9001/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    networks:
+      - raft_net
 
   # chaos_ctl and chaos_workload, and chaos_http.py on :7700, which the
   # workers' `chaos` command calls. Run directories live in the runs

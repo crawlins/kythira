@@ -18,6 +18,7 @@ COPY docker/chaos_node/dist/chaos_node /usr/local/bin/chaos_node
 # The cairn workload client rides along; a compose service runs it with its
 # own entrypoint (docker/chaos-5-compose.yml, profile "workload").
 COPY docker/chaos_node/dist/chaos_workload /usr/local/bin/chaos_workload
+COPY docker/chaos_node/dist/chaos_s3_mock /usr/local/bin/chaos_s3_mock
 COPY docker/chaos_node/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
