@@ -1,0 +1,191 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+name: Cache Cluster sccache Measurement
+
+# The disk-backed build cache's full-tree measurement
+# (.kiro/specs/disk-backed-build-cache/ task 11, Requirement 13): this
+# repository's own tree, built through sccache 0.17.0's WebDAV backend
+# against the three-node cache cluster of docker/cache-cluster/, and compared
+# with the OCI bucket that ci.yml uses today.
+#
+# Manually dispatched; it is a measurement, not a gate. Each leg, g++-13 and
+# clang++-18 on x64, runs at the same time on its own GitHub-hosted runner,
+# the hardware the OCI baseline (oci-build-cache task 10, run 34353211972)
+# was measured on. A runner cannot reach another runner's containers, so each
+# leg starts its own cluster on its own runner; the nodes share the
+# runner's CPU and disk with the build, which can only make the WebDAV
+# figures look worse than a separate cache host would.
+#
+# Per leg, at one commit:
+#   1. the cache-cluster image, its daemon built through the OCI cache
+#   2. WebDAV cold: an empty cluster, read_write user
+#   3. WebDAV warm: the same build again, fresh build directory
+#   4. WebDAV warm, read_only user with SCCACHE_WEBDAV_RW_MODE=READ_ONLY
+#      (Requirement 13.4; disk-backed-build-cache task 1 found the mode)
+#   5. OCI warm: the same build against the OCI bucket with the read-only
+#      key, for a same-runner, same-day comparison (Requirement 13.2)
+# and the cluster's peak RSS, chunk-store bytes and file count after step 3.
+#
+# scripts/cache-cluster-measure/measure.sh does the work; the numbers land
+# in the job summary and the `cache-cluster-measure-<compiler>` artifact.
+# Dispatch from main after main's own CI run has finished at that commit, so
+# step 5 is warm.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-cluster-measure-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: Measure (${{ matrix.compiler }}, x64)
+    runs-on: ubuntu-24.04
+    # A cold full-tree build on a hosted runner is 70-175 minutes; then three
+    # warm builds and the image.
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: g++-13
+          - compiler: clang++-18
+            vcpkg_cc: clang-18
+            vcpkg_cxx: clang++-18
+
+    env:
+      MEASURE_COMPILER: ${{ matrix.compiler }}
+      MEASURE_PREFIX_PATH: ${{ github.workspace }}/vcpkg_installed/x64-linux
+      MEASURE_OUT: ${{ github.workspace }}/measure-out
+      # Room for a full tree's objects on every node (each holds every
+      # chunk); the compose default of 4 GiB is sized for the scenario tests.
+      KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES: "17179869184"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Three copies of the cache, a full build tree and vcpkg_installed do
+      # not fit the stock image's free space.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 g++-13 clang-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool mold jq; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          exit 1
+
+      - name: Install Python tools
+        run: |
+          pip3 install --user -r scripts/kconfig/requirements.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      # Installs the pinned sccache and exports the OCI environment. A
+      # dispatch is never a push to main, so this is the read-only key: the
+      # measurement cannot write to the bucket ci.yml builds from.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # The same key as ci.yml's build-and-test leg for this compiler.
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc${{ matrix.vcpkg_cxx && format('-{0}', matrix.vcpkg_cxx) || '' }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ -n "${{ matrix.vcpkg_cxx }}" ]; then
+            export CC="${{ matrix.vcpkg_cc }}" CXX="${{ matrix.vcpkg_cxx }}"
+            export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
+          fi
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      # The daemon for the image, in its own build directory and through the
+      # OCI cache, so nothing reaches the cluster before the cold run.
+      # Configured as container-tests.yml configures it, numeric node ids
+      # included, which is what the compose file's peer lists are.
+      - name: Build the cache-cluster image
+        run: |
+          scripts/oci-build-cache/start-sccache.sh
+          cmake -B build-image -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKYTHIRA_NODE_ID_KIND=numeric \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DKYTHIRA_COMPILER_LAUNCHER=sccache \
+            -DKYTHIRA_LINKER=mold \
+            -DCONTAINER_RUNTIME=docker \
+            -DCMAKE_PREFIX_PATH="$MEASURE_PREFIX_PATH"
+          cmake --build build-image --target docker-cache-cluster-image -j"$(nproc)"
+          sccache --stop-server || true
+          rm -rf build-image
+          df -h /
+
+      - name: Start the cache cluster
+        run: scripts/cache-cluster-measure/measure.sh cluster-up
+
+      - name: Build (WebDAV, cold)
+        run: scripts/cache-cluster-measure/measure.sh build webdav-cold webdav
+
+      - name: Build (WebDAV, warm)
+        run: scripts/cache-cluster-measure/measure.sh build webdav-warm webdav
+
+      - name: Cluster after the warm run
+        run: scripts/cache-cluster-measure/measure.sh cluster-stats webdav-warm
+
+      - name: Build (WebDAV, warm, read_only)
+        run: scripts/cache-cluster-measure/measure.sh build webdav-warm-ro webdav-ro
+
+      - name: Build (OCI, warm)
+        run: scripts/cache-cluster-measure/measure.sh build oci-warm oci
+
+      - name: Cluster logs
+        if: failure()
+        run: docker compose -f docker/cache-cluster/compose.yml logs --tail 200
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cache-cluster-measure-${{ matrix.compiler }}
+          path: measure-out/
+          if-no-files-found: warn
