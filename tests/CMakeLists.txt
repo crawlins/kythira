@@ -5237,6 +5237,23 @@ set_tests_properties(jwt_unit_test PROPERTIES
     LABELS "unit;jose;jwt;oidc;iam"
 )
 
+# IAM spec task 1: the OIDC issuer's signing-key rotation planner and its
+# ca_state_machine commands and snapshot checks.
+add_executable(oidc_issuer_unit_test oidc_issuer_unit_test.cpp)
+target_link_libraries(oidc_issuer_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(oidc_issuer_unit_test PRIVATE cxx_std_23)
+add_test(NAME oidc_issuer_unit_test COMMAND oidc_issuer_unit_test)
+set_tests_properties(oidc_issuer_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;oidc;iam;state_machine"
+)
+
 # Guarded on httplib_FOUND: acme_test_server.hpp (this trio's shared mock
 # ACME server) uses httplib directly, and these three were previously
 # unconditional here even though every other httplib::httplib-using target

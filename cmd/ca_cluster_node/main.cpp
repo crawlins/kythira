@@ -16,6 +16,13 @@
 //                    [--rpc-tls-cert <path> --rpc-tls-key <path>]
 //                    [--allow-plaintext-rpc] [--allow-plaintext-http]
 //                    [--rpc-renewal-window-secs <n>]
+//                    [--oidc-issuer-url <https url> [--oidc-alg RS256|ES256]
+//                     [--oidc-key-rotation-days <n>] [--oidc-max-token-lifetime-secs <n>]]
+//
+// --oidc-issuer-url turns on the OIDC issuer (`.kiro/specs/iam-compatible-auth/`
+// Requirement 1): the leader keeps a sealed signing key in the replicated
+// state and rotates it, and /.well-known/openid-configuration and
+// /.well-known/jwks.json are served without the bearer token.
 //
 // The client bearer token comes from $CA_SERVICE_AUTH_TOKEN (--auth-token
 // still works, but leaves the token in /proc/<pid>/cmdline).
@@ -66,6 +73,7 @@
 #include <raft/httplib_listeners.hpp>
 #include <raft/membership.hpp>
 #include <raft/metrics.hpp>
+#include <raft/oidc_issuer.hpp>
 #include <raft/private_file.hpp>
 #include <raft/raft.hpp>
 #include <raft/tcp_raft_types.hpp>
@@ -103,6 +111,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 
 namespace {
 
@@ -867,6 +876,69 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
         }
     };
 
+    // ── OIDC issuer signing keys (iam-compatible-auth Requirements 1.3-1.5) ─
+    // The leader runs the pure planner against the replicated key set and its
+    // own clock, and proposes one step at a time: the first key, a successor
+    // a day before it is due to sign, or the retirement of a superseded key.
+    // Key generation and sealing happen here, never in apply(). Checked every
+    // few seconds rather than every tick, since each check is a linearisable
+    // read; after a committed step the next tick re-plans at once.
+    std::chrono::steady_clock::time_point next_oidc_check{};
+    auto maybe_rotate_oidc = [&] {
+        if (!cfg.oidc_enabled() || !raft_node.is_leader()) {
+            return;
+        }
+        const auto steady_now = std::chrono::steady_clock::now();
+        if (steady_now < next_oidc_check) {
+            return;
+        }
+        next_oidc_check = steady_now + std::chrono::seconds(5);
+
+        raft::testing::ca_state_machine state;
+        try {
+            state = read_ca_state(raft_node, std::chrono::milliseconds(5000));
+        } catch (const std::exception&) {
+            return;  // lost leadership or no quorum yet; retry later
+        }
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        const auto step =
+            kythira::oidc::plan_oidc_rotation(state.oidc_keys(), now, cfg.oidc_rotation_config());
+        try {
+            if (const auto* create = std::get_if<kythira::oidc::create_key>(&step)) {
+                auto key = kythira::jose::generate_signing_key(cfg.oidc_alg);
+                kythira::oidc::oidc_key_record rec;
+                rec.alg = cfg.oidc_alg;
+                rec.public_jwk = kythira::jose::public_jwk(key.get());
+                rec.kid = kythira::jose::jwk_thumbprint(rec.public_jwk);
+                rec.sealed_private_key = raft::testing::encrypt_ca_private_key(
+                    kythira::jose::private_key_to_pem(key.get()), unseal_passphrase);
+                rec.publish_after = create->publish_after;
+                rec.sign_after = create->sign_after;
+                raft_node
+                    .submit_command(raft::testing::encode_record_oidc_key_command(rec, now),
+                                    k_command_timeout)
+                    .get();
+                std::cerr << "[info] ca_cluster_node: OIDC signing key " << rec.kid
+                          << " recorded (signs from " << rec.sign_after << ")\n";
+                next_oidc_check = {};
+            } else if (const auto* retire = std::get_if<kythira::oidc::retire_key>(&step)) {
+                raft_node
+                    .submit_command(raft::testing::encode_retire_oidc_key_command(
+                                        retire->kid, retire->retire_after, now),
+                                    k_command_timeout)
+                    .get();
+                std::cerr << "[info] ca_cluster_node: OIDC signing key " << retire->kid
+                          << " retiring (unpublished at " << retire->retire_after << ")\n";
+                next_oidc_check = {};
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[warn] ca_cluster_node: OIDC key rotation step failed, will retry: "
+                      << ex.what() << "\n";
+        }
+    };
+
 #ifdef KYTHIRA_HAS_OPENSSL
     // ── RPC TLS maintenance behaviors (Requirements 5, 6, 7) — only
     //    meaningful (and only compiled in a way that's reachable) when this
@@ -1261,6 +1333,7 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 }
                 maybe_bootstrap();
                 ensure_signer();
+                maybe_rotate_oidc();
             } else if (was_leader) {
                 std::lock_guard lock(signer_mu);
                 signer.reset();
@@ -1388,6 +1461,13 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 return httplib::Server::HandlerResponse::Unhandled;  // health checks must work with
                                                                      // no credentials
             }
+            // OIDC discovery and JWKS are public by design: relying parties
+            // (cloud STS services) fetch them anonymously.
+            if (cfg.oidc_enabled() && (req.method == "GET" || req.method == "HEAD") &&
+                (req.path == kythira::oidc::k_discovery_path ||
+                 req.path == kythira::oidc::k_jwks_path)) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
             // Peer-to-peer calls authenticate with the peer-enrollment key
             // instead of the client bearer token, which followers never send
             // to a peer:
@@ -1444,6 +1524,54 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 res.set_content(json_error(ex.what()), "application/json");
             }
         });
+
+        // OIDC discovery and JWKS (iam-compatible-auth Requirements 1.1, 1.10).
+        // Served by the leader from a linearisable read, so a follower
+        // redirects like /v1/root-ca does: followers cannot read their
+        // replica without going through the leader. Deployments where the
+        // relying party cannot follow that redirect publish both documents
+        // to a bucket instead (--oidc-publish-url, task 2).
+        if (cfg.oidc_enabled()) {
+            auto serve_oidc_document = [&](const httplib::Request& req, httplib::Response& res,
+                                           bool jwks) {
+                if (!require_leader_or_redirect(req, res)) {
+                    return;
+                }
+                try {
+                    auto state = read_ca_state(raft_node, k_command_timeout);
+                    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                                         std::chrono::system_clock::now().time_since_epoch())
+                                         .count();
+                    auto doc = kythira::oidc::jwks_document(state.oidc_keys(), now);
+                    if (doc.at("keys").as_array().empty()) {
+                        res.status = 503;
+                        res.set_content(json_error("no_signing_key"), "application/json");
+                        return;
+                    }
+                    if (!jwks) {
+                        doc = kythira::oidc::discovery_document(
+                            cfg.oidc_issuer_url,
+                            cfg.oidc_issuer_url + std::string(kythira::oidc::k_jwks_path),
+                            cfg.oidc_alg);
+                    }
+                    // Short enough that a relying party picks up a successor
+                    // well inside the day it is published before signing.
+                    res.set_header("Cache-Control", "public, max-age=300");
+                    res.set_content(boost::json::serialize(doc), "application/json");
+                } catch (const std::exception& ex) {
+                    res.status = 503;
+                    res.set_content(json_error(ex.what()), "application/json");
+                }
+            };
+            server->Get(std::string(kythira::oidc::k_discovery_path),
+                        [serve_oidc_document](const httplib::Request& req, httplib::Response& res) {
+                            serve_oidc_document(req, res, false);
+                        });
+            server->Get(std::string(kythira::oidc::k_jwks_path),
+                        [serve_oidc_document](const httplib::Request& req, httplib::Response& res) {
+                            serve_oidc_document(req, res, true);
+                        });
+        }
 
         // Peer-only (pre-routing admits nothing but a valid request MAC):
         // the RPC trust state a follower builds its RPC TLS policy from.

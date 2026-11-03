@@ -395,6 +395,10 @@ struct unbuffered_progress_log {
 };
 BOOST_TEST_GLOBAL_FIXTURE(unbuffered_progress_log);
 
+// Every three_node_cluster runs the OIDC issuer, so the Property 16 scan
+// below also covers its sealed signing keys.
+constexpr const char* k_oidc_issuer = "https://issuer.kythira.test";
+
 struct three_node_cluster {
     std::string tmp_root;
     std::string unseal_key_file;
@@ -464,7 +468,9 @@ struct three_node_cluster {
             nodes.push_back(std::make_unique<cluster_node_process>(
                 infos[i].id, infos[i].rpc_port, infos[i].http_port,
                 tmp_root + "/node" + std::to_string(infos[i].id) + "_" + std::to_string(attempt),
-                unseal_key_file, k_auth_token, peers_arg, /*bootstrap=*/i == 0));
+                unseal_key_file, k_auth_token, peers_arg, /*bootstrap=*/i == 0,
+                std::vector<std::string>{"--rpc-address", "127.0.0.1", "--http-address",
+                                         "127.0.0.1", "--oidc-issuer-url", k_oidc_issuer}));
         }
 
         return wait_all_healthy(nodes, std::chrono::seconds(60), died);
@@ -545,6 +551,53 @@ BOOST_AUTO_TEST_CASE(bootstrap_convergence_redirect_and_property_16,
     BOOST_REQUIRE(followed_res);
     BOOST_TEST(followed_res->status == 200);
     BOOST_TEST(followed_res->body == leader->root_pem);
+
+    // OIDC issuer (iam-compatible-auth Requirements 1.1-1.3, 1.10): the
+    // leader creates the first signing key on its own and serves discovery
+    // and JWKS with no bearer token; a follower redirects them.
+    {
+        httplib::Client leader_client("127.0.0.1", cluster.nodes[leader->node_index]->http_port);
+        leader_client.set_connection_timeout(2, 0);
+        leader_client.set_read_timeout(20, 0);
+        httplib::Result jwks_res;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (std::chrono::steady_clock::now() < deadline) {
+            jwks_res = leader_client.Get("/.well-known/jwks.json");
+            if (jwks_res && jwks_res->status == 200) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        BOOST_REQUIRE(jwks_res);
+        BOOST_REQUIRE_EQUAL(jwks_res->status, 200);
+        auto jwks = boost::json::parse(jwks_res->body).as_object();
+        const auto& keys = jwks.at("keys").as_array();
+        BOOST_REQUIRE_EQUAL(keys.size(), 1u);
+        const auto& jwk = keys.at(0).as_object();
+        BOOST_TEST(jwk.at("kty").as_string() == "RSA");  // RS256 by default
+        BOOST_TEST(jwk.at("alg").as_string() == "RS256");
+        BOOST_TEST(jwk.at("use").as_string() == "sig");
+        BOOST_TEST(!jwk.at("kid").as_string().empty());
+        BOOST_TEST(!jwk.contains("d"));
+
+        auto disc_res = leader_client.Get("/.well-known/openid-configuration");
+        BOOST_REQUIRE(disc_res);
+        BOOST_REQUIRE_EQUAL(disc_res->status, 200);
+        auto disc = boost::json::parse(disc_res->body).as_object();
+        BOOST_TEST(disc.at("issuer").as_string() == k_oidc_issuer);
+        BOOST_TEST(disc.at("jwks_uri").as_string() ==
+                   std::string(k_oidc_issuer) + "/.well-known/jwks.json");
+
+        auto follower_jwks = raw_client.Get("/.well-known/jwks.json");
+        BOOST_REQUIRE(follower_jwks);
+        BOOST_TEST(follower_jwks->status == 308);
+        BOOST_TEST(follower_jwks->get_header_value("Location").ends_with("/.well-known/jwks.json"));
+
+        // Other routes still need the bearer token.
+        auto unauth = leader_client.Get("/v1/root-ca");
+        BOOST_REQUIRE(unauth);
+        BOOST_TEST(unauth->status == 401);
+    }
 
     // Property 16: the CA private key is never persisted in plaintext —
     // every on-disk log/snapshot file under every node's data_dir must be

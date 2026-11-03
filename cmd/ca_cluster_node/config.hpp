@@ -7,6 +7,7 @@
 #include <raft/tls_tcp_rpc.hpp>
 #endif
 #include <raft/host_node_id.hpp>
+#include <raft/oidc_issuer.hpp>
 #include <raft/tcp_rpc.hpp>
 
 #include <chrono>
@@ -93,6 +94,20 @@ struct ca_cluster_node_config {
     // when the leader is briefly unreachable. Tests set it close to the
     // validity itself to force a renewal within seconds of issuance.
     std::chrono::seconds rpc_renewal_window{std::chrono::hours(24 * 7)};
+    // OIDC issuer (`.kiro/specs/iam-compatible-auth/` Requirement 1). Off
+    // unless --oidc-issuer-url is given; then the leader keeps a signing key
+    // in the CA state machine, rotates it, and every member answers
+    // /.well-known/openid-configuration and /.well-known/jwks.json.
+    std::string oidc_issuer_url;
+    kythira::jose::jws_alg oidc_alg{kythira::jose::jws_alg::rs256};
+    std::chrono::seconds oidc_key_rotation{std::chrono::hours(24 * 90)};
+    std::chrono::seconds oidc_max_token_lifetime{std::chrono::hours(12)};
+    [[nodiscard]] auto oidc_enabled() const -> bool { return !oidc_issuer_url.empty(); }
+    [[nodiscard]] auto oidc_rotation_config() const -> kythira::oidc::rotation_config {
+        return {.rotation_period = oidc_key_rotation,
+                .publish_lead = std::chrono::hours(24),
+                .max_token_lifetime = oidc_max_token_lifetime};
+    }
 #ifdef KYTHIRA_HAS_OPENSSL
     // Resolved (not CLI-facing) transport config main() actually constructs
     // tls_tcp_rpc_client/server with — populated from rpc_tls_cert_path/
@@ -303,6 +318,9 @@ namespace detail {
         << "                       [--rpc-tls-cert <path> --rpc-tls-key <path>]\n"
         << "                       [--allow-plaintext-rpc] [--allow-plaintext-http]\n"
         << "                       [--rpc-renewal-window-secs <n>]\n"
+        << "                       [--oidc-issuer-url <https url> [--oidc-alg RS256|ES256]\n"
+        << "                        [--oidc-key-rotation-days <n>]\n"
+        << "                        [--oidc-max-token-lifetime-secs <n>]]\n"
         << "                       [--auth-token <token>]  (prefer $CA_SERVICE_AUTH_TOKEN)\n"
         << "                       [--print-root-fingerprint]\n"
         << "\n"
@@ -375,6 +393,36 @@ namespace detail {
             if (cfg.rpc_renewal_window <= std::chrono::seconds::zero()) {
                 usage_error("--rpc-renewal-window-secs must be positive");
             }
+        } else if (arg == "--oidc-issuer-url") {
+            cfg.oidc_issuer_url = next();
+            if (auto err = kythira::oidc::issuer_url_error(cfg.oidc_issuer_url)) {
+                usage_error("--oidc-issuer-url: " + *err);
+            }
+        } else if (arg == "--oidc-alg") {
+            // Requirement 1.3: RS256 by default, ES256 as the option.
+            const auto name = next();
+            if (name == "RS256") {
+                cfg.oidc_alg = kythira::jose::jws_alg::rs256;
+            } else if (name == "ES256") {
+                cfg.oidc_alg = kythira::jose::jws_alg::es256;
+            } else {
+                usage_error("--oidc-alg must be RS256 or ES256");
+            }
+        } else if (arg == "--oidc-key-rotation-days") {
+            const auto days = std::stoll(next());
+            // A successor is published a day before it signs, so a period of
+            // a day or less would never let one key finish its notice.
+            if (days < 2 || days > 3650) {
+                usage_error("--oidc-key-rotation-days must be between 2 and 3650");
+            }
+            cfg.oidc_key_rotation = std::chrono::hours(24 * days);
+        } else if (arg == "--oidc-max-token-lifetime-secs") {
+            const auto secs = std::stoll(next());
+            // Requirement 1.8: at most 12 hours.
+            if (secs < 60 || secs > 12 * 3600) {
+                usage_error("--oidc-max-token-lifetime-secs must be between 60 and 43200");
+            }
+            cfg.oidc_max_token_lifetime = std::chrono::seconds(secs);
         } else if (arg == "--print-root-fingerprint") {
             cfg.print_root_fingerprint = true;
         } else if (arg == "--election-timeout-min-ms") {
