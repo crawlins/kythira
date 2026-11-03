@@ -5221,6 +5221,22 @@ set_tests_properties(acme_jws_unit_test PROPERTIES
     LABELS "unit;certificate_authority;ca;acme;jws"
 )
 
+# IAM spec task 1 (.kiro/specs/iam-compatible-auth/): the JOSE library the
+# OIDC issuer signs with, checked against RFC 7515/7520/7638 vectors.
+add_executable(jwt_unit_test jwt_unit_test.cpp)
+target_link_libraries(jwt_unit_test PRIVATE
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(jwt_unit_test PRIVATE cxx_std_23)
+add_test(NAME jwt_unit_test COMMAND jwt_unit_test)
+set_tests_properties(jwt_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;jose;jwt;oidc;iam"
+)
+
 # Guarded on httplib_FOUND: acme_test_server.hpp (this trio's shared mock
 # ACME server) uses httplib directly, and these three were previously
 # unconditional here even though every other httplib::httplib-using target
