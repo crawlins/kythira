@@ -3209,6 +3209,45 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
             break;
         }
 
+        // ── the split freeze ─────────────────────────────────────────────────
+        //
+        // A split in flight is a freeze for writes. The split entry is in the
+        // log from the moment it is proposed, and a write appended after it
+        // applies after the cut: to the narrowed parent, for a key that may
+        // now be a child's, where nothing ever reads it again. Reads are
+        // unaffected until the split applies, so they are still served.
+        //
+        // A write holds `_proposal_gate` shared from here until its entry is
+        // appended; see the member for why. The gate is taken, and the freeze
+        // checked, BEFORE the epoch and range checks below, not after them.
+        // In the other order a write could pass the epoch check, lose the CPU
+        // while the split was admitted, committed and applied (about a
+        // millisecond on an idle in-process cluster), then take the gate, see
+        // the shard back to `stable`, and append to the narrowed parent under
+        // the epoch it had already validated: acknowledged, and lost (1 in
+        // ~200 runs of a_write_racing_a_split_is_never_lost under load).
+        //
+        // The acquire load pairs with the store in `release()`. A write that
+        // finds the shard no longer `splitting` after a split was admitted
+        // therefore also sees the descriptor that split's apply wrote, and the
+        // epoch check below redirects it to the child.
+        std::shared_lock<std::shared_mutex> gate;
+        if (!is_read) {
+            gate = std::shared_lock<std::shared_mutex>(local->_proposal_gate);
+            if (local->_operation.load(std::memory_order_acquire) ==
+                shard_operation_state::splitting) {
+                gate = {};
+                last_error = std::make_exception_ptr(
+                    shard_busy_exception<GroupId>{desc->_group_id, "split in flight"});
+                if (attempt < _cfg.max_route_retries) {
+                    std::this_thread::sleep_for(_cfg.route_retry_backoff);
+                    refresh_map_from_local_groups();
+                    continue;
+                }
+                break;
+            }
+        }
+
         // ── epoch ────────────────────────────────────────────────────────────
         //
         // The local replica's own descriptor is the authority; the map is a
@@ -3293,30 +3332,7 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
         // the retry either succeeds against the source again (the merge rolled
         // back) or is redirected by an epoch mismatch (it committed).
         //
-        // A split in flight is a freeze for writes too. The split entry is in
-        // the log from the moment it is proposed, and a write appended after
-        // it applies after the cut: to the narrowed parent, for a key that
-        // may now be a child's, where nothing ever reads it again. Reads are
-        // unaffected until the split applies, so they are still served.
-        //
-        // A write holds `_proposal_gate` shared from this check until its
-        // entry is appended; see the member for why.
-        std::shared_lock<std::shared_mutex> gate;
-        if (!is_read) {
-            gate = std::shared_lock<std::shared_mutex>(local->_proposal_gate);
-        }
-        if (!is_read &&
-            local->_operation.load(std::memory_order_relaxed) == shard_operation_state::splitting) {
-            gate = {};
-            last_error = std::make_exception_ptr(
-                shard_busy_exception<GroupId>{desc->_group_id, "split in flight"});
-            if (attempt < _cfg.max_route_retries) {
-                std::this_thread::sleep_for(_cfg.route_retry_backoff);
-                refresh_map_from_local_groups();
-                continue;
-            }
-            break;
-        }
+        // The split freeze is checked above, before the epoch check.
         if (local->_operation.load(std::memory_order_relaxed) ==
             shard_operation_state::merging_source) {
             gate = {};
