@@ -18,6 +18,7 @@ add_executable(chaos_node
     run_node_prometheus.cpp
     run_node_victoriametrics.cpp
     run_node_telegraf.cpp
+    run_node_s3.cpp
 )
 
 target_include_directories(chaos_node PRIVATE

@@ -11,6 +11,10 @@ raft/network/send_install_snapshot
 raft/network/send_request_pre_vote
 raft/network/send_request_vote
 raft/network/send_timeout_now
+raft/objstore/delete_object
+raft/objstore/get_object
+raft/objstore/list_object
+raft/objstore/put_object
 raft/persistence/append_log_entry
 raft/persistence/barrier
 raft/persistence/save_current_term

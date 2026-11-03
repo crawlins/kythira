@@ -102,6 +102,22 @@ struct node_config {
 
     [[nodiscard]] auto rpc_tls() const -> bool { return !rpc_tls_cert_path.empty(); }
 
+    // Raft state in an S3-compatible store instead of DATA_DIR
+    // (cairn-chaos-testing task 14.1): PERSISTENCE=s3. The engine is the
+    // object-store one over aws_s3_client, set up the way
+    // multi_raft_node_s3_process_test runs it (combined hard state, a
+    // segmented log, CAS fencing), because that test's lost write is what
+    // this mode exists to reproduce. Only on the default quorum-manager
+    // path: from_env() refuses it alongside RPC_TLS_*, a telemetry backend
+    // or QUORUM_MANAGER, and refuses any S3_* variable without it.
+    bool s3_persistence{false};              ///< PERSISTENCE=s3 (default file)
+    std::string s3_endpoint;                 ///< S3_ENDPOINT, e.g. http://s3mock:9000 (required)
+    std::string s3_bucket{"kythira-chaos"};  ///< S3_BUCKET
+    std::string s3_prefix;                   ///< S3_PREFIX (default nodes/<NODE_ID>)
+    std::string s3_region{"us-east-1"};      ///< S3_REGION
+    bool s3_write_behind{true};              ///< S3_WRITE_BEHIND=0|1 (default 1)
+    std::chrono::seconds s3_timeout{10};     ///< S3_TIMEOUT_S
+
     // Parse from environment variables.
     // Throws std::invalid_argument if NODE_ID or PEERS are missing / malformed.
     // NODE_ID (or KYTHIRA_NODE_ID) takes kythira::parse_host_node_id's forms,
@@ -343,7 +359,58 @@ struct node_config {
             }
         }
 
+        parse_persistence(cfg, get_opt);
+
         return cfg;
+    }
+
+    // PERSISTENCE and S3_*; see s3_persistence above.
+    template<typename GetOpt> static void parse_persistence(node_config& cfg, GetOpt& get_opt) {
+        const std::string mode = get_opt("PERSISTENCE", "file");
+        if (mode != "file" && mode != "s3") {
+            throw std::invalid_argument("chaos_node: PERSISTENCE must be file or s3, got: " + mode);
+        }
+        cfg.s3_persistence = (mode == "s3");
+        if (!cfg.s3_persistence) {
+            for (const char* var : {"S3_ENDPOINT", "S3_BUCKET", "S3_PREFIX", "S3_REGION",
+                                    "S3_WRITE_BEHIND", "S3_TIMEOUT_S"}) {
+                if (!get_opt(var, "").empty()) {
+                    throw std::invalid_argument(std::string("chaos_node: ") + var +
+                                                " is set but PERSISTENCE is not s3");
+                }
+            }
+            return;
+        }
+        cfg.s3_endpoint = get_opt("S3_ENDPOINT", "");
+        if (cfg.s3_endpoint.empty()) {
+            throw std::invalid_argument(
+                "chaos_node: PERSISTENCE=s3 needs S3_ENDPOINT (e.g. http://s3mock:9000)");
+        }
+        cfg.s3_bucket = get_opt("S3_BUCKET", "kythira-chaos");
+        cfg.s3_prefix = get_opt("S3_PREFIX", "");
+        if (cfg.s3_prefix.empty()) {
+            cfg.s3_prefix = "nodes/" + kythira::host_node_id_text(cfg.node_id);
+        }
+        cfg.s3_region = get_opt("S3_REGION", "us-east-1");
+        const std::string wb = get_opt("S3_WRITE_BEHIND", "1");
+        if (wb != "0" && wb != "1") {
+            throw std::invalid_argument("chaos_node: S3_WRITE_BEHIND must be 0 or 1, got: " + wb);
+        }
+        cfg.s3_write_behind = (wb == "1");
+        const std::string timeout = get_opt("S3_TIMEOUT_S", "10");
+        cfg.s3_timeout = std::chrono::seconds(std::stoll(timeout));
+        if (cfg.s3_timeout.count() <= 0) {
+            throw std::invalid_argument("chaos_node: S3_TIMEOUT_S must be positive, got: " +
+                                        timeout);
+        }
+        const bool telemetry = cfg.otlp_endpoint || cfg.prometheus_metrics_port ||
+                               cfg.victoriametrics_endpoint || cfg.telegraf_endpoint ||
+                               cfg.netdata_endpoint;
+        if (cfg.rpc_tls() || telemetry || !get_opt("QUORUM_MANAGER", "").empty()) {
+            throw std::invalid_argument(
+                "chaos_node: PERSISTENCE=s3 cannot be combined with RPC_TLS_*, a telemetry "
+                "backend or QUORUM_MANAGER");
+        }
     }
 
     // One PEERS token, "id:host:port".

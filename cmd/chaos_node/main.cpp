@@ -15,6 +15,7 @@
 
 #ifdef KYTHIRA_HAS_AWS_SDK
 #include <aws/core/Aws.h>
+#include <raft/aws_client_config.hpp>
 #endif
 
 #include <chrono>
@@ -23,7 +24,9 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 
 // ── Types: the bundles live in node_types.hpp, run_node in run_node.hpp ─────
@@ -174,6 +177,97 @@ int main(int argc, char** argv) {
     if (cfg.peer_address_template) {
         client.set_peer_resolver([cfg](const node_id_type& id) { return cfg.resolve(id); });
     }
+    // ── Raft state in S3 (PERSISTENCE=s3, cairn-chaos-testing task 14.1) ─────
+    // from_env() has already refused it beside RPC_TLS_*, telemetry and
+    // QUORUM_MANAGER, so this is the default path's node with only the
+    // persistence engine swapped.
+    if (cfg.s3_persistence) {
+#ifdef KYTHIRA_HAS_AWS_SDK
+        // chaos_s3_mock checks no signature, but the SDK signs every request
+        // and fails before sending one when it finds no credentials. The
+        // cairn fence gives no container cloud credentials (Requirement
+        // 7.5), so a node without keys signs with placeholders, which only
+        // a mock accepts. Never read from IMDS: the endpoint is local.
+        ::setenv("AWS_ACCESS_KEY_ID", "chaos-s3-mock", /*overwrite=*/0);
+        ::setenv("AWS_SECRET_ACCESS_KEY", "chaos-s3-mock", /*overwrite=*/0);
+        ::setenv("AWS_EC2_METADATA_DISABLED", "true", /*overwrite=*/0);
+        Aws::SDKOptions sdk_options;
+        Aws::InitAPI(sdk_options);
+        struct sdk_shutdown {
+            Aws::SDKOptions& options;
+            ~sdk_shutdown() { Aws::ShutdownAPI(options); }
+        } shutdown_sdk{sdk_options};
+
+        kythira::object_persistence_options engine_options;
+        engine_options.hard_state = kythira::hard_state_layout::combined;
+        engine_options.log = kythira::log_layout::segmented;
+        engine_options.write_behind = cfg.s3_write_behind;
+        engine_options.owner_id = kythira::host_node_id_text(cfg.node_id);
+
+        kythira::aws_client_config client_cfg;
+        client_cfg.region = cfg.s3_region;
+        client_cfg.endpoint_override = cfg.s3_endpoint;
+        client_cfg.api_timeout = cfg.s3_timeout;
+
+        // The store may still be starting: the cairn stack cannot make the
+        // nodes depend on a service in a profile it does not always enable,
+        // and a restart policy would undo fault.kill. So retry the load for
+        // up to 30 s; a fenced prefix is final and is not retried.
+        using engine_type = tcp_raft_types_with_s3::persistence_engine_type;
+        std::optional<engine_type> engine;
+        for (int attempt = 1;; ++attempt) {
+            try {
+                engine.emplace(kythira::aws_s3_client{client_cfg}, cfg.s3_bucket, cfg.s3_prefix,
+                               engine_options);
+                break;
+            } catch (const kythira::persistence_fenced_error& e) {
+                std::cerr << "chaos_node: s3://" << cfg.s3_bucket << "/" << cfg.s3_prefix
+                          << " is held by another process: " << e.what() << "\n";
+                return 1;
+            } catch (const std::exception& e) {
+                std::cerr << "chaos_node: s3://" << cfg.s3_bucket << "/" << cfg.s3_prefix << " at "
+                          << cfg.s3_endpoint << " (attempt " << attempt << "): " << e.what()
+                          << "\n";
+                if (attempt == 30) {
+                    return 1;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds{1});
+            }
+        }
+        std::cerr << "[info] persistence: s3://" << cfg.s3_bucket << "/" << cfg.s3_prefix
+                  << " endpoint=" << cfg.s3_endpoint
+                  << " write_behind=" << (cfg.s3_write_behind ? 1 : 0) << "\n";
+
+        kythira::desired_topology<std::string> s3_topology;
+        if (const char* target = std::getenv("QUORUM_TARGET");
+            target != nullptr && *target != '\0') {
+            s3_topology.groups.push_back(
+                {.group_id = "", .target_count = static_cast<std::size_t>(std::stoul(target))});
+        }
+
+        kythira::node_config<tcp_raft_types_with_s3> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(client),
+            .network_server = std::move(server),
+            .persistence = std::move(*engine),
+            .logger = kythira::console_logger{},
+            .metrics = kythira::noop_metrics{},
+            .membership = kythira::default_membership_manager<node_id_type>{},
+            .config = raft_cfg,
+            .self_address = cfg.self_address,
+            .peer_discovery =
+                kythira::seed_peer_discovery<node_id_type, std::string>{join_seeds(cfg)},
+            .quorum_manager =
+                kythira::node_config<tcp_raft_types_with_s3>::quorum_manager_type{
+                    std::move(s3_topology)},
+        };
+        return run_node<tcp_raft_types_with_s3>(cfg, std::move(ncfg));
+#else
+        std::cerr << "chaos_node: PERSISTENCE=s3 needs a build with the AWS SDK\n";
+        return 1;
+#endif
+    }
+
     kythira::file_persistence_engine<node_id_type> persistence(cfg.data_dir);
 
     // ── OTLP telemetry (.kiro/specs/otlp-telemetry-backend/, Req 5.3) ─────────
