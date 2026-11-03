@@ -6,12 +6,16 @@ FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884
 ENV DEBIAN_FRONTEND=noninteractive
 # libldns3: chaos_node links libldns whenever the build host's pkg-config
 # finds it (CMakeLists.txt), and the binary is copied in prebuilt.
+# libatomic1: a build that finds the AWS SDK links its CRT, which needs
+# libatomic.so.1, into chaos_node and chaos_s3_mock alike; without it both
+# exit 127 at load (found by the M3 smoke run, cairn-chaos-testing 14).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libfiu0 fiu-utils \
         iproute2 \
         iptables \
         curl \
         libldns3 \
+        libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/chaos_node/dist/chaos_node /usr/local/bin/chaos_node
