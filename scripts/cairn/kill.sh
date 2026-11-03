@@ -7,7 +7,8 @@
 # and its workers, the tool server, the proxies, the tunnel to llama.cpp
 # and the cluster in docker/cairn/cairn-compose.yml, plus the host-side
 # clusters that `chaos_ctl replay` and `minimize` start
-# (docker/docker-compose.yml, docker/chaos-5-compose.yml) and any
+# (docker/docker-compose.yml, docker/chaos-5-compose.yml,
+# docker/chaos-s3-compose.yml) and any
 # chaos_workload a host-side run left running. It is also what a run's
 # wall-clock limit fires:
 #
@@ -79,8 +80,9 @@ fi
 # Every profile, so the engine, the tunnel and the probe come down with the
 # rest.
 down "$repo/docker/cairn/cairn-compose.yml" --profile engine --profile dispatch --profile llm \
-    --profile probe
+    --profile probe --profile s3
 down "$repo/docker/docker-compose.yml"
+down "$repo/docker/chaos-s3-compose.yml"
 down "$repo/docker/chaos-5-compose.yml"
 
 if pkill -x chaos_workload 2>/dev/null; then

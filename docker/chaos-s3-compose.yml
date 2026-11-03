@@ -1,0 +1,98 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# docker/docker-compose.yml's three chaos nodes with their Raft state in an
+# S3-compatible store instead of their data directories
+# (.kiro/specs/cairn-chaos-testing/ task 14.3): the host-side twin of
+# docker/cairn/cairn-compose.yml's `s3` profile, where a cairn run on S3
+# replays (chaos_ctl replay --layout chaos3-s3).
+#
+# The store is chaos_s3_mock (cmd/chaos_s3_mock) from the same image: S3 on
+# :9000 for the nodes, and its control API, which fault.s3 and run.reset
+# drive, published on 127.0.0.1:19001. Its objects live in memory, so
+# `down` forgets the cluster's state as removing the nodes' containers does
+# on the disk layout.
+#
+# Same container names and published ports as docker/docker-compose.yml
+# (harness.hpp k_node_map), so the two must not run at once. Nodes reach
+# the store by service name; no static IPs (CLAUDE.md "Container runtime
+# compatibility").
+
+x-chaos-node: &chaos-node
+  image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
+  cap_add:
+    - NET_ADMIN     # tc and iptables inside the container
+  depends_on:
+    - s3mock
+  networks:
+    - raft_net
+
+x-chaos-node-env: &chaos-node-env
+  RPC_PORT: "7000"
+  HTTP_PORT: "8080"
+  FIU_PORT: "9000"
+  DATA_DIR: "/var/lib/chaos_node"
+  ELECTION_TIMEOUT_MIN_MS: "150"
+  ELECTION_TIMEOUT_MAX_MS: "300"
+  HEARTBEAT_INTERVAL_MS: "50"
+  PERSISTENCE: "s3"
+  S3_ENDPOINT: "http://s3mock:9000"
+
+services:
+  s3mock:
+    image: "${KYTHIRA_CHAOS_NODE_IMAGE:-kythira-chaos-node:dev}"
+    container_name: chaos_s3_mock
+    hostname: s3mock
+    entrypoint: ["/usr/local/bin/chaos_s3_mock"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9001/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:19001:9001"   # control API
+    networks:
+      - raft_net
+
+  node1:
+    <<: *chaos-node
+    container_name: chaos_node_1
+    hostname: node1
+    environment:
+      <<: *chaos-node-env
+      NODE_ID: "1"
+      PEERS: "2:node2:7000,3:node3:7000"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7001:7000"   # RPC
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8081:8080"   # HTTP control plane
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9001:9000"   # fiu_rc_tcp
+
+  node2:
+    <<: *chaos-node
+    container_name: chaos_node_2
+    hostname: node2
+    environment:
+      <<: *chaos-node-env
+      NODE_ID: "2"
+      PEERS: "1:node1:7000,3:node3:7000"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7002:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8082:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9002:9000"
+
+  node3:
+    <<: *chaos-node
+    container_name: chaos_node_3
+    hostname: node3
+    environment:
+      <<: *chaos-node-env
+      NODE_ID: "3"
+      PEERS: "1:node1:7000,2:node2:7000"
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:7003:7000"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:8083:8080"
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:9003:9000"
+
+networks:
+  raft_net:
+    driver: bridge
