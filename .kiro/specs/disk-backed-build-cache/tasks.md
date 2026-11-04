@@ -788,6 +788,61 @@ error table always said ("drop the chunk and queue a repair").
     read-only mode if task 1 found one; otherwise count the refused `PUT`s.
   - _Requirements: 13.1–13.6_
 
+### Task 11 results (2026-11-04, g++-13 leg; clang++-18 leg pending)
+
+Run [41777755237](https://github.com/crawlins/kythira/actions/runs/41777755237)
+of `.github/workflows/cache-cluster-measure.yml`, dispatched on `main` at
+28d1bc29 after main's own CI run at that commit had finished green, so the
+OCI bucket held that commit's objects. Hardware: a GitHub-hosted
+`ubuntu-24.04` runner (image 20261025.353.1), the class the OCI baseline was
+measured on. The three cache nodes ran on the same runner as the build,
+with `KYTHIRA_CACHE_CLUSTER_MAX_DISK_BYTES` at 16 GiB. Commands:
+`scripts/cache-cluster-measure/measure.sh cluster-up`, then
+`measure.sh build <label> <webdav|webdav-ro|oci>` per row and
+`measure.sh cluster-stats webdav-warm`. Each build is a clean configure
+identical to ci.yml's Release configure and a timed `cmake --build`.
+
+| g++-13, x64 | Build | Requests | Hits | Hit rate | Read / write errors, timeouts | Writes | Avg read hit |
+|---|---|---|---|---|---|---|---|
+| WebDAV cold (empty cluster) | 7,862.4 s (131.0 min) | 752 | 0 | 0% | 0 / 0, 0 | 752 | n/a |
+| WebDAV warm | 317.8 s (5.30 min) | 752 | 752 | 100% | 0 / 0, 0 | 0 | 3.8 ms |
+| WebDAV warm, `read_only` + `READ_ONLY` mode | 317.1 s (5.29 min) | 752 | 752 | 100% | 0 / 0, 0 | 0 | 3.5 ms |
+| OCI warm, same runner, same commit | 334.6 s (5.58 min) | 752 | 752 | 100% | 0 / 0, 0 | 0 | 168.2 ms |
+
+Cluster after the warm run (every node holds every chunk):
+
+| Node | Peak RSS | RSS after | Store bytes | Loose files | Packed chunks | Files under /data | Hash failures |
+|---|---|---|---|---|---|---|---|
+| cache-1 | 240 MiB | 98 MiB | 288,182,670 | 604 | 154 | 611 | 0 |
+| cache-2 | 207 MiB | 146 MiB | 288,182,670 | 604 | 154 | 611 | 0 |
+| cache-3 | 150 MiB | 51 MiB | 288,182,670 | 604 | 154 | 611 | 0 |
+
+Against Requirement 13, for this leg:
+
+- **13.1** Full tree, cold then warm at one commit: met.
+- **13.2** Warm hit rate 100% (≥ 99%): met. The warm WebDAV Build took
+  0.95× the OCI warm Build on the same runner and commit (≤ 1.2×): met.
+  The `oci-build-cache` task 10 figure of 2.23–4.05 min is from a smaller
+  tree; the tree has grown since, and OCI itself now takes 5.58 min, so the
+  same-run OCI time is the comparison that holds the work constant.
+- **13.3** Zero read errors, write errors and timeouts on the cold and warm
+  runs: met. The cluster counted 752 PUTs on the cold run, one per write,
+  and no 403s.
+- **13.4** The `read_only` run with `SCCACHE_WEBDAV_RW_MODE=READ_ONLY`
+  served 752 hits with zero writes, zero write attempts and zero PUTs at
+  the cluster: met.
+- **13.5** Per-hit read latency was 3.5–3.8 ms against OCI's 168 ms. A
+  node's peak RSS stayed at or under 240 MiB, and 288 MB of chunks took 611
+  files per node.
+- The cold run compiled all 752 translation units on the runner's cores
+  in 131 min, the PUTs included. A cold OCI build was not part of the run,
+  so this says nothing about WebDAV's cost on a miss.
+
+The clang++-18 leg did not start its cluster: a clang build that finds the
+Azure SDK links libatomic into the daemon, and the image lacked
+`libatomic1`, so every node exited at load. The image now installs it; the
+leg will be re-run and recorded here.
+
 - [ ] 12. Documentation
   - `doc/redis-gateway.md`: the variables, HTTP API, WebDAV subset, disk
     layout, and client settings for sccache and vcpkg with read-only and
