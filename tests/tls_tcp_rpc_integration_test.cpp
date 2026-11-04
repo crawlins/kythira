@@ -15,6 +15,7 @@
 #include <raft/certificate_authority.hpp>
 #include <raft/tls_tcp_rpc.hpp>
 
+#include "format1_snapshot_transfer.hpp"
 #include "tcp_server_hardening_cases.hpp"
 
 #include <arpa/inet.h>
@@ -475,6 +476,36 @@ BOOST_AUTO_TEST_CASE(append_entries_and_install_snapshot_round_trip_under_pinned
     tls_tcp_rpc_config client_cfg{files.cert_path, files.key_path, pinned_fingerprint(fp)};
 
     BOOST_TEST(try_all_rpc_types_round_trip(std::move(server_cfg), std::move(client_cfg)));
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary, reassembled and verified by the
+// follower's stream writer.
+BOOST_AUTO_TEST_CASE(install_snapshot_format1_multi_chunk, *boost::unit_test::timeout(30)) {
+    certificate_authority bootstrap_cred;
+    temp_pem_files files(bootstrap_cred.root_certificate_pem(),
+                         detail_testing::unsafe_extract_ca_private_key_pem(bootstrap_cred));
+    auto fp = fingerprint_of_root(bootstrap_cred.root_certificate_pem());
+
+    auto port = find_free_port();
+    tls_tcp_rpc_server server(
+        port, tls_tcp_rpc_config{files.cert_path, files.key_path, pinned_fingerprint(fp)});
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    server.start();
+
+    tls_tcp_rpc_client client(
+        tls_tcp_rpc_config{files.cert_path, files.key_path, pinned_fingerprint(fp)});
+    client.add_peer(1, "127.0.0.1", port);
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(42)) {
+        auto resp = client.send_install_snapshot(1, req, std::chrono::milliseconds(5000)).get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
+    server.stop();
 }
 
 // Requirement 1.3/6.2/7.2: reload_identity()/reload_trust_policy() update the

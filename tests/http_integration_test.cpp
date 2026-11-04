@@ -7,6 +7,10 @@
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+
+#include "format1_snapshot_transfer.hpp"
+#include "test_ports.hpp"
+
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include <thread>
@@ -529,6 +533,39 @@ BOOST_AUTO_TEST_CASE(test_tls_https, *boost::unit_test::timeout(180)) {
     BOOST_TEST_MESSAGE("TLS/HTTPS integration test completed");
     BOOST_TEST_MESSAGE("Note: Full TLS testing requires valid test certificates");
     BOOST_TEST_MESSAGE("This test validates configuration and error handling paths");
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary, reassembled and verified by the
+// follower's stream writer.
+BOOST_AUTO_TEST_CASE(test_install_snapshot_format1_multi_chunk, *boost::unit_test::timeout(60)) {
+    const auto port = kythira::testing::free_port();
+    kythira::cpp_httplib_server_config server_config;
+    kythira::cpp_httplib_client_config client_config;
+    client_config.request_timeout = std::chrono::milliseconds{5000};
+    typename test_transport_types::metrics_type metrics;
+
+    kythira::cpp_httplib_server<test_transport_types> server(test_bind_address, port, server_config,
+                                                             metrics);
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    server.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+    std::unordered_map<std::uint64_t, std::string> node_urls;
+    node_urls[test_node_id] = "http://127.0.0.1:" + std::to_string(port);
+    kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls), client_config,
+                                                             metrics);
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(42)) {
+        auto resp =
+            client.send_install_snapshot(test_node_id, req, std::chrono::milliseconds{5000}).get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
+    server.stop();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

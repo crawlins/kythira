@@ -28,6 +28,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "format1_snapshot_transfer.hpp"
 #include "test_timeout_scale.hpp"
 
 using namespace kythira;
@@ -175,6 +176,39 @@ BOOST_AUTO_TEST_CASE(test_cbor_install_snapshot_round_trip,
     BOOST_REQUIRE(future.wait(test_timeout));
     auto response = std::move(future).get();
     BOOST_TEST(response.term() == 7);
+
+    server.stop();
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary (each chunk also crosses CoAP blocks),
+// reassembled and verified by the follower's stream writer, with CBOR bodies.
+BOOST_AUTO_TEST_CASE(test_cbor_install_snapshot_format1_multi_chunk,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    kythira::coap_server_config server_config;
+    server_config.enable_dtls = false;
+    kythira::noop_metrics server_metrics;
+    coap_server<test_transport_types> server(test_bind_address, 0, server_config, server_metrics);
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    server.start();
+
+    kythira::coap_client_config client_config;
+    client_config.enable_dtls = false;
+    std::unordered_map<std::uint64_t, std::string> endpoints;
+    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, server.bound_port());
+    kythira::noop_metrics client_metrics;
+    coap_client<test_transport_types> client(std::move(endpoints), client_config, client_metrics);
+
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(1)) {
+        auto future = client.send_install_snapshot(test_node_id, req, test_timeout);
+        BOOST_REQUIRE(future.wait(test_timeout));
+        kythira::test::format1::check_ack(req, std::move(future).get());
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
 
     server.stop();
 }

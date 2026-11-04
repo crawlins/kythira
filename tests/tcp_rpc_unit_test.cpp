@@ -7,6 +7,7 @@
 #include <raft/tcp_rpc.hpp>
 #include <raft/types.hpp>
 
+#include "format1_snapshot_transfer.hpp"
 #include "tcp_server_hardening_cases.hpp"
 
 #ifdef FIU_ENABLE
@@ -754,6 +755,30 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_round_trip, *boost::unit_test::timeou
     auto resp = std::move(fut).get();
 
     BOOST_TEST(resp._term == 5u);
+
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(test_install_snapshot_format1_multi_chunk, *boost::unit_test::timeout(30)) {
+    // file-install-snapshot Requirement 2.2: a manifest-described file set
+    // in several chunks, at least one spanning a file boundary, reassembled
+    // and verified by the follower's stream writer.
+    std::uint16_t port = find_free_port();
+    kythira::tcp_rpc_server server(port);
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    server.start();
+
+    kythira::tcp_rpc_client client;
+    client.add_peer(1, "127.0.0.1", port);
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(1)) {
+        auto resp = client.send_install_snapshot(1, req, std::chrono::milliseconds{5000}).get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
 
     server.stop();
 }

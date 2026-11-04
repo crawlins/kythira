@@ -969,6 +969,8 @@ set_tests_properties(aws_endpoint_override_unit_test PROPERTIES
 )
 
 add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
+# SHA-256 for the format-1 InstallSnapshot case (format1_snapshot_transfer.hpp).
+target_link_libraries(tcp_rpc_unit_test PRIVATE OpenSSL::Crypto)
 # The raft/network/* failpoint case needs libfiu's control API; without it
 # the case compiles away along with the failpoints.
 if(FIU_FOUND)
@@ -1208,6 +1210,7 @@ if(TARGET httplib::httplib AND TARGET boost_json)
     set_tests_properties(host_node_id_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
 endif()
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
+target_link_libraries(group_transport_unit_test PRIVATE OpenSSL::Crypto)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)
 add_raft_completion_test(striped_executor_unit_test striped_executor_unit_test.cpp)
 add_raft_completion_test(multi_raft_host_unit_test multi_raft_host_unit_test.cpp)
@@ -2489,6 +2492,7 @@ if(TARGET Folly::folly)
         network_simulator
         Boost::unit_test_framework
         boost_json
+        OpenSSL::Crypto
     )
     if(TARGET Folly::folly)
         target_link_libraries(http_integration_test PRIVATE Folly::folly)
@@ -3158,6 +3162,8 @@ endif()
 # trip over UDP with cbor_rpc_serializer as Types::serializer_type
 if(KYTHIRA_BUILD_COAP_TRANSPORT)
     add_network_test(coap_cbor_end_to_end_test coap_cbor_end_to_end_test.cpp)
+    # SHA-256 for the format-1 InstallSnapshot case (format1_snapshot_transfer.hpp).
+    target_link_libraries(coap_cbor_end_to_end_test PRIVATE OpenSSL::Crypto)
     # Block-wise transfer (Requirement 12) with more than one block actually on
     # the wire between a real client and server.
     add_network_test(coap_block_transfer_end_to_end_test coap_block_transfer_end_to_end_test.cpp)
@@ -4975,6 +4981,7 @@ set_tests_properties(raft_node_rpc_handler_test PROPERTIES
 )
 
 add_raft_completion_test(simulator_network_coverage_test simulator_network_coverage_test.cpp)
+target_link_libraries(simulator_network_coverage_test PRIVATE OpenSSL::Crypto)
 set_tests_properties(simulator_network_coverage_test PROPERTIES
     TIMEOUT 60
     LABELS "unit;coverage;simulator_network"
@@ -6934,6 +6941,8 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     if(TARGET Folly::folly)
         target_link_libraries(coap_libnyoci_integration_test PRIVATE Folly::folly)
     endif()
+    # SHA-256 for the format-1 InstallSnapshot case (format1_snapshot_transfer.hpp).
+    target_link_libraries(coap_libnyoci_integration_test PRIVATE OpenSSL::Crypto)
     target_compile_features(coap_libnyoci_integration_test PRIVATE cxx_std_23)
     add_test(NAME coap_libnyoci_integration_test COMMAND coap_libnyoci_integration_test)
     set_tests_properties(coap_libnyoci_integration_test PROPERTIES
@@ -7071,6 +7080,8 @@ if(KYTHIRA_BUILD_COAP_TRANSPORT)
     if(TARGET OpenSSL::SSL)
         target_link_libraries(coap_cantcoap_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     endif()
+    # SHA-256 for the format-1 InstallSnapshot case (format1_snapshot_transfer.hpp).
+    target_link_libraries(coap_cantcoap_integration_test PRIVATE OpenSSL::Crypto)
     target_compile_features(coap_cantcoap_integration_test PRIVATE cxx_std_23)
     add_test(NAME coap_cantcoap_integration_test COMMAND coap_cantcoap_integration_test)
     set_tests_properties(coap_cantcoap_integration_test PROPERTIES

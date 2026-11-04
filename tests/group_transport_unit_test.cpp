@@ -24,6 +24,8 @@
 #include <raft/group_transport.hpp>
 #include <raft/network.hpp>
 
+#include "format1_snapshot_transfer.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -349,6 +351,57 @@ BOOST_AUTO_TEST_CASE(a_response_carries_the_group_it_was_addressed_to) {
     const auto resp = demux.inner().deliver(vote_for(5, 9));
     BOOST_CHECK_EQUAL(resp.group_id(), 5u);
     BOOST_CHECK(resp.vote_granted());
+}
+
+// file-install-snapshot Requirement 2.2: the group layer copies a request
+// whole when it stamps the group, so format-1 fields survive a scoped client,
+// the demultiplexer and a scoped server, and a multi-chunk transfer (one
+// chunk spanning a file boundary) reassembles at the receiving group.
+BOOST_AUTO_TEST_CASE(a_format1_snapshot_crosses_the_group_layer_intact) {
+    demux_type demux{recording_server{}};
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    group_scoped_server<demux_type> scoped_server{demux, 7};
+    scoped_server.register_request_vote_handler([](const rv_request& req) {
+        return rv_response{._term = req.term(), ._vote_granted = true, ._group_id = 7};
+    });
+    scoped_server.register_append_entries_handler([](const ae_request& req) {
+        return ae_response{._term = req.term(),
+                           ._success = true,
+                           ._conflict_index = std::nullopt,
+                           ._conflict_term = std::nullopt,
+                           ._group_id = 7};
+    });
+    scoped_server.register_install_snapshot_handler(
+        [&rx](const is_request& req) { return rx.handle<is_response>(req); });
+    demux.start();
+
+    // Delivers straight into the demultiplexer, standing in for a socket.
+    struct loopback_client {
+        demux_type* demux;
+        auto send_request_vote(std::uint64_t, const rv_request& req, std::chrono::milliseconds)
+            -> kythira::future_default<rv_response> {
+            return kythira::future_factory_default::makeFuture(demux->inner().deliver(req));
+        }
+        auto send_append_entries(std::uint64_t, const ae_request& req, std::chrono::milliseconds)
+            -> kythira::future_default<ae_response> {
+            return kythira::future_factory_default::makeFuture(demux->inner().deliver(req));
+        }
+        auto send_install_snapshot(std::uint64_t, const is_request& req, std::chrono::milliseconds)
+            -> kythira::future_default<is_response> {
+            return kythira::future_factory_default::makeFuture(demux->inner().deliver(req));
+        }
+    };
+    loopback_client inner{&demux};
+    group_scoped_client<loopback_client> scoped_client{inner, 7};
+
+    for (const auto& req : t.requests<is_request>(1)) {
+        auto resp =
+            scoped_client.send_install_snapshot(2, req, std::chrono::milliseconds{10}).get();
+        BOOST_CHECK_EQUAL(resp.group_id(), 7u);
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
 }
 
 BOOST_AUTO_TEST_CASE(the_unknown_group_callback_fires_exactly_once_per_message) {
