@@ -6,6 +6,8 @@
 #define BOOST_TEST_MODULE protobuf_rpc_serializer_concept_test
 #include <boost/test/unit_test.hpp>
 
+#include "install_snapshot_wire_extension_cases.hpp"
+
 // Concept-conformance and smoke tests for protobuf_rpc_serializer, mirroring
 // tests/rpc_serializer_concept_test.cpp. Validates Requirement 10.1 / 4.5.
 
@@ -41,3 +43,6 @@ BOOST_AUTO_TEST_CASE(test_protobuf_serializer_name) {
     kythira::protobuf_rpc_serializer<std::vector<std::byte>> serializer;
     BOOST_TEST(serializer.name() == "protobuf");
 }
+
+// file-install-snapshot wire fields (shared across every serializer).
+KYTHIRA_INSTALL_SNAPSHOT_WIRE_CASES(kythira::protobuf_serializer, protobuf, false)

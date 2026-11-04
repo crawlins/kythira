@@ -6,6 +6,8 @@
 #define BOOST_TEST_MODULE cbor_serializer_concept_test
 #include <boost/test/unit_test.hpp>
 
+#include "install_snapshot_wire_extension_cases.hpp"
+
 #include <raft/coap_utils.hpp>
 
 namespace {
@@ -71,3 +73,6 @@ BOOST_AUTO_TEST_CASE(test_name_resolves_to_cbor_content_format) {
     BOOST_TEST((kythira::coap_utils::get_content_format_for_serializer(serializer.name()) ==
                 kythira::coap_utils::coap_content_format::application_cbor));
 }
+
+// file-install-snapshot wire fields (shared across every serializer).
+KYTHIRA_INSTALL_SNAPSHOT_WIRE_CASES(kythira::cbor_serializer, cbor, true)
