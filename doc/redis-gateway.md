@@ -111,6 +111,9 @@ The Redis front end:
   `127.0.0.1` and `::1`. Each address must belong to this host, or the
   daemon refuses to start.
 
+The `KYTHIRA_CACHE_*` variables of the disk-backed mode, which is the
+default, are under *The disk-backed cache* below.
+
 ### Shard cuts
 
 Keys are plain byte strings ordered lexicographically, and a shard is a
@@ -246,6 +249,179 @@ fi
 build with every gateway stopped still succeeds. It also asserts the read-only
 runner's builds succeed with a non-zero `cache_write_errors`, and that a user
 scoped to another prefix gets an uncached build rather than a failed one.
+
+## The disk-backed cache
+
+By default (`KYTHIRA_CACHE_PERSISTENCE=file`) a node keeps values on disk
+and only the key index in RAM, so a node with 1 GB of memory can serve a
+cache much larger than that. It also serves an HTTP object API next to
+RESP, which is what sccache's WebDAV backend and vcpkg's `http` binary
+source speak. `KYTHIRA_CACHE_PERSISTENCE=memory` is the older mode with
+every value in RAM. It refuses the variables below that need a data
+directory, and the rest of this section does not apply to it.
+
+`docker/cache-cluster/compose.yml` runs three nodes this way as uid 10001,
+with no capabilities, under Docker or rootless Podman, and
+`docker/cache-cluster/client/` holds a real sccache and vcpkg pointed at it.
+The design is `.kiro/specs/disk-backed-build-cache/`.
+
+### Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KYTHIRA_CACHE_PERSISTENCE` | `file` | `file`, or `memory` for values in RAM. `file` needs `KYTHIRA_WIRE_SERIALIZER=cbor` |
+| `KYTHIRA_CACHE_DATA_DIR` | required | Chunk store and Raft state; see *Disk layout* |
+| `KYTHIRA_CACHE_MAX_DISK_BYTES` | required | This node's disk budget. Over it, shard leaders evict least-recently-read keys, counting reads served by followers |
+| `KYTHIRA_CACHE_MIN_FREE_BYTES` | `1073741824` | Below this much free space on the data filesystem, writes are refused with a retryable error and reads continue |
+| `KYTHIRA_CACHE_MIN_FREE_INODES` | `10000` | The same for free inodes (`statvfs` `f_favail`). A leader also refuses while any voter of the shard reports itself under either floor |
+| `KYTHIRA_CACHE_CHUNK_BYTES` | `4194304` | Values are split into chunks of this size, at most 16 MiB. One chunk is one Raft entry |
+| `KYTHIRA_CACHE_PACK_THRESHOLD_BYTES` | `65536` | Chunks smaller than this go into shared pack files instead of a file each, so small values cannot exhaust inodes |
+| `KYTHIRA_CACHE_MAX_VALUE_BYTES` | `2147483648` | Largest value an HTTP `PUT` may carry; larger answers 413 |
+| `KYTHIRA_CACHE_ORPHAN_GRACE_ENTRIES` | `100000` | Log entries a chunk with no committed key survives before it is collected (the chunks of a `PUT` whose client went away) |
+| `KYTHIRA_CACHE_FETCH_BYTES_PER_SEC` | `50000000` | Rate limit for fetching missing chunks from peers |
+| `KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES` | `268435456` | Applied bytes after which a shard snapshots and compacts its log. A snapshot names chunks by hash, so a node that installs one fetches the chunks from peers |
+| `KYTHIRA_CACHE_HTTP_LISTEN` | empty | Plaintext HTTP listener, `host:port`. Refused unless `KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP=true` |
+| `KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP` | `false` | Allow the plaintext listener, which carries credentials and values unencrypted |
+| `KYTHIRA_CACHE_HTTPS_LISTEN` | empty | TLS listener |
+| `KYTHIRA_CACHE_HTTPS_CERT` / `_HTTPS_KEY` | `KYTHIRA_REDIS_TLS_CERT` / `_TLS_KEY` | PEM certificate and key for the TLS listener |
+| `KYTHIRA_CACHE_PEER_HTTP` | each peer's host with this node's listener port | `id=host:port,...` of every peer's HTTP front end, the kind this node forwards over (TLS when `KYTHIRA_REDIS_FORWARD_TLS` is on) |
+| `KYTHIRA_CACHE_AUTH_CACHE_SECONDS` | `300` | How long a successful authentication is remembered |
+
+Two gateway variables change meaning in file mode:
+
+- `KYTHIRA_REDIS_MAX_VALUE_BYTES` may be at most 16 MiB, because a RESP
+  `SET` is stored as one chunk. Larger values go over HTTP.
+- `KYTHIRA_REDIS_MAX_SHARD_BYTES` applies only when set. Left unset, the
+  disk budget is what bounds a shard; the 1 GiB default meant for RAM
+  evicted keys long before the disk was full.
+
+Forwarding, TLS for forwarding, `KYTHIRA_REDIS_INTERNAL_SECRET` and the ACL
+are shared with RESP: an HTTP request for a shard another node leads is
+relayed to the leader's front end with the client's own credentials, one
+hop, under the same plaintext and TLS rules as a forwarded command.
+
+### HTTP API
+
+The path after the leading `/` is the key, percent-decoded, under 1 KiB.
+Authentication is `Authorization: Basic` with an ACL user and its secret,
+or `Bearer <secret>`. Basic is cheaper with more than a few users, because
+a bearer token is tried against each user's record. The role and prefixes
+are the user's ACL line, exactly as on RESP.
+
+| Request | Role | Answer |
+|---|---|---|
+| `GET /<key>` | `read_only` | 200 with the value streamed, 206 for one `Range`, 404 on a miss |
+| `HEAD /<key>` | `read_only` | 200 with `Content-Length` and `ETag` (the value's SHA-256), or 404 |
+| `PUT /<key>` | `read_write` | 201 once committed; 413 over `KYTHIRA_CACHE_MAX_VALUE_BYTES`; 507 under a free-space or inode floor |
+| `DELETE /<key>` | `read_write` | 204, or 404 |
+| `PROPFIND /<dir>/` | `read_write` | 207 for any collection; 207 or 404 for a key |
+| `MKCOL /<dir>/` | `read_write` | 201, and does nothing |
+| `GET /_metrics` | `admin` | Counters as text, one `name value` per line |
+| `GET /_chunk/<sha>` | internal | One chunk, for peers only (`KYTHIRA_REDIS_INTERNAL_SECRET`) |
+
+401 means no or wrong credentials, and 403 a user whose role or prefixes do
+not cover the request.
+
+A `PUT` holds at most two chunks of its body in memory at a time, and a
+client that disconnects mid-body leaves the old value in place. Every chunk
+is hash-checked as it is read. A bad first chunk is a miss, or the leader's
+copy where the node forwards. A bad later chunk is found after the headers
+have gone out, so the node closes the connection and the client sees a
+short body, never a wrong one. Either way the node drops the bad chunk and
+fetches a good copy from a peer.
+
+**The WebDAV subset** is just what sccache 0.17.0's WebDAV backend sends:
+`GET`, `PUT`, `PROPFIND` and `MKCOL`. sccache sends a `PROPFIND` on the
+parent collection before every `PUT`, and only on the write path. The node
+answers 207 for any collection path because keys have no real directories,
+so a `PUT` costs one `PROPFIND` and the `PUT`, with no `MKCOL` walk. There
+are no locks, no `COPY` or `MOVE`, and no listings.
+
+### Disk layout
+
+```
+DATA_DIR/
+  chunks/ab/cd/abcd…      one chunk at or over the pack threshold, by SHA-256
+  chunks/tmp/             writes in progress, cleared at start
+  packs/pack.<n>          smaller chunks, appended; a .dead sidecar per pack
+  raft/<group>/           each shard replica's log, snapshots and state
+```
+
+Chunks are content-addressed and shared by every key and every shard
+replica on the node that uses them. They are deleted when the last key that
+references them is gone. A pack is closed at 64 MiB and compacted once its
+live bytes fall under half. So the file count follows the disk budget, not
+the key count: the task 11 measurement stored a full g++ build of this
+repository, 752 objects and 288 MB, in 611 files per node.
+
+`INFO` has a `# Cache` section (`cache_keys`, `cache_chunks`,
+`cache_store_bytes`, `cache_store_files`, `cache_loose_chunks`,
+`cache_packed_chunks`, `cache_hash_failures`, `cache_fetch_pending_chunks`,
+`cache_fetched_chunks`, `cache_fs_free_bytes`, `cache_fs_free_inodes`,
+`cache_space_refusals` and more), and `GET /_metrics` has the HTTP
+counters (`kythira_cache_http_requests`, `_hits`, `_misses`, `_puts`,
+`_forwards`, `_forward_failures`, `_auth_failures`, `_forbidden`, ...)
+plus the store's.
+
+### Clients
+
+The same ACL users serve RESP and HTTP. A build farm usually has a
+`read_write` user for main-branch runners and a `read_only` user for pull
+requests:
+
+```
+user ci-main  pbkdf2-sha256$600000$...$...  read_write  sccache/ vcpkg/
+user ci-pr    pbkdf2-sha256$600000$...$...  read_only   sccache/ vcpkg/
+```
+
+**sccache (0.17 or later) over WebDAV.** Any node will do as the endpoint:
+
+```sh
+# read-write: main-branch runners
+export SCCACHE_WEBDAV_ENDPOINT=https://cache1.example:8443/sccache
+export SCCACHE_WEBDAV_USERNAME=ci-main
+export SCCACHE_WEBDAV_PASSWORD=...
+
+# read-only: pull-request runners
+export SCCACHE_WEBDAV_ENDPOINT=https://cache1.example:8443/sccache
+export SCCACHE_WEBDAV_USERNAME=ci-pr
+export SCCACHE_WEBDAV_PASSWORD=...
+export SCCACHE_WEBDAV_RW_MODE=READ_ONLY
+```
+
+As with `SCCACHE_REDIS_RW_MODE`, `READ_ONLY` is a client-side courtesy:
+the `read_only` role is what stops a write, and the mode stops sccache from
+spending a request per compile being told no. Measured with both set, a
+full warm build served every object and attempted no write. Unset any
+`SCCACHE_BUCKET` / `SCCACHE_S3_*` variables on the same runner: sccache
+picks S3 over WebDAV when both are configured. The `.sccache_check` probe
+at server start is the cache's availability contract, as on RESP; start
+the server explicitly and only export the wrapper if it started.
+
+**vcpkg's `http` binary source.** The template is `{name}/{version}/{sha}`
+under a prefix the user may touch, and the fourth field is a header vcpkg
+sends with every request:
+
+```sh
+# read-write
+auth="Authorization: Basic $(printf '%s:%s' ci-main "$SECRET" | base64 -w0)"
+export VCPKG_BINARY_SOURCES="clear;http,https://cache1.example:8443/vcpkg/{name}/{version}/{sha},readwrite,${auth}"
+
+# read-only
+auth="Authorization: Basic $(printf '%s:%s' ci-pr "$SECRET" | base64 -w0)"
+export VCPKG_BINARY_SOURCES="clear;http,https://cache1.example:8443/vcpkg/{name}/{version}/{sha},read,${auth}"
+```
+
+The header carries the secret, so keep `VCPKG_BINARY_SOURCES` out of logs.
+
+### Measured
+
+Task 11 built this repository through the cluster on a GitHub-hosted
+runner, with the three nodes on that same runner. A warm g++-13 build took
+5.30 minutes against 5.58 through the OCI bucket on the same runner and
+commit. All 752 objects were hits, at 3.8 ms each against OCI's 168 ms,
+with no read or write errors. Each node's memory peaked at 240 MiB or
+less. The full numbers are in `.kiro/specs/disk-backed-build-cache/tasks.md`.
 
 ## Transactions
 
