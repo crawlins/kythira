@@ -375,7 +375,7 @@ Configuration structure for CoAP server behavior.
 ```cpp
 struct coap_server_config {
     std::size_t max_concurrent_sessions{200};
-    std::size_t max_request_size{64 * 1024};  // 64 KB
+    std::size_t max_request_size{4 * 1024 * 1024};  // 4 MiB: a default snapshot chunk fits
     std::chrono::seconds session_timeout{300};
 
     // DTLS Configuration
