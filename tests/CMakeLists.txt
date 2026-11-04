@@ -444,6 +444,16 @@ add_raft_completion_test(state_machine_idempotency_property_test state_machine_i
 add_raft_completion_test(state_machine_determinism_property_test state_machine_determinism_property_test.cpp)
 add_raft_completion_test(state_machine_performance_benchmark state_machine_performance_benchmark.cpp)
 add_raft_completion_test(state_machine_apply_performance_property_test state_machine_apply_performance_property_test.cpp)
+# .kiro/specs/persistent-state-machine/ task 1: the kv_engine and
+# persistent_state_machine concepts, the snapshot manifest, memory_kv_engine
+# and the engine conformance suite (tests/kv_engine_conformance.hpp, which the
+# RocksDB engine reuses). The Redis and build-cache state machines are
+# type-checked only where the gateway is built.
+add_raft_completion_test(persistent_state_machine_test persistent_state_machine_test.cpp)
+target_link_libraries(persistent_state_machine_test PRIVATE OpenSSL::Crypto)
+if(KYTHIRA_BUILD_REDIS_GATEWAY)
+    target_compile_definitions(persistent_state_machine_test PRIVATE KYTHIRA_PSM_TEST_HAS_REDIS)
+endif()
 set_tests_properties(state_machine_apply_performance_property_test PROPERTIES
     # Measures real elapsed-time thresholds for state machine apply
     # throughput — CPU contention from co-scheduled tests under `ctest -j`
