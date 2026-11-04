@@ -1,6 +1,6 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 10/13 tasks complete
+## Status: 11/13 tasks complete (task 11 waits on its clang++-18 leg)
 
 **Last Updated**: November 2, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
@@ -843,7 +843,7 @@ Azure SDK links libatomic into the daemon, and the image lacked
 `libatomic1`, so every node exited at load. The image now installs it; the
 leg will be re-run and recorded here.
 
-- [ ] 12. Documentation
+- [x] 12. Documentation
   - `doc/redis-gateway.md`: the variables, HTTP API, WebDAV subset, disk
     layout, and client settings for sccache and vcpkg with read-only and
     read-write users.

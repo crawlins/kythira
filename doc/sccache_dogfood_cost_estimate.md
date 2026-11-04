@@ -413,6 +413,40 @@ What it does not change:
 - **The x64 test legs need x86 runners** if the self-hosted-runner option
   below is ever taken; that is unchanged by the uplink.
 
+#### Disk-backed sizing (added November 4, 2026)
+
+The two memory objections above were written against the in-memory gateway.
+The disk-backed cache (`.kiro/specs/disk-backed-build-cache/`, now the
+default mode, see `doc/redis-gateway.md`) answers both. Values live on disk
+and only the key index is in RAM, and each shard snapshots and compacts its
+log every 256 MiB of applied writes. That changes what each board needs:
+
+- **Disk, not RAM, is the budget.** Every node holds every chunk, so each
+  board needs the whole cache. The OCI bucket held 132 GiB when
+  disk-backed task 1 listed it (October 27, 2026), but one `main` run read
+  about 10.6 GiB of it.
+  A `KYTHIRA_CACHE_MAX_DISK_BYTES` of 64 GiB keeps several weeks of
+  main-branch objects and evicts the least-recently-read rest. That calls
+  for a 128 GB or larger SSD per board, on the Pi 5's PCIe slot or USB 3,
+  not the SD card: the store fsyncs every chunk.
+- **RAM drops to the index.** In the task 11 full-tree run, a node holding
+  a whole g++ build (752 objects, 288 MB) peaked at 240 MiB. The index
+  grows with the key count, not with bytes, so a 64 GiB store fits a 4 GB
+  board with room to spare. The 8 GB boards stay for headroom, not for
+  values.
+- **Inodes are not a constraint.** Chunks under 64 KiB share pack files,
+  and the same run used 611 files for 288 MB. The node refuses writes
+  before inodes or bytes run out (`KYTHIRA_CACHE_MIN_FREE_*`), so a full
+  disk costs cache misses, not a stopped node.
+- **A power blip no longer empties the cache.** File mode restores from
+  disk on restart, so the UPS is now about uptime, not about keeping the
+  cache warm.
+
+Revised hardware line: a 128 GB NVMe or USB SSD adds roughly $25 to $40 per
+board (an estimate, not a quote), about $100 once for three, so the two-year total moves by about $4 a
+month. That is still about $20 to $50 a month, under the preemptible OCI
+cluster.
+
 Recommendation, revised from the OCI one above: with fiber at the address,
 run the gateway dogfood at home, wire local builds and the Rust feed first,
 then measure bytes per warm leg with `sccache --show-stats` before pointing
