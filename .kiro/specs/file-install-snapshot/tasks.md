@@ -30,12 +30,25 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
   - Multi-chunk format-1 test per transport; size-limit review
   - _Requirements: 2.1-2.3_
 
-- [ ] 3. Stream reader and writer
+- [x] 3. Stream reader and writer
   - `snapshot_stream_reader` (pread across files) and
     `snapshot_stream_writer` (staging, per-file fsync, SHA-256, manifest
     validation, disk check)
   - Unit tests incl. chunks spanning files and zero-length files
   - _Requirements: 3.1-3.3, 5.1_
+  - As built (November 4, 2026): `include/raft/snapshot_stream.hpp`. The
+    reader checks file sizes up front and opens, preads and closes per
+    read, so it holds nothing between chunks and is thread-safe. The
+    writer refuses a bad manifest (including sizes that overflow and the
+    reserved name `MANIFEST.kythira`) or a disk without total plus margin
+    (default 64 MiB) before creating the staging directory, writes each
+    chunk straight to its file(s), hashes as it goes, and fsyncs and
+    checks each file when complete; `finish()` fsyncs the directory.
+    Every refusal is a `snapshot_stream_error` carrying the reject reason.
+    An offset mismatch leaves the transfer usable; a checksum or I/O
+    failure marks it failed. `reopen()` rebuilds `bytes_received` from
+    disk (verified complete files plus the prefix of the next), ahead of
+    task 6. `tests/snapshot_stream_test.cpp`, 18 cases.
 
 - [ ] 4. Follower receive and install
   - Format-1 branch in `handle_install_snapshot` and `install_snapshot`;

@@ -454,6 +454,11 @@ target_link_libraries(persistent_state_machine_test PRIVATE OpenSSL::Crypto)
 if(KYTHIRA_BUILD_REDIS_GATEWAY)
     target_compile_definitions(persistent_state_machine_test PRIVATE KYTHIRA_PSM_TEST_HAS_REDIS)
 endif()
+# file-install-snapshot task 3: the format-1 stream reader (leader) and
+# writer (follower) over real files in a temp directory, including chunks
+# that span files, zero-length files, corruption and reopen after a crash.
+add_raft_completion_test(snapshot_stream_test snapshot_stream_test.cpp)
+target_link_libraries(snapshot_stream_test PRIVATE OpenSSL::Crypto)
 set_tests_properties(state_machine_apply_performance_property_test PROPERTIES
     # Measures real elapsed-time thresholds for state machine apply
     # throughput — CPU contention from co-scheduled tests under `ctest -j`
