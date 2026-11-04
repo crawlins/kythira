@@ -269,7 +269,14 @@ struct coap_server_config {
     std::size_t max_block_size{1024};
     std::size_t max_concurrent_sessions{100};
     std::chrono::milliseconds session_timeout{30000};
-    std::size_t max_request_size{65536};
+    // Largest request body accepted, after Block1 reassembly. The default fits
+    // the largest InstallSnapshot chunk a node sends with default settings: a
+    // full 1 MB `snapshot_chunk_size` plus a 1 MiB format-1 manifest, base64
+    // in JSON, about 2.7 MB (file-install-snapshot Requirement 2.3). It was
+    // 64 KiB, which refused any default snapshot chunk on every CoAP backend.
+    // Worst-case reassembly memory is this times `max_concurrent_sessions`;
+    // constrained deployments lower both, and `snapshot_chunk_size` with them.
+    std::size_t max_request_size{4 * 1024 * 1024};
     // Bytes of sent replies the cantcoap server keeps so it can answer a
     // retransmitted request whose reply was lost (RFC 7252 Section 4.5). 0
     // disables replay. libcoap and libnyoci ignore this: they replay inside the

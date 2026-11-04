@@ -112,7 +112,7 @@ coap_server_config config;
 
 // High-concurrency settings
 config.max_concurrent_sessions = 500;                   // Default: 200
-config.max_request_size = 128 * 1024;                  // Default: 64KB
+config.max_request_size = 8 * 1024 * 1024;             // Default: 4 MiB
 config.session_timeout = std::chrono::seconds{300};    // Default: 300s
 
 // Resource-constrained settings
@@ -123,7 +123,8 @@ config.session_timeout = std::chrono::seconds{120};
 
 **Tuning Guidelines:**
 - **High load**: Increase `max_concurrent_sessions` to 500-1000
-- **Large snapshots**: Increase `max_request_size` to 1MB+
+- **Large snapshots**: the 4 MiB default fits a default 1 MB `snapshot_chunk_size`; raise both together
+- **Small `max_request_size`**: lower `snapshot_chunk_size` to match, or snapshot chunks are refused with 4.13
 - **Memory pressure**: Reduce both limits
 - **Short-lived connections**: Reduce `session_timeout`
 

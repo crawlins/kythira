@@ -54,6 +54,18 @@ current list of outstanding work, see [TODO.md](TODO.md).
   leader's blocking httplib sends to one slow follower delay the other
   follower's heartbeats.
 
+### What Changed (November 4, 2026)
+
+- **CoAP servers accept a default-size snapshot chunk.**
+  `coap_server_config::max_request_size` now defaults to 4 MiB instead of
+  64 KiB. The old default refused every InstallSnapshot chunk at the
+  default 1 MB `snapshot_chunk_size` on libcoap, cantcoap and libnyoci, so
+  a CoAP cluster with default settings could not send a snapshot over
+  64 KiB at all. 4 MiB also fits the first chunk of a file-set snapshot,
+  which adds a manifest of up to 1 MiB (file-install-snapshot). A
+  deployment that wants the old memory bound sets the field back and
+  lowers `snapshot_chunk_size` to match.
+
 ### What Changed (November 3, 2026)
 
 - **The OCI heartbeat policy grants only the permission the writer
