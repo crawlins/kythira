@@ -2984,6 +2984,20 @@ unverified completion claim.
   `posix_spawn`-based subprocess pattern. Verified via 10 further runs
   with no orphans left behind at the time; superseded in relevance by the
   root-cause fix above, but kept working alongside it.
+  **Second path, fixed November 4, 2026.** The July reorder left a race:
+  `node::stop()` keeps the node in the leader state, and
+  `submit_command()`/`read_state()` only check that state, so a call that
+  passed its leader check just before `stop()` registered its waiter
+  after `cancel_all_operations()` had run. With the tick gone, nothing
+  ever resolved it. IAM task 1 (PR #681) widened the window: the leader's
+  maintenance thread now generates an RSA key between its read and its
+  `submit_command()`, and property 17 SIGTERMs the leader right after
+  start, when that first key is being made. CI showed it as "node 2 ...
+  did not exit within 30s of SIGTERM; force-killed" (9 retry rescues,
+  November 3-4). Fix: `stop()` calls `commit_waiter::close()`, which
+  cancels everything and rejects any later registration at once;
+  `start()` reopens it. Covered by Test 8 in
+  `tests/raft_shutdown_cleanup_property_test.cpp`.
 
 - **Folly decoupling is complete at the header level; two independent
   gaps remain out of scope** (July 24, 2026) — `future_default.hpp` no

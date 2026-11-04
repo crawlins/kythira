@@ -4248,6 +4248,9 @@ auto node<Types>::start() -> void {
         _last_heartbeat = std::chrono::steady_clock::now();
     }
 
+    // A previous stop() closed the commit waiter; accept operations again.
+    _commit_waiter.reopen();
+
     // Mark as running
     _running.store(true, std::memory_order_release);
 
@@ -4288,8 +4291,11 @@ auto node<Types>::stop() -> void {
     // Mark as not running
     _running.store(false, std::memory_order_release);
 
-    // Cancel all pending client operations
-    _commit_waiter.cancel_all_operations("Node shutdown");
+    // Cancel all pending client operations, and refuse any registered from
+    // here on. A caller that passed its leader check just before this line
+    // (the state stays leader after stop) would otherwise register after the
+    // cancel and block forever, since no tick is left to time it out.
+    _commit_waiter.close("Node shutdown");
 
     // A leadership transfer is driven by the tick, and after this there are no
     // more ticks. Settling it here is what keeps `stop()` from leaving a caller
