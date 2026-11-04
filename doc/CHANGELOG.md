@@ -5,6 +5,18 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (November 3, 2026)
 
+- **The OCI heartbeat policy grants only the permission the writer
+  needs.** `kythira-ci-instance-hb` now limits its `use instances`
+  statement to `request.permission = 'INSTANCE_UPDATE'`, the one permission
+  the on-instance heartbeat writer uses beyond `read instances`. Oracle
+  Support confirmed (SR 4-0004186379) that there is no supported self-only
+  condition for UpdateInstance, so the compartment stays the boundary. A
+  November 2 reproduction also cleared the August self-only attempt: the
+  CI group's bucket failures then were the episodic Object Storage fault,
+  not the policy. The narrowed policy was applied live and passed the OCI
+  instance-pool bundle (run 41742136990). `policies/heartbeat.txt` records
+  the reasoning.
+
 - **The chaos cluster can keep its Raft state in S3.** `chaos_node` takes
   `PERSISTENCE=s3`: the write-behind object-store engine over a store at
   `S3_ENDPOINT`. `chaos_s3_mock` serves that store from the node image, with

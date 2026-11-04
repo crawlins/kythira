@@ -26,38 +26,37 @@
 #
 # Policy kythira-ci-instance-hb (compartment):
 Allow dynamic-group kythira-ci-instance-dg to read instances in compartment {COMPARTMENT}
-Allow dynamic-group kythira-ci-instance-dg to use instances in compartment {COMPARTMENT}
-# `use instances` is what covers UpdateInstance — the tag write. Same
-# verb-family trap instance-pool.txt documents: reads pass without it and the
-# failure is a 404 that looks like a wrong OCID.
+Allow dynamic-group kythira-ci-instance-dg to use instances in compartment {COMPARTMENT} where request.permission = 'INSTANCE_UPDATE'
+# `use instances` is what covers UpdateInstance, the tag write. It is the same
+# verb-family trap instance-pool.txt documents: reads pass without it, and the
+# failure is a 404 that looks like a wrong OCID. The writer makes exactly two
+# calls (include/raft/oci_heartbeat_writer.hpp): GetInstance, covered by
+# `read instances`, and UpdateInstance, whose permission is INSTANCE_UPDATE.
+# The where clause limits the `use` grant to that one permission.
 #
-# DELIBERATELY NOT narrowed to self-only. The obvious clause —
-#   where request.principal.id = target.instance.id
-# — was applied on August 12, 2026 and REVERTED the same hour, because it
-# broke an unrelated principal in the same compartment: with the clause in
-# place, the CI group's put_object to the kythira-ci-artifacts bucket failed
-# with BucketNotFound/404 ("...or you are not authorized") on two consecutive
-# dispatches (runs 31641076068 and 31641860637, 4 and 13 minutes after the
-# policy write), while the same UPST's compute calls (ListInstances) kept
-# succeeding — and the compartment audit log shows the policy update as the
-# ONLY mutation between the last green run and the failures. The mechanism
-# is a sharper version of the documented one (Policy Advanced Features,
-# "Variables that Aren't Applicable to a Request Result in a Declined
-# Request"): a condition variable that is inapplicable to a request declines
-# the request rather than merely not matching the statement — and the
-# services evaluate this inconsistently: Compute tolerated the clause for
-# requests with no target.instance.id (ListInstances passed), Object Storage
-# failed closed for a DIFFERENT principal covered by a DIFFERENT,
-# unconditional policy. Variable-to-variable comparison is additionally
-# undocumented (the syntax reference only shows variable-to-literal), so the
-# write-time validator accepting it proves nothing.
-# Consequence: any instance in the pool can read/tag-write ANY instance in
-# this compartment. Accepted: the compartment holds nothing but CI
-# resources, and the alternative demonstrably breaks the artifact-delivery
-# path for everyone else in the compartment. Anyone re-attempting this must
-# verify put_object BY THE CI GROUP still works afterwards, not just the
-# heartbeat path — that is exactly the cross-principal breakage that made
-# the first attempt look like a bucket outage.
+# NOT self-only, and it cannot be. Oracle Support (SR 4-0004186379, answered
+# November 3, 2026) says no documented condition compares an instance
+# principal with the target instance for UpdateInstance, so
+# `where request.principal.id = target.instance.id` must not be relied on.
+# The compartment is the supported boundary, so any pool instance can still
+# tag any instance in this compartment. That is accepted, because the
+# compartment holds nothing but CI resources. `request.permission` is a
+# documented general variable, and narrowing by it was Oracle's suggestion.
+#
+# History, so nobody re-litigates it: on August 12, 2026 the self-only clause
+# was applied and reverted the same hour, because the CI group's put_object
+# started failing 404 BucketNotFound on runs 31641076068 and 31641860637. A
+# November 2 reproduction (0 of 440 requests declined with the clause on and
+# after reverting it) showed the clause was not the cause. Those August runs
+# fell inside the episodic Object Storage decline fault that
+# RUNBOOK-object-storage-404-flake.md records (active until August 22).
+#
+# Applied live November 3, 2026 at 23:49:05Z. Real Cloud Tests run
+# 41742136990 (instance_pool bundle) then passed on it: a pool instance wrote
+# its own kythira-last-heartbeat tag under Instance Principal, and the CI
+# group uploaded the writer binary to the bucket and minted the PAR. If a
+# future writer needs any other instance operation, add that permission
+# here; do not drop the clause back to a bare `use instances`.
 #
 # Policy kythira-ci-artifacts (compartment):
 Allow group {GROUP} to manage object-family in compartment {COMPARTMENT}
@@ -66,8 +65,7 @@ Allow group {GROUP} to manage object-family in compartment {COMPARTMENT}
 # which holds nothing but CI resources.
 #
 # Exercised by a least-privilege principal: YES for both, August 12, 2026,
-# at the granted (broad) scope — see above for why the self-only narrowing
-# was attempted, measured, and backed out the same day.
+# at the then-granted (broad) scope; narrowed November 3, 2026 as above.
 # Instance side: a pool instance running oci_heartbeat_writer_node under
 # Instance Principal performed GetInstance + UpdateInstance (the heartbeat
 # tag write) against itself — the first code from this tree ever to run on
