@@ -41,12 +41,34 @@ RocksDB is linked. Each task is one PR unless noted.
       persistent state machine showing atomic apply, replay after a crash
       and the durable applied index).
 
-- [ ] 2. Reference state machine on the engine
+- [x] 2. Reference state machine on the engine
   - `persistent_kv_state_machine`: the Redis command set, atomic apply with
     the applied index, replay no-op at or below it, TTL deadlines and sweeps
   - Unit and property tests against the in-memory `redis_kv_state_machine`
     as the oracle
   - _Requirements: 2.1-2.4, 9.1_
+  - As built (November 4, 2026):
+    `services/redis/include/kythira/redis/persistent_kv_state_machine.hpp`,
+    templated on the engine. It lives in the Redis module, not core,
+    because it reuses the module's command parser and reply types. Data keys are `ns + key` holding the deadline
+    then the value. The applied index and the counters (bytes, keys,
+    expiring) live in one `meta` record at `ns + range.start`, inside the
+    group's own range rather than at the design's
+    `<ns>/group/<id>/applied_index`. That way checkpoint, ingest and drop
+    carry or remove it with the range, and no other group's range can
+    contain it. Every apply is one batch with that record; a replay at or
+    below the applied index writes nothing. Later commands of one entry
+    see earlier ones' effects through a pending overlay. `split_at` writes
+    each child's record in one batch (counters recounted by a scan of each
+    part, no key moves); `adopt` folds and erases the source's record.
+    The read API (`lookup`, `collect_expired`, `for_each_key`, the size
+    hints) matches the in-memory machine's so the gateway can switch, but
+    selecting it in `redis_gateway_node` needs the node path of task 3.
+    `services/redis/tests/persistent_kv_state_machine_test.cpp`, 9 cases: oracle
+    equivalence over 40 seeded random workloads (replies, values,
+    deadlines, counters, expiry scans, restart), replay, one batch per
+    apply, crash with held-back durability and replay, checkpoint/ingest
+    between engines next to another group, split/adopt, namespaces.
 
 - [ ] 3. Node integration: restart, compaction, reads
   - `if constexpr` branches in `initialize_from_storage`,

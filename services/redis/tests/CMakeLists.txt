@@ -30,6 +30,10 @@ endfunction()
 kythira_redis_test(resp_protocol_unit_test resp_protocol_unit_test.cpp)
 kythira_redis_test(redis_kv_commands_unit_test redis_kv_commands_unit_test.cpp)
 kythira_redis_test(redis_kv_state_machine_unit_test redis_kv_state_machine_unit_test.cpp)
+# persistent-state-machine task 2: the same command set on a kv_engine,
+# checked against redis_kv_state_machine as the oracle.
+kythira_redis_test(persistent_kv_state_machine_test persistent_kv_state_machine_test.cpp)
+target_link_libraries(persistent_kv_state_machine_test PRIVATE OpenSSL::Crypto)
 # multi-raft-transactions task 11: the multi-version variant.
 kythira_redis_test(redis_kv_mvcc_state_machine_test redis_kv_mvcc_state_machine_test.cpp)
 # Task 12: snapshot isolation over three hosts whose shards keep versions.
