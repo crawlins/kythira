@@ -75,6 +75,12 @@ private:
     // Mutex for protecting shared state
     mutable std::mutex _mutex;
 
+    // Set by close(), cleared by reopen(). While set, register_operation()
+    // rejects at once: nothing will ever complete or time out an operation
+    // registered after the node has stopped.
+    bool _closed{false};
+    std::string _closed_reason;
+
 public:
     /**
      * @brief Default constructor
@@ -101,6 +107,12 @@ public:
                             std::optional<std::chrono::milliseconds> timeout = std::nullopt)
         -> void {
         std::lock_guard<std::mutex> lock(_mutex);
+
+        if (_closed) {
+            reject_callback(std::make_exception_ptr(
+                raft_completion_exception("Operation cancelled: " + _closed_reason)));
+            return;
+        }
 
         // Create pending operation
         pending_operation op(index, std::move(fulfill_callback), std::move(reject_callback),
@@ -179,6 +191,33 @@ public:
         }
 
         _pending_operations.clear();
+    }
+
+    /**
+     * @brief Cancel all pending operations and refuse new ones until reopen()
+     *
+     * Called by node::stop(). A caller that passed its own leader check just
+     * before stop() would otherwise register after cancel_all_operations()
+     * ran, and wait forever: the tick that times operations out has stopped.
+     *
+     * @param reason The reason for cancellation (used in exception messages)
+     */
+    auto close(const std::string& reason) -> void {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _closed = true;
+            _closed_reason = reason;
+        }
+        cancel_all_operations(reason);
+    }
+
+    /**
+     * @brief Accept registrations again after close() (node restart)
+     */
+    auto reopen() -> void {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _closed = false;
+        _closed_reason.clear();
     }
 
     /**

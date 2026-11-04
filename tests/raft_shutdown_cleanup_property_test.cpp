@@ -15,6 +15,7 @@
 #include <random>
 #include <chrono>
 #include <thread>
+#include <string>
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -339,6 +340,53 @@ BOOST_AUTO_TEST_CASE(raft_shutdown_cleanup_property_test, *boost::unit_test::tim
                           test_operations);  // Should only be called once per operation
 
         BOOST_TEST_MESSAGE("✓ Multiple shutdown calls are idempotent");
+    }
+
+    // Test 8: Registration after close() is rejected at once
+    //
+    // node::stop() closes the waiter. A submit_command() or read_state() that
+    // passed its leader check just before stop() registers afterwards, and
+    // with the tick gone nothing would ever time it out. ca_cluster_node hung
+    // on SIGTERM this way when its maintenance thread proposed an OIDC key
+    // while the node stopped.
+    {
+        BOOST_TEST_MESSAGE("Test 8: Registration after close()");
+
+        kythira::commit_waiter<std::uint64_t> commit_waiter;
+        std::atomic<std::size_t> rejection_count{0};
+        std::atomic<std::size_t> fulfil_count{0};
+        auto reject_callback = [&rejection_count](std::exception_ptr ex) {
+            try {
+                std::rethrow_exception(ex);
+            } catch (const kythira::raft_completion_exception& e) {
+                BOOST_CHECK(std::string(e.what()).find(shutdown_reason) != std::string::npos);
+            } catch (...) {
+                BOOST_ERROR("unexpected exception type");
+            }
+            rejection_count.fetch_add(1);
+        };
+        auto fulfil_callback = [&fulfil_count](std::vector<std::byte>) {
+            fulfil_count.fetch_add(1);
+        };
+
+        commit_waiter.register_operation(1, fulfil_callback, reject_callback, operation_timeout);
+        commit_waiter.close(shutdown_reason);
+        BOOST_CHECK_EQUAL(rejection_count.load(), 1U);
+
+        // No timeout: only the close itself can ever resolve this one.
+        commit_waiter.register_operation(2, fulfil_callback, reject_callback);
+        BOOST_CHECK_EQUAL(rejection_count.load(), 2U);
+        BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 0U);
+
+        // A restarted node reopens the waiter, and operations wait again.
+        commit_waiter.reopen();
+        commit_waiter.register_operation(3, fulfil_callback, reject_callback);
+        BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 1U);
+        commit_waiter.notify_committed_and_applied(3);
+        BOOST_CHECK_EQUAL(fulfil_count.load(), 1U);
+        BOOST_CHECK_EQUAL(rejection_count.load(), 2U);
+
+        BOOST_TEST_MESSAGE("✓ Registration after close() is rejected, and reopen() restores it");
     }
 
     BOOST_TEST_MESSAGE("All shutdown cleanup property tests passed!");
