@@ -101,7 +101,7 @@ commit_ts`), which this layout leaves room for.
 | `kv_engine`, `persistent_state_machine`, `persistent_splittable_state_machine` | `include/raft/persistent_state_machine.hpp` | Concepts plus `snapshot_manifest` (file name, size, SHA-256, and the engine's format tag) |
 | `memory_kv_engine` | `include/raft/memory_kv_engine.hpp` | `std::map` per column family; a held-back durable sequence for tests; checkpoint writes one file per range |
 | `rocksdb_kv_engine` | `include/raft/rocksdb_kv_engine.hpp`, `src/rocksdb_kv_engine.cpp` | Behind `KYTHIRA_ENGINE_ROCKSDB`; compiled in a `.cpp` so RocksDB headers stay out of every TU |
-| `persistent_kv_state_machine` | `include/raft/persistent_kv_state_machine.hpp` | Redis command set on the engine; TTL deadlines and sweeps as `redis-compatible-kv` Requirement 8 |
+| `persistent_kv_state_machine` | `services/redis/include/kythira/redis/persistent_kv_state_machine.hpp` | Redis command set on the engine; TTL deadlines and sweeps as `redis-compatible-kv` Requirement 8 |
 | Node integration | `include/raft/raft.hpp` | `if constexpr` branches at the eight sites in requirements.md |
 | Host integration | `include/raft/multi_raft_impl.hpp` | Engine ownership, split/merge branches, namespace |
 | Wrapper integration | `include/raft/txn_state_machine.hpp` | Persistent specialisation of the map storage |
