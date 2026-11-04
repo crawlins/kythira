@@ -4,7 +4,7 @@ Ordered so the contract and the in-memory engine exist before any node code
 changes, and so every node change is tested on the in-memory engine before
 RocksDB is linked. Each task is one PR unless noted.
 
-- [ ] 1. Concepts and the in-memory engine
+- [x] 1. Concepts and the in-memory engine
   - `persistent_state_machine.hpp`: `kv_engine`, `persistent_state_machine`,
     `persistent_splittable_state_machine`, `snapshot_manifest`
   - `memory_kv_engine` with a held-back durable sequence
@@ -12,6 +12,34 @@ RocksDB is linked. Each task is one PR unless noted.
   - Static-assert tests that every existing state machine still selects the
     byte-buffer path
   - _Requirements: 1.1-1.5, 7.1, 7.4_
+  - Done 2026-11-04. As built:
+    - Keys and values are `std::string` (unsigned byte order); a
+      `key_range` is `[start, end)` with an optional end. `write_batch`
+      holds put, erase and erase-range operations; each non-empty batch
+      takes one `engine_sequence`.
+    - `kv_engine` has `get`, `scan` (a visitor that returns false to stop,
+      which is how callers bound a scan for Requirement 5.3), `write`,
+      `latest_sequence`, `durable_sequence`, `sync(seq)`, `checkpoint`,
+      `ingest`, `drop` and `format_tag`. `ingest` and `drop` are writes and
+      return their sequence.
+    - `storage_kind_of<SM>` picks the path; a type satisfying both kinds is
+      persistent (1.5). `byte_buffer_state_machine` names the old path.
+    - `snapshot_manifest` has a bounded binary encoding and a digest, since
+      it is also file-install-snapshot's first-chunk payload. Decode checks
+      every length against the input and caps (1 MiB, 16 Ki files, 255-byte
+      names) before allocating, and refuses names that could leave a
+      staging directory (`..`, separators, NUL).
+    - `memory_kv_engine` scans in chunks of 256 with its mutex released
+      between chunks, so a visitor may call back into the engine. Its
+      checkpoint is one file, `range.kvs`.
+    - The redis and build-cache state machines are type-checked only where
+      the gateway is built (`KYTHIRA_PSM_TEST_HAS_REDIS`), so the test
+      builds with the gateway off and with no Folly.
+    - Tests: `tests/persistent_state_machine_test.cpp` (32 cases: the
+      conformance suite in `tests/kv_engine_conformance.hpp`, durability
+      hold and crash, manifest bounds, concept selection, and a toy
+      persistent state machine showing atomic apply, replay after a crash
+      and the durable applied index).
 
 - [ ] 2. Reference state machine on the engine
   - `persistent_kv_state_machine`: the Redis command set, atomic apply with
