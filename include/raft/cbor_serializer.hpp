@@ -216,7 +216,12 @@ public:
     [[nodiscard]] auto serialize(
         const install_snapshot_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
         std::vector<std::byte> out;
-        write_map_header(out, 9);
+        // file-install-snapshot fields are written only when set, so a
+        // format-0 request encodes exactly as before they existed (and an
+        // older decoder, which refuses unknown keys, still reads it).
+        const bool has_format = req.format() != install_snapshot_format::byte_buffer;
+        const bool has_manifest = !req.manifest().empty();
+        write_map_header(out, 9 + (has_format ? 1 : 0) + (has_manifest ? 1 : 0));
         write_discriminant(out, "install_snapshot_request");
         write_text_string(out, "group_id");
         write_id(out, req.group_id());
@@ -234,6 +239,14 @@ public:
         write_byte_string(out, req.data());
         write_text_string(out, "done");
         write_bool(out, req.done());
+        if (has_format) {
+            write_text_string(out, "format");
+            write_uint(out, req.format());
+        }
+        if (has_manifest) {
+            write_text_string(out, "manifest");
+            write_byte_string(out, req.manifest());
+        }
         return to_data(out);
     }
 
@@ -242,12 +255,22 @@ public:
     [[nodiscard]] auto serialize(const install_snapshot_response<TermId, GroupId>& resp) const
         -> Data {
         std::vector<std::byte> out;
-        write_map_header(out, 3);
+        const auto received = resp.bytes_received();
+        const auto reason = resp.reject_reason();
+        write_map_header(out, 3 + (received ? 1 : 0) + (reason ? 1 : 0));
         write_discriminant(out, "install_snapshot_response");
         write_text_string(out, "group_id");
         write_id(out, resp.group_id());
         write_text_string(out, "term");
         write_uint(out, resp.term());
+        if (received) {
+            write_text_string(out, "bytes_received");
+            write_uint(out, *received);
+        }
+        if (reason) {
+            write_text_string(out, "reject_reason");
+            write_uint(out, static_cast<std::uint64_t>(*reason));
+        }
         return to_data(out);
     }
 
@@ -721,6 +744,12 @@ public:
                 // default value is exactly "the single group", so a missing
                 // key is not an error and carries no required-field flag.
                 req._group_id = read_id<GroupId>(cur);
+            } else if (key == "format") {
+                // Absent means format 0, as before file-install-snapshot.
+                req._format = read_narrowed<std::uint32_t>(cur);
+            } else if (key == "manifest") {
+                req._manifest =
+                    read_byte_string_capped(cur, k_max_install_snapshot_manifest_bytes, "manifest");
             } else {
                 throw serialization_exception("Unexpected key in install_snapshot_request: " + key);
             }
@@ -754,6 +783,11 @@ public:
                 // default value is exactly "the single group", so a missing
                 // key is not an error and carries no required-field flag.
                 resp._group_id = read_id<GroupId>(cur);
+            } else if (key == "bytes_received") {
+                resp._bytes_received = read_narrowed<std::uint64_t>(cur);
+            } else if (key == "reject_reason") {
+                resp._reject_reason =
+                    static_cast<install_snapshot_reject_reason>(read_narrowed<std::uint8_t>(cur));
             } else {
                 throw serialization_exception("Unexpected key in install_snapshot_response: " +
                                               key);
@@ -1217,6 +1251,21 @@ private:
 
     static auto read_byte_string(decode_cursor& cur) -> std::vector<std::byte> {
         const std::uint64_t len = read_head_of(cur, major_byte_string);
+        require_available(cur, len);
+        std::vector<std::byte> result(cur.pos, cur.pos + len);
+        cur.pos += len;
+        return result;
+    }
+
+    /// A byte string refused, before it is copied, when its declared length
+    /// is above `cap`.
+    static auto read_byte_string_capped(decode_cursor& cur, std::uint64_t cap, const char* field)
+        -> std::vector<std::byte> {
+        const std::uint64_t len = read_head_of(cur, major_byte_string);
+        if (len > cap) {
+            throw serialization_exception(std::string("CBOR decode: field '") + field +
+                                          "' exceeds " + std::to_string(cap) + " bytes");
+        }
         require_available(cur, len);
         std::vector<std::byte> result(cur.pos, cur.pos + len);
         cur.pos += len;

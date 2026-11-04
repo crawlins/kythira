@@ -6,6 +6,8 @@
 #define BOOST_TEST_MODULE ion_serializer_concept_test
 #include <boost/test/unit_test.hpp>
 
+#include "install_snapshot_wire_extension_cases.hpp"
+
 #include <raft/coap_utils.hpp>
 
 namespace {
@@ -98,3 +100,6 @@ BOOST_AUTO_TEST_CASE(test_name_distinguishes_encoding_and_resolves_to_ion_format
     BOOST_TEST(kythira::coap_utils::content_format_to_string(
                    kythira::coap_utils::coap_content_format::application_ion) == "application/ion");
 }
+
+// file-install-snapshot wire fields (shared across every serializer).
+KYTHIRA_INSTALL_SNAPSHOT_WIRE_CASES(kythira::ion_serializer, ion, true)

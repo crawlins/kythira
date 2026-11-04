@@ -261,7 +261,7 @@ struct snapshot_manifest {
     /// Bounds on a decoded manifest. A RocksDB checkpoint has a few hundred
     /// files; the caps exist so a hostile first chunk cannot make a follower
     /// allocate without limit (file-install-snapshot Requirement 1.5).
-    static constexpr std::size_t k_max_encoded_bytes = 1024 * 1024;
+    static constexpr std::size_t k_max_encoded_bytes = k_max_install_snapshot_manifest_bytes;
     static constexpr std::size_t k_max_files = 16 * 1024;
     static constexpr std::size_t k_max_name_bytes = 255;
     static constexpr std::size_t k_max_format_bytes = 64;

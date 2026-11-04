@@ -340,19 +340,28 @@ public:
              typename LogIndex = std::uint64_t, typename GroupId = std::uint64_t>
     [[nodiscard]] auto serialize(
         const install_snapshot_request<NodeId, TermId, LogIndex, GroupId>& req) const -> Data {
-        return encode(base_estimate + req.data().size() * 2, [&](hWRITER w) {
-            write_annotation(w, "install_snapshot_request");
-            start_struct(w);
-            write_field_id(w, "group_id", req.group_id());
-            write_field_int(w, "term", req.term());
-            write_field_id(w, "leader_id", req.leader_id());
-            write_field_int(w, "last_included_index", req.last_included_index());
-            write_field_int(w, "last_included_term", req.last_included_term());
-            write_field_int(w, "offset", req.offset());
-            write_field_blob(w, "data", req.data());
-            write_field_bool(w, "done", req.done());
-            finish_struct(w);
-        });
+        return encode(base_estimate + (req.data().size() + req.manifest().size()) * 2,
+                      [&](hWRITER w) {
+                          write_annotation(w, "install_snapshot_request");
+                          start_struct(w);
+                          write_field_id(w, "group_id", req.group_id());
+                          write_field_int(w, "term", req.term());
+                          write_field_id(w, "leader_id", req.leader_id());
+                          write_field_int(w, "last_included_index", req.last_included_index());
+                          write_field_int(w, "last_included_term", req.last_included_term());
+                          write_field_int(w, "offset", req.offset());
+                          write_field_blob(w, "data", req.data());
+                          write_field_bool(w, "done", req.done());
+                          // file-install-snapshot fields, written only when set so a
+                          // format-0 request encodes exactly as before they existed.
+                          if (req.format() != install_snapshot_format::byte_buffer) {
+                              write_field_int(w, "format", req.format());
+                          }
+                          if (!req.manifest().empty()) {
+                              write_field_blob(w, "manifest", req.manifest());
+                          }
+                          finish_struct(w);
+                      });
     }
 
     // Serialize InstallSnapshot Response
@@ -364,6 +373,12 @@ public:
             start_struct(w);
             write_field_id(w, "group_id", resp.group_id());
             write_field_int(w, "term", resp.term());
+            if (const auto received = resp.bytes_received()) {
+                write_field_int(w, "bytes_received", *received);
+            }
+            if (const auto reason = resp.reject_reason()) {
+                write_field_int(w, "reject_reason", static_cast<std::uint64_t>(*reason));
+            }
             finish_struct(w);
         });
     }
@@ -775,6 +790,11 @@ public:
                     // default value is exactly "the single group", so a missing
                     // field is not an error and carries no required-field flag.
                     req._group_id = read_id<GroupId>(r, t);
+                } else if (key == "format") {
+                    // Absent means format 0, as before file-install-snapshot.
+                    req._format = read_int<std::uint32_t>(r, t);
+                } else if (key == "manifest") {
+                    req._manifest = read_blob(r, t, k_max_install_snapshot_manifest_bytes);
                 } else {
                     throw serialization_exception("Unexpected field in install_snapshot_request: " +
                                                   key);
@@ -804,6 +824,11 @@ public:
                     // default value is exactly "the single group", so a missing
                     // field is not an error and carries no required-field flag.
                     resp._group_id = read_id<GroupId>(r, t);
+                } else if (key == "bytes_received") {
+                    resp._bytes_received = read_int<std::uint64_t>(r, t);
+                } else if (key == "reject_reason") {
+                    resp._reject_reason =
+                        static_cast<install_snapshot_reject_reason>(read_int<std::uint8_t>(r, t));
                 } else {
                     throw serialization_exception(
                         "Unexpected field in install_snapshot_response: " + key);
@@ -1340,7 +1365,11 @@ private:
         return to_std_string(s);
     }
 
-    static auto read_blob(hREADER r, ION_TYPE t) -> std::vector<std::byte> {
+    /// `cap` refuses a blob whose declared size is larger, before anything
+    /// is allocated for it.
+    static auto read_blob(hREADER r, ION_TYPE t,
+                          std::size_t cap = std::numeric_limits<std::size_t>::max())
+        -> std::vector<std::byte> {
         if (t != tid_BLOB) {
             throw serialization_exception("expected Ion blob");
         }
@@ -1348,6 +1377,11 @@ private:
         check_read(ion_reader_get_lob_size(r, &size), "reading blob size");
         if (size < 0) {
             throw serialization_exception("negative Ion blob size");
+        }
+        if (static_cast<std::size_t>(size) > cap) {
+            throw serialization_exception("Ion blob of " + std::to_string(size) +
+                                          " bytes exceeds the " + std::to_string(cap) +
+                                          "-byte limit for its field");
         }
         std::vector<std::byte> out(static_cast<std::size_t>(size));
         if (size > 0) {

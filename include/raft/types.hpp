@@ -14,6 +14,7 @@
 #include <concepts>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <optional>
 #include <cstddef>
@@ -602,6 +603,71 @@ struct append_entries_response {
     [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
 };
 
+/// @page install_snapshot_formats InstallSnapshot formats
+///
+/// `.kiro/specs/file-install-snapshot/` Requirement 1. Format 0 is the
+/// original transfer: `data` chunks of one opaque state buffer, `offset` an
+/// offset into it. Format 1 carries a checkpoint of a persistent state
+/// machine as a set of files: the first chunk carries the encoded
+/// `snapshot_manifest` (persistent_state_machine.hpp), `offset` is a stream
+/// offset over the manifest's files in order, and a chunk may span files.
+///
+/// The new fields are additive and every serializer writes them only when
+/// they differ from their defaults, so a format-0 message encodes exactly as
+/// it did before they existed and an older receiver still reads it.
+
+/// The format of an InstallSnapshot transfer (see @ref install_snapshot_formats).
+namespace install_snapshot_format {
+inline constexpr std::uint32_t byte_buffer = 0;
+inline constexpr std::uint32_t file_set = 1;
+}  // namespace install_snapshot_format
+
+/// Largest manifest a decoder accepts on a format-1 first chunk
+/// (file-install-snapshot Requirement 1.5). `snapshot_manifest` encodes to
+/// at most this many bytes.
+inline constexpr std::size_t k_max_install_snapshot_manifest_bytes = 1024 * 1024;
+
+/// Why a follower refused an InstallSnapshot chunk (file-install-snapshot
+/// design "Reject reasons"). The first four existed before only as metric
+/// dimensions. Decoders keep a code they do not know as its raw value, so a
+/// newer follower's reason reaches an older leader as "some rejection".
+enum class install_snapshot_reject_reason : std::uint8_t {
+    stale_term = 1,
+    stale_snapshot = 2,
+    offset_mismatch = 3,
+    missing_first_chunk = 4,
+    format_mismatch = 5,
+    manifest_invalid = 6,
+    disk_space = 7,
+    checksum = 8,
+    io_error = 9,
+};
+
+[[nodiscard]] constexpr auto to_string(install_snapshot_reject_reason r) noexcept
+    -> std::string_view {
+    switch (r) {
+        case install_snapshot_reject_reason::stale_term:
+            return "stale_term";
+        case install_snapshot_reject_reason::stale_snapshot:
+            return "stale_snapshot";
+        case install_snapshot_reject_reason::offset_mismatch:
+            return "offset_mismatch";
+        case install_snapshot_reject_reason::missing_first_chunk:
+            return "missing_first_chunk";
+        case install_snapshot_reject_reason::format_mismatch:
+            return "format_mismatch";
+        case install_snapshot_reject_reason::manifest_invalid:
+            return "manifest_invalid";
+        case install_snapshot_reject_reason::disk_space:
+            return "disk_space";
+        case install_snapshot_reject_reason::checksum:
+            return "checksum";
+        case install_snapshot_reject_reason::io_error:
+            return "io_error";
+    }
+    return "unknown";
+}
+
 /// @brief Default InstallSnapshot request.
 /// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
@@ -620,6 +686,14 @@ struct install_snapshot_request {
 
     GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
 
+    /// Transfer format; see @ref install_snapshot_formats. Kept after
+    /// `_group_id` so positional initializers written before it still mean
+    /// the same fields.
+    std::uint32_t _format{install_snapshot_format::byte_buffer};
+    /// The encoded `snapshot_manifest`, on the first chunk of a format-1
+    /// transfer only; empty otherwise.
+    std::vector<std::byte> _manifest{};
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto leader_id() const -> NodeId { return _leader_id; }
     [[nodiscard]] auto last_included_index() const -> LogIndex { return _last_included_index; }
@@ -628,6 +702,8 @@ struct install_snapshot_request {
     [[nodiscard]] auto data() const -> const std::vector<std::byte>& { return _data; }
     [[nodiscard]] auto done() const -> bool { return _done; }
     [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
+    [[nodiscard]] auto format() const -> std::uint32_t { return _format; }
+    [[nodiscard]] auto manifest() const -> const std::vector<std::byte>& { return _manifest; }
 };
 
 /// @brief Default InstallSnapshot response.
@@ -639,8 +715,21 @@ struct install_snapshot_response {
 
     GroupId _group_id{};  ///< Multi-Raft group selector; see @ref multiraft_group_id.
 
+    /// The follower's contiguous written prefix of this transfer, so a
+    /// leader can resume rather than restart (file-install-snapshot
+    /// Requirement 6). Absent from followers that do not report it.
+    std::optional<std::uint64_t> _bytes_received{};
+    /// Set when the follower refused the chunk.
+    std::optional<install_snapshot_reject_reason> _reject_reason{};
+
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto group_id() const -> GroupId { return _group_id; }
+    [[nodiscard]] auto bytes_received() const -> std::optional<std::uint64_t> {
+        return _bytes_received;
+    }
+    [[nodiscard]] auto reject_reason() const -> std::optional<install_snapshot_reject_reason> {
+        return _reject_reason;
+    }
 };
 
 /// @brief Concept constraining the serialized-data container to a `std::byte` range.

@@ -125,12 +125,20 @@ message InstallSnapshotRequest {
   uint64 group_id = 8;
   // Preferred over leader_id (see NodeIdValue).
   NodeIdValue leader = 9;
+  // file-install-snapshot: 0 = single byte buffer (default), 1 = file set.
+  uint32 format = 10;
+  // Encoded snapshot_manifest on the first chunk of a format-1 install.
+  bytes manifest = 11;
 }
 
 message InstallSnapshotResponse {
   uint64 term = 1;
   // Multi-Raft group selector; 0 means the single group.
   uint64 group_id = 2;
+  // file-install-snapshot: bytes the follower holds, for resume.
+  optional uint64 bytes_received = 3;
+  // install_snapshot_reject_reason code; absent on success.
+  optional uint32 reject_reason = 4;
 }
 
 // The base, minimal service surface — matches every other transport's core

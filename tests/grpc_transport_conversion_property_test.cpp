@@ -190,6 +190,52 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_roundtrip) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(install_snapshot_file_install_fields_roundtrip) {
+    // file-install-snapshot task 1: the format/manifest request fields and
+    // the bytes_received/reject_reason response fields survive the gRPC
+    // mapping, and stay absent when unset.
+    kythira::install_snapshot_request<> req{._term = 4,
+                                            ._leader_id = 2,
+                                            ._last_included_index = 50,
+                                            ._last_included_term = 3,
+                                            ._offset = 0,
+                                            ._data = {std::byte{1}},
+                                            ._done = false};
+    auto plain = kythira::to_proto(req);
+    BOOST_TEST(plain.format() == 0U);
+    BOOST_TEST(plain.manifest().empty());
+
+    req._format = kythira::install_snapshot_format::file_set;
+    req._manifest = {std::byte{'K'}, std::byte{'Y'}, std::byte{'M'}, std::byte{'F'}};
+    auto out = kythira::from_proto(kythira::to_proto(req));
+    BOOST_TEST(out.format() == kythira::install_snapshot_format::file_set);
+    BOOST_TEST((out.manifest() == req.manifest()));
+
+    kythira::install_snapshot_response<> resp{._term = 4};
+    auto plain_resp = kythira::to_proto(resp);
+    BOOST_TEST(!plain_resp.has_bytes_received());
+    BOOST_TEST(!plain_resp.has_reject_reason());
+
+    resp._bytes_received = 0;
+    resp._reject_reason = kythira::install_snapshot_reject_reason::disk_space;
+    auto resp_out = kythira::from_proto(kythira::to_proto(resp));
+    BOOST_REQUIRE(resp_out.bytes_received().has_value());
+    BOOST_TEST(*resp_out.bytes_received() == 0U);
+    BOOST_REQUIRE(resp_out.reject_reason().has_value());
+    BOOST_TEST((*resp_out.reject_reason() == kythira::install_snapshot_reject_reason::disk_space));
+}
+
+BOOST_AUTO_TEST_CASE(install_snapshot_file_install_bounds_fail_closed) {
+    kythira::raft::v1::InstallSnapshotRequest big;
+    big.set_manifest(std::string(kythira::k_max_install_snapshot_manifest_bytes + 1, 'x'));
+    BOOST_CHECK_THROW((void)kythira::from_proto(big), kythira::grpc_message_conversion_error);
+
+    kythira::raft::v1::InstallSnapshotResponse bad_reason;
+    bad_reason.set_reject_reason(256);
+    BOOST_CHECK_THROW((void)kythira::from_proto(bad_reason),
+                      kythira::grpc_message_conversion_error);
+}
+
 BOOST_AUTO_TEST_CASE(property_cluster_bootstrap_roundtrip) {
     auto rng = rng_seeded();
     for (std::size_t i = 0; i < property_test_iterations; ++i) {

@@ -6,6 +6,8 @@
 #define BOOST_TEST_MODULE rpc_serializer_concept_test
 #include <boost/test/unit_test.hpp>
 
+#include "install_snapshot_wire_extension_cases.hpp"
+
 namespace {
 constexpr const char* test_name = "rpc_serializer_concept_test";
 }
@@ -53,3 +55,6 @@ BOOST_AUTO_TEST_CASE(test_json_serializer_instantiation) {
     BOOST_TEST(deserialized.last_log_index() == req.last_log_index());
     BOOST_TEST(deserialized.last_log_term() == req.last_log_term());
 }
+
+// file-install-snapshot wire fields (shared across every serializer).
+KYTHIRA_INSTALL_SNAPSHOT_WIRE_CASES(kythira::json_serializer, json, true)

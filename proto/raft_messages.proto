@@ -159,12 +159,25 @@ message InstallSnapshotRequest {
   bool done = 7;
   // Multi-Raft group selector; absent (UNSET) means the single group.
   GroupIdValue group_id = 8;
+  // file-install-snapshot: 0 = single byte buffer (the default, and the
+  // only format before this field existed), 1 = manifest-described file
+  // set. Proto3 omits a zero value, so format-0 requests encode exactly as
+  // before.
+  uint32 format = 9;
+  // Encoded snapshot_manifest, sent on the first chunk of a format-1
+  // install. Capped at k_max_install_snapshot_manifest_bytes on decode.
+  bytes manifest = 10;
 }
 
 message InstallSnapshotResponse {
   uint64 term = 1;
   // Multi-Raft group selector; absent (UNSET) means the single group.
   GroupIdValue group_id = 2;
+  // file-install-snapshot: bytes the follower holds for the install in
+  // progress, so the leader can resume from that offset.
+  optional uint64 bytes_received = 3;
+  // install_snapshot_reject_reason code (fits a uint8); absent on success.
+  optional uint32 reject_reason = 4;
 }
 
 // Mirrors kythira::peer_info<NodeId, Address>. Address is always std::string

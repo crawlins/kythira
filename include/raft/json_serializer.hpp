@@ -197,6 +197,14 @@ public:
         obj["offset"] = req.offset();
         obj["data"] = bytes_to_base64(req.data());
         obj["done"] = req.done();
+        // file-install-snapshot fields, written only when set so a format-0
+        // request encodes exactly as before they existed.
+        if (req.format() != install_snapshot_format::byte_buffer) {
+            obj["format"] = req.format();
+        }
+        if (!req.manifest().empty()) {
+            obj["manifest"] = bytes_to_base64(req.manifest());
+        }
 
         return json_to_bytes(boost::json::serialize(obj));
     }
@@ -209,6 +217,12 @@ public:
         obj["type"] = "install_snapshot_response";
         encode_group_id(obj, resp.group_id());
         obj["term"] = resp.term();
+        if (const auto received = resp.bytes_received()) {
+            obj["bytes_received"] = *received;
+        }
+        if (const auto reason = resp.reject_reason()) {
+            obj["reject_reason"] = static_cast<std::uint64_t>(*reason);
+        }
 
         return json_to_bytes(boost::json::serialize(obj));
     }
@@ -385,6 +399,12 @@ public:
             req._offset = read_int<std::size_t>(obj, "offset");
             req._data = read_bytes(obj, "data");
             req._done = read_bool(obj, "done");
+            if (obj.contains("format")) {
+                req._format = read_int<std::uint32_t>(obj, "format");
+            }
+            if (obj.contains("manifest")) {
+                req._manifest = read_manifest(obj);
+            }
 
             req._leader_id = read_id<NodeId>(obj, "leader_id");
 
@@ -402,6 +422,13 @@ public:
             install_snapshot_response<TermId, GroupId> resp;
             resp._group_id = decode_group_id<GroupId>(obj);
             resp._term = read_int<TermId>(obj, "term");
+            if (obj.contains("bytes_received")) {
+                resp._bytes_received = read_int<std::uint64_t>(obj, "bytes_received");
+            }
+            if (obj.contains("reject_reason")) {
+                resp._reject_reason = static_cast<install_snapshot_reject_reason>(
+                    read_int<std::uint8_t>(obj, "reject_reason"));
+            }
 
             return resp;
         });
@@ -812,6 +839,30 @@ private:
             fail_kind(key, "base64 string", v);
         }
         return base64_to_bytes(v.get_string(), key);
+    }
+
+    /// The InstallSnapshot manifest, refused above
+    /// `k_max_install_snapshot_manifest_bytes` before its base64 is decoded.
+    [[nodiscard]] static auto read_manifest(const boost::json::object& obj)
+        -> std::vector<std::byte> {
+        const auto& v = require(obj, "manifest");
+        if (!v.is_string()) {
+            fail_kind("manifest", "base64 string", v);
+        }
+        const auto too_big = [] {
+            throw serialization_exception("JSON decode: field 'manifest' exceeds " +
+                                          std::to_string(k_max_install_snapshot_manifest_bytes) +
+                                          " bytes");
+        };
+        constexpr std::size_t k_max_base64 = (k_max_install_snapshot_manifest_bytes + 2) / 3 * 4;
+        if (v.get_string().size() > k_max_base64) {
+            too_big();
+        }
+        auto bytes = base64_to_bytes(v.get_string(), "manifest");
+        if (bytes.size() > k_max_install_snapshot_manifest_bytes) {
+            too_big();
+        }
+        return bytes;
     }
 
     /// A node or group id as JSON: a number when numeric, a string when

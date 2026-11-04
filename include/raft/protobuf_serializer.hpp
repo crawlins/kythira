@@ -31,6 +31,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -181,6 +182,12 @@ public:
         msg.set_offset(to_wire(req.offset(), "offset"));
         msg.set_data(bytes_to_proto_string(req.data()));
         msg.set_done(req.done());
+        // Proto3 drops a zero format and an empty manifest from the wire, so
+        // a format-0 request encodes exactly as it did before these fields.
+        msg.set_format(req.format());
+        if (!req.manifest().empty()) {
+            msg.set_manifest(bytes_to_proto_string(req.manifest()));
+        }
         return encode(message_tag::install_snapshot_request, msg);
     }
 
@@ -191,6 +198,12 @@ public:
         raft_pb::InstallSnapshotResponse msg;
         *msg.mutable_group_id() = to_group_id_value<GroupId>(resp.group_id());
         msg.set_term(to_wire(resp.term(), "term"));
+        if (const auto received = resp.bytes_received()) {
+            msg.set_bytes_received(*received);
+        }
+        if (const auto reason = resp.reject_reason()) {
+            msg.set_reject_reason(static_cast<std::uint32_t>(*reason));
+        }
         return encode(message_tag::install_snapshot_response, msg);
     }
 
@@ -423,6 +436,13 @@ public:
         req._offset = from_wire<std::size_t>(msg.offset(), "offset");
         req._data = proto_string_to_bytes(msg.data());
         req._done = msg.done();
+        req._format = msg.format();
+        if (msg.manifest().size() > k_max_install_snapshot_manifest_bytes) {
+            throw serialization_exception("install_snapshot_request manifest exceeds " +
+                                          std::to_string(k_max_install_snapshot_manifest_bytes) +
+                                          " bytes");
+        }
+        req._manifest = proto_string_to_bytes(msg.manifest());
         return req;
     }
 
@@ -436,6 +456,16 @@ public:
         install_snapshot_response<TermId, GroupId> resp;
         resp._group_id = from_group_id_value<GroupId>(msg.group_id());
         resp._term = from_wire<TermId>(msg.term(), "term");
+        if (msg.has_bytes_received()) {
+            resp._bytes_received = msg.bytes_received();
+        }
+        if (msg.has_reject_reason()) {
+            if (msg.reject_reason() > std::numeric_limits<std::uint8_t>::max()) {
+                throw serialization_exception(
+                    "install_snapshot_response reject_reason out of range");
+            }
+            resp._reject_reason = static_cast<install_snapshot_reject_reason>(msg.reject_reason());
+        }
         return resp;
     }
 

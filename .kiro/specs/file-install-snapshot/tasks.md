@@ -4,11 +4,25 @@ Depends on `.kiro/specs/persistent-state-machine/` task 1 (the manifest type)
 for every task, and on its task 2 (`checkpoint`/`ingest`) from task 4 on.
 Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
 
-- [ ] 1. Wire fields and serializers
+- [x] 1. Wire fields and serializers
   - `types.hpp` fields with defaults; JSON, CBOR, protobuf, Ion, gRPC
     conversion, both `.proto` files (new field numbers)
   - Round-trip, absent-field and bounds tests
   - _Requirements: 1.1-1.5_
+  - As built (November 4, 2026): `install_snapshot_format`,
+    `k_max_install_snapshot_manifest_bytes` (1 MiB, also the manifest
+    encoder's own cap) and `install_snapshot_reject_reason` live in
+    `types.hpp`. Request `_format`/`_manifest` sit after `_group_id`, so
+    positional initializers keep their meaning. Every serializer writes
+    the new fields only when non-default, so a format-0 message is
+    byte-identical to before and decoders that refuse unknown keys (JSON,
+    CBOR, Ion) still accept it. Field numbers: `raft_messages.proto`
+    request 9/10, response 3/4; `raft.proto` request 10/11 (9 is
+    `leader`), response 3/4. Decoders refuse a manifest over the cap
+    before allocating and a reject code above 255; codes this build does
+    not name are kept, not refused. Cases in
+    `tests/install_snapshot_wire_extension_cases.hpp`, run by the four
+    serializer concept tests, plus two gRPC conversion cases.
 
 - [ ] 2. Transports
   - Carry the fields on tcp_rpc (plain, TLS), httplib, Beast, Proxygen,

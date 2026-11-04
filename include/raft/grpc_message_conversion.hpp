@@ -431,11 +431,18 @@ auto to_proto(const install_snapshot_request<NodeId>& req) -> raft::v1::InstallS
     proto.set_data(grpc_detail::bytes_to_proto(req.data()));
     proto.set_done(req.done());
     proto.set_group_id(req.group_id());
+    proto.set_format(req.format());
+    if (!req.manifest().empty()) {
+        proto.set_manifest(grpc_detail::bytes_to_proto(req.manifest()));
+    }
     return proto;
 }
 
 template<typename NodeId = std::uint64_t>
 auto from_proto(const raft::v1::InstallSnapshotRequest& proto) -> install_snapshot_request<NodeId> {
+    if (proto.manifest().size() > k_max_install_snapshot_manifest_bytes) {
+        throw grpc_message_conversion_error("install_snapshot manifest exceeds the size cap");
+    }
     return install_snapshot_request<NodeId>{
         ._term = proto.term(),
         ._leader_id = grpc_detail::node_id_from_proto<NodeId>(proto.has_leader(), proto.leader(),
@@ -445,19 +452,37 @@ auto from_proto(const raft::v1::InstallSnapshotRequest& proto) -> install_snapsh
         ._offset = grpc_detail::uint64_to_size(proto.offset()),
         ._data = grpc_detail::bytes_from_proto(proto.data()),
         ._done = proto.done(),
-        ._group_id = proto.group_id()};
+        ._group_id = proto.group_id(),
+        ._format = proto.format(),
+        ._manifest = grpc_detail::bytes_from_proto(proto.manifest())};
 }
 
 inline auto to_proto(const install_snapshot_response<>& resp) -> raft::v1::InstallSnapshotResponse {
     raft::v1::InstallSnapshotResponse proto;
     proto.set_term(resp.term());
     proto.set_group_id(resp.group_id());
+    if (const auto received = resp.bytes_received()) {
+        proto.set_bytes_received(*received);
+    }
+    if (const auto reason = resp.reject_reason()) {
+        proto.set_reject_reason(static_cast<std::uint32_t>(*reason));
+    }
     return proto;
 }
 
 inline auto from_proto(const raft::v1::InstallSnapshotResponse& proto)
     -> install_snapshot_response<> {
-    return install_snapshot_response<>{._term = proto.term(), ._group_id = proto.group_id()};
+    install_snapshot_response<> resp{._term = proto.term(), ._group_id = proto.group_id()};
+    if (proto.has_bytes_received()) {
+        resp._bytes_received = proto.bytes_received();
+    }
+    if (proto.has_reject_reason()) {
+        if (proto.reject_reason() > std::numeric_limits<std::uint8_t>::max()) {
+            throw grpc_message_conversion_error("install_snapshot reject_reason out of range");
+        }
+        resp._reject_reason = static_cast<install_snapshot_reject_reason>(proto.reject_reason());
+    }
+    return resp;
 }
 
 // ── PeerInfo / peer_info redirect hint (Requirement 15.4) ────────────────────
