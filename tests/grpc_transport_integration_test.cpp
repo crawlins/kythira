@@ -22,6 +22,7 @@
 #include <raft/grpc_exceptions.hpp>
 #include <raft/grpc_transport_impl.hpp>
 
+#include "format1_snapshot_transfer.hpp"
 #include "recording_metrics.hpp"
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
@@ -97,6 +98,31 @@ BOOST_AUTO_TEST_CASE(request_vote_end_to_end_insecure) {
 
     server->stop();
     BOOST_TEST(!server->is_running());
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary, through the gRPC mapping in both
+// directions, reassembled and verified by the follower's stream writer.
+BOOST_AUTO_TEST_CASE(install_snapshot_format1_multi_chunk) {
+    folly::CPUThreadPoolExecutor exec(4);
+
+    auto server = make_server(exec);
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server->register_install_snapshot_handler(
+        [&rx](const kythira::install_snapshot_request<>& req) {
+            return rx.handle<kythira::install_snapshot_response<>>(req);
+        });
+    server->start();
+
+    auto client = make_client(server->bound_port(), exec);
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(2)) {
+        auto resp = client->send_install_snapshot(1, req, 5000ms).get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
+
+    server->stop();
 }
 
 BOOST_AUTO_TEST_CASE(handler_exception_maps_to_server_error) {

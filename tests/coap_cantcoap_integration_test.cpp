@@ -17,6 +17,7 @@
 
 #include "coap_lossy_udp_relay.hpp"
 #include "coap_wire_probe.hpp"
+#include "format1_snapshot_transfer.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -361,6 +362,31 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_round_trip,
     const auto response =
         client.send_install_snapshot(peer_node_id, request, std::chrono::seconds{15}).get();
     BOOST_TEST(response.term() == 250U);
+
+    server.stop();
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary (each chunk also crosses CoAP blocks),
+// reassembled and verified by the follower's stream writer.
+BOOST_AUTO_TEST_CASE(test_install_snapshot_format1_multi_chunk,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    test_server server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}};
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, fast_client_config(), test_metrics{}};
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(1)) {
+        const auto resp =
+            client.send_install_snapshot(peer_node_id, req, std::chrono::seconds{30}).get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
 
     server.stop();
 }

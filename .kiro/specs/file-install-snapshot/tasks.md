@@ -24,11 +24,25 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
     `tests/install_snapshot_wire_extension_cases.hpp`, run by the four
     serializer concept tests, plus two gRPC conversion cases.
 
-- [ ] 2. Transports
+- [x] 2. Transports
   - Carry the fields on tcp_rpc (plain, TLS), httplib, Beast, Proxygen,
     libcoap, cantcoap, libnyoci, gRPC, group transport, simulator
   - Multi-chunk format-1 test per transport; size-limit review
   - _Requirements: 2.1-2.3_
+  - As built (November 4, 2026): no transport code changed. Every one of
+    them hands InstallSnapshot to the rpc serializer or the gRPC
+    conversion, and the group layer copies requests whole, so task 1
+    carried the fields everywhere. `tests/format1_snapshot_transfer.hpp`
+    cuts a small checkpoint (zero-length files included) into format-1
+    requests and feeds what arrives to a real `snapshot_stream_writer`;
+    each transport's test sends a whole transfer through it, with at least
+    one chunk spanning a file boundary. Size review: the worst default
+    first chunk (1 MB data plus a 1 MiB manifest, base64 in JSON, about
+    2.7 MB) fits HTTP's 10 MiB, gRPC's 16 MiB and tcp_rpc's 64 MiB, checked
+    per serializer by the shared wire cases. CoAP's
+    `coap_server_config::max_request_size` default was 64 KiB, which
+    refused any default chunk on every CoAP backend, format 0 included; it
+    is now 4 MiB.
 
 - [x] 3. Stream reader and writer
   - `snapshot_stream_reader` (pread across files) and

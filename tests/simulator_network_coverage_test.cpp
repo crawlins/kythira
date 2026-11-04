@@ -16,6 +16,8 @@
 
 #include <raft/simulator_network.hpp>
 
+#include "format1_snapshot_transfer.hpp"
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
@@ -190,6 +192,35 @@ BOOST_AUTO_TEST_CASE(install_snapshot_handler, *boost::unit_test::timeout(10)) {
     BOOST_CHECK(
         wait_for([&] { return handler_calls.load() >= 1; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_GE(handler_calls.load(), 1);
+
+    srv.stop();
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary, client to server through the
+// simulator, reassembled and verified by the follower's stream writer.
+BOOST_AUTO_TEST_CASE(install_snapshot_format1_multi_chunk, *boost::unit_test::timeout(60)) {
+    auto sim = network_simulator::NetworkSimulator<net_types>{};
+    sim.start();
+
+    auto node1 = sim.create_node("1");
+    auto node2 = sim.create_node("2");
+    add_edge_both(sim, "1", "2");
+
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server_t srv{node2, serializer{}};
+    srv.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    srv.start();
+
+    client_t client{node1, serializer{}};
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(1)) {
+        auto resp = client.send_install_snapshot(2, req, std::chrono::milliseconds{5000}).get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
 
     srv.stop();
 }
