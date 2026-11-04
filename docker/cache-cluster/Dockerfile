@@ -23,8 +23,14 @@
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 ENV DEBIAN_FRONTEND=noninteractive
+# libatomic1: a clang++ build that finds the Azure SDK links libatomic
+# into everything built on network_simulator (CMakeLists.txt), the daemon
+# included, and ubuntu:24.04 does not ship it, so a clang-built daemon
+# exited at load in every container (found by the task 11 measurement's
+# clang++-18 leg). docker/chaos_node/Dockerfile installs it too.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --user-group --no-create-home \
         --home-dir /data --shell /usr/sbin/nologin kythira \
