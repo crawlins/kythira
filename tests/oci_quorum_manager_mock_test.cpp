@@ -25,6 +25,7 @@
 
 #include "oci_mock_server.hpp"
 #include "test_timeout_scale.hpp"
+#include "test_ports.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -51,7 +52,7 @@ using kythira::oci_instance_pool_quorum_manager_config;
 using kythira::quorum_status;
 using kythira::testing::oci_mock_server;
 
-constexpr std::uint16_t test_port = 18322;
+const std::uint16_t test_port = kythira::testing::free_port();
 
 auto generate_rsa_key_pem() -> std::string {
     EVP_PKEY* raw = nullptr;

@@ -10,6 +10,7 @@
 #include <raft/executor_default.hpp>
 
 #include "beast_test_thread_pool.hpp"
+#include "test_ports.hpp"
 
 #include <chrono>
 #include <memory>
@@ -21,15 +22,13 @@
 // what used to be tests/beast_transport_test.cpp -- one-to-one with
 // tests/http_integration_test.cpp: real RPCs against a real
 // boost_beast_server, through a real boost_beast_client, both driven by the
-// same caller-owned io_context (Requirement 8). Each test picks its own
-// port from a disjoint range (this file is its own ctest binary now, and
-// may run concurrently with the other beast_* test binaries under
-// `ctest -j`).
+// same caller-owned io_context (Requirement 8). Ports are picked at run
+// time (tests/test_ports.hpp), since other test binaries may be listening
+// concurrently under `ctest -j`.
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_bind_port = 18210;
-constexpr std::uint16_t test_multi_bind_port_base = 18211;
-constexpr const char* test_server_url = "http://127.0.0.1:18210";
+const std::uint16_t test_bind_port = kythira::testing::free_port();
+const std::string test_server_url = "http://127.0.0.1:" + std::to_string(test_bind_port);
 constexpr std::uint64_t test_node_id = 1;
 
 using test_transport_types =
@@ -120,7 +119,7 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes) {
     std::vector<std::unique_ptr<kythira::boost_beast_server<test_transport_types>>> servers;
     std::unordered_map<std::uint64_t, std::string> node_map;
     for (int i = 0; i < node_count; ++i) {
-        auto port = static_cast<std::uint16_t>(test_multi_bind_port_base + i);
+        auto port = kythira::testing::free_port();
         auto server = std::make_unique<kythira::boost_beast_server<test_transport_types>>(
             ioc, test_bind_address, port, kythira::boost_beast_server_config{},
             kythira::noop_metrics{});

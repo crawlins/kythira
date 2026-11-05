@@ -34,6 +34,7 @@
 #include <raft/oci_http_client.hpp>
 
 #include "test_timeout_scale.hpp"
+#include "test_ports.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -51,9 +52,8 @@ namespace {
 
 namespace federation = kythira::oci_federation;
 
-/// 18324 — next free slot in the OCI block (18320-18323 are the http client,
-/// quorum unit, quorum mock and certificates mock tests).
-constexpr std::uint16_t test_port = 18324;
+/// Picked at run time (tests/test_ports.hpp).
+const std::uint16_t test_port = kythira::testing::free_port();
 constexpr const char* bind_address = "127.0.0.1";
 
 const std::string test_origin =

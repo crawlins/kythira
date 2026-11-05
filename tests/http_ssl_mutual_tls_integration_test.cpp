@@ -8,6 +8,7 @@
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include "ca_test_fixture.hpp"
+#include "test_ports.hpp"
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <filesystem>
 #include <fstream>
@@ -89,7 +90,7 @@ BOOST_AUTO_TEST_CASE(mutual_tls_handshake_actually_completes, *boost::unit_test:
     using test_types =
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
-    constexpr std::uint16_t handshake_test_port = 18543;
+    const std::uint16_t handshake_test_port = kythira::testing::free_port();
 
     mtls_material material;
     const auto& server_files = material.server();
@@ -141,7 +142,7 @@ BOOST_AUTO_TEST_CASE(server_rejects_connection_with_no_client_certificate,
     using test_types =
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
-    constexpr std::uint16_t handshake_test_port = 18544;
+    const std::uint16_t handshake_test_port = kythira::testing::free_port();
 
     mtls_material material;
     const auto& server_files = material.server();
@@ -219,7 +220,7 @@ auto make_vote_request() -> kythira::request_vote_request<> {
 // this RPC failed the handshake.
 BOOST_AUTO_TEST_CASE(cpp_httplib_client_presents_client_certificate,
                      *boost::unit_test::timeout(60)) {
-    constexpr std::uint16_t port = 18544;
+    const std::uint16_t port = kythira::testing::free_port();
     mtls_material material;
     const auto& client_files = material.client();
     auto server = make_mtls_server(material, port);
@@ -252,7 +253,7 @@ BOOST_AUTO_TEST_CASE(cpp_httplib_client_presents_client_certificate,
 // never asked for one.
 BOOST_AUTO_TEST_CASE(cpp_httplib_client_without_certificate_is_rejected,
                      *boost::unit_test::timeout(60)) {
-    constexpr std::uint16_t port = 18545;
+    const std::uint16_t port = kythira::testing::free_port();
     mtls_material material;
     auto server = make_mtls_server(material, port);
     BOOST_REQUIRE_NO_THROW(server->start());

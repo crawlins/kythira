@@ -52,6 +52,7 @@
 
 #include "beast_test_thread_pool.hpp"
 #include "http_interop_rpc_rig.hpp"
+#include "test_ports.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -64,10 +65,10 @@ using kythira::testing::interop_bind_address;
 using kythira::testing::interop_node_map_for;
 using kythira::testing::register_interop_handlers;
 
-// Fresh ports: the equivalence suites hold 18220-18223 and may run concurrently
-// under `ctest -j`.
-constexpr std::uint16_t beast_server_port = 18290;
-constexpr std::uint16_t httplib_server_port = 18291;
+// Ports are picked at run time (tests/test_ports.hpp), since other suites
+// may be listening concurrently under `ctest -j`.
+const std::uint16_t beast_server_port = kythira::testing::free_port();
+const std::uint16_t httplib_server_port = kythira::testing::free_port();
 
 using httplib_transport_types =
     kythira::http_transport_types<kythira::json_serializer, kythira::noop_metrics,

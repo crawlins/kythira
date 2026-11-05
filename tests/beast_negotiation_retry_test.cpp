@@ -32,6 +32,7 @@
 
 #include "beast_test_thread_pool.hpp"
 #include "recording_metrics.hpp"
+#include "test_ports.hpp"
 
 #include <httplib.h>
 
@@ -45,8 +46,8 @@
 namespace {
 
 constexpr const char* bind_address = "127.0.0.1";
-constexpr std::uint16_t json_server_port = 18295;
-constexpr std::uint16_t cbor_server_port = 18296;
+const std::uint16_t json_server_port = kythira::testing::free_port();
+const std::uint16_t cbor_server_port = kythira::testing::free_port();
 constexpr std::uint64_t peer_node_id = 1;
 constexpr std::chrono::milliseconds rpc_timeout{4000};
 
@@ -102,8 +103,8 @@ using multi_three_recording = beast_recording_types<
     kythira::multi_serializer_registry<kythira::cbor_serializer, alt_json_serializer,
                                        kythira::json_serializer>>;
 
-constexpr std::uint16_t accept_post_server_port = 18297;
-constexpr std::uint16_t advertise_server_port = 18298;
+const std::uint16_t accept_post_server_port = kythira::testing::free_port();
+const std::uint16_t advertise_server_port = kythira::testing::free_port();
 
 }  // namespace
 

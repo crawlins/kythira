@@ -41,6 +41,7 @@
 
 #include "recording_metrics.hpp"
 #include "test_timeout_scale.hpp"
+#include "test_ports.hpp"
 
 #include <atomic>
 #include <unordered_map>
@@ -55,7 +56,7 @@ namespace {
 
 constexpr const char* bind_address = "127.0.0.1";
 // Distinct from every other proxygen_*_test's port; these tests bind for real.
-constexpr std::uint16_t bind_port = 18240;
+const std::uint16_t bind_port = kythira::testing::free_port();
 constexpr const char* endpoint_request_vote = "/v1/raft/request_vote";
 
 using data_type = std::vector<std::byte>;

@@ -15,6 +15,7 @@
 
 #include "test_timeout_scale.hpp"
 #include "http_limit_test_helpers.hpp"
+#include "test_ports.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -40,14 +41,12 @@
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-// 18400-18423, clear of beast_server_test (18200-18207) and
-// beast_integration_test (18210-18214). This binary used to start at 18199 and
-// shared every one of those ports, so under `ctest -j` whichever of two
-// concurrently running cases bound a port second failed.
-constexpr std::uint16_t test_bind_port = 18400;
-constexpr std::uint16_t test_tls_bind_port = 18411;
-constexpr std::uint16_t test_multi_bind_port_base = 18420;
-constexpr const char* test_server_url = "http://127.0.0.1:18400";
+// Ports are picked at run time (tests/test_ports.hpp). Fixed ranges kept
+// drifting into other binaries' ranges, and under `ctest -j` whichever of
+// two concurrently running cases bound a shared port second failed.
+const std::uint16_t test_bind_port = kythira::testing::free_port_block(10);
+const std::uint16_t test_tls_bind_port = kythira::testing::free_port();
+const std::string test_server_url = "http://127.0.0.1:" + std::to_string(test_bind_port);
 constexpr std::uint64_t test_node_id = 1;
 
 // Requirement 12.6/19.3: a metrics implementation that records every
@@ -460,7 +459,7 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes,
     std::vector<std::unique_ptr<kythira::proxygen_server<test_transport_types>>> servers;
     std::unordered_map<std::uint64_t, std::string> node_map;
     for (int i = 0; i < node_count; ++i) {
-        auto port = static_cast<std::uint16_t>(test_multi_bind_port_base + i);
+        auto port = kythira::testing::free_port();
         auto server = std::make_unique<kythira::proxygen_server<test_transport_types>>(
             test_bind_address, port, kythira::proxygen_server_config{}, recording_metrics{},
             std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {}));
@@ -955,7 +954,7 @@ auto request_vote_over_tls_succeeds(const temp_mtls_material& mtls, std::uint16_
 BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_ip_literal,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_mtls_material mtls;
-    std::uint16_t port = 18284;
+    std::uint16_t port = kythira::testing::free_port();
     BOOST_TEST(
         request_vote_over_tls_succeeds(mtls, port, "https://127.0.0.1:" + std::to_string(port)));
 }
@@ -965,7 +964,7 @@ BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_ip_literal,
 BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_ip,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_mtls_material mtls("other-node.example", "DNS:other-node.example,IP:10.0.0.9");
-    std::uint16_t port = 18285;
+    std::uint16_t port = kythira::testing::free_port();
     BOOST_TEST(
         !request_vote_over_tls_succeeds(mtls, port, "https://127.0.0.1:" + std::to_string(port)));
 }
@@ -973,7 +972,7 @@ BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_ip,
 BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_host,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_mtls_material mtls("localhost", "DNS:localhost");
-    std::uint16_t port = 18286;
+    std::uint16_t port = kythira::testing::free_port();
     BOOST_TEST(
         request_vote_over_tls_succeeds(mtls, port, "https://localhost:" + std::to_string(port)));
 }
@@ -983,7 +982,7 @@ BOOST_AUTO_TEST_CASE(verified_tls_accepts_certificate_naming_the_host,
 BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_host,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_mtls_material mtls("localhost", "DNS:other-node.example,IP:127.0.0.1");
-    std::uint16_t port = 18287;
+    std::uint16_t port = kythira::testing::free_port();
     BOOST_TEST(
         !request_vote_over_tls_succeeds(mtls, port, "https://localhost:" + std::to_string(port)));
 }
@@ -994,7 +993,7 @@ BOOST_AUTO_TEST_CASE(verified_tls_rejects_trusted_certificate_for_another_host,
 BOOST_AUTO_TEST_CASE(unverified_tls_ignores_certificate_name,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_mtls_material mtls("other-node.example", "DNS:other-node.example");
-    std::uint16_t port = 18288;
+    std::uint16_t port = kythira::testing::free_port();
     BOOST_TEST(request_vote_over_tls_succeeds(
         mtls, port, "https://127.0.0.1:" + std::to_string(port), /*verify=*/false));
 }
@@ -1042,7 +1041,7 @@ BOOST_AUTO_TEST_CASE(peer_identity_error_matches_rfc6125_rules) {
 // first. "*" is 0.0.0.0 and :: on one port.
 BOOST_AUTO_TEST_CASE(localhost_and_star_binds_round_trip,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
-    std::uint16_t port = 18250;
+    std::uint16_t port = kythira::testing::free_port();
     for (std::string bind : {"localhost", "*"}) {
         // A fresh executor per server: proxygen_server::stop() stops the
         // executor it was handed, so a second server on the same one would
@@ -1074,7 +1073,7 @@ BOOST_AUTO_TEST_CASE(unlisted_bind_name_is_refused,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(1);
     kythira::proxygen_server<test_transport_types> server(
-        "kythira-test.invalid", 18252, {}, recording_metrics{},
+        "kythira-test.invalid", kythira::testing::free_port(), {}, recording_metrics{},
         std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {}));
     BOOST_CHECK_THROW(server.start(), std::invalid_argument);
 }
@@ -1082,7 +1081,7 @@ BOOST_AUTO_TEST_CASE(unlisted_bind_name_is_refused,
 // ── Request and connection limits (.kiro/specs/http-server-request-limits/) ──
 // Own port range, clear of every other HTTP test binary's.
 namespace {
-constexpr std::uint16_t limits_port_base = 18340;
+const std::uint16_t limits_port_base = kythira::testing::free_port_block(7);
 namespace limits = kythira::testing::http_limits;
 
 auto limits_executor_handle(folly::IOThreadPoolExecutor& io_executor)

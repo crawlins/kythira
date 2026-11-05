@@ -57,6 +57,7 @@
 
 #include "beast_test_thread_pool.hpp"
 #include "http_interop_rpc_rig.hpp"
+#include "test_ports.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -93,16 +94,13 @@ using kythira::testing::interop_bind_address;
 using kythira::testing::interop_node_map_for;
 using kythira::testing::register_interop_handlers;
 
-// Fresh ports. 18220-18223 belong to the equivalence suites, 18240 to
-// proxygen_negotiation_integration_test and 18290-18291 to
-// http_implementation_interop_test; any of them may be running concurrently
-// under `ctest -j`. One port per case rather than one per server role, so a
-// socket still in TIME_WAIT from the previous case cannot fail the next one's
-// bind.
-constexpr std::uint16_t proxygen_server_port_for_beast_client = 18300;
-constexpr std::uint16_t beast_server_port = 18301;
-constexpr std::uint16_t httplib_server_port = 18302;
-constexpr std::uint16_t proxygen_server_port_for_httplib_client = 18303;
+// Ports are picked at run time (tests/test_ports.hpp), since other suites
+// may be listening concurrently under `ctest -j`. One port per case rather than one per server
+// role, so a socket still in TIME_WAIT from the previous case cannot fail the next one's bind.
+const std::uint16_t proxygen_server_port_for_beast_client = kythira::testing::free_port();
+const std::uint16_t beast_server_port = kythira::testing::free_port();
+const std::uint16_t httplib_server_port = kythira::testing::free_port();
+const std::uint16_t proxygen_server_port_for_httplib_client = kythira::testing::free_port();
 
 // How long to give a freshly-started server before the first request. Matches
 // the sibling interop and negotiation suites; every server here starts

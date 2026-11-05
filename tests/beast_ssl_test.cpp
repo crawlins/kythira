@@ -10,6 +10,7 @@
 #include <raft/executor_default.hpp>
 
 #include "beast_test_thread_pool.hpp"
+#include "test_ports.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -26,12 +27,12 @@
 // self-signed cert/key pair generated fresh per test run via the `openssl`
 // CLI rather than a placeholder/mocked PEM. TLS material reload lives in
 // beast_client_test.cpp/beast_server_test.cpp instead, since it doesn't
-// need a live handshake to exercise. Each test picks its own port from a
-// disjoint range (this file is its own ctest binary now, and may run
-// concurrently with the other beast_* test binaries under `ctest -j`).
+// need a live handshake to exercise. Ports are picked at run time
+// (tests/test_ports.hpp), since other test binaries may be listening
+// concurrently under `ctest -j`.
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_bind_port_base = 18230;
+const std::uint16_t test_bind_port_base = kythira::testing::free_port_block(7);
 constexpr std::uint64_t test_node_id = 1;
 
 using test_transport_types =

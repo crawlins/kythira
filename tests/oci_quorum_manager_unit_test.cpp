@@ -35,6 +35,7 @@
 #include "oci_mock_server.hpp"
 #include "ordered_global_fixtures.hpp"
 #include "test_timeout_scale.hpp"
+#include "test_ports.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -59,9 +60,8 @@ namespace {
 using kythira::oci_instance_pool_quorum_manager;
 using kythira::oci_instance_pool_quorum_manager_config;
 
-/// Below the ephemeral range (32768-60999), like every hand-allocated port in
-/// this tree; 18320 is `oci_http_client_unit_test`'s.
-constexpr std::uint16_t test_port = 18321;
+/// Picked at run time, below the ephemeral range (tests/test_ports.hpp).
+const std::uint16_t test_port = kythira::testing::free_port();
 
 auto generate_rsa_key_pem() -> std::string {
     EVP_PKEY* raw = nullptr;
