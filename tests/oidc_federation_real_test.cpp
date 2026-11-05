@@ -135,7 +135,11 @@ auto public_get(const std::string& url) -> std::optional<std::string> {
 
 auto kid_set(const std::string& jwks) -> std::vector<std::string> {
     std::vector<std::string> kids;
-    for (const auto& k : boost::json::parse(jwks).at("keys").as_array()) {
+    // Named, not iterated in place: before C++23's P2718 (clang 19), a
+    // range-for does not extend the parse() temporary, and the loop would
+    // walk a freed array.
+    const auto doc = boost::json::parse(jwks);
+    for (const auto& k : doc.at("keys").as_array()) {
         kids.emplace_back(k.as_object().at("kid").as_string());
     }
     std::sort(kids.begin(), kids.end());
