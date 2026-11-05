@@ -26,6 +26,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "multi_raft_test_fabric.hpp"
+#include "redis_golden_bytes.hpp"
 
 #include <raft/bounded_resolver.hpp>
 #include <raft/console_logger.hpp>
@@ -1804,6 +1805,160 @@ BOOST_AUTO_TEST_CASE(a_space_refusal_stops_set_but_not_del, *boost::unit_test::t
     BOOST_REQUIRE_EQUAL(ops.auth("ops", "ops-secret"), "+OK\r\n");
     const auto info = ops.call({"INFO"});
     BOOST_CHECK(info.find("kythira_space_refusals:") != std::string::npos);
+}
+
+// The reply bytes of every command the default build supports, including its
+// errors, pinned before the gateway moves into services/redis/
+// (.kiro/specs/redis-gateway-module/ task 1). The script avoids replies that
+// depend on the clock or the cluster's history (TTL of an expiring key, INFO,
+// DBSIZE after writes). The disk-store variant runs the same script against
+// the same file: the store must not change a single reply byte.
+// Regenerate with KYTHIRA_UPDATE_GOLDENS=1; a change is a wire change.
+BOOST_AUTO_TEST_CASE(resp_replies_match_the_golden_file, *boost::unit_test::timeout(120)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    const auto port = c.port(c.leader_of(k_sccache_group));
+    using kythira::testing::golden::escape;
+
+    std::string out =
+        "# RESP replies of redis_gateway_node, default build (redis-gateway-module\n"
+        "# task 1). One `>` line per command sent, one `<` line per reply, escaped.\n"
+        "# Regenerate with KYTHIRA_UPDATE_GOLDENS=1; a change here is a wire change.\n";
+    auto record = [&](resp_client& client, const std::string& who,
+                      const std::vector<std::string>& argv) {
+        std::string line = "> " + who;
+        for (const auto& a : argv) {
+            line += " " + escape(a);
+        }
+        out += line + "\n< " + escape(client.call(argv)) + "\n";
+    };
+
+    resp_client farm(port);
+    out += "## before AUTH\n";
+    record(farm, "farm", {"GET", "sccache/x"});
+    record(farm, "farm", {"PING"});
+    record(farm, "farm", {"AUTH"});
+    record(farm, "farm", {"AUTH", "farm", "wrong-secret"});
+    record(farm, "farm", {"AUTH", "nobody", "farm-secret"});
+    record(farm, "farm", {"AUTH", "gone", "anything"});
+    record(farm, "farm", {"HELLO", "4"});
+    record(farm, "farm", {"HELLO", "x"});
+    record(farm, "farm", {"AUTH", "farm", "farm-secret"});
+
+    out += "## connection commands\n";
+    record(farm, "farm", {"PING"});
+    record(farm, "farm", {"PING", "hello"});
+    record(farm, "farm", {"PING", "a", "b"});
+    record(farm, "farm", {"ping"});
+    record(farm, "farm", {"ECHO", "hi"});
+    record(farm, "farm", {"ECHO"});
+    record(farm, "farm", {"SELECT", "0"});
+    record(farm, "farm", {"SELECT", "1"});
+    record(farm, "farm", {"SELECT"});
+    record(farm, "farm", {"CLIENT", "GETNAME"});
+    record(farm, "farm", {"CLIENT", "SETNAME", "golden"});
+    record(farm, "farm", {"CLIENT", "GETNAME"});
+    record(farm, "farm", {"CLIENT", "SETINFO", "LIB-NAME", "redis-rs"});
+    record(farm, "farm", {"CLIENT", "SETINFO", "LIB-VER", "0.25.0"});
+    record(farm, "farm", {"CLIENT", "SETINFO", "BOGUS", "1"});
+    record(farm, "farm", {"CLIENT", "NOSUCH"});
+    record(farm, "farm", {"CLIENT"});
+    record(farm, "farm", {"COMMAND", "COUNT"});
+    record(farm, "farm", {"COMMAND", "LIST"});
+    record(farm, "farm", {"COMMAND", "DOCS"});
+    record(farm, "farm", {"COMMAND", "INFO", "get"});
+    record(farm, "farm", {"COMMAND"});
+    record(farm, "farm", {"FLUSHALL"});
+    record(farm, "farm", {"FLUSHALL", "ASYNC"});
+    record(farm, "farm", {"KYTHIRA.ADVISE", "node-9;0,0,0"});
+    record(farm, "farm", {"INFO"});
+    record(farm, "farm", {"DBSIZE"});
+
+    out += "## data commands\n";
+    record(farm, "farm", {"GET", "sccache/missing"});
+    record(farm, "farm", {"GET"});
+    record(farm, "farm", {"GET", "a", "b"});
+    record(farm, "farm", {"SET", "sccache/obj1", "object-bytes"});
+    record(farm, "farm", {"SET", "sccache/obj1", "other-bytes"});
+    record(farm, "farm", {"SET", "sccache/obj1"});
+    record(farm, "farm", {"SET", "sccache/obj1", "v", "EX", "10"});
+    record(farm, "farm", {"GET", "sccache/obj1"});
+    record(farm, "farm", {"get", "sccache/obj1"});
+    record(farm, "farm", {"EXISTS", "sccache/obj1"});
+    record(farm, "farm", {"EXISTS", "sccache/missing"});
+    record(farm, "farm", {"EXISTS"});
+    record(farm, "farm", {"STRLEN", "sccache/obj1"});
+    record(farm, "farm", {"STRLEN", "sccache/missing"});
+    record(farm, "farm", {"GETRANGE", "sccache/obj1", "0", "5"});
+    record(farm, "farm", {"GETRANGE", "sccache/obj1", "-5", "-1"});
+    record(farm, "farm", {"GETRANGE", "sccache/obj1", "5", "1"});
+    record(farm, "farm", {"GETRANGE", "sccache/obj1", "0", "1000"});
+    record(farm, "farm", {"GETRANGE", "sccache/missing", "0", "1"});
+    record(farm, "farm", {"GETRANGE", "sccache/obj1", "a", "b"});
+    record(farm, "farm", {"GETRANGE", "sccache/obj1", "0"});
+    record(farm, "farm", {"TTL", "sccache/obj1"});
+    record(farm, "farm", {"TTL", "sccache/missing"});
+    record(farm, "farm", {"TTL"});
+    record(farm, "farm", {"SETEX", "sccache/exp", "100", "v"});
+    record(farm, "farm", {"SETEX", "sccache/exp2", "0", "v"});
+    record(farm, "farm", {"SETEX", "sccache/exp2", "-1", "v"});
+    record(farm, "farm", {"SETEX", "sccache/exp2", "abc", "v"});
+    record(farm, "farm", {"SETEX", "sccache/exp2", "100"});
+    record(farm, "farm", {"GET", "sccache/exp"});
+    record(farm, "farm", {"SET", "sccache/bin", std::string("a\r\n\0b\xff", 6)});
+    record(farm, "farm", {"GET", "sccache/bin"});
+    record(farm, "farm", {"SET", "sccache/empty", ""});
+    record(farm, "farm", {"GET", "sccache/empty"});
+    record(farm, "farm", {"STRLEN", "sccache/empty"});
+    record(farm, "farm", {"DEL", "sccache/obj1"});
+    record(farm, "farm", {"DEL", "sccache/obj1"});
+    record(farm, "farm", {"DEL"});
+    record(farm, "farm", {"GET", "sccache/obj1"});
+    record(farm, "farm", {"GET", "other/key"});
+    record(farm, "farm", {"SET", "other/key", "v"});
+    record(farm, "farm", {"DEL", "other/key"});
+    record(farm, "farm", {"MSET", "sccache/a", "1", "sccache/b", "2"});
+    record(farm, "farm", {"MGET", "sccache/a", "sccache/b"});
+    record(farm, "farm", {"MULTI"});
+    record(farm, "farm", {"EXEC"});
+    record(farm, "farm", {"DISCARD"});
+    record(farm, "farm", {"WATCH", "sccache/a"});
+    record(farm, "farm", {"UNWATCH"});
+
+    out += "## roles\n";
+    resp_client reader(port);
+    record(reader, "reader", {"AUTH", "reader", "reader-secret"});
+    record(reader, "reader", {"GET", "sccache/bin"});
+    record(reader, "reader", {"SET", "sccache/r", "v"});
+    record(reader, "reader", {"SETEX", "sccache/r", "10", "v"});
+    record(reader, "reader", {"DEL", "sccache/bin"});
+    record(reader, "reader", {"DBSIZE"});
+    resp_client ops(port);
+    record(ops, "ops", {"AUTH", "ops", "ops-secret"});
+    record(ops, "ops", {"GET", "anything/at/all"});
+    record(ops, "ops", {"SET", "ops/key", "v"});
+    record(ops, "ops", {"DEL", "ops/key"});
+
+    out += "## RESP3 and RESET\n";
+    resp_client v3(port);
+    record(v3, "v3", {"HELLO", "3", "AUTH", "farm", "farm-secret", "SETNAME", "three"});
+    record(v3, "v3", {"GET", "sccache/none"});
+    record(v3, "v3", {"GET", "sccache/bin"});
+    record(v3, "v3", {"EXISTS", "sccache/bin"});
+    record(v3, "v3", {"CLIENT", "GETNAME"});
+    record(v3, "v3", {"PING"});
+    record(v3, "v3", {"SELECT", "1"});
+    record(v3, "v3", {"COMMAND", "COUNT"});
+    record(v3, "v3", {"HELLO"});
+    record(v3, "v3", {"HELLO", "2"});
+    record(v3, "v3", {"GET", "sccache/none"});
+    record(v3, "v3", {"RESET"});
+    record(v3, "v3", {"GET", "sccache/none"});
+    record(v3, "v3", {"HELLO", "2", "AUTH", "farm", "wrong"});
+    record(v3, "v3", {"QUIT"});
+    BOOST_CHECK(v3.wait_closed());
+
+    kythira::testing::golden::check_golden("resp_replies.txt", out);
 }
 
 BOOST_AUTO_TEST_CASE(only_peer_gateways_may_advise, *boost::unit_test::timeout(120)) {

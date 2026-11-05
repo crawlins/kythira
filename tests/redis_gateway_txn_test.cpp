@@ -20,6 +20,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "multi_raft_test_fabric.hpp"
+#include "redis_golden_bytes.hpp"
 
 #include <raft/console_logger.hpp>
 #include <raft/future_default.hpp>
@@ -528,6 +529,82 @@ BOOST_AUTO_TEST_CASE(a_plain_write_resolves_an_expired_lock_and_retries_once,
     auto conflict = client.call({"MSET", "a/held", "x", "z/held", "y"});
     BOOST_CHECK(starts_with(conflict, "-ERR transaction aborted: write conflict"));
     BOOST_CHECK_EQUAL(client.call({"GET", "z/held"}), "$-1\r\n");
+}
+
+// The reply bytes of the transaction commands (CONFIG_REDIS_GATEWAY_TRANSACTIONS),
+// pinned before the gateway moves into services/redis/
+// (.kiro/specs/redis-gateway-module/ task 1); redis_gateway_integration_test
+// pins the rest. Keys are spread over both shards. Regenerate with
+// KYTHIRA_UPDATE_GOLDENS=1; a change is a wire change.
+BOOST_AUTO_TEST_CASE(txn_resp_replies_match_the_golden_file, *boost::unit_test::timeout(180)) {
+    cluster c;
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    using kythira::testing::golden::escape;
+    std::string out =
+        "# RESP replies of the transaction commands (redis-gateway-module task 1).\n"
+        "# One `>` line per command sent, one `<` line per reply, escaped.\n"
+        "# Regenerate with KYTHIRA_UPDATE_GOLDENS=1; a change here is a wire change.\n";
+    auto record = [&](resp_client& client, const std::string& who,
+                      const std::vector<std::string>& argv) {
+        std::string line = "> " + who;
+        for (const auto& a : argv) {
+            line += " " + escape(a);
+        }
+        out += line + "\n< " + escape(client.call(argv)) + "\n";
+    };
+
+    resp_client ops(c.port(c.leader_of(1)));
+    record(ops, "ops", {"AUTH", "ops", "ops-secret"});
+    out += "## multi-key commands\n";
+    record(ops, "ops", {"MSET", "a/1", "left", "z/1", "right"});
+    record(ops, "ops", {"MSET", "a/1", "left"});
+    record(ops, "ops", {"MSET", "a/1", "other"});
+    record(ops, "ops", {"MSET", "a/2"});
+    record(ops, "ops", {"MSET"});
+    record(ops, "ops", {"MGET", "a/1", "z/1", "a/absent"});
+    record(ops, "ops", {"MGET"});
+    record(ops, "ops", {"DEL", "a/1", "z/1", "a/absent"});
+    record(ops, "ops", {"MGET", "a/1", "z/1"});
+    out += "## MULTI / EXEC / DISCARD / WATCH\n";
+    record(ops, "ops", {"EXEC"});
+    record(ops, "ops", {"DISCARD"});
+    record(ops, "ops", {"MULTI"});
+    record(ops, "ops", {"MULTI"});
+    record(ops, "ops", {"SET", "a/m", "1"});
+    record(ops, "ops", {"GET", "a/m"});
+    record(ops, "ops", {"MSET", "z/m", "2", "z/n", "3"});
+    record(ops, "ops", {"MGET", "a/m", "z/m"});
+    record(ops, "ops", {"DEL", "z/n", "a/absent"});
+    record(ops, "ops", {"EXISTS", "z/n"});
+    record(ops, "ops", {"EXEC"});
+    record(ops, "ops", {"MULTI"});
+    record(ops, "ops", {"SET", "a/d", "1"});
+    record(ops, "ops", {"DISCARD"});
+    record(ops, "ops", {"GET", "a/d"});
+    record(ops, "ops", {"MULTI"});
+    record(ops, "ops", {"GET"});
+    record(ops, "ops", {"FLUSHALL"});
+    record(ops, "ops", {"EXEC"});
+    record(ops, "ops", {"WATCH", "a/m"});
+    record(ops, "ops", {"UNWATCH"});
+    out += "## isolation and internal commands\n";
+    record(ops, "ops", {"KYTHIRA.ISOLATION"});
+    record(ops, "ops", {"KYTHIRA.ISOLATION", "read-committed-wait"});
+    record(ops, "ops", {"KYTHIRA.ISOLATION"});
+    record(ops, "ops", {"KYTHIRA.ISOLATION", "snapshot"});
+    record(ops, "ops", {"KYTHIRA.ISOLATION", "bogus"});
+    record(ops, "ops", {"KYTHIRA.TXN", "READ", "a/k"});
+    // farm may write only under a/: a multi-key command with a key outside
+    // its scope is refused as a whole.
+    resp_client farm(c.port(c.leader_of(1)));
+    record(farm, "farm", {"AUTH", "farm", "farm-secret"});
+    record(farm, "farm", {"MSET", "a/f", "1", "z/f", "2"});
+    record(farm, "farm", {"MGET", "a/f", "z/f"});
+    record(farm, "farm", {"MULTI"});
+    record(farm, "farm", {"SET", "z/f", "1"});
+    record(farm, "farm", {"EXEC"});
+
+    kythira::testing::golden::check_golden("txn_resp_replies.txt", out);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

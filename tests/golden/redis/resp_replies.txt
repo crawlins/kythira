@@ -1,0 +1,231 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# RESP replies of redis_gateway_node, default build (redis-gateway-module
+# task 1). One `>` line per command sent, one `<` line per reply, escaped.
+# Regenerate with KYTHIRA_UPDATE_GOLDENS=1; a change here is a wire change.
+## before AUTH
+> farm GET sccache/x
+< -NOAUTH Authentication required.\r\n
+> farm PING
+< -NOAUTH Authentication required.\r\n
+> farm AUTH
+< -ERR wrong number of arguments for 'auth' command\r\n
+> farm AUTH farm wrong-secret
+< -WRONGPASS invalid username-password pair or user is disabled.\r\n
+> farm AUTH nobody farm-secret
+< -WRONGPASS invalid username-password pair or user is disabled.\r\n
+> farm AUTH gone anything
+< -WRONGPASS invalid username-password pair or user is disabled.\r\n
+> farm HELLO 4
+< -NOPROTO unsupported protocol version\r\n
+> farm HELLO x
+< -NOPROTO unsupported protocol version\r\n
+> farm AUTH farm farm-secret
+< +OK\r\n
+## connection commands
+> farm PING
+< +PONG\r\n
+> farm PING hello
+< $5\r\nhello\r\n
+> farm PING a b
+< -ERR wrong number of arguments for 'ping' command\r\n
+> farm ping
+< +PONG\r\n
+> farm ECHO hi
+< $2\r\nhi\r\n
+> farm ECHO
+< -ERR wrong number of arguments for 'echo' command\r\n
+> farm SELECT 0
+< +OK\r\n
+> farm SELECT 1
+< -ERR DB index is out of range\r\n
+> farm SELECT
+< -ERR wrong number of arguments for 'select' command\r\n
+> farm CLIENT GETNAME
+< $-1\r\n
+> farm CLIENT SETNAME golden
+< +OK\r\n
+> farm CLIENT GETNAME
+< $6\r\ngolden\r\n
+> farm CLIENT SETINFO LIB-NAME redis-rs
+< +OK\r\n
+> farm CLIENT SETINFO LIB-VER 0.25.0
+< +OK\r\n
+> farm CLIENT SETINFO BOGUS 1
+< -ERR Unrecognized option 'BOGUS'\r\n
+> farm CLIENT NOSUCH
+< -ERR unknown subcommand 'NOSUCH'. Try CLIENT HELP.\r\n
+> farm CLIENT
+< -ERR wrong number of arguments for 'client' command\r\n
+> farm COMMAND COUNT
+< :17\r\n
+> farm COMMAND LIST
+< *17\r\n$3\r\nGET\r\n$3\r\nSET\r\n$5\r\nSETEX\r\n$3\r\nDEL\r\n$6\r\nEXISTS\r\n$6\r\nSTRLEN\r\n$8\r\nGETRANGE\r\n$4\r\nPING\r\n$4\r\nAUTH\r\n$5\r\nHELLO\r\n$6\r\nSELECT\r\n$6\r\nCLIENT\r\n$4\r\nQUIT\r\n$7\r\nCOMMAND\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$3\r\nTTL\r\n
+> farm COMMAND DOCS
+< *0\r\n
+> farm COMMAND INFO get
+< *0\r\n
+> farm COMMAND
+< *17\r\n*6\r\n$3\r\nget\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$3\r\nset\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$5\r\nsetex\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$3\r\ndel\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$6\r\nexists\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$6\r\nstrlen\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$8\r\ngetrange\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$4\r\nping\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$4\r\nauth\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$5\r\nhello\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$6\r\nselect\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$6\r\nclient\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$4\r\nquit\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$7\r\ncommand\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$4\r\ninfo\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$6\r\ndbsize\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n*6\r\n$3\r\nttl\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n
+> farm FLUSHALL
+< -ERR unknown command 'FLUSHALL', with args beginning with: \r\n
+> farm FLUSHALL ASYNC
+< -ERR unknown command 'FLUSHALL', with args beginning with: 'ASYNC' \r\n
+> farm KYTHIRA.ADVISE node-9;0,0,0
+< -NOPERM KYTHIRA.ADVISE is for peer gateways only\r\n
+> farm INFO
+< -NOPERM User farm has no permissions to run the 'INFO' command\r\n
+> farm DBSIZE
+< :0\r\n
+## data commands
+> farm GET sccache/missing
+< $-1\r\n
+> farm GET
+< -ERR wrong number of arguments for 'get' command\r\n
+> farm GET a b
+< -ERR wrong number of arguments for 'get' command\r\n
+> farm SET sccache/obj1 object-bytes
+< +OK\r\n
+> farm SET sccache/obj1 other-bytes
+< -ERR value conflict for an existing key\r\n
+> farm SET sccache/obj1
+< -ERR wrong number of arguments for 'set' command\r\n
+> farm SET sccache/obj1 v EX 10
+< -ERR wrong number of arguments for 'set' command\r\n
+> farm GET sccache/obj1
+< $12\r\nobject-bytes\r\n
+> farm get sccache/obj1
+< $12\r\nobject-bytes\r\n
+> farm EXISTS sccache/obj1
+< :1\r\n
+> farm EXISTS sccache/missing
+< :0\r\n
+> farm EXISTS
+< -ERR wrong number of arguments for 'exists' command\r\n
+> farm STRLEN sccache/obj1
+< :12\r\n
+> farm STRLEN sccache/missing
+< :0\r\n
+> farm GETRANGE sccache/obj1 0 5
+< $6\r\nobject\r\n
+> farm GETRANGE sccache/obj1 -5 -1
+< $5\r\nbytes\r\n
+> farm GETRANGE sccache/obj1 5 1
+< $0\r\n\r\n
+> farm GETRANGE sccache/obj1 0 1000
+< $12\r\nobject-bytes\r\n
+> farm GETRANGE sccache/missing 0 1
+< $0\r\n\r\n
+> farm GETRANGE sccache/obj1 a b
+< -ERR value is not an integer or out of range\r\n
+> farm GETRANGE sccache/obj1 0
+< -ERR wrong number of arguments for 'getrange' command\r\n
+> farm TTL sccache/obj1
+< :-1\r\n
+> farm TTL sccache/missing
+< :-2\r\n
+> farm TTL
+< -ERR wrong number of arguments for 'ttl' command\r\n
+> farm SETEX sccache/exp 100 v
+< +OK\r\n
+> farm SETEX sccache/exp2 0 v
+< -ERR invalid expire time in 'setex' command\r\n
+> farm SETEX sccache/exp2 -1 v
+< -ERR invalid expire time in 'setex' command\r\n
+> farm SETEX sccache/exp2 abc v
+< -ERR value is not an integer or out of range\r\n
+> farm SETEX sccache/exp2 100
+< -ERR wrong number of arguments for 'setex' command\r\n
+> farm GET sccache/exp
+< $1\r\nv\r\n
+> farm SET sccache/bin a\r\n\x00b\xff
+< +OK\r\n
+> farm GET sccache/bin
+< $6\r\na\r\n\x00b\xff\r\n
+> farm SET sccache/empty 
+< +OK\r\n
+> farm GET sccache/empty
+< $0\r\n\r\n
+> farm STRLEN sccache/empty
+< :0\r\n
+> farm DEL sccache/obj1
+< :1\r\n
+> farm DEL sccache/obj1
+< :0\r\n
+> farm DEL
+< -ERR wrong number of arguments for 'del' command\r\n
+> farm GET sccache/obj1
+< $-1\r\n
+> farm GET other/key
+< -NOPERM No permissions to access a key\r\n
+> farm SET other/key v
+< -NOPERM No permissions to access a key\r\n
+> farm DEL other/key
+< -NOPERM No permissions to access a key\r\n
+> farm MSET sccache/a 1 sccache/b 2
+< -ERR unknown command 'MSET', with args beginning with: 'sccache/a' '1' 'sccache/b' '2' \r\n
+> farm MGET sccache/a sccache/b
+< -ERR unknown command 'MGET', with args beginning with: 'sccache/a' 'sccache/b' \r\n
+> farm MULTI
+< -ERR unknown command 'MULTI', with args beginning with: \r\n
+> farm EXEC
+< -ERR unknown command 'EXEC', with args beginning with: \r\n
+> farm DISCARD
+< -ERR unknown command 'DISCARD', with args beginning with: \r\n
+> farm WATCH sccache/a
+< -ERR unknown command 'WATCH', with args beginning with: 'sccache/a' \r\n
+> farm UNWATCH
+< -ERR unknown command 'UNWATCH', with args beginning with: \r\n
+## roles
+> reader AUTH reader reader-secret
+< +OK\r\n
+> reader GET sccache/bin
+< $6\r\na\r\n\x00b\xff\r\n
+> reader SET sccache/r v
+< -NOPERM User reader has no permissions to run the 'SET' command\r\n
+> reader SETEX sccache/r 10 v
+< -NOPERM User reader has no permissions to run the 'SETEX' command\r\n
+> reader DEL sccache/bin
+< -NOPERM User reader has no permissions to run the 'DEL' command\r\n
+> reader DBSIZE
+< :3\r\n
+> ops AUTH ops ops-secret
+< +OK\r\n
+> ops GET anything/at/all
+< $-1\r\n
+> ops SET ops/key v
+< +OK\r\n
+> ops DEL ops/key
+< :1\r\n
+## RESP3 and RESET
+> v3 HELLO 3 AUTH farm farm-secret SETNAME three
+< %7\r\n$6\r\nserver\r\n$7\r\nkythira\r\n$7\r\nversion\r\n$13\r\n7.0.0-kythira\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:0\r\n$4\r\nmode\r\n$7\r\ncluster\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n
+> v3 GET sccache/none
+< _\r\n
+> v3 GET sccache/bin
+< $6\r\na\r\n\x00b\xff\r\n
+> v3 EXISTS sccache/bin
+< :1\r\n
+> v3 CLIENT GETNAME
+< $5\r\nthree\r\n
+> v3 PING
+< +PONG\r\n
+> v3 SELECT 1
+< -ERR DB index is out of range\r\n
+> v3 COMMAND COUNT
+< :17\r\n
+> v3 HELLO
+< %7\r\n$6\r\nserver\r\n$7\r\nkythira\r\n$7\r\nversion\r\n$13\r\n7.0.0-kythira\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:0\r\n$4\r\nmode\r\n$7\r\ncluster\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n
+> v3 HELLO 2
+< *14\r\n$6\r\nserver\r\n$7\r\nkythira\r\n$7\r\nversion\r\n$13\r\n7.0.0-kythira\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:0\r\n$4\r\nmode\r\n$7\r\ncluster\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n
+> v3 GET sccache/none
+< $-1\r\n
+> v3 RESET
+< +RESET\r\n
+> v3 GET sccache/none
+< -NOAUTH Authentication required.\r\n
+> v3 HELLO 2 AUTH farm wrong
+< -WRONGPASS invalid username-password pair or user is disabled.\r\n
+> v3 QUIT
+< +OK\r\n

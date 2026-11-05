@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 2/8 tasks complete (tasks 2, 3)
+## Status: 3/8 tasks complete (tasks 1-3)
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -45,7 +45,7 @@ Reference material:
 
 ## Tasks
 
-- [ ] 1. Pin today's behaviour
+- [x] 1. Pin today's behaviour
   - Golden-byte tests, generated from `main` and checked in:
     - RESP replies for every supported command, including errors;
     - every `redis_kv_*` command encoding;
@@ -59,6 +59,25 @@ Reference material:
     `ci_full_defconfig` with the module on and off. Its output from `main` is
     checked in under `services/redis/tests/surface/` in task 4. Until then it
     lives in `scripts/` only.
+  - Done. Goldens are in `tests/golden/redis/` (they move with the tests in
+    task 4), compared by `tests/redis_golden_bytes.hpp` and regenerated with
+    `KYTHIRA_UPDATE_GOLDENS=1`:
+    - `resp_replies.txt` from `redis_gateway_integration_test` (the default
+      build's commands and errors, RESP2 and RESP3); the disk-store variant
+      checks the same file, so the store changes no reply byte;
+    - `txn_resp_replies.txt` from `redis_gateway_txn_test` (MSET, MGET,
+      MULTI/EXEC/DISCARD, WATCH's refusal, `KYTHIRA.ISOLATION`);
+    - `kv_commands.txt` and `state_machines.txt` from the new
+      `redis_golden_bytes_test`. The state machines are the four the daemon
+      can be built with: plain, transaction-wrapped, the mvcc variant
+      wrapped with `mvcc::on`, and `cache_kv_state_machine`, which the
+      daemon never wraps (config.cpp refuses transactions with file
+      persistence), so there is no wrapped cache golden.
+    - Not pinned: replies that depend on the clock or on cluster history
+      (TTL of an expiring key, INFO, DBSIZE after writes), and WATCH under
+      `mvcc::on`, which `redis_gateway_snapshot_test` covers by assertion.
+  - The daemon has no separate default-config dump; `--help` lists every
+    variable with its default, so the script records that.
   - _Requirements: 7.1-7.3_
 
 - [x] 2. Public core pieces the module needs
