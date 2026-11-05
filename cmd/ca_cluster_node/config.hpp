@@ -8,8 +8,11 @@
 #endif
 #include <raft/host_node_id.hpp>
 #include <raft/oidc_issuer.hpp>
+#include <raft/oidc_publisher.hpp>
 #include <raft/oidc_token.hpp>
 #include <raft/tcp_rpc.hpp>
+
+#include "oidc_publish_store.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -20,6 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace ca_cluster_node {
@@ -110,6 +114,10 @@ struct ca_cluster_node_config {
     // certificates only).
     std::set<std::string> oidc_audiences;
     std::string oidc_workload_uri_prefix;
+    // --oidc-publish-url (Requirement 1.9): the leader also uploads both
+    // documents to this bucket whenever the JWKS changes. The issuer URL is
+    // then the bucket's public HTTPS URL, so nothing else moves.
+    std::optional<kythira::oidc::publish_target> oidc_publish_target;
     [[nodiscard]] auto oidc_enabled() const -> bool { return !oidc_issuer_url.empty(); }
     [[nodiscard]] auto oidc_rotation_config() const -> kythira::oidc::rotation_config {
         return {.rotation_period = oidc_key_rotation,
@@ -446,6 +454,18 @@ namespace detail {
                 usage_error("--oidc-audience must not be empty");
             }
             cfg.oidc_audiences.insert(aud);
+        } else if (arg == "--oidc-publish-url") {
+            auto parsed = kythira::oidc::parse_publish_url(next());
+            if (const auto* err = std::get_if<std::string>(&parsed)) {
+                usage_error("--oidc-publish-url: " + *err);
+            }
+            cfg.oidc_publish_target = std::get<kythira::oidc::publish_target>(parsed);
+            const auto provider = oidc_publish_provider(cfg.oidc_publish_target->provider);
+            if (!provider.available) {
+                usage_error("--oidc-publish-url: this build cannot write to " +
+                            cfg.oidc_publish_target->provider + " (needs " +
+                            std::string(provider.needs) + ")");
+            }
         } else if (arg == "--oidc-workload-uri-prefix") {
             cfg.oidc_workload_uri_prefix = next();
             if (auto err = kythira::oidc::workload_prefix_error(cfg.oidc_workload_uri_prefix)) {
@@ -474,9 +494,11 @@ namespace detail {
     if (!cfg.rpc_tls_cert_path.empty() != !cfg.rpc_tls_key_path.empty()) {
         usage_error("--rpc-tls-cert and --rpc-tls-key must be given together");
     }
-    if (!cfg.oidc_enabled() &&
-        (!cfg.oidc_audiences.empty() || !cfg.oidc_workload_uri_prefix.empty())) {
-        usage_error("--oidc-audience and --oidc-workload-uri-prefix need --oidc-issuer-url");
+    if (!cfg.oidc_enabled() && (!cfg.oidc_audiences.empty() ||
+                                !cfg.oidc_workload_uri_prefix.empty() || cfg.oidc_publish_target)) {
+        usage_error(
+            "--oidc-audience, --oidc-workload-uri-prefix and --oidc-publish-url need "
+            "--oidc-issuer-url");
     }
     if (cfg.print_root_fingerprint) {
         // Requirement 19.2: prints the fingerprint and exits without binding

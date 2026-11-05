@@ -111,7 +111,7 @@ because each has a zero-spend fallback.
       amended): `node<Types>` has no local read, only the linearisable
       `read_state()`, which followers cannot serve.
 
-- [ ] 2. Token endpoint and bucket publishing
+- [x] 2. Token endpoint and bucket publishing
   - `POST /v1/oidc/token`:
     - client certificate required, revocation checked;
     - subject from a node SAN or a workload URI SAN;
@@ -124,8 +124,8 @@ because each has a zero-spend fallback.
     here verifies with an independent library (Python `PyJWT` in the test
     container).
   - _Requirements: 1.6–1.9_
-  - Token endpoint done November 5, 2026; `--oidc-publish-url` is the rest
-    of this task. Notes from the implementation:
+  - Done November 5, 2026, in two PRs: the token endpoint (#694), then
+    bucket publishing. Notes from the implementation:
     - `include/raft/oidc_token.hpp` holds the whole decision
       (`decide_token`) as a pure function of the certificate facts, the
       chain and revocation results, the body and `now`. The handler only
@@ -159,6 +159,30 @@ because each has a zero-spend fallback.
       over the TLS listener and verifies it with PyJWT
       (`tests/oidc_pyjwt_verify.py`, `python3-jwt` in the Build & Test
       jobs). It reports a skip, not a pass, where PyJWT is missing.
+    - Publishing: the issuer URL is the bucket's public HTTPS URL and
+      `--oidc-publish-url` the same place in the store's scheme, so `iss`,
+      the discovery URL and `jwks_uri` never diverge and the discovery
+      document needs no separate `jwks_uri` setting.
+    - The trigger is "the JWKS differs from the last upload", not "a key
+      command committed": a successor appears at its `publish_after` and a
+      retiring key drops out at its `retire_after` with no command applied.
+      A six-hour refresh restores deleted objects; failures back off from
+      5 s to 5 min (`include/raft/oidc_publisher.hpp`, pure, unit tested).
+    - The JWKS is uploaded before the discovery document, and nothing is
+      uploaded while the key set is empty.
+    - Uploads run on their own thread on the leader, so a hung object-store
+      call cannot delay key rotation or certificate renewal.
+    - Providers follow `cmd/raft_object_backup`: compiled in when the
+      dependency is found and the persistence Kconfig gate is on. A node
+      asked for a missing provider refuses to start and names what would
+      enable it.
+    - The failure metric is `kythira_oidc_publish_failures_total` on a new
+      bearer-gated `GET /metrics` (Prometheus text), with success and
+      last-success gauges beside it. ca_cluster_node had no metrics
+      endpoint before.
+    - The object-store clients set no content type. Whether each cloud
+      accepts the store's default is left to the task 5 real-cloud run.
+    - Operator documentation: `doc/oidc-issuer.md`.
 
 - [ ] 3. Token source plus AWS and GCP exchange providers
   - `kythira_oidc_token_source`: per-audience cache, refresh at 80% of the
