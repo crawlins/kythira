@@ -26,9 +26,8 @@ add_executable(redis_gateway_node
 target_include_directories(redis_gateway_node PRIVATE
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node"
-    # transport_client_handle / transport_server_handle and the Beast bundle
-    # are shared with the in-process harness rather than copied.
-    "${CMAKE_SOURCE_DIR}/tests"
+    # No tests/: the transport handles and the Types bundle come from the
+    # public <raft/multi_raft_transport_handles.hpp>.
 )
 
 target_link_libraries(redis_gateway_node PRIVATE
@@ -71,7 +70,6 @@ add_executable(redis_gateway_node_snapshot EXCLUDE_FROM_ALL
 target_include_directories(redis_gateway_node_snapshot PRIVATE
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node"
-    "${CMAKE_SOURCE_DIR}/tests"
 )
 target_link_libraries(redis_gateway_node_snapshot PRIVATE
     network_simulator

@@ -13,6 +13,10 @@ include(cmake/Kconfig.cmake)
 # Opt-in per-test Boost.Test reports for CI (KYTHIRA_TEST_REPORT_DIR).
 include(cmake/TestReports.cmake)
 
+# cmake/ on the module path, so tests/ and the service modules under
+# services/ can include(kythira_test_helpers) without naming core's tree.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 # C++23 standard required
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -874,6 +878,29 @@ endif()
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# The public core headers as a target (.kiro/specs/redis-gateway-module/
+# Requirement 4.3). Core itself still relies on the include_directories()
+# call above; a service module under services/ links this instead, so it
+# would build the same way against an installed Kythira.
+add_library(kythira_core_headers INTERFACE)
+target_include_directories(kythira_core_headers INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
+    $<INSTALL_INTERFACE:include>
+)
+
+# The in-process test fabric's include path (multi_raft_test_fabric.hpp,
+# multi_raft_transport_harness.hpp, docker_chaos/os_faults.hpp and friends),
+# for a module's tests (Requirement 4.2). Module tests include those headers
+# by name through this target, never by a relative path; the boundary check
+# (scripts/check_module_boundaries.py) enforces that.
+add_library(kythira_test_support INTERFACE)
+target_include_directories(kythira_test_support INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/docker_chaos"
+)
+target_link_libraries(kythira_test_support INTERFACE kythira_core_headers)
 
 # Library target
 add_library(network_simulator INTERFACE)

@@ -16,10 +16,6 @@
 #include "config.hpp"
 #include "stop_signal.hpp"
 
-// The transport handle types are shared with the in-process harness rather
-// than re-declared here; see cmd/multi_raft_node/main.cpp for why.
-#include "multi_raft_transport_harness.hpp"
-
 #include <raft/beast_http_transport_impl.hpp>
 #include <raft/binary_file_persistence.hpp>
 #include <raft/bounded_resolver.hpp>
@@ -33,6 +29,7 @@
 #include <raft/json_serializer.hpp>
 #include <raft/metrics.hpp>
 #include <raft/multi_raft_impl.hpp>
+#include <raft/multi_raft_transport_handles.hpp>
 #include <raft/persistence.hpp>
 #include <raft/redis_gateway_impl.hpp>
 #include <raft/redis_kv_mvcc_state_machine.hpp>
@@ -95,7 +92,7 @@ inline constexpr std::uint64_t k_oracle_group = 0xFFFF'FFFF'FFFF'FF00ULL;
 #endif
 
 template<typename Serializer> struct beast_stack {
-    using bundle = kythira::testing::harness_transport_types<Serializer>;
+    using bundle = kythira::host_transport_types<Serializer>;
     using client_type = kythira::boost_beast_client<bundle, kythira::host_node_id>;
     using server_type = kythira::boost_beast_server<bundle, kythira::host_node_id>;
 
@@ -218,9 +215,9 @@ template<typename Stack, typename Storage> struct host_types {
     using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
     using network_client_type =
-        kythira::testing::transport_client_handle<typename Stack::client_type, node_id_type>;
+        kythira::transport_client_handle<typename Stack::client_type, node_id_type>;
     using network_server_type =
-        kythira::testing::transport_server_handle<typename Stack::server_type, node_id_type>;
+        kythira::transport_server_handle<typename Stack::server_type, node_id_type>;
 
     using persistence_engine_type = typename Storage::persistence_engine_type;
     using logger_type = kythira::console_logger;
