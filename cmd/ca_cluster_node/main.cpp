@@ -17,12 +17,17 @@
 //                    [--allow-plaintext-rpc] [--allow-plaintext-http]
 //                    [--rpc-renewal-window-secs <n>]
 //                    [--oidc-issuer-url <https url> [--oidc-alg RS256|ES256]
-//                     [--oidc-key-rotation-days <n>] [--oidc-max-token-lifetime-secs <n>]]
+//                     [--oidc-key-rotation-days <n>] [--oidc-max-token-lifetime-secs <n>]
+//                     [--oidc-audience <aud>]... [--oidc-workload-uri-prefix <uri>]]
 //
 // --oidc-issuer-url turns on the OIDC issuer (`.kiro/specs/iam-compatible-auth/`
 // Requirement 1): the leader keeps a sealed signing key in the replicated
 // state and rotates it, and /.well-known/openid-configuration and
 // /.well-known/jwks.json are served without the bearer token.
+// POST /v1/oidc/token then turns a Kythira-CA client certificate (mTLS, no
+// bearer token) into a signed identity token for one of the --oidc-audience
+// values: node certificates always qualify, workload certificates when their
+// URI SAN is under --oidc-workload-uri-prefix.
 //
 // The client bearer token comes from $CA_SERVICE_AUTH_TOKEN (--auth-token
 // still works, but leaves the token in /proc/<pid>/cmdline).
@@ -74,6 +79,7 @@
 #include <raft/membership.hpp>
 #include <raft/metrics.hpp>
 #include <raft/oidc_issuer.hpp>
+#include <raft/oidc_token.hpp>
 #include <raft/private_file.hpp>
 #include <raft/raft.hpp>
 #include <raft/tcp_raft_types.hpp>
@@ -84,7 +90,9 @@
 #include <boost/json.hpp>
 
 #include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <openssl/x509.h>
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
@@ -94,6 +102,7 @@
 #include <folly/init/Init.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -108,6 +117,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1428,6 +1438,34 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     // Everything the route handlers capture by reference lives out here, not
     // inside configure_http_server, so it outlives every server it configures.
     const std::string bearer_prefix = "Bearer ";
+    // POST /v1/oidc/token state. The reserved peer SAN of every configured
+    // member maps to that member's canonical id text, the `node:<id>`
+    // subject (Requirement 1.6). Unsealed signing keys are kept by kid, so
+    // a request pays the unseal key derivation once per key, not per token.
+    std::map<std::string, std::string> oidc_peer_names;
+    for (const auto& [name, id] : cluster_peer_node_ids(cfg)) {
+        oidc_peer_names[name] = kythira::node_id_traits<node_id_type>::to_text(id);
+    }
+    const auto oidc_policy = cfg.oidc_token_policy();
+    std::mutex oidc_key_cache_mu;
+    std::map<std::string, std::shared_ptr<EVP_PKEY>> oidc_key_cache;
+    auto oidc_unsealed_key =
+        [&](const kythira::oidc::oidc_key_record& rec) -> std::shared_ptr<EVP_PKEY> {
+        std::lock_guard lock(oidc_key_cache_mu);
+        if (auto it = oidc_key_cache.find(rec.kid); it != oidc_key_cache.end()) {
+            return it->second;
+        }
+        auto pem = raft::testing::decrypt_ca_private_key(rec.sealed_private_key, unseal_passphrase);
+        std::shared_ptr<EVP_PKEY> key(kythira::jose::private_key_from_pem(pem).release(),
+                                      EVP_PKEY_free);
+        OPENSSL_cleanse(pem.data(), pem.size());
+        // Retired keys never sign again; drop them rather than grow forever.
+        if (oidc_key_cache.size() >= 4) {
+            oidc_key_cache.clear();
+        }
+        oidc_key_cache[rec.kid] = key;
+        return key;
+    };
     // Returns true iff this node should proceed to handle the request as
     // leader. Otherwise `res` has already been populated with a 308 redirect
     // or 503 no_known_leader per Requirement 17.7, and the caller must return.
@@ -1456,6 +1494,13 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             if (req.method == "POST" && req.path == "/v1/certificates/renew") {
                 return httplib::Server::HandlerResponse::Unhandled;  // authenticates via mTLS in
                                                                      // its own handler
+            }
+            // The token endpoint authenticates by client certificate alone
+            // (Requirement 1.6): a workload holding only its own certificate
+            // must not need the operator's bearer token.
+            if (cfg.oidc_enabled() && req.method == "POST" &&
+                req.path == kythira::oidc::k_token_path) {
+                return httplib::Server::HandlerResponse::Unhandled;
             }
             if (req.path == "/healthz") {
                 return httplib::Server::HandlerResponse::Unhandled;  // health checks must work with
@@ -1728,6 +1773,80 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 res.set_content(json_error(ex.what()), "application/json");
             }
         });
+
+        // OIDC token endpoint (iam-compatible-auth Requirements 1.6-1.8).
+        // Only the leader signs (1.10); a follower redirects with 308, which
+        // keeps the method and body, and the client presents its
+        // certificate again to the leader. The decision itself is
+        // kythira::oidc::decide_token; this handler only gathers what it
+        // needs and signs the result.
+        if (cfg.oidc_enabled()) {
+            server->Post(std::string(kythira::oidc::k_token_path), [&](const httplib::Request& req,
+                                                                       httplib::Response& res) {
+                if (!require_leader_or_redirect(req, res)) {
+                    return;
+                }
+                auto send_error = [&](int status, const std::string& code,
+                                      const std::string& message) {
+                    res.status = status;
+                    res.set_content(boost::json::serialize(
+                                        boost::json::object{{"error", code}, {"message", message}}),
+                                    "application/json");
+                };
+                try {
+                    auto state = read_ca_state(raft_node, k_command_timeout);
+                    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                                         std::chrono::system_clock::now().time_since_epoch())
+                                         .count();
+                    kythira::oidc::token_evidence evidence;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+                    raft::testing::x509_ptr_generic peer_cert_owner{
+                        req.ssl == nullptr
+                            ? nullptr
+                            : SSL_get1_peer_certificate(static_cast<const SSL*>(req.ssl))};
+                    if (X509* peer_cert = peer_cert_owner.get(); peer_cert != nullptr) {
+                        auto serial = raft::testing::serial_of(peer_cert);
+                        evidence.cert = kythira::oidc::cert_facts_of(
+                            peer_cert, serial ? serial->to_hex() : std::string{});
+                        evidence.chains_to_ca = serial.has_value() && state.has_root_material() &&
+                                                raft::testing::cert_chains_to_root(
+                                                    peer_cert, state.root_certificate_pem());
+                        for (const auto& e : state.ledger()) {
+                            if (serial && e.serial == *serial && e.revoked_at.has_value()) {
+                                evidence.revoked = true;
+                            }
+                        }
+                    }
+#endif
+                    auto decision = kythira::oidc::decide_token(
+                        evidence, req.body, cfg.oidc_issuer_url, oidc_policy, oidc_peer_names, now);
+                    if (const auto* err = std::get_if<kythira::oidc::token_error>(&decision)) {
+                        send_error(err->status, err->code, err->message);
+                        return;
+                    }
+                    const auto* key = kythira::oidc::signing_key(state.oidc_keys(), now);
+                    if (key == nullptr) {
+                        send_error(503, "no_signing_key", "the issuer has no signing key yet");
+                        return;
+                    }
+                    auto private_key = oidc_unsealed_key(*key);
+                    std::array<unsigned char, 16> jti_bytes{};
+                    if (RAND_bytes(jti_bytes.data(), static_cast<int>(jti_bytes.size())) != 1) {
+                        send_error(503, "unavailable", "no randomness for the token id");
+                        return;
+                    }
+                    auto body = kythira::oidc::mint_token(
+                        std::get<kythira::oidc::token_grant>(std::move(decision)),
+                        kythira::jose::base64url_encode(
+                            std::span<const unsigned char>(jti_bytes.data(), jti_bytes.size())),
+                        *key, private_key.get(), now);
+                    res.set_header("Cache-Control", "no-store");
+                    res.set_content(boost::json::serialize(body), "application/json");
+                } catch (const std::exception& ex) {
+                    send_error(503, "unavailable", ex.what());
+                }
+            });
+        }
 
         server->Post("/v1/certificates/renew", [&](const httplib::Request& req,
                                                    httplib::Response& res) {

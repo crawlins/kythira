@@ -17,6 +17,7 @@
 
 #include <raft/certificate_authority.hpp>
 #include <raft/certificate_provider.hpp>
+#include <raft/jwt.hpp>
 
 #include "ca_cluster_node_process_wait.hpp"
 
@@ -32,6 +33,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -49,6 +51,9 @@
 
 #ifndef CA_CLUSTER_NODE_PATH
 #define CA_CLUSTER_NODE_PATH "ca_cluster_node"
+#endif
+#ifndef OIDC_PYJWT_SCRIPT
+#define OIDC_PYJWT_SCRIPT "tests/oidc_pyjwt_verify.py"
 #endif
 
 using namespace raft::testing;
@@ -1138,4 +1143,183 @@ BOOST_AUTO_TEST_CASE(insecure_peer_http_addresses_rejected, *boost::unit_test::t
         BOOST_REQUIRE_MESSAGE(code.has_value(), "node started with peer address " + http);
         BOOST_TEST(*code == 1);
     }
+}
+
+// iam-compatible-auth task 2 (Requirements 1.6-1.8): POST /v1/oidc/token over
+// the client-API TLS listener. A workload certificate issued by this cluster
+// gets a token without the bearer token, and that token verifies under the
+// cluster's own JWKS both here and with PyJWT; an unlisted audience, a
+// connection with no client certificate and a certificate from another CA
+// are refused. The other refusals (revoked, lifetime past the certificate,
+// workload outside the prefix) are covered against real certificates in
+// oidc_token_unit_test, which drives the same decision function.
+BOOST_AUTO_TEST_CASE(oidc_token_endpoint_over_mtls, *boost::unit_test::timeout(180)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("oidc_token");
+    constexpr const char* k_audience = "sts.amazonaws.com";
+    constexpr const char* k_prefix = "spiffe://kythira.test/wl/";
+    const std::string workload = std::string(k_prefix) + "billing/api";
+
+    certificate_authority listener_ca;
+    const std::string listener_root = dir.tmp_root + "/listener_root.pem";
+    std::ofstream(listener_root) << listener_ca.root_certificate_pem();
+    {
+        leaf_certificate_options o;
+        o.subject.common_name = "ca-node-1";
+        o.ip_addresses = {"127.0.0.1"};
+        auto leaf = listener_ca.issue(o);
+        std::ofstream(dir.tmp_root + "/cert.pem") << leaf.chain_pem;
+        std::ofstream(dir.tmp_root + "/key.pem") << leaf.private_key_pem;
+    }
+
+    const int rpc_port = find_free_port();
+    const int http_port = find_free_port();
+    const std::string peers = "1:127.0.0.1:" + std::to_string(rpc_port) +
+                              "@https://127.0.0.1:" + std::to_string(http_port);
+    cluster_node_process node(
+        1, rpc_port, http_port, dir.tmp_root + "/node1", dir.unseal_key_file, k_auth_token, peers,
+        /*bootstrap=*/true,
+        std::vector<std::string>{"--rpc-address", "127.0.0.1", "--http-address", "127.0.0.1",
+                                 "--tls-cert", dir.tmp_root + "/cert.pem", "--tls-key",
+                                 dir.tmp_root + "/key.pem", "--peer-tls-ca", listener_root,
+                                 "--oidc-issuer-url", k_oidc_issuer, "--oidc-audience", k_audience,
+                                 "--oidc-workload-uri-prefix", k_prefix});
+
+    auto client = [&](const std::string& cert = {}, const std::string& key = {}) {
+        auto c = cert.empty()
+                     ? std::make_unique<httplib::SSLClient>("127.0.0.1", http_port)
+                     : std::make_unique<httplib::SSLClient>("127.0.0.1", http_port, cert, key);
+        c->set_ca_cert_path(listener_root);
+        c->enable_server_certificate_verification(true);
+        c->set_connection_timeout(5, 0);
+        c->set_read_timeout(30, 0);
+        return c;
+    };
+    const httplib::Headers bearer{{"Authorization", std::string("Bearer ") + k_auth_token}};
+
+    // A workload client certificate from the cluster CA, through the
+    // ordinary bearer-token issuance route, once the CA and the first OIDC
+    // key exist.
+    leaf_certificate_options wl;
+    wl.subject.common_name = "billing-api";
+    auto csr = generate_key_and_csr(wl);
+    boost::json::object issue_body{{"csr_pem", csr.csr_pem},
+                                   {"uri_names", boost::json::array{boost::json::string(workload)}},
+                                   {"client_auth", true},
+                                   {"server_auth", false}};
+    std::string workload_cert_pem;
+    std::string jwks_body;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+    while (std::chrono::steady_clock::now() < deadline &&
+           (workload_cert_pem.empty() || jwks_body.empty())) {
+        if (workload_cert_pem.empty()) {
+            auto res = client()->Post("/v1/certificates", bearer,
+                                      boost::json::serialize(issue_body), "application/json");
+            if (res && res->status == 200) {
+                workload_cert_pem =
+                    std::string(boost::json::parse(res->body).at("chain_pem").as_string());
+            }
+        }
+        if (jwks_body.empty()) {
+            auto res = client()->Get("/.well-known/jwks.json");
+            if (res && res->status == 200) {
+                jwks_body = res->body;
+            }
+        }
+        if (workload_cert_pem.empty() || jwks_body.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(!workload_cert_pem.empty(), "the node never issued a certificate");
+    BOOST_REQUIRE_MESSAGE(!jwks_body.empty(), "the node never published a JWKS");
+    const std::string wl_cert = dir.tmp_root + "/wl_cert.pem";
+    const std::string wl_key = dir.tmp_root + "/wl_key.pem";
+    std::ofstream(wl_cert) << workload_cert_pem;
+    std::ofstream(wl_key) << csr.private_key_pem;
+
+    const std::string form = std::string("audience=") + k_audience;
+    auto ok = client(wl_cert, wl_key)
+                  ->Post(std::string("/v1/oidc/token"), form, "application/x-www-form-urlencoded");
+    BOOST_REQUIRE(ok);
+    BOOST_REQUIRE_MESSAGE(ok->status == 200, "token request: " << ok->status << " " << ok->body);
+    auto response = boost::json::parse(ok->body).as_object();
+    BOOST_TEST(response.at("token_type").as_string() == "urn:ietf:params:oauth:token-type:jwt");
+    BOOST_TEST(response.at("expires_in").as_int64() == 3600);
+    const std::string token(response.at("token").as_string());
+
+    // Verify against the published JWKS with this repository's own JOSE code.
+    auto parts = kythira::jose::parse_compact(token);
+    BOOST_REQUIRE(parts.has_value());
+    const auto jwks = boost::json::parse(jwks_body).as_object();
+    const boost::json::object* jwk = nullptr;
+    for (const auto& k : jwks.at("keys").as_array()) {
+        if (k.as_object().at("kid") == parts->header.at("kid")) {
+            jwk = &k.as_object();
+        }
+    }
+    BOOST_REQUIRE(jwk != nullptr);
+    auto pub = kythira::jose::public_key_from_jwk(*jwk);
+    auto verified = kythira::jose::verify_compact(token, pub.get(), kythira::jose::jws_alg::rs256);
+    BOOST_REQUIRE(verified.has_value());
+    auto claims = boost::json::parse(verified->payload).as_object();
+    BOOST_TEST(claims.at("iss").as_string() == k_oidc_issuer);
+    BOOST_TEST(claims.at("sub").as_string() == "workload:" + workload);
+    BOOST_TEST(claims.at("aud").as_string() == k_audience);
+    BOOST_TEST(claims.at("kythira:workload").as_string() == workload);
+    BOOST_TEST(!claims.at("jti").as_string().empty());
+    BOOST_TEST(claims.at("exp").as_int64() - claims.at("iat").as_int64() == 3600);
+
+    // And with an independent library.
+    {
+        const std::string token_file = dir.tmp_root + "/token.jwt";
+        const std::string jwks_file = dir.tmp_root + "/jwks.json";
+        std::ofstream(token_file) << token;
+        std::ofstream(jwks_file) << jwks_body;
+        const std::string cmd = std::string("python3 '") + OIDC_PYJWT_SCRIPT + "' '" + token_file +
+                                "' '" + jwks_file + "' '" + k_oidc_issuer + "' '" + k_audience +
+                                "'";
+        const int rc = std::system(cmd.c_str());
+        const int code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+        if (code == 77) {
+            BOOST_TEST_MESSAGE("PyJWT is not installed here; skipped the independent check");
+        } else {
+            BOOST_TEST(code == 0);
+        }
+    }
+
+    // Refusals.
+    auto unlisted = client(wl_cert, wl_key)
+                        ->Post(std::string("/v1/oidc/token"), "audience=example.com",
+                               "application/x-www-form-urlencoded");
+    BOOST_REQUIRE(unlisted);
+    BOOST_TEST(unlisted->status == 400);
+
+    auto anonymous =
+        client()->Post(std::string("/v1/oidc/token"), form, "application/x-www-form-urlencoded");
+    BOOST_REQUIRE(anonymous);
+    BOOST_TEST(anonymous->status == 401);
+
+    // The right workload URI from the wrong CA (the listener CA here).
+    {
+        leaf_certificate_options o;
+        o.subject.common_name = "impostor";
+        o.uri_names = {workload};
+        o.server_auth = false;
+        o.client_auth = true;
+        auto impostor = listener_ca.issue(o);
+        std::ofstream(dir.tmp_root + "/imp_cert.pem") << impostor.chain_pem;
+        std::ofstream(dir.tmp_root + "/imp_key.pem") << impostor.private_key_pem;
+        auto res =
+            client(dir.tmp_root + "/imp_cert.pem", dir.tmp_root + "/imp_key.pem")
+                ->Post(std::string("/v1/oidc/token"), form, "application/x-www-form-urlencoded");
+        BOOST_REQUIRE(res);
+        BOOST_TEST(res->status == 401);
+    }
+
+    // Bearer-token routes are unchanged: a client certificate is not a
+    // bearer token.
+    auto no_bearer = client(wl_cert, wl_key)->Get("/v1/root-ca");
+    BOOST_REQUIRE(no_bearer);
+    BOOST_TEST(no_bearer->status == 401);
+    node.stop();
 }

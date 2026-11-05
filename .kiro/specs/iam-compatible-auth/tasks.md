@@ -124,6 +124,41 @@ because each has a zero-spend fallback.
     here verifies with an independent library (Python `PyJWT` in the test
     container).
   - _Requirements: 1.6–1.9_
+  - Token endpoint done November 5, 2026; `--oidc-publish-url` is the rest
+    of this task. Notes from the implementation:
+    - `include/raft/oidc_token.hpp` holds the whole decision
+      (`decide_token`) as a pure function of the certificate facts, the
+      chain and revocation results, the body and `now`. The handler only
+      gathers those and signs, so `oidc_token_unit_test` drives every
+      refusal against real CA-issued certificates.
+    - Flags: `--oidc-audience` (repeatable; none refuses every request) and
+      `--oidc-workload-uri-prefix`, which must end in `/` or `:` so a prefix
+      cannot match a longer sibling, and must not overlap the reserved
+      `urn:kythira:node:` namespace. The lifetime cap is the existing
+      `--oidc-max-token-lifetime-secs`, which is also how long a superseded
+      key stays published, so no token outlives its key.
+    - The route skips the bearer-token gate: a workload holding only its own
+      certificate must not need the operator's token.
+    - Status codes: 401 for no certificate, wrong CA, revoked or expired;
+      403 for a valid certificate naming no eligible subject (criterion
+      1.6); 400 for the body, the audience (`invalid_target`) or the
+      lifetime. Authentication is checked first, so an unauthenticated
+      caller learns nothing about the body rules.
+    - Lifetime: an explicit `lifetime` past the certificate's notAfter is
+      refused; with none, the 1-hour default is cut to the certificate's
+      remaining validity.
+    - Subject: a cluster member's reserved peer SAN gives `node:<id>`; a
+      certificate naming two members, or two workload URIs, is refused.
+      Workload paths with dot segments, `?` or `#` are refused, so the
+      subject a cloud trust policy matches is the one the CA issued.
+    - "Follower forwarding" is the 308 redirect the other `/v1/*` routes
+      use; the client presents its certificate again to the leader.
+    - Unsealed signing keys are cached by `kid`, so the unseal key
+      derivation runs once per key, not once per token.
+    - `ca_cluster_node_test`'s `oidc_token_endpoint_over_mtls` gets a token
+      over the TLS listener and verifies it with PyJWT
+      (`tests/oidc_pyjwt_verify.py`, `python3-jwt` in the Build & Test
+      jobs). It reports a skip, not a pass, where PyJWT is missing.
 
 - [ ] 3. Token source plus AWS and GCP exchange providers
   - `kythira_oidc_token_source`: per-audience cache, refresh at 80% of the

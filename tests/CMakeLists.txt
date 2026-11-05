@@ -5298,6 +5298,23 @@ set_tests_properties(oidc_issuer_unit_test PROPERTIES
     LABELS "unit;certificate_authority;ca;oidc;iam;state_machine"
 )
 
+# IAM spec task 2: the OIDC token endpoint's decisions (subject, audience,
+# lifetime, every refusal) against real CA-issued certificates.
+add_executable(oidc_token_unit_test oidc_token_unit_test.cpp)
+target_link_libraries(oidc_token_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(oidc_token_unit_test PRIVATE cxx_std_23)
+add_test(NAME oidc_token_unit_test COMMAND oidc_token_unit_test)
+set_tests_properties(oidc_token_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;oidc;iam"
+)
+
 # IAM spec task 6: server-side SigV4 verification, run against every case of
 # AWS's signing test suite (vendored, Apache-2.0, under sigv4_suite/).
 add_executable(sigv4_verifier_test sigv4_verifier_test.cpp)
@@ -5601,6 +5618,7 @@ target_link_libraries(ca_cluster_node_test PRIVATE
 )
 target_compile_definitions(ca_cluster_node_test PRIVATE
     CA_CLUSTER_NODE_PATH="$<TARGET_FILE:ca_cluster_node>"
+    OIDC_PYJWT_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/oidc_pyjwt_verify.py"
 )
 add_dependencies(ca_cluster_node_test ca_cluster_node)
 target_compile_features(ca_cluster_node_test PRIVATE cxx_std_23)

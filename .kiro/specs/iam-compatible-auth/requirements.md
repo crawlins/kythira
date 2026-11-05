@@ -154,7 +154,8 @@ without any stored cloud keys.
     local read of its replica, only the leader-served linearisable read.
     Where a relying party will not follow the redirect, the operator uses
     `--oidc-publish-url` (criterion 9). Only the leader SHALL sign tokens; a
-    follower SHALL proxy the token request to the leader or answer 503 with
+    follower SHALL answer a token request with a 308 redirect to the leader
+    (the client presents its certificate again there) or 503 with
     `no_known_leader`, as the other `/v1/*` routes do.
 
 ### Requirement 2: Cloud credential exchange
