@@ -288,6 +288,15 @@ because each has a zero-spend fallback.
       `ca_cluster_node_test.cpp` to `tests/ca_cluster_node_harness.hpp` so
       both tests share them.
     - Azure, Alibaba and OCI join after task 4.
+    - AWS and GCP passed on November 5, 2026 (run 42097505918, 20/20
+      assertions). The issuer documents went public under
+      `kythira-oidc-fed-827617851594/ci`, the S3 test object was read
+      through `AssumeRoleWithWebIdentity`, and the GCS test object through
+      the GCP STS exchange. The leak audit found nothing left. Spend: two
+      S3 PUTs and DELETEs, a few GETs, and one GCS read, well under a cent.
+      Two earlier runs failed and were fixed: the build cache's Oracle
+      `AWS_ENDPOINT_URL` sent the STS call to Oracle, and `kid_set()`
+      walked a freed JSON temporary.
 
 ### Phase B — IAM core
 
