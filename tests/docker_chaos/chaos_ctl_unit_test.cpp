@@ -862,6 +862,13 @@ BOOST_AUTO_TEST_SUITE(report)
 BOOST_FIXTURE_TEST_CASE(refused_calls_reach_nothing_and_are_classified_refused, fixture) {
     using boost::json::array;
     const std::string fp = "raft/persistence/save_current_term";
+    // fault.s3 checks its arguments before it posts anything.
+    ctx.cfg.s3_control = "s3mock:9001";
+    std::vector<std::string> posted;
+    ctx.http_post = [&posted](const std::string& url, const std::string& /*body*/) {
+        posted.push_back(url);
+        return dc::HttpResult{200, R"({"ok":true})"};
+    };
     const std::vector<std::pair<std::string, boost::json::object>> bad{
         {"fault.failpoint", {{"node", 1}, {"name", "vote"}, {"mode", "off"}}},
         {"fault.failpoint", {{"node", 1}}},
@@ -875,6 +882,11 @@ BOOST_FIXTURE_TEST_CASE(refused_calls_reach_nothing_and_are_classified_refused, 
         {"fault.partition", {{"groups", array{array{1}, array{}}}}},
         {"fault.partition", {{"groups", array{array{"a"}, array{2, 3}}}}},
         {"fault.delay", {{"node", 1}, {"delay_ms", 70000}}},
+        {"fault.drop", {{"node", 1}, {"loss_pct", 150}}},
+        {"fault.s3", {}},
+        {"fault.s3", {{"delay_ms", 100}, {"clear", true}}},
+        {"fault.s3", {{"delay_ms", 90000}}},
+        {"fault.s3", {{"fail_puts", 0}}},
         {"fault.clock_skew", {{"node", 1}, {"offset_ms", 500}}},
         {"cluster.add_member", {{"node", 9}}},
         {"workload.start", {{"concurrency", 99}}},
@@ -888,6 +900,7 @@ BOOST_FIXTURE_TEST_CASE(refused_calls_reach_nothing_and_are_classified_refused, 
     BOOST_TEST(fake.commands.empty());
     BOOST_TEST(fiu.empty());
     BOOST_TEST(spawned_env.empty());
+    BOOST_TEST(posted.empty());
     for (const auto& c : chaos_ctl::read_calls(ctx.paths.schedule().string())) {
         BOOST_TEST(chaos_ctl::report::refused(c), c.tool << ": " << c.error);
     }

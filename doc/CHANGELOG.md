@@ -5,6 +5,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (November 5, 2026)
 
+- **Cairn campaigns release the GPU host when they finish, and the
+  reporter drops every argument error.** `m1-campaign.sh` (and so
+  `m2-hunt.sh`) powers the model host off over `CAIRN_LLM_SSH` once the
+  last run is saved, unless `--keep-host` is given; M3 ended at 02:04Z
+  but billed until its 06:01Z cap. `chaos_ctl report` now counts
+  `fault.s3` argument errors and an out-of-range `fault.drop` loss as
+  refused, as it already did for every other tool's argument checks.
+
 - **The build cache can live on disk, and sccache and vcpkg can both use
   it.** The disk-backed-build-cache spec is complete. In disk mode the
   Redis gateway keeps values in a per-node, content-addressed chunk store
