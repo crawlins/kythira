@@ -81,6 +81,7 @@
 #include <raft/oidc_issuer.hpp>
 #include <raft/oidc_token.hpp>
 #include <raft/private_file.hpp>
+#include <raft/prometheus_metrics.hpp>
 #include <raft/raft.hpp>
 #include <raft/tcp_raft_types.hpp>
 #include <raft/tcp_rpc.hpp>
@@ -1320,6 +1321,10 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 #endif  // KYTHIRA_HAS_OPENSSL
 
     // ── Background maintenance: leadership-triggered signer lifecycle ──────
+    // Served at GET /metrics (bearer token, like every /v1/* route). Holds
+    // the OIDC publisher's counters today.
+    auto metrics_registry = std::make_shared<kythira::prometheus_registry>();
+
     std::jthread maintenance_thread([&](std::stop_token st) {
         bool was_leader = false;
         while (!st.stop_requested() && !g_stop.load()) {
@@ -1357,6 +1362,81 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             }
 #endif
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    });
+
+    // ── OIDC document publishing (iam-compatible-auth Requirement 1.9) ───────
+    // With --oidc-publish-url the leader uploads the discovery document and
+    // JWKS to a bucket whenever the JWKS differs from the last upload (a key
+    // published or retired changes it with no command applied), every six
+    // hours regardless, and on a backed-off retry after a failure. Its own
+    // thread, so a slow or hung object-store call can never delay key
+    // rotation or certificate renewal in the maintenance thread.
+    std::jthread oidc_publish_thread([&](const std::stop_token& st) {
+        if (!cfg.oidc_enabled() || !cfg.oidc_publish_target) {
+            return;
+        }
+        const auto& target = *cfg.oidc_publish_target;
+        kythira::oidc::publish_schedule schedule;
+        ca_cluster_node::oidc_put_fn put;
+        bool was_leader = false;
+        auto steady_seconds = [] {
+            return std::chrono::duration_cast<std::chrono::seconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        };
+        while (!st.stop_requested() && !g_stop.load()) {
+            for (int i = 0; i < 25 && !st.stop_requested() && !g_stop.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            const bool leader = raft_node.is_leader();
+            if (leader && !was_leader) {
+                schedule.reset();  // a previous leader may have uploaded since
+            }
+            was_leader = leader;
+            if (!leader || st.stop_requested() || g_stop.load()) {
+                continue;
+            }
+            std::optional<kythira::oidc::published_documents> docs;
+            try {
+                auto state = read_ca_state(raft_node, std::chrono::milliseconds(5000));
+                const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+                docs = kythira::oidc::documents_to_publish(state.oidc_keys(), now,
+                                                           cfg.oidc_issuer_url, cfg.oidc_alg);
+            } catch (const std::exception&) {
+                continue;  // lost leadership or no quorum; try again next round
+            }
+            const auto steady_now = steady_seconds();
+            if (!docs || !schedule.due(*docs, steady_now)) {
+                continue;
+            }
+            try {
+                if (!put) {
+                    put = ca_cluster_node::make_oidc_publish_store(target);
+                }
+                kythira::oidc::publish_documents(ca_cluster_node::oidc_put_store{put}, target,
+                                                 *docs);
+                schedule.succeeded(*docs, steady_now);
+                metrics_registry->observe_counter("kythira_oidc_publish_success", {}, 1);
+                metrics_registry->observe_gauge(
+                    "kythira_oidc_publish_last_success_timestamp_seconds", {},
+                    static_cast<double>(std::chrono::duration_cast<std::chrono::seconds>(
+                                            std::chrono::system_clock::now().time_since_epoch())
+                                            .count()));
+                std::cerr << "[info] ca_cluster_node: published the OIDC documents to "
+                          << target.provider << "://" << target.bucket << "/" << target.prefix
+                          << "\n";
+            } catch (const std::exception& ex) {
+                schedule.failed(steady_now);
+                put = nullptr;  // rebuild the client: credentials may have changed
+                metrics_registry->observe_counter("kythira_oidc_publish_failures", {}, 1);
+                std::cerr << "[error] ca_cluster_node: publishing the OIDC documents to "
+                          << target.provider << "://" << target.bucket << "/" << target.prefix
+                          << " failed (attempt " << schedule.consecutive_failures()
+                          << "), will retry: " << ex.what() << "\n";
+            }
         }
     });
 
@@ -1550,6 +1630,12 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
 
         server->Get("/healthz", [&](const httplib::Request&, httplib::Response& res) {
             res.status = raft_node.is_running() ? 200 : 503;
+        });
+
+        // Prometheus text format. Per node, not redirected: each member
+        // reports what it did itself (only the leader publishes).
+        server->Get("/metrics", [&](const httplib::Request&, httplib::Response& res) {
+            res.set_content(metrics_registry->render_text(), "text/plain; version=0.0.4");
         });
 
         server->Get("/v1/root-ca", [&](const httplib::Request& req, httplib::Response& res) {

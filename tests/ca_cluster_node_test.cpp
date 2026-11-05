@@ -1316,10 +1316,43 @@ BOOST_AUTO_TEST_CASE(oidc_token_endpoint_over_mtls, *boost::unit_test::timeout(1
         BOOST_TEST(res->status == 401);
     }
 
+    // Prometheus counters (the OIDC publisher's, when --oidc-publish-url is
+    // set) sit behind the bearer token like the /v1/* routes.
+    auto metrics = client()->Get("/metrics", bearer);
+    BOOST_REQUIRE(metrics);
+    BOOST_TEST(metrics->status == 200);
+    auto metrics_anon = client()->Get("/metrics");
+    BOOST_REQUIRE(metrics_anon);
+    BOOST_TEST(metrics_anon->status == 401);
+
     // Bearer-token routes are unchanged: a client certificate is not a
     // bearer token.
     auto no_bearer = client(wl_cert, wl_key)->Get("/v1/root-ca");
     BOOST_REQUIRE(no_bearer);
     BOOST_TEST(no_bearer->status == 401);
     node.stop();
+}
+
+// --oidc-publish-url is checked at startup: a malformed URL, or a publish URL
+// without an issuer, stops the node with a usage error (exit 1) instead of
+// failing quietly at the first upload.
+BOOST_AUTO_TEST_CASE(oidc_publish_url_checked_at_startup, *boost::unit_test::timeout(60)) {
+    scoped_plaintext_env env(nullptr);
+    lone_node_env dir("oidc_publish_flags");
+    for (const auto& extra : std::vector<std::vector<std::string>>{
+             {"--oidc-issuer-url", k_oidc_issuer, "--oidc-publish-url", "ftp://bucket/x"},
+             {"--oidc-issuer-url", k_oidc_issuer, "--oidc-publish-url", "s3://bucket/../x"},
+             {"--oidc-publish-url", "s3://bucket/x"},
+             {"--oidc-audience", "sts.amazonaws.com"},
+         }) {
+        std::vector<std::string> args{"--rpc-address", "127.0.0.1", "--http-address", "127.0.0.1"};
+        args.insert(args.end(), extra.begin(), extra.end());
+        cluster_node_process node(1, find_free_port(), find_free_port(), dir.tmp_root + "/node1",
+                                  dir.unseal_key_file, k_auth_token, dir.peers,
+                                  /*bootstrap=*/false, args);
+        auto code = node.wait_for_own_exit(std::chrono::seconds(15));
+        BOOST_TEST_INFO("args: " << extra.back());
+        BOOST_REQUIRE(code.has_value());
+        BOOST_TEST(*code == 1);
+    }
 }
