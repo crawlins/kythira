@@ -157,6 +157,7 @@ multi_serializer_interop_test gated on `TARGET Folly::folly` in tests/CMakeLists
 multi_serializer_negotiation_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 negotiation_failure_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 network_topology_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
+oidc_federation_real_test inside tests/CMakeLists.txt's `if(TARGET ca_cluster_node)` block, and cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
 performance_benchmark_report_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 promise_concept_inheritance_property_test uses Folly directly (`folly::exception_wrapper`, `folly::Unit`)
 promise_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly

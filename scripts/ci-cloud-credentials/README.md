@@ -117,6 +117,16 @@ this family does.
 | OCI | Implemented (quorum/certificates/object-persistence suites + monitoring config) | [`oci/README.md`](oci/README.md) |
 | Alibaba Cloud | Implemented (ESS quorum manager + OSS object persistence, both live-verified; no cert provider — `doc/TODO.md` Cloud Provider Support) | [`alibaba/README.md`](alibaba/README.md) |
 
+## OIDC federation test (IAM spec task 5)
+
+`aws/provision-oidc-federation-test.sh` and
+`gcp/provision-oidc-federation-test.sh` set up, once and with admin
+credentials, the trust that `.github/workflows/oidc-federation.yml` exercises:
+an S3 issuer bucket, an IAM OIDC provider and role, and a GCP workload identity
+pool, each allowed to read only one test object. They are separate from the
+bundles because they create IAM resources, which the CI roles may not. Run the
+AWS script first; it prints the issuer URL the GCP script takes.
+
 ## Why AWS needs two provisioning scripts, not one
 
 Most bundles need only one script: `aws/provision-oidc-role.sh` creates the

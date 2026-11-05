@@ -5680,6 +5680,43 @@ set_tests_properties(ca_cluster_node_test PROPERTIES
     LABELS "integration;certificate_authority;ca;ca_cluster_node;raft;multi_node"
 )
 
+# IAM spec task 5: the real-cloud OIDC federation run
+# (.github/workflows/oidc-federation.yml). One ca_cluster_node publishes its
+# issuer documents to S3; the test exchanges its JWT with AWS STS and GCP STS
+# and reads one object in each cloud. Needs the AWS SDK with the S3 gate (the
+# node's publisher and the AWS read); google-cloud-cpp storage adds the GCP
+# read. Without KYTHIRA_OIDC_FED_ISSUER_URL it exits 77, which ctest reports
+# as skipped, so a normal ctest run never touches a cloud.
+if(AWSSDK_FOUND AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE AND TARGET httplib::httplib)
+    add_executable(oidc_federation_real_test oidc_federation_real_test.cpp)
+    target_compile_definitions(oidc_federation_real_test PRIVATE
+        KYTHIRA_HAS_AWS_SDK
+        CA_CLUSTER_NODE_PATH="$<TARGET_FILE:ca_cluster_node>")
+    target_link_libraries(oidc_federation_real_test PRIVATE
+        certificate_authority
+        Boost::unit_test_framework
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        httplib::httplib
+        boost_json
+        ${AWSSDK_LINK_LIBRARIES}
+    )
+    if(TARGET google-cloud-cpp::storage AND _KYTHIRA_GATE_GCP_STORAGE_PERSISTENCE)
+        target_compile_definitions(oidc_federation_real_test PRIVATE KYTHIRA_HAS_GCP_STORAGE)
+        target_link_libraries(oidc_federation_real_test PRIVATE google-cloud-cpp::storage)
+    endif()
+    add_dependencies(oidc_federation_real_test ca_cluster_node)
+    target_compile_features(oidc_federation_real_test PRIVATE cxx_std_23)
+    add_test(NAME oidc_federation_real_test COMMAND oidc_federation_real_test)
+    set_tests_properties(oidc_federation_real_test PROPERTIES
+        SKIP_RETURN_CODE 77
+        TIMEOUT 1000
+        # slow: keeps it out of every default ctest run (ci.yml -LE), like
+        # the other real-cloud tests, so its skip is never reported there.
+        LABELS "real-cloud;oidc;iam;slow"
+    )
+endif()
+
 add_executable(ca_cluster_node_rpc_tls_test ca_cluster_node_rpc_tls_test.cpp)
 target_link_libraries(ca_cluster_node_rpc_tls_test PRIVATE
     certificate_authority
