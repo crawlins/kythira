@@ -157,6 +157,15 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc) --target ca_cluster_node oidc_federation_real_test
 
+      # The build cache action wrote Oracle's AWS_ENDPOINT_URL and access key
+      # into $GITHUB_ENV. Left in place, configure-aws-credentials sends the
+      # STS call to Oracle ("Couldn't parse the specified URI") and the aws
+      # CLI steps below address Oracle's namespace, not the issuer bucket.
+      # Empty reads as unset (see real-cloud-tests.yml, the same step); the
+      # next step replaces the key, secret and region as one set.
+      - name: Clear the build cache's Oracle endpoint
+        run: echo "AWS_ENDPOINT_URL=" >> "$GITHUB_ENV"
+
       # The CI role, for the node's publisher only: a same-account bucket
       # policy lets it write <prefix>/.well-known/*. The federated reads use
       # the credentials the test exchanges for, never these.
@@ -202,6 +211,8 @@ jobs:
         run: |
           left="$(aws s3api list-objects-v2 --bucket "${ISSUER_BUCKET}" \
                     --prefix "${ISSUER_PREFIX}/.well-known/" --query 'KeyCount' --output text)"
+          # The CLI prints None, not 0, when the prefix is empty.
+          [[ "${left}" == "None" ]] && left=0
           {
             echo "### OIDC federation run"
             echo "- issuer: https://${ISSUER_BUCKET}.s3.${AWS_REGION_FED}.amazonaws.com/${ISSUER_PREFIX}"
