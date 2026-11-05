@@ -87,9 +87,14 @@ own cloud clients. `kythira_oidc_token_source` fetches and caches a token per
 audience over mTLS, following a follower's redirect with the certificate.
 `aws_web_identity_source` calls `AssumeRoleWithWebIdentity`, and
 `gcp_workload_identity_source` calls the GCP STS token exchange and, when a
-service account is named, `generateAccessToken`. Every source refreshes at
-80% of the lifetime and keeps serving the old credentials while a refresh
-fails, until they expire.
+service account is named, `generateAccessToken`. `azure_federated_source`
+asks Entra ID for a token per resource scope with the Kythira token as a
+federated `client_assertion`. `alibaba_oidc_role_source` calls
+`AssumeRoleWithOIDC`. `oci_upst_source` exchanges the token at an OCI
+identity domain for a User Principal Session Token, bound to a session key
+pair generated fresh for each exchange. Every source refreshes at 80% of the
+lifetime and keeps serving the old credentials while a refresh fails, until
+they expire.
 
 - AWS components take
   `aws_client_config::credentials_provider = make_web_identity_provider_chain(source)`
@@ -98,6 +103,32 @@ fails, until they expire.
 - `gcp_gcs_client` takes `gcp_client_config::access_token`, a function
   returning the source's current token. The other GCP components do not read
   it yet.
+- Azure components take
+  `azure_client_config::credential = make_shared<azure_federated_token_credential>(source)`
+  (`include/raft/azure_federated_credential.hpp`). That covers the blob
+  client, the Key Vault CA provider and the VM and VMSS components, each
+  asking for its own scope.
+- Alibaba components take `alibaba_client_config::credentials`, a function
+  returning the source's current keys. Both signers read it on every
+  request, so the OSS client and the control-plane components are covered.
+- OCI components take `oci_client_config::session_credentials`, a function
+  returning the source's current UPST and session key. `oci_signing` signs
+  with them under `keyId = "ST$<token>"`.
+
+Each cloud has its own trust setup and audience:
+
+| Cloud | Trust | Kythira token audience (default) |
+|---|---|---|
+| AWS | IAM OIDC provider and role | `sts.amazonaws.com` |
+| GCP | Workload identity pool provider | the provider's resource name |
+| Azure | Federated credential on an app registration or managed identity | `api://AzureADTokenExchange` |
+| Alibaba | RAM OIDC provider and role | one of the provider's client ids, `sts.aliyuncs.com` |
+| OCI | Identity propagation trust on an identity domain | `https://cloud.oracle.com` |
+
+OCI's exchange authenticates as the confidential application the trust
+names, with its client id and secret over HTTP Basic, so that secret is the
+one stored value on the OCI path. The application can exchange tokens and
+holds no OCI permissions of its own.
 
 ## Publishing to a bucket
 

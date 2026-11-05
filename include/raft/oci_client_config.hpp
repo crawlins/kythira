@@ -21,9 +21,19 @@
 /// has. That is what keeps `vcpkg.json` unchanged for this feature.
 
 #include <chrono>
+#include <functional>
 #include <string>
 
 namespace kythira {
+
+/// A User Principal Session Token and the session private key whose public
+/// half was submitted in the exchange that issued it. The two expire
+/// together.
+struct oci_session_credentials {
+    std::string security_token;
+    std::string private_key_pem;
+    std::chrono::system_clock::time_point expires_at{};
+};
 
 /// @brief Shared OCI connection settings consumed by both OCI providers.
 ///
@@ -90,6 +100,16 @@ struct oci_client_config {
     /// service in a CI runner to fetch anything from. Ignored when
     /// @ref use_instance_principal is set, which performs its own exchange.
     std::string security_token;
+
+    /// When set, called on every signed request for the token and its session
+    /// key, in place of @ref security_token and @ref private_key_pem. This is the
+    /// fourth auth mode, a UPST this library obtains and renews itself. An
+    /// `oci_upst_source` (`raft/cloud_credential_exchange.hpp`,
+    /// `.kiro/specs/iam-compatible-auth/` task 4) exchanges a Kythira OIDC
+    /// token for it and caches the result, so the call is a cache hit. It may
+    /// throw; the request then fails before anything is sent. Ignored when
+    /// @ref use_instance_principal is set.
+    std::function<oci_session_credentials()> session_credentials;
 
     /// When non-empty, overrides the derived service endpoint host. Points the
     /// providers at a mock server during tests, the same way

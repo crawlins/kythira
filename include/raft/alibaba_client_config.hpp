@@ -21,9 +21,20 @@
 /// shape. That is what keeps `vcpkg.json` unchanged for this feature.
 
 #include <chrono>
+#include <functional>
 #include <string>
 
 namespace kythira {
+
+/// One set of RAM keys: a long-lived user key, or the temporary key, secret
+/// and token an STS exchange returns (`expires_at` is then the STS
+/// Expiration; for a long-lived key it is unused).
+struct alibaba_sts_credentials {
+    std::string access_key_id;
+    std::string access_key_secret;
+    std::string security_token;
+    std::chrono::system_clock::time_point expires_at{};
+};
 
 /// @brief Shared Alibaba Cloud connection settings consumed by every Alibaba
 ///        component (control-plane RPC client and OSS object client alike).
@@ -50,6 +61,15 @@ struct alibaba_client_config {
     /// the exchange itself happens in the workflow, not in this library.
     std::string security_token;
 
+    /// When set, called for the keys on every signed request, in place of
+    /// @ref access_key_id, @ref access_key_secret and @ref security_token.
+    /// This is how refreshing credentials arrive: an
+    /// `alibaba_oidc_role_source` (`raft/cloud_credential_exchange.hpp`,
+    /// `.kiro/specs/iam-compatible-auth/` task 4) caches and renews its
+    /// AssumeRoleWithOIDC keys, and the call is a cache hit. It may throw;
+    /// the request then fails before anything is sent.
+    std::function<alibaba_sts_credentials()> credentials;
+
     /// When non-empty, overrides every derived endpoint at once — control
     /// plane and OSS — pointing all components at one mock server during
     /// tests, the same way `oci_client_config::endpoint_override` does. The
@@ -62,5 +82,15 @@ struct alibaba_client_config {
     /// and the request phases.
     std::chrono::seconds api_timeout{30};
 };
+
+/// The keys a request is signed with: the @ref alibaba_client_config::credentials
+/// hook's when set, otherwise the three static fields.
+[[nodiscard]] inline auto signing_credentials(const alibaba_client_config& cfg)
+    -> alibaba_sts_credentials {
+    if (cfg.credentials) {
+        return cfg.credentials();
+    }
+    return {cfg.access_key_id, cfg.access_key_secret, cfg.security_token, {}};
+}
 
 }  // namespace kythira

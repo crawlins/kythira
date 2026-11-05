@@ -383,12 +383,16 @@ public:
         // A token still needs the session private key it was bound to —
         // found live on the first WIF CI run, where this gate demanded a
         // tenancy_id the token mode deliberately does not have.
-        if (!_cfg.oci.use_instance_principal && _cfg.oci.security_token.empty()) {
+        // A session_credentials hook (task 4 of iam-compatible-auth) also
+        // brings its own token and key, so nothing static is checked for it.
+        const bool brings_own =
+            _cfg.oci.use_instance_principal || static_cast<bool>(_cfg.oci.session_credentials);
+        if (!brings_own && _cfg.oci.security_token.empty()) {
             require(_cfg.oci.tenancy_id, "oci.tenancy_id");
             require(_cfg.oci.user_id, "oci.user_id");
             require(_cfg.oci.fingerprint, "oci.fingerprint");
             require(_cfg.oci.private_key_pem, "oci.private_key_pem");
-        } else if (!_cfg.oci.security_token.empty()) {
+        } else if (!brings_own) {
             require(_cfg.oci.private_key_pem, "oci.private_key_pem (the session key)");
         }
 

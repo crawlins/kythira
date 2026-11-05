@@ -357,10 +357,11 @@ public:
                                         std::string_view content_type = {},
                                         std::string_view content_md5 = {}) const
         -> std::map<std::string, std::string> {
-        if (_cfg.access_key_id.empty()) {
+        const auto keys = signing_credentials(_cfg);
+        if (keys.access_key_id.empty()) {
             throw std::invalid_argument("alibaba_oss_client: access_key_id is empty");
         }
-        if (_cfg.access_key_secret.empty()) {
+        if (keys.access_key_secret.empty()) {
             throw std::invalid_argument("alibaba_oss_client: access_key_secret is empty");
         }
         const std::string timestamp = alibaba_oss_detail::iso8601_basic_utc(when);
@@ -401,8 +402,8 @@ public:
         if (!content_md5.empty()) {
             signed_headers.emplace("content-md5", std::string(content_md5));
         }
-        if (!_cfg.security_token.empty()) {
-            signed_headers.emplace("x-oss-security-token", _cfg.security_token);
+        if (!keys.security_token.empty()) {
+            signed_headers.emplace("x-oss-security-token", keys.security_token);
         }
 
         const std::string resource =
@@ -431,7 +432,7 @@ public:
                                            alibaba_signing::detail::sha256_hex(canonical);
 
         using alibaba_signing::detail::hmac_sha256;
-        std::string signing_key = hmac_sha256("aliyun_v4" + _cfg.access_key_secret, date);
+        std::string signing_key = hmac_sha256("aliyun_v4" + keys.access_key_secret, date);
         signing_key = hmac_sha256(signing_key, _cfg.region);
         signing_key = hmac_sha256(signing_key, "oss");
         signing_key = hmac_sha256(signing_key, "aliyun_v4_request");
@@ -439,7 +440,7 @@ public:
             alibaba_signing::detail::to_hex(hmac_sha256(signing_key, string_to_sign));
 
         auto headers = signed_headers;
-        headers.emplace("Authorization", "OSS4-HMAC-SHA256 Credential=" + _cfg.access_key_id + "/" +
+        headers.emplace("Authorization", "OSS4-HMAC-SHA256 Credential=" + keys.access_key_id + "/" +
                                              scope + ",Signature=" + signature);
         return headers;
     }

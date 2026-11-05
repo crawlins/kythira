@@ -238,7 +238,7 @@ because each has a zero-spend fallback.
       `x-amz-security-token` from the assumed role, and the `Bearer` token
       from the GCP exchange, including a token change between requests.
 
-- [ ] 4. Azure, Alibaba and OCI exchange providers
+- [x] 4. Azure, Alibaba and OCI exchange providers
   - Azure: client-credentials flow with a federated `client_assertion`, wired
     into `azure_blob_client`.
   - Alibaba: `AssumeRoleWithOIDC`, wired into `alibaba_oss_client` (STS
@@ -250,6 +250,32 @@ because each has a zero-spend fallback.
     here and drop this sub-item.
   - Mock-endpoint tests as in task 3.
   - _Requirements: 2.2–2.4_
+  - Done November 5, 2026, in `include/raft/cloud_credential_exchange.hpp`:
+    - `azure_federated_source` posts `client_credentials` with the Kythira
+      token as a `jwt-bearer` `client_assertion` (audience
+      `api://AzureADTokenExchange`) and caches one token per resource
+      scope. `azure_federated_token_credential`
+      (`include/raft/azure_federated_credential.hpp`) is the SDK
+      `TokenCredential`, so it covers every Azure component through
+      `azure_client_config::credential`, not only `azure_blob_client`.
+    - `alibaba_oidc_role_source` calls the anonymous `AssumeRoleWithOIDC`
+      RPC. `alibaba_client_config::credentials` is a new hook both signers
+      read per request (OSS V4 and the ACS3 control plane), so the ESS
+      components are covered too.
+    - OCI: the exchange exists for this project's tenancy, which is on an
+      identity domain. CI's OCI jobs have used the same grant with GitHub's
+      token since the WIF work. `oci_upst_source` generates a session key
+      per exchange, posts the token-exchange grant with the public key, and
+      reads the expiry from the UPST's `exp`. `oci_signing::sign_request`
+      reads the new `oci_client_config::session_credentials` hook. One
+      difference from the other clouds: the exchange authenticates as the
+      trust's confidential application (client id and secret over HTTP
+      Basic), so that secret is stored. It can exchange tokens and has no
+      OCI permissions.
+    - Tests: wire format, caching and error text for each exchange against
+      mock endpoints, the Alibaba and OCI signers reading exchanged
+      credentials, and `azure_blob_client` sending the exchanged Entra
+      token (and sending nothing when the exchange is refused).
 
 - [ ] 5. Real-cloud federation run (needs Clark's go)
   - A workflow sets up the issuer's trust in each cloud: an IAM OIDC provider
