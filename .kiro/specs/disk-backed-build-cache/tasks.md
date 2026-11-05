@@ -1,6 +1,6 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 11/13 tasks complete (task 11 waits on its clang++-18 leg)
+## Status: 12/13 tasks complete
 
 **Last Updated**: November 2, 2026 (task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
@@ -775,7 +775,7 @@ name). Every later GET of that object failed the same way. The store now has
 hash, and the daemon calls it before queueing the repair, as design.md's
 error table always said ("drop the chunk and queue a repair").
 
-- [ ] 11. Full-tree sccache measurement in WebDAV mode
+- [x] 11. Full-tree sccache measurement in WebDAV mode
   - Per Requirement 13. Point sccache 0.17.0's WebDAV backend at the
     three-node compose cluster. Build this repository's tree on two
     configurations at once (`g++-13` and `clang++-18`, x64), cold and then
@@ -788,7 +788,7 @@ error table always said ("drop the chunk and queue a repair").
     read-only mode if task 1 found one; otherwise count the refused `PUT`s.
   - _Requirements: 13.1–13.6_
 
-### Task 11 results (2026-11-04, g++-13 leg; clang++-18 leg pending)
+### Task 11 results (2026-11-04 and 2026-11-05, both legs)
 
 Run [41777755237](https://github.com/crawlins/kythira/actions/runs/41777755237)
 of `.github/workflows/cache-cluster-measure.yml`, dispatched on `main` at
@@ -838,10 +838,67 @@ Against Requirement 13, for this leg:
   in 131 min, the PUTs included. A cold OCI build was not part of the run,
   so this says nothing about WebDAV's cost on a miss.
 
-The clang++-18 leg did not start its cluster: a clang build that finds the
-Azure SDK links libatomic into the daemon, and the image lacked
-`libatomic1`, so every node exited at load. The image now installs it; the
-leg will be re-run and recorded here.
+In run 41777755237 the clang++-18 leg did not start its cluster: a clang
+build that finds the Azure SDK links libatomic into the daemon, and the
+image lacked `libatomic1`, so every node exited at load. The image now
+installs it (#689), and both legs were run again.
+
+#### Second run, both legs (2026-11-05)
+
+Run [41924204158](https://github.com/crawlins/kythira/actions/runs/41924204158),
+the same workflow and commands at ab4265da, after main's own CI run at that
+commit had finished its Build & Test jobs. Main had moved on by dispatch
+time, so the run was dispatched from a working branch pinned at ab4265da;
+the dispatch uses the read-only OCI key on any ref, so the OCI row reads the
+same objects a run on `main` would. Same runner class and image
+(`ubuntu-24.04` 20261025.353.1), same 16 GiB disk cap. The tree had one
+more translation unit (753) than at 28d1bc29.
+
+| clang++-18, x64 | Build | Requests | Hits | Hit rate | Read / write errors, timeouts | Writes | Avg read hit |
+|---|---|---|---|---|---|---|---|
+| WebDAV cold (empty cluster) | 7,771.1 s (129.5 min) | 753 | 0 | 0% | 0 / 0, 0 | 753 | n/a |
+| WebDAV warm | 246.9 s (4.12 min) | 753 | 752 | 99.87% | 0 / 0, 0 | 1 | 3.0 ms |
+| WebDAV warm, `read_only` + `READ_ONLY` mode | 245.1 s (4.09 min) | 753 | 752 | 99.87% | 0 / 1, 0 | 0 | 2.9 ms |
+| OCI warm, same runner, same commit | 256.8 s (4.28 min) | 753 | 751 | 99.73% | 0 / 2, 0 | 0 | 135.0 ms |
+
+| g++-13, x64 (repeat) | Build | Requests | Hits | Hit rate | Read / write errors, timeouts | Writes | Avg read hit |
+|---|---|---|---|---|---|---|---|
+| WebDAV cold (empty cluster) | 7,109.0 s (118.5 min) | 753 | 0 | 0% | 0 / 0, 0 | 753 | n/a |
+| WebDAV warm | 295.9 s (4.93 min) | 753 | 753 | 100% | 0 / 0, 0 | 0 | 5.5 ms |
+| WebDAV warm, `read_only` + `READ_ONLY` mode | 292.0 s (4.87 min) | 753 | 753 | 100% | 0 / 0, 0 | 0 | 4.9 ms |
+| OCI warm, same runner, same commit | 313.8 s (5.23 min) | 753 | 753 | 100% | 0 / 0, 0 | 0 | 191.0 ms |
+
+Cluster after each leg's warm run (every node holds every chunk):
+
+| Leg | Node | Peak RSS | Store bytes | Files under /data | Hash failures |
+|---|---|---|---|---|---|
+| clang++-18 | cache-1 / 2 / 3 | 291 / 164 / 158 MiB | 264,288,053 | 561 | 0 |
+| g++-13 | cache-1 / 2 / 3 | 163 / 263 / 235 MiB | 288,500,128 | 612 | 0 |
+
+Against Requirement 13, for the clang++-18 leg:
+
+- **13.1** Full tree, cold then warm at one commit: met.
+- **13.2** Warm hit rate 99.87% (≥ 99%): met. The warm WebDAV Build took
+  0.96× the OCI warm Build (≤ 1.2×): met. The g++-13 repeat came in at
+  0.94×, in line with the first run's 0.95×.
+- **13.3** Zero read errors, write errors and timeouts on the cold and warm
+  runs: met. The cluster counted 753 PUTs on the cold run and 1 on the warm
+  run, with no 403s.
+- **13.4** The `read_only` run wrote nothing: zero writes and zero PUTs or
+  403s at the cluster: met. Its one write error is sccache declining to
+  store the run's one miss because of `READ_ONLY` mode. That is the mode
+  doing its job, not a failed request. OCI's read-only run shows the same
+  thing for its two misses.
+- **13.5** Per-hit read latency was 2.9–3.0 ms against OCI's 135 ms. A
+  node's peak RSS stayed at or under 291 MiB, and 264 MB of chunks took
+  561 files per node.
+- The clang warm runs missed one translation unit whose cache key changed
+  between the cold and warm builds at the same commit. OCI missed two at
+  that commit, and the g++-13 leg missed none, so the cause is in the clang
+  build's inputs, not in the cache. The log does not name the unit. Finding
+  it is follow-up work if the clang hit rate ever drops toward 99%.
+
+Both legs meet every Requirement 13 threshold, so task 11 is complete.
 
 - [x] 12. Documentation
   - `doc/redis-gateway.md`: the variables, HTTP API, WebDAV subset, disk
