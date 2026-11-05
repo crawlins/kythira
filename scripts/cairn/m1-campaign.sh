@@ -23,6 +23,11 @@
 #   --hours     each run's wall-clock limit, default 2
 #   --deadline  epoch second the model host must be released by (its cost
 #               cap); a run is not started with less than --hours left
+#   --keep-host leave the model host running when the campaign ends. By
+#               default the driver powers it off over CAIRN_LLM_SSH as
+#               soon as the last run is saved: M3 ended at 02:04Z, but the
+#               host billed on until its MAX_MINUTES cap at 06:01Z, about
+#               four idle hours.
 #
 # Per run:
 #   1. Bootstrap. start-run.sh starts the project; it counts as bootstrapped
@@ -55,7 +60,7 @@ tool="$CAIRN_RUN-tool-server"
 disp="$CAIRN_RUN-dispatcher"
 tunnel="$CAIRN_RUN-llm-tunnel"
 
-out="" runs=5 hours=2 deadline="" projects="" want=election_safety
+out="" runs=5 hours=2 deadline="" projects="" want=election_safety keep_host=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) out="$2"; shift 2 ;;
@@ -64,6 +69,7 @@ while [ $# -gt 0 ]; do
         --deadline) deadline="$2"; shift 2 ;;
         --projects) projects="$2"; shift 2 ;;
         --violation) want="$2"; shift 2 ;;
+        --keep-host) keep_host=1; shift ;;
         *) echo "m1-campaign.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -132,6 +138,23 @@ model_tokens() {
         -o StrictHostKeyChecking=accept-new "$CAIRN_LLM_SSH" \
         'grep -hoE "[0-9]+ tokens" ~/server.log 2>/dev/null | awk "{s+=\$1} END {print s+0}"' \
         2>/dev/null || echo ""
+}
+
+# Powers the model host off so it stops billing. The host is stopped,
+# never terminated (shutdown -h on EC2 stops an EBS-backed instance), and
+# a failure is only logged: llm-gpu-setup.sh's MAX_MINUTES cap still
+# stands behind it.
+release_host() {
+    if [ "$keep_host" = 1 ] || [ -z "${CAIRN_LLM_SSH:-}" ]; then
+        return
+    fi
+    if ssh ${CAIRN_LLM_SSH_KEY:+-i "$CAIRN_LLM_SSH_KEY"} -o ConnectTimeout=10 \
+        -o StrictHostKeyChecking=accept-new "$CAIRN_LLM_SSH" \
+        'sudo shutdown -h +1' >/dev/null 2>&1; then
+        log "model host $CAIRN_LLM_SSH powers off in 1 minute"
+    else
+        log "WARNING: could not power off model host $CAIRN_LLM_SSH; its MAX_MINUTES cap still applies"
+    fi
 }
 
 stop_stack() {
@@ -234,3 +257,4 @@ print(m)' "$rd/schedule.jsonl" 2>/dev/null || echo 0)
 done
 log "CAMPAIGN DONE"
 column -s, -t "$out/SUMMARY.csv" 2>/dev/null | tee -a "$out/driver.log"
+release_host

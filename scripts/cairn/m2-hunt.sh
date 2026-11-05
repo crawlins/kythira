@@ -9,7 +9,7 @@
 # abort, the --deadline cost guard and the per-run logs are the same.
 #
 # Usage: m2-hunt.sh --out DIR [--hours H] [--deadline EPOCH]
-#                   [--projects P1,P2,...]
+#                   [--projects P1,P2,...] [--keep-host]
 #   --projects  default: all six under docker/cairn/projects/, cheapest
 #               to check first (election-safety ... liveness)
 #
