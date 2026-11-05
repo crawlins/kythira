@@ -153,6 +153,9 @@ jobs:
           # package manager" error.
           # mold: the linker (.kiro/specs/mold-linker/). Configure asks for it
           # by name below, so a missing package fails there, not silently.
+          # python3-jwt/python3-cryptography: ca_cluster_node_test verifies an
+          # OIDC token with PyJWT, a library that shares no code with ours
+          # (iam-compatible-auth task 2); without them that check is skipped.
           for attempt in 1 2 3; do
             if timeout 300 sudo apt-get update -q \
                  && timeout 600 sudo apt-get install -y --no-install-recommends \
@@ -167,7 +170,9 @@ jobs:
                  autoconf-archive \
                  automake \
                  libtool \
-                 mold; then
+                 mold \
+                 python3-jwt \
+                 python3-cryptography; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."

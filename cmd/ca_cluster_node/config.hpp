@@ -8,6 +8,7 @@
 #endif
 #include <raft/host_node_id.hpp>
 #include <raft/oidc_issuer.hpp>
+#include <raft/oidc_token.hpp>
 #include <raft/tcp_rpc.hpp>
 
 #include <chrono>
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -102,11 +104,24 @@ struct ca_cluster_node_config {
     kythira::jose::jws_alg oidc_alg{kythira::jose::jws_alg::rs256};
     std::chrono::seconds oidc_key_rotation{std::chrono::hours(24 * 90)};
     std::chrono::seconds oidc_max_token_lifetime{std::chrono::hours(12)};
+    // POST /v1/oidc/token (Requirements 1.6-1.8): the audiences a token may
+    // name (--oidc-audience, repeatable; none refuses every request) and the
+    // URI SAN prefix that marks a workload certificate (empty: node
+    // certificates only).
+    std::set<std::string> oidc_audiences;
+    std::string oidc_workload_uri_prefix;
     [[nodiscard]] auto oidc_enabled() const -> bool { return !oidc_issuer_url.empty(); }
     [[nodiscard]] auto oidc_rotation_config() const -> kythira::oidc::rotation_config {
         return {.rotation_period = oidc_key_rotation,
                 .publish_lead = std::chrono::hours(24),
                 .max_token_lifetime = oidc_max_token_lifetime};
+    }
+    [[nodiscard]] auto oidc_token_policy() const -> kythira::oidc::token_policy {
+        kythira::oidc::token_policy p;
+        p.audiences = oidc_audiences;
+        p.workload_uri_prefix = oidc_workload_uri_prefix;
+        p.max_lifetime = oidc_max_token_lifetime;
+        return p;
     }
 #ifdef KYTHIRA_HAS_OPENSSL
     // Resolved (not CLI-facing) transport config main() actually constructs
@@ -320,7 +335,9 @@ namespace detail {
         << "                       [--rpc-renewal-window-secs <n>]\n"
         << "                       [--oidc-issuer-url <https url> [--oidc-alg RS256|ES256]\n"
         << "                        [--oidc-key-rotation-days <n>]\n"
-        << "                        [--oidc-max-token-lifetime-secs <n>]]\n"
+        << "                        [--oidc-max-token-lifetime-secs <n>]\n"
+        << "                        [--oidc-audience <aud>]... [--oidc-workload-uri-prefix "
+           "<uri>]]\n"
         << "                       [--auth-token <token>]  (prefer $CA_SERVICE_AUTH_TOKEN)\n"
         << "                       [--print-root-fingerprint]\n"
         << "\n"
@@ -423,6 +440,17 @@ namespace detail {
                 usage_error("--oidc-max-token-lifetime-secs must be between 60 and 43200");
             }
             cfg.oidc_max_token_lifetime = std::chrono::seconds(secs);
+        } else if (arg == "--oidc-audience") {
+            const auto aud = next();
+            if (aud.empty()) {
+                usage_error("--oidc-audience must not be empty");
+            }
+            cfg.oidc_audiences.insert(aud);
+        } else if (arg == "--oidc-workload-uri-prefix") {
+            cfg.oidc_workload_uri_prefix = next();
+            if (auto err = kythira::oidc::workload_prefix_error(cfg.oidc_workload_uri_prefix)) {
+                usage_error("--oidc-workload-uri-prefix: " + *err);
+            }
         } else if (arg == "--print-root-fingerprint") {
             cfg.print_root_fingerprint = true;
         } else if (arg == "--election-timeout-min-ms") {
@@ -445,6 +473,10 @@ namespace detail {
     }
     if (!cfg.rpc_tls_cert_path.empty() != !cfg.rpc_tls_key_path.empty()) {
         usage_error("--rpc-tls-cert and --rpc-tls-key must be given together");
+    }
+    if (!cfg.oidc_enabled() &&
+        (!cfg.oidc_audiences.empty() || !cfg.oidc_workload_uri_prefix.empty())) {
+        usage_error("--oidc-audience and --oidc-workload-uri-prefix need --oidc-issuer-url");
     }
     if (cfg.print_root_fingerprint) {
         // Requirement 19.2: prints the fingerprint and exits without binding
