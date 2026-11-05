@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 0/8 tasks complete
+## Status: 1/8 tasks complete (task 3)
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -75,10 +75,22 @@ Reference material:
     Task 1's surface snapshot must be unchanged.
   - _Requirements: 4.1-4.4_
 
-- [ ] 3. Module boundary check
+- [x] 3. Module boundary check
   - `scripts/check_module_boundaries.py` with the rules in design.md
     ("Boundary check"), for every `services/*/`. It is a no-op while
     `services/` holds no module.
+  - Done. One deviation from Requirement 3.2: `boundary-allow.txt` may also
+    list module tests, not only the composition root. A dry run of the task 4
+    move showed four Redis tests (`cache_http_front_end_test`,
+    `redis_gateway_integration_test`, `_snapshot_test`, `_txn_test`) include
+    `multi_raft_impl.hpp` to stand up an in-process cluster, as the daemon
+    does. Library headers still never may.
+  - The same dry run found core tests that use Redis headers as their
+    workload (`multi_raft_txn_*`, `persistent_state_machine_test`,
+    `tests/bench_rows/txn_*fabric.cpp`, `docker_chaos/txn_bank_chaos_test`).
+    Task 4 has to resolve these (`core-includes-module`) before the move can
+    pass the check. The format-check glob in the top-level `CMakeLists.txt`
+    also has to gain `services/`.
   - A fixture tree under `scripts/tests/module_boundaries/` with one
     violation per rule, plus a clean module, and a test that each violation
     is reported with file, line and rule.

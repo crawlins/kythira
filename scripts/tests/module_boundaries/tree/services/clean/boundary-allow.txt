@@ -1,0 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# file                       allowed core *_impl.hpp  why
+cmd/clean_node/main.cpp      thing_impl.hpp           instantiates the thing
+tests/clean_test.cpp         thing_impl.hpp           stands up an in-process cluster

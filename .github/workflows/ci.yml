@@ -3465,6 +3465,13 @@ jobs:
         run: python3 scripts/kconfig/check_defconfigs.py Kconfig configs
       - name: Every defconfig is applied by a workflow or allowlisted
         run: python3 scripts/kconfig/check_defconfig_usage.py
+      # services/README.md, "Boundary rules". Lives in this job because it
+      # needs no build either; its fixture tests run first so a broken
+      # checker cannot pass the tree by reporting nothing.
+      - name: Module boundary checker passes its fixture tests
+        run: python3 scripts/tests/test_check_module_boundaries.py -v
+      - name: Every services/ module uses only Kythira's public surface
+        run: python3 scripts/check_module_boundaries.py
 
   workflow-input-limits:
     runs-on: ubuntu-24.04
