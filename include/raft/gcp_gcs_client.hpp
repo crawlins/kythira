@@ -170,6 +170,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -303,7 +304,9 @@ public:
         namespace gcs = ::google::cloud::storage;
 
         google::cloud::Options opts;
-        if (!_cfg.credentials_json.empty()) {
+        if (_cfg.access_token) {
+            // Credentials are added per token in client(): see there.
+        } else if (!_cfg.credentials_json.empty()) {
             opts.set<google::cloud::UnifiedCredentialsOption>(
                 google::cloud::MakeServiceAccountCredentials(_cfg.credentials_json));
         } else {
@@ -335,7 +338,12 @@ public:
         opts.set<gcs::RetryPolicyOption>(
             std::make_shared<gcs::LimitedErrorCountRetryPolicy>(/*maximum_failures=*/0));
 
-        _client = std::make_shared<gcs::Client>(std::move(opts));
+        if (_cfg.access_token) {
+            _token_state = std::make_shared<token_state>();
+            _token_state->base_options = std::move(opts);
+        } else {
+            _client = std::make_shared<gcs::Client>(std::move(opts));
+        }
     }
 
     /// @brief The name this store answers to in error messages, metrics and a
@@ -374,7 +382,7 @@ public:
         -> std::optional<get_result> {
         fiu_do_on("raft/gcp/gcs/get_object",
                   throw std::runtime_error("chaos: raft/gcp/gcs/get_object " + key););
-        auto stream = _client->ReadObject(bucket, key);
+        auto stream = client()->ReadObject(bucket, key);
         if (!stream.status().ok()) {
             if (gcp_gcs_detail::is_absent_object(stream.status())) {
                 return std::nullopt;
@@ -456,7 +464,9 @@ public:
         fiu_do_on("raft/gcp/gcs/list_keys",
                   throw std::runtime_error("chaos: raft/gcp/gcs/list_keys " + prefix););
         std::vector<std::string> keys;
-        for (auto& item : _client->ListObjects(bucket, gcs::Prefix(prefix))) {
+        // Held for the whole loop: the reader pages through it.
+        const auto c = client();
+        for (auto& item : c->ListObjects(bucket, gcs::Prefix(prefix))) {
             if (!item) {
                 throw std::runtime_error(
                     gcp_gcs_detail::describe("ListObjects", prefix, item.status()) +
@@ -493,7 +503,7 @@ private:
     /// came back, rather than an overwrite that would not be.
     [[nodiscard]] auto zero_byte_get(const std::string& bucket, const std::string& key) const
         -> std::optional<get_result> {
-        auto metadata = _client->GetObjectMetadata(bucket, key);
+        auto metadata = client()->GetObjectMetadata(bucket, key);
         if (!metadata) {
             if (gcp_gcs_detail::is_absent_object(metadata.status())) {
                 return std::nullopt;
@@ -525,7 +535,7 @@ private:
             if_generation = gcs::IfGenerationMatch(generation_for(*pre, key, expected));
         }
 
-        auto metadata = _client->InsertObject(
+        auto metadata = client()->InsertObject(
             bucket, key, gcp_gcs_detail::to_absl(bytes),
             gcs::MD5HashValue(gcs::ComputeMD5Hash(gcp_gcs_detail::to_absl(bytes))), if_generation);
 
@@ -551,7 +561,7 @@ private:
             if_generation = gcs::IfGenerationMatch(generation_for(*pre, key, expected));
         }
 
-        const auto status = _client->DeleteObject(bucket, key, if_generation);
+        const auto status = client()->DeleteObject(bucket, key, if_generation);
         if (status.ok()) {
             return;
         }
@@ -594,8 +604,43 @@ private:
             pre);
     }
 
+    /// The SDK client to use for one request.
+    ///
+    /// With `gcp_client_config::access_token` set, google-cloud-cpp offers no
+    /// public hook for credentials that refresh themselves, only
+    /// `MakeAccessTokenCredentials(token, expiry)` for a fixed token. So the
+    /// client is rebuilt whenever the source hands out a different token
+    /// (about once an hour) and shared until then. Building one opens no
+    /// connection, and a request already running keeps its own client alive
+    /// through the shared_ptr.
+    [[nodiscard]] auto client() const -> std::shared_ptr<google::cloud::storage::Client> {
+        if (!_token_state) {
+            return _client;
+        }
+        auto token = _cfg.access_token();
+        const std::lock_guard lock(_token_state->mutex);
+        if (!_token_state->client || token.access_token != _token_state->token) {
+            auto opts = _token_state->base_options;
+            opts.set<google::cloud::UnifiedCredentialsOption>(
+                google::cloud::MakeAccessTokenCredentials(token.access_token, token.expires_at));
+            _token_state->client =
+                std::make_shared<google::cloud::storage::Client>(std::move(opts));
+            _token_state->token = std::move(token.access_token);
+        }
+        return _token_state->client;
+    }
+
+    /// Shared, so the client stays copyable like the other stores.
+    struct token_state {
+        std::mutex mutex;
+        google::cloud::Options base_options;
+        std::string token;
+        std::shared_ptr<google::cloud::storage::Client> client;
+    };
+
     gcp_client_config _cfg;
     std::shared_ptr<google::cloud::storage::Client> _client;
+    std::shared_ptr<token_state> _token_state;
 };
 
 static_assert(key_object_store<gcp_gcs_client>, "gcp_gcs_client must satisfy key_object_store");

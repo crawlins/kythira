@@ -6129,6 +6129,7 @@ if(AWSSDK_FOUND AND TARGET httplib::httplib AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE
         Boost::unit_test_framework
         network_simulator
         httplib::httplib
+        boost_json  # the web-identity cases (cloud_credential_exchange.hpp)
         ${AWSSDK_LINK_LIBRARIES}
     )
     target_include_directories(aws_s3_client_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
@@ -6462,6 +6463,7 @@ if(TARGET google-cloud-cpp::storage AND TARGET httplib::httplib AND TARGET OpenS
         httplib::httplib
         google-cloud-cpp::storage
         OpenSSL::Crypto
+        boost_json  # the workload-identity case (cloud_credential_exchange.hpp)
     )
     target_include_directories(gcp_gcs_client_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_features(gcp_gcs_client_unit_test PRIVATE cxx_std_23)

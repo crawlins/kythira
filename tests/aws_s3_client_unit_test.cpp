@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/aws_s3_client.hpp>
+#include <raft/aws_web_identity_credentials.hpp>
 #include <raft/object_store_persistence.hpp>
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
@@ -60,6 +61,7 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 #include <httplib.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <mutex>
@@ -1051,6 +1053,121 @@ BOOST_AUTO_TEST_CASE(a_failing_list_is_issued_exactly_once) {
     const aws_s3_client client{config_for(mock)};
     BOOST_CHECK_THROW((void)client.list_keys("b", "raft/"), std::runtime_error);
     BOOST_TEST(mock.request_count() == 1U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Credentials from a Kythira OIDC token (IAM spec task 3, Requirement 2.2) ──
+//
+// The adapter is checked where it matters: on the request S3 receives. The
+// SigV4 Authorization header names the access key from AssumeRoleWithWebIdentity
+// and the session token travels as x-amz-security-token, which is what makes
+// temporary credentials usable at all.
+
+BOOST_AUTO_TEST_SUITE(aws_s3_web_identity)
+
+namespace {
+
+auto mock_sts_reply() -> std::string {
+    return R"(<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <SessionToken>test-fixture-session-token</SessionToken>
+      <SecretAccessKey>test-fixture-secret-access-key</SecretAccessKey>
+      <Expiration>2099-01-01T00:00:00Z</Expiration>
+      <AccessKeyId>ASIA-TEST-FIXTURE-KEY-ID</AccessKeyId>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+</AssumeRoleWithWebIdentityResponse>)";
+}
+
+auto web_identity_source(const std::string& sts_url)
+    -> std::shared_ptr<kythira::cloud_credentials::aws_web_identity_source> {
+    namespace cc = kythira::cloud_credentials;
+    auto tokens = std::make_shared<cc::kythira_oidc_token_source>([](const std::string&) {
+        return cc::oidc_token{"hdr.payload.sig", cc::clock::now() + 1h};
+    });
+    cc::aws_web_identity_config cfg;
+    cfg.role_arn = "arn:aws:iam::123456789012:role/kythira-node";
+    cfg.sts_endpoint = sts_url;
+    return std::make_shared<cc::aws_web_identity_source>(tokens, cfg);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(s3_requests_are_signed_with_the_assumed_role) {
+    httplib::Server sts;
+    std::atomic<int> sts_hits{0};
+    sts.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
+        ++sts_hits;
+        if (req.get_param_value("WebIdentityToken") != "hdr.payload.sig") {
+            res.status = 400;
+            return;
+        }
+        res.set_content(mock_sts_reply(), "text/xml");
+    });
+    const int sts_port = sts.bind_to_any_port("127.0.0.1");
+    std::thread sts_thread([&] { sts.listen_after_bind(); });
+    sts.wait_until_ready();
+
+    MockS3 mock;
+    mock.responders.push_back([](const recorded_request&, httplib::Response& res) {
+        res.set_header("ETag", "\"5d41402abc4b2a76b9719d911017c592\"");
+        res.status = 200;
+    });
+    mock.start();
+
+    auto cfg = config_for(mock);
+    cfg.credentials_provider = kythira::cloud_credentials::make_web_identity_provider_chain(
+        web_identity_source("http://127.0.0.1:" + std::to_string(sts_port)));
+    const aws_s3_client client{cfg};
+    client.put_object("mybucket", "raft/term", "hello");
+    client.put_object("mybucket", "raft/vote", "hello");
+
+    sts.stop();
+    sts_thread.join();
+
+    const auto reqs = mock.requests();
+    BOOST_REQUIRE(reqs.size() == 2U);
+    for (const auto& r : reqs) {
+        BOOST_TEST(r.header("Authorization").find("Credential=ASIA-TEST-FIXTURE-KEY-ID/") !=
+                   std::string::npos);
+        BOOST_TEST(r.header("x-amz-security-token") == "test-fixture-session-token");
+    }
+    BOOST_TEST(sts_hits.load() == 1);  // the second request used the cache
+}
+
+BOOST_AUTO_TEST_CASE(a_failed_exchange_gives_the_sdk_empty_credentials) {
+    httplib::Server sts;
+    sts.Post("/", [](const httplib::Request&, httplib::Response& res) {
+        res.status = 403;
+        res.set_content(
+            "<ErrorResponse><Error><Code>AccessDenied</Code><Message>no</Message></Error>"
+            "</ErrorResponse>",
+            "text/xml");
+    });
+    const int sts_port = sts.bind_to_any_port("127.0.0.1");
+    std::thread sts_thread([&] { sts.listen_after_bind(); });
+    sts.wait_until_ready();
+
+    auto chain = kythira::cloud_credentials::make_web_identity_provider_chain(
+        web_identity_source("http://127.0.0.1:" + std::to_string(sts_port)));
+    const auto creds = chain->GetAWSCredentials();
+
+    sts.stop();
+    sts_thread.join();
+    BOOST_TEST(creds.IsEmpty());
+}
+
+BOOST_AUTO_TEST_CASE(the_sdk_credentials_carry_the_expiry) {
+    namespace cc = kythira::cloud_credentials;
+    const cc::aws_sts_credentials c{"ASIA", "secret", "token",
+                                    cc::clock::from_time_t(4'000'000'000)};
+    const auto sdk = cc::to_aws_sdk_credentials(c);
+    BOOST_TEST(sdk.GetAWSAccessKeyId() == "ASIA");
+    BOOST_TEST(sdk.GetAWSSecretKey() == "secret");
+    BOOST_TEST(sdk.GetSessionToken() == "token");
+    BOOST_TEST(sdk.GetExpiration().Millis() == 4'000'000'000'000LL);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

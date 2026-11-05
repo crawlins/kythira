@@ -4,6 +4,7 @@
 #define BOOST_TEST_MODULE gcp_gcs_client_unit_test
 #include <boost/test/unit_test.hpp>
 
+#include <raft/cloud_credential_exchange.hpp>
 #include <raft/gcp_gcs_client.hpp>
 
 // Unit coverage for `gcp_gcs_client` (cloud-object-persistence Requirement 14,
@@ -61,7 +62,9 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -149,6 +152,7 @@ struct recorded_request {
     std::string target;  // path + query, undecoded
     std::string body;
     httplib::Params params;
+    std::string authorization;
 
     [[nodiscard]] auto param(const std::string& name) const -> std::string {
         const auto it = params.find(name);
@@ -183,7 +187,8 @@ struct MockGcs {
 
     MockGcs() {
         auto handler = [this](const httplib::Request& req, httplib::Response& res) {
-            recorded_request rec{req.method, req.path, req.target, req.body, req.params};
+            recorded_request rec{req.method, req.path,   req.target,
+                                 req.body,   req.params, req.get_header_value("Authorization")};
             std::size_t index = 0;
             {
                 const std::lock_guard lock(mu);
@@ -1094,6 +1099,106 @@ BOOST_AUTO_TEST_CASE(the_endpoint_override_is_what_the_client_talks_to) {
 
     BOOST_TEST(configured.request_count() == 1U);
     BOOST_TEST(unconfigured.request_count() == 0U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Credentials from a Kythira OIDC token (IAM spec task 3, Requirement 2.3) ──
+//
+// `gcp_client_config::access_token` replaces the service account. What is
+// checked is the Authorization header GCS receives: the current token on every
+// request, and a new token as soon as the source hands one out (the client is
+// rebuilt for it, since google-cloud-cpp only takes a fixed access token).
+
+BOOST_AUTO_TEST_SUITE(gcp_gcs_access_token)
+
+BOOST_AUTO_TEST_CASE(each_request_carries_the_current_token) {
+    MockGcs mock;
+    mock.responders = {json_responder(200, object_json("k", "5"))};
+    mock.start();
+
+    auto current = std::make_shared<std::string>("ya29.first");
+    auto calls = std::make_shared<int>(0);
+    auto cfg = config_for(mock);
+    cfg.credentials_json.clear();
+    cfg.access_token = [current, calls] {
+        ++*calls;
+        return gcp_access_token{*current, std::chrono::system_clock::now() + 1h};
+    };
+
+    const gcp_gcs_client client{cfg};
+    BOOST_TEST(*calls == 0);  // nothing is fetched until a request needs it
+    client.put_object(k_bucket, "k", "hello");
+    client.put_object(k_bucket, "k", "hello");
+    *current = "ya29.second";
+    client.put_object(k_bucket, "k", "hello");
+
+    const auto requests = mock.requests();
+    BOOST_REQUIRE_EQUAL(requests.size(), 3U);
+    BOOST_TEST(requests[0].authorization == "Bearer ya29.first");
+    BOOST_TEST(requests[1].authorization == "Bearer ya29.first");
+    BOOST_TEST(requests[2].authorization == "Bearer ya29.second");
+    BOOST_TEST(*calls == 3);
+}
+
+BOOST_AUTO_TEST_CASE(a_failing_token_source_fails_the_request_before_sending) {
+    MockGcs mock;
+    mock.start();
+
+    auto cfg = config_for(mock);
+    cfg.access_token = []() -> gcp_access_token { throw std::runtime_error("STS said no"); };
+
+    const gcp_gcs_client client{cfg};
+    BOOST_CHECK_THROW(client.put_object(k_bucket, "k", "hello"), std::runtime_error);
+    BOOST_TEST(mock.request_count() == 0U);
+}
+
+BOOST_AUTO_TEST_CASE(workload_identity_federation_end_to_end) {
+    // The real exchange against a mock STS, feeding the client.
+    namespace cc = kythira::cloud_credentials;
+    httplib::Server sts;
+    std::mutex sts_mu;
+    std::string seen_subject_token;
+    sts.Post("/v1/token", [&](const httplib::Request& req, httplib::Response& res) {
+        {
+            const std::lock_guard lock(sts_mu);
+            seen_subject_token = req.get_param_value("subject_token");
+        }
+        res.set_content(
+            R"({"access_token":"ya29.federated","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer","expires_in":3600})",
+            "application/json");
+    });
+    const int sts_port = sts.bind_to_any_port("127.0.0.1");
+    std::thread sts_thread([&] { sts.listen_after_bind(); });
+    sts.wait_until_ready();
+
+    MockGcs mock;
+    mock.responders = {json_responder(200, object_json("k", "5"))};
+    mock.start();
+
+    auto tokens = std::make_shared<cc::kythira_oidc_token_source>([](const std::string&) {
+        return cc::oidc_token{"hdr.payload.sig", cc::clock::now() + 1h};
+    });
+    cc::gcp_workload_identity_config wif;
+    wif.provider_audience =
+        "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/k";
+    wif.sts_endpoint = "http://127.0.0.1:" + std::to_string(sts_port);
+    auto source = std::make_shared<cc::gcp_workload_identity_source>(tokens, wif);
+
+    auto cfg = config_for(mock);
+    cfg.credentials_json.clear();
+    cfg.access_token = [source] { return source->current(); };
+    const gcp_gcs_client client{cfg};
+    client.put_object(k_bucket, "k", "hello");
+
+    sts.stop();
+    sts_thread.join();
+
+    const auto requests = mock.requests();
+    BOOST_REQUIRE_EQUAL(requests.size(), 1U);
+    BOOST_TEST(requests[0].authorization == "Bearer ya29.federated");
+    const std::lock_guard lock(sts_mu);
+    BOOST_TEST(seen_subject_token == "hdr.payload.sig");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

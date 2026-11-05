@@ -80,6 +80,25 @@ its certificate again there.
 | Alibaba | the client id registered on the RAM OIDC provider |
 | OCI | the client id configured on the identity domain's token-exchange trust |
 
+## Using tokens inside Kythira
+
+`include/raft/cloud_credential_exchange.hpp` does the exchange for Kythira's
+own cloud clients. `kythira_oidc_token_source` fetches and caches a token per
+audience over mTLS, following a follower's redirect with the certificate.
+`aws_web_identity_source` calls `AssumeRoleWithWebIdentity`, and
+`gcp_workload_identity_source` calls the GCP STS token exchange and, when a
+service account is named, `generateAccessToken`. Every source refreshes at
+80% of the lifetime and keeps serving the old credentials while a refresh
+fails, until they expire.
+
+- AWS components take
+  `aws_client_config::credentials_provider = make_web_identity_provider_chain(source)`
+  (`include/raft/aws_web_identity_credentials.hpp`). That covers the S3
+  client, the ACM-PCA provider, and the EC2 and ASG components.
+- `gcp_gcs_client` takes `gcp_client_config::access_token`, a function
+  returning the source's current token. The other GCP components do not read
+  it yet.
+
 ## Publishing to a bucket
 
 AWS and GCP fetch the discovery document from `<issuer>/.well-known/...`, and
