@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 1/8 tasks complete (task 3)
+## Status: 2/8 tasks complete (tasks 2, 3)
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -61,7 +61,7 @@ Reference material:
     lives in `scripts/` only.
   - _Requirements: 7.1-7.3_
 
-- [ ] 2. Public core pieces the module needs
+- [x] 2. Public core pieces the module needs
   - `include/raft/multi_raft_transport_handles.hpp`: `transport_client_handle`,
     `transport_server_handle` and the Beast transport bundle, moved out of
     `tests/multi_raft_transport_harness.hpp`, with `kythira::testing` aliases
@@ -73,6 +73,17 @@ Reference material:
     unchanged, and `include()`d from both test CMake files.
   - The multi-raft bench and performance tests are the regression check.
     Task 1's surface snapshot must be unchanged.
+  - Done, landing ahead of task 1 because IAM tasks 8 and 10 need the
+    targets. `rpc_counters` and `rpc_snapshot` moved too, since the client
+    handle counts into them. The bundle is public as
+    `kythira::host_transport_types`, with `harness_transport_types` as the
+    harness alias. The container-runtime detection
+    (`kythira_detect_container_runtime()`) and the boost_json resolution
+    moved into the helper file as well, since the module's container
+    targets need `_RUNTIME_EXE`, `_IMAGE_FORMAT_ARGS` and `_RT_ENV`.
+    `cmd/multi_raft_bench` and `cmd/multi_raft_node` use the harness's
+    workload code, so they keep including the harness and reach the
+    handles through its aliases.
   - _Requirements: 4.1-4.4_
 
 - [x] 3. Module boundary check

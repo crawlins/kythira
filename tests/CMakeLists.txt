@@ -59,13 +59,9 @@ function(add_network_test test_name source_file)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
 
-# Helper function for creating Raft completion test executables with additional dependencies
-function(add_raft_completion_test test_name source_file)
-    add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE kythira_test_pch)
-    target_precompile_headers(${test_name} REUSE_FROM kythira_test_pch)
-    add_test(NAME ${test_name} COMMAND ${test_name})
-endfunction()
+# add_raft_completion_test lives in cmake/kythira_test_helpers.cmake, so the
+# service modules under services/ register their tests the same way.
+include(kythira_test_helpers)
 
 # Helper for stdexec-future-backend spec tests (.kiro/specs/stdexec-future-backend/).
 # kythira_test_pch already links STDEXEC::stdexec/TBB::tbb and defines
