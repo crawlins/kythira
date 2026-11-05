@@ -14,9 +14,8 @@
 /// contract; every request here is still signature-verified, just under the
 /// API-key mode the mock understands.
 ///
-/// Ports 18325 (mock control plane) and 18326 (metadata stub) — next free
-/// slots in the OCI block (18320-18324: http client, signing, quorum mock,
-/// certificates, federation).
+/// The mock control plane's and metadata stub's ports are picked at run time
+/// (tests/test_ports.hpp).
 
 #define BOOST_TEST_MODULE oci_heartbeat_writer_unit_test
 #include <boost/test/unit_test.hpp>
@@ -25,6 +24,7 @@
 
 #include "oci_mock_server.hpp"
 #include "test_timeout_scale.hpp"
+#include "test_ports.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -43,8 +43,8 @@ namespace {
 using kythira::oci_heartbeat_writer;
 using kythira::oci_heartbeat_writer_config;
 
-constexpr std::uint16_t test_port = 18325;
-constexpr std::uint16_t metadata_port = 18326;
+const std::uint16_t test_port = kythira::testing::free_port();
+const std::uint16_t metadata_port = kythira::testing::free_port();
 
 auto generate_rsa_key_pem() -> std::string {
     EVP_PKEY* raw = nullptr;

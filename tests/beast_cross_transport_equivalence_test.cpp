@@ -13,6 +13,7 @@
 #include <raft/http_exceptions.hpp>
 
 #include "beast_test_thread_pool.hpp"
+#include "test_ports.hpp"
 
 #include <chrono>
 #include <stdexcept>
@@ -33,10 +34,10 @@
 // itself is the same, only the transport carrying it differs.
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t httplib_port = 18220;
-constexpr std::uint16_t beast_port = 18221;
-constexpr std::uint16_t httplib_error_port = 18222;
-constexpr std::uint16_t beast_error_port = 18223;
+const std::uint16_t httplib_port = kythira::testing::free_port();
+const std::uint16_t beast_port = kythira::testing::free_port();
+const std::uint16_t httplib_error_port = kythira::testing::free_port();
+const std::uint16_t beast_error_port = kythira::testing::free_port();
 constexpr std::uint64_t test_node_id = 1;
 
 using httplib_transport_types =

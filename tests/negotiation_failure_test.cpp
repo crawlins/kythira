@@ -32,6 +32,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "negotiation_test_harness.hpp"
+#include "test_ports.hpp"
 
 #include <raft/cbor_serializer.hpp>
 #include <raft/http_exceptions.hpp>
@@ -59,7 +60,7 @@ using cbor_serializer = kythira::cbor_rpc_serializer<data_type>;
 using single_json = kythira::single_serializer_registry<json_serializer>;
 using client_types = negotiating_transport_types<json_serializer, single_json>;
 
-constexpr std::uint16_t rogue_port = 18270;
+const std::uint16_t rogue_port = kythira::testing::free_port();
 constexpr const char* endpoint_request_vote = "/v1/raft/request_vote";
 
 /// A well-formed `request_vote_response` in the given serializer's format, so a

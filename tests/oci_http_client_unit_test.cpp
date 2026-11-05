@@ -27,6 +27,7 @@
 #include <raft/oci_http_client.hpp>
 
 #include "test_timeout_scale.hpp"
+#include "test_ports.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -48,7 +49,7 @@ using kythira::oci_http_client;
 /// source port, which is how `grpc_transport_integration_test` failed on main.
 /// Port 0 is not usable here: the config needs the port in `endpoint_override`
 /// before the server is asked what it bound.
-constexpr std::uint16_t test_port = 18320;
+const std::uint16_t test_port = kythira::testing::free_port();
 constexpr const char* bind_address = "127.0.0.1";
 
 auto generate_rsa_key_pem() -> std::string {

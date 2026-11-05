@@ -32,6 +32,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "negotiation_test_harness.hpp"
+#include "test_ports.hpp"
 
 #include <raft/cbor_serializer.hpp>
 #include <raft/http_content_negotiation.hpp>
@@ -73,13 +74,13 @@ struct alt_json_serializer : json_serializer {
 
 constexpr const char* alt_media = "application/x-alt-json";
 
-// Fresh ports: the other negotiation suites hold 18230-18239 and 18295-18296,
-// and may run concurrently under `ctest -j`.
-constexpr std::uint16_t advertise_port = 18310;
-constexpr std::uint16_t informed_retry_port = 18311;
-constexpr std::uint16_t single_serializer_port = 18312;
-constexpr std::uint16_t flip_port = 18313;
-constexpr std::uint16_t asymmetric_port = 18314;
+// Ports are picked at run time (tests/test_ports.hpp), since other suites
+// may be listening concurrently under `ctest -j`.
+const std::uint16_t advertise_port = kythira::testing::free_port();
+const std::uint16_t informed_retry_port = kythira::testing::free_port();
+const std::uint16_t single_serializer_port = kythira::testing::free_port();
+const std::uint16_t flip_port = kythira::testing::free_port();
+const std::uint16_t asymmetric_port = kythira::testing::free_port();
 
 // Spelled locally, as `negotiation_failure_test` does for the same reason: the
 // transport's own copies live in an anonymous namespace inside `kythira`, so

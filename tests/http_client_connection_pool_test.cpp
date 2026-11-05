@@ -20,6 +20,7 @@
 #include <raft/json_serializer.hpp>
 
 #include "recording_metrics.hpp"
+#include "test_ports.hpp"
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
@@ -110,7 +111,7 @@ BOOST_AUTO_TEST_SUITE(http_client_connection_pool_tests)
 
 // Requirement 11.2: back-to-back RPCs to one peer ride one connection.
 BOOST_AUTO_TEST_CASE(sequential_rpcs_reuse_one_connection, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18571;
+    const std::uint16_t port = kythira::testing::free_port();
     peer server(port, std::chrono::milliseconds{0});
     pool_client client(port, 4);
 
@@ -125,7 +126,7 @@ BOOST_AUTO_TEST_CASE(sequential_rpcs_reuse_one_connection, *boost::unit_test::ti
 // no further; the rest queue for a returned connection and still succeed.
 // Before the pool, the four calls queued on a single connection.
 BOOST_AUTO_TEST_CASE(concurrent_rpcs_are_bounded_by_pool_size, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18572;
+    const std::uint16_t port = kythira::testing::free_port();
     constexpr auto delay = std::chrono::milliseconds{400};
     peer server(port, delay);
     pool_client client(port, 2);
@@ -158,7 +159,7 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_are_bounded_by_pool_size, *boost::unit_test
 // Requirement 11.4: a connection idle past keep_alive_timeout is closed and
 // the next RPC opens a fresh one.
 BOOST_AUTO_TEST_CASE(idle_connection_past_keep_alive_is_closed, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18573;
+    const std::uint16_t port = kythira::testing::free_port();
     peer server(port, std::chrono::milliseconds{0});
     pool_client client(port, 4, std::chrono::milliseconds{100});
 
@@ -173,7 +174,7 @@ BOOST_AUTO_TEST_CASE(idle_connection_past_keep_alive_is_closed, *boost::unit_tes
 
 // Within keep_alive_timeout the same connection is reused.
 BOOST_AUTO_TEST_CASE(connection_within_keep_alive_is_reused, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18574;
+    const std::uint16_t port = kythira::testing::free_port();
     peer server(port, std::chrono::milliseconds{0});
     pool_client client(port, 4, std::chrono::milliseconds{5000});
 
@@ -188,7 +189,7 @@ BOOST_AUTO_TEST_CASE(connection_within_keep_alive_is_reused, *boost::unit_test::
 // A connection whose exchange failed is closed rather than pooled, and the
 // next RPC opens a fresh one.
 BOOST_AUTO_TEST_CASE(failed_exchange_connection_is_not_pooled, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18575;
+    const std::uint16_t port = kythira::testing::free_port();
     peer server(port, std::chrono::milliseconds{600});
     pool_client client(port, 4);
 
@@ -201,7 +202,7 @@ BOOST_AUTO_TEST_CASE(failed_exchange_connection_is_not_pooled, *boost::unit_test
 
 // A zero pool size still allows one connection rather than deadlocking.
 BOOST_AUTO_TEST_CASE(zero_pool_size_is_treated_as_one, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18576;
+    const std::uint16_t port = kythira::testing::free_port();
     peer server(port, std::chrono::milliseconds{0});
     pool_client client(port, 0);
 

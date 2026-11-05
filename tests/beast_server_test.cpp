@@ -12,6 +12,7 @@
 
 #include "beast_test_thread_pool.hpp"
 #include "http_limit_test_helpers.hpp"
+#include "test_ports.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -35,12 +36,11 @@
 // covering boost_beast_server's own lifecycle/resilience/limits (start/
 // stop/drain, malformed-request handling, TLS material reload) rather than
 // full client+server round trips, which live in beast_integration_test.cpp.
-// Each test picks its own port from a disjoint range (this file is its own
-// ctest binary now, and may run concurrently with the other beast_* test
-// binaries under `ctest -j`).
+// Ports are picked at run time (tests/test_ports.hpp), since other test
+// binaries may be listening concurrently under `ctest -j`.
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_bind_port_base = 18200;
+const std::uint16_t test_bind_port_base = kythira::testing::free_port_block(9);
 constexpr std::uint64_t test_node_id = 1;
 
 using test_transport_types =
@@ -364,7 +364,7 @@ BOOST_AUTO_TEST_CASE(server_refuses_unlisted_bind_name) {
 // ── Request and connection limits (.kiro/specs/http-server-request-limits/) ──
 // Own port range, clear of every other HTTP test binary's.
 namespace {
-constexpr std::uint16_t limits_port_base = 18330;
+const std::uint16_t limits_port_base = kythira::testing::free_port_block(7);
 namespace limits = kythira::testing::http_limits;
 }  // namespace
 

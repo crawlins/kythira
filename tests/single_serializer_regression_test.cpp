@@ -32,6 +32,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "negotiation_test_harness.hpp"
+#include "test_ports.hpp"
 
 #include <raft/cbor_serializer.hpp>
 #include <raft/json_serializer.hpp>
@@ -121,12 +122,13 @@ template<typename Server_Types> struct server_fixture {
 ///        the bytes the serializer produces, and the response body is exactly
 ///        the bytes it would produce — no wrapper, no re-framing.
 BOOST_AUTO_TEST_CASE(a_single_serializer_server_is_byte_identical_to_its_serializer) {
-    server_fixture<json_server_types> fixture(18280);
+    const auto port = kythira::testing::free_port();
+    server_fixture<json_server_types> fixture(port);
 
     const json_serializer serializer;
     const auto request_bytes = serializer.serialize(sample_request());
 
-    httplib::Client client(bind_address, 18280);
+    httplib::Client client(bind_address, port);
     client.set_read_timeout(5, 0);
     httplib::Headers headers{{"Content-Type", json_media}};
     auto result = client.Post(endpoint_request_vote, headers, to_string(request_bytes), json_media);
@@ -156,12 +158,13 @@ BOOST_AUTO_TEST_CASE(a_single_serializer_server_is_byte_identical_to_its_seriali
 /// case above cannot distinguish "labelled with the configured serializer's
 /// type" from "always labelled JSON", because for it the two answers coincide.
 BOOST_AUTO_TEST_CASE(a_single_cbor_server_labels_and_encodes_as_cbor) {
-    server_fixture<cbor_server_types> fixture(18281);
+    const auto port = kythira::testing::free_port();
+    server_fixture<cbor_server_types> fixture(port);
 
     const cbor_serializer serializer;
     const auto request_bytes = serializer.serialize(sample_request());
 
-    httplib::Client client(bind_address, 18281);
+    httplib::Client client(bind_address, port);
     client.set_read_timeout(5, 0);
     httplib::Headers headers{{"Content-Type", cbor_media}};
     auto result = client.Post(endpoint_request_vote, headers, to_string(request_bytes), cbor_media);
@@ -190,12 +193,13 @@ BOOST_AUTO_TEST_CASE(a_single_cbor_server_labels_and_encodes_as_cbor) {
 /// unmodified node in an existing cluster stopped being able to talk to an
 /// upgraded one.
 BOOST_AUTO_TEST_CASE(a_peer_sending_no_accept_header_is_served_the_default) {
-    server_fixture<json_server_types> fixture(18282);
+    const auto port = kythira::testing::free_port();
+    server_fixture<json_server_types> fixture(port);
 
     const json_serializer serializer;
     const auto request_bytes = serializer.serialize(sample_request());
 
-    httplib::Client client(bind_address, 18282);
+    httplib::Client client(bind_address, port);
     client.set_read_timeout(5, 0);
     // Content-Type only. No Accept -- exactly what a pre-negotiation peer sends,
     // and something `cpp_httplib_client` can no longer be made to produce.
@@ -216,12 +220,13 @@ BOOST_AUTO_TEST_CASE(a_peer_sending_no_accept_header_is_served_the_default) {
 /// depends on the server parsing `Accept` and passing it down, not only on the
 /// registry's matcher being right.
 BOOST_AUTO_TEST_CASE(a_wildcard_accept_is_served_by_a_single_serializer_server) {
-    server_fixture<json_server_types> fixture(18283);
+    const auto port = kythira::testing::free_port();
+    server_fixture<json_server_types> fixture(port);
 
     const json_serializer serializer;
     const auto request_bytes = serializer.serialize(sample_request());
 
-    httplib::Client client(bind_address, 18283);
+    httplib::Client client(bind_address, port);
     client.set_read_timeout(5, 0);
     httplib::Headers headers{{"Content-Type", json_media}, {"Accept", "*/*"}};
     auto result = client.Post(endpoint_request_vote, headers, to_string(request_bytes), json_media);

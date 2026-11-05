@@ -30,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include "test_ports.hpp"
 
 namespace {
 
@@ -94,7 +95,7 @@ BOOST_AUTO_TEST_SUITE(http_client_per_call_timeout_tests)
 // near the per-call deadline. Before the fix it waited out the handler and
 // succeeded, because only request_timeout reached the socket.
 BOOST_AUTO_TEST_CASE(per_call_timeout_bounds_the_rpc, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18561;
+    const std::uint16_t port = kythira::testing::free_port();
     slow_peer peer(port);
     auto client = make_client(port, std::chrono::milliseconds{10000});
 
@@ -112,7 +113,7 @@ BOOST_AUTO_TEST_CASE(per_call_timeout_bounds_the_rpc, *boost::unit_test::timeout
 // A per-call timeout that covers the handler still succeeds: the deadline
 // bounds the RPC, it does not shorten an RPC that fits inside it.
 BOOST_AUTO_TEST_CASE(rpc_within_per_call_timeout_succeeds, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18562;
+    const std::uint16_t port = kythira::testing::free_port();
     slow_peer peer(port);
     auto client = make_client(port, std::chrono::milliseconds{10000});
 
@@ -126,7 +127,7 @@ BOOST_AUTO_TEST_CASE(rpc_within_per_call_timeout_succeeds, *boost::unit_test::ti
 // A caller with no deadline of its own (a zero timeout) falls back to the
 // configured request_timeout instead of being treated as "expire at once".
 BOOST_AUTO_TEST_CASE(zero_timeout_falls_back_to_request_timeout, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18563;
+    const std::uint16_t port = kythira::testing::free_port();
     slow_peer peer(port);
     auto client = make_client(port, std::chrono::milliseconds{300});
 
@@ -143,7 +144,7 @@ BOOST_AUTO_TEST_CASE(zero_timeout_falls_back_to_request_timeout, *boost::unit_te
 // for a connection held by a slow one must still give up at its own deadline
 // rather than wait for the slow call to finish first.
 BOOST_AUTO_TEST_CASE(queued_call_keeps_its_own_deadline, *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port = 18564;
+    const std::uint16_t port = kythira::testing::free_port();
     slow_peer peer(port);
     auto client = make_client(port, std::chrono::milliseconds{10000}, 1);
 

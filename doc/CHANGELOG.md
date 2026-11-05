@@ -5,6 +5,15 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (November 5, 2026)
 
+- **Network tests pick their ports at run time.** Tests that listened on
+  hardcoded ports in 182xx-185xx collided under `ctest -j`: eighteen
+  ports were claimed by two or more test binaries, so `beast_server_test`
+  and `proxygen_transport_test` failed `bind() on port N` whenever two
+  such binaries ran together (main run 42086364363 and several IAM PRs).
+  The new `tests/test_ports.hpp` picks a random port that is free now,
+  below the kernel's ephemeral range so no outgoing connection can be
+  handed it before the server binds. 27 test files use it.
+
 - **Cairn campaigns release the GPU host when they finish, and the
   reporter drops every argument error.** `m1-campaign.sh` (and so
   `m2-hunt.sh`) powers the model host off over `CAIRN_LLM_SSH` once the

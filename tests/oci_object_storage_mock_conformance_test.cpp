@@ -10,6 +10,7 @@
 #include <raft/oci_object_storage_client.hpp>
 
 #include "oci_mock_server.hpp"
+#include "test_ports.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -77,13 +78,11 @@ auto shared_key_pem() -> const std::string& {
 /// instantiates the NO_INJECTION subset. That is honest rather than
 /// convenient — a harness that silently skipped the retry cases while claiming
 /// the full suite would misreport what had been proved.
-/// A fixed port, matching what the other OCI mock suites do. `origin()` echoes
+/// A concrete port picked up front (tests/test_ports.hpp). `origin()` echoes
 /// whatever the constructor was given, so an ephemeral 0 would produce
 /// `http://127.0.0.1:0` — which fails with "could not establish connection" and
-/// looks like a client bug rather than a harness one. Distinct from
-/// oci_quorum_manager_mock_test's 18322 so the two can run concurrently under
-/// `ctest -j`.
-constexpr std::uint16_t k_test_port = 18327;
+/// looks like a client bug rather than a harness one.
+const std::uint16_t k_test_port = kythira::testing::free_port();
 
 struct oci_mock_harness {
     using engine_t = object_store_persistence_engine<oci_object_storage_client>;

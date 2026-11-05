@@ -27,6 +27,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "negotiation_test_harness.hpp"
+#include "test_ports.hpp"
 
 #include <raft/cbor_serializer.hpp>
 #include <raft/json_serializer.hpp>
@@ -84,7 +85,8 @@ auto check_interoperates(const exchange_observation& obs, const std::string& exp
 /// The easy cell, included because its *absence* would leave the harder ones
 /// with nothing to be compared against.
 BOOST_AUTO_TEST_CASE(single_json_client_against_multi_server_preferring_json) {
-    const auto obs = run_exchange<single_json_types, multi_json_first_types>(18260);
+    const auto obs =
+        run_exchange<single_json_types, multi_json_first_types>(kythira::testing::free_port());
     check_interoperates(obs, json_media);
 }
 
@@ -94,14 +96,16 @@ BOOST_AUTO_TEST_CASE(single_json_client_against_multi_server_preferring_json) {
 /// `Accept` offers. A server that answered its own default here would produce a
 /// response the client cannot decode — the exact failure Requirement 7.3 forbids.
 BOOST_AUTO_TEST_CASE(single_json_client_against_multi_server_preferring_cbor) {
-    const auto obs = run_exchange<single_json_types, multi_cbor_first_types>(18261);
+    const auto obs =
+        run_exchange<single_json_types, multi_cbor_first_types>(kythira::testing::free_port());
     check_interoperates(obs, json_media);
 }
 
 /// The same shape with the formats swapped, so neither cell above can be passing
 /// merely because JSON is the value everything falls back to.
 BOOST_AUTO_TEST_CASE(single_cbor_client_against_multi_server_preferring_json) {
-    const auto obs = run_exchange<single_cbor_types, multi_json_first_types>(18262);
+    const auto obs =
+        run_exchange<single_cbor_types, multi_json_first_types>(kythira::testing::free_port());
     check_interoperates(obs, cbor_media);
 }
 
@@ -110,7 +114,8 @@ BOOST_AUTO_TEST_CASE(single_cbor_client_against_multi_server_preferring_json) {
 /// The multi-serializer client's default is the one format the server speaks, so
 /// its unnegotiated request leg happens to be right.
 BOOST_AUTO_TEST_CASE(multi_client_preferring_json_against_single_json_server) {
-    const auto obs = run_exchange<multi_json_first_types, single_json_types>(18263);
+    const auto obs =
+        run_exchange<multi_json_first_types, single_json_types>(kythira::testing::free_port());
     check_interoperates(obs, json_media);
 }
 
@@ -123,7 +128,8 @@ BOOST_AUTO_TEST_CASE(multi_client_preferring_json_against_single_json_server) {
 /// also every single-serializer deployment shipping today, which is why it must
 /// cost exactly one attempt and not two.
 BOOST_AUTO_TEST_CASE(a_client_with_no_alternative_format_fails_after_one_attempt) {
-    const auto obs = run_exchange<single_cbor_types, single_json_types>(18265);
+    const auto obs =
+        run_exchange<single_cbor_types, single_json_types>(kythira::testing::free_port());
 
     BOOST_TEST(obs.failed_rpcs == 3);
     BOOST_TEST(obs.first_error.find("415") != std::string::npos,
@@ -174,7 +180,8 @@ BOOST_AUTO_TEST_CASE(a_client_with_no_alternative_format_fails_after_one_attempt
 /// point is that the first exchange costs **two** attempts and the rest cost
 /// one, which a uniform "every request used JSON" check would hide.
 BOOST_AUTO_TEST_CASE(multi_client_preferring_cbor_interoperates_with_a_single_json_server) {
-    const auto obs = run_exchange<multi_cbor_first_types, single_json_types>(18264);
+    const auto obs =
+        run_exchange<multi_cbor_first_types, single_json_types>(kythira::testing::free_port());
 
     BOOST_TEST(obs.failed_rpcs == 0, "RPC failed: " << obs.first_error);
     BOOST_TEST(obs.round_trips_correct);

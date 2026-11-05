@@ -10,6 +10,7 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include "http_limit_test_helpers.hpp"
+#include "test_ports.hpp"
 
 #include <chrono>
 #include <string>
@@ -142,7 +143,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_acceptance, *boost::unit_test::timeout(3
 
 // ── Request and connection limits (.kiro/specs/http-server-request-limits/) ──
 namespace {
-constexpr std::uint16_t limits_port_base = 18350;
+const std::uint16_t limits_port_base = kythira::testing::free_port_block(3);
 namespace limits = kythira::testing::http_limits;
 
 auto register_vote_handler(kythira::cpp_httplib_server<test_transport_types>& server) -> void {

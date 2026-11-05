@@ -31,6 +31,7 @@
 #include "recording_metrics.hpp"
 #include "test_timeout_scale.hpp"
 #include "wide_serial_test_support.hpp"
+#include "test_ports.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -58,7 +59,7 @@ using raft::testing::oci_certificates_provider_config;
 using raft::testing::serial_from_certificate_pem;
 using chain_mode = kythira::testing::oci_mock_server::chain_mode;
 
-constexpr std::uint16_t test_port = 18323;
+const std::uint16_t test_port = kythira::testing::free_port();
 
 /// A real but minimal CSR (P-256 key, CN=mock-csr, no requested extensions),
 /// generated once and embedded so no case pays for a keygen. It has to be a

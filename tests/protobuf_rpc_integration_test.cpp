@@ -12,6 +12,7 @@
 #include <thread>
 #include <chrono>
 #include <unordered_map>
+#include "test_ports.hpp"
 
 // End-to-end integration test proving protobuf_rpc_serializer is a transparent
 // drop-in for json_rpc_serializer (Property 5, Requirements 1.2, 10.4): the ONLY
@@ -33,10 +34,8 @@ using test_transport_types =
 BOOST_AUTO_TEST_SUITE(protobuf_rpc_integration_tests)
 
 BOOST_AUTO_TEST_CASE(test_full_rpc_exchange, *boost::unit_test::timeout(60)) {
-    // Not 8097: http_negotiation_integration_test binds that port too, and
-    // ctest -j can run the two binaries at the same time.
-    constexpr std::uint16_t unique_port = 18430;
-    constexpr const char* server_url = "http://127.0.0.1:18430";
+    const std::uint16_t unique_port = kythira::testing::free_port();
+    const std::string server_url = "http://127.0.0.1:" + std::to_string(unique_port);
 
     kythira::cpp_httplib_server_config server_config;
     server_config.max_concurrent_connections = 10;

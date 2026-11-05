@@ -45,6 +45,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "negotiation_test_harness.hpp"
+#include "test_ports.hpp"
 
 #include <raft/cbor_serializer.hpp>
 #include <raft/json_serializer.hpp>
@@ -106,7 +107,8 @@ auto check_all_three_negotiated(const exchange_observation& obs, const std::stri
 /// Both sides prefer JSON. The baseline: no disagreement to resolve, so a
 /// failure here is a wiring fault rather than a negotiation one.
 BOOST_AUTO_TEST_CASE(json_first_client_against_json_first_server_uses_json) {
-    const auto obs = run_exchange<json_first_types, json_first_types>(18250);
+    const auto obs =
+        run_exchange<json_first_types, json_first_types>(kythira::testing::free_port());
     check_all_three_negotiated(obs, json_media);
 }
 
@@ -114,14 +116,16 @@ BOOST_AUTO_TEST_CASE(json_first_client_against_json_first_server_uses_json) {
 /// distinguishes the rule from its opposite**: under "our order wins" the
 /// server would answer CBOR here.
 BOOST_AUTO_TEST_CASE(json_first_client_against_cbor_first_server_still_uses_json) {
-    const auto obs = run_exchange<json_first_types, cbor_first_types>(18251);
+    const auto obs =
+        run_exchange<json_first_types, cbor_first_types>(kythira::testing::free_port());
     check_all_three_negotiated(obs, json_media);
 }
 
 /// The mirror image, and the one that proves the previous cell is not simply
 /// "JSON always wins" — here the same rule selects CBOR.
 BOOST_AUTO_TEST_CASE(cbor_first_client_against_json_first_server_still_uses_cbor) {
-    const auto obs = run_exchange<cbor_first_types, json_first_types>(18252);
+    const auto obs =
+        run_exchange<cbor_first_types, json_first_types>(kythira::testing::free_port());
     check_all_three_negotiated(obs, cbor_media);
 }
 
@@ -129,7 +133,8 @@ BOOST_AUTO_TEST_CASE(cbor_first_client_against_json_first_server_still_uses_cbor
 /// transport really can run a non-JSON format end to end — the hardcoded
 /// `application/json` that Requirement 9.4 removed would fail exactly here.
 BOOST_AUTO_TEST_CASE(cbor_first_client_against_cbor_first_server_uses_cbor) {
-    const auto obs = run_exchange<cbor_first_types, cbor_first_types>(18253);
+    const auto obs =
+        run_exchange<cbor_first_types, cbor_first_types>(kythira::testing::free_port());
     check_all_three_negotiated(obs, cbor_media);
 }
 
@@ -156,7 +161,8 @@ BOOST_AUTO_TEST_CASE(cbor_first_client_against_cbor_first_server_uses_cbor) {
 /// separates the two outright. This case keeps the stability property, which is
 /// the one Task 14 names.
 BOOST_AUTO_TEST_CASE(the_capability_cache_converges_after_the_first_exchange) {
-    const auto obs = run_exchange<cbor_first_types, json_first_types>(18254);
+    const auto obs =
+        run_exchange<cbor_first_types, json_first_types>(kythira::testing::free_port());
 
     BOOST_TEST(obs.failed_rpcs == 0, "unexpected RPC failure: " << obs.first_error);
     BOOST_REQUIRE_EQUAL(obs.client_request_types.size(), 3u);

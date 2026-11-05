@@ -16,6 +16,7 @@
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include "ca_test_fixture.hpp"
+#include "test_ports.hpp"
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <chrono>
 #include <filesystem>
@@ -138,11 +139,11 @@ BOOST_AUTO_TEST_CASE(client_max_tls_version_is_applied, *boost::unit_test::timeo
     server_config.max_tls_version = "TLSv1.3";
 
     auto client_config = client_config_for(material);
-    BOOST_TEST(request_vote_succeeds(18561, server_config, client_config));
+    BOOST_TEST(request_vote_succeeds(kythira::testing::free_port(), server_config, client_config));
 
     // A TLS 1.2-only client cannot reach a TLS 1.3-only server.
     client_config.max_tls_version = "TLSv1.2";
-    BOOST_TEST(!request_vote_succeeds(18562, server_config, client_config));
+    BOOST_TEST(!request_vote_succeeds(kythira::testing::free_port(), server_config, client_config));
 }
 
 BOOST_AUTO_TEST_CASE(client_min_tls_version_is_applied, *boost::unit_test::timeout(60)) {
@@ -152,11 +153,11 @@ BOOST_AUTO_TEST_CASE(client_min_tls_version_is_applied, *boost::unit_test::timeo
     server_config.max_tls_version = "TLSv1.2";
 
     auto client_config = client_config_for(material);
-    BOOST_TEST(request_vote_succeeds(18563, server_config, client_config));
+    BOOST_TEST(request_vote_succeeds(kythira::testing::free_port(), server_config, client_config));
 
     // A TLS 1.3-only client cannot reach a TLS 1.2-only server.
     client_config.min_tls_version = "TLSv1.3";
-    BOOST_TEST(!request_vote_succeeds(18564, server_config, client_config));
+    BOOST_TEST(!request_vote_succeeds(kythira::testing::free_port(), server_config, client_config));
 }
 
 BOOST_AUTO_TEST_CASE(client_cipher_suites_are_applied, *boost::unit_test::timeout(60)) {
@@ -168,11 +169,11 @@ BOOST_AUTO_TEST_CASE(client_cipher_suites_are_applied, *boost::unit_test::timeou
 
     auto client_config = client_config_for(material);
     client_config.cipher_suites = server_only_ciphers;
-    BOOST_TEST(request_vote_succeeds(18565, server_config, client_config));
+    BOOST_TEST(request_vote_succeeds(kythira::testing::free_port(), server_config, client_config));
 
     // No suite in common: the handshake must fail.
     client_config.cipher_suites = disjoint_client_ciphers;
-    BOOST_TEST(!request_vote_succeeds(18566, server_config, client_config));
+    BOOST_TEST(!request_vote_succeeds(kythira::testing::free_port(), server_config, client_config));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
