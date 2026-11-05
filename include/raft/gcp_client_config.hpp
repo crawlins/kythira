@@ -18,10 +18,20 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 
 namespace kythira {
+
+/// @brief A short-lived OAuth 2.0 access token and the moment it expires.
+///
+/// What `gcp_client_config::access_token` hands out. The workload-identity
+/// exchange in `cloud_credential_exchange.hpp` produces exactly this.
+struct gcp_access_token {
+    std::string access_token;
+    std::chrono::system_clock::time_point expires_at;
+};
 
 /// @brief Shared GCP connection settings consumed by every GCP component in
 ///        this spec (`gcp_compute_quorum_manager`, `gcp_mig_quorum_manager`,
@@ -40,6 +50,19 @@ struct gcp_client_config {
     /// Application Default Credentials (`MakeGoogleDefaultCredentials()`); when
     /// non-empty, `MakeServiceAccountCredentials(credentials_json)` is used.
     std::string credentials_json;
+
+    /// When set, takes precedence over `credentials_json` and Application
+    /// Default Credentials: every request carries the token this returns
+    /// (`.kiro/specs/iam-compatible-auth/` Requirement 2.3, workload identity
+    /// federation from a Kythira OIDC token). It is called before every
+    /// request, so it must answer from a cache, as
+    /// `cloud_credentials::gcp_workload_identity_source::current()` does, and
+    /// it may throw, which fails that request.
+    ///
+    /// Only `gcp_gcs_client` reads it so far. The Compute, MIG and Private CA
+    /// components build their SDK clients once and would need the same
+    /// rebuild-on-new-token step before they can honour it.
+    std::function<gcp_access_token()> access_token;
 
     /// When non-empty, overrides the REST endpoint. Used to point a GCP
     /// component at a hand-written test double instead of the real service.

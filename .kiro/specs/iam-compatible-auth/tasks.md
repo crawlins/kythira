@@ -184,7 +184,7 @@ because each has a zero-spend fallback.
       accepts the store's default is left to the task 5 real-cloud run.
     - Operator documentation: `doc/oidc-issuer.md`.
 
-- [ ] 3. Token source plus AWS and GCP exchange providers
+- [x] 3. Token source plus AWS and GCP exchange providers
   - `kythira_oidc_token_source`: per-audience cache, refresh at 80% of the
     lifetime, one shared in-flight refresh.
   - The `cloud_credential_source` concept.
@@ -195,10 +195,9 @@ because each has a zero-spend fallback.
   - Tests use local mock token endpoints that check the exact request
     format: grant type, audience, `subject_token_type`.
   - _Requirements: 2.1–2.4_
-  - In progress. Part 1 (November 5, 2026): the token source and the AWS
-    and GCP exchanges in `include/raft/cloud_credential_exchange.hpp`.
-    Part 2 plugs them into `aws_s3_client`, the ACM-PCA provider and
-    `gcp_gcs_client`. Notes so far:
+  - Done November 5, 2026, in two parts. Part 1: the token source and the
+    AWS and GCP exchanges in `include/raft/cloud_credential_exchange.hpp`.
+    Part 2: the SDK wiring. Notes:
     - The source interface is synchronous (`current()` returns the
       credentials), not the design's future-returning concept: every
       consumer is an SDK credential hook such as
@@ -221,6 +220,23 @@ because each has a zero-spend fallback.
     - `cloud_credential_exchange_test` checks every field of each request
       against local mock endpoints, including the grant type, audience
       and `subject_token_type`, and passes under ASan and TSan.
+    - AWS wiring (`include/raft/aws_web_identity_credentials.hpp`): every
+      AWS component already takes `aws_client_config::credentials_provider`,
+      so one `AWSCredentialsProviderChain` subclass whose only link asks the
+      web-identity source covers `aws_s3_client` and the ACM-PCA provider
+      (and the EC2 and ASG components). A failed exchange gives the SDK
+      empty credentials and logs why, the SDK's own convention, rather than
+      throwing through SDK frames.
+    - GCP wiring: `gcp_client_config::access_token`, a function returning
+      the current token. google-cloud-cpp has no public hook for
+      credentials that refresh themselves, only a fixed access token, so
+      `gcp_gcs_client` rebuilds its SDK client whenever the token changes
+      (about hourly). Only the GCS client reads the field so far; the
+      Compute, MIG and Private CA components build their clients once.
+    - `aws_s3_client_unit_test` and `gcp_gcs_client_unit_test` check the
+      request the store receives: SigV4 `Credential=` plus
+      `x-amz-security-token` from the assumed role, and the `Bearer` token
+      from the GCP exchange, including a token change between requests.
 
 - [ ] 4. Azure, Alibaba and OCI exchange providers
   - Azure: client-credentials flow with a federated `client_assertion`, wired

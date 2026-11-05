@@ -31,6 +31,8 @@
 // Request building and response parsing are pure functions, so tests check
 // the exact wire format against local mock endpoints.
 
+#include <raft/gcp_client_config.hpp>
+
 #include <boost/json.hpp>
 
 #include <httplib.h>
@@ -451,17 +453,17 @@ private:
 // Credentials and the source concept
 // ---------------------------------------------------------------------------
 
-struct aws_credentials {
+// Not `aws_credentials`: aws-c-auth forward-declares a C struct of that name,
+// and clang-tidy's bugprone-forward-declaration-namespace flags the pair.
+struct aws_sts_credentials {
     std::string access_key_id;
     std::string secret_access_key;
     std::string session_token;
     clock::time_point expires_at;
 };
 
-struct gcp_access_token {
-    std::string access_token;
-    clock::time_point expires_at;
-};
+/// Defined beside `gcp_client_config`, whose `access_token` hook hands it out.
+using kythira::gcp_access_token;
 
 /// Anything that hands out current credentials of type `Credentials`,
 /// refreshing them itself.
@@ -499,7 +501,7 @@ struct aws_web_identity_config {
 /// Parses the XML response; throws exchange_error with STS's own code and
 /// message for an error response.
 [[nodiscard]] inline auto parse_assume_role_with_web_identity(int status, std::string_view xml)
-    -> aws_credentials {
+    -> aws_sts_credentials {
     if (status != 200) {
         const auto code = detail::xml_text(xml, "Code").value_or("HTTP " + std::to_string(status));
         const auto message = detail::xml_text(xml, "Message").value_or("");
@@ -530,7 +532,7 @@ public:
     aws_web_identity_source(
         std::shared_ptr<kythira_oidc_token_source> tokens, aws_web_identity_config cfg,
         refresh_policy policy = {},
-        refreshing_value<aws_credentials>::now_fn now = [] { return clock::now(); })
+        refreshing_value<aws_sts_credentials>::now_fn now = [] { return clock::now(); })
         : _cache(
               [tokens = std::move(tokens), cfg = std::move(cfg)] {
                   const auto jwt = tokens->token(cfg.audience);
@@ -539,14 +541,14 @@ public:
                                             "application/x-www-form-urlencoded");
                   auto creds = parse_assume_role_with_web_identity(reply.status, reply.body);
                   const auto exp = creds.expires_at;
-                  return refreshing_value<aws_credentials>::timed{std::move(creds), exp};
+                  return refreshing_value<aws_sts_credentials>::timed{std::move(creds), exp};
               },
               policy, std::move(now)) {}
 
-    [[nodiscard]] auto current() -> aws_credentials { return _cache.get(); }
+    [[nodiscard]] auto current() -> aws_sts_credentials { return _cache.get(); }
 
 private:
-    refreshing_value<aws_credentials> _cache;
+    refreshing_value<aws_sts_credentials> _cache;
 };
 
 // ---------------------------------------------------------------------------
@@ -691,7 +693,7 @@ private:
     refreshing_value<gcp_access_token> _cache;
 };
 
-static_assert(cloud_credential_source<aws_web_identity_source, aws_credentials>);
+static_assert(cloud_credential_source<aws_web_identity_source, aws_sts_credentials>);
 static_assert(cloud_credential_source<gcp_workload_identity_source, gcp_access_token>);
 
 }  // namespace kythira::cloud_credentials
