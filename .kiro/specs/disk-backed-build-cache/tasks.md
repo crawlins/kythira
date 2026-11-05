@@ -1,8 +1,10 @@
 # Implementation Plan — Disk-Backed Build Cache
 
-## Status: 12/13 tasks complete
+## Status: 13/13 tasks complete
 
-**Last Updated**: November 2, 2026 (task 2: the chunk store, pack files and
+**Last Updated**: November 5, 2026 (task 11, the full-tree WebDAV
+measurement on both compilers; task 12, the documentation; task 13, the
+close-out. Earlier: task 2: the chunk store, pack files and
 node-wide reference counts; task 3: the cache state machine, codec version 2
 and the gateway over either machine; task 4: the binary persistence engine;
 task 5: the chunk fetcher; task 6: the HTTP front end and auth cache;
@@ -908,7 +910,34 @@ Both legs meet every Requirement 13 threshold, so task 11 is complete.
     instead of RAM.
   - _Requirements: 14.1–14.3_
 
-- [ ] 13. Close-out
+- [x] 13. Close-out
   - Update `doc/TODO.md`'s row and `doc/CHANGELOG.md`. Record what task 1 and
     task 9 measured against what this spec assumed.
   - _Requirements: all_
+
+### Task 13 results (2026-11-05)
+
+`doc/TODO.md`'s row moved from "Not Started" to the completed table at
+13/13, and `doc/CHANGELOG.md` has the entry. What tasks 1, 9 and 11
+measured against what design.md assumed:
+
+| Assumption (design.md) | Measured | Consequence |
+|---|---|---|
+| sccache's WebDAV client (OpenDAL) stats with PROPFIND, creates parents with MKCOL and writes with PUT | Confirmed (task 1), with two things the design did not foresee: PROPFIND targets the parent collection, never the key, and OpenDAL rejects a minimal multistatus reply | The front end answers 207 for every collection path, so no MKCOL is ever sent, and replies in mod_dav's shape. Never HEAD, DELETE or `Range` |
+| vcpkg's `http` source might probe with HEAD | No HEAD, no triplet, no `.zip` in the key, PUTs not retried, failures never redden an install (task 1) | Its keys do not match the OCI bucket's `x-aws` objects, so moving vcpkg to the cluster means a re-seed, not a copy |
+| sccache objects average 0.85 MiB, so a 4 MiB chunk holds a whole object | Bucket mean 1.02 MiB, p99 10.14 MiB, largest 16.6 MiB, 2.46% over 8 MiB (task 1). One full-tree build: 753 objects, 264-288 MB, a mean of about 0.37 MB (task 11) | Most objects are one chunk, but the large ones that hold a quarter of the bytes span two to five. Nothing needed a change: manifests already carry many chunks |
+| Values up to 2 GiB (`KYTHIRA_CACHE_MAX_VALUE_BYTES`) | vcpkg objects up to 955 MiB, 81 over 64 MiB (task 1) | The default holds with room to spare |
+| One loose file per large chunk, packs for small ones, inodes bounded by budget / 64 KiB | 561-612 files under `/data` for 264-288 MB per node (task 11) | Inodes are not a constraint at CI's object mix; the `f_favail` check stays as the guard |
+| 77,000 sccache keys and 64 GiB of values; a snapshot of about 10 MB | The bucket held 109,166 sccache objects (108 GiB) after a month of churn, while one `main` run reads about 6.2 GiB of sccache and 4.4 GiB of vcpkg (task 1) | A cluster sized to the working set, not the bucket, is enough; the snapshot at the bucket's count would be about 14 MB |
+| A 500 MB PUT is about 120 Raft rounds; pipelining two chunks keeps the link busy | It never committed at first (task 9). AppendEntries had no byte limit and overran the follower's 10 MB request limit, file mode still evicted at the RAM mode's 1 GiB per shard, and a lagging follower was flooded with repeated ranges | Fixed in task 9: `_max_append_bytes`, the shard limit only when set in file mode, and one entry-carrying AppendEntries in flight per follower, not two chunks pipelined. After the fixes a 500 MB PUT took 27-33 s on the sandbox's disk and a GET 2.0-2.4 s |
+| The cluster can match the OCI cache's hit rates and Build times | Warm WebDAV at 0.94-0.96x the OCI Build, 99.87-100% hits, 3-5.5 ms per hit against 135-191 ms (task 11) | Requirement 13 is met on both compilers |
+
+Left open, outside this spec's tasks:
+
+- The clang++-18 build has one translation unit whose cache key changes
+  between two builds of one commit (task 11). Not yet identified.
+- `redis_gateway_disk_store_integration_test` is still on the ctest retry
+  allowlist; the November 4 re-survey counted 9 rescues in 50 runs.
+- A Boost-backend daemon can crash in pre-vote when peers are host names
+  that are not yet up (found during task 9 on the host recipe; Folly is
+  unaffected). Not yet filed or fixed.

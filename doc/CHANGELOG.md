@@ -3,6 +3,27 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (November 5, 2026)
+
+- **The build cache can live on disk, and sccache and vcpkg can both use
+  it.** The disk-backed-build-cache spec is complete. In disk mode the
+  Redis gateway keeps values in a per-node, content-addressed chunk store
+  (small chunks packed, the index in RAM), Raft state in binary files, and
+  snapshots that carry only the index; a replica fetches the chunks it is
+  missing from its peers. An HTTP front end serves GET, HEAD, PUT and the
+  WebDAV subset sccache 0.17 sends, behind the gateway's ACLs, so sccache's
+  WebDAV backend and vcpkg's `http` binary source share one cluster of
+  minimal containers (`docker/cache-cluster/`). Building the whole tree
+  through it on GitHub-hosted runners, a warm build took 0.94-0.96x the
+  time the OCI cache takes, with 99.87-100% hits and 3-5.5 ms per hit
+  against OCI's 135-191 ms, on both g++-13 and clang++-18
+  (`cache-cluster-measure.yml`). `doc/redis-gateway.md` documents the
+  variables, API and client settings, and
+  `doc/sccache_dogfood_cost_estimate.md` the disk-based sizing. Large
+  uploads found three faults on the way, all fixed: AppendEntries batches
+  had no byte limit, file mode still evicted at the RAM mode's 1 GiB per
+  shard, and a lagging follower was sent the same range on every round.
+
 ### What Changed (November 3, 2026)
 
 - **The OCI heartbeat policy grants only the permission the writer
