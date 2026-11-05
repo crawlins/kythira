@@ -262,6 +262,32 @@ because each has a zero-spend fallback.
     audit, record the spend. IAM-type resources are free; the bucket costs
     cents.
   - _Requirements: 2.5_
+  - In progress. Clark gave his go on November 5, 2026, and chose a
+    one-time admin setup over per-run creation: the AWS CI role's
+    permissions boundary denies every IAM action, and the GCP CI service
+    account may not create workload identity pools, so a workflow cannot
+    create the trust itself. Pieces:
+    - `scripts/ci-cloud-credentials/aws/provision-oidc-federation-test.sh`:
+      the issuer bucket (only `<prefix>/.well-known/*` public, the CI role
+      writes there through the bucket policy), the test object, the IAM
+      OIDC provider, and a role that trusts only
+      `aud=sts.amazonaws.com`, `sub=workload:<uri>` and may read only the
+      test object.
+    - `scripts/ci-cloud-credentials/gcp/provision-oidc-federation-test.sh`:
+      a pool and provider trusting the same issuer with the same subject
+      condition, and direct federated `storage.objectViewer` on a bucket
+      holding only the test object.
+    - `.github/workflows/oidc-federation.yml` runs
+      `tests/oidc_federation_real_test.cpp`: one `ca_cluster_node`
+      publishes to the bucket, a workload certificate is exchanged for a
+      JWT, and the JWT for AWS and GCP credentials that read the test
+      object through `aws_s3_client` and `gcp_gcs_client`. A run creates
+      only the two published objects and deletes them, then checks none
+      are left.
+    - The `ca_cluster_node` spawning helpers moved from
+      `ca_cluster_node_test.cpp` to `tests/ca_cluster_node_harness.hpp` so
+      both tests share them.
+    - Azure, Alibaba and OCI join after task 4.
 
 ### Phase B — IAM core
 

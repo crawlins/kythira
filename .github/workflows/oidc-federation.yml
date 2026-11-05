@@ -1,0 +1,214 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Real-cloud OIDC federation (.kiro/specs/iam-compatible-auth/ task 5,
+# Requirement 2.5): a ca_cluster_node publishes its issuer documents to a
+# public S3 prefix, and tests/oidc_federation_real_test.cpp exchanges its JWT
+# with AWS STS and GCP STS and reads one object in each cloud.
+#
+# Its own workflow, not a bundle of real-cloud-tests.yml: that file is at
+# GitHub's 25-input workflow_dispatch limit, and this run needs none of its
+# per-provider build matrix.
+#
+# Prerequisites, set up once with admin credentials because the CI roles may
+# not administer IAM (see each script's header):
+#   scripts/ci-cloud-credentials/aws/provision-oidc-federation-test.sh
+#   scripts/ci-cloud-credentials/gcp/provision-oidc-federation-test.sh
+# They print the repository variables this workflow reads (OIDC_FED_*).
+#
+# Cost: the trust resources (IAM OIDC provider, role, workload identity pool)
+# are free. Each run writes two small objects to the issuer bucket and deletes
+# them, and reads one object per cloud: well under a cent.
+
+name: OIDC Federation (real cloud)
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws:
+        description: "Federate to AWS (AssumeRoleWithWebIdentity, S3 read)"
+        type: boolean
+        default: true
+      gcp:
+        description: "Federate to GCP (STS token exchange, GCS read)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Every run publishes to the same issuer prefix.
+  group: oidc-federation
+  cancel-in-progress: false
+
+jobs:
+  federate:
+    name: OIDC federation (AWS, GCP)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ISSUER_BUCKET: ${{ vars.OIDC_FED_AWS_BUCKET }}
+      ISSUER_PREFIX: ${{ vars.OIDC_FED_AWS_PREFIX || 'ci' }}
+      AWS_REGION_FED: ${{ vars.OIDC_FED_AWS_REGION || 'us-east-1' }}
+    steps:
+      - name: Check the one-time setup was done
+        run: |
+          missing=()
+          [[ -n "${ISSUER_BUCKET}" ]] || missing+=(OIDC_FED_AWS_BUCKET)
+          if [[ "${{ inputs.aws }}" == "true" ]]; then
+            [[ -n "${{ vars.OIDC_FED_AWS_ROLE_ARN }}" ]] || missing+=(OIDC_FED_AWS_ROLE_ARN)
+          fi
+          if [[ "${{ inputs.gcp }}" == "true" ]]; then
+            [[ -n "${{ vars.OIDC_FED_GCP_PROVIDER }}" ]] || missing+=(OIDC_FED_GCP_PROVIDER)
+            [[ -n "${{ vars.OIDC_FED_GCS_BUCKET }}" ]] || missing+=(OIDC_FED_GCS_BUCKET)
+          fi
+          if [[ "${{ inputs.aws }}" != "true" && "${{ inputs.gcp }}" != "true" ]]; then
+            echo "::error::choose at least one cloud"
+            exit 1
+          fi
+          if (( ${#missing[@]} )); then
+            echo "::error::repository variables not set: ${missing[*]}. Run the provision-oidc-federation-test.sh scripts first."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool mold; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Read-only cache key: this job never runs in build-cache-write.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # The same key as ci.yml's gcp-sdk-build, so a warm cache from there is
+      # reused here.
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies (with gcp feature)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=gcp
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_gcp_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc) --target ca_cluster_node oidc_federation_real_test
+
+      # The CI role, for the node's publisher only: a same-account bucket
+      # policy lets it write <prefix>/.well-known/*. The federated reads use
+      # the credentials the test exchanges for, never these.
+      - name: Configure AWS credentials (issuer bucket writes)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-oidc-federation
+          aws-region: ${{ env.AWS_REGION_FED }}
+
+      - name: Run the federation test
+        env:
+          KYTHIRA_OIDC_FED_ISSUER_URL: https://${{ env.ISSUER_BUCKET }}.s3.${{ env.AWS_REGION_FED }}.amazonaws.com/${{ env.ISSUER_PREFIX }}
+          KYTHIRA_OIDC_FED_PUBLISH_URL: s3://${{ env.ISSUER_BUCKET }}/${{ env.ISSUER_PREFIX }}
+          KYTHIRA_OIDC_FED_SUBJECT_URI: ${{ vars.OIDC_FED_SUBJECT_URI || 'spiffe://kythira.test/wl/oidc-federation' }}
+          # YAML's double quotes make the \n a real newline, as in the object.
+          KYTHIRA_OIDC_FED_EXPECTED: "kythira-oidc-federation-test\n"
+          KYTHIRA_OIDC_FED_AWS_ROLE_ARN: ${{ inputs.aws && vars.OIDC_FED_AWS_ROLE_ARN || '' }}
+          KYTHIRA_OIDC_FED_AWS_REGION: ${{ env.AWS_REGION_FED }}
+          KYTHIRA_OIDC_FED_AWS_BUCKET: ${{ env.ISSUER_BUCKET }}
+          KYTHIRA_OIDC_FED_AWS_KEY: test-object/federation.txt
+          KYTHIRA_OIDC_FED_GCP_PROVIDER: ${{ inputs.gcp && vars.OIDC_FED_GCP_PROVIDER || '' }}
+          KYTHIRA_OIDC_FED_GCS_BUCKET: ${{ vars.OIDC_FED_GCS_BUCKET }}
+          KYTHIRA_OIDC_FED_GCS_KEY: test-object/federation.txt
+        run: |
+          rc=0
+          ./build/tests/oidc_federation_real_test --log_level=message --report_level=short || rc=$?
+          if [[ $rc -eq 77 ]]; then
+            echo "::error::the test skipped itself; the issuer URL did not reach it"
+            exit 1
+          fi
+          exit $rc
+
+      # The only objects a run creates. The trust resources stay: they are the
+      # one-time setup, and free.
+      - name: Remove the published issuer documents
+        if: always()
+        run: |
+          aws s3 rm "s3://${ISSUER_BUCKET}/${ISSUER_PREFIX}/.well-known/" --recursive || true
+
+      - name: Leak audit
+        if: always()
+        run: |
+          left="$(aws s3api list-objects-v2 --bucket "${ISSUER_BUCKET}" \
+                    --prefix "${ISSUER_PREFIX}/.well-known/" --query 'KeyCount' --output text)"
+          {
+            echo "### OIDC federation run"
+            echo "- issuer: https://${ISSUER_BUCKET}.s3.${AWS_REGION_FED}.amazonaws.com/${ISSUER_PREFIX}"
+            echo "- objects left under ${ISSUER_PREFIX}/.well-known/: ${left}"
+            echo "- spend: two PUTs, two DELETEs and a few GETs on S3, one GCS read; under \$0.01"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${left}" != "0" ]]; then
+            echo "::error::${left} published object(s) were not removed"
+            exit 1
+          fi
