@@ -195,6 +195,32 @@ because each has a zero-spend fallback.
   - Tests use local mock token endpoints that check the exact request
     format: grant type, audience, `subject_token_type`.
   - _Requirements: 2.1–2.4_
+  - In progress. Part 1 (November 5, 2026): the token source and the AWS
+    and GCP exchanges in `include/raft/cloud_credential_exchange.hpp`.
+    Part 2 plugs them into `aws_s3_client`, the ACM-PCA provider and
+    `gcp_gcs_client`. Notes so far:
+    - The source interface is synchronous (`current()` returns the
+      credentials), not the design's future-returning concept: every
+      consumer is an SDK credential hook such as
+      `AWSCredentialsProvider::GetAWSCredentials`, which is synchronous
+      itself, and the hot path is a cache hit under one mutex.
+    - One caching rule for everything (`refreshing_value`): refresh after
+      80% of the lifetime; while one caller refreshes, the others keep the
+      still-valid value; a caller with nothing valid waits for the single
+      in-flight fetch; a failed refresh keeps the old value until it
+      really expires and backs off (1 s doubling to 1 min). The spec's
+      "`async_retry` backoff" names nothing that exists in the repository,
+      so this is that backoff.
+    - The mTLS token fetch follows a follower's 308 itself: httplib's own
+      redirect builds a new client for the other host without the client
+      certificate, so the leader would see an anonymous request.
+    - AWS: the Query call is unsigned, as STS documents for
+      `AssumeRoleWithWebIdentity`; the regional endpoint is configurable.
+      GCP: the OIDC audience is the Workload Identity provider's full
+      resource name, and impersonation is optional.
+    - `cloud_credential_exchange_test` checks every field of each request
+      against local mock endpoints, including the grant type, audience
+      and `subject_token_type`, and passes under ASan and TSan.
 
 - [ ] 4. Azure, Alibaba and OCI exchange providers
   - Azure: client-credentials flow with a federated `client_assertion`, wired

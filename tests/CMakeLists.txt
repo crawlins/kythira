@@ -5331,6 +5331,27 @@ set_tests_properties(oidc_publisher_unit_test PROPERTIES
     LABELS "unit;oidc;iam"
 )
 
+# IAM spec task 3: the OIDC token source and the AWS and GCP credential
+# exchanges, against local mock endpoints (plus TLS servers for the mTLS
+# token fetch, whose certificates come from certificate_authority).
+if(TARGET httplib::httplib)
+    add_executable(cloud_credential_exchange_test cloud_credential_exchange_test.cpp)
+    target_link_libraries(cloud_credential_exchange_test PRIVATE
+        certificate_authority
+        Boost::unit_test_framework
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        boost_json
+    )
+    target_compile_features(cloud_credential_exchange_test PRIVATE cxx_std_23)
+    add_test(NAME cloud_credential_exchange_test COMMAND cloud_credential_exchange_test)
+    set_tests_properties(cloud_credential_exchange_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;oidc;iam;cloud_credentials"
+    )
+endif()
+
 # IAM spec task 6: server-side SigV4 verification, run against every case of
 # AWS's signing test suite (vendored, Apache-2.0, under sigv4_suite/).
 add_executable(sigv4_verifier_test sigv4_verifier_test.cpp)
