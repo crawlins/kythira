@@ -320,9 +320,9 @@ BOOST_AUTO_TEST_CASE(aws_assume_role_with_web_identity_wire_format) {
     <SubjectFromWebIdentityToken>node:1</SubjectFromWebIdentityToken>
     <Credentials>
       <SessionToken>FwoGZX&amp;token</SessionToken>
-      <SecretAccessKey>wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY</SecretAccessKey>
+      <SecretAccessKey>test-fixture-secret-access-key</SecretAccessKey>
       <Expiration>2027-01-15T09:00:00Z</Expiration>
-      <AccessKeyId>ASIAIOSFODNN7EXAMPLE</AccessKeyId>
+      <AccessKeyId>ASIA-TEST-FIXTURE-KEY-ID</AccessKeyId>
     </Credentials>
   </AssumeRoleWithWebIdentityResult>
 </AssumeRoleWithWebIdentityResponse>)",
@@ -338,8 +338,8 @@ BOOST_AUTO_TEST_CASE(aws_assume_role_with_web_identity_wire_format) {
     fake_clock clk;  // 2027-01-15T08:00:00Z, an hour before Expiration
     cc::aws_web_identity_source src(fixed_token_source("hdr.payload.sig"), cfg, {}, clk.fn());
     auto creds = src.current();
-    BOOST_TEST(creds.access_key_id == "ASIAIOSFODNN7EXAMPLE");
-    BOOST_TEST(creds.secret_access_key == "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+    BOOST_TEST(creds.access_key_id == "ASIA-TEST-FIXTURE-KEY-ID");
+    BOOST_TEST(creds.secret_access_key == "test-fixture-secret-access-key");
     BOOST_TEST(creds.session_token == "FwoGZX&token");
     BOOST_TEST((creds.expires_at == cc::clock::from_time_t(1'800'003'600)));
     (void)src.current();
