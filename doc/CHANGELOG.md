@@ -24,6 +24,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
   had no byte limit, file mode still evicted at the RAM mode's 1 GiB per
   shard, and a lagging follower was sent the same range on every round.
 
+- **The S3 "lost write" was a read that timed out.** Every "1 of 2000
+  acknowledged keys are lost" from `multi_raft_node_s3_process_test` was
+  key 0, the first key read back, and no host had answered that read:
+  leadership flipped between the two survivors for about 20 s after the
+  killed leader restarted. The check now fails a key as lost only when a
+  host answers without it. The same test's other retries were a restarted
+  host losing its old port to an outgoing connection (ports now come from
+  below the ephemeral range) and needless elections under 50 ms PUTs (the
+  test now runs the 1000 ms election-timeout floor the binary warns below
+  for S3). Those elections have a real cause, still open in TODO.md: the
+  leader's blocking httplib sends to one slow follower delay the other
+  follower's heartbeats.
+
 ### What Changed (November 3, 2026)
 
 - **The OCI heartbeat policy grants only the permission the writer

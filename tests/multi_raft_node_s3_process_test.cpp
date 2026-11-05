@@ -41,6 +41,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -71,21 +72,56 @@ auto slurp(const std::filesystem::path& path) -> std::string {
     return buffer.str();
 }
 
-/// A port nothing is listening on now. Released before use, so another
-/// process could take it in between; the window is microseconds on a test
-/// machine and every other process test here accepts it.
+/// The low end of the kernel's ephemeral port range, 32768 if it cannot be
+/// read.
+auto ephemeral_port_floor() -> std::uint16_t {
+    std::ifstream in("/proc/sys/net/ipv4/ip_local_port_range");
+    unsigned low = 0;
+    if (in >> low && low > 1024U && low <= 65535U) {
+        return static_cast<std::uint16_t>(low);
+    }
+    return 32768;
+}
+
+/// A port nothing is listening on now, chosen BELOW the ephemeral range.
+///
+/// A host restarted after a SIGKILL binds the ports it had before, about
+/// 30 s later. A port the kernel handed out with bind(0) is an ephemeral
+/// port, and in those 30 s any outgoing connection on the machine can be
+/// given it as its local port -- another ctest job's, or one of the
+/// survivors' own reconnects to the dead host, which Linux can complete as a
+/// TCP self-connect. The restart then failed "failed to bind", reported as
+/// "host N never became ready" (3 of 20 CI rescues, 2026-11-02..05). A port
+/// below the range is never assigned to an outgoing connection.
+///
+/// Released before use, so another process that binds explicit ports could
+/// take it in between; the window is microseconds.
 auto free_port() -> std::uint16_t {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    BOOST_REQUIRE(fd >= 0);
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;
-    BOOST_REQUIRE(::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
-    socklen_t len = sizeof(addr);
-    BOOST_REQUIRE(::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
-    ::close(fd);
-    return ntohs(addr.sin_port);
+    static std::mutex mu;
+    static std::mt19937 rng{std::random_device{}()};
+    const std::uint16_t ceiling = ephemeral_port_floor();
+    const std::uint16_t floor = ceiling > 12000 ? 10000 : 1025;
+    std::uniform_int_distribution<int> pick(floor, ceiling - 1);
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        std::uint16_t port = 0;
+        {
+            std::lock_guard lock(mu);
+            port = static_cast<std::uint16_t>(pick(rng));
+        }
+        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        BOOST_REQUIRE(fd >= 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(port);
+        const bool bound = ::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+        ::close(fd);
+        if (bound) {
+            return port;
+        }
+    }
+    BOOST_FAIL("no free port below " << ceiling << " in 200 tries");
+    return 0;
 }
 
 /// Static dummy keys, an empty HOME (no `~/.aws`), IMDS off, and nothing else.
@@ -226,6 +262,15 @@ public:
     auto operator=(s3_cluster&&) -> s3_cluster& = delete;
 
     /// The arguments host `id` runs with, at `ports`.
+    ///
+    /// Election timeouts are 1000-2000 ms, the floor the binary itself warns
+    /// below for S3 (`k_s3_min_election_timeout`). At 300-600 ms the
+    /// write-behind cases lost their leader to a needless election in 17 of
+    /// 20 CI rescues (2026-11-02..05): the leader sends AppendEntries to its
+    /// followers one after another on its tick thread, the httplib client
+    /// blocks for the whole round trip, and a follower answering after a
+    /// 50 ms-delayed PUT holds the other follower's heartbeat back by that
+    /// much again. See doc/TODO.md.
     [[nodiscard]] auto args(std::uint64_t id, const host_ports& ports) const
         -> std::vector<std::string> {
         std::vector<std::string> out{"--node-id",
@@ -241,9 +286,9 @@ public:
                                      "--groups",
                                      std::to_string(_groups),
                                      "--election-timeout-min",
-                                     "300",
+                                     "1000",
                                      "--election-timeout-max",
-                                     "600",
+                                     "2000",
                                      "--heartbeat-interval",
                                      "50",
                                      "--op-timeout",
@@ -365,9 +410,17 @@ public:
     }
 
     /// A linearizable read through the log. The value, or nullopt.
+    ///
+    /// A leader's "no such key" is an answer, so the read stops there rather
+    /// than retrying it until @p limit. @p answered, when given, says whether
+    /// any host answered at all: nullopt with `*answered == false` means the
+    /// cluster served no read in time, which is not the same as the key
+    /// being gone.
     auto get(const std::string& key, std::chrono::milliseconds limit = 20s,
-             std::string* last_outcome = nullptr) -> std::optional<std::string> {
+             std::string* last_outcome = nullptr, bool* answered = nullptr)
+        -> std::optional<std::string> {
         std::optional<std::string> value;
+        bool absent = false;
         std::uint64_t answered_by = 0;
         until_ok(
             limit,
@@ -380,11 +433,19 @@ public:
                 if (last_outcome != nullptr) {
                     *last_outcome = "outcome " + std::to_string(static_cast<int>(r._outcome));
                 }
+                if (r._outcome == kv_outcome::no_such_key) {
+                    absent = true;
+                    r._outcome = kv_outcome::ok;  // an answer: stop retrying
+                }
                 return r;
             },
             &answered_by);
-        if (last_outcome != nullptr && value) {
-            *last_outcome = "read from host " + std::to_string(answered_by);
+        if (answered != nullptr) {
+            *answered = value.has_value() || absent;
+        }
+        if (last_outcome != nullptr && (value || absent)) {
+            *last_outcome = std::string(absent ? "no such key, " : "") + "read from host " +
+                            std::to_string(answered_by);
         }
         return value;
     }
@@ -479,33 +540,47 @@ auto role_changes(s3_cluster& cluster, std::uint64_t id) -> std::string {
 
 /// The failure message names each lost key, what reading it returned, and
 /// which host acknowledged the write, followed by every host's role changes.
-/// The SIGKILL case lost exactly one acknowledged write in about one CI job
-/// in twenty-five (2026-10-24..28) and never in 102 local runs, so the
-/// failure has to explain itself.
+///
+/// A key counts as lost only when a host ANSWERED the read with no value or a
+/// wrong one. A read nobody answered is a separate failure, "unanswered":
+/// until 2026-11-05 it was counted as lost, and every "1 of 2000
+/// acknowledged keys are lost" in CI (2026-10-24..11-02) was key 0, the first
+/// key read, read back as "nothing (outcome 4)" -- outcome `other`, no
+/// answer -- while leadership flipped between the two survivors for about
+/// the read's whole 20 s. The keys after it read back fine. So an unanswered
+/// read gets another 60 s once before it fails, and fails as what it is.
 auto require_readable(s3_cluster& cluster, const std::set<std::size_t>& keys,
                       const std::map<std::size_t, std::uint64_t>& acked_by = {}) -> void {
-    std::size_t missing = 0;
+    std::size_t lost = 0;
+    std::size_t unanswered = 0;
     std::string detail;
     for (const auto i : keys) {
         std::string outcome;
-        const auto got = cluster.get(kythira::testing::kv_key(i), 20s, &outcome);
-        if (got != value_for(i)) {
-            ++missing;
-            const auto acker = acked_by.find(i);
-            detail += "\n  key " + std::to_string(i) + " read back as " +
-                      (got ? "'" + *got + "'" : std::string("nothing")) + " (" + outcome +
-                      "), acknowledged by host " +
-                      (acker == acked_by.end() ? std::string("?") : std::to_string(acker->second));
+        bool answered = false;
+        auto got = cluster.get(kythira::testing::kv_key(i), 20s, &outcome, &answered);
+        if (!answered) {
+            got = cluster.get(kythira::testing::kv_key(i), 60s, &outcome, &answered);
         }
+        if (answered && got == value_for(i)) {
+            continue;
+        }
+        ++(answered ? lost : unanswered);
+        const auto acker = acked_by.find(i);
+        detail += "\n  key " + std::to_string(i) +
+                  (answered ? " read back as " + (got ? "'" + *got + "'" : std::string("nothing"))
+                            : std::string(" got no answer in 80 s")) +
+                  " (" + outcome + "), acknowledged by host " +
+                  (acker == acked_by.end() ? std::string("?") : std::to_string(acker->second));
     }
-    if (missing != 0U) {
+    if (lost + unanswered != 0U) {
         for (std::uint64_t id = 1; id <= 3; ++id) {
             detail += "\n── host " + std::to_string(id) + " role changes ──\n" +
                       role_changes(cluster, id);
         }
     }
-    BOOST_TEST(missing == 0U,
-               missing << " of " << keys.size() << " acknowledged keys are lost" << detail);
+    BOOST_TEST(lost + unanswered == 0U, lost << " of " << keys.size()
+                                             << " acknowledged keys are lost and " << unanswered
+                                             << " got no answer" << detail);
 }
 
 auto describe_hosts(s3_cluster& cluster) -> std::string {
@@ -584,13 +659,14 @@ BOOST_AUTO_TEST_CASE(survives_a_full_restart_and_refuses_a_duplicate_host) {
             // follower that restarted behind can still be catching up after
             // the reads above: the leader keeps one AppendEntries batch in
             // flight per follower and holds the rest for up to an election
-            // timeout (600 ms here) while a reply is outstanding, and each
-            // caught-up entry is a PUT. Quiet means no PUT for 2 s.
+            // timeout (up to 2 s here) while a reply is outstanding, and each
+            // caught-up entry is a PUT. Quiet means no PUT for 3 s, longer
+            // than that hold.
             auto puts_before = mock.put_log().size();
             {
                 const auto deadline = std::chrono::steady_clock::now() + 30s;
                 auto quiet_since = std::chrono::steady_clock::now();
-                while (std::chrono::steady_clock::now() - quiet_since < 2s) {
+                while (std::chrono::steady_clock::now() - quiet_since < 3s) {
                     BOOST_REQUIRE_MESSAGE(
                         std::chrono::steady_clock::now() < deadline,
                         "the cluster never went quiet: " << mock.put_log().size() - puts_before

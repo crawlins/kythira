@@ -1781,6 +1781,38 @@ unverified completion claim.
       after the kill only two hosts are left.
       Keep the test allowlisted until a week of CI shows no lost key; if
       one appears, its message is the next lead.
+      **November 5, 2026: there was no lost write.** The self-explaining
+      message named the key every time: in all four hits after October 29
+      (November 1-2) it was key 0, the first key `require_readable` reads,
+      "read back as nothing (outcome 4)". Outcome 4 is `other`: no host
+      answered. A leader that does not have a key answers `no_such_key`
+      (outcome 3). Leadership flipped between the two survivors about once
+      a second for ~20 s after the killed host restarted, the read gave up
+      at its 20 s limit, and every key after it read back fine. The check
+      now tells "lost" (a host answered with nothing or a wrong value) from
+      "unanswered" (gives it 60 s more, then fails as such). From November 2
+      17:00Z to November 5 (94 runs) the test was rescued 22 times, none a
+      lost key: 19 `group_commit_batches_and_the_baseline_does_not`
+      "leadership moved during the window" and 3 "host N never became
+      ready", which was the restarted host failing to bind its old port.
+      Fixed test-side: ports now come from below the ephemeral range (a
+      bind(0) port can be handed to any outgoing connection, the survivors'
+      reconnects to the dead host included, in the 30 s it is down), and
+      the cluster runs the 1000-2000 ms election timeouts the binary warns
+      below for S3 instead of 300-600 ms.
+      **Still open, the cause of the churn:** the leader replicates on its
+      tick thread, one follower after another, and the httplib client's
+      `send_rpc` blocks for the whole round trip (it returns a ready
+      future). A follower whose AppendEntries waits on a slow durable write
+      (a 50 ms PUT, or a restarted follower catching up a long range)
+      holds back the OTHER follower's heartbeat by that long, and past an
+      election timeout that follower starts an election. Beast is
+      asynchronous and does not do this. A fix is either an asynchronous
+      httplib client or per-follower sends off the tick thread, with at
+      most one outstanding per follower. Until then, S3 clusters on the
+      httplib transport need election timeouts well above their followers'
+      slowest AppendEntries. Re-survey the test about November 12; if
+      clean, de-allowlist it.
     - Fixed the same day, all test-side: `kythira_future_continuation_operations_property_test`
       (11: the clock started after Folly's `delayed()` timer had already
       begun, so a loaded runner read 0 ms), `behavioral_preservation_property_test`
