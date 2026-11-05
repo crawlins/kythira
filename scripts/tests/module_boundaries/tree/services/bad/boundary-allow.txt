@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# rule allow-entry (no reason)
+cmd/bad_node/main.cpp
+# rule allow-entry (library header: neither composition root nor test)
+include/kythira/bad/bad.hpp  thing_impl.hpp  library header
+# rule allow-entry (public header)
+cmd/bad_node/main.cpp  public.hpp  public needs no entry
+# rule allow-entry (stale: main.cpp never includes it)
+cmd/bad_node/main.cpp  raft/other_impl.hpp  gone
+# rule allow-entry (file does not exist)
+cmd/bad_node/missing.cpp  thing_impl.hpp  removed
