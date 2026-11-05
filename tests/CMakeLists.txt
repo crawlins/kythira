@@ -5342,9 +5342,11 @@ set_tests_properties(oidc_publisher_unit_test PROPERTIES
     LABELS "unit;oidc;iam"
 )
 
-# IAM spec task 3: the OIDC token source and the AWS and GCP credential
-# exchanges, against local mock endpoints (plus TLS servers for the mTLS
-# token fetch, whose certificates come from certificate_authority).
+# IAM spec tasks 3 and 4: the OIDC token source and the AWS, GCP, Azure,
+# Alibaba and OCI credential exchanges, against local mock endpoints (plus
+# TLS servers for the mTLS token fetch, whose certificates come from
+# certificate_authority), and the Alibaba and OCI signers reading the
+# exchanged credentials. Those signers are header-only, so no gate applies.
 if(TARGET httplib::httplib)
     add_executable(cloud_credential_exchange_test cloud_credential_exchange_test.cpp)
     target_link_libraries(cloud_credential_exchange_test PRIVATE
@@ -6470,6 +6472,7 @@ if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND AND TARGET httplib::httplib
         OpenSSL::Crypto
         Azure::azure-core
         Azure::azure-identity
+        boost_json
     )
     target_include_directories(azure_blob_client_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
     target_compile_features(azure_blob_client_unit_test PRIVATE cxx_std_23)

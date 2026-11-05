@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/azure_blob_client.hpp>
+#include <raft/azure_federated_credential.hpp>
 
 // Unit coverage for `azure_blob_client` (cloud-object-persistence Requirement
 // 13, task 8), against a local `httplib::Server` standing in for Blob REST.
@@ -824,6 +825,128 @@ BOOST_AUTO_TEST_CASE(binary_bytes_survive_a_round_trip) {
     const auto got = client.get_object("c", "blob");
     BOOST_REQUIRE(got.has_value());
     BOOST_TEST(got->body == payload);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Federated credential (iam-compatible-auth task 4) ─────────────────────────
+//
+// The blob client asks its TokenCredential for the storage scope; the Kythira
+// adapter answers with an Entra token exchanged for a Kythira OIDC token. Both
+// sides are asserted from what arrived: the assertion at the mock Entra
+// endpoint, the bearer at the mock blob service.
+BOOST_AUTO_TEST_SUITE(azure_blob_federated_credential)
+
+namespace {
+
+struct MockEntra {
+    httplib::Server server;
+    std::thread thread;
+    int port{0};
+    mutable std::mutex mu;
+    std::vector<recorded_request> log;
+    int status{200};
+
+    MockEntra() {
+        server.Post("/.*", [this](const httplib::Request& req, httplib::Response& res) {
+            {
+                const std::lock_guard lock(mu);
+                log.push_back({req.method, req.path, req.body, req.headers, req.params});
+            }
+            res.status = status;
+            res.set_content(
+                status == 200
+                    ? R"({"token_type":"Bearer","expires_in":3599,"access_token":"federated-storage-token"})"
+                    : R"({"error":"invalid_client","error_description":"AADSTS70021: No matching federated identity record found."})",
+                "application/json");
+        });
+    }
+    void start() {
+        port = server.bind_to_any_port("127.0.0.1");
+        thread = std::thread([this] { server.listen_after_bind(); });
+        server.wait_until_ready();
+    }
+    ~MockEntra() {
+        server.stop();
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    MockEntra(const MockEntra&) = delete;
+    auto operator=(const MockEntra&) -> MockEntra& = delete;
+    MockEntra(MockEntra&&) = delete;
+    auto operator=(MockEntra&&) -> MockEntra& = delete;
+
+    [[nodiscard]] auto requests() const -> std::vector<recorded_request> {
+        const std::lock_guard lock(mu);
+        return log;
+    }
+};
+
+auto federated_config(const MockBlob& blob, const MockEntra& entra) -> azure_blob_config {
+    namespace cc = kythira::cloud_credentials;
+    cc::azure_federated_config app;
+    app.tenant_id = "tenant-guid";
+    app.client_id = "app-guid";
+    app.authority = "http://127.0.0.1:" + std::to_string(entra.port);
+    auto tokens = std::make_shared<cc::kythira_oidc_token_source>([](const std::string&) {
+        return cc::oidc_token{"kythira.jwt.token", std::chrono::system_clock::now() + 1h};
+    });
+    azure_blob_config cfg;
+    cfg.account = "kythirarealtestobj";
+    cfg.endpoint_override = blob.origin();
+    cfg.azure.api_timeout = 5s;
+    cfg.azure.credential = std::make_shared<cc::azure_federated_token_credential>(
+        std::make_shared<cc::azure_federated_source>(tokens, app));
+    return cfg;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(requests_carry_the_exchanged_entra_token) {
+    MockEntra entra;
+    entra.start();
+    MockBlob blob;
+    blob.responders.push_back([](const recorded_request& req, httplib::Response& res) {
+        res.set_header("ETag", "\"e\"");
+        res.status = req.method == "PUT" ? 201 : 200;
+    });
+    blob.start();
+
+    const azure_blob_client client{federated_config(blob, entra)};
+    client.put_object("c", "k", "v");
+    (void)client.get_object("c", "k");
+
+    const auto exchanges = entra.requests();
+    BOOST_REQUIRE(exchanges.size() == 1U);  // cached across both requests
+    BOOST_TEST(exchanges[0].path == "/tenant-guid/oauth2/v2.0/token");
+    BOOST_TEST(exchanges[0].param("scope") == "https://storage.azure.com/.default");
+    BOOST_TEST(exchanges[0].param("client_assertion") == "kythira.jwt.token");
+    BOOST_TEST(exchanges[0].param("client_assertion_type") ==
+               "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+
+    const auto reqs = blob.requests();
+    BOOST_REQUIRE(reqs.size() == 2U);
+    for (const auto& req : reqs) {
+        BOOST_TEST(req.header("Authorization") == "Bearer federated-storage-token");
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_refused_exchange_fails_before_anything_is_sent) {
+    MockEntra entra;
+    entra.status = 400;
+    entra.start();
+    MockBlob blob;
+    blob.start();
+
+    const azure_blob_client client{federated_config(blob, entra)};
+    try {
+        client.put_object("c", "k", "v");
+        BOOST_FAIL("expected the put to fail");
+    } catch (const std::exception& e) {
+        BOOST_TEST(std::string(e.what()).find("AADSTS70021") != std::string::npos);
+    }
+    BOOST_TEST(blob.request_count() == 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

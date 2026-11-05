@@ -14,6 +14,11 @@
 //   aws_web_identity_source     sts:AssumeRoleWithWebIdentity
 //   gcp_workload_identity_source  STS token exchange, then optional
 //                               service-account impersonation
+//   azure_federated_source      Entra ID client credentials with a
+//                               federated client_assertion (task 4)
+//   alibaba_oidc_role_source    sts:AssumeRoleWithOIDC (task 4)
+//   oci_upst_source             identity-domain token exchange to a UPST
+//                               bound to a fresh session key (task 4)
 //
 // Every source shares one caching rule (refreshing_value): serve the cached
 // value until 80% of its lifetime has passed; then the first caller
@@ -31,7 +36,13 @@
 // Request building and response parsing are pure functions, so tests check
 // the exact wire format against local mock endpoints.
 
+#include <raft/alibaba_client_config.hpp>
 #include <raft/gcp_client_config.hpp>
+#include <raft/oci_client_config.hpp>
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+#include <raft/oci_federation.hpp>  // session key generation, JWT exp
+#endif
 
 #include <boost/json.hpp>
 
@@ -464,6 +475,17 @@ struct aws_sts_credentials {
 
 /// Defined beside `gcp_client_config`, whose `access_token` hook hands it out.
 using kythira::gcp_access_token;
+/// Defined beside `alibaba_client_config`, whose `credentials` hook hands it out.
+using kythira::alibaba_sts_credentials;
+/// Defined beside `oci_client_config`, whose `session_credentials` hook hands
+/// it out.
+using kythira::oci_session_credentials;
+
+/// An Entra ID access token for one resource scope.
+struct azure_access_token {
+    std::string access_token;
+    clock::time_point expires_at;
+};
 
 /// Anything that hands out current credentials of type `Credentials`,
 /// refreshing them itself.
@@ -693,7 +715,344 @@ private:
     refreshing_value<gcp_access_token> _cache;
 };
 
+// ---------------------------------------------------------------------------
+// Azure: client credentials with a federated client_assertion (2.2)
+// ---------------------------------------------------------------------------
+
+inline constexpr std::string_view k_azure_jwt_bearer_assertion =
+    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
+struct azure_federated_config {
+    /// Directory (tenant) id of the app registration.
+    std::string tenant_id;
+    /// Application (client) id of the app registration, or of a user-assigned
+    /// managed identity, carrying the federated credential.
+    std::string client_id;
+    /// The federated credential's audience, and so the Kythira token's.
+    /// Entra's recommended value.
+    std::string audience{"api://AzureADTokenExchange"};
+    /// Default resource scope, for `current()`. Callers asking through the
+    /// SDK credential name their own scope per request.
+    std::string scope{"https://storage.azure.com/.default"};
+    /// "https://login.microsoftonline.com", or a sovereign cloud's authority.
+    std::string authority{"https://login.microsoftonline.com"};
+};
+
+[[nodiscard]] inline auto azure_token_path(const azure_federated_config& cfg) -> std::string {
+    return "/" + detail::form_escape(cfg.tenant_id) + "/oauth2/v2.0/token";
+}
+
+[[nodiscard]] inline auto azure_client_assertion_body(const azure_federated_config& cfg,
+                                                      std::string_view scope,
+                                                      std::string_view assertion) -> std::string {
+    return detail::form_body({{"grant_type", "client_credentials"},
+                              {"client_id", cfg.client_id},
+                              {"scope", scope},
+                              {"client_assertion_type", k_azure_jwt_bearer_assertion},
+                              {"client_assertion", assertion}});
+}
+
+/// Parses the token endpoint's reply. Entra's v2.0 endpoint sends
+/// `expires_in` as a number; older and sovereign deployments send it as a
+/// string, so both are accepted. An error names Entra's AADSTS description.
+[[nodiscard]] inline auto parse_azure_token(int status, std::string_view body,
+                                            clock::time_point now) -> azure_access_token {
+    boost::system::error_code ec;
+    auto v = boost::json::parse(body, ec);
+    if (ec || !v.is_object()) {
+        throw exchange_error("Entra ID token response is not JSON (HTTP " + std::to_string(status) +
+                             ")");
+    }
+    const auto& o = v.as_object();
+    if (status != 200) {
+        std::string what = "Entra ID refused (HTTP " + std::to_string(status) + ")";
+        if (const auto* e = o.if_contains("error"); e != nullptr && e->is_string()) {
+            what += ": " + std::string(e->as_string());
+        }
+        if (const auto* d = o.if_contains("error_description"); d != nullptr && d->is_string()) {
+            // The description's first line names the AADSTS code; the rest
+            // is a trace id and timestamp.
+            const std::string_view text = d->as_string();
+            what += ": " + std::string(text.substr(0, text.find_first_of("\r\n")));
+        }
+        throw exchange_error(what);
+    }
+    const auto* tok = o.if_contains("access_token");
+    const auto* exp = o.if_contains("expires_in");
+    std::int64_t seconds = 0;
+    if (exp != nullptr && exp->is_int64()) {
+        seconds = exp->as_int64();
+    } else if (exp != nullptr && exp->is_string()) {
+        try {
+            seconds = std::stoll(std::string(exp->as_string()));
+        } catch (const std::exception&) {
+            seconds = 0;
+        }
+    }
+    if (tok == nullptr || !tok->is_string() || tok->as_string().empty() || seconds <= 0) {
+        throw exchange_error("Entra ID token response lacks access_token or expires_in");
+    }
+    return {std::string(tok->as_string()), now + std::chrono::seconds(seconds)};
+}
+
+/// One cached Entra ID token per resource scope, each obtained with a fresh
+/// Kythira token as the client assertion.
+class azure_federated_source {
+public:
+    azure_federated_source(
+        std::shared_ptr<kythira_oidc_token_source> tokens, azure_federated_config cfg,
+        refresh_policy policy = {},
+        refreshing_value<azure_access_token>::now_fn now = [] { return clock::now(); })
+        : _tokens(std::move(tokens)), _cfg(std::move(cfg)), _policy(policy), _now(std::move(now)) {}
+
+    /// The token for `scope`, e.g. "https://vault.azure.net/.default".
+    [[nodiscard]] auto token(const std::string& scope) -> azure_access_token {
+        refreshing_value<azure_access_token>* slot = nullptr;
+        {
+            std::lock_guard lock(_mu);
+            auto it = _by_scope.find(scope);
+            if (it == _by_scope.end()) {
+                auto fetch = [tokens = _tokens, cfg = _cfg, scope, now = _now] {
+                    const auto jwt = tokens->token(cfg.audience);
+                    auto reply = detail::post(cfg.authority, azure_token_path(cfg), {},
+                                              azure_client_assertion_body(cfg, scope, jwt),
+                                              "application/x-www-form-urlencoded");
+                    auto t = parse_azure_token(reply.status, reply.body, now());
+                    const auto exp = t.expires_at;
+                    return refreshing_value<azure_access_token>::timed{std::move(t), exp};
+                };
+                it = _by_scope
+                         .emplace(scope, std::make_unique<refreshing_value<azure_access_token>>(
+                                             std::move(fetch), _policy, _now))
+                         .first;
+            }
+            slot = it->second.get();
+        }
+        return slot->get();
+    }
+
+    /// The token for the configured default scope.
+    [[nodiscard]] auto current() -> azure_access_token { return token(_cfg.scope); }
+
+private:
+    std::shared_ptr<kythira_oidc_token_source> _tokens;
+    azure_federated_config _cfg;
+    refresh_policy _policy;
+    refreshing_value<azure_access_token>::now_fn _now;
+    std::mutex _mu;
+    std::map<std::string, std::unique_ptr<refreshing_value<azure_access_token>>> _by_scope;
+};
+
+// ---------------------------------------------------------------------------
+// Alibaba: sts:AssumeRoleWithOIDC (2.3)
+// ---------------------------------------------------------------------------
+
+struct alibaba_oidc_role_config {
+    /// "acs:ram::<account>:role/<name>".
+    std::string role_arn;
+    /// "acs:ram::<account>:oidc-provider/<name>".
+    std::string oidc_provider_arn;
+    std::string role_session_name{"kythira"};
+    /// One of the OIDC provider's client ids, and so the Kythira token's
+    /// audience. The value Alibaba's own GitHub action uses.
+    std::string audience{"sts.aliyuncs.com"};
+    std::chrono::seconds duration{std::chrono::hours(1)};
+    /// "https://sts.aliyuncs.com", or a regional "https://sts.<region>.aliyuncs.com".
+    std::string sts_endpoint{"https://sts.aliyuncs.com"};
+};
+
+/// The RPC call's query string. AssumeRoleWithOIDC is anonymous (the OIDC
+/// token is the proof), so there is no signature; the common parameters go
+/// in the query and the call's own in the form body, as Alibaba's SDKs send
+/// it.
+[[nodiscard]] inline auto alibaba_assume_role_with_oidc_query(clock::time_point when)
+    -> std::string {
+    const std::time_t t = clock::to_time_t(when);
+    std::tm tm{};
+    gmtime_r(&t, &tm);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return "/?" + detail::form_body({{"Action", "AssumeRoleWithOIDC"},
+                                     {"Format", "JSON"},
+                                     {"Version", "2015-04-01"},
+                                     {"Timestamp", stamp}});
+}
+
+[[nodiscard]] inline auto alibaba_assume_role_with_oidc_body(const alibaba_oidc_role_config& cfg,
+                                                             std::string_view oidc_token)
+    -> std::string {
+    const auto duration = std::to_string(cfg.duration.count());
+    return detail::form_body({{"RoleArn", cfg.role_arn},
+                              {"OIDCProviderArn", cfg.oidc_provider_arn},
+                              {"OIDCToken", oidc_token},
+                              {"RoleSessionName", cfg.role_session_name},
+                              {"DurationSeconds", duration}});
+}
+
+/// Parses the JSON reply; an error names STS's Code and Message.
+[[nodiscard]] inline auto parse_alibaba_assume_role_with_oidc(int status, std::string_view body)
+    -> alibaba_sts_credentials {
+    boost::system::error_code ec;
+    auto v = boost::json::parse(body, ec);
+    if (ec || !v.is_object()) {
+        throw exchange_error("AssumeRoleWithOIDC response is not JSON (HTTP " +
+                             std::to_string(status) + ")");
+    }
+    const auto& o = v.as_object();
+    const auto text = [](const boost::json::object& obj, std::string_view key) -> std::string {
+        const auto* f = obj.if_contains(key);
+        return f != nullptr && f->is_string() ? std::string(f->as_string()) : std::string();
+    };
+    if (status != 200) {
+        auto code = text(o, "Code");
+        auto message = text(o, "Message");
+        throw exchange_error("AssumeRoleWithOIDC refused: " +
+                             (code.empty() ? "HTTP " + std::to_string(status) : code) +
+                             (message.empty() ? "" : ": " + message));
+    }
+    const auto* creds = o.if_contains("Credentials");
+    if (creds == nullptr || !creds->is_object()) {
+        throw exchange_error("AssumeRoleWithOIDC response has no Credentials");
+    }
+    const auto& c = creds->as_object();
+    alibaba_sts_credentials out{
+        text(c, "AccessKeyId"), text(c, "AccessKeySecret"), text(c, "SecurityToken"), {}};
+    const auto when = detail::parse_rfc3339_utc(text(c, "Expiration"));
+    if (out.access_key_id.empty() || out.access_key_secret.empty() || out.security_token.empty() ||
+        !when) {
+        throw exchange_error("AssumeRoleWithOIDC response lacks a credential field");
+    }
+    out.expires_at = *when;
+    return out;
+}
+
+class alibaba_oidc_role_source {
+public:
+    alibaba_oidc_role_source(
+        std::shared_ptr<kythira_oidc_token_source> tokens, alibaba_oidc_role_config cfg,
+        refresh_policy policy = {},
+        refreshing_value<alibaba_sts_credentials>::now_fn now = [] { return clock::now(); })
+        : _cache(
+              [tokens = std::move(tokens), cfg = std::move(cfg), now] {
+                  const auto jwt = tokens->token(cfg.audience);
+                  auto reply =
+                      detail::post(cfg.sts_endpoint, alibaba_assume_role_with_oidc_query(now()),
+                                   {{"Accept", "application/json"}},
+                                   alibaba_assume_role_with_oidc_body(cfg, jwt),
+                                   "application/x-www-form-urlencoded");
+                  auto creds = parse_alibaba_assume_role_with_oidc(reply.status, reply.body);
+                  const auto exp = creds.expires_at;
+                  return refreshing_value<alibaba_sts_credentials>::timed{std::move(creds), exp};
+              },
+              policy, now) {}
+
+    [[nodiscard]] auto current() -> alibaba_sts_credentials { return _cache.get(); }
+
+private:
+    refreshing_value<alibaba_sts_credentials> _cache;
+};
+
+// ---------------------------------------------------------------------------
+// OCI: identity-domain token exchange to a UPST (2.4)
+// ---------------------------------------------------------------------------
+
+inline constexpr std::string_view k_oci_upst_token_type = "urn:oci:token-type:oci-upst";
+
+struct oci_upst_config {
+    /// The identity domain's URL, "https://idcs-<id>.identity.oraclecloud.com".
+    std::string domain_url;
+    /// The confidential application the domain's identity propagation trust
+    /// names. The exchange authenticates as it (HTTP Basic), so this is the
+    /// one stored secret in the OCI path; it can exchange tokens but holds no
+    /// OCI permissions of its own.
+    std::string client_id;
+    std::string client_secret;
+    /// The Kythira token's audience, which the trust may check.
+    std::string audience{"https://cloud.oracle.com"};
+};
+
+[[nodiscard]] inline auto oci_upst_exchange_body(std::string_view subject_token,
+                                                 std::string_view public_key_der_b64)
+    -> std::string {
+    return detail::form_body({{"grant_type", k_gcp_token_exchange_grant},
+                              {"requested_token_type", k_oci_upst_token_type},
+                              {"subject_token_type", "jwt"},
+                              {"subject_token", subject_token},
+                              {"public_key", public_key_der_b64}});
+}
+
+/// The UPST from the exchange's reply. An error names the domain's error
+/// and description.
+[[nodiscard]] inline auto parse_oci_upst_exchange(int status, std::string_view body)
+    -> std::string {
+    boost::system::error_code ec;
+    auto v = boost::json::parse(body, ec);
+    if (ec || !v.is_object()) {
+        throw exchange_error("OCI token exchange response is not JSON (HTTP " +
+                             std::to_string(status) + ")");
+    }
+    const auto& o = v.as_object();
+    if (status != 200) {
+        std::string what = "OCI token exchange refused (HTTP " + std::to_string(status) + ")";
+        if (const auto* e = o.if_contains("error"); e != nullptr && e->is_string()) {
+            what += ": " + std::string(e->as_string());
+        }
+        if (const auto* d = o.if_contains("error_description"); d != nullptr && d->is_string()) {
+            what += ": " + std::string(d->as_string());
+        }
+        throw exchange_error(what);
+    }
+    const auto* tok = o.if_contains("token");
+    if (tok == nullptr || !tok->is_string() || tok->as_string().empty()) {
+        throw exchange_error("OCI token exchange response lacks token");
+    }
+    return std::string(tok->as_string());
+}
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+/// A UPST bound to a session key pair generated fresh for each exchange, as
+/// the OCI SDKs do: the key's only purpose is its token, so it lives no
+/// longer. The UPST's own `exp` claim gives the expiry.
+class oci_upst_source {
+public:
+    oci_upst_source(
+        std::shared_ptr<kythira_oidc_token_source> tokens, oci_upst_config cfg,
+        refresh_policy policy = {},
+        refreshing_value<oci_session_credentials>::now_fn now = [] { return clock::now(); })
+        : _cache(
+              [tokens = std::move(tokens), cfg = std::move(cfg)] {
+                  const auto jwt = tokens->token(cfg.audience);
+                  auto key = oci_federation::generate_session_key_pem();
+                  auto reply = detail::post(
+                      cfg.domain_url, "/oauth2/v1/token",
+                      {httplib::make_basic_authentication_header(cfg.client_id, cfg.client_secret)},
+                      oci_upst_exchange_body(jwt, oci_federation::public_key_der_base64(key)),
+                      "application/x-www-form-urlencoded");
+                  auto upst = parse_oci_upst_exchange(reply.status, reply.body);
+                  clock::time_point exp;
+                  try {
+                      exp = clock::from_time_t(oci_federation::parse_jwt_exp(upst));
+                  } catch (const std::exception& e) {
+                      throw exchange_error(std::string("OCI UPST unreadable: ") + e.what());
+                  }
+                  return refreshing_value<oci_session_credentials>::timed{
+                      oci_session_credentials{std::move(upst), std::move(key), exp}, exp};
+              },
+              policy, std::move(now)) {}
+
+    [[nodiscard]] auto current() -> oci_session_credentials { return _cache.get(); }
+
+private:
+    refreshing_value<oci_session_credentials> _cache;
+};
+#endif  // CPPHTTPLIB_OPENSSL_SUPPORT
+
 static_assert(cloud_credential_source<aws_web_identity_source, aws_sts_credentials>);
 static_assert(cloud_credential_source<gcp_workload_identity_source, gcp_access_token>);
+static_assert(cloud_credential_source<azure_federated_source, azure_access_token>);
+static_assert(cloud_credential_source<alibaba_oidc_role_source, alibaba_sts_credentials>);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+static_assert(cloud_credential_source<oci_upst_source, oci_session_credentials>);
+#endif
 
 }  // namespace kythira::cloud_credentials

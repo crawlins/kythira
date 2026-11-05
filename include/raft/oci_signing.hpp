@@ -350,6 +350,19 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
             "oci_http_client selects automatically when use_instance_principal is set");
     }
 
+    // Refreshing UPST mode: the token and its session key come from the hook
+    // on every call (a cache hit in oci_upst_source), so a renewed token is
+    // picked up without rebuilding the client.
+    if (cfg.session_credentials) {
+        const auto session = cfg.session_credentials();
+        if (session.security_token.empty() || session.private_key_pem.empty()) {
+            throw std::invalid_argument(
+                "oci_signing: session_credentials returned an empty token or session key");
+        }
+        return sign_request_with_key("ST$" + session.security_token, session.private_key_pem, "",
+                                     method, request_target, host, body, when, content_type);
+    }
+
     // UPST mode: the caller already holds a federated token (CI's GitHub-OIDC
     // exchange, Requirement 14.2) bound to the session key in
     // private_key_pem. Same keyId scheme Instance Principal uses — "ST$" plus

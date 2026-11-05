@@ -230,10 +230,11 @@ inline constexpr const char* k_hex_digits = "0123456789abcdef";
     std::string_view path, const std::map<std::string, std::string>& query, std::string_view action,
     std::string_view version, std::string_view body, std::chrono::system_clock::time_point when,
     std::string_view nonce) -> std::map<std::string, std::string> {
-    if (cfg.access_key_id.empty()) {
+    const auto keys = signing_credentials(cfg);
+    if (keys.access_key_id.empty()) {
         throw std::invalid_argument("alibaba_signing: access_key_id is empty");
     }
-    if (cfg.access_key_secret.empty()) {
+    if (keys.access_key_secret.empty()) {
         throw std::invalid_argument("alibaba_signing: access_key_secret is empty");
     }
 
@@ -249,14 +250,14 @@ inline constexpr const char* k_hex_digits = "0123456789abcdef";
         {"x-acs-signature-nonce", std::string(nonce)},
         {"x-acs-version", std::string(version)},
     };
-    if (!cfg.security_token.empty()) {
-        signed_headers.emplace("x-acs-security-token", cfg.security_token);
+    if (!keys.security_token.empty()) {
+        signed_headers.emplace("x-acs-security-token", keys.security_token);
     }
 
     const std::string canonical = canonical_request(method, path, canonical_query_string(query),
                                                     signed_headers, payload_hash);
     const std::string signature =
-        detail::hmac_sha256_hex(cfg.access_key_secret, string_to_sign(canonical));
+        detail::hmac_sha256_hex(keys.access_key_secret, string_to_sign(canonical));
 
     std::string signed_names;
     for (const auto& [name, value] : signed_headers) {
@@ -267,7 +268,7 @@ inline constexpr const char* k_hex_digits = "0123456789abcdef";
     }
 
     auto headers = signed_headers;
-    headers.emplace("Authorization", "ACS3-HMAC-SHA256 Credential=" + cfg.access_key_id +
+    headers.emplace("Authorization", "ACS3-HMAC-SHA256 Credential=" + keys.access_key_id +
                                          ",SignedHeaders=" + signed_names +
                                          ",Signature=" + signature);
     return headers;
