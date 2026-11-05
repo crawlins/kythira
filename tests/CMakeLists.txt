@@ -1318,6 +1318,15 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
     # snapshot and never under serializable.
     add_raft_completion_test(multi_raft_txn_write_skew_test multi_raft_txn_write_skew_test.cpp)
     add_raft_completion_test(redis_acl_unit_test redis_acl_unit_test.cpp)
+    # redis-gateway-module task 1: the log-entry and snapshot bytes of every
+    # state machine the daemon can be built with, against tests/golden/redis/.
+    # The RESP-reply goldens live in the integration and txn tests below.
+    set(KYTHIRA_REDIS_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden/redis")
+    add_raft_completion_test(redis_golden_bytes_test redis_golden_bytes_test.cpp)
+    target_link_libraries(redis_golden_bytes_test PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(redis_golden_bytes_test PRIVATE
+        KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
+    set_tests_properties(redis_golden_bytes_test PROPERTIES LABELS "unit;redis;cache" TIMEOUT 120)
     target_link_libraries(redis_acl_unit_test PRIVATE OpenSSL::Crypto)
     add_raft_completion_test(redis_auth_limiter_unit_test redis_auth_limiter_unit_test.cpp)
     # redis_gateway_node's own environment parsing (the plaintext-Raft opt-in).
@@ -1358,12 +1367,16 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
         LABELS "unit;redis;cache" TIMEOUT 60)
     if(folly_FOUND)
         add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
+        target_compile_definitions(redis_gateway_integration_test PRIVATE
+            KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
         target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         set_tests_properties(redis_gateway_integration_test PROPERTIES LABELS "multi-raft;redis" TIMEOUT 600)
         # The same cases over the disk-backed cache_kv_state_machine
         # (.kiro/specs/disk-backed-build-cache/ Requirement 2.7).
         add_raft_completion_test(redis_gateway_disk_store_integration_test
                                  redis_gateway_disk_store_integration_test.cpp)
+        target_compile_definitions(redis_gateway_disk_store_integration_test PRIVATE
+            KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
         target_link_libraries(redis_gateway_disk_store_integration_test PRIVATE
                               OpenSSL::SSL OpenSSL::Crypto)
         set_tests_properties(redis_gateway_disk_store_integration_test PROPERTIES
@@ -1377,6 +1390,8 @@ if(KYTHIRA_BUILD_REDIS_GATEWAY)
         # .kiro/specs/multi-raft-transactions/ task 9: the gateway's
         # transaction surface over a wrapped KV state machine.
         add_raft_completion_test(redis_gateway_txn_test redis_gateway_txn_test.cpp)
+        target_compile_definitions(redis_gateway_txn_test PRIVATE
+            KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
         target_link_libraries(redis_gateway_txn_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         set_tests_properties(redis_gateway_txn_test PROPERTIES LABELS "multi-raft;redis;txn" TIMEOUT 600)
         # Tier 2 (task 14): the gateway over a multi-versioned KV and an

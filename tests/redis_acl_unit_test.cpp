@@ -183,3 +183,35 @@ BOOST_AUTO_TEST_CASE(role_names_round_trip, *boost::unit_test::timeout(30)) {
     BOOST_CHECK(!parse_redis_role("root").has_value());
     BOOST_CHECK_EQUAL(redis_role_name(redis_role::read_write), "read_write");
 }
+
+// Pins today's reading of an `auth=` word after the role, before IAM task 21
+// gives it a meaning (.kiro/specs/redis-gateway-module/ task 1, design
+// "The ACL `auth=` attribute"). Today it is an ordinary key prefix, so an
+// older gateway that meets `auth=iam` in an ACL file still allows password
+// AUTH for that user, scoped to keys starting "auth=iam". Task 21 must
+// change this test, and roll every gateway before any ACL uses `auth=`.
+BOOST_AUTO_TEST_CASE(auth_attribute_is_read_as_a_key_prefix_today, *boost::unit_test::timeout(30)) {
+    redis_acl acl;
+    acl.reload("user farm " + redis_acl::hash_secret("farm-secret", test_iters) +
+               " read_write auth=iam sccache/\n" + "user iamonly " +
+               redis_acl::hash_secret("iam-secret", test_iters) + " read_only auth=iam\n");
+
+    const auto users =
+        redis_acl::parse("user farm " + redis_acl::hash_secret("farm-secret", test_iters) +
+                         " read_write auth=iam sccache/\n");
+    BOOST_REQUIRE_EQUAL(users.size(), 1U);
+    BOOST_CHECK(users[0]._key_prefixes == (std::vector<std::string>{"auth=iam", "sccache/"}));
+
+    auto farm = acl.authenticate("farm", "farm-secret");
+    BOOST_REQUIRE(farm.has_value());
+    BOOST_CHECK(farm->_key_prefixes == (std::vector<std::string>{"auth=iam", "sccache/"}));
+    BOOST_CHECK(redis_acl::key_in_scope(*farm, "sccache/obj"));
+    BOOST_CHECK(redis_acl::key_in_scope(*farm, "auth=iam/anything"));
+
+    // A user whose only word after the role is `auth=iam` still has a
+    // password and a one-prefix scope: there is no IAM-only user yet.
+    auto iamonly = acl.authenticate("iamonly", "iam-secret");
+    BOOST_REQUIRE(iamonly.has_value());
+    BOOST_CHECK(iamonly->_key_prefixes == (std::vector<std::string>{"auth=iam"}));
+    BOOST_CHECK(!redis_acl::key_in_scope(*iamonly, "sccache/obj"));
+}

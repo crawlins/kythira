@@ -1,0 +1,95 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# RESP replies of the transaction commands (redis-gateway-module task 1).
+# One `>` line per command sent, one `<` line per reply, escaped.
+# Regenerate with KYTHIRA_UPDATE_GOLDENS=1; a change here is a wire change.
+> ops AUTH ops ops-secret
+< +OK\r\n
+## multi-key commands
+> ops MSET a/1 left z/1 right
+< +OK\r\n
+> ops MSET a/1 left
+< +OK\r\n
+> ops MSET a/1 other
+< -ERR value conflict for an existing key\r\n
+> ops MSET a/2
+< -ERR wrong number of arguments for 'mset' command\r\n
+> ops MSET
+< -ERR wrong number of arguments for 'mset' command\r\n
+> ops MGET a/1 z/1 a/absent
+< *3\r\n$4\r\nleft\r\n$5\r\nright\r\n$-1\r\n
+> ops MGET
+< -ERR wrong number of arguments for 'mget' command\r\n
+> ops DEL a/1 z/1 a/absent
+< :2\r\n
+> ops MGET a/1 z/1
+< *2\r\n$-1\r\n$-1\r\n
+## MULTI / EXEC / DISCARD / WATCH
+> ops EXEC
+< -ERR EXEC without MULTI\r\n
+> ops DISCARD
+< -ERR DISCARD without MULTI\r\n
+> ops MULTI
+< +OK\r\n
+> ops MULTI
+< -ERR MULTI calls can not be nested\r\n
+> ops SET a/m 1
+< +QUEUED\r\n
+> ops GET a/m
+< +QUEUED\r\n
+> ops MSET z/m 2 z/n 3
+< +QUEUED\r\n
+> ops MGET a/m z/m
+< +QUEUED\r\n
+> ops DEL z/n a/absent
+< +QUEUED\r\n
+> ops EXISTS z/n
+< +QUEUED\r\n
+> ops EXEC
+< *6\r\n+OK\r\n$1\r\n1\r\n+OK\r\n*2\r\n$1\r\n1\r\n$1\r\n2\r\n:1\r\n:0\r\n
+> ops MULTI
+< +OK\r\n
+> ops SET a/d 1
+< +QUEUED\r\n
+> ops DISCARD
+< +OK\r\n
+> ops GET a/d
+< $-1\r\n
+> ops MULTI
+< +OK\r\n
+> ops GET
+< -ERR wrong number of arguments for 'get' command\r\n
+> ops FLUSHALL
+< -ERR FLUSHALL is not supported inside MULTI on this gateway\r\n
+> ops EXEC
+< -EXECABORT Transaction discarded because of previous errors.\r\n
+> ops WATCH a/m
+< -ERR WATCH needs a build with mvcc::on (multi-version transactions)\r\n
+> ops UNWATCH
+< -ERR UNWATCH needs a build with mvcc::on (multi-version transactions)\r\n
+## isolation and internal commands
+> ops KYTHIRA.ISOLATION
+< $14\r\nread_committed\r\n
+> ops KYTHIRA.ISOLATION read-committed-wait
+< +OK\r\n
+> ops KYTHIRA.ISOLATION
+< $19\r\nread_committed_wait\r\n
+> ops KYTHIRA.ISOLATION snapshot
+< -ERR isolation snapshot is not available in this build; it offers read_committed, read_committed_wait (snapshot and serializable need a host built with mvcc::on)\r\n
+> ops KYTHIRA.ISOLATION bogus
+< -ERR unknown isolation level 'bogus'\r\n
+> ops KYTHIRA.TXN READ a/k
+< -NOPERM KYTHIRA.TXN is internal to the gateways\r\n
+> farm AUTH farm farm-secret
+< +OK\r\n
+> farm MSET a/f 1 z/f 2
+< -NOPERM No permissions to access a key\r\n
+> farm MGET a/f z/f
+< -NOPERM No permissions to access a key\r\n
+> farm MULTI
+< +OK\r\n
+> farm SET z/f 1
+< -NOPERM No permissions to access a key\r\n
+> farm EXEC
+< -EXECABORT Transaction discarded because of previous errors.\r\n
