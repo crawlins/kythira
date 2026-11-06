@@ -2086,7 +2086,9 @@ jobs:
   # header reaches most translation units anyway, so a diff-scoped pull
   # request run would often be a full run. Six shards take 27-40 minutes
   # each; every event, pull request or main push, analyses the full tree.
-  # KYTHIRA_TIDY_SHARD_COUNT/INDEX split the sorted file list round robin.
+  # KYTHIRA_TIDY_SHARD_COUNT/INDEX pick one of six shards that
+  # scripts/tidy-shard.py balances by the measured per-file cost in
+  # configs/tidy-file-costs.txt (clang-tidy-result-cache Requirement 8).
   #
   # No compile of project code is needed: clang-tidy only parses.
   # scripts/build-tidy-prerequisites.sh builds what the compile commands
@@ -2213,7 +2215,11 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DKYTHIRA_TIDY_SHARD_COUNT=6 \
             -DKYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }}
-          echo "This shard analyses $(wc -l < build/tidy-sources.txt) files."
+          echo "This shard analyses $(wc -l < build/tidy-sources.txt) files" \
+               "on $(nproc) x $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)."
+          # The cost-balanced planner, not the round-robin fallback, chose
+          # this shard's files.
+          test -s build/tidy-shard-sources.txt
 
       # Same assertion as build-and-test; see scripts/check-build-config.py.
       - name: Assert the build is configured as this job claims
@@ -3729,6 +3735,8 @@ jobs:
       # checker cannot pass the tree by reporting nothing.
       - name: Module boundary checker passes its fixture tests
         run: python3 scripts/tests/test_check_module_boundaries.py -v
+      - name: clang-tidy shard planner passes its tests
+        run: python3 scripts/tests/test_tidy_shard.py -v
       - name: Every services/ module uses only Kythira's public surface
         run: python3 scripts/check_module_boundaries.py
 

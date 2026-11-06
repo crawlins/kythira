@@ -2431,31 +2431,71 @@ else()
     list(SORT TIDY_SOURCES)
 endif()
 
-# A full run is ~2.5 hours on a 4-core CI runner, so CI splits it across
+# A full run is ~3.5 hours on a 4-core CI runner, so CI splits it across
 # parallel jobs: each configures with its own KYTHIRA_TIDY_SHARD_INDEX and
-# analyses every KYTHIRA_TIDY_SHARD_COUNT-th file of the sorted list. Round
-# robin rather than contiguous ranges, so the heavy test directories spread
-# evenly. The defaults (one shard) analyse everything.
+# analyses one shard of the file list. scripts/tidy-shard.py deals the files
+# longest-first by the measured cost in configs/tidy-file-costs.txt, so the
+# shards finish together (clang-tidy-result-cache Requirement 8); the old
+# round robin gave one shard 27 minutes and another 66 in the same run.
+# Without Python it falls back to that round robin. The defaults (one shard)
+# analyse everything.
 set(KYTHIRA_TIDY_SHARD_COUNT 1 CACHE STRING
     "Split the static-analysis file list into this many shards")
 set(KYTHIRA_TIDY_SHARD_INDEX 0 CACHE STRING
     "Which shard (0-based) the static-analysis targets analyse")
+set(_tidy_costs "${CMAKE_SOURCE_DIR}/configs/tidy-file-costs.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_tidy_costs}")
 if(KYTHIRA_TIDY_SHARD_COUNT GREATER 1)
     if(KYTHIRA_TIDY_SHARD_INDEX LESS 0 OR
        NOT KYTHIRA_TIDY_SHARD_INDEX LESS KYTHIRA_TIDY_SHARD_COUNT)
         message(FATAL_ERROR "KYTHIRA_TIDY_SHARD_INDEX=${KYTHIRA_TIDY_SHARD_INDEX} "
                             "is outside 0..KYTHIRA_TIDY_SHARD_COUNT-1")
     endif()
-    set(_tidy_shard "")
-    set(_tidy_i 0)
-    foreach(_f IN LISTS TIDY_SOURCES)
-        math(EXPR _tidy_mod "${_tidy_i} % ${KYTHIRA_TIDY_SHARD_COUNT}")
-        if(_tidy_mod EQUAL KYTHIRA_TIDY_SHARD_INDEX)
-            list(APPEND _tidy_shard "${_f}")
+    if(NOT Python3_EXECUTABLE)
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+    endif()
+    if(Python3_EXECUTABLE)
+        # The same -j the static-analysis target passes run-clang-tidy below.
+        if(CMAKE_BUILD_PARALLEL_LEVEL)
+            set(_tidy_plan_jobs ${CMAKE_BUILD_PARALLEL_LEVEL})
+        else()
+            cmake_host_system_information(RESULT _tidy_plan_jobs QUERY NUMBER_OF_LOGICAL_CORES)
         endif()
-        math(EXPR _tidy_i "${_tidy_i} + 1")
-    endforeach()
-    set(TIDY_SOURCES ${_tidy_shard})
+        string(REPLACE ";" "\n" _tidy_all "${TIDY_SOURCES}")
+        file(WRITE "${CMAKE_BINARY_DIR}/tidy-all-sources.txt" "${_tidy_all}\n")
+        execute_process(
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/tidy-shard.py" plan
+                    --count ${KYTHIRA_TIDY_SHARD_COUNT}
+                    --index ${KYTHIRA_TIDY_SHARD_INDEX}
+                    --jobs ${_tidy_plan_jobs}
+                    --costs "${_tidy_costs}"
+                    --root "${CMAKE_SOURCE_DIR}"
+                    --files-from "${CMAKE_BINARY_DIR}/tidy-all-sources.txt"
+                    --out "${CMAKE_BINARY_DIR}/tidy-shard-sources.txt"
+            RESULT_VARIABLE _tidy_rc
+            OUTPUT_VARIABLE _tidy_plan
+            ERROR_VARIABLE _tidy_err
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _tidy_rc EQUAL 0)
+            message(FATAL_ERROR "scripts/tidy-shard.py failed (${_tidy_rc}): ${_tidy_err}")
+        endif()
+        message(STATUS "${_tidy_plan}")
+        file(STRINGS "${CMAKE_BINARY_DIR}/tidy-shard-sources.txt" TIDY_SOURCES)
+    else()
+        message(WARNING "python3 not found: clang-tidy shards fall back to round robin, "
+                        "which ignores configs/tidy-file-costs.txt")
+        file(REMOVE "${CMAKE_BINARY_DIR}/tidy-shard-sources.txt")
+        set(_tidy_shard "")
+        set(_tidy_i 0)
+        foreach(_f IN LISTS TIDY_SOURCES)
+            math(EXPR _tidy_mod "${_tidy_i} % ${KYTHIRA_TIDY_SHARD_COUNT}")
+            if(_tidy_mod EQUAL KYTHIRA_TIDY_SHARD_INDEX)
+                list(APPEND _tidy_shard "${_f}")
+            endif()
+            math(EXPR _tidy_i "${_tidy_i} + 1")
+        endforeach()
+        set(TIDY_SOURCES ${_tidy_shard})
+    endif()
 endif()
 list(LENGTH TIDY_SOURCES TIDY_SOURCES_COUNT)
 # The exact list each run analyses, for CI logs and ad-hoc runs.
