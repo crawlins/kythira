@@ -2,7 +2,8 @@
 
 ## Status: 0/9 tasks complete
 
-**Last Updated**: November 6, 2026 (spec written).
+**Last Updated**: November 6, 2026 (spec written; Requirement 4 amended the
+same day so every same-repository branch writes, not only `main`).
 
 ## Overview
 
@@ -46,8 +47,8 @@ Reference material to read before starting:
     },
     {
       "wave": 4,
-      "tasks": [6, 7, 8],
-      "description": "CI wiring, bucket lifecycle and audit prefix, weekly uncached audit"
+      "tasks": [7, 6, 8],
+      "description": "Lifecycle rule (needs the maintainer's go) and CI wiring, which needs the shared PR-only key to exist, and the weekly uncached audit"
     },
     {
       "wave": 5,
@@ -139,22 +140,25 @@ Reference material to read before starting:
     `check-build-config.py`, upload `tidy-cache-stats.json` with
     `if: always()`.
   - `vars.TIDY_CACHE_DISABLED == 'true'` forces `off`.
-  - Verify three runs and record their IDs: a `main` push on a cold prefix
-    (all misses, stores), the next `main` push (mostly hits), and a pull
-    request (read-only, no PUTs in its log, hits on unchanged TUs).
+  - Mode `readwrite` whenever the build-cache action exported a writing key
+    (main's read-write key or the shared PR-only key), `off` otherwise.
+  - Verify three runs and record their IDs: a pull request on a cold prefix
+    (all misses, stores), the `main` push after it merges (near-all hits),
+    and a fork-style run with the secrets absent (`off`, today's output).
   - Update the comment above the job with the measured warm and cold
     figures.
-  - _Requirements: 4.1-4.4, 6.2, 7.2, 7.3_
+  - _Requirements: 4.1, 4.3, 4.4, 6.2, 7.2, 7.3_
 
 - [ ] 7. Bucket lifecycle and audit prefix
+  - Depends on the PR-only build-cache key from the thread "Let PR runs
+    write build caches"; check that its policy covers `clang-tidy/`.
   - `scripts/oci-build-cache/provision.sh`: add the 30-day `clang-tidy/`
     lifecycle rule to `LIFECYCLE_JSON`.
   - `scripts/oci-build-cache/audit.sh` and `test-audit.sh`: report the new
     prefix.
-  - **Applying the lifecycle rule to the live bucket needs the maintainer's
-    go in his own words.** Until then, entries simply do not expire; the
-    storage estimate (design) shows that is harmless for weeks.
-  - _Requirements: 9.1-9.3_
+  - **Applying the lifecycle rule to the live bucket is a live-cloud change
+    and needs the maintainer's go in his own words.**
+  - _Requirements: 4.2, 4.3, 9.1-9.3_
 
 - [ ] 8. Weekly uncached audit
   - `tidy-audit.yml`: weekly schedule plus `workflow_dispatch`, all six

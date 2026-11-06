@@ -47,6 +47,7 @@ way the ccache, OCI build-cache and mold specs did.
 - The job already has OCI build-cache credentials through
   `.github/actions/oci-build-cache`: read-write on `main` (the
   `build-cache-write` environment), read-only on pull requests, none on fork
+  pull requests. Requirement 4 uses the shared PR-only key for non-fork
   pull requests. The bucket `kythira-build-cache` has lifecycle rules only
   for the `sccache/` and `vcpkg/` prefixes (`scripts/oci-build-cache/provision.sh`).
 - `curl` 8.5 on the runners supports `--aws-sigv4`, so the job can talk to
@@ -161,23 +162,36 @@ clang-tidy run, so cached output never stands in for a real diagnostic.
 4. `static-analysis` SHALL still fail if any TU reports a finding, exactly as
    it does today.
 
-### Requirement 4: Trust model
+### Requirement 4: Who writes
 
-**User Story:** As the maintainer, I want only `main` to write to the cache,
-so a pull request cannot plant a clean result that a later run trusts.
+**User Story:** As the maintainer, I want every CI run that can hold a
+credential, on `main` and on every pull-request branch, to write its clean
+results, so a merged PR's files are already cached when `main` re-checks
+them. (Amended November 6, 2026 at the maintainer's request; the first
+draft let only `main` write.)
 
 #### Acceptance Criteria
 
-1. Writes SHALL happen only with the read-write build-cache credentials,
-   which only jobs in the `build-cache-write` environment on `main` receive.
-2. Pull-request runs SHALL read the cache with the read-only credentials and
-   SHALL NOT write, even if a write is attempted; the RO key's IAM policy
-   already denies it.
-3. Fork pull requests, which get no credentials, SHALL run with the cache
-   disabled and behave exactly as today.
-4. The cache SHALL live under the `clang-tidy/` prefix of the existing
-   `kythira-build-cache` bucket. No new credentials or buckets SHALL be
-   created.
+1. `static-analysis` runs on `main` pushes and on pull requests from
+   branches in this repository, whoever the author, SHALL read and write
+   the cache.
+2. `main` SHALL write with the existing read-write build-cache key. Pull
+   requests SHALL write with the PR-only build-cache key that the thread
+   "Let PR runs write build caches" provisions for `sccache/`, `vcpkg/` and
+   `clang-tidy/` together (the maintainer chose one PR-only key for all
+   three caches on November 6). This spec SHALL NOT create a key of its
+   own.
+3. The PR-only key is a repository secret, not an environment secret, so
+   pull-request jobs from branches in this repository receive it.
+4. Fork pull requests SHALL run with the cache `off` and behave exactly as
+   today. GitHub gives `pull_request` runs from forks no secrets, and this
+   spec SHALL NOT work around that with `pull_request_target`, which would
+   run a fork's code next to the repository's secrets.
+5. The accepted risk SHALL be written down in the docs (Requirement 10.2):
+   anyone who can push a branch to this repository can store a "clean"
+   entry for any key, including one for files they later merge with a
+   finding in them. The weekly uncached audit (Requirement 7.4) is what
+   catches that.
 
 ### Requirement 5: Fail open, never fail closed on the cache
 
@@ -223,9 +237,8 @@ findings.
 1. A CMake cache variable `KYTHIRA_TIDY_CACHE` SHALL take `off` (default),
    `read`, `readwrite` or `local:<directory>`. `off` SHALL leave the
    `static-analysis` command line byte-identical to today's.
-2. `ci.yml` SHALL set `readwrite` on `main`, `read` on pull requests with
-   credentials, and `off` when the build-cache action reports no
-   credentials.
+2. `ci.yml` SHALL set `readwrite` whenever a writing build-cache key is
+   present (Requirement 4) and `off` when none is.
 3. A repository variable `TIDY_CACHE_DISABLED=true` SHALL force `off` in
    every CI job without a code change.
 4. A scheduled workflow run, at least weekly, SHALL run all shards with the

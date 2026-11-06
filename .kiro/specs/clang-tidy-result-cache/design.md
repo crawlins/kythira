@@ -193,9 +193,27 @@ lookups (silent no-op)".
 In the `static-analysis` job of `ci.yml`:
 
 - Configure adds `-DKYTHIRA_TIDY_CACHE=<mode>`, where mode is `off` if
-  `vars.TIDY_CACHE_DISABLED == 'true'` or the build-cache action reports
-  `enabled != 'true'`, else `readwrite` on `refs/heads/main` and `read`
-  otherwise.
+  `vars.TIDY_CACHE_DISABLED == 'true'` or the build-cache action exported
+  no writing key (fork pull requests), else `readwrite`, on `main` and on
+  every same-repository pull request alike (Requirement 4, amended
+  November 6).
+- The driver reads the `AWS_*` variables the build-cache action exports.
+  On `main` they hold the existing read-write key; on same-repository pull
+  requests they hold the shared PR-only key for `sccache/`, `vcpkg/` and
+  `clang-tidy/`, which the thread "Let PR runs write build caches"
+  provisions and wires into `.github/actions/oci-build-cache`. This spec
+  adds no key of its own.
+- The mode comes from `OCI_BUILD_CACHE_MODE` (`readwrite` or `read`),
+  which the build-cache action exports, rather than being inferred. The
+  PR-only key has `OBJECT_CREATE` but not `OBJECT_OVERWRITE`, so a PR can
+  add entries but never replace one. OCI refuses a store onto an existing
+  name and reports it misleadingly as `NoSuchBucket` (found by the
+  build-cache thread, fixed for sccache's probe object in fe53e33), so a
+  refused PUT from the PR key is first confirmed with a `HEAD` on the same
+  name; if the object exists, the driver counts an already-present entry,
+  not a backend error. The driver also never writes a fixed probe object,
+  so it needs no overwrite grant. Entries are keyed on content, so the existing entry means
+  the same thing.
 - A step after `static-analysis`, `if: always()`, uploads
   `build/tidy-cache-stats.json`.
 - `scripts/check-build-config.py` gains `--expect KYTHIRA_TIDY_CACHE=<mode>`.
@@ -209,13 +227,15 @@ SHA and, if that passed, names the result a false clean (Requirement 7.4).
 
 ## Storage estimate (Requirement 9.3)
 
-One entry per clean TU per distinct key. A cold cache writes 772 entries.
-Afterwards, a `main` push writes one entry per TU whose key changed: a
-`.cpp`-only change writes a few, a widely included header change writes up
-to all 772. At the October-November rate of 10-15 `main` pushes a day, a
-30-day lifecycle bounds the prefix at roughly 772 x 15 x 30 = 350,000
-objects in the very worst case, under 350 MB, and far less in practice. At
-OCI's $0.0255/GB-month, that is under one cent a month.
+One entry per clean TU per distinct key, about 250 bytes each. A cold cache
+writes 772 entries. Afterwards, every run (main and pull requests,
+Requirement 4) writes one entry per TU whose key changed: a `.cpp`-only
+change writes a few, a widely included header change up to all 772. At
+the early-November rate of about 34 CI runs a day, a 30-day lifecycle
+bounds the prefix at roughly 772 x 34 x 30 = 790,000 objects, about
+200 MB, in the very worst case, and 25-50 MB at a typical 50-100 new
+entries per run. At OCI's $0.0255/GB-month, that is under one cent a
+month.
 
 ## Alternatives considered
 
