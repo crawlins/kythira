@@ -2383,6 +2383,54 @@ file(GLOB_RECURSE TIDY_SOURCES
 )
 list(SORT TIDY_SOURCES)
 
+# configs/tidy-variant-sources.txt names the translation units that only
+# build under an optional dependency the ci_full_defconfig shards lack, and
+# the CI variant (KYTHIRA_TIDY_VARIANT) that analyses each one instead; that
+# file's header has the format and the variants. With no variant the listed
+# files leave the shard lists; with one, the variant's files are the list.
+# Either way cmake/check_compdb.cmake then fails the target on any file in
+# the list that has no compile command, which run-clang-tidy would otherwise
+# skip without a word.
+set(KYTHIRA_TIDY_VARIANT "" CACHE STRING
+    "Analyse only this variant's files from configs/tidy-variant-sources.txt (empty: every other file)")
+set(_tidy_variant_file "${CMAKE_SOURCE_DIR}/configs/tidy-variant-sources.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_tidy_variant_file}")
+file(STRINGS "${_tidy_variant_file}" _tidy_variant_lines)
+set(_tidy_variant_all "")
+set(_tidy_variant_mine "")
+set(_tidy_variant_names "")
+foreach(_line IN LISTS _tidy_variant_lines)
+    string(STRIP "${_line}" _line)
+    if(_line STREQUAL "" OR _line MATCHES "^#")
+        continue()
+    endif()
+    if(NOT _line MATCHES "^([A-Za-z0-9_-]+)[ \t]+([^ \t]+)$")
+        message(FATAL_ERROR "${_tidy_variant_file}: malformed line '${_line}' "
+                            "(want '<variant> <path>')")
+    endif()
+    set(_v "${CMAKE_MATCH_1}")
+    set(_f "${CMAKE_SOURCE_DIR}/${CMAKE_MATCH_2}")
+    if(NOT EXISTS "${_f}")
+        message(FATAL_ERROR "${_tidy_variant_file}: ${CMAKE_MATCH_2} does not exist")
+    endif()
+    list(APPEND _tidy_variant_all "${_f}")
+    list(APPEND _tidy_variant_names "${_v}")
+    if(_v STREQUAL KYTHIRA_TIDY_VARIANT)
+        list(APPEND _tidy_variant_mine "${_f}")
+    endif()
+endforeach()
+if(KYTHIRA_TIDY_VARIANT STREQUAL "")
+    list(REMOVE_ITEM TIDY_SOURCES ${_tidy_variant_all})
+else()
+    list(REMOVE_DUPLICATES _tidy_variant_names)
+    if(NOT KYTHIRA_TIDY_VARIANT IN_LIST _tidy_variant_names)
+        message(FATAL_ERROR "KYTHIRA_TIDY_VARIANT=${KYTHIRA_TIDY_VARIANT} names no variant in "
+                            "${_tidy_variant_file} (have: ${_tidy_variant_names})")
+    endif()
+    set(TIDY_SOURCES ${_tidy_variant_mine})
+    list(SORT TIDY_SOURCES)
+endif()
+
 # A full run is ~2.5 hours on a 4-core CI runner, so CI splits it across
 # parallel jobs: each configures with its own KYTHIRA_TIDY_SHARD_INDEX and
 # analyses every KYTHIRA_TIDY_SHARD_COUNT-th file of the sorted list. Round
@@ -2439,6 +2487,7 @@ else()
             COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
                 "static-analysis: running clang-tidy on ${TIDY_SOURCES_COUNT} files, parallel"
             COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
+                    -DSOURCES=${CMAKE_BINARY_DIR}/tidy-sources.txt
                     -P ${CMAKE_SOURCE_DIR}/cmake/check_compdb.cmake
             COMMAND ${RUN_CLANG_TIDY_EXECUTABLE}
                     -p ${CMAKE_BINARY_DIR}
@@ -2468,6 +2517,7 @@ else()
             COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
                 "static-analysis: running clang-tidy on ${TIDY_SOURCES_COUNT} files, sequential"
             COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
+                    -DSOURCES=${CMAKE_BINARY_DIR}/tidy-sources.txt
                     -P ${CMAKE_SOURCE_DIR}/cmake/check_compdb.cmake
             COMMAND ${CLANG_TIDY_EXECUTABLE} -p ${CMAKE_BINARY_DIR} ${TIDY_SOURCES}
             COMMAND ${CMAKE_COMMAND} -E echo
