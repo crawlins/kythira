@@ -375,6 +375,15 @@ echo
 # replacing an entry main wrote with different bytes under the same key. It
 # covers the whole bucket -- sccache/, vcpkg/ and clang-tidy/ -- because those
 # three prefixes are the bucket.
+#
+# The one exception is sccache's own probe object. On every server start
+# sccache 0.17 writes `<prefix>.sccache_check` -- a fixed name that main's
+# runs created long ago -- and if that write is refused it marks the whole
+# cache read-only for the session and skips every later write with "Cannot
+# write to read-only storage". Measured on #707's first PR-key run: 31/31
+# and 32/32 write errors, every one of them that. So the pr group may
+# overwrite exactly that one object and nothing else; its contents are a
+# fixed probe string nothing reads as a cache entry.
 echo "3. Policy kythira-build-cache-access"
 # Scoped where the BUCKET is, which is the S3 compartment, not
 # --compartment-id. A policy in the wrong compartment grants nothing and says
@@ -390,6 +399,7 @@ Allow group ${GROUP_NAME} to read buckets ${POLICY_SCOPE} where target.bucket.na
 Allow group ${RW_USER} to manage objects ${POLICY_SCOPE} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE' } }
 Allow group ${RO_USER} to read objects ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
 Allow group ${PR_USER} to manage objects ${POLICY_SCOPE} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE' } }
+Allow group ${PR_USER} to manage objects ${POLICY_SCOPE} where all { target.bucket.name = '${BUCKET}', target.object.name = 'sccache/.sccache_check', request.permission = 'OBJECT_OVERWRITE' }
 Allow service objectstorage-${REGION} to manage object-family ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
 POLICY
 )
@@ -425,7 +435,7 @@ elif [ -n "$policy_id" ]; then
 else
     statements_json=$(printf '%s\n' "$POLICY_STATEMENTS" | jq -R . | jq -s .)
     if [ "$APPLY" -eq 0 ]; then
-        echo "  would create policy kythira-build-cache-access with those 5 statements"
+        echo "  would create policy kythira-build-cache-access with those 6 statements"
     else
         printf '%s' "$statements_json" | oci iam policy create \
             --compartment-id "$S3_COMPARTMENT" \

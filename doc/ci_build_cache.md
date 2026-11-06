@@ -57,7 +57,10 @@ the bucket (sccache, vcpkg, the clang-tidy result cache) is content-addressed,
 so a writer only ever needs to add a name that is absent; withholding
 overwrite means a pull request can add entries but never replace one `main`
 wrote. A refused overwrite (a race with `main` on the same key) is a logged
-write error, not a failure. The residual risk, a PR adding an entry under a
+write error, not a failure. The single exception is `sccache/.sccache_check`, the fixed
+probe object sccache rewrites on every server start: refused, sccache would
+mark the whole cache read-only for the run, so the pr key may overwrite that
+one name. The residual risk, a PR adding an entry under a
 key `main` has not computed yet, is accepted because only people who can push
 branches here can open such a PR. `pull_request_target` is never used for
 this: it would hand the key to a fork's code.
