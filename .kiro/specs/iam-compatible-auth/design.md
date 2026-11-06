@@ -280,6 +280,7 @@ struct request_context {
 struct decision {
     enum class effect { allow, explicit_deny, implicit_deny } effect;
     std::optional<statement_ref> deciding;   // policy ARN + Sid/index
+    std::optional<std::string> encoded_message;  // Component 9, on request
 };
 
 auto evaluate(const iam_view&, const request_context&) -> decision;
@@ -421,6 +422,42 @@ compressed, refused with `PackedPolicyTooLarge` past the limit.
 
 No Raft write takes place. **GetSessionToken** wraps a user's identity. Its
 token has `issuer_kind=session_token` and the user's policies apply.
+
+**GetFederationToken** (Requirement 10.8). The caller must be a user (or
+the root) signing with an `AKIA` key; the call is evaluated as
+`sts:GetFederationToken` against
+`arn:aws:sts::<account>:federated-user/<Name>`. The token has
+`issuer_kind=federated` and carries the calling user's ARN as well as the
+federated-user ARN. At request time the evaluator gathers the calling
+user's identity policies (current ones, as AWS does: a policy change
+applies to live federated sessions) and intersects them with the session
+policies in the token. With no session policy the intersection is empty.
+For the resource-policy step:
+- a statement naming the federated-user ARN allows on its own;
+- a statement naming the user's ARN still needs the session policies;
+both are the same "session ARN" and "user ARN" exceptions the evaluator
+already has for role sessions (step 4 of Component 6).
+
+**Temporary-credential limits** (Requirement 10.10). The Query router
+checks `issuer_kind` before evaluation: `session_token` tokens may call
+only AssumeRole and GetCallerIdentity in STS and nothing in IAM;
+`federated` tokens may call only GetCallerIdentity in STS and nothing in
+IAM. These refusals are `AccessDenied` with AWS's wording and are not
+policy decisions, so no policy can lift them. Any `SerialNumber` or
+`TokenCode` parameter is refused the same way.
+
+**DecodeAuthorizationMessage** (Requirement 10.9). `decision` gains an
+optional `encoded_message`, filled only when the caller of `evaluate()`
+asks for it (the `aws_request_authorizer` concept's
+`want_encoded_message` flag; off by default, and off for the IAM and STS
+handlers). The message is a CBOR record of the decision, the matched and
+failed statements and the request context, sealed exactly like a session
+token (same `kid` scheme, its own `0x02` version byte and associated data
+`"authz-message" | account`, so a session token can never be decoded as a
+message or the reverse). DecodeAuthorizationMessage checks
+`sts:DecodeAuthorizationMessage`, unseals under the caller's account, and
+renders AWS's JSON. A message older than the STS key retention window
+fails with `InvalidAuthorizationMessageException`, AWS's error.
 
 ## Component 10: Web identity (Requirements 11–12)
 

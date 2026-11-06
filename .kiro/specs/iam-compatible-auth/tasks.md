@@ -1,11 +1,14 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 7/25 tasks complete
+## Status: 7/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
 was amended the same day to put IAM in a `services/iam/` module, following
 the `redis-gateway-module` spec (PR #675), at Clark's request.
+Amended November 6, 2026, at Clark's request ("Add STS support to the IAM
+spec"): task 26 completes STS with GetFederationToken,
+DecodeAuthorizationMessage and AWS's limits on temporary credentials.
 
 ## Overview
 
@@ -16,7 +19,7 @@ without stored keys (tasks 1–5). Then build an AWS IAM-compatible service:
 - the policy engine (tasks 10–12);
 - the authorizer hook (task 13);
 - the IAM Query API (tasks 14–16);
-- STS and federation (tasks 17–20).
+- STS and federation (tasks 17–20, and 26 for the remaining STS calls).
 
 The Redis gateway is the first consumer (tasks 21–22). Conformance and docs
 close it out (tasks 23–25).
@@ -64,7 +67,7 @@ Reference material to read before starting:
     { "wave": 4, "tasks": [4, 13], "description": "Azure, Alibaba and OCI providers; authorizer hook and replicas" },
     { "wave": 5, "tasks": [5, 14, 17], "description": "Real-cloud federation run; Query API core; STS core" },
     { "wave": 6, "tasks": [15, 18, 21], "description": "Roles and policies API; STS session features; Redis IAM AUTH" },
-    { "wave": 7, "tasks": [16, 19, 22], "description": "OIDC provider and simulation APIs; web identity; Redis lifetime and modes" },
+    { "wave": 7, "tasks": [16, 19, 22, 26], "description": "OIDC provider and simulation APIs; web identity; Redis lifetime and modes; GetFederationToken and DecodeAuthorizationMessage" },
     { "wave": 8, "tasks": [20, 23], "description": "Kythira-CA web identity; CLI, SDK and Redis conformance" },
     { "wave": 9, "tasks": [24], "description": "Terraform conformance and optional AWS simulator comparison" },
     { "wave": 10, "tasks": [25], "description": "Docs and close-out" }
@@ -581,6 +584,32 @@ because each has a zero-spend fallback.
   - A test of AWS's "revoke older sessions" inline-deny pattern.
   - _Requirements: 10.2, 10.5, 10.6_
 
+- [ ] 26. GetFederationToken, DecodeAuthorizationMessage and credential limits
+  - Numbered 26 because it was added on November 6, 2026, at Clark's
+    request ("Add STS support to the IAM spec"); it follows task 18.
+  - GetFederationToken (design Component 9): the `federated` token, the
+    federated-user principal and `aws:userid`, the 129600-second cap (3600
+    for the root), and the user-policy ∩ session-policy evaluation.
+  - DecodeAuthorizationMessage: `decision::encoded_message` behind the
+    authorizer's `want_encoded_message` flag, the `0x02` sealed record, and
+    AWS's JSON rendering.
+  - The temporary-credential limits of Requirement 10.10 in the Query
+    router, and `NotImplemented` for AssumeRoleWithSAML and AssumeRoot.
+  - Add the new actions to the `sts` action table.
+  - Tests:
+    - GetFederationToken with no session policy can do nothing; with one,
+      exactly the intersection;
+    - a resource policy naming the federated-user ARN, and one naming the
+      user ARN;
+    - a user-policy change applying to a live federated session;
+    - a root call capped at 3600 seconds;
+    - federated and GetSessionToken credentials refused on IAM and on the
+      STS calls they may not make, whatever the policies say;
+    - an encoded message that round-trips, one decoded from another
+      account, a session token fed to DecodeAuthorizationMessage, and an
+      expired message.
+  - _Requirements: 10.1, 10.8–10.10_
+
 - [ ] 19. AssumeRoleWithWebIdentity (external OIDC)
   - `oidc_jwks_cache` with timeouts, a size cap, the host allowlist, private
     address refusal and DNS-rebinding-safe connects.
@@ -655,12 +684,15 @@ because each has a zero-spend fallback.
   - A compose scenario: three `iam_node`s, the CA cluster, and two Redis
     gateways as replicas.
   - Drive it with the pinned AWS CLI v2 and boto3, covering everything in
-    Requirement 15.1.
+    Requirement 15.1, including the STS calls of tasks 17–19 and 26 and the
+    SDK credential providers of Requirement 10.11 (a `source_profile` role
+    chain, `web_identity_token_file`, and the `AWS_ROLE_ARN` environment
+    pair).
   - Add it to `iam-module.yml`'s container matrix, under both Docker and
     rootless Podman, using the shared `setup-container-runtime` action. The
     workflow's path filter covers `services/iam/**` and the core headers of
     Requirement 17.2.
-  - _Requirements: 15.1, 15.3, 15.4_
+  - _Requirements: 10.11, 15.1, 15.3, 15.4_
 
 - [ ] 24. Terraform conformance and simulator comparison
   - `terraform apply` and `destroy` of a configuration covering
