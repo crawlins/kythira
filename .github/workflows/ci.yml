@@ -119,9 +119,11 @@ jobs:
 
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -217,9 +219,13 @@ jobs:
 
       # ── vcpkg (Boost, Folly, Poco, libcoap, lakers, …) ───────────────────
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -227,6 +233,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -647,9 +655,11 @@ jobs:
     timeout-minutes: 360
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -689,9 +699,13 @@ jobs:
       # includes google-cloud-cpp via --x-feature=gcp) never collides with the
       # main build-and-test jobs' cache, which is built without that feature.
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -699,6 +713,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -833,9 +849,11 @@ jobs:
     timeout-minutes: 300
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -884,9 +902,13 @@ jobs:
       # so it must not collide with either the plain edhoc caches or the
       # GCC 14 build-and-test leg's edhoc-only one.
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -894,6 +916,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -1049,9 +1073,11 @@ jobs:
     timeout-minutes: 300
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -1104,6 +1130,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -1405,9 +1433,13 @@ jobs:
           fi
 
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -1415,6 +1447,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -1667,9 +1701,13 @@ jobs:
         run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
 
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -1677,6 +1715,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -1820,9 +1860,11 @@ jobs:
     timeout-minutes: 300
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -1875,6 +1917,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -2113,6 +2157,8 @@ jobs:
           triplet: ${{ steps.triplet.outputs.value }}
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -2202,9 +2248,11 @@ jobs:
 
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -2283,9 +2331,13 @@ jobs:
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -2293,6 +2345,8 @@ jobs:
           triplet: x64-linux
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -2639,9 +2693,11 @@ jobs:
 
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -2685,9 +2741,13 @@ jobs:
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -2695,6 +2755,8 @@ jobs:
           triplet: x64-linux
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
@@ -3005,9 +3067,11 @@ jobs:
 
     # The read-write build-cache key is an environment secret of
     # build-cache-write, whose deployment branches are main only, so a
-    # job on any other ref never receives it and cannot poison the cache
-    # main builds from. Other refs run with no environment and fall back
-    # to the read-only key. See doc/ci_build_cache.md.
+    # job on any other ref never receives it. Same-repository pull requests
+
+    # write with the separate create-only pr key (a repository secret);
+
+    # everything else falls back to the read-only key. See doc/ci_build_cache.md.
     environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
     steps:
       - name: Checkout
@@ -3051,9 +3115,13 @@ jobs:
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read, and installs the pinned sccache. The writer policy -- only a
-      # push to main gets the read-write key -- lives in that action and
-      # nowhere else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
+      # both read, and installs the pinned sccache. The writer policy -- a push
+
+      # to main gets the read-write key, a same-repository pull request the
+
+      # create-only pr key, the rest read -- lives in that action and nowhere
+
+      # else. See .kiro/specs/oci-build-cache/ and doc/ci_build_cache.md.
       - name: OCI build cache
         id: buildcache
         uses: ./.github/actions/oci-build-cache
@@ -3061,6 +3129,8 @@ jobs:
           triplet: x64-linux
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}

@@ -7,12 +7,15 @@
 # (.kiro/specs/oci-build-cache/ Requirement 2, design.md Component 1).
 #
 # One bucket holds both caches: vcpkg's per-port archives under
-# vcpkg/<triplet>/ and sccache's objects under sccache/. Two IAM users reach
-# it through the S3 Compatibility API -- kythira-build-cache-rw for pushes to
-# main, kythira-build-cache-ro for everything else -- because the writer
-# policy is enforced by IAM and not only by the workflow's choice of mode. A
-# workflow bug that selected readwrite on a pull request is refused by the
-# service.
+# vcpkg/<triplet>/ and sccache's objects under sccache/ (and the clang-tidy
+# result cache under clang-tidy/). Three IAM users reach it through the S3
+# Compatibility API -- kythira-build-cache-rw for pushes to main,
+# kythira-build-cache-pr for pull requests from branches of this repository,
+# kythira-build-cache-ro for everything else -- because the writer policy is
+# enforced by IAM and not only by the workflow's choice of mode. The pr user
+# may create objects but not overwrite them, so a pull request can add cache
+# entries and never replace one main wrote; a workflow bug that handed it a
+# write to an existing name is refused by the service.
 #
 # DRY RUN IS THE DEFAULT. Nothing is created without --apply. Every action is
 # printed either way, in the order it would run, so a dry run is a plan.
@@ -31,16 +34,17 @@
 # so a leaked key cannot empty the cache -- only add to it, at worst.
 #
 # Usage:
-#   provision.sh [--apply] [--rotate rw|ro|both] [--bucket NAME]
+#   provision.sh [--apply] [--rotate rw|ro|pr|both|all] [--bucket NAME]
 #                [--compartment-id OCID] [--region REGION] [--tenancy-id OCID]
 #
 #   --apply           create; without it, print the plan and exit 0
-#   --rotate WHICH    replace that user's customer secret key (implies --apply)
+#   --rotate WHICH    replace that user's customer secret key (implies --apply);
+#                     both = rw and ro, all = rw, ro and pr
 #   --bucket          default: kythira-build-cache
 #   --compartment-id  default: $OCI_CI_COMPARTMENT_ID
 #   --region          default: $OCI_CI_REGION
 #   --tenancy-id      default: derived by walking up from the compartment
-#   --email           primary email for the two service users; default: the
+#   --email           primary email for the service users; default: the
 #                     address of the OCI CLI user running this script
 #   --update-policy   replace the existing policy's statements with the ones
 #                     this script would create. Off by default: an IAM policy
@@ -64,6 +68,7 @@ ROTATE=""
 GROUP_NAME="kythira-build-cache"
 RW_USER="kythira-build-cache-rw"
 RO_USER="kythira-build-cache-ro"
+PR_USER="kythira-build-cache-pr"
 SPEC_TAG_KEY="kythira-spec"
 SPEC_TAG_VALUE="oci-build-cache"
 
@@ -85,7 +90,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --apply)          APPLY=1; shift ;;
-        --rotate)         ROTATE="${2:?--rotate needs rw, ro or both}"; APPLY=1; shift 2 ;;
+        --rotate)         ROTATE="${2:?--rotate needs rw, ro, pr, both or all}"; APPLY=1; shift 2 ;;
         --bucket)         BUCKET="${2:?--bucket needs a name}"; shift 2 ;;
         --compartment-id) COMPARTMENT_ID="${2:?--compartment-id needs an OCID}"; shift 2 ;;
         --region)         REGION="${2:?--region needs a region}"; shift 2 ;;
@@ -97,7 +102,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-case "$ROTATE" in ""|rw|ro|both) ;; *) echo "--rotate takes rw, ro or both" >&2; exit 2 ;; esac
+case "$ROTATE" in ""|rw|ro|pr|both|all) ;; *) echo "--rotate takes rw, ro, pr, both or all" >&2; exit 2 ;; esac
 
 command -v oci >/dev/null 2>&1 || { echo "error: the OCI CLI is not on PATH" >&2; exit 1; }
 command -v jq  >/dev/null 2>&1 || { echo "error: jq is not on PATH" >&2; exit 1; }
@@ -245,7 +250,7 @@ if [ -z "$EMAIL" ]; then
     echo "  created without one." >&2
     exit 2
 fi
-echo "Primary email for the two service users: $EMAIL"
+echo "Primary email for the service users: $EMAIL"
 echo
 
 # ── 1. Bucket ────────────────────────────────────────────────────────────────
@@ -275,7 +280,7 @@ fi
 echo
 
 # ── 2. Group and users ───────────────────────────────────────────────────────
-echo "2. Group $GROUP_NAME and its two users"
+echo "2. Group $GROUP_NAME and its three users"
 # Every lookup is "list by name, take the id, empty if absent". OCI's list
 # calls exit 0 with an empty data array when nothing matches, so the exit
 # status says nothing and only the query result does — which is why none of
@@ -302,7 +307,7 @@ else
     [ "$APPLY" -eq 1 ] && group_id=$(group_id_of "$GROUP_NAME")
 fi
 
-for user in "$RW_USER" "$RO_USER"; do
+for user in "$RW_USER" "$RO_USER" "$PR_USER"; do
     uid=$(user_id_of "$user")
     if [ -n "$uid" ]; then
         echo "  user exists: $user ($uid)"
@@ -363,6 +368,13 @@ echo
 # found by the service refusing the call, since design.md's Component 1 does
 # not mention it. That principal DOES need delete: expiring objects is the
 # whole job.
+#
+# The pr statement is the rw one minus OBJECT_OVERWRITE (added 2026-11-06).
+# Every cache here is content-addressed, so a pull request only ever needs to
+# add a name that is absent; withholding overwrite is what stops one from
+# replacing an entry main wrote with different bytes under the same key. It
+# covers the whole bucket -- sccache/, vcpkg/ and clang-tidy/ -- because those
+# three prefixes are the bucket.
 echo "3. Policy kythira-build-cache-access"
 # Scoped where the BUCKET is, which is the S3 compartment, not
 # --compartment-id. A policy in the wrong compartment grants nothing and says
@@ -377,6 +389,7 @@ POLICY_STATEMENTS=$(cat <<POLICY
 Allow group ${GROUP_NAME} to read buckets ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
 Allow group ${RW_USER} to manage objects ${POLICY_SCOPE} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE', request.permission = 'OBJECT_OVERWRITE' } }
 Allow group ${RO_USER} to read objects ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
+Allow group ${PR_USER} to manage objects ${POLICY_SCOPE} where all { target.bucket.name = '${BUCKET}', any { request.permission = 'OBJECT_READ', request.permission = 'OBJECT_INSPECT', request.permission = 'OBJECT_CREATE' } }
 Allow service objectstorage-${REGION} to manage object-family ${POLICY_SCOPE} where target.bucket.name = '${BUCKET}'
 POLICY
 )
@@ -412,7 +425,7 @@ elif [ -n "$policy_id" ]; then
 else
     statements_json=$(printf '%s\n' "$POLICY_STATEMENTS" | jq -R . | jq -s .)
     if [ "$APPLY" -eq 0 ]; then
-        echo "  would create policy kythira-build-cache-access with those 4 statements"
+        echo "  would create policy kythira-build-cache-access with those 5 statements"
     else
         printf '%s' "$statements_json" | oci iam policy create \
             --compartment-id "$S3_COMPARTMENT" \
@@ -500,7 +513,11 @@ mint_key() {
     existing=$(count_of oci iam customer-secret-key list --user-id "$uid" \
                    --query 'length(data)')
     local rotating=0
-    case "$ROTATE" in both) rotating=1 ;; "$which") rotating=1 ;; esac
+    case "$ROTATE" in
+        all) rotating=1 ;;
+        both) if [ "$which" != "pr" ]; then rotating=1; fi ;;
+        "$which") rotating=1 ;;
+    esac
     if [ "$existing" != "0" ] && [ "$rotating" -eq 0 ]; then
         echo "  $user already holds $existing key(s); not minting (pass --rotate $which to replace)"
         return 0
@@ -518,7 +535,8 @@ mint_key() {
     echo
     echo "  ── $user — printed once, never written to disk ──"
     # The read-write key goes in the main-only build-cache-write environment,
-    # never in a repository secret any branch's workflow could read.
+    # never in a repository secret any branch's workflow could read. The pr
+    # and ro keys are repository secrets; GitHub withholds both from forks.
     local scope=""
     [ "$which" = "rw" ] && scope=" --env build-cache-write"
     echo "  gh secret set OCI_BUILD_CACHE_${which^^}_ACCESS_KEY_ID${scope} --body '$key_id'"
@@ -539,6 +557,7 @@ mint_key() {
 }
 mint_key "$RW_USER" rw
 mint_key "$RO_USER" ro
+mint_key "$PR_USER" pr
 echo
 
 # ── 6. Repository configuration ──────────────────────────────────────────────

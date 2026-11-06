@@ -178,8 +178,9 @@ jobs:
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Exports the environment vcpkg's x-aws backend and sccache's s3 backend
-      # both read. Writer policy lives in the action: only a push to main gets
-      # the read-write key, so these runs are readers. See
+      # both read. Writer policy lives in the action: a push to main gets the
+      # read-write key and a same-repository pull request the create-only pr
+      # key; schedule and dispatch runs here read. See
       # .kiro/specs/oci-build-cache/.
       - name: OCI build cache
         id: buildcache
@@ -188,6 +189,8 @@ jobs:
           triplet: x64-linux
           rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
           rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
           ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
           ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
           bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
