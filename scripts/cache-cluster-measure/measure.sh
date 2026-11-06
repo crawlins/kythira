@@ -30,7 +30,7 @@ set -euo pipefail
 : "${MEASURE_COMPILER:?}"
 : "${MEASURE_PREFIX_PATH:?}"
 out="${MEASURE_OUT:-${RUNNER_TEMP:-/tmp}/measure}"
-compose_file="docker/cache-cluster/compose.yml"
+compose_file="services/redis/docker/cache-cluster/compose.yml"
 cache_http="http://127.0.0.1:18091"
 mkdir -p "$out"
 

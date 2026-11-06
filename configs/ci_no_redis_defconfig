@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# ci_no_redis_defconfig — ci_full_defconfig with the Redis gateway module
+# (services/redis/, .kiro/specs/redis-gateway-module/) switched off. The
+# module's own workflow (task 5) builds and tests core with it, to show core
+# needs nothing from the module: with CONFIG_REDIS_GATEWAY off nothing under
+# services/redis/ is configured, and the core's targets and tests are a
+# module-on build's minus the module's. Written, like ci_full_defconfig,
+# against `-DKYTHIRA_KCONFIG_STRICT=ON`; see that file's header for the
+# reasoning behind every other line, which must stay verbatim from it.
+#
+#   REDIS_GATEWAY           — the point of the file. REDIS_GATEWAY_TRANSACTIONS
+#                             depends on it and goes with it.
+# CONFIG_REDIS_GATEWAY is not set
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_PROTOBUF_SERIALIZER=y

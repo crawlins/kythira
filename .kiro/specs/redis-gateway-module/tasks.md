@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 3/8 tasks complete (tasks 1-3)
+## Status: 4/8 tasks complete (tasks 1-4)
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -130,7 +130,7 @@ Reference material:
     as is.
   - _Requirements: 3.1-3.7, 9.2_
 
-- [ ] 4. Move the gateway into `services/redis/`
+- [x] 4. Move the gateway into `services/redis/`
   - Before starting: no open PR touches a path in design.md's layout table.
     Check with the D (build cache) and T (multi-raft transactions) threads.
   - `git mv` every file in the layout table, with basenames kept. Rewrite
@@ -152,6 +152,35 @@ Reference material:
     - the surface snapshot matches `main`, module on and off;
     - the boundary check is green with the module present.
   - _Requirements: 1.1-1.5, 2.1-2.6, 3.1-3.5, 7.1-7.4_
+  - Done November 6, 2026. Notes on what the move found:
+    - The core tests that used the Redis KV moved with it, as Clark chose
+      on November 5: `multi_raft_txn_snapshot_test`,
+      `multi_raft_txn_snapshot_bank_test`, `multi_raft_txn_write_skew_test`,
+      the transaction bench rows (the module adds them to core's
+      `multi_raft_bench_rows`), `docker_txn_bank_chaos_test` with its image
+      and compose file, and `multi_raft_performance_report_transactions`.
+      `persistent_state_machine_test`'s Redis half was six `static_assert`s;
+      they moved into `cache_kv_state_machine_unit_test`, so no test was
+      added or renamed.
+    - `boundary-allow.txt` has ten lines, not two: the eight module tests
+      that stand up in-process hosts include `multi_raft_impl.hpp` too. The
+      checker accepts module tests there (see task 3's notes).
+    - Directory-scoped steps in `tests/CMakeLists.txt` did not follow the
+      tests: the timeout scaling became `kythira_scale_test_timeouts()` in
+      `cmake/kythira_test_helpers.cmake`, which both directories call, and
+      the module calls `kythira_attach_test_reports()`.
+    - Test binaries and working directories stay in `build/tests/`, which
+      the coverage job collects binaries from.
+    - The images still build from the source root, because the cache client
+      image copies `scripts/oci-build-cache/start-sccache.sh`. The module
+      reaches it through `KYTHIRA_IMAGE_CONTEXT`, not `${CMAKE_SOURCE_DIR}`.
+    - `redis_gateway_node` stays in core's `host_binaries` list, marked
+      `# module-hook`.
+    - The format-check glob covers `services/*/{include,cmd,tests}`, not
+      the modules' `docker/` trees (the cache client's sample project).
+    - `services/redis/README.md` was written here (task 8 still owns
+      `doc/redis-gateway.md` and the spec notes), and the snapshot script
+      now keeps target names only (no paths, no per-directory targets).
 
 - [ ] 5. Module CI workflow
   - `.github/workflows/redis-module.yml` with the triggers and jobs in

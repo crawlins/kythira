@@ -92,11 +92,11 @@ One `redis_gateway_node` daemon per voter, three voters, one shard cut
 (`sccache/8`) so that two shards usually have different leaders and a single
 client endpoint exercises forwarding. sccache on each CI runner and on the
 local machine speaks RESP to any node; `KYTHIRA_REDIS_FORWARDING` handles the
-rest. `docker/sccache-e2e-compose.yml` on the branch is the topology, minus
+rest. `services/redis/docker/sccache-e2e-compose.yml` on the branch is the topology, minus
 the network between the nodes.
 
 Facts about the branch's daemon that size the nodes, all read from
-`cmd/redis_gateway_node/run_host.hpp` and `doc/redis-gateway.md` at
+`services/redis/cmd/redis_gateway_node/run_host.hpp` and `doc/redis-gateway.md` at
 `f0de1b4`:
 
 - **Memory persistence, by design.** `memory_persistence_engine`, with the
@@ -507,7 +507,7 @@ not do about it:
 2. **Membership change in the daemon**, per the section above.
 3. **The sccache adoption spec.** Wiring `RUSTC_WRAPPER=sccache` into the
    `lakers` port and CI was explicitly excluded from `redis-compatible-kv`
-   and does not exist yet. `docker/sccache_runner/run.sh` is the pattern:
+   and does not exist yet. `services/redis/docker/sccache_runner/run.sh` is the pattern:
    start the server explicitly and export the wrapper only if that worked,
    so an unreachable cache is never a build dependency.
 

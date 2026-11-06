@@ -32,16 +32,6 @@
 #include <raft/txn_state_machine.hpp>
 #include <raft/types.hpp>
 
-// The Redis and build-cache state machines are checked only where the
-// gateway is built (tests/CMakeLists.txt defines this then), so this test
-// keeps building with the gateway off.
-#if defined(KYTHIRA_PSM_TEST_HAS_REDIS)
-#include <raft/cache_kv_state_machine.hpp>
-#include <raft/redis_kv_commands.hpp>
-#include <raft/redis_kv_mvcc_state_machine.hpp>
-#include <raft/redis_kv_state_machine.hpp>
-#endif
-
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -469,6 +459,8 @@ constexpr bool selects_byte_buffer =
     storage_kind_of<SM> == state_machine_storage::byte_buffer;
 
 // Requirement 1.4: every existing state machine keeps the byte-buffer path.
+// The Redis and build-cache state machines are checked in
+// services/redis/tests/cache_kv_state_machine_unit_test.cpp, with the module.
 /// The transaction wrapper needs a partitioner; any will do for a type check.
 struct whole_command_partitioner {
     [[nodiscard]] auto key_of(const std::vector<std::byte>& command) const -> std::string {
@@ -483,17 +475,6 @@ static_assert(
     selects_byte_buffer<
         kythira::transactional_state_machine<kythira::test_key_value_state_machine<std::uint64_t>,
                                              std::string, whole_command_partitioner>>);
-#if defined(KYTHIRA_PSM_TEST_HAS_REDIS)
-static_assert(selects_byte_buffer<kythira::redis_kv_state_machine<std::uint64_t>>);
-static_assert(selects_byte_buffer<kythira::redis_kv_mvcc_state_machine<std::uint64_t>>);
-static_assert(selects_byte_buffer<kythira::cache_kv_state_machine<std::uint64_t>>);
-static_assert(selects_byte_buffer<
-              kythira::transactional_state_machine<kythira::redis_kv_state_machine<std::uint64_t>,
-                                                   std::string, kythira::redis_kv_partitioner>>);
-static_assert(selects_byte_buffer<kythira::transactional_state_machine<
-                  kythira::redis_kv_mvcc_state_machine<std::uint64_t>, std::string,
-                  kythira::redis_kv_partitioner, kythira::mvcc::on>>);
-#endif
 
 // The new kinds.
 static_assert(kythira::kv_engine<memory_kv_engine>);

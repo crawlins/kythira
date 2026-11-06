@@ -2076,11 +2076,6 @@ if(NOT ENABLE_COVERAGE)
         # the enclosing guard, like every other `cmd/` binary.
         add_subdirectory(cmd/multi_raft_bench)
     endif()
-    if(KYTHIRA_BUILD_REDIS_GATEWAY AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND folly_FOUND)
-        # The Redis-compatible gateway daemon (.kiro/specs/redis-compatible-kv/
-        # task 10). Same posture as multi_raft_node: not in any install target.
-        add_subdirectory(cmd/redis_gateway_node)
-    endif()
     if(LIBLDNS_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND httplib_FOUND)
         add_subdirectory(cmd/dns_discovery_node)
         add_subdirectory(cmd/dns_sd_discovery_node)
@@ -2105,6 +2100,16 @@ if(NOT ENABLE_COVERAGE)
         add_subdirectory(cmd/raft_object_backup)
     endif()
 endif()
+# The service modules (services/README.md). Each is entered only with its
+# switch on, after the core targets, tests/ and tests/docker_chaos/, so the
+# targets and helpers it uses exist. services/redis/ is the Redis-compatible
+# gateway, the build cache it serves and redis_gateway_node
+# (.kiro/specs/redis-gateway-module/); like multi_raft_node, the daemon is in
+# no install target.
+if(KYTHIRA_BUILD_REDIS_GATEWAY)
+    add_subdirectory(services/redis)
+endif()
+
 # Every cmd/ binary this configuration defines, as one target: CI's numeric
 # node id build (configs/ci_numeric_node_id_defconfig) builds exactly this, so the
 # binaries are compiled in both id kinds without also building the test suite
@@ -2113,7 +2118,8 @@ add_custom_target(host_binaries)
 foreach(_kythira_host_binary
         ca_service ca_cluster_node chaos_node chaos_workload chaos_ctl chaos_s3_mock
         poco_discovery_node
-        multi_raft_node multi_raft_bench redis_gateway_node dns_discovery_node
+        multi_raft_node multi_raft_bench dns_discovery_node
+        redis_gateway_node  # module-hook: services/redis/'s daemon, built by CI's numeric-id leg
         dns_sd_discovery_node oci_heartbeat_writer_node raft_object_backup)
     if(TARGET ${_kythira_host_binary})
         add_dependencies(host_binaries ${_kythira_host_binary})
@@ -2301,6 +2307,11 @@ file(GLOB_RECURSE FORMAT_SOURCES
     "${CMAKE_SOURCE_DIR}/tests/*.cpp"    "${CMAKE_SOURCE_DIR}/tests/*.hpp"
     "${CMAKE_SOURCE_DIR}/examples/*.cpp" "${CMAKE_SOURCE_DIR}/examples/*.hpp"
     "${CMAKE_SOURCE_DIR}/cmd/*.cpp"      "${CMAKE_SOURCE_DIR}/cmd/*.hpp"
+    # The service modules' code; not their docker/ trees, which hold
+    # client projects built inside images.
+    "${CMAKE_SOURCE_DIR}/services/*/include/*.hpp"
+    "${CMAKE_SOURCE_DIR}/services/*/cmd/*.cpp"   "${CMAKE_SOURCE_DIR}/services/*/cmd/*.hpp"
+    "${CMAKE_SOURCE_DIR}/services/*/tests/*.cpp" "${CMAKE_SOURCE_DIR}/services/*/tests/*.hpp"
 )
 list(LENGTH FORMAT_SOURCES FORMAT_SOURCES_COUNT)
 
@@ -2346,6 +2357,9 @@ file(GLOB_RECURSE TIDY_SOURCES
     "${CMAKE_SOURCE_DIR}/tests/*.cpp"
     "${CMAKE_SOURCE_DIR}/examples/*.cpp"
     "${CMAKE_SOURCE_DIR}/cmd/*.cpp"
+    # The service modules' code, as for format-check above.
+    "${CMAKE_SOURCE_DIR}/services/*/cmd/*.cpp"
+    "${CMAKE_SOURCE_DIR}/services/*/tests/*.cpp"
 )
 list(SORT TIDY_SOURCES)
 

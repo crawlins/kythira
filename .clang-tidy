@@ -128,8 +128,9 @@ Checks: >
   -clang-analyzer-optin.core.EnumCastOutOfRange,
   -clang-analyzer-core.uninitialized.UndefReturn
 
-# Only report findings in project-owned headers; suppress third-party noise.
-HeaderFilterRegex: "^.*(include/raft|include/network_simulator|include/concepts|tests|src)/.*\\.hpp$"
+# Only report findings in project-owned headers (core and the service
+# modules under services/); suppress third-party noise.
+HeaderFilterRegex: "^.*(include/raft|include/network_simulator|include/concepts|services/[^/]+/include|tests|src)/.*\\.hpp$"
 
 # Exit non-zero on any finding.
 WarningsAsErrors: "*"

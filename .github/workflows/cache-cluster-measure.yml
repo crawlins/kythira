@@ -6,8 +6,9 @@ name: Cache Cluster sccache Measurement
 # The disk-backed build cache's full-tree measurement
 # (.kiro/specs/disk-backed-build-cache/ task 11, Requirement 13): this
 # repository's own tree, built through sccache 0.17.0's WebDAV backend
-# against the three-node cache cluster of docker/cache-cluster/, and compared
-# with the OCI bucket that ci.yml uses today.
+# against the three-node cache cluster of
+# services/redis/docker/cache-cluster/, and compared with the OCI bucket
+# that ci.yml uses today.
 #
 # Manually dispatched; it is a measurement, not a gate. Each leg, g++-13 and
 # clang++-18 on x64, runs at the same time on its own GitHub-hosted runner,
@@ -180,7 +181,7 @@ jobs:
 
       - name: Cluster logs
         if: failure()
-        run: docker compose -f docker/cache-cluster/compose.yml logs --tail 200
+        run: docker compose -f services/redis/docker/cache-cluster/compose.yml logs --tail 200
 
       - name: Upload results
         if: always()
