@@ -26,6 +26,13 @@ else()
     set(_boost_json_lib "")
 endif()
 
+# The build context every container image uses and the directory every
+# container scenario target runs in: the source root, so a Dockerfile COPYs
+# and a scenario harness defaults by a repository-relative path (several
+# images take files from more than one directory). A service module uses this
+# instead of naming the source root itself.
+set(KYTHIRA_IMAGE_CONTEXT "${CMAKE_SOURCE_DIR}")
+
 # Helper function for creating Raft completion test executables with
 # additional dependencies. Needs tests/'s kythira_test_pch, so it may be
 # called only once tests/ has been added.
@@ -108,3 +115,27 @@ macro(kythira_detect_container_runtime)
         )
     endif()
 endmacro()
+
+# ── Test-timeout scaling ──────────────────────────────────────────────────────
+#
+# Applies KYTHIRA_TEST_TIMEOUT_SCALE (a cache variable tests/CMakeLists.txt
+# declares, with the reasoning) to the calling directory: the compile
+# definition the Boost per-case budgets read, and every registered test's
+# CTest TIMEOUT. Call it at the end of a directory that registers tests, after
+# the last add_test. Moved unchanged from the end of tests/CMakeLists.txt.
+function(kythira_scale_test_timeouts)
+    if(KYTHIRA_TEST_TIMEOUT_SCALE GREATER 1)
+        add_compile_definitions(KYTHIRA_TEST_TIMEOUT_SCALE=${KYTHIRA_TEST_TIMEOUT_SCALE})
+        get_property(_kythira_tests DIRECTORY PROPERTY TESTS)
+        foreach(_test IN LISTS _kythira_tests)
+            get_test_property(${_test} TIMEOUT _test_timeout)
+            if(_test_timeout)
+                math(EXPR _scaled "${_test_timeout} * ${KYTHIRA_TEST_TIMEOUT_SCALE}")
+                set_tests_properties(${_test} PROPERTIES TIMEOUT ${_scaled})
+            endif()
+        endforeach()
+        message(STATUS
+            "Test timeouts scaled by ${KYTHIRA_TEST_TIMEOUT_SCALE}x "
+            "(Boost per-case budgets and CTest TIMEOUT properties)")
+    endif()
+endfunction()

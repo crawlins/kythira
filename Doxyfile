@@ -26,7 +26,9 @@ OUTPUT_LANGUAGE        = English
 #---------------------------------------------------------------------------
 # Input
 #---------------------------------------------------------------------------
-INPUT                  = include README.md
+# Each service module's include/ is listed too (services/README.md); its
+# headers were under include/raft/ before the module moved out.
+INPUT                  = include services/redis/include README.md
 RECURSIVE              = YES
 # *.md picks up include/raft/future_stdexec_README.md, which README.md links to;
 # without it that link is an unresolvable \ref.  Markdown targets outside INPUT

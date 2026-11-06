@@ -9,7 +9,8 @@
 # For configs/ci_full_defconfig with the module on, and again with
 # CONFIG_REDIS_GATEWAY=n, it configures a build tree and writes to OUT_DIR:
 #
-#   on/targets.txt     every target name (`ninja -t targets all`, sorted)
+#   on/targets.txt     every target name (`ninja -t targets all`, sorted,
+#                      without paths and per-directory utility targets)
 #   on/tests.json      `ctest --show-only=json-v1`, reduced to each test's
 #                      name, labels, timeout and command, with the source
 #                      and build roots replaced by <src> and <build>
@@ -105,7 +106,12 @@ snapshot() {
         [[ "${mode}" == "off" ]] || { echo "module off in the on build" >&2; exit 1; }
     fi
 
-    ninja -C "${build}" -t targets all | sed 's/:.*$//' | LC_ALL=C sort -u >"${dest}/targets.txt"
+    # Target names only: ninja also lists every output file and the CMake
+    # files a re-run depends on, by path, and the per-directory utility
+    # targets (<dir>/all, <dir>/test, ...), all of which name directories
+    # rather than say what the build makes.
+    ninja -C "${build}" -t targets all | sed 's/:.*$//' | grep -v / |
+        LC_ALL=C sort -u >"${dest}/targets.txt"
     (cd "${build}" && ctest --show-only=json-v1) >"${build}/ctest.json"
     normalise_tests "${build}" "${build}/ctest.json" >"${dest}/tests.json"
 

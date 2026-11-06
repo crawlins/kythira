@@ -8,3 +8,4 @@
 #
 # Format: <name>_defconfig  # <reason>
 
+ci_no_redis_defconfig  # the module-off build of .kiro/specs/redis-gateway-module/; redis-module.yml (task 5) applies it

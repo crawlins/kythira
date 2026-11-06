@@ -162,27 +162,6 @@ add_docker_chaos_scenario_test(docker_otlp_collector_test
 add_docker_chaos_scenario_test(docker_mtls_chaos_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/mtls_chaos_test.cpp")
 
-# The real-sccache acceptance tests (.kiro/specs/redis-compatible-kv/ tasks 12
-# and 13). Gated with the feature so that CONFIG_REDIS_GATEWAY=n leaves no
-# trace of it in the target list (Requirement 16.4). The test speaks RESP to
-# the gateways directly for its readiness probe and wire-level checks, which
-# is the one reason it reaches into include/ for resp_protocol.hpp.
-if(KYTHIRA_BUILD_REDIS_GATEWAY)
-    add_docker_chaos_scenario_test(docker_sccache_e2e_test
-        "${CMAKE_SOURCE_DIR}/tests/docker_chaos/sccache_e2e_test.cpp")
-    target_include_directories(docker_sccache_e2e_test PRIVATE "${CMAKE_SOURCE_DIR}/include")
-    # The disk-backed build cache in containers
-    # (.kiro/specs/disk-backed-build-cache/ task 8): same RESP framing need.
-    add_docker_chaos_scenario_test(docker_cache_cluster_test
-        "${CMAKE_SOURCE_DIR}/tests/docker_chaos/cache_cluster_test.cpp")
-    target_include_directories(docker_cache_cluster_test PRIVATE "${CMAKE_SOURCE_DIR}/include")
-    # Cross-shard transactions through the gateway under faults
-    # (.kiro/specs/multi-raft-transactions/ task 15): same RESP framing need.
-    add_docker_chaos_scenario_test(docker_txn_bank_chaos_test
-        "${CMAKE_SOURCE_DIR}/tests/docker_chaos/txn_bank_chaos_test.cpp")
-    target_include_directories(docker_txn_bank_chaos_test PRIVATE "${CMAKE_SOURCE_DIR}/include")
-endif()
-
 # ── Self-hosted metrics backend scenario tests (doc/TODO.md "Metrics
 # Backends", Docker tier). Each pairs a real chaos_node (wired to the
 # backend via its env var) with the real agent's stock upstream image —
@@ -251,14 +230,6 @@ if(_RUNTIME_EXE)
     set(_DNS_SD_DISCOVERY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/dns-sd-discovery-compose.yml")
     set(_DNS_SD_DISCOVERY_DOCKERFILE     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/Dockerfile")
     set(_OTLP_COLLECTOR_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/otlp-collector-compose.yml")
-    set(_REDIS_GATEWAY_DOCKERFILE        "${CMAKE_SOURCE_DIR}/docker/redis_gateway_node/Dockerfile")
-    set(_SCCACHE_RUNNER_DOCKERFILE       "${CMAKE_SOURCE_DIR}/docker/sccache_runner/Dockerfile")
-    set(_SCCACHE_E2E_COMPOSE_FILE        "${CMAKE_SOURCE_DIR}/docker/sccache-e2e-compose.yml")
-    set(_CACHE_CLUSTER_DOCKERFILE        "${CMAKE_SOURCE_DIR}/docker/cache-cluster/Dockerfile")
-    set(_CACHE_CLUSTER_COMPOSE_FILE      "${CMAKE_SOURCE_DIR}/docker/cache-cluster/compose.yml")
-    set(_CACHE_CLIENT_DOCKERFILE         "${CMAKE_SOURCE_DIR}/docker/cache-cluster/client/Dockerfile")
-    set(_TXN_CHAOS_DOCKERFILE            "${CMAKE_SOURCE_DIR}/docker/txn-chaos/Dockerfile")
-    set(_TXN_CHAOS_COMPOSE_FILE          "${CMAKE_SOURCE_DIR}/docker/txn-chaos-compose.yml")
     set(_PROMETHEUS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-metrics-compose.yml")
     set(_PROMETHEUS_REMOTE_WRITE_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/prometheus-remote-write-compose.yml")
     set(_VICTORIAMETRICS_METRICS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/victoriametrics-metrics-compose.yml")
@@ -664,144 +635,6 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
-    # The redis-compatible-kv acceptance tests (tasks 12 and 13). Two images:
-    # the gateway daemon, staged from the host build exactly like
-    # docker-chaos-image (and guarded exactly like cmd/redis_gateway_node's
-    # inclusion at the top level, for the same `if(TARGET ...)` reason), and
-    # the sccache runner, which is upstream sccache plus a Rust toolchain and
-    # needs nothing from this build. Everything is gated on the feature so a
-    # CONFIG_REDIS_GATEWAY=n configure defines none of these targets.
-    if(KYTHIRA_BUILD_REDIS_GATEWAY)
-        if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND folly_FOUND)
-            add_custom_target(docker-redis-gateway-image
-                DEPENDS redis_gateway_node
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-                        "${CMAKE_SOURCE_DIR}/docker/redis_gateway_node/dist"
-                COMMAND ${CMAKE_COMMAND} -E copy
-                        "$<TARGET_FILE:redis_gateway_node>"
-                        "${CMAKE_SOURCE_DIR}/docker/redis_gateway_node/dist/redis_gateway_node"
-                COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
-                        --file "${_REDIS_GATEWAY_DOCKERFILE}"
-                        --tag kythira-redis-gateway:dev
-                        "${CMAKE_SOURCE_DIR}"
-                COMMENT "Staging redis_gateway_node binary and building kythira-redis-gateway:dev image"
-                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            )
-        else()
-            add_custom_target(docker-redis-gateway-image
-                COMMAND ${CMAKE_COMMAND} -E echo
-                        "'docker-redis-gateway-image' requires redis_gateway_node to be buildable (folly + a future backend, and not a coverage build)"
-                COMMAND ${CMAKE_COMMAND} -E false
-            )
-        endif()
-
-        add_custom_target(docker-sccache-runner-image
-            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
-                    --file "${_SCCACHE_RUNNER_DOCKERFILE}"
-                    --tag kythira-sccache-runner:dev
-                    "${CMAKE_SOURCE_DIR}"
-            COMMENT "Building kythira-sccache-runner:dev image (upstream sccache + rust toolchain)"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        )
-
-        add_custom_target(docker-sccache-e2e-tests
-            COMMAND ${CMAKE_COMMAND} -E env
-                    ${_RT_ENV}
-                    KYTHIRA_SCCACHE_E2E_COMPOSE_FILE=${_SCCACHE_E2E_COMPOSE_FILE}
-                    $<TARGET_FILE:docker_sccache_e2e_test>
-                    --log_level=message
-            DEPENDS docker-redis-gateway-image docker-sccache-runner-image docker_sccache_e2e_test
-            COMMENT "Running real-sccache acceptance tests against the redis gateway (runtime: ${CONTAINER_RUNTIME})"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        )
-
-        # The disk-backed build cache (.kiro/specs/disk-backed-build-cache/
-        # task 8): the same daemon in its default file mode, as uid 10001
-        # with a /data volume. Staged and guarded like the gateway image.
-        if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND folly_FOUND)
-            add_custom_target(docker-cache-cluster-image
-                DEPENDS redis_gateway_node
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-                        "${CMAKE_SOURCE_DIR}/docker/cache-cluster/dist"
-                COMMAND ${CMAKE_COMMAND} -E copy
-                        "$<TARGET_FILE:redis_gateway_node>"
-                        "${CMAKE_SOURCE_DIR}/docker/cache-cluster/dist/redis_gateway_node"
-                COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
-                        --file "${_CACHE_CLUSTER_DOCKERFILE}"
-                        --tag kythira-cache-cluster:dev
-                        "${CMAKE_SOURCE_DIR}"
-                COMMENT "Staging redis_gateway_node binary and building kythira-cache-cluster:dev image"
-                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            )
-        else()
-            add_custom_target(docker-cache-cluster-image
-                COMMAND ${CMAKE_COMMAND} -E echo
-                        "'docker-cache-cluster-image' requires redis_gateway_node to be buildable (folly + a future backend, and not a coverage build)"
-                COMMAND ${CMAKE_COMMAND} -E false
-            )
-        endif()
-
-        # Task 9's CI job: upstream sccache 0.17.0 and vcpkg at the pinned
-        # baseline, nothing from this project. Needs the internet to build
-        # (GitHub), none to run.
-        add_custom_target(docker-cache-client-image
-            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
-                    --file "${_CACHE_CLIENT_DOCKERFILE}"
-                    --tag kythira-cache-client:dev
-                    "${CMAKE_SOURCE_DIR}"
-            COMMENT "Building kythira-cache-client:dev image (upstream sccache + vcpkg)"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        )
-
-        add_custom_target(docker-cache-cluster-tests
-            COMMAND ${CMAKE_COMMAND} -E env
-                    ${_RT_ENV}
-                    KYTHIRA_CACHE_CLUSTER_COMPOSE_FILE=${_CACHE_CLUSTER_COMPOSE_FILE}
-                    $<TARGET_FILE:docker_cache_cluster_test>
-                    --log_level=message
-            DEPENDS docker-cache-cluster-image docker-cache-client-image docker_cache_cluster_test
-            COMMENT "Running the disk-backed cache cluster container tests (runtime: ${CONTAINER_RUNTIME})"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        )
-
-        # Transactions under faults (.kiro/specs/multi-raft-transactions/
-        # task 15): the daemon's snapshot-isolation variant, built whatever
-        # the Kconfig selects for redis_gateway_node itself.
-        if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND folly_FOUND)
-            add_custom_target(docker-txn-chaos-image
-                DEPENDS redis_gateway_node_snapshot
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-                        "${CMAKE_SOURCE_DIR}/docker/txn-chaos/dist"
-                COMMAND ${CMAKE_COMMAND} -E copy
-                        "$<TARGET_FILE:redis_gateway_node_snapshot>"
-                        "${CMAKE_SOURCE_DIR}/docker/txn-chaos/dist/redis_gateway_node"
-                COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
-                        --file "${_TXN_CHAOS_DOCKERFILE}"
-                        --tag kythira-txn-chaos:dev
-                        "${CMAKE_SOURCE_DIR}"
-                COMMENT "Staging redis_gateway_node_snapshot and building kythira-txn-chaos:dev image"
-                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            )
-        else()
-            add_custom_target(docker-txn-chaos-image
-                COMMAND ${CMAKE_COMMAND} -E echo
-                        "'docker-txn-chaos-image' requires redis_gateway_node_snapshot to be buildable (folly + a future backend, and not a coverage build)"
-                COMMAND ${CMAKE_COMMAND} -E false
-            )
-        endif()
-
-        add_custom_target(docker-txn-chaos-tests
-            COMMAND ${CMAKE_COMMAND} -E env
-                    ${_RT_ENV}
-                    KYTHIRA_TXN_CHAOS_COMPOSE_FILE=${_TXN_CHAOS_COMPOSE_FILE}
-                    $<TARGET_FILE:docker_txn_bank_chaos_test>
-                    --log_level=message
-            DEPENDS docker-txn-chaos-image docker_txn_bank_chaos_test
-            COMMENT "Running the transaction bank chaos container test (runtime: ${CONTAINER_RUNTIME})"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        )
-    endif()
-
     # Agent images are pulled directly (no custom Dockerfiles) — these
     # targets only need the existing chaos-node image, same as OTLP above.
     add_custom_target(docker-prometheus-metrics-tests
@@ -898,22 +731,8 @@ if(_RUNTIME_EXE)
         "docker-telegraf-metrics-tests, docker-netdata-metrics-tests, "
         "docker-cloudwatch-metrics-tests, docker-cloud-monitoring-config-tests, "
         "docker-multi-raft-node-image, docker-elastic-capacity-tests targets available")
-    if(KYTHIRA_BUILD_REDIS_GATEWAY)
-        message(STATUS
-            "Container runtime: docker-redis-gateway-image, docker-sccache-runner-image, "
-            "docker-sccache-e2e-tests, docker-cache-cluster-image, docker-cache-client-image, "
-            "docker-cache-cluster-tests, docker-txn-chaos-image, docker-txn-chaos-tests "
-            "targets available")
-    endif()
 else()
-    if(KYTHIRA_BUILD_REDIS_GATEWAY)
-        list(APPEND _redis_docker_targets
-            docker-redis-gateway-image docker-sccache-runner-image docker-sccache-e2e-tests
-            docker-cache-cluster-image docker-cache-client-image docker-cache-cluster-tests
-            docker-txn-chaos-image docker-txn-chaos-tests)
-    endif()
     foreach(_t
-        ${_redis_docker_targets}
         docker-chaos-image docker-chaos-tests
         quorum-healing-tests
         docker-poco-discovery-image docker-poco-discovery-tests

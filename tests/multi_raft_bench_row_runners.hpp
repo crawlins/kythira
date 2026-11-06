@@ -80,8 +80,9 @@ auto write_fabric(const write_row_spec& spec, const row_observer& observer) -> r
 // ── transactions (in-process fabric) ─────────────────────────────────────────
 //
 // `.kiro/specs/multi-raft-transactions/` Requirement 13.6. The rows and their
-// cluster are in `multi_raft_txn_bench_rows.hpp`; the spec is here so the
-// report's catalog can build one without including that header.
+// cluster are in the Redis module (services/redis/tests/
+// multi_raft_txn_bench_rows.hpp); the spec is here so the report's catalog
+// can build one without including that header.
 
 }  // namespace kythira::testing::rows
 

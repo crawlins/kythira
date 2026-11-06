@@ -1,0 +1,97 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Three redis_gateway_node replicas built for snapshot isolation
+# (.kiro/specs/multi-raft-transactions/ task 15), for
+# services/redis/tests/docker/txn_bank_chaos_test.cpp: a bank of accounts across two
+# shards, moved by WATCH/MULTI/EXEC transfers on every node while the test
+# crashes and isolates nodes, and read whole by snapshot MGETs that must
+# always sum to the same total.
+#
+# CLAUDE.md's container rules, as they apply here:
+#
+#   * **No static IPs.** Raft peers and gateway forwarding address each
+#     other by **service name**; the daemon resolves names when it connects.
+#   * **No runtime named anywhere.** The scenario test drives this file
+#     through `container_runtime()` / `compose_prefix()`
+#     (tests/docker_chaos/os_faults.hpp).
+#   * **No capabilities, no privileged or host networking.** Faults are
+#     `kill`/`start` and `network disconnect`/`connect`, which rootless
+#     Podman allows; nothing here needs NET_ADMIN.
+#
+# The network has a fixed name so the test can disconnect a node from it,
+# and reconnects the node with its service-name alias.
+#
+# In-memory persistence, as the transactional daemon requires. That is why
+# the test never restarts a killed node: it would rejoin with no log and no
+# vote, which Raft does not survive.
+# Values are mutable (transfers overwrite balances), and the default
+# isolation is snapshot, so every MGET reads one point in time.
+
+x-node: &node
+  image: kythira-txn-chaos:dev
+  networks:
+    txn_chaos_net: {}
+
+x-node-env: &node-env
+  KYTHIRA_PEERS: "1=http://txn-1:7000,2=http://txn-2:7000,3=http://txn-3:7000"
+  KYTHIRA_RAFT_PORT: "7000"
+  KYTHIRA_ALLOW_PLAINTEXT_RAFT: "true"
+  # Two shards: accounts acct/0..acct/3 on one, acct/4..acct/7 on the other,
+  # so most transfers are two-shard transactions.
+  KYTHIRA_SHARD_CUTS: "acct/4"
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "300"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "600"
+  KYTHIRA_HEARTBEAT_INTERVAL_MS: "75"
+  KYTHIRA_REDIS_LISTEN: "0.0.0.0:6379"
+  KYTHIRA_REDIS_ACL_FILE: "/etc/kythira/acl.txt"
+  KYTHIRA_REDIS_INTERNAL_SECRET: "txn-chaos-internal"
+  KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING: "true"
+  KYTHIRA_REDIS_PEER_GATEWAYS: "1=txn-1:6379,2=txn-2:6379,3=txn-3:6379"
+  KYTHIRA_CACHE_PERSISTENCE: "memory"
+  KYTHIRA_REDIS_TRANSACTIONS: "on"
+  KYTHIRA_REDIS_TXN_ISOLATION: "snapshot"
+  KYTHIRA_REDIS_IMMUTABLE_VALUES: "false"
+  KYTHIRA_REDIS_COMMAND_TIMEOUT_MS: "5000"
+
+services:
+  txn-1:
+    <<: *node
+    container_name: txn-chaos-1
+    hostname: txn-1
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "1"
+    volumes:
+      - ./txn-chaos/acl.txt:/etc/kythira/acl.txt:ro
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16401:6379"
+
+  txn-2:
+    <<: *node
+    container_name: txn-chaos-2
+    hostname: txn-2
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "2"
+    volumes:
+      - ./txn-chaos/acl.txt:/etc/kythira/acl.txt:ro
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16402:6379"
+
+  txn-3:
+    <<: *node
+    container_name: txn-chaos-3
+    hostname: txn-3
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "3"
+    volumes:
+      - ./txn-chaos/acl.txt:/etc/kythira/acl.txt:ro
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16403:6379"
+
+networks:
+  txn_chaos_net:
+    name: kythira_txn_chaos_net
+    driver: bridge

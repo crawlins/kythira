@@ -1,0 +1,51 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The Redis gateway module (services/redis/, .kiro/specs/redis-gateway-module/).
+# Sourced from the top-level Kconfig, where these symbols used to be, so the
+# symbol order and the generated autoconf header are unchanged.
+
+config REDIS_GATEWAY
+	bool "Redis-compatible KV gateway over multi_raft (sccache's redis backend)"
+	default y
+	depends on OPENSSL
+	help
+	  Builds kythira/redis/redis_gateway.hpp (services/redis/), the
+	  redis_gateway_node daemon and their tests: a RESP2/RESP3 front end
+	  over the multi_raft sharding layer scoped to exactly the command
+	  closure sccache's `redis` backend (via OpenDAL / redis-rs) puts on
+	  the wire -- GET, SET, SETEX, DEL, EXISTS, STRLEN, GETRANGE, PING,
+	  AUTH, HELLO, SELECT and CLIENT SETINFO -- plus a splittable
+	  replicated KV state machine, ACL with PBKDF2-SHA256 secrets, one-hop
+	  leader forwarding and TLS/mTLS. Needs nothing beyond what the tree
+	  already requires (Boost.Asio, OpenSSL), so the symbol exists to keep
+	  the feature's targets out of a build that does not want them, not to
+	  gate a dependency. See .kiro/specs/redis-compatible-kv/.
+
+config REDIS_GATEWAY_TRANSACTIONS
+	bool "Cross-shard transactions in redis_gateway_node (MSET, MULTI/EXEC)"
+	default n
+	depends on REDIS_GATEWAY
+	help
+	  Builds redis_gateway_node with its KV state machine wrapped in
+	  transactional_state_machine, so KYTHIRA_REDIS_TRANSACTIONS=on can
+	  run MSET, multi-key DEL, MGET and MULTI/EXEC/DISCARD as cross-shard
+	  transactions. The wrapper changes the snapshot format, so every
+	  node of a cluster must be built the same way; plain commands are
+	  unchanged on the wire. See .kiro/specs/multi-raft-transactions/
+	  task 9 and doc/redis-gateway.md.
+
+config REDIS_GATEWAY_SNAPSHOT_ISOLATION
+	bool "Snapshot isolation in redis_gateway_node (versioned KV, oracle)"
+	default n
+	depends on REDIS_GATEWAY_TRANSACTIONS
+	help
+	  Builds redis_gateway_node's KV state machine multi-versioned
+	  (redis_kv_mvcc_state_machine under mvcc::on), with a timestamp
+	  oracle group on every node, so the snapshot and serializable
+	  isolation levels and WATCH/UNWATCH are accepted, and MGET reads one
+	  point in time across shards. Every write then takes two Raft rounds
+	  and an oracle timestamp, and the snapshot format changes again, so
+	  every node of a cluster must be built the same way. See
+	  .kiro/specs/multi-raft-transactions/ task 14 and
+	  doc/redis-gateway.md.

@@ -1,0 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Test fixture for services/redis/docker/txn-chaos-compose.yml. One admin user, "ops",
+# secret "ops-secret" (the same hash services/redis/docker/cache-cluster/acl.txt uses).
+user ops pbkdf2-sha256$10000$S7/6htTEmS3NS+ziEjosWw==$T2tgLLRkSNWJDvgv1qLlIoMHGjIrYAEHtIX6Zuyw4DY= admin *

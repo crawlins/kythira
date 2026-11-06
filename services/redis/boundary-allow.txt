@@ -1,0 +1,19 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Core *_impl.hpp headers the Redis module may include, one per line, with
+# the reason (services/README.md, "Boundary rules"). Only the composition
+# root and tests that stand up an in-process cluster may be listed: both
+# instantiate core templates the way an application would.
+#
+# file                                       allowed core *_impl.hpp           why
+cmd/redis_gateway_node/run_host.hpp          multi_raft_impl.hpp               instantiates the multi-raft host
+cmd/redis_gateway_node/run_host.hpp          beast_http_transport_impl.hpp     instantiates the Beast transport
+tests/cache_http_front_end_test.cpp          multi_raft_impl.hpp               stands up in-process hosts
+tests/multi_raft_txn_bench_rows.hpp          multi_raft_impl.hpp               instantiates the bench's transaction clusters
+tests/multi_raft_txn_snapshot_bank_test.cpp  multi_raft_impl.hpp               stands up in-process hosts
+tests/multi_raft_txn_snapshot_test.cpp       multi_raft_impl.hpp               stands up in-process hosts
+tests/multi_raft_txn_write_skew_test.cpp     multi_raft_impl.hpp               stands up in-process hosts
+tests/redis_gateway_integration_test.cpp     multi_raft_impl.hpp               stands up in-process hosts
+tests/redis_gateway_snapshot_test.cpp        multi_raft_impl.hpp               stands up in-process hosts
+tests/redis_gateway_txn_test.cpp             multi_raft_impl.hpp               stands up in-process hosts

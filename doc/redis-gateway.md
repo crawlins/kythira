@@ -2,11 +2,11 @@
 
 `redis_gateway_node` is a replicated, sharded key/value store that speaks
 enough of the Redis protocol to be sccache's `redis` cache backend. It is the
-daemon built by `CONFIG_REDIS_GATEWAY` (`cmd/redis_gateway_node`), a RESP2/RESP3
-front end (`include/raft/redis_gateway.hpp`) over the `multi_raft` sharding
+daemon built by `CONFIG_REDIS_GATEWAY` (`services/redis/cmd/redis_gateway_node`), a RESP2/RESP3
+front end (`services/redis/include/kythira/redis/redis_gateway.hpp`) over the `multi_raft` sharding
 layer, with a state machine that splits with its shard
-(`include/raft/redis_kv_state_machine.hpp`) and an ACL with PBKDF2-hashed
-secrets (`include/raft/redis_acl.hpp`).
+(`services/redis/include/kythira/redis/redis_kv_state_machine.hpp`) and an ACL with PBKDF2-hashed
+secrets (`services/redis/include/kythira/redis/redis_acl.hpp`).
 
 It is deliberately not a Redis. The command set is exactly the closure sccache
 puts on the wire through OpenDAL and redis-rs — `GET SET SETEX DEL EXISTS
@@ -42,8 +42,8 @@ here, derived from `KYTHIRA_PEERS` and the TLS listen port; set
 `KYTHIRA_REDIS_PEER_GATEWAYS` when the peers listen elsewhere). See
 *Forwarding security* below.
 
-`docker/sccache-e2e-compose.yml` is a complete three-node example, and
-`docker/redis_gateway_node/Dockerfile` packages the host-built binary the same
+`services/redis/docker/sccache-e2e-compose.yml` is a complete three-node example, and
+`services/redis/docker/redis_gateway_node/Dockerfile` packages the host-built binary the same
 way the other daemons in `docker/` are packaged (`make docker-redis-gateway-image`).
 
 ### Environment variables
@@ -244,7 +244,7 @@ if sccache --start-server; then
 fi
 ```
 
-`docker/sccache_runner/run.sh` does exactly this, and the acceptance test
+`services/redis/docker/sccache_runner/run.sh` does exactly this, and the acceptance test
 `docker_sccache_e2e_test` (`make docker-sccache-e2e-tests`) asserts that a
 build with every gateway stopped still succeeds. It also asserts the read-only
 runner's builds succeed with a non-zero `cache_write_errors`, and that a user
@@ -260,9 +260,9 @@ source speak. `KYTHIRA_CACHE_PERSISTENCE=memory` is the older mode with
 every value in RAM. It refuses the variables below that need a data
 directory, and the rest of this section does not apply to it.
 
-`docker/cache-cluster/compose.yml` runs three nodes this way as uid 10001,
+`services/redis/docker/cache-cluster/compose.yml` runs three nodes this way as uid 10001,
 with no capabilities, under Docker or rootless Podman, and
-`docker/cache-cluster/client/` holds a real sccache and vcpkg pointed at it.
+`services/redis/docker/cache-cluster/client/` holds a real sccache and vcpkg pointed at it.
 The design is `.kiro/specs/disk-backed-build-cache/`.
 
 ### Variables

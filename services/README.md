@@ -69,7 +69,7 @@ through `${CMAKE_SOURCE_DIR}`:
 |---|---|
 | `kythira_core_headers` | `include/` and `generated/` (the Kconfig autoconf header) |
 | `kythira_test_support` | the in-process test fabric's include path (`tests/`, `tests/docker_chaos/`); tests only |
-| `cmake/kythira_test_helpers.cmake` | `add_raft_completion_test`, `add_docker_chaos_scenario_test` and the image-build helpers |
+| `cmake/kythira_test_helpers.cmake` | `add_raft_completion_test`, `add_docker_chaos_scenario_test`, the image-build helpers, `kythira_scale_test_timeouts()` (call it at the end of a directory that registers tests) and `KYTHIRA_IMAGE_CONTEXT`, the build context and working directory for images and scenario targets |
 
 Paths inside the module use `${CMAKE_CURRENT_SOURCE_DIR}`. A module's
 `README.md` lists the core targets and variables it uses, which is the list a

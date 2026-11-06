@@ -444,12 +444,9 @@ add_raft_completion_test(state_machine_apply_performance_property_test state_mac
 # persistent_state_machine concepts, the snapshot manifest, memory_kv_engine
 # and the engine conformance suite (tests/kv_engine_conformance.hpp, which the
 # RocksDB engine reuses). The Redis and build-cache state machines are
-# type-checked only where the gateway is built.
+# type-checked with the Redis module (services/redis/tests/).
 add_raft_completion_test(persistent_state_machine_test persistent_state_machine_test.cpp)
 target_link_libraries(persistent_state_machine_test PRIVATE OpenSSL::Crypto)
-if(KYTHIRA_BUILD_REDIS_GATEWAY)
-    target_compile_definitions(persistent_state_machine_test PRIVATE KYTHIRA_PSM_TEST_HAS_REDIS)
-endif()
 # file-install-snapshot task 3: the format-1 stream reader (leader) and
 # writer (follower) over real files in a temp directory, including chunks
 # that span files, zero-length files, corruption and reopen after a crash.
@@ -1297,115 +1294,6 @@ add_raft_completion_test(multi_raft_scale_test multi_raft_scale_test.cpp)
 set_target_properties(multi_raft_scale_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
 set_tests_properties(multi_raft_scale_test PROPERTIES LABELS "scale;multi-raft" TIMEOUT 1800)
 
-# redis-compatible-kv spec: the RESP gateway over multi_raft for sccache's
-# redis backend. The two codecs and the state machine have no dependency the
-# tree does not already require, but they are gated together with the gateway
-# anyway so that CONFIG_REDIS_GATEWAY=n leaves no trace of the feature in the
-# target list (Requirement 16.4). The ACL needs OpenSSL for PBKDF2; the gateway
-# integration test needs the in-process fabric, folly and Boost.Asio.
-if(KYTHIRA_BUILD_REDIS_GATEWAY)
-    add_raft_completion_test(resp_protocol_unit_test resp_protocol_unit_test.cpp)
-    add_raft_completion_test(redis_kv_commands_unit_test redis_kv_commands_unit_test.cpp)
-    add_raft_completion_test(redis_kv_state_machine_unit_test redis_kv_state_machine_unit_test.cpp)
-    # multi-raft-transactions task 11: the multi-version variant.
-    add_raft_completion_test(redis_kv_mvcc_state_machine_test redis_kv_mvcc_state_machine_test.cpp)
-    # Task 12: snapshot isolation over three hosts whose shards keep versions.
-    add_raft_completion_test(multi_raft_txn_snapshot_test multi_raft_txn_snapshot_test.cpp)
-    # Task 14: the tier-2 bank workload (snapshot reads always sum to the total).
-    add_raft_completion_test(multi_raft_txn_snapshot_bank_test
-                             multi_raft_txn_snapshot_bank_test.cpp)
-    # Task 17: write skew breaks a two-account minimum balance under
-    # snapshot and never under serializable.
-    add_raft_completion_test(multi_raft_txn_write_skew_test multi_raft_txn_write_skew_test.cpp)
-    add_raft_completion_test(redis_acl_unit_test redis_acl_unit_test.cpp)
-    # redis-gateway-module task 1: the log-entry and snapshot bytes of every
-    # state machine the daemon can be built with, against tests/golden/redis/.
-    # The RESP-reply goldens live in the integration and txn tests below.
-    set(KYTHIRA_REDIS_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden/redis")
-    add_raft_completion_test(redis_golden_bytes_test redis_golden_bytes_test.cpp)
-    target_link_libraries(redis_golden_bytes_test PRIVATE OpenSSL::Crypto)
-    target_compile_definitions(redis_golden_bytes_test PRIVATE
-        KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
-    set_tests_properties(redis_golden_bytes_test PROPERTIES LABELS "unit;redis;cache" TIMEOUT 120)
-    target_link_libraries(redis_acl_unit_test PRIVATE OpenSSL::Crypto)
-    add_raft_completion_test(redis_auth_limiter_unit_test redis_auth_limiter_unit_test.cpp)
-    # redis_gateway_node's own environment parsing (the plaintext-Raft opt-in).
-    add_raft_completion_test(redis_gateway_node_config_unit_test
-                             redis_gateway_node_config_unit_test.cpp)
-    target_sources(redis_gateway_node_config_unit_test PRIVATE
-                   "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node/config.cpp")
-    target_include_directories(redis_gateway_node_config_unit_test PRIVATE
-                               "${CMAKE_SOURCE_DIR}/cmd/redis_gateway_node")
-    # .kiro/specs/disk-backed-build-cache/ task 2: the per-node chunk store and
-    # its pack files. The crash and write-failure cases need libfiu's control
-    # API; without it they compile away and the rest still run.
-    add_raft_completion_test(cache_chunk_store_unit_test cache_chunk_store_unit_test.cpp)
-    target_link_libraries(cache_chunk_store_unit_test PRIVATE OpenSSL::Crypto)
-    set_tests_properties(cache_chunk_store_unit_test PROPERTIES
-        LABELS "unit;redis;cache" TIMEOUT 600)
-    if(FIU_FOUND)
-        target_compile_definitions(cache_chunk_store_unit_test PRIVATE FIU_ENABLE)
-        target_link_libraries(cache_chunk_store_unit_test PRIVATE ${FIU_LDFLAGS})
-        target_include_directories(cache_chunk_store_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
-    endif()
-    # Task 3: the disk-backed state machine over the chunk store, with the
-    # design's correctness properties 1-4 as randomized trials and the
-    # Requirement 2.2 index-memory bound.
-    add_raft_completion_test(cache_kv_state_machine_unit_test cache_kv_state_machine_unit_test.cpp)
-    target_link_libraries(cache_kv_state_machine_unit_test PRIVATE OpenSSL::Crypto)
-    set_tests_properties(cache_kv_state_machine_unit_test PROPERTIES
-        LABELS "unit;redis;cache" TIMEOUT 600)
-    # Task 5: the chunk fetcher, with in-process nodes whose stores the fetch
-    # callback reads directly.
-    add_raft_completion_test(cache_chunk_fetcher_unit_test cache_chunk_fetcher_unit_test.cpp)
-    target_link_libraries(cache_chunk_fetcher_unit_test PRIVATE OpenSSL::Crypto)
-    set_tests_properties(cache_chunk_fetcher_unit_test PROPERTIES
-        LABELS "unit;redis;cache" TIMEOUT 300)
-    # Task 7: the disk budget and the voters' free-space floors.
-    add_raft_completion_test(cache_disk_guard_unit_test cache_disk_guard_unit_test.cpp)
-    set_tests_properties(cache_disk_guard_unit_test PROPERTIES
-        LABELS "unit;redis;cache" TIMEOUT 60)
-    if(folly_FOUND)
-        add_raft_completion_test(redis_gateway_integration_test redis_gateway_integration_test.cpp)
-        target_compile_definitions(redis_gateway_integration_test PRIVATE
-            KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
-        target_link_libraries(redis_gateway_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-        set_tests_properties(redis_gateway_integration_test PROPERTIES LABELS "multi-raft;redis" TIMEOUT 600)
-        # The same cases over the disk-backed cache_kv_state_machine
-        # (.kiro/specs/disk-backed-build-cache/ Requirement 2.7).
-        add_raft_completion_test(redis_gateway_disk_store_integration_test
-                                 redis_gateway_disk_store_integration_test.cpp)
-        target_compile_definitions(redis_gateway_disk_store_integration_test PRIVATE
-            KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
-        target_link_libraries(redis_gateway_disk_store_integration_test PRIVATE
-                              OpenSSL::SSL OpenSSL::Crypto)
-        set_tests_properties(redis_gateway_disk_store_integration_test PROPERTIES
-            LABELS "multi-raft;redis;cache" TIMEOUT 600)
-        # Task 6: the cache's HTTP front end over three in-process hosts,
-        # including a 1 GiB PUT whose peak RSS must stay under 64 MiB.
-        add_raft_completion_test(cache_http_front_end_test cache_http_front_end_test.cpp)
-        target_link_libraries(cache_http_front_end_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-        set_tests_properties(cache_http_front_end_test PROPERTIES
-            LABELS "multi-raft;redis;cache" TIMEOUT 900)
-        # .kiro/specs/multi-raft-transactions/ task 9: the gateway's
-        # transaction surface over a wrapped KV state machine.
-        add_raft_completion_test(redis_gateway_txn_test redis_gateway_txn_test.cpp)
-        target_compile_definitions(redis_gateway_txn_test PRIVATE
-            KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
-        target_link_libraries(redis_gateway_txn_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-        set_tests_properties(redis_gateway_txn_test PROPERTIES LABELS "multi-raft;redis;txn" TIMEOUT 600)
-        # Tier 2 (task 14): the gateway over a multi-versioned KV and an
-        # oracle group, as CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION builds it.
-        add_raft_completion_test(redis_gateway_snapshot_test redis_gateway_snapshot_test.cpp)
-        target_link_libraries(redis_gateway_snapshot_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-        set_tests_properties(redis_gateway_snapshot_test PROPERTIES LABELS "multi-raft;redis;txn" TIMEOUT 600)
-    else()
-        message(STATUS "redis_gateway_integration_test: skipped (requires folly)")
-    endif()
-else()
-    message(STATUS "redis gateway tests: skipped (requires KYTHIRA_BUILD_REDIS_GATEWAY)")
-endif()
-
 # Tier B of .kiro/specs/multi-raft-performance/: `multi_raft` carrying the
 # key/value payload over a REAL transport and a REAL RPC serializer. Every other
 # multi-Raft suite runs on the in-process fabric, which removes the two costs an
@@ -1670,18 +1558,10 @@ target_link_libraries(multi_raft_bench_rows PUBLIC kythira_test_pch)
 target_precompile_headers(multi_raft_bench_rows REUSE_FROM kythira_test_pch)
 target_include_directories(multi_raft_bench_rows PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 kythira_wire_multi_raft_bench(multi_raft_bench_rows PUBLIC)
-# .kiro/specs/multi-raft-transactions/ Requirement 13.6: the transaction rows,
-# one translation unit per wrapper tier. They run over the Redis KV state
-# machines, so they are gated with the gateway like every other user of them
-# (Requirement 16.4 of redis-compatible-kv), and the catalog drops them by name
-# when they are absent.
-if(KYTHIRA_BUILD_REDIS_GATEWAY)
-    target_sources(multi_raft_bench_rows PRIVATE
-        bench_rows/txn_fabric.cpp
-        bench_rows/txn_snapshot_fabric.cpp
-    )
-    target_compile_definitions(multi_raft_bench_rows PUBLIC KYTHIRA_BENCH_HAS_TXN)
-endif()
+# The transaction rows (.kiro/specs/multi-raft-transactions/ Requirement
+# 13.6) run over the Redis KV state machines, so they live in the Redis
+# module, which adds them to this library (services/redis/tests/); the
+# catalog drops them by name when they are absent.
 
 add_raft_completion_test(multi_raft_http_benchmark_test multi_raft_http_benchmark_test.cpp)
 set_tests_properties(multi_raft_http_benchmark_test PROPERTIES
@@ -1824,20 +1704,6 @@ set_tests_properties(multi_raft_performance_report_smoke PROPERTIES
     LABELS "performance;benchmark;multi-raft;report"
     TIMEOUT 600
 )
-
-# The transaction rows (.kiro/specs/multi-raft-transactions/ Requirement
-# 13.6), at a fifth of their budget: a liveness check of 1PC, 2PC over two
-# and four shards and snapshot reads, labelled like the smoke entry above so
-# it runs where the report runs and not on every CI leg.
-if(KYTHIRA_BUILD_REDIS_GATEWAY)
-    add_test(NAME multi_raft_performance_report_transactions
-        COMMAND multi_raft_performance_report --axis transactions --budget-scale 0.2
-                --out-dir "${CMAKE_BINARY_DIR}/tests/report_transactions")
-    set_tests_properties(multi_raft_performance_report_transactions PROPERTIES
-        LABELS "performance;benchmark;multi-raft;report;transactions"
-        TIMEOUT 900
-    )
-endif()
 
 # Task 32 of .kiro/specs/multi-raft/: crash-and-recover at each split/merge
 # fault point. Needs libfiu's CONTROL API (fiu_enable/fiu_disable) as well as
@@ -7493,20 +7359,9 @@ endif()
 set(KYTHIRA_TEST_TIMEOUT_SCALE 1 CACHE STRING
     "Multiplier for test timeouts; raise for instrumented/Debug builds")
 
-if(KYTHIRA_TEST_TIMEOUT_SCALE GREATER 1)
-    add_compile_definitions(KYTHIRA_TEST_TIMEOUT_SCALE=${KYTHIRA_TEST_TIMEOUT_SCALE})
-    get_property(_kythira_tests DIRECTORY PROPERTY TESTS)
-    foreach(_test IN LISTS _kythira_tests)
-        get_test_property(${_test} TIMEOUT _test_timeout)
-        if(_test_timeout)
-            math(EXPR _scaled "${_test_timeout} * ${KYTHIRA_TEST_TIMEOUT_SCALE}")
-            set_tests_properties(${_test} PROPERTIES TIMEOUT ${_scaled})
-        endif()
-    endforeach()
-    message(STATUS
-        "Test timeouts scaled by ${KYTHIRA_TEST_TIMEOUT_SCALE}x "
-        "(Boost per-case budgets and CTest TIMEOUT properties)")
-endif()
+# kythira_scale_test_timeouts() (cmake/kythira_test_helpers.cmake) applies it
+# to this directory; the service modules call it for theirs.
+kythira_scale_test_timeouts()
 
 # Boost.Test case reports for CI; see cmake/TestReports.cmake.
 kythira_attach_test_reports()
