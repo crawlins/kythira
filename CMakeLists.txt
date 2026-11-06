@@ -799,6 +799,19 @@ else()
 endif()
 kythira_kconfig_require(REDIS_GATEWAY KYTHIRA_BUILD_REDIS_GATEWAY "OpenSSL")
 
+# iam-compatible-auth spec: the services/iam/ module (IAM, STS and the policy
+# evaluator front ends embed). Off unless CONFIG_IAM=y, like every new module;
+# entered with add_subdirectory(services/iam) below, after tests/.
+kythira_kconfig_gate(IAM)
+set(KYTHIRA_BUILD_IAM FALSE)
+if(_KYTHIRA_GATE_IAM AND DEFINED KCONFIG_IAM AND OpenSSL_FOUND AND Boost_FOUND)
+    set(KYTHIRA_BUILD_IAM TRUE)
+    message(STATUS "IAM module enabled (services/iam/, .kiro/specs/iam-compatible-auth/)")
+else()
+    message(STATUS "IAM module disabled (CONFIG_IAM=n, or OpenSSL/Boost not found)")
+endif()
+kythira_kconfig_require(IAM KYTHIRA_BUILD_IAM "OpenSSL")
+
 if(NOT stdexec_FOUND)
     message(WARNING "stdexec not found. The stdexec-backed Future/Promise implementation will not be available.")
 endif()
@@ -2137,6 +2150,13 @@ if(folly_FOUND)
     add_subdirectory(examples)
 else()
     message(STATUS "folly not found — examples/ targets disabled (all transitively require Folly)")
+endif()
+
+# The IAM module (services/README.md, .kiro/specs/iam-compatible-auth/),
+# entered after the core targets and tests/ so the targets and helpers it
+# uses exist.
+if(KYTHIRA_BUILD_IAM)
+    add_subdirectory(services/iam)
 endif()
 
 # Installation rules

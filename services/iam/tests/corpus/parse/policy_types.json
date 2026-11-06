@@ -1,0 +1,639 @@
+{
+  "description": "Rules that differ by policy type (Requirement 5.2): Principal required in trust and resource policies and forbidden in identity, boundary and session policies; no Resource in trust policies; no NotPrincipal in trust policies.",
+  "cases": [
+    {
+      "name": "trust policy with an account principal",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "123456789012"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "trust policy with a role principal",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::123456789012:role/role-name"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "trust policy with a service principal",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [
+                "ecs.amazonaws.com",
+                "elasticloadbalancing.amazonaws.com"
+              ]
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "trust policy with a federated OIDC principal",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "arn:aws:iam::123456789012:oidc-provider/kythira.example.com"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+              "StringEquals": {
+                "kythira.example.com:aud": "sts.amazonaws.com"
+              }
+            }
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "trust policy with everyone",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "trust policy with AWS star",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "*"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "trust policy without a principal",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Missing required field Principal"
+      }
+    },
+    {
+      "name": "trust policy with a resource",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "123456789012"
+            },
+            "Resource": "*",
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Has prohibited field Resource"
+      }
+    },
+    {
+      "name": "trust policy with notresource",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "123456789012"
+            },
+            "NotResource": "*",
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Has prohibited field NotResource"
+      }
+    },
+    {
+      "name": "principal is a bare string that is not star",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": "123456789012",
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid principal in policy"
+      }
+    },
+    {
+      "name": "principal with an unknown type",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "User": "bob"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "unknown principal type \"User\""
+      }
+    },
+    {
+      "name": "AWS principal that is neither account nor ARN",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "bob"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid principal in policy: \"AWS\":\"bob\""
+      }
+    },
+    {
+      "name": "AWS principal with an 11-digit account",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "12345678901"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid principal in policy"
+      }
+    },
+    {
+      "name": "empty principal object",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {},
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "non-empty object"
+      }
+    },
+    {
+      "name": "principal type with an empty array",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": []
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "\"AWS\" has no values"
+      }
+    },
+    {
+      "name": "notprincipal in a resource policy",
+      "kind": "parse",
+      "policy_type": "resource",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": [
+                "arn:aws:iam::444455556666:user/Bob",
+                "arn:aws:iam::444455556666:root"
+              ]
+            },
+            "Action": "s3:*",
+            "Resource": [
+              "arn:aws:s3:::BUCKETNAME",
+              "arn:aws:s3:::BUCKETNAME/*"
+            ]
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "notprincipal in a trust policy",
+      "kind": "parse",
+      "policy_type": "trust",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": "123456789012"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Has prohibited field NotPrincipal"
+      }
+    },
+    {
+      "name": "principal and notprincipal together",
+      "kind": "parse",
+      "policy_type": "resource",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": "*",
+            "NotPrincipal": {
+              "AWS": "123456789012"
+            },
+            "Action": "s3:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "both Principal and NotPrincipal"
+      }
+    },
+    {
+      "name": "identity policy with a principal",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "123456789012"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy document should not specify a principal."
+      }
+    },
+    {
+      "name": "identity policy with a notprincipal",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": "123456789012"
+            },
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy document should not specify a principal."
+      }
+    },
+    {
+      "name": "identity policy without principal",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "boundary policy with a principal",
+      "kind": "parse",
+      "policy_type": "boundary",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "123456789012"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy document should not specify a principal."
+      }
+    },
+    {
+      "name": "boundary policy with a notprincipal",
+      "kind": "parse",
+      "policy_type": "boundary",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": "123456789012"
+            },
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy document should not specify a principal."
+      }
+    },
+    {
+      "name": "boundary policy without principal",
+      "kind": "parse",
+      "policy_type": "boundary",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "session policy with a principal",
+      "kind": "parse",
+      "policy_type": "session",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "123456789012"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy document should not specify a principal."
+      }
+    },
+    {
+      "name": "session policy with a notprincipal",
+      "kind": "parse",
+      "policy_type": "session",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": "123456789012"
+            },
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy document should not specify a principal."
+      }
+    },
+    {
+      "name": "session policy without principal",
+      "kind": "parse",
+      "policy_type": "session",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "resource policy without a principal",
+      "kind": "parse",
+      "policy_type": "resource",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Missing required field Principal"
+      }
+    },
+    {
+      "name": "resource policy without a resource",
+      "kind": "parse",
+      "policy_type": "resource",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy statement must contain resources."
+      }
+    },
+    {
+      "name": "resource policy with a canonical user",
+      "kind": "parse",
+      "policy_type": "resource",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "CanonicalUser": "79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    }
+  ]
+}

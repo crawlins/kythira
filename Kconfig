@@ -617,4 +617,13 @@ endchoice
 
 endmenu # Futures
 
+# The service modules (services/README.md). A module's symbols live in its
+# own Kconfig; modules whose symbols predate the move (the Redis gateway) are
+# sourced where those symbols used to be instead, so their order is kept.
+menu "Service Modules"
+
+source "services/iam/Kconfig"
+
+endmenu # Service Modules
+
 # (mainmenu close is implicit at EOF)

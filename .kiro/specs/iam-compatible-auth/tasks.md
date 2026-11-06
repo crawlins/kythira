@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 2/25 tasks complete
+## Status: 6/25 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -401,7 +401,7 @@ because each has a zero-spend fallback.
     `iam-module.yml`'s container matrix.
   - _Requirements: 4.6, 8.1–8.5, 14.1, 17.1, 17.3_
 
-- [ ] 10. Policy parser and matchers
+- [x] 10. Policy parser and matchers
   - `services/iam/include/kythira/iam/iam_policy.hpp`: parse with duplicate-key detection, the
     AST, per-type validation and size limits, and `MalformedPolicyDocument`
     messages.
@@ -411,6 +411,34 @@ because each has a zero-spend fallback.
     `services/iam/tests/corpus/`. If task 8 has not landed first, this task
     creates the module scaffolding (see Overview).
   - _Requirements: 5.1–5.3_
+  - **Done November 6, 2026.** Notes:
+    - This task created the module scaffolding: `services/iam/` with its
+      `Kconfig` (`IAM`, default off, under a new top-level "Service
+      Modules" menu), `CMakeLists.txt`, `README.md` and an empty
+      `boundary-allow.txt`; the top-level `KYTHIRA_BUILD_IAM` gate and
+      `add_subdirectory`; `CONFIG_IAM=y` in `ci_full_defconfig` and a new
+      `ci_no_iam_defconfig`; the format-check, clang-tidy and
+      `.clang-tidy` header-filter globs for `services/*` (the same lines as
+      `redis-gateway-module` task 4); and `iam-module.yml`. The workflow's
+      module-off leg is a configure plus an assertion that no IAM target
+      or test exists, not a full core build: `ci.yml`'s config-variants job
+      already builds all of `minimal_defconfig`, where IAM is off.
+    - Duplicate keys are found by a Boost.JSON SAX pass before the DOM
+      parse, since `boost::json::parse` keeps one of them silently.
+    - Size quotas follow IAM's counting (whitespace outside strings is
+      free). The per-document defaults are 6144 for identity and boundary
+      documents, 2048 for trust and session documents and 20480 (S3's
+      bucket-policy limit) for resource policies; the aggregate inline
+      quotas are the state machine's job (task 8).
+    - ARN matching is segment by segment, except that a `*` ending a
+      segment may match past colons, as the IAM User Guide's Resource
+      page says. `?` and `*` count UTF-8 code points.
+    - Condition entries keep their shape only (operator, key, values as
+      strings); the operator table and variables are task 11. A resource
+      pattern holding `${...}` is stored and never matches until then.
+    - Error messages use AWS's wording where AWS has one ("Policy document
+      should not specify a principal.", "Has prohibited field Resource",
+      "Statement IDs (SID) in a single policy must be unique.").
 
 - [ ] 11. Condition operators, variables and context keys
   - The operator table with every family, `IfExists`, the set prefixes, and

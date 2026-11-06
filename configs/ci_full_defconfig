@@ -99,3 +99,8 @@ CONFIG_PROTOBUF_SERIALIZER=y
 # CONFIG_GCP_STORAGE_PERSISTENCE is not set
 # CONFIG_DNS_DISCOVERY is not set
 # CONFIG_POCO_DISCOVERY is not set
+# The IAM module (services/iam/, .kiro/specs/iam-compatible-auth/). Off by
+# default like every new module; on here so the build-and-test legs, coverage
+# and clang-tidy cover it. Needs only OpenSSL and Boost, which every leg has.
+# configs/ci_no_iam_defconfig is this file without it.
+CONFIG_IAM=y

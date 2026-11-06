@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The IAM module (services/iam/, .kiro/specs/iam-compatible-auth/).
+# Sourced from the top-level Kconfig's "Service Modules" menu.
+
+config IAM
+	bool "IAM-compatible authentication and authorization service"
+	default n
+	depends on OPENSSL
+	help
+	  Builds the services/iam/ module: an AWS IAM-compatible service
+	  (users, groups, roles, managed and inline policies, access keys,
+	  STS) hosted by its own Raft group, and the policy evaluator that
+	  front ends such as the Redis gateway embed to authorize requests
+	  locally. So far the module holds the policy parser and matchers
+	  (task 10) and their tests; the state machine, evaluator, daemon and
+	  Query API follow. OpenSSL is needed for the access-key sealing and
+	  SigV4 the later tasks add. Off by default like every new module
+	  (services/README.md). See .kiro/specs/iam-compatible-auth/.

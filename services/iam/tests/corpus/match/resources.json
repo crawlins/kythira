@@ -1,0 +1,202 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+  "description": "Resource ARN matching: case-sensitive, segment by segment, with a segment-ending `*` allowed past colon boundaries (Requirement 5.3).",
+  "cases": [
+    {
+      "name": "* matches arn:aws:s3:::anything",
+      "kind": "arn_match",
+      "pattern": "*",
+      "value": "arn:aws:s3:::anything",
+      "match": true
+    },
+    {
+      "name": "* matches not-even-an-arn",
+      "kind": "arn_match",
+      "pattern": "*",
+      "value": "not-even-an-arn",
+      "match": true
+    },
+    {
+      "name": "arn:aws:s3:::bucket/* matches arn:aws:s3:::bucket/key",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::bucket/*",
+      "value": "arn:aws:s3:::bucket/key",
+      "match": true
+    },
+    {
+      "name": "arn:aws:s3:::bucket/* matches arn:aws:s3:::bucket/a/b:c",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::bucket/*",
+      "value": "arn:aws:s3:::bucket/a/b:c",
+      "match": true
+    },
+    {
+      "name": "arn:aws:s3:::bucket/* does not match arn:aws:s3:::bucket",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::bucket/*",
+      "value": "arn:aws:s3:::bucket",
+      "match": false
+    },
+    {
+      "name": "arn:aws:s3:::bucket/* does not match arn:aws:s3:::Bucket/key",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::bucket/*",
+      "value": "arn:aws:s3:::Bucket/key",
+      "match": false
+    },
+    {
+      "name": "arn:aws:s3:::bucket matches arn:aws:s3:::bucket",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::bucket",
+      "value": "arn:aws:s3:::bucket",
+      "match": true
+    },
+    {
+      "name": "arn:aws:s3:::bucket does not match arn:aws:s3:::bucket/key",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::bucket",
+      "value": "arn:aws:s3:::bucket/key",
+      "match": false
+    },
+    {
+      "name": "arn:aws:iam::123456789012:user/Bob does not match arn:aws:iam::123456789012:user/bob",
+      "kind": "arn_match",
+      "pattern": "arn:aws:iam::123456789012:user/Bob",
+      "value": "arn:aws:iam::123456789012:user/bob",
+      "match": false
+    },
+    {
+      "name": "arn:aws:iam::123456789012:user/* matches arn:aws:iam::123456789012:user/division/Bob",
+      "kind": "arn_match",
+      "pattern": "arn:aws:iam::123456789012:user/*",
+      "value": "arn:aws:iam::123456789012:user/division/Bob",
+      "match": true
+    },
+    {
+      "name": "arn:aws:iam::123456789012:u* matches arn:aws:iam::123456789012:user/Bob",
+      "kind": "arn_match",
+      "pattern": "arn:aws:iam::123456789012:u*",
+      "value": "arn:aws:iam::123456789012:user/Bob",
+      "match": true
+    },
+    {
+      "name": "arn:aws:dynamodb:us-east-?:123456789012:table/books matches arn:aws:dynamodb:us-east-2:123456789012:table/books",
+      "kind": "arn_match",
+      "pattern": "arn:aws:dynamodb:us-east-?:123456789012:table/books",
+      "value": "arn:aws:dynamodb:us-east-2:123456789012:table/books",
+      "match": true
+    },
+    {
+      "name": "arn:aws:dynamodb:us-east-?:123456789012:table/books does not match arn:aws:dynamodb:us-east-12:123456789012:table/books",
+      "kind": "arn_match",
+      "pattern": "arn:aws:dynamodb:us-east-?:123456789012:table/books",
+      "value": "arn:aws:dynamodb:us-east-12:123456789012:table/books",
+      "match": false
+    },
+    {
+      "name": "arn:aws:dynamodb:us-*-1:123456789012:table/books matches arn:aws:dynamodb:us-west-1:123456789012:table/books",
+      "kind": "arn_match",
+      "pattern": "arn:aws:dynamodb:us-*-1:123456789012:table/books",
+      "value": "arn:aws:dynamodb:us-west-1:123456789012:table/books",
+      "match": true
+    },
+    {
+      "name": "arn:aws:dynamodb:us-*-1:123456789012:table/books does not match arn:aws:dynamodb:us-west-2:123456789012:table/books",
+      "kind": "arn_match",
+      "pattern": "arn:aws:dynamodb:us-*-1:123456789012:table/books",
+      "value": "arn:aws:dynamodb:us-west-2:123456789012:table/books",
+      "match": false
+    },
+    {
+      "name": "arn:aws:dynamodb:*:123456789012:table/books matches arn:aws:dynamodb:eu-west-1:123456789012:table/books",
+      "kind": "arn_match",
+      "pattern": "arn:aws:dynamodb:*:123456789012:table/books",
+      "value": "arn:aws:dynamodb:eu-west-1:123456789012:table/books",
+      "match": true
+    },
+    {
+      "name": "arn:aws:dynamodb:*:123456789012:table/books does not match arn:aws:dynamodb:eu-west-1:999999999999:table/books",
+      "kind": "arn_match",
+      "pattern": "arn:aws:dynamodb:*:123456789012:table/books",
+      "value": "arn:aws:dynamodb:eu-west-1:999999999999:table/books",
+      "match": false
+    },
+    {
+      "name": "arn:aws:kinesis:us-east-1:*:stream/s matches arn:aws:kinesis:us-east-1:123456789012:stream/s",
+      "kind": "arn_match",
+      "pattern": "arn:aws:kinesis:us-east-1:*:stream/s",
+      "value": "arn:aws:kinesis:us-east-1:123456789012:stream/s",
+      "match": true
+    },
+    {
+      "name": "arn:aws:kinesis:us-east-1:123456789012:stream/s? matches arn:aws:kinesis:us-east-1:123456789012:stream/s1",
+      "kind": "arn_match",
+      "pattern": "arn:aws:kinesis:us-east-1:123456789012:stream/s?",
+      "value": "arn:aws:kinesis:us-east-1:123456789012:stream/s1",
+      "match": true
+    },
+    {
+      "name": "arn:aws:kinesis:us-east-1:123456789012:stream/s? does not match arn:aws:kinesis:us-east-1:123456789012:stream/s",
+      "kind": "arn_match",
+      "pattern": "arn:aws:kinesis:us-east-1:123456789012:stream/s?",
+      "value": "arn:aws:kinesis:us-east-1:123456789012:stream/s",
+      "match": false
+    },
+    {
+      "name": "arn:aws:s3:* matches arn:aws:s3:::bucket/key",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:*",
+      "value": "arn:aws:s3:::bucket/key",
+      "match": true
+    },
+    {
+      "name": "arn:aws:s3:* does not match arn:aws:sqs:us-east-1:123456789012:q",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:*",
+      "value": "arn:aws:sqs:us-east-1:123456789012:q",
+      "match": false
+    },
+    {
+      "name": "arn:aws:s3:::bucket/* does not match arn:aws:s3",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::bucket/*",
+      "value": "arn:aws:s3",
+      "match": false
+    },
+    {
+      "name": "arn:aws:s3:::* does not match s3:::bucket",
+      "kind": "arn_match",
+      "pattern": "arn:aws:s3:::*",
+      "value": "s3:::bucket",
+      "match": false
+    },
+    {
+      "name": "arn:aws-cn:s3:::bucket does not match arn:aws:s3:::bucket",
+      "kind": "arn_match",
+      "pattern": "arn:aws-cn:s3:::bucket",
+      "value": "arn:aws:s3:::bucket",
+      "match": false
+    },
+    {
+      "name": "arn:aws*:s3:::bucket matches arn:aws-cn:s3:::bucket",
+      "kind": "arn_match",
+      "pattern": "arn:aws*:s3:::bucket",
+      "value": "arn:aws-cn:s3:::bucket",
+      "match": true
+    },
+    {
+      "name": "arn:aws:sqs:us-east-1:123456789012:queue? matches arn:aws:sqs:us-east-1:123456789012:queue1",
+      "kind": "arn_match",
+      "pattern": "arn:aws:sqs:us-east-1:123456789012:queue?",
+      "value": "arn:aws:sqs:us-east-1:123456789012:queue1",
+      "match": true
+    },
+    {
+      "name": "arn:aws:iam::123456789012:role/* does not match arn:aws:sts::123456789012:assumed-role/r/s",
+      "kind": "arn_match",
+      "pattern": "arn:aws:iam::123456789012:role/*",
+      "value": "arn:aws:sts::123456789012:assumed-role/r/s",
+      "match": false
+    }
+  ]
+}
