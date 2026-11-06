@@ -365,6 +365,20 @@ certificate whose URI SAN is on `--admin-uri-san`.
 **Kconfig.** `IAM` in `services/iam/Kconfig` (default n). It is enabled in the CI
 configurations that run Requirement 15.
 
+**As built (task 9).**
+- The public listener is core's `include/raft/beast_https_server.hpp`, with
+  the limits of `cache_http_front_end` (which is cpp-httplib, so no code is
+  shared).
+- Admin writes on a follower are redirected (307 to the leader's URL from
+  `--peers`), not proxied; `kythira-iam` follows the redirect.
+- Admin routes: `GET`/`POST /v1/admin/accounts`,
+  `POST /v1/admin/sts-keys/rotate`, `POST /v1/admin/replicas`. `/healthz`
+  is local and open.
+- Registered replicas are state-machine records (`register_replica`,
+  `remove_replica`, in the snapshot), so any leader re-adds them as
+  learners. The front ends' self-registration route above arrives with the
+  front ends.
+
 ## Component 8: Query protocol codec (Requirement 9)
 
 `include/raft/aws_query_protocol.hpp`:

@@ -1,0 +1,198 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Three IAM voters and one read replica (.kiro/specs/iam-compatible-auth/
+# task 9, Requirements 8.1-8.5 and 17.3), driven by iam_node_scenario_test.
+#
+# CLAUDE.md's container rules, as they apply here:
+#
+#   * **No static IPs.** No `ipam`, no `ipv4_address`; rootless Podman drops
+#     them silently. Raft RPC, leader redirects and the replica's
+#     registration all address nodes by **service name** (iam-1 .. iam-4),
+#     and every node certificate carries its service name as a DNS SAN.
+#   * **No runtime named anywhere.** The scenario test drives this file
+#     through `container_runtime()` / `compose_prefix()`
+#     (tests/docker_chaos/os_faults.hpp), honouring
+#     $KYTHIRA_CONTAINER_RUNTIME and $KYTHIRA_COMPOSE_COMMAND.
+#   * **No capabilities, no privileged or host networking.**
+#
+# The one-shot `certs` service writes the throwaway test PKI
+# (services/iam/tests/iam_test_pki.hpp) into the `pki` volume: a CA, one
+# certificate per node with its reserved peer SAN, the admin client
+# certificate and the unseal passphrase. The nodes start once it has
+# exited cleanly and mount the volume read-only. Compose runs `certs` again
+# whenever a node that depends on it starts, so it leaves an existing PKI
+# alone (--if-absent): a fresh CA would lock the restarted node out.
+#
+# Nothing is published on the host: the scenario runs `kythira-iam` inside
+# the containers with `compose exec`, so two stacks never contend for a
+# host port and the admin key never leaves the volume.
+#
+# Raft RPC is mutual TLS with reserved-SAN checks and the API is HTTPS with
+# client certificates; neither plaintext opt-in is given. Each node keeps
+# its Raft state in its own named volume, so `stop`/`start` resumes it and
+# `down -v` is a clean slate.
+#
+# iam-4 starts as a learner that no voter knows about yet. It joins when
+# the scenario runs `kythira-iam replica-add --node-id 4 --rpc-host iam-4
+# --rpc-port 7100` against the voters.
+
+name: kythira-iam-scenario
+
+x-node: &node
+  image: kythira-iam-node:dev
+  networks:
+    - iam_net
+  depends_on:
+    certs:
+      condition: service_completed_successfully
+  environment:
+    IAM_UNSEAL_KEY_FILE: /pki/unseal.txt
+    IAM_DATA_DIR: /var/lib/iam_node
+    # For `compose exec <node> kythira-iam ...`; iam_node ignores them.
+    KYTHIRA_IAM_CERT: /pki/admin.pem
+    KYTHIRA_IAM_KEY: /pki/admin.key
+    KYTHIRA_IAM_CA: /pki/ca.pem
+
+services:
+  certs:
+    image: kythira-iam-node:dev
+    entrypoint: ["/usr/local/bin/iam_test_certs"]
+    command:
+      - --out
+      - /pki
+      - --if-absent
+      - --node
+      - "1=iam-1"
+      - --node
+      - "2=iam-2"
+      - --node
+      - "3=iam-3"
+      - --node
+      - "4=iam-4"
+    volumes:
+      - pki:/pki
+    networks:
+      - iam_net
+
+  iam-1:
+    <<: *node
+    command:
+      - --node-id
+      - "1"
+      - --peers
+      - "2:iam-2:7100@https://iam-2:8443,3:iam-3:7100@https://iam-3:8443"
+      - --tls-cert
+      - /pki/node-1.pem
+      - --tls-key
+      - /pki/node-1.key
+      - --rpc-tls-cert
+      - /pki/node-1.pem
+      - --rpc-tls-key
+      - /pki/node-1.key
+      - --rpc-tls-ca
+      - /pki/ca.pem
+      - --admin-uri-san
+      - spiffe://kythira.test/iam-admin
+      - --election-timeout-min-ms
+      - "1000"
+      - --election-timeout-max-ms
+      - "2000"
+    volumes:
+      - pki:/pki:ro
+      - iam-1-data:/var/lib/iam_node
+
+  iam-2:
+    <<: *node
+    command:
+      - --node-id
+      - "2"
+      - --peers
+      - "1:iam-1:7100@https://iam-1:8443,3:iam-3:7100@https://iam-3:8443"
+      - --tls-cert
+      - /pki/node-2.pem
+      - --tls-key
+      - /pki/node-2.key
+      - --rpc-tls-cert
+      - /pki/node-2.pem
+      - --rpc-tls-key
+      - /pki/node-2.key
+      - --rpc-tls-ca
+      - /pki/ca.pem
+      - --admin-uri-san
+      - spiffe://kythira.test/iam-admin
+      - --election-timeout-min-ms
+      - "1000"
+      - --election-timeout-max-ms
+      - "2000"
+    volumes:
+      - pki:/pki:ro
+      - iam-2-data:/var/lib/iam_node
+
+  iam-3:
+    <<: *node
+    command:
+      - --node-id
+      - "3"
+      - --peers
+      - "1:iam-1:7100@https://iam-1:8443,2:iam-2:7100@https://iam-2:8443"
+      - --tls-cert
+      - /pki/node-3.pem
+      - --tls-key
+      - /pki/node-3.key
+      - --rpc-tls-cert
+      - /pki/node-3.pem
+      - --rpc-tls-key
+      - /pki/node-3.key
+      - --rpc-tls-ca
+      - /pki/ca.pem
+      - --admin-uri-san
+      - spiffe://kythira.test/iam-admin
+      - --election-timeout-min-ms
+      - "1000"
+      - --election-timeout-max-ms
+      - "2000"
+    volumes:
+      - pki:/pki:ro
+      - iam-3-data:/var/lib/iam_node
+
+  # The read replica: --peers lists the voters, which it never counts in a
+  # quorum; it learns of the leader from the Raft traffic it receives.
+  iam-4:
+    <<: *node
+    command:
+      - --node-id
+      - "4"
+      - --replica
+      - --peers
+      - "1:iam-1:7100@https://iam-1:8443,2:iam-2:7100@https://iam-2:8443,3:iam-3:7100@https://iam-3:8443"
+      - --tls-cert
+      - /pki/node-4.pem
+      - --tls-key
+      - /pki/node-4.key
+      - --rpc-tls-cert
+      - /pki/node-4.pem
+      - --rpc-tls-key
+      - /pki/node-4.key
+      - --rpc-tls-ca
+      - /pki/ca.pem
+      - --admin-uri-san
+      - spiffe://kythira.test/iam-admin
+      - --election-timeout-min-ms
+      - "1000"
+      - --election-timeout-max-ms
+      - "2000"
+    volumes:
+      - pki:/pki:ro
+      - iam-4-data:/var/lib/iam_node
+
+networks:
+  iam_net:
+    driver: bridge
+
+volumes:
+  pki:
+  iam-1-data:
+  iam-2-data:
+  iam-3-data:
+  iam-4-data:
