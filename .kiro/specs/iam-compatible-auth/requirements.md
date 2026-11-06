@@ -95,6 +95,8 @@ Requirement 17 states the boundary.
   account creation through `organizations:CreateAccount`. Accounts are created
   with the Kythira admin CLI. The evaluator leaves a seam where SCPs would go.
 - SAML federation (`AssumeRoleWithSAML`) and IAM Identity Center.
+- `sts:AssumeRoot`, which exists only for AWS Organizations member
+  accounts.
 - The S3, Kinesis and DynamoDB APIs themselves. Only their hooks are designed
   here.
 - IAM Access Analyzer, credential reports, service-last-accessed data, MFA
@@ -494,8 +496,11 @@ including a role in another account, so that I hold no long-lived keys.
 
 1. STS SHALL speak the Query protocol (`Version=2011-06-15`, namespace
    `https://sts.amazonaws.com/doc/2011-06-15/`) and implement AssumeRole,
-   AssumeRoleWithWebIdentity, GetSessionToken, GetCallerIdentity and
-   GetAccessKeyInfo.
+   AssumeRoleWithWebIdentity, GetSessionToken, GetFederationToken,
+   GetCallerIdentity, GetAccessKeyInfo and DecodeAuthorizationMessage. That
+   is every STS action except the ones out of scope (AssumeRoleWithSAML,
+   and AssumeRoot, which needs AWS Organizations); those SHALL return
+   `NotImplemented`.
 2. AssumeRole SHALL support:
    - `RoleSessionName`, `DurationSeconds` (900 up to the role's maximum,
      default 3600, at most 43200);
@@ -517,6 +522,42 @@ including a role in another account, so that I hold no long-lived keys.
 6. A session token over AWS's packed-policy limit SHALL be refused with
    `PackedPolicyTooLarge`.
 7. GetCallerIdentity SHALL never be denied by policy, as on AWS.
+8. GetFederationToken SHALL be callable with an IAM user's long-term keys
+   (or the account root's) and SHALL support `Name` (2 to 32 characters),
+   `DurationSeconds` (900 to 129600, default 43200; at most 3600 for the
+   root), `Policy`, `PolicyArns` and `Tags`, as on AWS:
+   - the session's principal SHALL be
+     `arn:aws:sts::<account>:federated-user/<Name>`, with `aws:userid`
+     `<account>:<Name>`;
+   - its permissions SHALL be the intersection of the calling user's
+     identity policies and the session policies, so a call with no session
+     policy SHALL yield a session with no permissions;
+   - a resource policy that names the federated-user ARN SHALL grant to the
+     session directly, and one that names the calling user's ARN SHALL be
+     limited by the session policies, as AWS documents.
+9. DecodeAuthorizationMessage SHALL decode an encoded authorization-failure
+   message into AWS's JSON shape (`allowed`, `explicitDeny`,
+   `matchedStatements`, `failures` and `context` with the principal,
+   action, resource and condition keys). The caller SHALL need
+   `sts:DecodeAuthorizationMessage`, and the message SHALL decode only in
+   the account that produced it. The authorizer hook SHALL be able to
+   return such a message with a deny, sealed under the STS key, for a
+   service module that chooses to put it in its error, as some AWS
+   services do. Kythira's IAM API itself SHALL NOT, matching AWS IAM.
+10. Temporary credentials SHALL be limited as on AWS:
+    - GetSessionToken credentials SHALL NOT call the IAM API (it needs MFA,
+      which is out of scope), and SHALL call only AssumeRole and
+      GetCallerIdentity in STS;
+    - GetFederationToken credentials SHALL NOT call the IAM API, and SHALL
+      call only GetCallerIdentity in STS;
+    - a request carrying `SerialNumber` or `TokenCode` SHALL be refused
+      with `AccessDenied`, since no MFA device can exist.
+11. THE AWS SDKs' and CLI's own credential providers SHALL work against
+    Kythira's STS once its endpoint is configured (Requirement 9.4):
+    a profile with `role_arn` and `source_profile` (including a chain of
+    two roles), a profile with `role_arn` and `web_identity_token_file`,
+    and the `AWS_ROLE_ARN` plus `AWS_WEB_IDENTITY_TOKEN_FILE` environment
+    pair.
 
 ### Requirement 11: Inbound OIDC federation
 
@@ -641,6 +682,11 @@ against Kythira, so that compatibility claims are tested.
    - creating a user, a key and a policy;
    - an allowed and a denied call;
    - cross-account AssumeRole with ExternalId;
+   - GetSessionToken, and GetFederationToken with and without a session
+     policy;
+   - DecodeAuthorizationMessage on a message from a denied request;
+   - the SDK credential providers of Requirement 10.11, including a
+     two-role `source_profile` chain;
    - AssumeRoleWithWebIdentity with a test issuer and with the Kythira
      issuer;
    - an expired token, a bad signature, and policy-change propagation;
