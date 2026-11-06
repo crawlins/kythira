@@ -13,6 +13,7 @@
 #include <raft/tcp_gossip_transport.hpp>
 
 #include "tcp_server_hardening_cases.hpp"
+#include "test_ports.hpp"
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -30,15 +31,19 @@ namespace {
 using gossip_t =
     kythira::tcp_gossip_peer2peer_replicator<std::uint64_t, std::string, std::uint64_t>;
 
-constexpr std::uint16_t k_port1 = 19701;
-constexpr std::uint16_t k_port2 = 19702;
-constexpr std::uint16_t k_port3 = 19703;
-constexpr std::uint16_t k_port_localhost1 = 19704;
-constexpr std::uint16_t k_port_localhost2 = 19705;
-constexpr std::uint16_t k_port_v6_1 = 19706;
-constexpr std::uint16_t k_port_v6_2 = 19707;
-constexpr std::uint16_t k_port_refused = 19708;
-constexpr std::uint16_t k_port_hardening = 19709;
+// Nine consecutive ports picked at run time (tests/test_ports.hpp). They
+// used to be hardcoded as 19701-19709, and a runner that already had 19709
+// bound failed every listener_* case with "bind() on port 19709".
+const std::uint16_t k_port_base = kythira::testing::free_port_block(9);
+const std::uint16_t k_port1 = k_port_base;
+const std::uint16_t k_port2 = static_cast<std::uint16_t>(k_port_base + 1);
+const std::uint16_t k_port3 = static_cast<std::uint16_t>(k_port_base + 2);
+const std::uint16_t k_port_localhost1 = static_cast<std::uint16_t>(k_port_base + 3);
+const std::uint16_t k_port_localhost2 = static_cast<std::uint16_t>(k_port_base + 4);
+const std::uint16_t k_port_v6_1 = static_cast<std::uint16_t>(k_port_base + 5);
+const std::uint16_t k_port_v6_2 = static_cast<std::uint16_t>(k_port_base + 6);
+const std::uint16_t k_port_refused = static_cast<std::uint16_t>(k_port_base + 7);
+const std::uint16_t k_port_hardening = static_cast<std::uint16_t>(k_port_base + 8);
 
 auto host_has_ipv6() -> bool {
     int fd = ::socket(AF_INET6, SOCK_STREAM, 0);
