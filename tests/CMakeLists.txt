@@ -5267,6 +5267,29 @@ set_tests_properties(sigv4_chunk_decoder_test PROPERTIES
     LABELS "unit;sigv4;aws;iam"
 )
 
+# IAM spec task 9: the Beast HTTPS server iam_node serves IAM and STS on, and
+# the Kinesis, DynamoDB and S3 front ends will reuse. Its certificates come
+# from the test CA.
+if(TARGET certificate_authority)
+    find_package(Threads REQUIRED)
+    add_executable(beast_https_server_test beast_https_server_test.cpp)
+    target_link_libraries(beast_https_server_test PRIVATE
+        Boost::unit_test_framework
+        certificate_authority
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        Threads::Threads
+    )
+    target_compile_features(beast_https_server_test PRIVATE cxx_std_23)
+    add_test(NAME beast_https_server_test COMMAND beast_https_server_test)
+    set_tests_properties(beast_https_server_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;https;iam"
+    )
+else()
+    message(STATUS "beast_https_server_test: skipped (requires certificate_authority)")
+endif()
+
 # Guarded on httplib_FOUND: acme_test_server.hpp (this trio's shared mock
 # ACME server) uses httplib directly, and these three were previously
 # unconditional here even though every other httplib::httplib-using target
