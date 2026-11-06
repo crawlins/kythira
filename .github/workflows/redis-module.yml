@@ -1,0 +1,533 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+name: Redis Module
+
+# The Redis gateway module's own workflow (services/redis/,
+# .kiro/specs/redis-gateway-module/ task 5, Requirement 5). It runs the
+# module's container scenarios on the pull requests that can break them,
+# rather than a week later, and leaves core-only pull requests alone:
+#
+#   boundary       the module boundary check and its fixture tests
+#   module-off     core built and tested with configs/ci_no_redis_defconfig,
+#                  which shows core needs nothing from the module
+#   module-tests   ci_full_defconfig, the module's targets and its ctest
+#   containers     the module's container scenarios, under rootful Docker
+#                  and rootless Podman (CLAUDE.md, "Container runtime
+#                  compatibility")
+#
+# NOT a required check, on purpose. GitHub reports nothing at all for a
+# workflow its `paths` filter skips, so a required check from here would hang
+# every pull request that does not touch the module. ci.yml still builds the
+# module and runs its ctest on every pull request; that is the gate. The
+# project's auto-merge fires on required checks only, so whoever owns a pull
+# request that touches the paths below waits for this workflow too before
+# merging (services/redis/README.md, "CI").
+
+on:
+  pull_request:
+    # Keep this list and push.paths below the same.
+    paths:
+      - services/redis/**
+      - .github/workflows/redis-module.yml
+      - .github/actions/setup-container-runtime/**
+      - configs/ci_no_redis_defconfig
+      - scripts/check_module_boundaries.py
+      - scripts/tests/test_check_module_boundaries.py
+      - cmake/kythira_test_helpers.cmake
+      # The core headers the module leans on most: the multi-Raft host it
+      # instantiates, the transaction wrapper under its MULTI/EXEC, the
+      # listeners its RESP and HTTP front ends accept on, the transport
+      # handles its daemon wires, and the credential seam (task 6).
+      - include/raft/multi_raft.hpp
+      - include/raft/multi_raft_impl.hpp
+      - include/raft/multi_raft_transport_handles.hpp
+      - include/raft/txn_*.hpp
+      - include/raft/asio_listeners.hpp
+      - include/raft/credential_verifier.hpp
+  push:
+    branches: [main]
+    paths:
+      - services/redis/**
+      - .github/workflows/redis-module.yml
+      - .github/actions/setup-container-runtime/**
+      - configs/ci_no_redis_defconfig
+      - scripts/check_module_boundaries.py
+      - scripts/tests/test_check_module_boundaries.py
+      - cmake/kythira_test_helpers.cmake
+      # The core headers the module leans on most: the multi-Raft host it
+      # instantiates, the transaction wrapper under its MULTI/EXEC, the
+      # listeners its RESP and HTTP front ends accept on, the transport
+      # handles its daemon wires, and the credential seam (task 6).
+      - include/raft/multi_raft.hpp
+      - include/raft/multi_raft_impl.hpp
+      - include/raft/multi_raft_transport_handles.hpp
+      - include/raft/txn_*.hpp
+      - include/raft/asio_listeners.hpp
+      - include/raft/credential_verifier.hpp
+  schedule:
+    # Monday 08:00 UTC, an hour after container-tests.yml's run.
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: "Which runtime leg(s) of the container job to run"
+        type: choice
+        options: [both, docker, podman]
+        default: both
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run; on main a run that has
+# started is left to finish (same policy as ci.yml).
+concurrency:
+  group: redis-module-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  boundary:
+    name: Module boundary check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Fixture tests first, so a broken checker cannot pass the tree by
+      # reporting nothing (ci.yml's kconfig-check job runs the same pair).
+      - name: Module boundary checker passes its fixture tests
+        run: python3 scripts/tests/test_check_module_boundaries.py -v
+      - name: services/redis uses only Kythira's public surface
+        run: python3 scripts/check_module_boundaries.py
+
+  # Both build jobs use the clang++-18 x64 setup of ci.yml's config-variants
+  # job, vcpkg cache key included, so they restore that job's tree and share
+  # its sccache objects instead of paying for cold builds of their own.
+  module-off:
+    name: Module off (ci_no_redis_defconfig)
+    runs-on: ubuntu-24.04
+    # A full build with the module's objects missing from sccache is the
+    # worst case; ci.yml's config-variants job is sized the same way.
+    timeout-minutes: 300
+    # The read-write build-cache key is an environment secret of
+    # build-cache-write (main only); see ci.yml and doc/ci_build_cache.md.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf & co. are for vcpkg's gperf port, needed only on a cold
+          # vcpkg cache; see ci.yml's build-and-test job.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool mold; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # Same as ci.yml's config-variants job: clang-built ports for mold,
+          # vcpkg pinned to vcpkg.json's builtin-baseline.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # The file must be ci_full_defconfig with the module off and nothing
+      # else, or this job stops proving what it claims. Its first version
+      # had lost ci_full_defconfig's "is not set" lines, so strict mode
+      # demanded libldns, which no image here installs.
+      - name: Assert ci_no_redis_defconfig is ci_full_defconfig minus the module
+        run: |
+          python3 - <<'PY'
+          import kconfiglib, sys
+          def load(path):
+              k = kconfiglib.Kconfig('Kconfig', warn=False)
+              k.load_config(path)
+              return {s.name: s.str_value for s in k.unique_defined_syms}
+          full = load('configs/ci_full_defconfig')
+          off = load('configs/ci_no_redis_defconfig')
+          diff = {n for n in full.keys() | off.keys() if full.get(n) != off.get(n)}
+          extra = sorted(n for n in diff if not n.startswith('REDIS_GATEWAY'))
+          if extra or off.get('REDIS_GATEWAY') != 'n':
+              print(f"::error::ci_no_redis_defconfig differs from ci_full_defconfig "
+                    f"beyond the module: {extra}")
+              sys.exit(1)
+          print(f"differs only in: {sorted(diff)}")
+          PY
+
+      - name: Configure (ci_no_redis_defconfig, strict)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_no_redis_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_no_redis_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4
+
+      # Requirement 2.4-2.5: with the module off nothing under services/redis/
+      # is configured, so neither its targets nor its tests exist.
+      - name: Assert the module is absent
+        run: |
+          set -o pipefail
+          if [ -d build/services/redis ]; then
+            echo "::error::build/services/redis exists with CONFIG_REDIS_GATEWAY off"
+            exit 1
+          fi
+          leaked=$(ninja -C build -t targets all | sed 's/:.*$//' | grep -v / |
+                   grep -E '^(redis_|resp_protocol|cache_|kythira_redis$|docker-(sccache-e2e|cache-cluster|txn-chaos))' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::module targets present with the module off:"
+            echo "$leaked"
+            exit 1
+          fi
+          tests=$(ctest --test-dir build -N | grep -E 'Test +#[0-9]+: (redis_|resp_|cache_)' || true)
+          if [ -n "$tests" ]; then
+            echo "::error::module tests registered with the module off:"
+            echo "$tests"
+            exit 1
+          fi
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
+
+      # ci.yml's selection, timeout and retries; see its Test step for why
+      # each flag is there.
+      - name: Test
+        run: |
+          set -o pipefail
+          ctest --test-dir build \
+            -j"$(nproc)" \
+            --output-on-failure \
+            --repeat until-pass:3 \
+            --no-tests=error \
+            --timeout 900 \
+            -LE '^(slow|performance|verbose|benchmark|docker)$' \
+            2>&1 | tee ctest-out.txt
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: sccache --show-stats
+
+  module-tests:
+    name: Module tests (ci_full_defconfig)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool mold; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      - name: Configure (ci_full_defconfig, strict)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/ci_full_defconfig \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON \
+            --expect KYTHIRA_TEST_TIMEOUT_SCALE=4
+
+      # Ninja's per-directory target: everything defined under services/redis/
+      # (the daemon, the module's tests and the container scenario binaries)
+      # plus the core targets they depend on, and nothing else.
+      - name: Build the module's targets
+        run: cmake --build build --target services/redis/all -j"$(nproc)"
+
+      - name: Assert binaries were linked by mold
+        run: scripts/check-linker.sh mold build
+
+      # Every test defined under services/redis/, by directory rather than by
+      # label (not every module test carries `redis` or `cache`), with
+      # ci.yml's exclusions: the container scenarios run in the job below and
+      # the performance rows belong to the report workflow.
+      - name: Test the module
+        run: |
+          set -o pipefail
+          ctest --test-dir build/services/redis \
+            -j"$(nproc)" \
+            --output-on-failure \
+            --repeat until-pass:3 \
+            --no-tests=error \
+            --timeout 900 \
+            -LE '^(slow|performance|verbose|benchmark|docker)$' \
+            2>&1 | tee ctest-out.txt
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: sccache --show-stats
+
+  # container-tests.yml's setup (the g++-13 tree and its vcpkg cache key), cut
+  # down to the module's scenarios. Each target builds its images and scenario
+  # binaries, then runs the suite against a live stack.
+  containers:
+    name: Container scenarios (${{ matrix.runtime }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both legs unless a dispatch picked one; see container-tests.yml.
+        runtime: ${{ fromJSON(inputs.runtime && inputs.runtime != 'both' && format('["{0}"]', inputs.runtime) || '["docker", "podman"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # See container-tests.yml: the runner image is short of disk for a
+      # full build plus the images on a bad day.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            g++-13 \
+            cmake \
+            ninja-build \
+            libfiu-dev \
+            libavahi-client-dev \
+            libldns-dev \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool \
+            mold
+
+      - name: Set up the container runtime
+        uses: ./.github/actions/setup-container-runtime
+        with:
+          runtime: ${{ matrix.runtime }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          # Same key as container-tests.yml and ci.yml's g++-13 legs.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # CONTAINER_RUNTIME is explicit because the runner has both binaries
+      # and auto-detection prefers docker.
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DCONTAINER_RUNTIME=${{ matrix.runtime }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      # `success() || failure()` keeps later suites running after an earlier
+      # one fails, so one run reports every verdict; the job still ends red.
+      # Never two stacks at once.
+      - name: docker-sccache-e2e-tests
+        run: cmake --build build --target docker-sccache-e2e-tests -j"$(nproc)"
+
+      - name: docker-cache-cluster-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-cache-cluster-tests -j"$(nproc)"
+
+      - name: docker-txn-chaos-tests
+        if: success() || failure()
+        run: cmake --build build --target docker-txn-chaos-tests -j"$(nproc)"
+
+      - name: Assert binaries were linked by mold
+        if: success() || failure()
+        run: scripts/check-linker.sh mold build
+
+      - name: Podman service log
+        if: always() && matrix.runtime == 'podman'
+        run: tail -n 200 "$RUNNER_TEMP/podman-service.log" || true
+
+      - name: Leftover containers
+        if: always()
+        run: ${{ matrix.runtime }} ps -a

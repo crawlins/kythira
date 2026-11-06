@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 4/8 tasks complete (tasks 1-4)
+## Status: 5/8 tasks complete (tasks 1-5)
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -182,7 +182,7 @@ Reference material:
       `doc/redis-gateway.md` and the spec notes), and the snapshot script
       now keeps target names only (no paths, no per-directory targets).
 
-- [ ] 5. Module CI workflow
+- [x] 5. Module CI workflow
   - `.github/workflows/redis-module.yml` with the triggers and jobs in
     design.md ("CI"): boundary check, module-off build and ctest, the
     module's ctest, and the two container targets under Docker and rootless
@@ -196,6 +196,21 @@ Reference material:
   - Not added as a required check. The module README tells PR owners to wait
     for it.
   - _Requirements: 2.6, 5.1-5.6_
+  - Notes:
+    - The container job runs `docker-txn-chaos-tests` as well as the two
+      targets design.md names, because task 4 moved that scenario into the
+      module too. `container-tests.yml` drops all three.
+    - `module-tests` builds Ninja's `services/redis/all` and runs
+      `ctest --test-dir build/services/redis`, so the selection is by
+      directory, not by the `redis|cache` labels: several module tests
+      (the codec and KV unit tests, the moved transaction tests) carry
+      neither label.
+    - `module-off` also asserts that no module target, test or build
+      directory exists, so a leak through a core CMake file fails there
+      rather than passing quietly.
+    - Both build jobs reuse the clang++-18 setup and vcpkg key of ci.yml's
+      config-variants job, and the container job the g++-13 key of
+      `container-tests.yml`, so they restore existing caches.
 
 - [ ] 6. Authentication seam
   - `include/raft/credential_verifier.hpp`: `credential_request`,

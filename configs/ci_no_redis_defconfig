@@ -3,8 +3,8 @@
 
 # ci_no_redis_defconfig — ci_full_defconfig with the Redis gateway module
 # (services/redis/, .kiro/specs/redis-gateway-module/) switched off. The
-# module's own workflow (task 5) builds and tests core with it, to show core
-# needs nothing from the module: with CONFIG_REDIS_GATEWAY off nothing under
+# module's own workflow (.github/workflows/redis-module.yml) builds and tests
+# core with it, to show core needs nothing from the module: with CONFIG_REDIS_GATEWAY off nothing under
 # services/redis/ is configured, and the core's targets and tests are a
 # module-on build's minus the module's. Written, like ci_full_defconfig,
 # against `-DKYTHIRA_KCONFIG_STRICT=ON`; see that file's header for the
@@ -12,12 +12,17 @@
 #
 #   REDIS_GATEWAY           — the point of the file. REDIS_GATEWAY_TRANSACTIONS
 #                             depends on it and goes with it.
-# CONFIG_REDIS_GATEWAY is not set
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y
 CONFIG_BOOST_BEAST_TRANSPORT=y
 CONFIG_PROXYGEN_TRANSPORT=y
+# CONFIG_REDIS_GATEWAY is not set
 CONFIG_PROTOBUF_SERIALIZER=y
-# The IAM module, as in ci_full_defconfig.
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set
 CONFIG_IAM=y

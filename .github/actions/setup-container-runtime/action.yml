@@ -1,0 +1,107 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+#
+# Sets up the container runtime a scenario job runs under: rootful Docker as
+# the runner image ships it, or rootless Podman configured the way CLAUDE.md
+# requires. Shared by container-tests.yml and redis-module.yml
+# (.kiro/specs/redis-gateway-module/ task 5), so the two workflows cannot
+# drift apart on how Podman is set up.
+#
+# For podman it exports XDG_RUNTIME_DIR and CONTAINER_SOCKET (the
+# Docker-compatible API socket) through GITHUB_ENV and leaves
+# `podman system service` running for the rest of the job; its log is
+# $RUNNER_TEMP/podman-service.log. Both runtimes end with `<runtime> version`
+# and `<runtime> compose version`, so a job that gets past this action has a
+# runtime and a compose that work.
+
+name: Set up container runtime
+description: Verify rootful Docker, or install and start rootless Podman with netavark and aardvark-dns
+
+inputs:
+  runtime:
+    description: docker or podman
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check the runtime input
+      shell: bash
+      env:
+        RUNTIME: ${{ inputs.runtime }}
+      run: |
+        case "$RUNTIME" in
+          docker|podman) ;;
+          *) echo "::error::runtime must be docker or podman, got '$RUNTIME'"; exit 1 ;;
+        esac
+
+    # Rootless Podman as CLAUDE.md describes it: Podman 4.x with netavark and
+    # aardvark-dns, so compose service names resolve. Ubuntu's podman can
+    # fall back to CNI, whose bridge has no DNS without the dnsname plugin,
+    # so the backend is pinned rather than left to whatever the image has.
+    #
+    # Compose runs through `podman compose`, which hands the file to the
+    # runner's docker-compose binary pointed at Podman's API socket. That is
+    # the empty-COMPOSE_COMMAND path in tests/docker_chaos/os_faults.hpp.
+    #
+    # The chaos stacks shape traffic with tc netem and iptables inside the
+    # containers (cap_add NET_ADMIN, which rootless Podman can grant inside
+    # its user namespace). What it cannot do is load a kernel module, so the
+    # modules are loaded on the host here. That is runner setup, not a
+    # privilege granted to any container.
+    - name: Set up rootless Podman
+      if: inputs.runtime == 'podman'
+      shell: bash
+      run: |
+        sudo apt-get install -y --no-install-recommends \
+          podman netavark aardvark-dns slirp4netns uidmap
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+        provider=""
+        for p in /usr/libexec/docker/cli-plugins/docker-compose \
+                 /usr/local/lib/docker/cli-plugins/docker-compose \
+                 "$(command -v docker-compose || true)"; do
+          if [ -n "$p" ] && [ -x "$p" ]; then provider="$p"; break; fi
+        done
+        test -n "$provider"
+        mkdir -p ~/.config/containers
+        cat > ~/.config/containers/containers.conf <<CONF
+        [network]
+        network_backend = "netavark"
+
+        [engine]
+        compose_providers = ["$provider"]
+        compose_warning_logs = false
+        CONF
+        for m in sch_netem ip_tables iptable_filter iptable_nat nf_tables; do
+          sudo modprobe "$m" || echo "::warning::modprobe $m failed"
+        done
+        # Ubuntu 24.04 can restrict unprivileged user namespaces through
+        # AppArmor. Relax it only if rootless Podman actually cannot start.
+        if ! podman unshare true; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          podman unshare true
+        fi
+        podman system reset --force
+        podman info --format '{{.Host.NetworkBackend}} rootless={{.Host.Security.Rootless}}'
+        test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+        test "$(podman info --format '{{.Host.NetworkBackend}}')" = netavark
+
+        # The Docker-compatible API socket. `podman compose` drives
+        # docker-compose through it, and the elastic-capacity controller and
+        # quorum nodes mount it as their container API.
+        sock="$(podman info --format '{{.Host.RemoteSocket.Path}}')"
+        mkdir -p "$(dirname "$sock")"
+        setsid nohup podman system service --time=0 "unix://$sock" \
+          > "$RUNNER_TEMP/podman-service.log" 2>&1 < /dev/null &
+        for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+        test -S "$sock"
+        echo "CONTAINER_SOCKET=$sock" >> "$GITHUB_ENV"
+
+    - name: Verify the container runtime
+      shell: bash
+      env:
+        RUNTIME: ${{ inputs.runtime }}
+      run: |
+        "$RUNTIME" version
+        "$RUNTIME" compose version

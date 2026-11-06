@@ -26,6 +26,10 @@ name: Container Scenario Tests
 #     DNS Discovery Build job installs it today.
 #   * docker-prometheus-remote-write-tests: no workflow runs it yet; adding it
 #     is a separate decision from adding a schedule.
+#   * the Redis gateway module's scenarios (docker-sccache-e2e-tests,
+#     docker-cache-cluster-tests, docker-txn-chaos-tests): redis-module.yml
+#     runs them, under both runtimes, on the pull requests that touch the
+#     module and weekly (.kiro/specs/redis-gateway-module/ task 5).
 
 on:
   schedule:
@@ -41,6 +45,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/container-tests.yml
+      - .github/actions/setup-container-runtime/**
       # The quorum and elastic-capacity scenarios run their nodes' container
       # API through this proxy.
       - docker/container_api_proxy/**
@@ -105,72 +110,13 @@ jobs:
             libtool \
             mold
 
-      # Rootless Podman as CLAUDE.md describes it: Podman 4.x with netavark and
-      # aardvark-dns, so compose service names resolve. Ubuntu's podman can
-      # fall back to CNI, whose bridge has no DNS without the dnsname plugin,
-      # so the backend is pinned rather than left to whatever the image has.
-      #
-      # Compose runs through `podman compose`, which hands the file to the
-      # runner's docker-compose binary pointed at Podman's API socket. That is
-      # the empty-COMPOSE_COMMAND path in tests/docker_chaos/os_faults.hpp.
-      #
-      # The chaos stacks shape traffic with tc netem and iptables inside the
-      # containers (cap_add NET_ADMIN, which rootless Podman can grant inside
-      # its user namespace). What it cannot do is load a kernel module, so the
-      # modules are loaded on the host here. That is runner setup, not a
-      # privilege granted to any container.
-      - name: Set up rootless Podman
-        if: matrix.runtime == 'podman'
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            podman netavark aardvark-dns slirp4netns uidmap
-          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
-          provider=""
-          for p in /usr/libexec/docker/cli-plugins/docker-compose \
-                   /usr/local/lib/docker/cli-plugins/docker-compose \
-                   "$(command -v docker-compose || true)"; do
-            if [ -n "$p" ] && [ -x "$p" ]; then provider="$p"; break; fi
-          done
-          test -n "$provider"
-          mkdir -p ~/.config/containers
-          cat > ~/.config/containers/containers.conf <<EOF
-          [network]
-          network_backend = "netavark"
-
-          [engine]
-          compose_providers = ["$provider"]
-          compose_warning_logs = false
-          EOF
-          for m in sch_netem ip_tables iptable_filter iptable_nat nf_tables; do
-            sudo modprobe "$m" || echo "::warning::modprobe $m failed"
-          done
-          # Ubuntu 24.04 can restrict unprivileged user namespaces through
-          # AppArmor. Relax it only if rootless Podman actually cannot start.
-          if ! podman unshare true; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-            podman unshare true
-          fi
-          podman system reset --force
-          podman info --format '{{.Host.NetworkBackend}} rootless={{.Host.Security.Rootless}}'
-          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
-          test "$(podman info --format '{{.Host.NetworkBackend}}')" = netavark
-
-          # The Docker-compatible API socket. `podman compose` drives
-          # docker-compose through it, and the elastic-capacity controller and
-          # quorum nodes mount it as their container API.
-          sock="$(podman info --format '{{.Host.RemoteSocket.Path}}')"
-          mkdir -p "$(dirname "$sock")"
-          setsid nohup podman system service --time=0 "unix://$sock" \
-            > "$RUNNER_TEMP/podman-service.log" 2>&1 < /dev/null &
-          for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
-          test -S "$sock"
-          echo "CONTAINER_SOCKET=$sock" >> "$GITHUB_ENV"
-
-      - name: Verify the container runtime
-        run: |
-          ${{ matrix.runtime }} version
-          ${{ matrix.runtime }} compose version
+      # Rootful Docker as the image ships it, or rootless Podman with
+      # netavark and aardvark-dns, set up the same way redis-module.yml sets
+      # it up (the action's header has the details).
+      - name: Set up the container runtime
+        uses: ./.github/actions/setup-container-runtime
+        with:
+          runtime: ${{ matrix.runtime }}
 
       # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
       # source (vcpkg's "edhoc" feature below).
@@ -327,18 +273,6 @@ jobs:
       - name: docker-cloud-monitoring-config-tests
         if: success() || failure()
         run: cmake --build build --target docker-cloud-monitoring-config-tests -j"$(nproc)"
-
-      - name: docker-sccache-e2e-tests
-        if: success() || failure()
-        run: cmake --build build --target docker-sccache-e2e-tests -j"$(nproc)"
-
-      - name: docker-cache-cluster-tests
-        if: success() || failure()
-        run: cmake --build build --target docker-cache-cluster-tests -j"$(nproc)"
-
-      - name: docker-txn-chaos-tests
-        if: success() || failure()
-        run: cmake --build build --target docker-txn-chaos-tests -j"$(nproc)"
 
       - name: Podman service log
         if: always() && matrix.runtime == 'podman'
