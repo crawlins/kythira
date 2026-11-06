@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 9/26 tasks complete
+## Status: 10/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -500,7 +500,7 @@ because each has a zero-spend fallback.
       under the module, not a top-level `tools/iam/`, because the module
       boundary check forbids a module's CMake from reaching outside it.
 
-- [ ] 9. `iam_node` daemon and `kythira-iam` CLI
+- [x] 9. `iam_node` daemon and `kythira-iam` CLI
   - `services/iam/cmd/iam_node`:
     - flags, unseal, Raft over TLS-TCP RPC with reserved-SAN checks;
     - leader forwarding and health;
@@ -515,6 +515,58 @@ because each has a zero-spend fallback.
     and works with Docker and rootless Podman. Add its scenario to
     `iam-module.yml`'s container matrix.
   - _Requirements: 4.6, 8.1–8.5, 14.1, 17.1, 17.3_
+  - Done November 6, 2026:
+    - `include/raft/beast_https_server.hpp` (core): a small Boost.Beast
+      HTTPS server with optional client certificates, connection, header
+      and body limits, and per-phase timeouts; 9 cases in
+      `tests/beast_https_server_test.cpp`. It is in core, not the module,
+      because modules may not include each other and Kinesis, DynamoDB and
+      S3 front ends will reuse it. It does not share
+      `cache_http_front_end`'s code as the design suggested: that front
+      end is cpp-httplib, so only its limits were copied.
+    - `services/iam/cmd/iam_node/` (`config.hpp`, `main.cpp`): the flags,
+      the unseal passphrase file, Raft over TLS-TCP RPC whose trust policy
+      binds each peer's reserved SAN to its node id (plaintext RPC only
+      with `--allow-plaintext-rpc` or on loopback), plaintext HTTP only
+      with `--insecure-plaintext` (Requirement 14.1), and a refusal to
+      start if the RPC certificate lacks its own reserved SAN. A member
+      whose passphrase does not open the cluster's sealed secrets exits 1
+      with a message rather than serve.
+    - Routes: `/healthz` (local, never redirected: role, leader, term,
+      applied index, account and replica counts, unsealed);
+      `/v1/admin/accounts` (GET, POST), `/v1/admin/sts-keys/rotate` and
+      `/v1/admin/replicas` for certificates whose URI SAN is on
+      `--admin-uri-san`. Admin calls on a follower answer 307 to the
+      leader's URL rather than being proxied, and the CLI follows them.
+      IAM and STS requests are routed by credential-scope service and
+      answer `NotImplemented` Query XML until tasks 14 and 17.
+    - `services/iam/include/kythira/iam/iam_admin.hpp` (the admin
+      operations over an `admin_cluster` concept) and `iam_routing.hpp`;
+      10 cases in `services/iam/tests/iam_admin_test.cpp`.
+    - Replicas: two new commands, `register_replica` (100) and
+      `remove_replica` (101), keep the registered learners in the state
+      machine and its snapshot, so a new leader re-adds them. The design's
+      front-end self-registration (`POST /v1/iam/replicas` with a node SAN
+      allowlist) is left to the front ends' task; `replica-add` is the
+      admin path to the same command.
+    - `kythira-iam`: `create-account` (refuses to overwrite an existing
+      key file, writes it with `raft::write_private_file`, prints the
+      secret once), `list-accounts [--json]`, `rotate-sts-key`,
+      `replica-add`, and `health`, which the compose scenario uses as its
+      replication probe.
+    - Tests: `services/iam/tests/iam_node_test.cpp` runs the binaries as
+      processes (three TLS voters and a replica on `free_port_block`:
+      redirects, create and list, 403 for no certificate and for a
+      non-admin one, rotation, replica-add, leader loss and catch-up, and
+      the wrong passphrase). `services/iam/tests/docker/compose.yml`
+      is the same cluster by service name, with a one-shot `certs`
+      service (`iam_test_certs --if-absent`) writing the test PKI to a
+      volume; `iam_node_scenario_test` drives it with `compose exec`
+      through `container_runtime()`/`compose_prefix()`. It passed 10 of
+      10 runs under Docker in the sandbox; the `container` job of
+      `iam-module.yml` runs it under Docker and rootless Podman.
+    - No core `*_impl.hpp` is included, so `boundary-allow.txt` stays
+      empty.
 
 - [x] 10. Policy parser and matchers
   - `services/iam/include/kythira/iam/iam_policy.hpp`: parse with duplicate-key detection, the

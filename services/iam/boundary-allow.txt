@@ -4,6 +4,7 @@
 # Core *_impl.hpp headers the IAM module may include, one per line, with
 # the reason (services/README.md, "Boundary rules"). Only the composition
 # roots (cmd/iam_node, cmd/kythira-iam) and tests that stand up an
-# in-process cluster may be listed. Empty until task 9 adds iam_node.
+# in-process cluster may be listed. Empty: iam_node (task 9) composes its
+# Raft group from public headers only.
 #
 # file                                   allowed core *_impl.hpp       why

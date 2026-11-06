@@ -62,6 +62,7 @@ docker/dns_sd_discovery_node/dist/
 services/redis/docker/redis_gateway_node/dist/
 services/redis/docker/cache-cluster/dist/
 services/redis/docker/txn-chaos/dist/
+services/iam/docker/iam_node/dist/
 docker/mtls_chaos/dist/
 docker/cairn/tool_server/dist/
 

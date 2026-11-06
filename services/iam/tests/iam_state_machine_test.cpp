@@ -76,7 +76,8 @@ struct fixture {
 
     auto run(iam_command type, boost::json::object body) -> std::vector<std::byte> {
         if (!body.contains("account") && type != iam_command::record_key_last_used &&
-            type != iam_command::record_sts_key && type != iam_command::retire_sts_key) {
+            type != iam_command::record_sts_key && type != iam_command::retire_sts_key &&
+            type != iam_command::register_replica && type != iam_command::remove_replica) {
             body["account"] = account_id;
         }
         return sm.apply(leader::command(type, std::move(body), ++now), ++index);
@@ -670,6 +671,26 @@ BOOST_AUTO_TEST_CASE(sts_keys_retire_on_the_log_clock) {
     BOOST_TEST(iam::open_secret(kek, f.sm.sts_keys()[0].sealed_key, "k2").value_or("") == "z");
 }
 
+BOOST_AUTO_TEST_CASE(replicas_register_move_and_remove) {
+    fixture f;
+    BOOST_TEST(f.err(iam_command::register_replica,
+                     {{"node_id", "7"}, {"rpc_host", "replica-a"}, {"rpc_port", 7100}})
+                   .empty());
+    BOOST_TEST_REQUIRE(f.sm.replicas().size() == 1U);
+    BOOST_TEST(f.sm.replicas().at("7").rpc_host == "replica-a");
+    // The same id again moves it.
+    BOOST_TEST(f.err(iam_command::register_replica,
+                     {{"node_id", "7"}, {"rpc_host", "replica-b"}, {"rpc_port", 7200}})
+                   .empty());
+    BOOST_TEST(f.sm.replicas().at("7").rpc_port == 7200U);
+    BOOST_CHECK_THROW(f.run(iam_command::register_replica,
+                            {{"node_id", "8"}, {"rpc_host", "h"}, {"rpc_port", 0}}),
+                      std::invalid_argument);
+    BOOST_TEST(f.err(iam_command::remove_replica, {{"node_id", "9"}}) == "NoSuchEntity");
+    BOOST_TEST(f.err(iam_command::remove_replica, {{"node_id", "7"}}).empty());
+    BOOST_TEST(f.sm.replicas().empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ── leader helpers ─────────────────────────────────────────────────────────
@@ -732,6 +753,23 @@ BOOST_AUTO_TEST_CASE(managed_policy_digest_recorded) {
     other.restore_from_snapshot(iam::iam_detail::bytes_of(o), 2);
     BOOST_TEST(other.aws_managed_mismatch());
     BOOST_TEST(other.account(account_id) != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(replicas_survive_a_snapshot) {
+    fixture f;
+    f.run(iam_command::register_replica,
+          {{"node_id", "aws:us-east-1:i-0abc"}, {"rpc_host", "10.0.0.9"}, {"rpc_port", 7000}});
+    iam::iam_state_machine copy;
+    copy.restore_from_snapshot(f.sm.get_state(), 4);
+    const bool same = copy.replicas() == f.sm.replicas();
+    BOOST_TEST(same);
+    // A snapshot written before replicas existed has no "replicas" member.
+    auto o = parse(f.sm.get_state());
+    o.erase("replicas");
+    iam::iam_state_machine older;
+    older.restore_from_snapshot(iam::iam_detail::bytes_of(o), 4);
+    BOOST_TEST(older.replicas().empty());
+    BOOST_TEST(older.account(account_id) != nullptr);
 }
 
 BOOST_AUTO_TEST_CASE(restore_checks_invariants) {

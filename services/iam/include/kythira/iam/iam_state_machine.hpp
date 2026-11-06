@@ -114,6 +114,10 @@ enum class iam_command : std::uint8_t {
     // STS sealing keys
     record_sts_key = 90,
     retire_sts_key = 91,
+    // Read replicas (iam_node `replica-add`): where a learner's Raft RPC
+    // listener is, so every member can reach it once it leads.
+    register_replica = 100,
+    remove_replica = 101,
 };
 
 /// AWS's IAM error codes, as the Query API returns them.
@@ -258,6 +262,16 @@ struct iam_account {
     std::map<std::string, iam_managed_policy> policies;
     std::map<std::string, iam_access_key> access_keys;        // by key id (case kept)
     std::map<std::string, iam_oidc_provider> oidc_providers;  // by url
+};
+
+/// A read replica: a Raft learner and the address of its RPC listener. The
+/// node id is kept as its canonical text, whatever the build's id type.
+struct replica_record {
+    std::string node_id;
+    std::string rpc_host;
+    std::uint16_t rpc_port = 0;
+    std::int64_t create_date = 0;
+    auto operator==(const replica_record&) const -> bool = default;
 };
 
 struct sts_key_record {
@@ -473,6 +487,25 @@ public:
 
     explicit iam_state_machine(iam_config config = {}) : _config(std::move(config)) {}
 
+    // Copyable and movable, so a read can hand out a restored copy. The
+    // parsed-policy cache comes along under the source's lock: its entries
+    // are immutable and keyed by ARN and version, so sharing them is safe.
+    iam_state_machine(const iam_state_machine& o) { copy_from(o); }
+    iam_state_machine(iam_state_machine&& o) noexcept { move_from(std::move(o)); }
+    auto operator=(const iam_state_machine& o) -> iam_state_machine& {
+        if (this != &o) {
+            copy_from(o);
+        }
+        return *this;
+    }
+    auto operator=(iam_state_machine&& o) noexcept -> iam_state_machine& {
+        if (this != &o) {
+            move_from(std::move(o));
+        }
+        return *this;
+    }
+    ~iam_state_machine() = default;
+
     auto apply(const std::vector<std::byte>& command, std::uint64_t index)
         -> std::vector<std::byte> {
         _last_applied = index;
@@ -520,6 +553,14 @@ public:
         o["sts_keys"] = std::move(sts);
         o["sts_clock"] = _sts_clock;
         o["aws_managed"] = aws_managed_digest();
+        boost::json::array replicas;
+        for (const auto& [_, r] : _replicas) {
+            replicas.push_back(boost::json::object{{"node_id", r.node_id},
+                                                   {"rpc_host", r.rpc_host},
+                                                   {"rpc_port", r.rpc_port},
+                                                   {"create_date", r.create_date}});
+        }
+        o["replicas"] = std::move(replicas);
         return iam_detail::bytes_of(o);
     }
 
@@ -536,6 +577,7 @@ public:
         std::vector<sts_key_record> sts;
         std::int64_t clock = 0;
         std::string managed;
+        std::map<std::string, replica_record> replicas;
         if (!snapshot.empty()) {
             try {
                 const auto o = iam_detail::parse_bytes(snapshot).as_object();
@@ -566,6 +608,16 @@ public:
                 }
                 clock = iam_detail::i64(o, "sts_clock");
                 managed = iam_detail::str(o, "aws_managed");
+                // Absent from snapshots written before replicas existed.
+                if (const auto* rs = o.if_contains("replicas")) {
+                    for (const auto& e : rs->as_array()) {
+                        auto r = replica_from_json(e.as_object());
+                        auto id = r.node_id;
+                        if (!replicas.emplace(id, std::move(r)).second) {
+                            throw std::invalid_argument("duplicate replica " + id);
+                        }
+                    }
+                }
                 check_invariants(accounts);
             } catch (const std::invalid_argument& e) {
                 throw std::invalid_argument(std::string("iam_state_machine: snapshot: ") +
@@ -579,6 +631,7 @@ public:
         _kek_salt = std::move(salt);
         _sts_keys = std::move(sts);
         _sts_clock = clock;
+        _replicas = std::move(replicas);
         _aws_managed_mismatch = !snapshot.empty() && managed != aws_managed_digest();
         rebuild_key_index();
         {
@@ -642,6 +695,11 @@ public:
         return _sts_keys;
     }
 
+    /// Registered read replicas, by node id text.
+    [[nodiscard]] auto replicas() const noexcept -> const std::map<std::string, replica_record>& {
+        return _replicas;
+    }
+
     /// The parsed form of a managed policy version (customer or AWS
     /// managed), cached beside its JSON and never serialised. Returns null
     /// for an unknown ARN or version.
@@ -679,11 +737,50 @@ private:
     std::string _kek_salt;
     std::vector<sts_key_record> _sts_keys;
     std::int64_t _sts_clock = 0;
+    std::map<std::string, replica_record> _replicas;
     bool _aws_managed_mismatch = false;
     std::unordered_map<std::string, std::string> _key_index;  // key id → account id
     std::uint64_t _last_applied = 0;
     mutable std::mutex _compiled_mutex;
     mutable std::unordered_map<std::string, std::shared_ptr<const policy_document>> _compiled;
+
+    void copy_from(const iam_state_machine& o) {
+        _config = o._config;
+        _accounts = o._accounts;
+        _kek_salt = o._kek_salt;
+        _sts_keys = o._sts_keys;
+        _sts_clock = o._sts_clock;
+        _replicas = o._replicas;
+        _aws_managed_mismatch = o._aws_managed_mismatch;
+        _key_index = o._key_index;
+        _last_applied = o._last_applied;
+        std::unordered_map<std::string, std::shared_ptr<const policy_document>> compiled;
+        {
+            const std::lock_guard lock(o._compiled_mutex);
+            compiled = o._compiled;
+        }
+        const std::lock_guard lock(_compiled_mutex);
+        _compiled = std::move(compiled);
+    }
+
+    void move_from(iam_state_machine&& o) noexcept {
+        _config = std::move(o._config);
+        _accounts = std::move(o._accounts);
+        _kek_salt = std::move(o._kek_salt);
+        _sts_keys = std::move(o._sts_keys);
+        _sts_clock = o._sts_clock;
+        _replicas = std::move(o._replicas);
+        _aws_managed_mismatch = o._aws_managed_mismatch;
+        _key_index = std::move(o._key_index);
+        _last_applied = o._last_applied;
+        std::unordered_map<std::string, std::shared_ptr<const policy_document>> compiled;
+        {
+            const std::lock_guard lock(o._compiled_mutex);
+            compiled = std::move(o._compiled);
+        }
+        const std::lock_guard lock(_compiled_mutex);
+        _compiled = std::move(compiled);
+    }
 
     // ── results ──
 
@@ -910,6 +1007,10 @@ private:
                 return do_record_sts_key(cmd);
             case retire_sts_key:
                 return do_retire_sts_key(cmd);
+            case register_replica:
+                return do_register_replica(cmd);
+            case remove_replica:
+                return do_remove_replica(cmd);
         }
         throw std::invalid_argument("iam_state_machine: unknown command type " +
                                     std::to_string(static_cast<int>(type)));
@@ -1950,6 +2051,39 @@ private:
             return error(iam_errors::invalid_input, "STS key " + kid + " is already retiring.");
         }
         it->retire_after = iam_detail::i64(cmd, "retire_after");
+        return ok();
+    }
+
+    // ── read replicas ──
+
+    static auto replica_from_json(const boost::json::object& o) -> replica_record {
+        replica_record r;
+        r.node_id = iam_detail::str(o, "node_id");
+        r.rpc_host = iam_detail::str(o, "rpc_host");
+        const auto port = iam_detail::i64(o, "rpc_port");
+        if (r.node_id.empty() || r.rpc_host.empty() || port <= 0 || port > 65535) {
+            throw std::invalid_argument("replica needs a node id, host and port");
+        }
+        r.rpc_port = static_cast<std::uint16_t>(port);
+        r.create_date = o.contains("create_date") ? iam_detail::i64(o, "create_date")
+                                                  : iam_detail::i64(o, "now");
+        return r;
+    }
+
+    /// Registering an id again moves it to the new address: a replica
+    /// rebuilt on another host keeps its id.
+    auto do_register_replica(const boost::json::object& cmd) -> result {
+        auto r = replica_from_json(cmd);
+        auto id = r.node_id;
+        _replicas.insert_or_assign(std::move(id), std::move(r));
+        return ok();
+    }
+
+    auto do_remove_replica(const boost::json::object& cmd) -> result {
+        const auto id = iam_detail::str(cmd, "node_id");
+        if (_replicas.erase(id) == 0) {
+            return error(iam_errors::no_such_entity, "Replica " + id + " is not registered.");
+        }
         return ok();
     }
 
