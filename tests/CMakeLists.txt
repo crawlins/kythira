@@ -5249,6 +5249,24 @@ set_tests_properties(sigv4_verifier_test PROPERTIES
     LABELS "unit;sigv4;aws;iam"
 )
 
+# IAM spec task 7: streaming (aws-chunked) payloads and the SigV4 failure
+# limiter, against vectors a pinned botocore signed (sigv4_chunked/).
+add_executable(sigv4_chunk_decoder_test sigv4_chunk_decoder_test.cpp)
+target_link_libraries(sigv4_chunk_decoder_test PRIVATE
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_definitions(sigv4_chunk_decoder_test PRIVATE
+    SIGV4_CHUNKED_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/sigv4_chunked/vectors.json")
+target_compile_features(sigv4_chunk_decoder_test PRIVATE cxx_std_23)
+add_test(NAME sigv4_chunk_decoder_test COMMAND sigv4_chunk_decoder_test)
+set_tests_properties(sigv4_chunk_decoder_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;sigv4;aws;iam"
+)
+
 # Guarded on httplib_FOUND: acme_test_server.hpp (this trio's shared mock
 # ACME server) uses httplib directly, and these three were previously
 # unconditional here even though every other httplib::httplib-using target

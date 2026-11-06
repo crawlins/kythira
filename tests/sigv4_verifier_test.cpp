@@ -251,7 +251,9 @@ BOOST_AUTO_TEST_CASE(path_rules_double_encode_except_s3) {
     BOOST_TEST(sv4::canonical_uri("/a%7Eb", true) == "/a%7Eb");  // not rewritten to ~
     BOOST_TEST(sv4::canonical_uri("/a%7eb", true) == "/a%7Eb");  // hex case normalised
     BOOST_TEST(sv4::canonical_uri("/a b", true) == "/a%20b");
-    BOOST_TEST(sv4::canonical_uri("/100%", true) == "/100%25");  // stray '%'
+    BOOST_TEST(sv4::canonical_uri("/100%", true) == "/100%25");                // stray '%'
+    BOOST_TEST(sv4::canonical_uri("/a+b=c,d:e@f!", true) == "/a+b=c,d:e@f!");  // pchar kept
+    BOOST_TEST(sv4::canonical_uri("/a+b", false) == "/a%2Bb");
     BOOST_TEST(sv4::canonical_uri("/a/./b/../c//d/", false) == "/a/c/d/");
     BOOST_TEST(sv4::canonical_uri("/a/./b/../c//d/", true) == "/a/./b/../c//d/");
     BOOST_TEST(sv4::canonical_uri("", false) == "/");
