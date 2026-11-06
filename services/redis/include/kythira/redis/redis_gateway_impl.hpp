@@ -141,15 +141,52 @@ private:
         }
     }
 
+    /// Strand only. One timer serves two deadlines: the idle timeout, pushed
+    /// back by every read, and the expiry of a credential a verifier
+    /// accepted (`_deadline_ns`), which nothing pushes back. It is armed for
+    /// whichever comes first.
     auto arm_idle() -> void {
-        if (_gw._config._idle_timeout.count() <= 0) {
+        using namespace std::chrono;
+        std::optional<steady_clock::duration> wait;
+        if (_gw._config._idle_timeout.count() > 0) {
+            wait = _gw._config._idle_timeout;
+        }
+        bool for_deadline = false;
+        if (auto d = _deadline_ns.load(); d != 0) {
+            auto left =
+                system_clock::time_point(duration_cast<system_clock::duration>(nanoseconds(d))) -
+                system_clock::now();
+            auto left_steady = std::max(steady_clock::duration::zero(),
+                                        duration_cast<steady_clock::duration>(left));
+            if (!wait || left_steady < *wait) {
+                wait = left_steady;
+                for_deadline = true;
+            }
+        }
+        if (!wait) {
+            _idle_timer.cancel();
             return;
         }
         auto self = this->shared_from_this();
-        _idle_timer.expires_after(_gw._config._idle_timeout);
-        _idle_timer.async_wait([self](const boost::system::error_code& ec) {
+        _idle_timer.expires_after(*wait);
+        _idle_timer.async_wait([self, for_deadline](const boost::system::error_code& ec) {
             if (ec) {
-                return;  // cancelled: activity or close
+                return;  // cancelled: activity, a new deadline, or close
+            }
+            if (for_deadline) {
+                auto d = self->_deadline_ns.load();
+                if (d == 0 || system_clock::now() <
+                                  system_clock::time_point(
+                                      duration_cast<system_clock::duration>(nanoseconds(d)))) {
+                    // RESET or a new AUTH moved the deadline since: re-arm.
+                    self->arm_idle();
+                    return;
+                }
+                ++self->_gw._stats._credential_expiries;
+                self->_gw._logger.log(log_level::info, "redis gateway: credential expired",
+                                      {{"source", self->_session._source}});
+                self->do_close();
+                return;
             }
             self->_gw._logger.log(log_level::debug, "redis gateway: idle timeout",
                                   {{"source", self->_session._source}});
@@ -364,6 +401,21 @@ private:
             // AUTH, HELLO ... AUTH and RESET change this; the strand reads it
             // to pick parser limits only once this command has finished.
             _authenticated.store(_session._identity.has_value());
+            // The same for a verifier's credential expiry: the strand re-arms
+            // its timer for the new deadline.
+            const std::int64_t deadline =
+                _session._expires ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        _session._expires->time_since_epoch())
+                                        .count()
+                                  : 0;
+            if (_deadline_ns.exchange(deadline) != deadline) {
+                auto self = this->shared_from_this();
+                boost::asio::post(_strand, [self] {
+                    if (!self->_closed) {
+                        self->arm_idle();
+                    }
+                });
+            }
             if (!reply.empty()) {
                 queue_reply(reply);
             }
@@ -488,6 +540,9 @@ private:
     /// Mirrors `_session._identity.has_value()` for the strand, which must
     /// not read the session while a worker executes against it.
     std::atomic<bool> _authenticated{false};
+    /// Mirrors `_session._expires` for the strand's timer, as nanoseconds
+    /// since the system clock's epoch; 0 when there is none.
+    std::atomic<std::int64_t> _deadline_ns{0};
     bool _writing = false;
     bool _read_pending = false;
     bool _close_after_flush = false;
@@ -1527,6 +1582,7 @@ auto redis_gateway<Host, Logger, Metrics>::execute(session& s, const resp_comman
         s._isolation.reset();
         s._identity.reset();
         s._internal = false;
+        s._expires.reset();
         s._writer.set_version(2);
         s._client_name.clear();
         if (_config._allow_anonymous && _acl.empty()) {
@@ -1539,6 +1595,17 @@ auto redis_gateway<Host, Logger, Metrics>::execute(session& s, const resp_comman
     }
     if (upper == "HELLO") {
         return finish(handle_hello(s, cmd));
+    }
+    if (s._expires && std::chrono::system_clock::now() >= *s._expires) {
+        // The credential a verifier accepted has lapsed. The idle timer
+        // closes a quiet connection at the deadline; this catches a command
+        // that arrives first. The client must reconnect and AUTH afresh.
+        ++_stats._credential_expiries;
+        audit(s, upper, "credential expired");
+        s._identity.reset();
+        s._expires.reset();
+        s._closing = true;
+        return finish(s._writer.error("NOAUTH credential expired"));
     }
     if (!s._identity) {
         return finish(s._writer.error("NOAUTH Authentication required."));
@@ -1662,6 +1729,27 @@ auto redis_gateway<Host, Logger, Metrics>::execute(session& s, const resp_comman
 }
 
 template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::admit_auth(session& s) -> std::optional<std::string> {
+    // Admission is decided, and the attempt charged, before the KDF runs.
+    switch (_auth_limiter.begin(s._rate_key)) {
+        case redis_auth_limiter::verdict::allowed:
+            return std::nullopt;
+        case redis_auth_limiter::verdict::rate_limited:
+            ++_stats._auth_failures;
+            emit("redis.auth.failures", "AUTH");
+            audit(s, "AUTH", "rate limited");
+            return s._writer.error(
+                "ERR too many authentication failures from this address, retry later");
+        case redis_auth_limiter::verdict::busy:
+            break;
+    }
+    ++_stats._auth_busy;
+    emit("redis.auth.busy", "AUTH");
+    audit(s, "AUTH", "too many concurrent attempts");
+    return s._writer.error("ERR too many concurrent authentication attempts, retry later");
+}
+
+template<typename Host, typename Logger, typename Metrics>
 auto redis_gateway<Host, Logger, Metrics>::handle_auth(session& s, const resp_command& cmd)
     -> std::string {
     if (cmd._argv.size() != 2 && cmd._argv.size() != 3) {
@@ -1670,21 +1758,12 @@ auto redis_gateway<Host, Logger, Metrics>::handle_auth(session& s, const resp_co
     // `AUTH password` is the pre-ACL form; it authenticates the `default` user.
     std::string user = cmd._argv.size() == 3 ? cmd._argv[1] : "default";
     const auto& secret = cmd._argv.back();
-    // Admission is decided, and the attempt charged, before the KDF runs.
-    switch (_auth_limiter.begin(s._rate_key)) {
-        case redis_auth_limiter::verdict::allowed:
-            break;
-        case redis_auth_limiter::verdict::rate_limited:
-            ++_stats._auth_failures;
-            emit("redis.auth.failures", "AUTH");
-            audit(s, "AUTH", "rate limited");
-            return s._writer.error(
-                "ERR too many authentication failures from this address, retry later");
-        case redis_auth_limiter::verdict::busy:
-            ++_stats._auth_busy;
-            emit("redis.auth.busy", "AUTH");
-            audit(s, "AUTH", "too many concurrent attempts");
-            return s._writer.error("ERR too many concurrent authentication attempts, retry later");
+    if (_config._credential_verifier && _config._credential_verifier_users &&
+        _config._credential_verifier_users(user)) {
+        return auth_with_verifier(s, user, secret);
+    }
+    if (auto refused = admit_auth(s)) {
+        return std::move(*refused);
     }
     std::optional<redis_identity> id;
     try {
@@ -1703,7 +1782,66 @@ auto redis_gateway<Host, Logger, Metrics>::handle_auth(session& s, const resp_co
     }
     s._identity = std::move(id);
     s._internal = s._identity->_user == _config._internal_user;
+    s._expires.reset();
     audit(s, "AUTH", "accepted");
+    return s._writer.simple_string("OK");
+}
+
+/// The credential verifier's half of AUTH (design "Authentication seam").
+/// It runs on the worker that executes the connection's commands, never on
+/// the I/O strand, so a verifier that answers slowly holds this connection
+/// (and one auth slot) and nothing else. Admission, the failure budget and
+/// the reply to a refused credential are the password path's.
+template<typename Host, typename Logger, typename Metrics>
+auto redis_gateway<Host, Logger, Metrics>::auth_with_verifier(session& s, const std::string& user,
+                                                              const std::string& credential)
+    -> std::string {
+    const auto wrongpass = [&](const std::string& why) {
+        ++_stats._auth_failures;
+        emit("redis.auth.failures", "AUTH");
+        audit(s, "AUTH", "rejected user '" + user + "': " + why);
+        return s._writer.error("WRONGPASS invalid username-password pair or user is disabled.");
+    };
+    if (auto refused = admit_auth(s)) {
+        return std::move(*refused);
+    }
+    // The ACL still decides who the user is and what it may do. The internal
+    // user is never vouched for from outside: forwarded links authenticate
+    // with its secret (IAM Requirement 13.7).
+    auto id = _acl.identity_of(user);
+    if (!id || user == _config._internal_user) {
+        _auth_limiter.finish(s._rate_key, false);
+        return wrongpass("not an enabled ACL user");
+    }
+    credential_result result;
+    try {
+        auto f = _config._credential_verifier(
+            credential_request{"redis", user, credential, s._rate_key});
+        if (!f.wait(_config._command_timeout)) {
+            // The verifier's delay, not the client's guess: refund it.
+            _auth_limiter.finish(s._rate_key, true);
+            audit(s, "AUTH", "credential verifier timed out");
+            return s._writer.error("ERR authentication timed out, retry later");
+        }
+        result = std::move(f).get();
+    } catch (...) {
+        _auth_limiter.finish(s._rate_key, false);
+        throw;
+    }
+    if (const auto* denied = std::get_if<credential_denied>(&result)) {
+        _auth_limiter.finish(s._rate_key, false);
+        return wrongpass(denied->reason);
+    }
+    auto& accepted = std::get<credential_accepted>(result);
+    if (accepted.expires <= std::chrono::system_clock::now()) {
+        _auth_limiter.finish(s._rate_key, false);
+        return wrongpass("credential already expired");
+    }
+    _auth_limiter.finish(s._rate_key, true);
+    s._identity = std::move(id);
+    s._internal = false;
+    s._expires = accepted.expires;
+    audit(s, "AUTH", "accepted by credential verifier as '" + accepted.principal + "'");
     return s._writer.simple_string("OK");
 }
 

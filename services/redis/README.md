@@ -54,6 +54,53 @@ The Podman setup lives in `.github/actions/setup-container-runtime`, which
 `container-tests.yml` uses too. `container-tests.yml` no longer runs the
 module's scenarios.
 
+## Authentication seam
+
+`include/raft/credential_verifier.hpp` is the core concept through which the
+gateway asks something outside itself whether a credential is good: a
+`credential_request` (service, user, credential, peer) in, a future of
+`credential_accepted` (principal, expiry) or `credential_denied` out. It
+names no IAM or AWS type. `credential_verifier_fn` is its type-erased form.
+
+Both front ends take an optional verifier and a predicate that selects which
+credentials go to it:
+
+- RESP: `redis_gateway_config::_credential_verifier` and
+  `_credential_verifier_users`. `AUTH` and `HELLO ... AUTH` for a selected
+  user go to the verifier instead of the password check. Admission, the
+  failure budget and the `WRONGPASS` reply are the password path's. The ACL
+  still decides the identity: an accepted user takes its ACL role and key
+  prefixes, a user the ACL does not have (or has disabled) is refused before
+  the verifier is asked, and the internal user is never accepted this way.
+  The call waits on the connection's worker, never on the I/O strand, for at
+  most `_command_timeout`. The accepted expiry closes the connection: the
+  connection's idle timer is armed for whichever of the idle timeout and the
+  expiry comes first, and a command after the expiry is refused with
+  `NOAUTH credential expired`. A password `AUTH` or `RESET` clears it.
+- HTTP: `cache_http_config::_credential_verifier` and
+  `_credential_verifier_selects`, through `verify_cache_http_credential`.
+  For Bearer, which names no user, the accepted `principal` names the ACL
+  user. Verified requests skip the success cache, so a cached entry can never
+  outlive the credential.
+
+With either field empty, which is every build today, both front ends behave
+exactly as they did before the seam existed.
+
+**For IAM task 21**, which fills the seam:
+
+- Set the predicates from the ACL's `auth=password|iam|both` attribute, and
+  parse `auth=` like `cert=`: a reserved attribute, not a key prefix, with a
+  repeated or unknown value rejected. Today's parser reads `auth=iam` as the
+  key prefix `auth=iam` (pinned by `redis_acl_unit_test`).
+- Roll every gateway onto the new build before any ACL file uses `auth=`,
+  and say so in `doc/redis-gateway.md`. An older gateway still allows
+  password `AUTH` for an `auth=iam` user, scoped to keys starting
+  `auth=iam`. Where a deployment needs a hard guarantee, give an IAM-only
+  user the secret `disabled`, which an old binary refuses outright.
+- Add `CONFIG_REDIS_GATEWAY_IAM` (depends on `REDIS_GATEWAY && IAM`) in
+  `Kconfig`. The daemon's composition root then links IAM's adapter, which
+  needs a `module-adapter` line in `boundary-allow.txt`.
+
 ## What the module uses from core
 
 This is the list a split to its own repository would have to export from a

@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 5/8 tasks complete (tasks 1-5)
+## Status: 6/8 tasks complete (tasks 1-6)
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -212,7 +212,7 @@ Reference material:
       config-variants job, and the container job the g++-13 key of
       `container-tests.yml`, so they restore existing caches.
 
-- [ ] 6. Authentication seam
+- [x] 6. Authentication seam
   - `include/raft/credential_verifier.hpp`: `credential_request`,
     `credential_accepted`, `credential_denied` and the `credential_verifier`
     concept (future-returning, no IAM types).
@@ -228,6 +228,26 @@ Reference material:
     attribute; roll every gateway before an ACL uses it; `disabled` secret
     for IAM-only users) goes into `services/redis/README.md`.
   - _Requirements: 6.1-6.6_
+  - Notes:
+    - The concept is `credential_verifier` in
+      `include/raft/credential_verifier.hpp`, with `credential_verifier_fn`
+      (a `std::function` returning `future_default<credential_result>`) as
+      the type-erased form and `erase_credential_verifier()` to make one.
+    - "No ACL user can select it yet" became a predicate next to the
+      verifier in each config (`_credential_verifier_users`,
+      `_credential_verifier_selects`). It is the internal hook the tests
+      drive, and the thing IAM task 21 sets from `auth=`. Both empty is
+      today's behaviour.
+    - The verifier is waited on from the connection's worker (as forwarded
+      commands are), not the strand, bounded by `_command_timeout`. A
+      timeout refunds the limiter charge and answers a retryable error.
+    - The internal user is never accepted through the verifier, and a user
+      the ACL lacks is refused before the verifier is asked
+      (`redis_acl::identity_of`).
+    - The HTTP front end asks the verifier on every request and never caches
+      the result, so a cached success cannot outlive the credential.
+    - Task 1 already pinned the `auth=iam`-as-prefix parse in
+      `redis_acl_unit_test`.
 
 - [ ] 7. Rolling-upgrade scenario
   - A cache-cluster variant with two gateways built from the last pre-move

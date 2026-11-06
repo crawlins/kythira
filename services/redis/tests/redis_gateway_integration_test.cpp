@@ -30,6 +30,7 @@
 
 #include <raft/bounded_resolver.hpp>
 #include <raft/console_logger.hpp>
+#include <raft/credential_verifier.hpp>
 #include <raft/future_default.hpp>
 #include <raft/metrics.hpp>
 #include <raft/multi_raft_impl.hpp>
@@ -1969,6 +1970,180 @@ BOOST_AUTO_TEST_CASE(only_peer_gateways_may_advise, *boost::unit_test::timeout(1
     BOOST_REQUIRE_EQUAL(client.auth("ops", "ops-secret"), "+OK\r\n");
     BOOST_CHECK_EQUAL(client.call({"KYTHIRA.ADVISE", "node-9;0,0,0"}).rfind("-NOPERM", 0), 0U);
     BOOST_CHECK(log->payloads().empty());
+}
+
+// ── the authentication seam (redis-gateway-module task 6) ───────────────────
+
+/// A credential verifier the test drives by the credential it is handed:
+/// "good" is accepted for an hour, "short" for 1.5 s, "stale" with an expiry
+/// already past, "slow" only when the test calls `release_slow()`, "never"
+/// not at all, and anything else is denied.
+struct test_verifier {
+    using result_promise = kythira::promise_default<kythira::credential_result>;
+
+    std::mutex _mu;
+    std::vector<std::unique_ptr<result_promise>> _pending;
+    std::unique_ptr<result_promise> _slow;
+    std::vector<std::string> _users_asked;
+
+    auto verify(const kythira::credential_request& r)
+        -> kythira::future_default<kythira::credential_result> {
+        using clock = std::chrono::system_clock;
+        const std::lock_guard lock(_mu);
+        _users_asked.emplace_back(r.user);
+        auto p = std::make_unique<result_promise>();
+        auto f = p->getFuture();
+        const std::string cred(r.credential);
+        if (cred == "good") {
+            p->setValue(kythira::credential_accepted{"principal-good",
+                                                     clock::now() + std::chrono::hours{1}});
+        } else if (cred == "short") {
+            p->setValue(kythira::credential_accepted{
+                "principal-short", clock::now() + std::chrono::milliseconds{1500}});
+        } else if (cred == "stale") {
+            p->setValue(kythira::credential_accepted{"principal-stale",
+                                                     clock::now() - std::chrono::seconds{1}});
+        } else if (cred == "slow") {
+            _slow = std::move(p);
+            return f;
+        } else if (cred == "never") {
+            _pending.push_back(std::move(p));
+            return f;
+        } else {
+            p->setValue(kythira::credential_denied{"test verifier: unknown credential"});
+        }
+        return f;
+    }
+
+    auto slow_asked() -> bool {
+        const std::lock_guard lock(_mu);
+        return _slow != nullptr;
+    }
+
+    auto release_slow() -> bool {
+        const std::lock_guard lock(_mu);
+        if (!_slow) {
+            return false;
+        }
+        _slow->setValue(kythira::credential_accepted{
+            "principal-slow", std::chrono::system_clock::now() + std::chrono::hours{1}});
+        _slow.reset();
+        return true;
+    }
+
+    auto users_asked() -> std::vector<std::string> {
+        const std::lock_guard lock(_mu);
+        return _users_asked;
+    }
+};
+static_assert(kythira::credential_verifier<test_verifier>);
+
+BOOST_AUTO_TEST_CASE(a_credential_verifier_vouches_only_for_selected_users,
+                     *boost::unit_test::timeout(120)) {
+    test_verifier verifier;
+    redis_gateway_config cfg;
+    cfg._credential_verifier = kythira::erase_credential_verifier(verifier);
+    // What IAM task 21's `auth=` attribute will decide; "reader" stays on
+    // its password.
+    cfg._credential_verifier_users = [](std::string_view user) {
+        return user == "farm" || user == "kythira-internal" || user == "ghost";
+    };
+    // Short enough that "never" times out inside the test.
+    cfg._command_timeout = std::chrono::milliseconds{3000};
+    cluster c(cfg);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    auto port = c.port(c.leader_of(k_sccache_group));
+    auto& gw = c.gateway(c.leader_of(k_sccache_group));
+    const std::string wrongpass =
+        "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+
+    // A selected user is the verifier's to vouch for, and only the
+    // verifier's: its ACL password no longer works.
+    {
+        resp_client farm(port);
+        BOOST_CHECK_EQUAL(farm.auth("farm", "farm-secret"), wrongpass);
+        BOOST_CHECK_EQUAL(farm.auth("farm", "nope"), wrongpass);
+        BOOST_CHECK_EQUAL(farm.auth("farm", "stale"), wrongpass);
+        BOOST_CHECK_EQUAL(farm.auth("farm", "good"), "+OK\r\n");
+        // Once in, the ACL user's role and key prefixes apply.
+        BOOST_CHECK_EQUAL(farm.call({"SET", "sccache/seam", "v"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(farm.call({"SET", "other/seam", "v"}),
+                          "-NOPERM No permissions to access a key\r\n");
+        BOOST_CHECK_EQUAL(farm.call({"INFO"}),
+                          "-NOPERM User farm has no permissions to run the 'INFO' command\r\n");
+    }
+    // HELLO ... AUTH takes the same path.
+    {
+        resp_client farm(port);
+        auto hello = farm.call({"HELLO", "3", "AUTH", "farm", "good"});
+        BOOST_CHECK_EQUAL(hello.rfind("%7\r\n", 0), 0U);
+        BOOST_CHECK_EQUAL(farm.call({"GET", "sccache/seam"}), bulk("v"));
+    }
+    // The internal user is never vouched for from outside, and a user the
+    // ACL does not have is refused before the verifier is asked.
+    {
+        resp_client other(port);
+        const auto asked_before = verifier.users_asked().size();
+        BOOST_CHECK_EQUAL(other.auth("kythira-internal", "good"), wrongpass);
+        BOOST_CHECK_EQUAL(other.auth("ghost", "good"), wrongpass);
+        BOOST_CHECK_EQUAL(verifier.users_asked().size(), asked_before);
+    }
+    // A user the predicate does not select authenticates as before.
+    {
+        resp_client reader(port);
+        BOOST_CHECK_EQUAL(reader.auth("reader", "good"), wrongpass);
+        BOOST_CHECK_EQUAL(reader.auth("reader", "reader-secret"), "+OK\r\n");
+    }
+    for (const auto& u : verifier.users_asked()) {
+        BOOST_CHECK_EQUAL(u, "farm");
+    }
+
+    // A verifier that is slow to answer holds its own connection and no
+    // other: while one AUTH waits, another client authenticates and is
+    // served.
+    {
+        resp_client slow(port);
+        slow.send_raw(resp_client::encode({"AUTH", "farm", "slow"}));
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (!verifier.slow_asked()) {
+            BOOST_REQUIRE(std::chrono::steady_clock::now() < deadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        resp_client reader(port);
+        BOOST_CHECK_EQUAL(reader.auth("reader", "reader-secret"), "+OK\r\n");
+        BOOST_CHECK_EQUAL(reader.call({"GET", "sccache/seam"}), bulk("v"));
+        BOOST_REQUIRE(verifier.release_slow());
+        BOOST_CHECK_EQUAL(slow.read_reply(), "+OK\r\n");
+        BOOST_CHECK_EQUAL(slow.call({"GET", "sccache/seam"}), bulk("v"));
+    }
+    // One that never answers costs the command timeout and a retryable
+    // error, not the connection.
+    {
+        resp_client never(port);
+        BOOST_CHECK_EQUAL(never.auth("farm", "never"),
+                          "-ERR authentication timed out, retry later\r\n");
+        BOOST_CHECK_EQUAL(never.auth("farm", "good"), "+OK\r\n");
+    }
+    // The credential's expiry closes the connection, even a busy one.
+    {
+        resp_client brief(port);
+        const auto expired_before = gw.stats()._credential_expiries.load();
+        BOOST_CHECK_EQUAL(brief.auth("farm", "short"), "+OK\r\n");
+        BOOST_CHECK_EQUAL(brief.call({"GET", "sccache/seam"}), bulk("v"));
+        auto start = std::chrono::steady_clock::now();
+        BOOST_CHECK(brief.wait_closed());
+        auto waited = std::chrono::steady_clock::now() - start;
+        BOOST_CHECK_LT(waited, std::chrono::seconds{10});
+        BOOST_CHECK_GT(gw.stats()._credential_expiries.load(), expired_before);
+    }
+    // A password AUTH clears a verifier's deadline: the connection outlives it.
+    {
+        resp_client back(port);
+        BOOST_CHECK_EQUAL(back.auth("farm", "short"), "+OK\r\n");
+        BOOST_CHECK_EQUAL(back.auth("reader", "reader-secret"), "+OK\r\n");
+        std::this_thread::sleep_for(std::chrono::milliseconds{2500});
+        BOOST_CHECK_EQUAL(back.call({"GET", "sccache/seam"}), bulk("v"));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
