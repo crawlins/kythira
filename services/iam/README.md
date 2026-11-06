@@ -18,8 +18,12 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `include/kythira/iam/iam_policy.hpp` | the policy parser, per-type validation, size quotas, and the action and ARN matchers | 10 |
 | `tests/iam_policy_test.cpp` | its unit tests and the corpus runner | 10 |
 | `tests/corpus/` | the policy corpus (format in its README) | 10 onward |
+| `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
+| `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |
+| `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |
+| `tools/` | the pinned AWS-managed policies (`aws_managed_policies.json`), the configure-time generator for `<kythira/iam/aws_managed_policies_data.hpp>`, and the script that refreshes the JSON from AWS | 8 |
 
-The state machine (task 8), the daemon (task 9), condition operators and
+The daemon (task 9), condition operators and
 variables (task 11), the evaluator (task 12) and the rest follow the plan in
 the spec's `tasks.md`.
 
@@ -35,6 +39,8 @@ package to export.
 | From core | Used for |
 |---|---|
 | `kythira_core_headers` | `include/` and `generated/`, through `kythira_iam` |
+| `OpenSSL::Crypto` | `iam_seal.hpp`, through `kythira_iam` |
+| `Python3_EXECUTABLE` | running `tools/gen_aws_managed_policies.py` at configure time |
 | `kythira_test_pch` | the test precompiled header and its links (Boost.Test, Boost.JSON), through `add_raft_completion_test` |
 | `cmake/kythira_test_helpers.cmake` | `add_raft_completion_test` |
 | `KYTHIRA_BUILD_IAM` | set by the top level from `CONFIG_IAM`, OpenSSL and Boost |

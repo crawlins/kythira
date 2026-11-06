@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 7/26 tasks complete
+## Status: 8/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -404,14 +404,14 @@ because each has a zero-spend fallback.
     `redis_auth_limiter`.
   - _Requirements: 3.4, 3.8_
 
-- [ ] 8. `iam_state_machine`
+- [x] 8. `iam_state_machine`
   - The command enum and JSON bodies of design Component 4. Leader-side
     stamping helpers.
   - `apply()` re-checks the preconditions that can race.
   - Per-account maps, the global access-key index, quotas, unique-id
     generation, case-insensitive names, and the sealed-secret format.
   - A generated header for the AWS-managed policy subset, from
-    `tools/iam/aws_managed_policies.json`.
+    `services/iam/tools/aws_managed_policies.json`.
   - Snapshot round trip with a version.
   - Lives in `services/iam/include/kythira/iam/`, with tests in
     `services/iam/tests/`. If task 10 has not landed first, this task
@@ -421,6 +421,47 @@ because each has a zero-spend fallback.
       instances and after a restore;
     - no plaintext secret appears in the log or snapshot bytes.
   - _Requirements: 4.1–4.5, 4.7, 4.8_
+  - Done November 6, 2026:
+    - `kythira/iam/iam_state_machine.hpp` (the state machine, its
+      `iam_command` enum and the `iam_leader` helpers) and
+      `kythira/iam/iam_seal.hpp` (KEK derivation and AES-256-GCM
+      sealing); 31 cases in `services/iam/tests/iam_state_machine_test.cpp`.
+    - Commands are JSON objects with a numeric `type`; values are part of
+      the log format and only ever appended. The leader stamps `now`,
+      unique ids and sealed secrets; `apply()` re-checks name clashes,
+      DeleteConflict and quotas and answers `{"error": <AWS code>}`
+      without mutating. A command the leader could never have proposed
+      (bad JSON, unknown type, missing field) throws
+      `std::invalid_argument`.
+    - Entities sit in ordered maps keyed by lower-cased name, so names
+      are unique case-insensitively and `get_state()` is byte-identical
+      across replicas. The access-key index (key id to account) is a
+      hash map rebuilt on restore; attachment and boundary counts are
+      recomputed on restore and checked against the entities.
+    - The KEK is PBKDF2-HMAC-SHA256 (200 000 iterations, the CA's) over a
+      per-cluster salt that the first `create_account` carries. A sealed
+      secret is base64url(nonce | tag | ciphertext) with the record's id
+      (access key id, STS kid) as associated data, so a blob moved to
+      another record does not open.
+    - STS keys retire on the log's clock: every STS-key command carries
+      the leader's `now`, and `apply()` drops retiring keys whose
+      `retire_after` has passed.
+    - Access-key last-used updates batch through
+      `iam_leader::last_used_batcher`, at most one write per key per
+      interval (five minutes by default).
+    - `services/iam/tools/aws_managed_policies.json` holds the six
+      policies Requirements 4.3 and 13 name (AdministratorAccess,
+      ReadOnlyAccess v191, IAMFullAccess, IAMReadOnlyAccess and the two
+      ElastiCache policies), fetched verbatim from AWS on November 6, 2026
+      by `services/iam/tools/refresh_aws_managed_policies.sh` with Clark's
+      personal profile (the CI role's boundary denies IAM, so refreshes
+      run locally). All six parse with `iam_policy.hpp`. The header is
+      generated at configure time into the build tree, and a digest of
+      the set is recorded in each snapshot; a restore from a member with
+      another set is accepted but flagged (`aws_managed_mismatch()`), so a
+      rolling upgrade is not blocked. The files live
+      under the module, not a top-level `tools/iam/`, because the module
+      boundary check forbids a module's CMake from reaching outside it.
 
 - [ ] 9. `iam_node` daemon and `kythira-iam` CLI
   - `services/iam/cmd/iam_node`:
