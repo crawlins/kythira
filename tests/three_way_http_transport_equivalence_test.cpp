@@ -29,6 +29,7 @@
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
 #include "http_limit_test_helpers.hpp"
+#include "test_ports.hpp"
 #include <raft/beast_http_transport.hpp>
 #include <raft/beast_http_transport_impl.hpp>
 #include <raft/proxygen_http_transport.hpp>
@@ -157,7 +158,7 @@ template<typename Server> auto register_extension_echo_handlers(Server& server) 
         });
 }
 
-/// The three servers on fixed ports with their io threads, and a client for
+/// The three servers on the given ports with their io threads, and a client for
 /// each, torn down in the right order. Only for the extension cases below;
 /// the original cases keep their inline setup.
 struct three_transports {
@@ -236,9 +237,10 @@ BOOST_AUTO_TEST_SUITE(three_way_http_transport_equivalence_tests)
 
 BOOST_AUTO_TEST_CASE(request_vote_success_is_equivalent_across_all_three_transports,
                      *boost::unit_test::timeout(60)) {
-    constexpr std::uint16_t http_port = 28390;
-    constexpr std::uint16_t beast_port = 28391;
-    constexpr std::uint16_t proxygen_port = 28392;
+    const std::uint16_t port_base = kythira::testing::free_port_block(3);
+    const std::uint16_t http_port = port_base;
+    const std::uint16_t beast_port = static_cast<std::uint16_t>(port_base + 1);
+    const std::uint16_t proxygen_port = static_cast<std::uint16_t>(port_base + 2);
 
     kythira::cpp_httplib_server<http_types> http_server("127.0.0.1", http_port, {},
                                                         kythira::noop_metrics{});
@@ -345,9 +347,10 @@ BOOST_AUTO_TEST_CASE(request_vote_success_is_equivalent_across_all_three_transpo
 BOOST_AUTO_TEST_CASE(
     malformed_and_unknown_endpoint_status_codes_are_equivalent_across_all_three_transports,
     *boost::unit_test::timeout(60)) {
-    constexpr std::uint16_t http_port = 28393;
-    constexpr std::uint16_t beast_port = 28394;
-    constexpr std::uint16_t proxygen_port = 28395;
+    const std::uint16_t port_base = kythira::testing::free_port_block(3);
+    const std::uint16_t http_port = port_base;
+    const std::uint16_t beast_port = static_cast<std::uint16_t>(port_base + 1);
+    const std::uint16_t proxygen_port = static_cast<std::uint16_t>(port_base + 2);
 
     kythira::cpp_httplib_server<http_types> http_server("127.0.0.1", http_port, {},
                                                         kythira::noop_metrics{});
@@ -405,9 +408,10 @@ BOOST_AUTO_TEST_CASE(connection_failure_is_reported_as_exception_by_all_three_tr
                      *boost::unit_test::timeout(60)) {
     // Nothing is bound to any of these ports -- every connection attempt
     // must fail.
-    constexpr std::uint16_t closed_http_port = 28396;
-    constexpr std::uint16_t closed_beast_port = 28397;
-    constexpr std::uint16_t closed_proxygen_port = 28398;
+    const std::uint16_t port_base = kythira::testing::free_port_block(3);
+    const std::uint16_t closed_http_port = port_base;
+    const std::uint16_t closed_beast_port = static_cast<std::uint16_t>(port_base + 1);
+    const std::uint16_t closed_proxygen_port = static_cast<std::uint16_t>(port_base + 2);
 
     std::unordered_map<std::uint64_t, std::string> http_node_map{
         {test_node_id, std::string("http://127.0.0.1:") + std::to_string(closed_http_port)}};
@@ -454,9 +458,10 @@ BOOST_AUTO_TEST_CASE(connection_failure_is_reported_as_exception_by_all_three_tr
 // Content-Type from every server, read off the wire.
 BOOST_AUTO_TEST_CASE(oversized_body_is_refused_the_same_way_by_all_three_transports,
                      *boost::unit_test::timeout(60)) {
-    constexpr std::uint16_t http_port = 28399;
-    constexpr std::uint16_t beast_port = 28400;
-    constexpr std::uint16_t proxygen_port = 28401;
+    const std::uint16_t port_base = kythira::testing::free_port_block(3);
+    const std::uint16_t http_port = port_base;
+    const std::uint16_t beast_port = static_cast<std::uint16_t>(port_base + 1);
+    const std::uint16_t proxygen_port = static_cast<std::uint16_t>(port_base + 2);
     constexpr std::size_t limit = 64;
 
     kythira::cpp_httplib_server_config http_config;
@@ -513,7 +518,9 @@ BOOST_AUTO_TEST_CASE(oversized_body_is_refused_the_same_way_by_all_three_transpo
 // included, and the three agree.
 BOOST_AUTO_TEST_CASE(extension_rpcs_are_equivalent_across_all_three_transports,
                      *boost::unit_test::timeout(60)) {
-    three_transports t(28420, 28421, 28422, /*with_extensions=*/true);
+    const std::uint16_t port_base = kythira::testing::free_port_block(3);
+    three_transports t(port_base, static_cast<std::uint16_t>(port_base + 1),
+                       static_cast<std::uint16_t>(port_base + 2), /*with_extensions=*/true);
 
     for (std::uint64_t term : {1ULL, 2ULL, 41ULL}) {
         kythira::request_pre_vote_request<> pv{};
@@ -567,9 +574,12 @@ BOOST_AUTO_TEST_CASE(extension_rpcs_are_equivalent_across_all_three_transports,
 // rpc_not_implemented_exception. The mandatory RPCs are untouched by that.
 BOOST_AUTO_TEST_CASE(unregistered_extension_handlers_answer_not_implemented_on_all_three,
                      *boost::unit_test::timeout(60)) {
-    three_transports t(28423, 28424, 28425, /*with_extensions=*/false);
+    const std::uint16_t port_base = kythira::testing::free_port_block(3);
+    three_transports t(port_base, static_cast<std::uint16_t>(port_base + 1),
+                       static_cast<std::uint16_t>(port_base + 2), /*with_extensions=*/false);
 
-    for (auto port : {std::uint16_t{28423}, std::uint16_t{28424}, std::uint16_t{28425}}) {
+    for (auto port : {port_base, static_cast<std::uint16_t>(port_base + 1),
+                      static_cast<std::uint16_t>(port_base + 2)}) {
         httplib::Client raw_client("127.0.0.1", port);
         raw_client.set_connection_timeout(5, 0);
         for (const auto* path : {"/v1/raft/request_pre_vote", "/v1/raft/timeout_now"}) {
@@ -602,7 +612,7 @@ BOOST_AUTO_TEST_CASE(unregistered_extension_handlers_answer_not_implemented_on_a
 // after exactly one request; on RequestVote it stays an ordinary client error.
 BOOST_AUTO_TEST_CASE(an_older_peer_without_the_routes_is_reported_as_not_implemented,
                      *boost::unit_test::timeout(60)) {
-    constexpr std::uint16_t older_port = 28426;
+    const std::uint16_t older_port = kythira::testing::free_port();
     httplib::Server older_peer;
     std::atomic<int> pre_vote_hits{0};
     older_peer.set_pre_routing_handler([&](const httplib::Request& req, httplib::Response&) {
@@ -657,7 +667,7 @@ BOOST_AUTO_TEST_CASE(an_older_peer_without_the_routes_is_reported_as_not_impleme
 
     // And a 404 on a mandatory RPC is a misconfigured peer, not an older one:
     // checked against a server with no routes at all.
-    constexpr std::uint16_t empty_port = 28427;
+    const std::uint16_t empty_port = kythira::testing::free_port();
     httplib::Server empty_peer;
     BOOST_REQUIRE(empty_peer.bind_to_port("127.0.0.1", empty_port));
     std::thread empty_thread([&] { empty_peer.listen_after_bind(); });
