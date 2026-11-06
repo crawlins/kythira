@@ -169,6 +169,19 @@ rights). Any future leg in that position needs the same treatment, and the
 lesson is that "only main writes" has a corner: **the first successful build
 must happen on `main`, or be seeded there.**
 
+**Amended 2026-11-06:** a pull request from a branch of this repository now
+writes, with the separate create-only `kythira-build-cache-pr` key, which
+removes the corner above for every leg except one that only passes on fork
+PRs. The action decides "same repository" by comparing
+`pull_request.head.repo.full_name` in the event payload with
+`GITHUB_REPOSITORY`; forks fail that check and receive no secrets anyway.
+Withholding `OBJECT_OVERWRITE` is what keeps this from being a poisoning
+path for existing entries: every cache in the bucket is content-addressed,
+so a writer only ever needs to add an absent name. A PR can still add an
+entry under a key `main` has not computed yet; that is accepted because
+only people who can push branches here can open such a PR. The paragraph
+below now describes fork PRs and other non-main refs only.
+
 Read-only on `pull_request` means sccache's write attempts fail with 403 and
 are counted as `cache write errors`; the compile result is still returned
 (`sccache/src/server.rs`, the same property `.kiro/specs/redis-compatible-kv/`

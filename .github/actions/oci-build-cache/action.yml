@@ -6,11 +6,13 @@
 # (.kiro/specs/oci-build-cache/ Requirements 3 and 4, design.md Component 2).
 #
 # The writer policy lives here and nowhere else: a push to main gets the
-# read-write key, everything else gets the read-only one, and a run with no
+# read-write key, a pull request from a branch of this repository gets the
+# PR-writer key, everything else gets the read-only one, and a run with no
 # key at all (a pull request from a fork, where GitHub withholds secrets)
 # turns both caches off and builds anyway. IAM enforces the same rule from
-# the other side -- the ro user cannot create objects -- so a bug in the case
-# statement below is refused by the service rather than poisoning a cache.
+# the other side -- the ro user cannot create objects, and the pr user can
+# create but never overwrite -- so a bug in the case statement below is
+# refused by the service rather than poisoning a cache.
 #
 # The action also decides, by probing, whether sccache may be used at all --
 # and exports RUSTC_WRAPPER only if the probe passes. That decision has to
@@ -36,6 +38,14 @@ inputs:
     default: ""
   rw-secret-access-key:
     description: secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY
+    required: false
+    default: ""
+  pr-access-key-id:
+    description: secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID — create-only key for same-repository pull requests
+    required: false
+    default: ""
+  pr-secret-access-key:
+    description: secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY
     required: false
     default: ""
   ro-access-key-id:
@@ -81,6 +91,8 @@ runs:
         # before bash ever sees the line.
         RW_ID: ${{ inputs.rw-access-key-id }}
         RW_SECRET: ${{ inputs.rw-secret-access-key }}
+        PR_ID: ${{ inputs.pr-access-key-id }}
+        PR_SECRET: ${{ inputs.pr-secret-access-key }}
         RO_ID: ${{ inputs.ro-access-key-id }}
         RO_SECRET: ${{ inputs.ro-secret-access-key }}
         BUCKET: ${{ inputs.bucket }}
@@ -118,11 +130,35 @@ runs:
         # translation units it could never store -- sccache attempted every
         # upload and was refused every time, which is what the paired
         # SCCACHE_S3_RW_MODE below now prevents.
-        case "${GITHUB_EVENT_NAME}:${GITHUB_REF_NAME}" in
-          push:main|schedule:main|workflow_dispatch:main)
+        #
+        # pull_request was added on 2026-11-06, for pull requests whose head
+        # branch lives in THIS repository only. They get a separate key, the
+        # pr user's, which IAM lets create objects but not overwrite them: a
+        # pull request can add cache entries but never replace one that main
+        # wrote. Only people who can push branches here can open such a pull
+        # request. A fork's pull request is excluded twice, by the head-repo
+        # check below and by GitHub withholding every secret from it.
+        # pull_request_target is never used for this, and must not be: it
+        # would hand the key to a fork's code.
+        same_repo=false
+        if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -r "${GITHUB_EVENT_PATH:-}" ]; then
+          head_repo=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH")
+          [ "$head_repo" = "${GITHUB_REPOSITORY}" ] && same_repo=true
+        fi
+
+        case "${GITHUB_EVENT_NAME}:${GITHUB_REF_NAME}:${same_repo}" in
+          push:main:*|schedule:main:*|workflow_dispatch:main:*)
                      key_id="$RW_ID"; secret="$RW_SECRET"; mode="readwrite"; which="read-write" ;;
+          pull_request:*:true)
+                     key_id="$PR_ID"; secret="$PR_SECRET"; mode="readwrite"; which="pr-writer (create-only)" ;;
           *)         key_id="$RO_ID"; secret="$RO_SECRET"; mode="read";      which="read-only" ;;
         esac
+
+        # Until the pr key exists as repository secrets, a same-repository
+        # pull request reads exactly as it did before.
+        if [ "$which" != "read-write" ] && [ "$mode" = "readwrite" ] && { [ -z "$key_id" ] || [ -z "$secret" ]; }; then
+          key_id="$RO_ID"; secret="$RO_SECRET"; mode="read"; which="read-only (no pr-writer key in this run)"
+        fi
 
         # The read-write key is an environment secret of build-cache-write
         # (main only), not a repository secret, so a job on main that runs
@@ -167,6 +203,9 @@ runs:
           echo "AWS_REQUEST_CHECKSUM_CALCULATION=when_required"
           echo "AWS_RESPONSE_CHECKSUM_VALIDATION=when_required"
           echo "VCPKG_BINARY_SOURCES=clear;x-aws,s3://${BUCKET}/vcpkg/${TRIPLET}/,${mode}"
+          # Stated, not inferred, for other consumers of these credentials
+          # (the clang-tidy result cache): readwrite or read.
+          echo "OCI_BUILD_CACHE_MODE=${mode}"
           echo "SCCACHE_BUCKET=${BUCKET}"
           echo "SCCACHE_ENDPOINT=${endpoint}"
           echo "SCCACHE_REGION=${REGION}"

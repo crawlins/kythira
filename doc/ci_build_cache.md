@@ -44,10 +44,23 @@ seconds and there are tens of thousands.
 
 ## Who may write
 
-**Only code that is on `main`.** Concretely: a `push` to `main`, a `schedule`
-run (which always runs on the default branch), and a `workflow_dispatch`
-whose ref *is* `main`. Everything else — every pull request, every push to
-every other branch, and a dispatch aimed at a feature branch — reads.
+**Code on `main`, and pull requests from branches of this repository.**
+Concretely: a `push` to `main`, a `schedule` run (which always runs on the
+default branch), and a `workflow_dispatch` whose ref *is* `main` write with
+the read-write key. A `pull_request` whose head branch is in this repository
+(any author, any base) writes with the separate create-only **pr** key, added
+on 2026-11-06. Everything else — a fork's pull request, a push to another
+branch, and a dispatch aimed at a feature branch — reads.
+
+The pr key can create objects but **cannot overwrite** them. Every cache in
+the bucket (sccache, vcpkg, the clang-tidy result cache) is content-addressed,
+so a writer only ever needs to add a name that is absent; withholding
+overwrite means a pull request can add entries but never replace one `main`
+wrote. A refused overwrite (a race with `main` on the same key) is a logged
+write error, not a failure. The residual risk, a PR adding an entry under a
+key `main` has not computed yet, is accepted because only people who can push
+branches here can open such a PR. `pull_request_target` is never used for
+this: it would hand the key to a fork's code.
 
 The ref is pinned in every writer pattern, which is what makes the two added
 events safe: a dispatch names its own ref, so trusting the event alone would
@@ -56,9 +69,12 @@ let any branch write.
 This is enforced three times:
 
 1. `.github/actions/oci-build-cache/` picks the read-write key for
-   `push:main`, `schedule:main` and `workflow_dispatch:main`, and the
-   read-only key for everything else. The match on `main` is exact;
-   `main-experiment` gets the read-only key.
+   `push:main`, `schedule:main` and `workflow_dispatch:main`, the pr key for
+   a `pull_request` whose `pull_request.head.repo.full_name` equals
+   `GITHUB_REPOSITORY`, and the read-only key for everything else. The match
+   on `main` is exact; `main-experiment` gets the read-only key. It also
+   exports `OCI_BUILD_CACHE_MODE` (`readwrite` or `read`) for other consumers
+   of the same credentials.
 2. The read-write key is not a repository secret. It is an environment
    secret of `build-cache-write`, whose deployment branches are `main` only,
    and a job joins that environment only when it runs on `main`. The case
@@ -69,14 +85,19 @@ This is enforced three times:
    in another environment (the `real-cloud-tests.yml` provider jobs) does not
    receive the key either, and reads with the read-only one.
 3. IAM refuses the rest. `kythira-build-cache-ro` holds `OBJECT_READ` and
-   `OBJECT_INSPECT` and nothing else, so a bug in that case statement is
-   answered with a 403 by the service rather than by poisoning a cache other
-   builds trust.
+   `OBJECT_INSPECT` and nothing else, and `kythira-build-cache-pr` adds only
+   `OBJECT_CREATE`, so a bug in that case statement is answered with a 403 by
+   the service rather than by poisoning a cache other builds trust. The pr
+   key is a repository secret, so any branch's workflow can read it; what
+   bounds it is that IAM policy, not GitHub.
 
 `OBJECT_DELETE` is granted to **nobody**. Expiry is the lifecycle policy's
 job, so a leaked key can at worst add to the cache.
 
 ### The trade-off, stated
+
+Since 2026-11-06 this applies to fork pull requests only; a same-repository
+pull request banks what it builds with the pr key.
 
 A pull request that changes `vcpkg.json` or an overlay port builds its new
 ports from source on **every one of its runs** until it merges, because it may
@@ -223,7 +244,7 @@ comm -23 /tmp/src.keys /tmp/dst.keys | wc -l     # must be 0
 ### Rotating a key
 
 ```bash
-scripts/oci-build-cache/provision.sh --rotate rw    # or: ro, both
+scripts/oci-build-cache/provision.sh --rotate rw    # or: ro, pr, both (rw+ro), all
 ```
 
 It mints and prints the replacement **before** deleting the old key, so a
@@ -249,6 +270,7 @@ updated means `main` builds without a cache for those runs; nothing breaks.
 | environment | `build-cache-write` | deployment branches: `main` only; no reviewers |
 | environment secret (`build-cache-write`) | `OCI_BUILD_CACHE_RW_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | `kythira-build-cache-rw`'s customer secret key |
 | repository secret | `OCI_BUILD_CACHE_RO_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | `kythira-build-cache-ro`'s customer secret key |
+| repository secret | `OCI_BUILD_CACHE_PR_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | `kythira-build-cache-pr`'s customer secret key (create-only) |
 
 The read-write pair must **not** also exist as a repository secret: a
 repository secret reaches every branch's jobs, which is exactly what the

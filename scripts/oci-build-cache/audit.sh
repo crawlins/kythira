@@ -47,6 +47,7 @@ REGION="${OCI_CI_REGION:-}"
 GROUP_NAME="kythira-build-cache"
 RW_USER="kythira-build-cache-rw"
 RO_USER="kythira-build-cache-ro"
+PR_USER="kythira-build-cache-pr"
 POLICY_NAME="kythira-build-cache-access"
 SPEC_TAG_KEY="kythira-spec"
 SPEC_TAG_VALUE="oci-build-cache"
@@ -174,7 +175,7 @@ if [ -n "$tenancy_id" ] && [[ "$tenancy_id" != ocid1.tenancy.* ]]; then
     echo x >> "$UNKNOWN_TALLY"
     tenancy_id=""
 fi
-for user in "$RW_USER" "$RO_USER"; do
+for user in "$RW_USER" "$RO_USER" "$PR_USER"; do
     if [ -z "$tenancy_id" ]; then
         echo "  UNKNOWN: $user (tenancy id unavailable)"
         continue
@@ -259,7 +260,7 @@ echo
 # a run of provision.sh that was interrupted, by an experiment, or by someone
 # copying the tag — and in each case it is billing and nobody is watching it.
 echo "5. Resources tagged $SPEC_TAG_KEY=$SPEC_TAG_VALUE"
-expected="$BUCKET|$GROUP_NAME|$RW_USER|$RO_USER|$POLICY_NAME"
+expected="$BUCKET|$GROUP_NAME|$RW_USER|$RO_USER|$PR_USER|$POLICY_NAME"
 search_rc=0
 # `|| search_rc=$?` rather than testing $? on the next line: the assignment
 # would otherwise be the tested command under any future `set -e`, and the

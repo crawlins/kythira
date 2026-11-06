@@ -257,6 +257,14 @@ builds with.
    PR does today whenever the Actions cache has evicted its entry. That is
    the cost of not letting a PR write, and it is bounded by the tree-cache
    L1, which PR runs still write.
+   **Amended 2026-11-06 (maintainer's decision):** criteria 2 and 4 now
+   apply to pull requests from forks only. A `pull_request` whose head
+   branch is in this repository SHALL use the `kythira-build-cache-pr` key
+   (repository secrets `OCI_BUILD_CACHE_PR_*`) with `readwrite` for vcpkg
+   and `READ_WRITE` for sccache. That user holds `OBJECT_CREATE` but not
+   `OBJECT_OVERWRITE`, so such a PR can add entries and cannot replace one
+   `main` wrote. Without the key the run falls back to criterion 2.
+   `pull_request_target` SHALL NOT be used to reach any build-cache key.
 5. One composite action, `.github/actions/oci-build-cache/`, SHALL perform
    the event-to-key selection and the environment export for both caches,
    so the policy lives in one file. It SHALL take the repository secrets
