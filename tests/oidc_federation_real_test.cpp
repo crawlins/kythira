@@ -9,10 +9,12 @@
 // test object, through the same SDK clients the persistence engine uses.
 //
 // The trust on the cloud side (an IAM OIDC provider and role, a GCP workload
-// identity pool and provider, each allowed to read only the test object) is
-// set up once by scripts/ci-cloud-credentials/*/provision-oidc-federation-test.sh,
-// because the CI roles may not administer IAM. Each run therefore creates
-// only the two published objects, and deletes them at the end.
+// identity pool and provider, an Entra app with a federated credential, a RAM
+// OIDC provider and role, an OCI identity propagation trust and service user,
+// each allowed to read only the test object) is set up once by
+// scripts/ci-cloud-credentials/*/provision-oidc-federation-test.sh, because the CI roles may not
+// administer IAM. Each run therefore creates only the two published objects, and deletes them at
+// the end.
 //
 // Configuration, all from the environment (.github/workflows/oidc-federation.yml):
 //   KYTHIRA_OIDC_FED_ISSUER_URL   https://<bucket>.s3.<region>.amazonaws.com/<prefix>
@@ -22,6 +24,13 @@
 //   AWS:  KYTHIRA_OIDC_FED_AWS_ROLE_ARN, _AWS_REGION, _AWS_BUCKET, _AWS_KEY
 //   GCP:  KYTHIRA_OIDC_FED_GCP_PROVIDER (the provider's full resource name,
 //         //iam.googleapis.com/projects/...), _GCS_BUCKET, _GCS_KEY
+//   Azure:   KYTHIRA_OIDC_FED_AZURE_TENANT_ID, _AZURE_CLIENT_ID,
+//            _AZURE_STORAGE_ACCOUNT, _AZURE_CONTAINER, _AZURE_KEY
+//   Alibaba: KYTHIRA_OIDC_FED_ALIBABA_ROLE_ARN, _ALIBABA_PROVIDER_ARN,
+//            _ALIBABA_REGION, _ALIBABA_BUCKET, _ALIBABA_KEY
+//   OCI:     KYTHIRA_OIDC_FED_OCI_DOMAIN_URL, _OCI_CLIENT_ID, _OCI_CLIENT_SECRET
+//            (the token-exchange confidential app), _OCI_REGION,
+//            _OCI_NAMESPACE, _OCI_BUCKET, _OCI_KEY
 // With no issuer URL the binary exits 77 (ctest "skipped"). A cloud whose
 // variables are missing is skipped with a message; at least one must be set.
 
@@ -42,6 +51,16 @@
 #ifdef KYTHIRA_HAS_GCP_STORAGE
 #include <raft/gcp_gcs_client.hpp>
 #endif
+#ifdef KYTHIRA_HAS_AZURE_SDK
+#include <raft/azure_blob_client.hpp>
+#include <raft/azure_federated_credential.hpp>
+#endif
+#ifdef KYTHIRA_OIDC_FED_ALIBABA
+#include <raft/alibaba_oss_client.hpp>
+#endif
+#ifdef KYTHIRA_OIDC_FED_OCI
+#include <raft/oci_object_storage_client.hpp>
+#endif
 
 #include "ca_cluster_node_harness.hpp"
 
@@ -56,6 +75,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -68,10 +88,26 @@ namespace {
 
 constexpr const char* k_auth_token = "oidc-federation-test-token";
 constexpr const char* k_aws_audience = "sts.amazonaws.com";
+// The audiences each exchange's source requests by default: Entra's fixed
+// federated-credential audience, Alibaba STS's client id, and OCI's.
+constexpr const char* k_azure_audience = "api://AzureADTokenExchange";
+constexpr const char* k_alibaba_audience = "sts.aliyuncs.com";
+constexpr const char* k_oci_audience = "https://cloud.oracle.com";
 
+// Trims surrounding whitespace: repository secrets can carry a trailing
+// newline (OCI_DOMAIN_URL does), which would end up in the request host.
 auto env(const char* name) -> std::string {
     const char* v = std::getenv(name);
-    return v == nullptr ? std::string{} : std::string(v);
+    if (v == nullptr) {
+        return {};
+    }
+    const std::string_view s(v);
+    constexpr std::string_view ws = " \t\r\n";
+    const auto first = s.find_first_not_of(ws);
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    return std::string(s.substr(first, s.find_last_not_of(ws) - first + 1));
 }
 
 /// Skips the whole module, with ctest's skip code, when not configured.
@@ -152,7 +188,9 @@ BOOST_AUTO_TEST_CASE(federates_to_each_configured_cloud, *boost::unit_test::time
     const std::string issuer = env("KYTHIRA_OIDC_FED_ISSUER_URL");
     const std::string publish = env("KYTHIRA_OIDC_FED_PUBLISH_URL");
     const std::string subject_uri = env("KYTHIRA_OIDC_FED_SUBJECT_URI");
-    const std::string expected = env("KYTHIRA_OIDC_FED_EXPECTED");
+    // Read untrimmed: the objects' content ends in a newline.
+    const char* expected_raw = std::getenv("KYTHIRA_OIDC_FED_EXPECTED");
+    const std::string expected = expected_raw == nullptr ? std::string{} : expected_raw;
     BOOST_REQUIRE_MESSAGE(issuer.starts_with("https://") && !publish.empty() &&
                               !subject_uri.empty() && !expected.empty(),
                           "set KYTHIRA_OIDC_FED_PUBLISH_URL, _SUBJECT_URI and _EXPECTED too");
@@ -160,7 +198,11 @@ BOOST_AUTO_TEST_CASE(federates_to_each_configured_cloud, *boost::unit_test::time
 
     const std::string aws_role = env("KYTHIRA_OIDC_FED_AWS_ROLE_ARN");
     const std::string gcp_provider = env("KYTHIRA_OIDC_FED_GCP_PROVIDER");
-    BOOST_REQUIRE_MESSAGE(!aws_role.empty() || !gcp_provider.empty(),
+    const std::string azure_client = env("KYTHIRA_OIDC_FED_AZURE_CLIENT_ID");
+    const std::string alibaba_role = env("KYTHIRA_OIDC_FED_ALIBABA_ROLE_ARN");
+    const std::string oci_domain = env("KYTHIRA_OIDC_FED_OCI_DOMAIN_URL");
+    BOOST_REQUIRE_MESSAGE(!aws_role.empty() || !gcp_provider.empty() || !azure_client.empty() ||
+                              !alibaba_role.empty() || !oci_domain.empty(),
                           "configure at least one cloud");
 
     lone_node_env dir("oidc_federation");
@@ -197,6 +239,15 @@ BOOST_AUTO_TEST_CASE(federates_to_each_configured_cloud, *boost::unit_test::time
     }
     if (!gcp_provider.empty()) {
         args.insert(args.end(), {"--oidc-audience", gcp_provider});
+    }
+    if (!azure_client.empty()) {
+        args.insert(args.end(), {"--oidc-audience", k_azure_audience});
+    }
+    if (!alibaba_role.empty()) {
+        args.insert(args.end(), {"--oidc-audience", k_alibaba_audience});
+    }
+    if (!oci_domain.empty()) {
+        args.insert(args.end(), {"--oidc-audience", k_oci_audience});
     }
 
     const int rpc_port = find_free_port();
@@ -325,6 +376,94 @@ BOOST_AUTO_TEST_CASE(federates_to_each_configured_cloud, *boost::unit_test::time
         BOOST_TEST_MESSAGE("GCP: read the test object through the STS token exchange");
 #else
         BOOST_FAIL("GCP is configured but this binary was built without google-cloud-cpp storage");
+#endif
+    }
+    if (azure_client.empty()) {
+        BOOST_TEST_MESSAGE("Azure: not configured, skipped");
+    } else {
+#ifdef KYTHIRA_HAS_AZURE_SDK
+        cc::azure_federated_config app;
+        app.tenant_id = env("KYTHIRA_OIDC_FED_AZURE_TENANT_ID");
+        app.client_id = azure_client;
+        auto entra = std::make_shared<cc::azure_federated_source>(tokens, app);
+        kythira::azure_blob_config bcfg;
+        bcfg.account = env("KYTHIRA_OIDC_FED_AZURE_STORAGE_ACCOUNT");
+        bcfg.azure.credential = std::make_shared<cc::azure_federated_token_credential>(entra);
+        const kythira::azure_blob_client blob{bcfg};
+        const auto got = blob.get_object(env("KYTHIRA_OIDC_FED_AZURE_CONTAINER"),
+                                         env("KYTHIRA_OIDC_FED_AZURE_KEY"));
+        BOOST_REQUIRE_MESSAGE(got.has_value(), "Azure: the test object is absent");
+        BOOST_TEST(got->body == expected);
+        BOOST_TEST_MESSAGE("Azure: read the test object through a federated client assertion");
+#else
+        BOOST_FAIL("Azure is configured but this binary was built without the Azure SDK");
+#endif
+    }
+
+    if (alibaba_role.empty()) {
+        BOOST_TEST_MESSAGE("Alibaba: not configured, skipped");
+    } else {
+#ifdef KYTHIRA_OIDC_FED_ALIBABA
+        cc::alibaba_oidc_role_config role;
+        role.role_arn = alibaba_role;
+        role.oidc_provider_arn = env("KYTHIRA_OIDC_FED_ALIBABA_PROVIDER_ARN");
+        role.role_session_name = "kythira-oidc-federation-test";
+        role.duration = std::chrono::seconds(900);  // Alibaba's minimum
+        auto sts = std::make_shared<cc::alibaba_oidc_role_source>(tokens, role);
+        // Alibaba caches the issuer's JWKS, and every run signs with a fresh
+        // CA key, so a run soon after another is refused with
+        // IssuerConfigurationBroken ("Cannot find the specific key") until
+        // the cache refreshes. Retry that one refusal for up to ten minutes.
+        const auto alibaba_deadline = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+        for (;;) {
+            try {
+                BOOST_TEST(sts->current().access_key_id.starts_with("STS."));
+                break;
+            } catch (const cc::exchange_error& e) {
+                const std::string_view what = e.what();
+                if (what.find("IssuerConfigurationBroken") == std::string_view::npos ||
+                    std::chrono::steady_clock::now() >= alibaba_deadline) {
+                    throw;
+                }
+                BOOST_TEST_MESSAGE("Alibaba: JWKS not refreshed yet, retrying in 30s");
+                std::this_thread::sleep_for(std::chrono::seconds(30));
+            }
+        }
+        kythira::alibaba_client_config acfg;
+        acfg.region = env("KYTHIRA_OIDC_FED_ALIBABA_REGION");
+        acfg.credentials = [sts] { return sts->current(); };
+        const kythira::alibaba_oss_client oss{acfg};
+        const auto got = oss.get_object(env("KYTHIRA_OIDC_FED_ALIBABA_BUCKET"),
+                                        env("KYTHIRA_OIDC_FED_ALIBABA_KEY"));
+        BOOST_REQUIRE_MESSAGE(got.has_value(), "Alibaba: the test object is absent");
+        BOOST_TEST(got->body == expected);
+        BOOST_TEST_MESSAGE("Alibaba: read the test object through AssumeRoleWithOIDC");
+#else
+        BOOST_FAIL("Alibaba is configured but this binary was built without Alibaba support");
+#endif
+    }
+
+    if (oci_domain.empty()) {
+        BOOST_TEST_MESSAGE("OCI: not configured, skipped");
+    } else {
+#ifdef KYTHIRA_OIDC_FED_OCI
+        cc::oci_upst_config app;
+        app.domain_url = oci_domain;
+        app.client_id = env("KYTHIRA_OIDC_FED_OCI_CLIENT_ID");
+        app.client_secret = env("KYTHIRA_OIDC_FED_OCI_CLIENT_SECRET");
+        auto upst = std::make_shared<cc::oci_upst_source>(tokens, app);
+        kythira::oci_object_storage_config ocfg;
+        ocfg.oci.region = env("KYTHIRA_OIDC_FED_OCI_REGION");
+        ocfg.oci.session_credentials = [upst] { return upst->current(); };
+        ocfg.namespace_name = env("KYTHIRA_OIDC_FED_OCI_NAMESPACE");
+        const kythira::oci_object_storage_client os{ocfg};
+        const auto got =
+            os.get_object(env("KYTHIRA_OIDC_FED_OCI_BUCKET"), env("KYTHIRA_OIDC_FED_OCI_KEY"));
+        BOOST_REQUIRE_MESSAGE(got.has_value(), "OCI: the test object is absent");
+        BOOST_TEST(got->body == expected);
+        BOOST_TEST_MESSAGE("OCI: read the test object with a UPST from the token exchange");
+#else
+        BOOST_FAIL("OCI is configured but this binary was built without OCI Object Storage");
 #endif
     }
 }

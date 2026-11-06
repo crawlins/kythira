@@ -4,7 +4,8 @@
 # Real-cloud OIDC federation (.kiro/specs/iam-compatible-auth/ task 5,
 # Requirement 2.5): a ca_cluster_node publishes its issuer documents to a
 # public S3 prefix, and tests/oidc_federation_real_test.cpp exchanges its JWT
-# with AWS STS and GCP STS and reads one object in each cloud.
+# with each chosen cloud's token service (AWS STS, GCP STS, Entra ID, Alibaba
+# STS, the OCI identity domain) and reads one object in each.
 #
 # Its own workflow, not a bundle of real-cloud-tests.yml: that file is at
 # GitHub's 25-input workflow_dispatch limit, and this run needs none of its
@@ -14,10 +15,17 @@
 # not administer IAM (see each script's header):
 #   scripts/ci-cloud-credentials/aws/provision-oidc-federation-test.sh
 #   scripts/ci-cloud-credentials/gcp/provision-oidc-federation-test.sh
-# They print the repository variables this workflow reads (OIDC_FED_*).
+#   scripts/ci-cloud-credentials/azure/provision-oidc-federation-test.sh
+#   scripts/ci-cloud-credentials/alibaba/provision-oidc-federation-test.sh
+#   scripts/ci-cloud-credentials/oci/provision-oidc-federation-test.sh
+# They print the repository variables this workflow reads (OIDC_FED_*). The
+# AWS one runs first in any case: its bucket hosts the issuer documents. OCI
+# also reads the real-cloud-tests environment secrets OCI_DOMAIN_URL,
+# OCI_WIF_CLIENT_ID and OCI_WIF_CLIENT_SECRET (the confidential app CI's
+# GitHub federation already uses).
 #
-# Cost: the trust resources (IAM OIDC provider, role, workload identity pool)
-# are free. Each run writes two small objects to the issuer bucket and deletes
+# Cost: the trust resources (OIDC providers, roles, pools, the Entra app, the
+# OCI trust and service user) are free. Each run writes two small objects to the issuer bucket and deletes
 # them, and reads one object per cloud: well under a cent.
 
 name: OIDC Federation (real cloud)
@@ -33,6 +41,18 @@ on:
         description: "Federate to GCP (STS token exchange, GCS read)"
         type: boolean
         default: true
+      azure:
+        description: "Federate to Azure (Entra client assertion, Blob read)"
+        type: boolean
+        default: true
+      alibaba:
+        description: "Federate to Alibaba Cloud (AssumeRoleWithOIDC, OSS read)"
+        type: boolean
+        default: true
+      oci:
+        description: "Federate to OCI (identity domain token exchange, Object Storage read)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -44,7 +64,7 @@ concurrency:
 
 jobs:
   federate:
-    name: OIDC federation (AWS, GCP)
+    name: OIDC federation
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     environment: real-cloud-tests
@@ -57,6 +77,10 @@ jobs:
       AWS_REGION_FED: ${{ vars.OIDC_FED_AWS_REGION || 'us-east-1' }}
     steps:
       - name: Check the one-time setup was done
+        env:
+          # Presence only; the values never reach the log.
+          OCI_DOMAIN_URL: ${{ secrets.OCI_DOMAIN_URL }}
+          OCI_WIF_CLIENT_ID: ${{ secrets.OCI_WIF_CLIENT_ID }}
         run: |
           missing=()
           [[ -n "${ISSUER_BUCKET}" ]] || missing+=(OIDC_FED_AWS_BUCKET)
@@ -67,7 +91,28 @@ jobs:
             [[ -n "${{ vars.OIDC_FED_GCP_PROVIDER }}" ]] || missing+=(OIDC_FED_GCP_PROVIDER)
             [[ -n "${{ vars.OIDC_FED_GCS_BUCKET }}" ]] || missing+=(OIDC_FED_GCS_BUCKET)
           fi
-          if [[ "${{ inputs.aws }}" != "true" && "${{ inputs.gcp }}" != "true" ]]; then
+          if [[ "${{ inputs.azure }}" == "true" ]]; then
+            [[ -n "${{ vars.OIDC_FED_AZURE_TENANT_ID }}" ]] || missing+=(OIDC_FED_AZURE_TENANT_ID)
+            [[ -n "${{ vars.OIDC_FED_AZURE_CLIENT_ID }}" ]] || missing+=(OIDC_FED_AZURE_CLIENT_ID)
+            [[ -n "${{ vars.OIDC_FED_AZURE_STORAGE_ACCOUNT }}" ]] || missing+=(OIDC_FED_AZURE_STORAGE_ACCOUNT)
+            [[ -n "${{ vars.OIDC_FED_AZURE_CONTAINER }}" ]] || missing+=(OIDC_FED_AZURE_CONTAINER)
+          fi
+          if [[ "${{ inputs.alibaba }}" == "true" ]]; then
+            [[ -n "${{ vars.OIDC_FED_ALIBABA_ROLE_ARN }}" ]] || missing+=(OIDC_FED_ALIBABA_ROLE_ARN)
+            [[ -n "${{ vars.OIDC_FED_ALIBABA_PROVIDER_ARN }}" ]] || missing+=(OIDC_FED_ALIBABA_PROVIDER_ARN)
+            [[ -n "${{ vars.OIDC_FED_ALIBABA_REGION }}" ]] || missing+=(OIDC_FED_ALIBABA_REGION)
+            [[ -n "${{ vars.OIDC_FED_ALIBABA_BUCKET }}" ]] || missing+=(OIDC_FED_ALIBABA_BUCKET)
+          fi
+          if [[ "${{ inputs.oci }}" == "true" ]]; then
+            [[ -n "${{ vars.OIDC_FED_OCI_REGION }}" ]] || missing+=(OIDC_FED_OCI_REGION)
+            [[ -n "${{ vars.OIDC_FED_OCI_NAMESPACE }}" ]] || missing+=(OIDC_FED_OCI_NAMESPACE)
+            [[ -n "${{ vars.OIDC_FED_OCI_BUCKET }}" ]] || missing+=(OIDC_FED_OCI_BUCKET)
+            [[ -n "${OCI_DOMAIN_URL}" ]] || missing+=("secret OCI_DOMAIN_URL")
+            [[ -n "${OCI_WIF_CLIENT_ID}" ]] || missing+=("secret OCI_WIF_CLIENT_ID")
+          fi
+          if [[ "${{ inputs.aws }}" != "true" && "${{ inputs.gcp }}" != "true" &&
+                "${{ inputs.azure }}" != "true" && "${{ inputs.alibaba }}" != "true" &&
+                "${{ inputs.oci }}" != "true" ]]; then
             echo "::error::choose at least one cloud"
             exit 1
           fi
@@ -190,6 +235,23 @@ jobs:
           KYTHIRA_OIDC_FED_GCP_PROVIDER: ${{ inputs.gcp && vars.OIDC_FED_GCP_PROVIDER || '' }}
           KYTHIRA_OIDC_FED_GCS_BUCKET: ${{ vars.OIDC_FED_GCS_BUCKET }}
           KYTHIRA_OIDC_FED_GCS_KEY: test-object/federation.txt
+          KYTHIRA_OIDC_FED_AZURE_TENANT_ID: ${{ vars.OIDC_FED_AZURE_TENANT_ID }}
+          KYTHIRA_OIDC_FED_AZURE_CLIENT_ID: ${{ inputs.azure && vars.OIDC_FED_AZURE_CLIENT_ID || '' }}
+          KYTHIRA_OIDC_FED_AZURE_STORAGE_ACCOUNT: ${{ vars.OIDC_FED_AZURE_STORAGE_ACCOUNT }}
+          KYTHIRA_OIDC_FED_AZURE_CONTAINER: ${{ vars.OIDC_FED_AZURE_CONTAINER }}
+          KYTHIRA_OIDC_FED_AZURE_KEY: test-object/federation.txt
+          KYTHIRA_OIDC_FED_ALIBABA_ROLE_ARN: ${{ inputs.alibaba && vars.OIDC_FED_ALIBABA_ROLE_ARN || '' }}
+          KYTHIRA_OIDC_FED_ALIBABA_PROVIDER_ARN: ${{ vars.OIDC_FED_ALIBABA_PROVIDER_ARN }}
+          KYTHIRA_OIDC_FED_ALIBABA_REGION: ${{ vars.OIDC_FED_ALIBABA_REGION }}
+          KYTHIRA_OIDC_FED_ALIBABA_BUCKET: ${{ vars.OIDC_FED_ALIBABA_BUCKET }}
+          KYTHIRA_OIDC_FED_ALIBABA_KEY: test-object/federation.txt
+          KYTHIRA_OIDC_FED_OCI_DOMAIN_URL: ${{ inputs.oci && secrets.OCI_DOMAIN_URL || '' }}
+          KYTHIRA_OIDC_FED_OCI_CLIENT_ID: ${{ secrets.OCI_WIF_CLIENT_ID }}
+          KYTHIRA_OIDC_FED_OCI_CLIENT_SECRET: ${{ secrets.OCI_WIF_CLIENT_SECRET }}
+          KYTHIRA_OIDC_FED_OCI_REGION: ${{ vars.OIDC_FED_OCI_REGION }}
+          KYTHIRA_OIDC_FED_OCI_NAMESPACE: ${{ vars.OIDC_FED_OCI_NAMESPACE }}
+          KYTHIRA_OIDC_FED_OCI_BUCKET: ${{ vars.OIDC_FED_OCI_BUCKET }}
+          KYTHIRA_OIDC_FED_OCI_KEY: test-object/federation.txt
         run: |
           rc=0
           ./build/tests/oidc_federation_real_test --log_level=message --report_level=short || rc=$?
