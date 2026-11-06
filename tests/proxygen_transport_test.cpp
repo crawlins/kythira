@@ -13,6 +13,7 @@
 
 #include <folly/executors/IOThreadPoolExecutor.h>
 
+#include "format1_snapshot_transfer.hpp"
 #include "test_timeout_scale.hpp"
 #include "http_limit_test_helpers.hpp"
 #include "test_ports.hpp"
@@ -390,6 +391,40 @@ BOOST_AUTO_TEST_CASE(request_vote_round_trip_and_connection_reuse,
                                                     kythira::testing::scaled_deadline(3000)))
                      .get();
     BOOST_TEST(resp2.vote_granted());
+
+    server.stop();
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary, reassembled and verified by the
+// follower's stream writer. Its port comes from the kernel rather than this
+// file's fixed range.
+BOOST_AUTO_TEST_CASE(install_snapshot_format1_multi_chunk,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    folly::IOThreadPoolExecutor io_executor(2);
+
+    const auto port = kythira::testing::free_port();
+    kythira::proxygen_server<test_transport_types> server(
+        test_bind_address, port, {}, recording_metrics{},
+        std::shared_ptr<folly::IOThreadPoolExecutorBase>(&io_executor, [](auto*) {}));
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {test_node_id, std::string("http://127.0.0.1:") + std::to_string(port)}};
+    kythira::proxygen_client<test_transport_types> client(io_executor, node_map, {},
+                                                          recording_metrics{});
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(1)) {
+        auto resp = std::move(client.send_install_snapshot(test_node_id, req,
+                                                           kythira::testing::scaled_deadline(5000)))
+                        .get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
 
     server.stop();
 }

@@ -11,6 +11,7 @@
 #include <raft/network.hpp>
 
 #include "beast_test_thread_pool.hpp"
+#include "format1_snapshot_transfer.hpp"
 #include "http_limit_test_helpers.hpp"
 #include "test_ports.hpp"
 
@@ -202,6 +203,39 @@ BOOST_AUTO_TEST_CASE(server_rejects_oversized_request_body) {
         std::move(client.send_install_snapshot(test_node_id, req, std::chrono::milliseconds(30000)))
             .get(),
         std::exception);
+
+    server.stop();
+}
+
+// file-install-snapshot Requirement 2.2: a format-1 transfer in several
+// chunks, one spanning a file boundary, reassembled and verified by the
+// follower's stream writer. Its port comes from the kernel rather than this
+// file's fixed range.
+BOOST_AUTO_TEST_CASE(server_install_snapshot_format1_multi_chunk) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+
+    const auto port = kythira::testing::free_port();
+    kythira::boost_beast_server<test_transport_types> server(ioc, test_bind_address, port, {},
+                                                             kythira::noop_metrics{});
+    kythira::test::format1::transfer t;
+    kythira::test::format1::receiver rx;
+    server.register_install_snapshot_handler([&rx](const kythira::install_snapshot_request<>& req) {
+        return rx.handle<kythira::install_snapshot_response<>>(req);
+    });
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {test_node_id, std::string("http://127.0.0.1:") + std::to_string(port)}};
+    kythira::boost_beast_client<test_transport_types> client(ioc, node_map, {},
+                                                             kythira::noop_metrics{});
+    for (const auto& req : t.requests<kythira::install_snapshot_request<>>(1)) {
+        auto resp = std::move(client.send_install_snapshot(test_node_id, req,
+                                                           std::chrono::milliseconds(30000)))
+                        .get();
+        kythira::test::format1::check_ack(req, resp);
+    }
+    BOOST_TEST(rx.matches(t), rx.last_error());
 
     server.stop();
 }

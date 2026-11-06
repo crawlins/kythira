@@ -102,6 +102,29 @@ template<typename Serializer> auto request_manifest_over_cap_is_refused() -> voi
     BOOST_TEST(back.manifest().size() == k_max_install_snapshot_manifest_bytes);
 }
 
+/// The smallest default request-size limit among the transports that carry
+/// InstallSnapshot without their own block layer: 10 MiB for HTTP (httplib,
+/// Beast and Proxygen `max_request_body_size`), against 16 MiB for gRPC
+/// (`max_receive_message_size`) and 64 MiB for tcp_rpc (`k_max_frame_bytes`).
+/// CoAP is configured separately (`coap_server_config::max_request_size`).
+inline constexpr std::size_t k_smallest_default_transport_limit = 10U * 1024U * 1024U;
+
+/// file-install-snapshot Requirement 2.3: the largest first chunk a node
+/// sends with default settings, a full `snapshot_chunk_size` plus a manifest
+/// at the cap, must fit every transport's default limit in every encoding
+/// (JSON's base64 is the largest).
+template<typename Serializer> auto worst_case_first_chunk_fits_transport_limits() -> void {
+    Serializer s;
+    auto req = base_request();
+    req._offset = 0;
+    req._format = install_snapshot_format::file_set;
+    req._data.assign(raft_configuration{}.snapshot_chunk_size(), std::byte{0xA5});
+    req._manifest.assign(k_max_install_snapshot_manifest_bytes, std::byte{0x5A});
+    const auto wire = s.serialize(req);
+    BOOST_TEST(wire.size() <= k_smallest_default_transport_limit,
+               "worst-case first chunk encodes to " << wire.size() << " bytes");
+}
+
 template<typename Serializer> auto response_round_trip() -> void {
     Serializer s;
     install_snapshot_response<> resp{._term = 9, ._group_id = 0};
@@ -160,6 +183,10 @@ template<typename Serializer> auto response_unknown_reason_code_is_preserved() -
     }                                                                                           \
     BOOST_AUTO_TEST_CASE(PREFIX##_install_snapshot_request_manifest_cap) {                      \
         ::kythira::test::install_snapshot_wire::request_manifest_over_cap_is_refused<           \
+            SERIALIZER>();                                                                      \
+    }                                                                                           \
+    BOOST_AUTO_TEST_CASE(PREFIX##_install_snapshot_worst_case_first_chunk_fits) {               \
+        ::kythira::test::install_snapshot_wire::worst_case_first_chunk_fits_transport_limits<   \
             SERIALIZER>();                                                                      \
     }                                                                                           \
     BOOST_AUTO_TEST_CASE(PREFIX##_install_snapshot_response_round_trip) {                       \
