@@ -29,6 +29,31 @@ binaries are still written to `build/tests/`. The container targets
 (`docker-sccache-e2e-tests`, `docker-cache-cluster-tests`,
 `docker-txn-chaos-tests` and their images) kept their names too.
 
+## CI
+
+`.github/workflows/redis-module.yml` runs on pull requests and pushes to
+`main` that touch `services/redis/**` or the core files listed in its
+`paths` (the multi-Raft host, the transaction wrapper, `asio_listeners.hpp`,
+the boundary checker, the test helpers), weekly, and on dispatch. Its jobs:
+
+| Job | What it proves |
+|---|---|
+| `boundary` | the boundary check and its fixture tests pass |
+| `module-off` | core builds and its ctest passes with `configs/ci_no_redis_defconfig`, and no module target or test is configured |
+| `module-tests` | the module's targets build and every test under `services/redis/` passes |
+| `containers` (docker, podman) | `docker-sccache-e2e-tests`, `docker-cache-cluster-tests` and `docker-txn-chaos-tests` pass under rootful Docker and rootless Podman |
+
+**It is not a required check.** GitHub reports nothing for a workflow its
+`paths` filter skips, so requiring it would hang every unrelated pull
+request, and the project's auto-merge waits on required checks only. If you
+own a pull request that touches those paths, wait for this workflow to finish
+green before merging, as well as for `ci.yml`. `ci.yml` still builds the
+module and runs its ctest on every pull request.
+
+The Podman setup lives in `.github/actions/setup-container-runtime`, which
+`container-tests.yml` uses too. `container-tests.yml` no longer runs the
+module's scenarios.
+
 ## What the module uses from core
 
 This is the list a split to its own repository would have to export from a
@@ -77,5 +102,5 @@ any application instantiating the multi-Raft host must.
   into Kythira's `tests/`.
 - The container helpers and an image base that does not need Kythira's
   source tree as its build context.
-- A CI workflow of its own (`.kiro/specs/redis-gateway-module/` task 5 adds
-  one in-tree, `redis-module.yml`).
+- A CI workflow of its own. `redis-module.yml` (above) is the in-tree one,
+  and would move with the module.
