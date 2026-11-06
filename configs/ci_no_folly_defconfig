@@ -42,3 +42,6 @@ CONFIG_PROTOBUF_SERIALIZER=y
 # CONFIG_GCP_STORAGE_PERSISTENCE is not set
 # CONFIG_DNS_DISCOVERY is not set
 # CONFIG_POCO_DISCOVERY is not set
+# The IAM module, as in ci_full_defconfig: its tests use no Folly, so the
+# no-Folly leg builds and runs them like the reference build does.
+CONFIG_IAM=y

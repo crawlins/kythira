@@ -1,0 +1,1082 @@
+{
+  "description": "Each policy element's accepted and refused forms (Requirement 5.1, 5.2).",
+  "cases": [
+    {
+      "name": "version 2012-10-17",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_version.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "version 2008-10-17",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_version.html",
+      "policy": {
+        "Version": "2008-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "version omitted defaults to 2008-10-17",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_version.html",
+      "policy": {
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "version is a date AWS never published",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_version.html",
+      "policy": {
+        "Version": "2020-01-01",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "The policy failed legacy parsing"
+      }
+    },
+    {
+      "name": "version as a number",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_version.html",
+      "policy": {
+        "Version": 2012,
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "The policy failed legacy parsing"
+      }
+    },
+    {
+      "name": "statement as a single object",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_statement.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::bucket/*"
+        }
+      },
+      "expect": "valid",
+      "statements": 1
+    },
+    {
+      "name": "statement as an array of two",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_statement.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          },
+          {
+            "Effect": "Deny",
+            "Action": "s3:DeleteObject",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid",
+      "statements": 2
+    },
+    {
+      "name": "statement missing",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_statement.html",
+      "policy": {
+        "Version": "2012-10-17"
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "missing required field Statement"
+      }
+    },
+    {
+      "name": "statement empty array",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_statement.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": []
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Statement must not be empty"
+      }
+    },
+    {
+      "name": "statement as a string",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_statement.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": "Allow"
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Statement must be an object or an array"
+      }
+    },
+    {
+      "name": "statement array holds a string",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_statement.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          "x"
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "each Statement must be an object"
+      }
+    },
+    {
+      "name": "Id is accepted",
+      "kind": "parse",
+      "policy_type": "resource",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_id.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Id": "S3-Account-Permissions",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:root"
+            },
+            "Action": "s3:*",
+            "Resource": "arn:aws:s3:::amzn-s3-demo-bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "Id must be a string",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_id.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Id": 7,
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Id must be a string"
+      }
+    },
+    {
+      "name": "sid alphanumeric",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_sid.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Sid": "1",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "sid with a space in an identity policy",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_sid.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Sid": "Read Only",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Statement IDs (SID) must be alpha-numeric"
+      }
+    },
+    {
+      "name": "sid with a hyphen in an identity policy",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_sid.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Sid": "read-only",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Statement IDs (SID) must be alpha-numeric"
+      }
+    },
+    {
+      "name": "sid with spaces in a resource policy",
+      "kind": "parse",
+      "policy_type": "resource",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_sid.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Sid": "Grant read to account",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "duplicate sids",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_sid.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Sid": "A",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          },
+          {
+            "Effect": "Allow",
+            "Sid": "A",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Statement IDs (SID) in a single policy must be unique."
+      }
+    },
+    {
+      "name": "empty sids do not collide",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_sid.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Sid": "",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          },
+          {
+            "Effect": "Allow",
+            "Sid": "",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "effect Deny",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_effect.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "effect is case-sensitive",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_effect.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "allow",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid effect: allow"
+      }
+    },
+    {
+      "name": "effect missing",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_effect.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Missing required field Effect"
+      }
+    },
+    {
+      "name": "effect not a string",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_effect.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": true,
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid effect: true"
+      }
+    },
+    {
+      "name": "action list",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              "sqs:SendMessage",
+              "sqs:ReceiveMessage",
+              "ec2:StartInstances",
+              "iam:ChangePassword",
+              "s3:GetObject"
+            ],
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "action service wildcard",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "action wildcard inside the name",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "iam:*AccessKey*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "action bare star",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "action with no vendor",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "GetObject",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Actions/Conditions must be prefaced by a vendor"
+      }
+    },
+    {
+      "name": "action with empty vendor",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ":GetObject",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Actions/Conditions must be prefaced by a vendor"
+      }
+    },
+    {
+      "name": "action missing",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy statement must contain actions."
+      }
+    },
+    {
+      "name": "action empty array",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [],
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy statement must contain actions."
+      }
+    },
+    {
+      "name": "action as a number",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": 1,
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Action must be a string or an array of strings"
+      }
+    },
+    {
+      "name": "action array holds an object",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              {
+                "a": 1
+              }
+            ],
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Action must be a string or an array of strings"
+      }
+    },
+    {
+      "name": "notaction with allow",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notaction.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "NotAction": "iam:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "action and notaction together",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notaction.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "NotAction": "iam:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "both Action and NotAction"
+      }
+    },
+    {
+      "name": "resource list",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "dynamodb:*",
+            "Resource": [
+              "arn:aws:dynamodb:us-east-2:account-ID-without-hyphens:table/books_table",
+              "arn:aws:dynamodb:us-east-2:account-ID-without-hyphens:table/magazines_table"
+            ]
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "resource with a policy variable",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "iam:*AccessKey*",
+            "Resource": "arn:aws:iam::account-ID-without-hyphens:user/${aws:username}"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "resource bare star",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:ListAllMyBuckets",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "resource not an ARN",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "bucket"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Resource bucket must be in ARN format or \"*\"."
+      }
+    },
+    {
+      "name": "resource with too few segments",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "arn:aws:s3"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "must be in ARN format"
+      }
+    },
+    {
+      "name": "resource missing in an identity policy",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy statement must contain resources."
+      }
+    },
+    {
+      "name": "resource empty array",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_resource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": []
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Policy statement must contain resources."
+      }
+    },
+    {
+      "name": "notresource with deny",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notresource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "Action": "s3:*",
+            "NotResource": [
+              "arn:aws:s3:::HRBucket/Payroll",
+              "arn:aws:s3:::HRBucket/Payroll/*"
+            ]
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "resource and notresource together",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notresource.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*",
+            "NotResource": "arn:aws:s3:::x"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "both Resource and NotResource"
+      }
+    },
+    {
+      "name": "condition with several operators and keys",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:PrincipalTag/job-category": "iamuser-admin",
+                "aws:PrincipalTag/role": [
+                  "audit",
+                  "security"
+                ]
+              },
+              "Bool": {
+                "aws:MultiFactorAuthPresent": true
+              },
+              "NumericLessThanEquals": {
+                "aws:MultiFactorAuthAge": "3600"
+              }
+            }
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "condition key without a vendor",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "username": "a"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Actions/Conditions must be prefaced by a vendor"
+      }
+    },
+    {
+      "name": "condition block not an object",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": "aws:username"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "must map to an object of condition keys"
+      }
+    },
+    {
+      "name": "condition not an object",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*",
+            "Condition": [
+              "StringEquals"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Condition must be an object"
+      }
+    },
+    {
+      "name": "condition value is null",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:username": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "values must be strings, numbers or booleans"
+      }
+    },
+    {
+      "name": "condition value empty array",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:username": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "has no values"
+      }
+    },
+    {
+      "name": "empty condition object",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*",
+            "Condition": {}
+          }
+        ]
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "unknown statement field",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_grammar.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Actions": "s3:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "unknown field Actions"
+      }
+    },
+    {
+      "name": "element names are case-sensitive",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_grammar.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "unknown field effect"
+      }
+    },
+    {
+      "name": "unknown top-level field",
+      "kind": "parse",
+      "policy_type": "identity",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_grammar.html",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ],
+        "Comment": "x"
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "unknown field Comment"
+      }
+    }
+  ]
+}

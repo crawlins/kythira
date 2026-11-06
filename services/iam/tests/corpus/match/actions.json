@@ -1,0 +1,146 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_action.html",
+  "description": "Action matching: case-insensitive, `*` any run, `?` one character (Requirement 5.3).",
+  "cases": [
+    {
+      "name": "s3:GetObject matches s3:GetObject",
+      "kind": "action_match",
+      "pattern": "s3:GetObject",
+      "value": "s3:GetObject",
+      "match": true
+    },
+    {
+      "name": "s3:GetObject matches S3:GETOBJECT",
+      "kind": "action_match",
+      "pattern": "s3:GetObject",
+      "value": "S3:GETOBJECT",
+      "match": true
+    },
+    {
+      "name": "S3:getobject matches s3:GetObject",
+      "kind": "action_match",
+      "pattern": "S3:getobject",
+      "value": "s3:GetObject",
+      "match": true
+    },
+    {
+      "name": "s3:* matches s3:PutObject",
+      "kind": "action_match",
+      "pattern": "s3:*",
+      "value": "s3:PutObject",
+      "match": true
+    },
+    {
+      "name": "s3:* matches s3:",
+      "kind": "action_match",
+      "pattern": "s3:*",
+      "value": "s3:",
+      "match": true
+    },
+    {
+      "name": "s3:* does not match s3x:GetObject",
+      "kind": "action_match",
+      "pattern": "s3:*",
+      "value": "s3x:GetObject",
+      "match": false
+    },
+    {
+      "name": "s3:* does not match ec2:RunInstances",
+      "kind": "action_match",
+      "pattern": "s3:*",
+      "value": "ec2:RunInstances",
+      "match": false
+    },
+    {
+      "name": "* matches iam:CreateUser",
+      "kind": "action_match",
+      "pattern": "*",
+      "value": "iam:CreateUser",
+      "match": true
+    },
+    {
+      "name": "iam:*AccessKey* matches iam:CreateAccessKey",
+      "kind": "action_match",
+      "pattern": "iam:*AccessKey*",
+      "value": "iam:CreateAccessKey",
+      "match": true
+    },
+    {
+      "name": "iam:*AccessKey* matches iam:ListAccessKeys",
+      "kind": "action_match",
+      "pattern": "iam:*AccessKey*",
+      "value": "iam:ListAccessKeys",
+      "match": true
+    },
+    {
+      "name": "iam:*AccessKey* does not match iam:CreateUser",
+      "kind": "action_match",
+      "pattern": "iam:*AccessKey*",
+      "value": "iam:CreateUser",
+      "match": false
+    },
+    {
+      "name": "s3:Get* matches s3:GetObjectAcl",
+      "kind": "action_match",
+      "pattern": "s3:Get*",
+      "value": "s3:GetObjectAcl",
+      "match": true
+    },
+    {
+      "name": "s3:Get* does not match s3:ListBucket",
+      "kind": "action_match",
+      "pattern": "s3:Get*",
+      "value": "s3:ListBucket",
+      "match": false
+    },
+    {
+      "name": "s3:?etObject matches s3:GetObject",
+      "kind": "action_match",
+      "pattern": "s3:?etObject",
+      "value": "s3:GetObject",
+      "match": true
+    },
+    {
+      "name": "s3:?etObject does not match s3:etObject",
+      "kind": "action_match",
+      "pattern": "s3:?etObject",
+      "value": "s3:etObject",
+      "match": false
+    },
+    {
+      "name": "s3:GetObjec? matches s3:GetObject",
+      "kind": "action_match",
+      "pattern": "s3:GetObjec?",
+      "value": "s3:GetObject",
+      "match": true
+    },
+    {
+      "name": "s3:GetObject does not match s3:GetObjectAcl",
+      "kind": "action_match",
+      "pattern": "s3:GetObject",
+      "value": "s3:GetObjectAcl",
+      "match": false
+    },
+    {
+      "name": "s3:*Object does not match s3:GetObjectAcl",
+      "kind": "action_match",
+      "pattern": "s3:*Object",
+      "value": "s3:GetObjectAcl",
+      "match": false
+    },
+    {
+      "name": "kinesis:Put* matches kinesis:PutRecords",
+      "kind": "action_match",
+      "pattern": "kinesis:Put*",
+      "value": "kinesis:PutRecords",
+      "match": true
+    },
+    {
+      "name": "*:Describe* matches ec2:DescribeInstances",
+      "kind": "action_match",
+      "pattern": "*:Describe*",
+      "value": "ec2:DescribeInstances",
+      "match": true
+    }
+  ]
+}

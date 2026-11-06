@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# ci_no_iam_defconfig — ci_full_defconfig with the IAM module (services/iam/,
+# .kiro/specs/iam-compatible-auth/) switched off. iam-module.yml configures
+# core with it to show that with CONFIG_IAM off nothing under services/iam/
+# is configured: no IAM target and no IAM test. Written, like
+# ci_full_defconfig, against `-DKYTHIRA_KCONFIG_STRICT=ON`; see that file's
+# header for the reasoning behind every other line, which must stay verbatim
+# from it.
+#
+#   IAM                     — the point of the file.
+# CONFIG_IAM is not set
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_REDIS_GATEWAY=y
+CONFIG_REDIS_GATEWAY_TRANSACTIONS=y
+CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set
