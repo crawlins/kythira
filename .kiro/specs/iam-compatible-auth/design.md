@@ -230,8 +230,8 @@ restore, never serialised.
   it fails closed.
 
 **AWS-managed policies.**
-- `tools/iam/aws_managed_policies.json` is a pinned subset, generated once
-  from the public policy reference and refreshed by hand.
+- `services/iam/tools/aws_managed_policies.json` is a pinned subset,
+  generated once from the public policy reference and refreshed by hand.
 - It is compiled into the binary as a generated header, and is never stored
   in the log.
 - Its version is part of the snapshot header, so every member evaluates the
