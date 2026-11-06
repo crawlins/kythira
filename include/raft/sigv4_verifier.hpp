@@ -294,7 +294,12 @@ inline void append_escape(std::string& out, unsigned char c) {
             out += static_cast<char>(std::toupper(static_cast<unsigned char>(wire[i + 1])));
             out += static_cast<char>(std::toupper(static_cast<unsigned char>(wire[i + 2])));
             i += 2;
-        } else if (is_unreserved(c) || c == '/') {
+        } else if (is_unreserved(c) || c == '/' ||
+                   std::string_view("!$&'()*+,;=:@").find(static_cast<char>(c)) !=
+                       std::string_view::npos) {
+            // RFC 3986 pchar: the sub-delims, ':' and '@' may appear raw in a
+            // path, and a client that sent them raw signed them raw (botocore
+            // presigns "/a+b" as "/a+b", tests/sigv4_chunked/).
             out += static_cast<char>(c);
         } else {
             append_escape(out, c);

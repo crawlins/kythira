@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 8/26 tasks complete
+## Status: 9/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -394,7 +394,7 @@ because each has a zero-spend fallback.
     - The result type is a small `parse_result`, not `std::expected`, which
       clang 18 over libstdc++ 13 lacks.
 
-- [ ] 7. Streaming payloads and failure rate limiting
+- [x] 7. Streaming payloads and failure rate limiting
   - `sigv4_chunk_decoder`: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, the
     unsigned and signed trailer forms, and per-chunk verification before
     release.
@@ -403,6 +403,43 @@ because each has a zero-spend fallback.
   - Failure limiter keyed by source address and access key id, modelled on
     `redis_auth_limiter`.
   - _Requirements: 3.4, 3.8_
+  - Done November 6, 2026:
+    - `include/raft/sigv4_chunk_decoder.hpp`: `sigv4::chunk_decoder`, a
+      push parser for all three streaming forms. It appends a chunk's
+      bytes to the caller's buffer only once the whole chunk is in and,
+      in the signed forms, its signature (chained from the seed) has
+      verified. Trailers must match `x-amz-trailer` exactly, and the
+      signed-trailer form needs `x-amz-trailer-signature`. The decoded
+      length is checked against `x-amz-decoded-content-length`. Chunk
+      size, line length and trailer size are bounded by `chunk_limits`.
+      Trailer checksum values go to the front end (`trailers()`), since
+      the S3 layer knows which algorithms it supports. S3's 8 KiB
+      minimum chunk is not enforced.
+    - `include/raft/sigv4_failure_limiter.hpp`: `sigv4::failure_limiter`,
+      with per-window failure budgets per source (IPv4 address or IPv6
+      /64) and per access key id, and a bounded table that never evicts
+      the key being charged. A failure is charged only after it happens
+      (a SigV4 check is a few HMACs, not a KDF, so no concurrency cap).
+      The per-key budget defaults to five times the per-source one,
+      because key ids are public and anyone can spend a key's budget.
+      `throttled()` gives each protocol's throttling error.
+    - `tests/sigv4_chunked/`: `gen_vectors.py` with botocore pinned in
+      `requirements.txt`, and its output `vectors.json` (nine cases:
+      signed, signed-trailer, unsigned-trailer and presigned). botocore
+      signs every seed and writes the unsigned-trailer bodies itself. It
+      never signs chunks, so the script computes chunk and trailer
+      signatures from botocore's signing key, as a second implementation
+      next to the C++ one.
+    - `tests/sigv4_chunk_decoder_test.cpp`, 19 cases:
+      - every vector decodes whole, byte by byte and at random cuts;
+      - every truncation, any flipped byte of a signed body, reordered or
+        dropped chunks and a wrong key all fail, and a flip inside the
+        first chunk releases nothing;
+      - the limiter tests.
+    - The presigned vectors found a task 6 bug: the S3 canonical path
+      escaped RFC 3986 sub-delims (`+`, `=`, `,` and the rest) that
+      clients sign raw, so a botocore URL for `/a+b` failed to verify.
+      `s3_canonical_path` now keeps pchar characters.
 
 - [x] 8. `iam_state_machine`
   - The command enum and JSON bodies of design Component 4. Leader-side
