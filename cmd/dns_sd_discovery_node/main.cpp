@@ -58,7 +58,9 @@ namespace {
 httplib::Server* g_srv = nullptr;
 
 void on_signal(int) {
-    if (g_srv) g_srv->stop();
+    if (g_srv != nullptr) {
+        g_srv->stop();
+    }
 }
 
 // Resolves a hostname or IP literal to a dotted-decimal IPv4 string.
@@ -79,7 +81,7 @@ std::string resolve_to_ip(const std::string& host) {
 
 const char* env_or(const char* key, const char* fallback) {
     const char* v = std::getenv(key);
-    return (v && *v) ? v : fallback;
+    return (v != nullptr && *v != '\0') ? v : fallback;
 }
 
 // The node runs in a compose stack where the DNS server's service name is
@@ -105,7 +107,7 @@ std::chrono::steady_clock::time_point startup_deadline() {
 std::string resolve_with_retry(const std::string& host,
                                std::chrono::steady_clock::time_point deadline, const char* tag) {
     while (true) {
-        const std::string ip = resolve_to_ip(host);
+        std::string ip = resolve_to_ip(host);
         if (is_ipv4_literal(ip)) {
             return ip;
         }
@@ -217,5 +219,7 @@ int main(int argc, char** argv) {
 
     std::cout << "[dns_sd_node] HTTP listening on :" << http_port << "\n";
     srv.listen("0.0.0.0", http_port);
+    // srv is about to go out of scope; on_signal() must not reach it.
+    g_srv = nullptr;
     return 0;
 }

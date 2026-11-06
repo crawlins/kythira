@@ -56,12 +56,14 @@ namespace {
 httplib::Server* g_srv = nullptr;
 
 void on_signal(int) {
-    if (g_srv) g_srv->stop();
+    if (g_srv != nullptr) {
+        g_srv->stop();
+    }
 }
 
 const char* env_or(const char* key, const char* fallback) {
     const char* v = std::getenv(key);
-    return (v && *v) ? v : fallback;
+    return (v != nullptr && *v != '\0') ? v : fallback;
 }
 
 // Resolves a hostname or IP literal to a dotted-decimal IPv4 string.
@@ -103,7 +105,7 @@ std::chrono::steady_clock::time_point startup_deadline() {
 std::string resolve_with_retry(const std::string& host,
                                std::chrono::steady_clock::time_point deadline, const char* tag) {
     while (true) {
-        const std::string ip = resolve_to_ip(host);
+        std::string ip = resolve_to_ip(host);
         if (is_ipv4_literal(ip)) {
             return ip;
         }
@@ -217,6 +219,8 @@ int main(int argc, char** argv) {
 
     std::cout << "[dns_node] HTTP listening on :" << http_port << "\n";
     srv.listen("0.0.0.0", http_port);
+    // srv is about to go out of scope; on_signal() must not reach it.
+    g_srv = nullptr;
     // Printed here (after listen() returns from on_signal()'s srv.stop(),
     // before `discovery` destructs below) so a real shutdown failure can be
     // distinguished from "the signal was never delivered/handled at all" —

@@ -228,15 +228,15 @@ private:
                 throw std::runtime_error("rfc6763_ldns_peer_discovery: failed to build RR");
             }
             ldns_rr_list_push_rr(update_list.get(), rr.get());
-            rr.release();  // ownership transferred to update_list
+            (void)rr.release();  // ownership transferred to update_list
         }
 
         ldns_pkt* raw_pkt =
             ldns_update_pkt_new(ldns_rdf_clone(zone_rdf.get()), LDNS_RR_CLASS_IN, prereq_list.get(),
                                 update_list.get(), additional_list.get());
-        prereq_list.release();
-        update_list.release();
-        additional_list.release();
+        (void)prereq_list.release();
+        (void)update_list.release();
+        (void)additional_list.release();
 
         if (raw_pkt == nullptr) {
             throw std::runtime_error("rfc6763_ldns_peer_discovery: failed to build UPDATE packet");

@@ -39,12 +39,14 @@ namespace {
 httplib::Server* g_srv = nullptr;
 
 void on_signal(int) {
-    if (g_srv) g_srv->stop();
+    if (g_srv != nullptr) {
+        g_srv->stop();
+    }
 }
 
 const char* env_or(const char* key, const char* fallback) {
     const char* v = std::getenv(key);
-    return (v && *v) ? v : fallback;
+    return (v != nullptr && *v != '\0') ? v : fallback;
 }
 
 }  // namespace
@@ -107,5 +109,7 @@ int main(int argc, char** argv) {
 
     std::cout << "[discovery_node] HTTP listening on :" << http_port << "\n";
     srv.listen("0.0.0.0", http_port);
+    // srv is about to go out of scope; on_signal() must not reach it.
+    g_srv = nullptr;
     return 0;
 }
