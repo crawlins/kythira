@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 6/25 tasks complete
+## Status: 7/25 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -277,7 +277,7 @@ because each has a zero-spend fallback.
       credentials, and `azure_blob_client` sending the exchanged Entra
       token (and sending nothing when the exchange is refused).
 
-- [ ] 5. Real-cloud federation run (needs Clark's go)
+- [x] 5. Real-cloud federation run (needs Clark's go)
   - A workflow sets up the issuer's trust in each cloud: an IAM OIDC provider
     and role, a GCP pool, an Entra app with a federated credential, an
     Alibaba OIDC provider and role, and the OCI trust if task 4 kept it.
@@ -288,7 +288,7 @@ because each has a zero-spend fallback.
     audit, record the spend. IAM-type resources are free; the bucket costs
     cents.
   - _Requirements: 2.5_
-  - In progress. Clark gave his go on November 5, 2026, and chose a
+  - Done. Clark gave his go on November 5, 2026, and chose a
     one-time admin setup over per-run creation: the AWS CI role's
     permissions boundary denies every IAM action, and the GCP CI service
     account may not create workload identity pools, so a workflow cannot
@@ -313,7 +313,26 @@ because each has a zero-spend fallback.
     - The `ca_cluster_node` spawning helpers moved from
       `ca_cluster_node_test.cpp` to `tests/ca_cluster_node_harness.hpp` so
       both tests share them.
-    - Azure, Alibaba and OCI join after task 4.
+    - Azure, Alibaba and OCI join after task 4. Their one-time setup scripts
+      landed November 6, 2026, with the test's three new legs and the
+      workflow's `azure`, `alibaba` and `oci` inputs (default off until the
+      setup has been run):
+      - `azure/provision-oidc-federation-test.sh`: an app registration with
+        no secret and one federated identity credential (the issuer,
+        `workload:<uri>`, audience `api://AzureADTokenExchange`), and
+        Storage Blob Data Reader on a container holding only the test
+        object.
+      - `alibaba/provision-oidc-federation-test.sh`: a RAM OIDC provider
+        (client id `sts.aliyuncs.com`, every certificate in the issuer
+        host's chain as a fingerprint, so an S3 leaf rotation does not
+        break it), a role pinning `oidc:iss`, `oidc:aud` and `oidc:sub`, and
+        a policy reading only the test object.
+      - `oci/provision-oidc-federation-test.sh`: a service user and group, an
+        identity propagation trust (the issuer's JWKS, CI's existing
+        token-exchange confidential app as its client, rule
+        `sub eq workload:<uri>`), and a policy reading only the test
+        bucket. It reuses the confidential app, so the run needs no new
+        secret.
     - AWS and GCP passed on November 5, 2026 (run 42097505918, 20/20
       assertions). The issuer documents went public under
       `kythira-oidc-fed-827617851594/ci`, the S3 test object was read
@@ -323,6 +342,21 @@ because each has a zero-spend fallback.
       Two earlier runs failed and were fixed: the build cache's Oracle
       `AWS_ENDPOINT_URL` sent the STS call to Oracle, and `kid_set()`
       walked a freed JSON temporary.
+    - All five clouds passed on November 6, 2026 (run 42254841313, 27/27
+      assertions), after Clark ran the Azure, Alibaba and OCI setup from
+      his machine. The workflow's `azure`, `alibaba` and `oci` inputs now
+      default on. Spend: the same two S3 objects plus one read each from
+      Blob, OSS and Object Storage, well under a cent. Found on the way:
+      - Alibaba's `CreateOIDCProvider` fetches the discovery document when
+        it is called, and the issuer prefix is empty between runs, so the
+        setup published throwaway issuer documents first and deleted them
+        after. The script now checks for the document and says so.
+      - Alibaba caches the issuer's JWKS, and every run signs with a fresh
+        key, so a run soon after another is refused with
+        `IssuerConfigurationBroken` for up to a minute; the test retries
+        that refusal for up to ten minutes.
+      - The `OCI_DOMAIN_URL` secret ends in a newline; the test trims the
+        values it reads (but not the expected object body).
 
 ### Phase B — IAM core
 

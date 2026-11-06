@@ -5561,8 +5561,8 @@ set_tests_properties(ca_cluster_node_test PROPERTIES
 
 # IAM spec task 5: the real-cloud OIDC federation run
 # (.github/workflows/oidc-federation.yml). One ca_cluster_node publishes its
-# issuer documents to S3; the test exchanges its JWT with AWS STS and GCP STS
-# and reads one object in each cloud. Needs the AWS SDK with the S3 gate (the
+# issuer documents to S3; the test exchanges its JWT with each configured
+# cloud (AWS, GCP, Azure, Alibaba, OCI) and reads one object in each. Needs the AWS SDK with the S3 gate (the
 # node's publisher and the AWS read); google-cloud-cpp storage adds the GCP
 # read. Without KYTHIRA_OIDC_FED_ISSUER_URL it exits 77, which ctest reports
 # as skipped, so a normal ctest run never touches a cloud.
@@ -5583,6 +5583,20 @@ if(AWSSDK_FOUND AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE AND TARGET httplib::httplib
     if(TARGET google-cloud-cpp::storage AND _KYTHIRA_GATE_GCP_STORAGE_PERSISTENCE)
         target_compile_definitions(oidc_federation_real_test PRIVATE KYTHIRA_HAS_GCP_STORAGE)
         target_link_libraries(oidc_federation_real_test PRIVATE google-cloud-cpp::storage)
+    endif()
+    # Azure, Alibaba and OCI legs (task 5's second half): each compiles in
+    # when its client does, and a leg configured at run time against a
+    # binary without it fails rather than skipping.
+    if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND AND _KYTHIRA_GATE_AZURE_BLOB_PERSISTENCE)
+        target_compile_definitions(oidc_federation_real_test PRIVATE KYTHIRA_HAS_AZURE_SDK)
+        target_link_libraries(oidc_federation_real_test PRIVATE
+            Azure::azure-core Azure::azure-identity)
+    endif()
+    if(KYTHIRA_ALIBABA_SHARED AND _KYTHIRA_GATE_ALIBABA_OSS_PERSISTENCE)
+        target_compile_definitions(oidc_federation_real_test PRIVATE KYTHIRA_OIDC_FED_ALIBABA)
+    endif()
+    if(KYTHIRA_OCI_SHARED AND _KYTHIRA_GATE_OCI_OBJECT_PERSISTENCE)
+        target_compile_definitions(oidc_federation_real_test PRIVATE KYTHIRA_OIDC_FED_OCI)
     endif()
     add_dependencies(oidc_federation_real_test ca_cluster_node)
     target_compile_features(oidc_federation_real_test PRIVATE cxx_std_23)
