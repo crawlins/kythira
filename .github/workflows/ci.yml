@@ -2092,6 +2092,10 @@ jobs:
   # scripts/build-tidy-prerequisites.sh builds what the compile commands
   # include but configure does not write (protoc output and the test PCH),
   # so no finding is an artefact of a missing header (Requirement 3.2).
+  #
+  # Files that only build under optional dependencies this image lacks are
+  # analysed by static-analysis-variants below instead; see
+  # configs/tidy-variant-sources.txt.
   static-analysis:
     name: clang-tidy (shard ${{ matrix.shard }} of 6)
     runs-on: ubuntu-24.04
@@ -2222,6 +2226,191 @@ jobs:
             --expect KYTHIRA_KCONFIG_STRICT=ON \
             --expect KYTHIRA_TIDY_SHARD_COUNT=6 \
             --expect KYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }}
+
+      - name: Build generated sources and precompiled headers
+        run: scripts/build-tidy-prerequisites.sh build
+
+      - name: static-analysis
+        run: cmake --build build --target static-analysis
+
+  # ── Static analysis of optional-dependency code (clang-tidy) ────────────────
+  # The files in configs/tidy-variant-sources.txt only build under a
+  # dependency the edhoc image above lacks (libldns and Poco DNSSD,
+  # google-cloud-cpp, ion-c) or under a configuration without AWS S3, so the
+  # ci_full_defconfig shards have no compile command for them. Each leg here
+  # configures the defconfig the matching build job uses, with clang++-18 so
+  # the compile commands are clang's, and analyses exactly its variant's
+  # files (KYTHIRA_TIDY_VARIANT); the static-analysis target fails if any of
+  # them has no compile command.
+  #
+  # Each leg restores the vcpkg tree its build job saves, read-only: on a hit
+  # that job built it, and on a miss this leg installs the same features
+  # with the same compiler so the shared binary cache serves the packages,
+  # but never saves, so it cannot write a tree under another job's key.
+  static-analysis-variants:
+    name: clang-tidy (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    # A warm leg is setup plus 1-8 files. 120 covers a vcpkg miss that has to
+    # build the variant's own port (poco-dnssd, ion-c) from source.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: dns
+            defconfig: configs/ci_dns_defconfig
+            strict: 'ON'
+            vcpkg_key: edhoc-poco-dnssd
+            vcpkg_features: --x-feature=edhoc --x-feature=poco-dnssd
+            vcpkg_cc: ''
+            vcpkg_cxx: ''
+            vcpkg_ldflags: ''
+            # pkg-config finds ldns from libldns-dev; the poco-dnssd port's
+            # headers include Avahi's; dns_discovery_bind_integration_test is
+            # only defined when CMake finds bind9's named (never started here).
+            apt: libldns-dev libavahi-client-dev bind9
+            cmake_extra: ''
+          - variant: gcp
+            defconfig: configs/ci_gcp_defconfig
+            strict: 'ON'
+            vcpkg_key: gcp-clang++-18
+            vcpkg_features: --x-feature=gcp
+            vcpkg_cc: clang-18
+            vcpkg_cxx: clang++-18
+            vcpkg_ldflags: -Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state
+            apt: ''
+            # The real-cloud GCP tests are compiled (never run) only with this.
+            cmake_extra: -DKYTHIRA_GCP_REAL_TESTS=ON
+          - variant: ion
+            defconfig: configs/ci_ion_defconfig
+            strict: 'ON'
+            vcpkg_key: edhoc-ion-g++-14
+            vcpkg_features: --x-feature=edhoc --x-feature=ion
+            vcpkg_cc: gcc-14
+            vcpkg_cxx: g++-14
+            vcpkg_ldflags: ''
+            apt: g++-14
+            cmake_extra: ''
+          - variant: no-cloud
+            defconfig: configs/no_cloud_defconfig
+            # Not strict, as in config-variants: no_cloud_defconfig turns
+            # symbols off on purpose, and strict asserts what is left was found.
+            strict: 'OFF'
+            vcpkg_key: edhoc-clang++-18
+            vcpkg_features: --x-feature=edhoc
+            vcpkg_cc: clang-18
+            vcpkg_cxx: clang++-18
+            vcpkg_ldflags: -Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state
+            apt: ''
+            cmake_extra: ''
+    # Same build-cache environment rule as every other job; see build-and-test.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 clang-tidy-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool ${{ matrix.apt }}; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # Only reached on a vcpkg miss of a tree with the edhoc feature.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # The exact key the variant's build job saves (dns-discovery-build,
+      # gcp-sdk-build, ion-serializer-build, config-variants); restore only.
+      - name: Restore vcpkg packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ matrix.vcpkg_key }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          # Same compiler and features as the owning build job, so vcpkg's
+          # ABI hashes match the packages that job put in the binary cache.
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          if [ -n "${{ matrix.vcpkg_cc }}" ]; then
+            export CC='${{ matrix.vcpkg_cc }}' CXX='${{ matrix.vcpkg_cxx }}'
+          fi
+          if [ -n "${{ matrix.vcpkg_ldflags }}" ]; then
+            export LDFLAGS='${{ matrix.vcpkg_ldflags }}'
+          fi
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage ${{ matrix.vcpkg_features }}
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      - name: Configure (${{ matrix.defconfig }}, tidy variant ${{ matrix.variant }})
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=${{ matrix.defconfig }} \
+            -DKYTHIRA_KCONFIG_STRICT=${{ matrix.strict }} \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DKYTHIRA_TIDY_VARIANT=${{ matrix.variant }} \
+            ${{ matrix.cmake_extra }}
+          echo "This leg analyses $(wc -l < build/tidy-sources.txt) files:"
+          cat build/tidy-sources.txt
+
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig ${{ matrix.defconfig }} \
+            --compiler clang++-18 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=${{ matrix.strict }} \
+            --expect KYTHIRA_TIDY_VARIANT=${{ matrix.variant }}
 
       - name: Build generated sources and precompiled headers
         run: scripts/build-tidy-prerequisites.sh build

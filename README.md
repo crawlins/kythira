@@ -973,6 +973,14 @@ six parallel shards with `-DKYTHIRA_TIDY_SHARD_COUNT=6
 -DKYTHIRA_TIDY_SHARD_INDEX=<n>`. The same options work locally;
 `build/tidy-sources.txt` lists the files a configured tree analyses.
 
+Files that only build under an optional dependency the shards' configuration
+lacks (DNS discovery, GCP, Ion) are listed in
+`configs/tidy-variant-sources.txt`. The shards skip them, and the
+`static-analysis-variants` job analyses each under its own defconfig with
+`-DKYTHIRA_TIDY_VARIANT=<variant>`. The target fails if a file it is asked to
+analyse has no compile command, rather than letting clang-tidy skip it
+silently, so a new file of that kind must be added to that list.
+
 ### Apply auto-fixes
 
 ```bash

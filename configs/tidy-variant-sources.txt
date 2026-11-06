@@ -1,0 +1,56 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Translation units clang-tidy cannot see in the ci_full_defconfig
+# compilation database, and the CI variant that analyses each instead.
+#
+# Format: one "<variant> <path relative to the source root>" pair per line;
+# blank lines and lines starting with # are ignored.
+#
+# The static-analysis target reads this file in two ways (see the clang-tidy
+# section of the root CMakeLists.txt):
+#
+#   * KYTHIRA_TIDY_VARIANT unset (the six ci_full_defconfig shards): every
+#     file listed here is dropped from the shard lists, and every remaining
+#     file must have a compile command or the target fails. run-clang-tidy
+#     skips a file with no compile command without a word, which is how these
+#     files went unanalysed until this list existed.
+#   * KYTHIRA_TIDY_VARIANT=<variant> (ci.yml's static-analysis-variants job):
+#     exactly the files listed for that variant are analysed, and each must
+#     have a compile command in that variant's configuration.
+#
+# A new file that only builds under an optional dependency fails the main
+# shards until it is added here under the variant whose defconfig builds it.
+#
+# Variants and the configuration each one analyses under:
+#   dns       configs/ci_dns_defconfig (libldns + Poco DNSSD)
+#   gcp       configs/ci_gcp_defconfig with KYTHIRA_GCP_REAL_TESTS=ON
+#   ion       configs/ci_ion_defconfig (ion-c)
+#   no-cloud  configs/no_cloud_defconfig (no AWS S3, so multi_raft_node
+#             builds its "S3 unavailable" test instead of the S3 ones)
+
+dns cmd/dns_discovery_node/main.cpp
+dns cmd/dns_sd_discovery_node/main.cpp
+dns cmd/poco_discovery_node/main.cpp
+dns tests/chaos/dns_peer_discovery_chaos_test.cpp
+dns tests/dns_discovery_bind_integration_test.cpp
+dns tests/dns_peer_discovery_unit_test.cpp
+dns tests/poco_peer_discovery_unit_test.cpp
+
+gcp tests/gcp_gcs_client_unit_test.cpp
+gcp tests/gcp_gcs_object_persistence_real_test.cpp
+gcp tests/gcp_privateca_provider_real_test.cpp
+gcp tests/gcp_privateca_provider_unit_test.cpp
+gcp tests/gcp_quorum_manager_real_gce_test.cpp
+
+ion examples/ion_serializer_example.cpp
+ion tests/ion_binary_decimal_regression_test.cpp
+ion tests/ion_http_coap_end_to_end_test.cpp
+ion tests/ion_json_serializer_equivalence_property_test.cpp
+ion tests/ion_malformed_message_property_test.cpp
+ion tests/ion_serialization_property_test.cpp
+ion tests/ion_serializer_concept_test.cpp
+ion tests/ion_serializer_range_property_test.cpp
+ion tests/shard_group_id_ion_wire_property_test.cpp
+
+no-cloud tests/multi_raft_node_s3_unavailable_test.cpp
