@@ -1,9 +1,10 @@
 # Implementation Plan — clang-tidy Result Cache and Shard Balancing
 
-## Status: 0/9 tasks complete
+## Status: 1/9 tasks complete
 
 **Last Updated**: November 6, 2026 (spec written; Requirement 4 amended the
-same day so every same-repository branch writes, not only `main`).
+same day so every same-repository branch writes, not only `main`; task 1
+measured, gate met).
 
 ## Overview
 
@@ -61,21 +62,53 @@ Reference material to read before starting:
 
 ## Tasks
 
-- [ ] 1. Throwaway measurement and correctness check
-  - Prototype the key (design "Key computation") and a `local:` backend in a
-    throwaway script; no CMake or `ci.yml` changes.
-  - Add a throwaway dispatch-only `tidy-cache-measure.yml` on a scratch
-    branch with a draft PR, split into 4 jobs of 5 commits each over the last
-    20 commits on `main`, cache directory carried between jobs with
-    `actions/cache`.
-  - Per commit: TUs, hits, misses, key seconds, analysis seconds; for every
-    hit, a fresh clang-tidy run compared with the cached clean.
-  - Uncached full-tree runs on the first and last commit, recording per-TU
-    file cost and the dependency-scan cost per TU.
-  - Record results and run IDs here. Gate (Requirement 1.6): zero false
-    cleans and warm median at most 30% of uncached. If missed, stop and ask
-    the maintainer: fix the key, adopt anyway, or close.
-  - Close the draft PR and delete the scratch branch.
+- [x] 1. Throwaway measurement and correctness check
+  - Prototype driver (key per design, `local:` backend, `--verify-sample`)
+    run from this thread's branch by throwaway push-triggered workflows
+    rather than a dispatch workflow and draft PR: run 42160557316 replayed
+    the 20 first-parent `main` commits from 431bd33 to 23d1209 in four
+    chained legs on one `ubuntu-24.04` runner at a time, carrying the cache
+    directory through the Actions cache. Workflows and prototype removed
+    from the branch afterwards (copies in the project's shared files).
+  - **Hit rate.** After the cold first commit, the next 14 commits (legs
+    1-3) hit 744-749 of the 746-749 TUs that have a compile command; median
+    99.9%. The one wide change in the window (85829cc) still hit 722 and
+    missed 27.
+  - **Speed.** The cold run took 12,762 s (3.5 h) on one 4-vCPU runner
+    (analysis 50,652 CPU-s). Warm, the work per commit was key computation
+    (307-442 CPU-s, 0.4-0.6 s per TU, almost all of it the `-M` scan) plus
+    the misses: an estimated 186-373 s wall per commit at `-j4`, 864 s for
+    85829cc. Median about 240 s, **1.9% of uncached**, far under the 30%
+    gate. (Measured walls of 1,480-3,350 s include re-analysing the 10%
+    verification sample and the 22 TUs below.)
+  - **False cleans: zero.** Every replayed `main` commit passed clang-tidy,
+    so re-checking hits there cannot catch a stale clean; the per-commit
+    10% samples (72-79 hits each, 1,099 in all) found none, as expected.
+    The real test was run 42221510397: PR head 69e7858 (based on replay
+    commit 18), whose CI run 42132799851 failed on a
+    `modernize-use-nodiscard` finding in
+    `include/raft/azure_federated_credential.hpp`. From the leg-1 cache, it
+    hit 660 TUs and missed 111; the TU that reports that header
+    (`tests/azure_blob_client_unit_test.cpp`) missed and reported the
+    finding, and **all 660 hits re-analysed fresh were clean**. This
+    replaces Requirement 1.3's "every hit on every commit", which would
+    have cost a full 3.5-hour analysis per commit.
+  - **Found on the way: 22 TUs have no compile command** in the
+    `ci_full_defconfig` database (the discovery nodes, DNS, GCP and Ion
+    tests, the Ion example, `multi_raft_node_s3_unavailable_test`,
+    `poco_peer_discovery_unit_test`, `shard_group_id_ion_wire_property_test`).
+    `run-clang-tidy` skips them silently, so CI has never analysed them; the
+    prototype fed them to clang-tidy, which failed them. The driver (task
+    4) must skip and count them as `run-clang-tidy` does. Adding them to a
+    CI config is its own piece of work, started separately on November 6.
+  - **File costs** (task 2) from the cold run: 768 TUs, 50,652 s in all,
+    copied to the project's shared files as `costs-431bd33.txt`. The spread
+    is wide: `tests/object_store_persistence_unit_test.cpp` alone takes
+    1,896 s (31.6 min), the next 546 s. A shard can never finish uncached in
+    less time than its slowest TU, so that one file bounds the uncached
+    critical path near 32 minutes until it is split.
+  - Gate (Requirement 1.6) **met**: zero false cleans, warm median 1.9% of
+    uncached. Tasks 2-9 proceed.
   - _Requirements: 1.1-1.6_
 
 - [ ] 2. Cost-weighted shard planner
@@ -115,6 +148,8 @@ Reference material to read before starting:
     `HEAD`/`PUT` against the S3-compatible endpoint with standard-library
     SigV4, `local:` backend, clean-only stores, `== <tu>` output blocks,
     "cached: <tu>" lines, non-zero exit on any finding.
+  - Skip TUs with no entry in `compile_commands.json`, as `run-clang-tidy`
+    does, and count them in the summary (task 1 found 22).
   - Fail open: 10 s timeout, 2 retries, backend disabled after 20
     consecutive errors.
   - `build/tidy-cache-stats.json` and the `$GITHUB_STEP_SUMMARY` table;
