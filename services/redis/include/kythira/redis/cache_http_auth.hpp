@@ -23,6 +23,7 @@
 /// request rather than after `ttl`.
 
 #include <kythira/redis/redis_acl.hpp>
+#include <raft/credential_verifier.hpp>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -42,6 +43,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 
 namespace kythira {
 
@@ -99,6 +101,38 @@ struct cache_http_credentials {
 /// Constant-time string equality, for comparing presented secrets.
 [[nodiscard]] inline auto cache_http_secret_equal(std::string_view a, std::string_view b) -> bool {
     return a.size() == b.size() && (a.empty() || CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0);
+}
+
+/// Check `creds` with a credential verifier instead of the ACL's secrets
+/// (.kiro/specs/redis-gateway-module/ Requirement 6.6). The ACL still
+/// decides the identity: for Basic, the named user; for Bearer, which names
+/// no user, the ACL user the verifier's `principal` names. Returns nullopt
+/// for a denial, a verifier that does not answer within `timeout`, an
+/// accepted credential that has already expired, or a user the ACL does not
+/// have enabled.
+///
+/// Successes are deliberately not put in `cache_http_auth_cache`: a cached
+/// entry would outlive the credential's own expiry by up to the cache's TTL.
+/// A verifier is expected to be cheap (IAM's answers from its local
+/// replica), so it is asked on every request instead.
+[[nodiscard]] inline auto verify_cache_http_credential(const credential_verifier_fn& verifier,
+                                                       const redis_acl& acl,
+                                                       const cache_http_credentials& creds,
+                                                       std::string_view peer,
+                                                       std::chrono::milliseconds timeout)
+    -> std::optional<redis_identity> {
+    auto f = verifier(credential_request{"cache-http", creds._user, creds._secret, peer});
+    if (!f.wait(timeout)) {
+        return std::nullopt;
+    }
+    credential_result result = std::move(f).get();
+    const auto* accepted = std::get_if<credential_accepted>(&result);
+    if (accepted == nullptr || accepted->expires <= std::chrono::system_clock::now()) {
+        return std::nullopt;
+    }
+    return acl.identity_of(creds._scheme == cache_http_credentials::scheme::basic
+                               ? std::string_view(creds._user)
+                               : std::string_view(accepted->principal));
 }
 
 class cache_http_auth_cache {

@@ -405,6 +405,19 @@ public:
         return redis_identity{u->_name, u->_role, u->_key_prefixes};
     }
 
+    /// The identity of an enabled user, without checking any secret. Only for
+    /// a caller that has authenticated the user some other way: the gateway
+    /// after a credential verifier accepted the user's credential
+    /// (.kiro/specs/redis-gateway-module/ Requirement 6.5).
+    [[nodiscard]] auto identity_of(std::string_view user) const -> std::optional<redis_identity> {
+        auto table = snapshot();
+        const auto* u = table->find(user);
+        if (u == nullptr || !u->_enabled) {
+            return std::nullopt;
+        }
+        return redis_identity{u->_name, u->_role, u->_key_prefixes};
+    }
+
     /// mTLS: map a verified client-certificate subject to a user.
     [[nodiscard]] auto authenticate_certificate(std::string_view subject) const
         -> std::optional<redis_identity> {
