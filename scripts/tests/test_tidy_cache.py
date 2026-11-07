@@ -164,6 +164,7 @@ class DriverS3Test(unittest.TestCase):
         self.assertIn("/bucket/clang-tidy/k-ok.cpp", self.stub.objects)
         self.assertIn("== bad.cpp", d.outbuf.getvalue())
         self.assertIn("warning: bad [x-check]", d.outbuf.getvalue())
+        self.assertEqual(d.stats["finding_tus"], ["bad.cpp"])
         # Analysed again next time, never served from the cache.
         d2 = make_driver(s3(self.stub), results={"bad.cpp": False})
         self.assertEqual(d2.run(["bad.cpp"]), 1)
