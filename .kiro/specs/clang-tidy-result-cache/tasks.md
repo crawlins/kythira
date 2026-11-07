@@ -1,6 +1,6 @@
 # Implementation Plan — clang-tidy Result Cache and Shard Balancing
 
-## Status: 4/9 tasks complete
+## Status: 5/9 tasks complete
 
 **Last Updated**: November 6, 2026 (spec written; Requirement 4 amended the
 same day so every same-repository branch writes, not only `main`; task 1
@@ -196,7 +196,7 @@ Reference material to read before starting:
     clang-tidy-18 (cold, warm, a real finding never stored, the silent
     no-op); runs beside the key tests in clang-tidy shard 0.
 
-- [ ] 5. `KYTHIRA_TIDY_CACHE` CMake knob
+- [x] 5. `KYTHIRA_TIDY_CACHE` CMake knob
   - Cache variable with `off` (default), `read`, `readwrite`,
     `local:<dir>`; reject anything else with `FATAL_ERROR`.
   - `off` leaves the `static-analysis` command byte-identical to today's
@@ -205,6 +205,14 @@ Reference material to read before starting:
     and compiler paths found at configure, and `-j` as today.
   - `static-analysis-fix` stays uncached.
   - _Requirements: 7.1, 10.1_
+  - **Done.** With `off` the generated `build.ninja` is byte-identical
+    to before (diffed on a mini project holding the clang-tidy section,
+    shard 2 of 6). Other modes keep today's command as
+    `static-analysis-uncached` and make `static-analysis` run the driver
+    with the planner's list, `--costs` and the same `-j`. Added mode
+    `env`, which defers read or readwrite to `$OCI_BUILD_CACHE_MODE`, so
+    task 6 can configure once without guessing what the build-cache
+    action exported.
 
 - [ ] 6. CI wiring
   - `ci.yml` `static-analysis` job: pick the mode (design "CI wiring"),

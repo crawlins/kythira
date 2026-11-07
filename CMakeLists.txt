@@ -2502,6 +2502,27 @@ list(LENGTH TIDY_SOURCES TIDY_SOURCES_COUNT)
 string(REPLACE ";" "\n" _tidy_list "${TIDY_SOURCES}")
 file(WRITE "${CMAKE_BINARY_DIR}/tidy-sources.txt" "${_tidy_list}\n")
 
+# KYTHIRA_TIDY_CACHE (clang-tidy-result-cache Requirements 7.1 and 10.1):
+# off runs run-clang-tidy exactly as before; any other mode makes
+# static-analysis run scripts/tidy-cache.py, which skips TUs whose cache key
+# matches a stored clean result. read and readwrite use the S3-compatible
+# build-cache bucket from the AWS_* and SCCACHE_BUCKET variables the
+# oci-build-cache action exports; env takes read or readwrite from its
+# OCI_BUILD_CACHE_MODE; local:<dir> needs no credentials. The uncached
+# command stays available as static-analysis-uncached, and
+# static-analysis-fix is never cached.
+set(KYTHIRA_TIDY_CACHE "off" CACHE STRING
+    "clang-tidy result cache: off, read, readwrite, env or local:<dir>")
+if(NOT KYTHIRA_TIDY_CACHE MATCHES "^(off|read|readwrite|env|local:.+)$")
+    message(FATAL_ERROR "KYTHIRA_TIDY_CACHE=${KYTHIRA_TIDY_CACHE}: want off, read, readwrite, "
+                        "env or local:<dir>")
+endif()
+if(KYTHIRA_TIDY_CACHE STREQUAL "off")
+    set(_tidy_main_target static-analysis)
+else()
+    set(_tidy_main_target static-analysis-uncached)
+endif()
+
 if(NOT CLANG_TIDY_EXECUTABLE)
     message(WARNING "clang-tidy not found — 'static-analysis' and 'static-analysis-fix' targets "
                     "unavailable.  Install with: apt install clang-tidy")
@@ -2523,7 +2544,7 @@ else()
             cmake_host_system_information(RESULT _TIDY_JOBS QUERY NUMBER_OF_LOGICAL_CORES)
         endif()
 
-        add_custom_target(static-analysis
+        add_custom_target(${_tidy_main_target}
             COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
                 "static-analysis: running clang-tidy on ${TIDY_SOURCES_COUNT} files, parallel"
             COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
@@ -2553,7 +2574,7 @@ else()
         )
     else()
         # Sequential fallback — run-clang-tidy not found
-        add_custom_target(static-analysis
+        add_custom_target(${_tidy_main_target}
             COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
                 "static-analysis: running clang-tidy on ${TIDY_SOURCES_COUNT} files, sequential"
             COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
@@ -2575,6 +2596,37 @@ else()
                     ${TIDY_SOURCES}
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             COMMENT "Applying clang-tidy auto-fixes, sequential"
+        )
+    endif()
+
+    if(NOT KYTHIRA_TIDY_CACHE STREQUAL "off")
+        if(NOT Python3_EXECUTABLE)
+            find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        endif()
+        if(CMAKE_BUILD_PARALLEL_LEVEL)
+            set(_tidy_cache_jobs ${CMAKE_BUILD_PARALLEL_LEVEL})
+        else()
+            cmake_host_system_information(RESULT _tidy_cache_jobs QUERY NUMBER_OF_LOGICAL_CORES)
+        endif()
+        add_custom_target(static-analysis
+            COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
+                "static-analysis: running clang-tidy on ${TIDY_SOURCES_COUNT} files, cache ${KYTHIRA_TIDY_CACHE}"
+            COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
+                    -DSOURCES=${CMAKE_BINARY_DIR}/tidy-sources.txt
+                    -P ${CMAKE_SOURCE_DIR}/cmake/check_compdb.cmake
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/tidy-cache.py run
+                    -p ${CMAKE_BINARY_DIR}
+                    --src ${CMAKE_SOURCE_DIR}
+                    --mode ${KYTHIRA_TIDY_CACHE}
+                    --clang-tidy ${CLANG_TIDY_EXECUTABLE}
+                    --jobs ${_tidy_cache_jobs}
+                    --costs ${CMAKE_SOURCE_DIR}/configs/tidy-file-costs.txt
+                    --files-from ${CMAKE_BINARY_DIR}/tidy-sources.txt
+            COMMAND ${CMAKE_COMMAND} -E echo
+                "static-analysis: all ${TIDY_SOURCES_COUNT} files clean"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Running clang-tidy static analysis through the result cache"
+            VERBATIM
         )
     endif()
 endif()
