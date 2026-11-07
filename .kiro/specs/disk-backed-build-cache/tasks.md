@@ -1,5 +1,13 @@
 # Implementation Plan — Disk-Backed Build Cache
 
+> **Paths (November 2026).** This spec predates the `services/redis/`
+> module. Its `include/raft/redis_*.hpp`, `cache_*.hpp` and `resp_*` gateway
+> headers now live in `services/redis/include/kythira/redis/`,
+> `cmd/redis_gateway_node/` in `services/redis/cmd/redis_gateway_node/`,
+> `tests/redis_*` and the container scenarios in `services/redis/tests/`,
+> and `docker/cache-cluster/` (and the gateway's other images) in
+> `services/redis/docker/` (`redis-gateway-module` task 4; basenames kept).
+
 ## Status: 13/13 tasks complete
 
 **Last Updated**: November 5, 2026 (task 11, the full-tree WebDAV

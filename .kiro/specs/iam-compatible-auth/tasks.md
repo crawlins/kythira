@@ -765,7 +765,13 @@ because each has a zero-spend fallback.
 ### Phase E — Redis
 
 - [ ] 21. Redis AUTH with IAM tokens
-  - Needs `redis-gateway-module` tasks 4 and 6 merged.
+  - Needs `redis-gateway-module` tasks 4 and 6 merged (both done). Paths:
+    the gateway and ACL are under `services/redis/include/kythira/redis/`,
+    the seam is `include/raft/credential_verifier.hpp`, and the hooks are
+    `redis_gateway_config::_credential_verifier` /
+    `_credential_verifier_users` and `cache_http_config::_credential_verifier`
+    / `_credential_verifier_selects`, described in `services/redis/README.md`
+    "Authentication seam".
   - In the Redis module:
     - parse the ACL `auth=password|iam|both` as a reserved attribute, like
       `cert=`;

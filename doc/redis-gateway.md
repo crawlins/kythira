@@ -18,6 +18,30 @@ A build with the transaction adapter adds the multi-key commands of
 The design, its requirements and its acceptance tests are in
 `.kiro/specs/redis-compatible-kv/`.
 
+## Where the code lives
+
+Everything that only the gateway uses is in the `services/redis/` module
+(`.kiro/specs/redis-gateway-module/`), behind `CONFIG_REDIS_GATEWAY` in
+`services/redis/Kconfig`, on by default.
+
+| Path | What |
+|---|---|
+| `services/redis/include/kythira/redis/` | the gateway, the KV state machines (memory, multi-version, disk-backed cache), the cache's HTTP front end, the ACL and the auth limiter, included as `<kythira/redis/…>` |
+| `services/redis/cmd/redis_gateway_node/` | the daemon and its configuration |
+| `services/redis/tests/` | unit and in-process integration tests, golden bytes |
+| `services/redis/tests/docker/` | the sccache, cache-cluster, rolling-upgrade and transaction chaos scenarios |
+| `services/redis/docker/` | the images and compose files those scenarios use |
+| `services/redis/README.md` | the module's layout, CI, what it uses from core, the authentication seam, and what a split into its own repository would still need |
+
+Core pieces it builds on stay in `include/raft/`: the
+multi-Raft host, the transaction wrapper, the listeners, and
+`credential_verifier.hpp`, the seam a non-password `AUTH` (IAM tokens)
+plugs into. Specs written before the move name the old paths
+(`include/raft/redis_*.hpp`, `cmd/redis_gateway_node/`, `docker/cache-cluster/`);
+the files kept their basenames, so `git log --follow` reaches their history.
+`.github/workflows/redis-module.yml` runs the module's tests and container
+scenarios on the pull requests that touch it.
+
 ## Running a cluster
 
 Every voter runs one daemon. A daemon is configured entirely through the
