@@ -228,8 +228,25 @@ Reference material to read before starting:
   - Update the comment above the job with the measured warm and cold
     figures.
   - _Requirements: 4.1, 4.3, 4.4, 6.2, 7.2, 7.3_
-  - **Wiring in place; the three verification runs and the comment are
-    still owed.** A "Choose the clang-tidy cache mode" step picks `env`
+  - **Two of three verification runs recorded; the fork-style `off` run
+    is still owed.**
+    - Cold: PR #720 head 6c5b91e, run 42351017144. Every shard printed
+      `clang-tidy cache: env (build-cache key in readwrite mode)`; 760 TUs
+      analysed and stored, 0 backend errors, 0 findings; static-analysis
+      1456-3389 s per shard (about 3340 s on the four EPYC 7763 runners);
+      keying about 0.7 s per TU; run wall 79 minutes.
+    - Warm: the main push of 087a880, run 42356568825. 760/760 hits, 0
+      misses, 0 stored, 0 backend errors; static-analysis 12-22 s per
+      shard (22 s on EPYC 7763, 12-14 s on EPYC 9V45), each shard job
+      about 90 s including setup. Run wall 21 minutes (was 62-71 before
+      the cache, 79 cold); the slowest job is now Coverage (clang++-18)
+      at 21 minutes, then the full-suite and x64 build-and-test legs at
+      20. The runner lottery no longer matters:
+      the slowest shard is no longer the run's critical path. That commit
+      changed no C++, so every key matched; a typical PR misses only the
+      TUs its change reaches.
+    - The comment above the job and its timeout note carry these figures.
+  - A "Choose the clang-tidy cache mode" step picks `env`
     (the driver then reads read or readwrite from `OCI_BUILD_CACHE_MODE`)
     when the build-cache action handed the run a key, and `off` when it
     did not or `vars.TIDY_CACHE_DISABLED` is `true`. Stats upload as
