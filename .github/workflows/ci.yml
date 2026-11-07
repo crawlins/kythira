@@ -2245,6 +2245,12 @@ jobs:
           TIDY_CACHE_KEY_TESTS_REQUIRED: "1"
         run: python3 scripts/tests/test_tidy_cache_key.py -v
 
+      - name: clang-tidy cache driver passes its tests
+        if: matrix.shard == 0
+        env:
+          TIDY_CACHE_KEY_TESTS_REQUIRED: "1"
+        run: python3 scripts/tests/test_tidy_cache.py -v
+
       - name: static-analysis
         run: cmake --build build --target static-analysis
 

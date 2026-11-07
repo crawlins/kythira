@@ -1,6 +1,6 @@
 # Implementation Plan — clang-tidy Result Cache and Shard Balancing
 
-## Status: 3/9 tasks complete
+## Status: 4/9 tasks complete
 
 **Last Updated**: November 6, 2026 (spec written; Requirement 4 amended the
 same day so every same-repository branch writes, not only `main`; task 1
@@ -169,7 +169,7 @@ Reference material to read before starting:
     never changes, so task 1's results stand; the library sorts by the
     tokenised path.
 
-- [ ] 4. Cache driver
+- [x] 4. Cache driver
   - `scripts/tidy-cache.py run` per design Component 2: thread pool,
     `HEAD`/`PUT` against the S3-compatible endpoint with standard-library
     SigV4, `local:` backend, clean-only stores, `== <tu>` output blocks,
@@ -184,6 +184,17 @@ Reference material to read before starting:
     no store on finding/crash/timeout, read-only mode never PUTs, 403 on PUT
     is a warning, error budget, silent no-op exit.
   - _Requirements: 3.1-3.4, 5.1-5.4, 6.1-6.3, 10.1_
+  - **Done.** `scripts/tidy-cache.py run` imports the task 3 key library.
+    Modes off, read, readwrite, `local:<dir>`, and `env` (read or
+    readwrite from `$OCI_BUILD_CACHE_MODE`). SigV4 is checked against
+    botocore when that is importable (not in CI). A PUT refused with
+    403/404/409/412 is confirmed with a HEAD, so the create-only PR key
+    counts an existing entry as present. With `--costs`, TUs start
+    longest first, which fixes the late-starting 1,896 s file task 2 hit
+    under run-clang-tidy. `scripts/tests/test_tidy_cache.py`: 22 cases
+    against a stub S3 server plus two end-to-end runs of the CLI with
+    clang-tidy-18 (cold, warm, a real finding never stored, the silent
+    no-op); runs beside the key tests in clang-tidy shard 0.
 
 - [ ] 5. `KYTHIRA_TIDY_CACHE` CMake knob
   - Cache variable with `off` (default), `read`, `readwrite`,
