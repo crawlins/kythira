@@ -228,6 +228,13 @@ Reference material to read before starting:
   - Update the comment above the job with the measured warm and cold
     figures.
   - _Requirements: 4.1, 4.3, 4.4, 6.2, 7.2, 7.3_
+  - **Wiring in place; the three verification runs and the comment are
+    still owed.** A "Choose the clang-tidy cache mode" step picks `env`
+    (the driver then reads read or readwrite from `OCI_BUILD_CACHE_MODE`)
+    when the build-cache action handed the run a key, and `off` when it
+    did not or `vars.TIDY_CACHE_DISABLED` is `true`. Stats upload as
+    `tidy-cache-stats-shard-<n>` whenever the mode is not `off`. The
+    variant legs stay uncached.
 
 - [ ] 7. Bucket lifecycle and audit prefix
   - Depends on the PR-only build-cache key from the thread "Let PR runs
