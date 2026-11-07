@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The verifiable ledger module (services/ledger/,
+# .kiro/specs/verifiable-ledger/). Sourced from the top-level Kconfig's
+# "Service Modules" menu.
+
+config LEDGER
+	bool "Verifiable ledger (tamper-evident journal, digests and proofs)"
+	default n
+	depends on ION_SERIALIZER && OPENSSL
+	help
+	  Builds the services/ledger/ module: ledgers of Ion documents whose
+	  every committed change is a block in a SHA-256 hash-chained journal,
+	  with digests, Merkle proofs, document history and optimistic
+	  transactions, each ledger served by one Raft group on a persistent
+	  state machine. So far the module holds the Ion hash, the `dot`
+	  combiner and the Merkle accumulator (task 2) and the ledger_node
+	  placeholder; the state machine, API and daemon follow.
+
+	  Needs ion-c (CONFIG_ION_SERIALIZER, the opt-in `ion` vcpkg feature)
+	  for documents and the Ion hash, and OpenSSL for SHA-256. The engine
+	  is the persistent-state-machine kv_engine: the in-memory engine is
+	  always built, and RocksDB is used where that spec's engine is on.
+	  Off by default like every new module (services/README.md). See
+	  .kiro/specs/verifiable-ledger/.

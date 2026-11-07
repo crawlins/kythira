@@ -812,6 +812,21 @@ else()
 endif()
 kythira_kconfig_require(IAM KYTHIRA_BUILD_IAM "OpenSSL")
 
+# verifiable-ledger spec: the services/ledger/ module (tamper-evident ledgers
+# of Ion documents). Off unless CONFIG_LEDGER=y, like every new module; needs
+# ion-c (found above for CONFIG_ION_SERIALIZER) for documents and the Ion
+# hash, and OpenSSL for SHA-256. Entered with add_subdirectory(services/ledger)
+# below, after tests/.
+kythira_kconfig_gate(LEDGER)
+set(KYTHIRA_BUILD_LEDGER FALSE)
+if(_KYTHIRA_GATE_LEDGER AND DEFINED KCONFIG_LEDGER AND TARGET raft_ion_serializer AND OpenSSL_FOUND)
+    set(KYTHIRA_BUILD_LEDGER TRUE)
+    message(STATUS "ledger module enabled (services/ledger/, .kiro/specs/verifiable-ledger/)")
+else()
+    message(STATUS "ledger module disabled (CONFIG_LEDGER=n, or ion-c/OpenSSL not found)")
+endif()
+kythira_kconfig_require(LEDGER KYTHIRA_BUILD_LEDGER "ion-c and OpenSSL")
+
 if(NOT stdexec_FOUND)
     message(WARNING "stdexec not found. The stdexec-backed Future/Promise implementation will not be available.")
 endif()
@@ -2157,6 +2172,12 @@ endif()
 # uses exist.
 if(KYTHIRA_BUILD_IAM)
     add_subdirectory(services/iam)
+endif()
+
+# The verifiable ledger module (services/README.md,
+# .kiro/specs/verifiable-ledger/), entered likewise.
+if(KYTHIRA_BUILD_LEDGER)
+    add_subdirectory(services/ledger)
 endif()
 
 # Installation rules

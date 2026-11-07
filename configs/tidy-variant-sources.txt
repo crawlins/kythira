@@ -52,5 +52,8 @@ ion tests/ion_serialization_property_test.cpp
 ion tests/ion_serializer_concept_test.cpp
 ion tests/ion_serializer_range_property_test.cpp
 ion tests/shard_group_id_ion_wire_property_test.cpp
+ion services/ledger/cmd/ledger_node/main.cpp
+ion services/ledger/tests/ion_hash_test.cpp
+ion services/ledger/tests/ledger_merkle_test.cpp
 
 no-cloud tests/multi_raft_node_s3_unavailable_test.cpp

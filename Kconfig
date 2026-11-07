@@ -623,6 +623,7 @@ endmenu # Futures
 menu "Service Modules"
 
 source "services/iam/Kconfig"
+source "services/ledger/Kconfig"
 
 endmenu # Service Modules
 

@@ -6,17 +6,51 @@ for the RocksDB CI leg, and `.kiro/specs/file-install-snapshot/` for
 follower catch-up (task 9). Tasks 1-2 need neither and can start now. Each
 task is one PR unless noted.
 
-- [ ] 1. Module skeleton
+- [x] 1. Module skeleton
   - `KYTHIRA_LEDGER` Kconfig option (default off), `services/ledger/` and
     `cmd/ledger_node/` CMake targets, the no-`*_impl.hpp` include check
   - Off-by-default build proved unchanged
   - _Requirements: 1.1-1.4_
+  - Done 2026-11-07. As built:
+    - The symbol is `CONFIG_LEDGER` (`services/ledger/Kconfig`, in the
+      "Service Modules" menu), `depends on ION_SERIALIZER && OPENSSL`; the
+      in-memory engine is always built, so 1.1's engine condition holds.
+      The top level sets `KYTHIRA_BUILD_LEDGER` and enters
+      `services/ledger/` after `tests/`, like `services/iam/`.
+    - The daemon lives at `services/ledger/cmd/ledger_node/`, per
+      `services/README.md`, as a `--self-test` placeholder until task 7.
+    - The include check is `scripts/check_module_boundaries.py`'s
+      `impl-header` rule, which already runs over every `services/*/` on
+      every pull request; no ledger-specific CMake regex was added.
+    - Only `configs/ci_ion_defconfig` turns the module on (it needs
+      ion-c); every other defconfig, and so every other CI build, is
+      unchanged.
 
-- [ ] 2. Ion hash, `dot` and the Merkle accumulator
+- [x] 2. Ion hash, `dot` and the Merkle accumulator
   - SHA-256 Ion hash over ion-c; amazon-ion-hash test vectors
   - `dot`, proof folding, accumulator with an abstract node store; test
     against the AWS QLDB verification tutorial example
   - _Requirements: 4.6, 12.1, 12.2_
+  - Done 2026-11-07. As built:
+    - `ion_hash.hpp` is header-only and parameterised over the hash
+      function, so the suite's identity vectors check the exact bytes;
+      `ion_hash()` is the SHA-256 form. All 166 identity and 5 MD5 cases of
+      amazon-ion/ion-hash-test pass (`tests/vectors/`, copied unchanged).
+    - ion-c quirks it works around: timestamps are local fields plus an
+      offset, so they are converted to UTC; annotations are read before
+      stepping into a container (stepping in drops them); strings and lobs
+      are read in pieces, because a refused `get_string_length` on a long
+      text value consumes part of it; and the walk has its own depth limit,
+      since the text reader ignores `max_container_depth`.
+    - The binary-Ion length preflight and the reader owner moved from
+      `raft/ion_serializer.hpp` to core `raft/ion_preflight.hpp`, so the
+      ledger reads Ion without the serializer or a future backend.
+    - The AWS tutorial publishes the verification code but no hash values,
+      so `tests/tools/qldb_dot_vectors.py` runs the tutorial's Python
+      functions as published and prints the vectors the C++ test checks.
+    - Level 0 of the node store holds the leaves (block hashes) as well as
+      the interior nodes. The tree is RFC 6962's shape with `dot`; its
+      roots for 1-9 leaves are pinned in the test.
 
 - [ ] 3. Ledger state machine: tables, documents, journal
   - `ledger_state_machine` on the persistent concept: catalog keys, tables,
