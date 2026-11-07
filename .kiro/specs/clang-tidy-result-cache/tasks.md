@@ -237,6 +237,9 @@ Reference material to read before starting:
     variant legs stay uncached.
 
 - [ ] 7. Bucket lifecycle and audit prefix
+  - _Code written (rule `expire-clang-tidy-results`, audit prefix, two
+    new stub checks; the PR key's policy already covers the whole bucket).
+    Live apply owed: `provision.sh --apply` after the maintainer's go._
   - Depends on the PR-only build-cache key from the thread "Let PR runs
     write build caches"; check that its policy covers `clang-tidy/`.
   - `scripts/oci-build-cache/provision.sh`: add the 30-day `clang-tidy/`
