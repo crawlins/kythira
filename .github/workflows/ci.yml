@@ -2200,6 +2200,29 @@ jobs:
         if: steps.buildcache.outputs.enabled == 'true'
         run: scripts/oci-build-cache/start-sccache.sh
 
+      # The clang-tidy result cache (.kiro/specs/clang-tidy-result-cache/):
+      # whenever the build-cache action handed this run a key, the driver
+      # takes read or readwrite from the OCI_BUILD_CACHE_MODE it exported
+      # (main's read-write key, or the create-only key same-repository pull
+      # requests get). No key, as on fork pull requests, or the
+      # TIDY_CACHE_DISABLED repository variable, runs run-clang-tidy as
+      # before.
+      - name: Choose the clang-tidy cache mode
+        id: tidycache
+        env:
+          DISABLED: ${{ vars.TIDY_CACHE_DISABLED }}
+          BUILD_CACHE_ENABLED: ${{ steps.buildcache.outputs.enabled }}
+        run: |
+          if [ "${DISABLED}" = "true" ]; then
+            mode=off; why="TIDY_CACHE_DISABLED is true"
+          elif [ "${BUILD_CACHE_ENABLED}" = "true" ] && [ -n "${OCI_BUILD_CACHE_MODE:-}" ]; then
+            mode=env; why="build-cache key in ${OCI_BUILD_CACHE_MODE} mode"
+          else
+            mode=off; why="no build-cache key in this run"
+          fi
+          echo "clang-tidy cache: ${mode} (${why})"
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+
       # Same flags as the clang++-18 build-and-test leg, so the PCH build hits
       # that leg's sccache entries.
       - name: Configure (ci_full_defconfig, strict)
@@ -2214,7 +2237,8 @@ jobs:
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DKYTHIRA_TIDY_SHARD_COUNT=6 \
-            -DKYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }}
+            -DKYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }} \
+            -DKYTHIRA_TIDY_CACHE=${{ steps.tidycache.outputs.mode }}
           echo "This shard analyses $(wc -l < build/tidy-sources.txt) files" \
                "on $(nproc) x $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)."
           # The cost-balanced planner, not the round-robin fallback, chose
@@ -2231,7 +2255,8 @@ jobs:
             --expect CMAKE_BUILD_TYPE=Release \
             --expect KYTHIRA_KCONFIG_STRICT=ON \
             --expect KYTHIRA_TIDY_SHARD_COUNT=6 \
-            --expect KYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }}
+            --expect KYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }} \
+            --expect KYTHIRA_TIDY_CACHE=${{ steps.tidycache.outputs.mode }}
 
       - name: Build generated sources and precompiled headers
         run: scripts/build-tidy-prerequisites.sh build
@@ -2253,6 +2278,18 @@ jobs:
 
       - name: static-analysis
         run: cmake --build build --target static-analysis
+
+      # Hits, misses, stores, backend errors and per-TU seconds; the
+      # per-TU seconds of analysed TUs refresh configs/tidy-file-costs.txt
+      # (scripts/tidy-shard.py refresh).
+      - name: Upload clang-tidy cache stats
+        if: always() && steps.tidycache.outputs.mode != 'off'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tidy-cache-stats-shard-${{ matrix.shard }}
+          path: build/tidy-cache-stats.json
+          if-no-files-found: warn
+          retention-days: 14
 
   # ── Static analysis of optional-dependency code (clang-tidy) ────────────────
   # The files in configs/tidy-variant-sources.txt only build under a
