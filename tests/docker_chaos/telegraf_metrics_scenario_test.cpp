@@ -73,9 +73,18 @@ BOOST_FIXTURE_TEST_CASE(log_events_are_parsed_and_reach_an_output, TelegrafFixtu
 
     require_eventually(
         [&] {
+            // Any level tag, not `level=info` in particular: the node logs
+            // at info mostly while it starts, which can be before Telegraf's
+            // listener accepts. Under rootless Podman that is the usual
+            // order, and afterwards a lone leader logs only at debug, so a
+            // run that waited for info failed with debug records already
+            // parsed in the file (PR #715, twice).
             auto out = read_telegraf_output();
-            return out.find("kythira_log") != std::string::npos &&
-                   out.find("level=info") != std::string::npos &&
+            return out.find("kythira_log,") != std::string::npos &&
+                   (out.find("level=debug") != std::string::npos ||
+                    out.find("level=info") != std::string::npos ||
+                    out.find("level=warning") != std::string::npos ||
+                    out.find("level=error") != std::string::npos) &&
                    out.find("msg=") != std::string::npos;
         },
         30s, [&] { return "output file tail:\n" + read_telegraf_output().substr(0, 4000); },
