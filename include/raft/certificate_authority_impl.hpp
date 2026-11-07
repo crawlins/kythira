@@ -547,8 +547,10 @@ struct certificate_authority::impl {
 
         set_certificate_serial(ca_cert.get(), next_serial());
 
+        // Backdated a minute: see leaf_certificate_options::not_before.
         auto now = std::chrono::system_clock::now();
-        detail::set_validity_window(ca_cert.get(), now, now + options.validity);
+        detail::set_validity_window(ca_cert.get(), now - std::chrono::minutes(1),
+                                    now + options.validity);
 
         X509_NAME* name = X509_get_subject_name(ca_cert.get());
         detail::set_name(name, options.subject);
