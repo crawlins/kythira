@@ -101,7 +101,8 @@ JSON
   *"object-lifecycle-policy get"*)
       echo '{"data":{"items":[
         {"name":"expire-sccache-objects","action":"DELETE","time-amount":30,"time-unit":"DAYS","is-enabled":true,"object-name-filter":{"inclusion-prefixes":["sccache/"]}},
-        {"name":"expire-vcpkg-archives","action":"DELETE","time-amount":90,"time-unit":"DAYS","is-enabled":true,"object-name-filter":{"inclusion-prefixes":["vcpkg/"]}}]}}' ;;
+        {"name":"expire-vcpkg-archives","action":"DELETE","time-amount":90,"time-unit":"DAYS","is-enabled":true,"object-name-filter":{"inclusion-prefixes":["vcpkg/"]}},
+        {"name":"expire-clang-tidy-results","action":"DELETE","time-amount":30,"time-unit":"DAYS","is-enabled":true,"object-name-filter":{"inclusion-prefixes":["clang-tidy/"]}}]}}' ;;
   *"iam compartment get"*)
       # `stderrnoise`: exit 0, print nothing on stdout, write a diagnostic to
       # stderr -- exactly what the real CLI does for `--query` on the tenancy
@@ -207,6 +208,9 @@ check infofail 0 "UNKNOWN"                           "an informational query fai
 check infofail 0 "informational query/queries could not be read" \
                                                      "a failed informational query is COUNTED, not merely printed"
 check stderrnoise 0 "tenancy id unavailable"         "a command that exits 0 while writing to stderr yields no value"
+check clean    0 "clang-tidy/: 2 objects"            "the clang-tidy result cache prefix is counted"
+check clean    0 "expire-clang-tidy-results: DELETE objects under clang-tidy/ after 30 days" \
+                                                     "the clang-tidy lifecycle rule is reported"
 
 # The month-one bill. All three fail against the version before this one, which
 # asked the Usage API for an ungrouped total and then filtered it by a field

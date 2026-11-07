@@ -9,10 +9,10 @@
 # It answers four questions:
 #
 #   1. What is in the bucket -- object count and bytes under vcpkg/ and
-#      sccache/, which is the storage line on the bill and the input to
+#      sccache/ and clang-tidy/, which is the storage line on the bill and the input to
 #      Requirement 6.5's cost check.
-#   2. Are the two lifecycle rules still there. Without them the sccache
-#      prefix grows without bound, and nothing else in this system would
+#   2. Are the lifecycle rules still there. Without them the sccache and
+#      clang-tidy prefixes grow without bound, and nothing else in this system would
 #      ever notice.
 #   3. Which customer secret keys exist and when they were created, so that
 #      a key nobody remembers minting is visible and a rotation is dateable.
@@ -125,7 +125,7 @@ echo
 
 # ── 1. Contents, per prefix ──────────────────────────────────────────────────
 echo "1. Bucket contents"
-for prefix in vcpkg/x64-linux/ vcpkg/arm64-linux/ sccache/; do
+for prefix in vcpkg/x64-linux/ vcpkg/arm64-linux/ sccache/ clang-tidy/; do
     if out=$(try "objects under $prefix" oci os object list --bucket-name "$BUCKET" \
                  --prefix "$prefix" --fields name,size --all); then
         printf '%s' "$out" | jq -r --arg p "$prefix" '
@@ -144,7 +144,7 @@ echo "2. Lifecycle rules"
 if out=$(try "lifecycle policy" oci os object-lifecycle-policy get --bucket-name "$BUCKET"); then
     printf '%s' "$out" | jq -r '
         (.data.items // [])
-        | if length == 0 then "  NONE — the sccache prefix will grow without bound"
+        | if length == 0 then "  NONE — the sccache and clang-tidy prefixes will grow without bound"
           else .[] | "  \(.name): \(.action) objects under \(."object-name-filter"."inclusion-prefixes" // [] | join(", ")) after \(."time-amount") \(."time-unit" | ascii_downcase) (enabled: \(."is-enabled"))"
           end'
 fi

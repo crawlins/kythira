@@ -457,7 +457,10 @@ echo
 # minutes of build per object and there are a few hundred; an sccache object
 # is seconds and there are tens of thousands. Deleting the cheap ones sooner
 # keeps the storage line flat without ever making a port rebuild.
-echo "4. Lifecycle rules (sccache/ 30 days, vcpkg/ 90 days)"
+# clang-tidy/ (the clang-tidy result cache, .kiro/specs/clang-tidy-result-cache/
+# Requirement 4.2) is on the sccache side of that line: one small JSON object
+# per clean translation unit, re-analysed in about a minute if it expires.
+echo "4. Lifecycle rules (sccache/ and clang-tidy/ 30 days, vcpkg/ 90 days)"
 # A bare JSON ARRAY in camelCase, which is what --items wants. Both halves of
 # that were learned from the live service rejecting the alternatives: an
 # object wrapped as {"items": [...]}, and kebab-case keys, are each refused
@@ -472,7 +475,10 @@ LIFECYCLE_JSON=$(cat <<'JSON'
    "objectNameFilter": {"inclusionPrefixes": ["sccache/"]}},
   {"name": "expire-vcpkg-archives", "action": "DELETE", "timeAmount": 90,
    "timeUnit": "DAYS", "isEnabled": true,
-   "objectNameFilter": {"inclusionPrefixes": ["vcpkg/"]}}
+   "objectNameFilter": {"inclusionPrefixes": ["vcpkg/"]}},
+  {"name": "expire-clang-tidy-results", "action": "DELETE", "timeAmount": 30,
+   "timeUnit": "DAYS", "isEnabled": true,
+   "objectNameFilter": {"inclusionPrefixes": ["clang-tidy/"]}}
 ]
 JSON
 )
@@ -480,7 +486,7 @@ if [ "$APPLY" -eq 0 ]; then
     printf '%s\n' "$LIFECYCLE_JSON" | sed 's/^/  would put: /'
 else
     # --force because this is a PUT of the whole policy: re-running replaces
-    # the two rules with the same two rules, which is what idempotent means
+    # the rules with the same rules, which is what idempotent means
     # here. There is no partial update API for lifecycle rules.
     # Via a temp file rather than file:///dev/stdin: this call needs BOTH the
     # JSON on stdin and stdin closed against an interactive prompt, and those

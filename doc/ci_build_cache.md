@@ -27,6 +27,7 @@ entirely.
   vcpkg/x64-linux/<abi-hash>.zip      lifecycle: delete after 90 days unmodified
   vcpkg/arm64-linux/<abi-hash>.zip
   sccache/<h>/<h>/<h>/<hash>          lifecycle: delete after 30 days unmodified
+  clang-tidy/<key>                    lifecycle: delete after 30 days unmodified
 ```
 
 The triplets are kept apart by prefix for the same reason `runner.arch` is
