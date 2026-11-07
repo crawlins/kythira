@@ -2236,6 +2236,15 @@ jobs:
       - name: Build generated sources and precompiled headers
         run: scripts/build-tidy-prerequisites.sh build
 
+      # The clang-tidy result cache's key library needs clang++-18 and
+      # clang-tidy-18, which only the clang-tidy jobs install; one shard
+      # is enough.
+      - name: clang-tidy cache key passes its tests
+        if: matrix.shard == 0
+        env:
+          TIDY_CACHE_KEY_TESTS_REQUIRED: "1"
+        run: python3 scripts/tests/test_tidy_cache_key.py -v
+
       - name: static-analysis
         run: cmake --build build --target static-analysis
 
