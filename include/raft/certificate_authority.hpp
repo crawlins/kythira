@@ -67,7 +67,12 @@ struct leaf_certificate_options {
     std::vector<std::string> uri_names;
     bool server_auth{true};
     bool client_auth{false};
-    std::chrono::system_clock::time_point not_before{std::chrono::system_clock::now()};
+    /// A minute in the past by default, as the root's is. OpenSSL checks
+    /// validity against time(), which on Linux reads the coarse clock and
+    /// can trail system_clock::now() across a second boundary; a notBefore
+    /// of exactly "now" then reads as not yet valid for a few milliseconds.
+    std::chrono::system_clock::time_point not_before{std::chrono::system_clock::now() -
+                                                     std::chrono::minutes(1)};
     std::chrono::seconds validity{std::chrono::hours(24 * 30)};
 };
 
