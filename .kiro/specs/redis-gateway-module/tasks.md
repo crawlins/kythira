@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 7/8 tasks complete (tasks 1-7)
+## Status: 8/8 tasks complete
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -272,7 +272,7 @@ Reference material:
     `compose up -d --no-deps` (volumes kept), and checks the key on every
     node and that a warm build with the same salt hits every object.
 
-- [ ] 8. Docs and cross-references
+- [x] 8. Docs and cross-references
   - `doc/redis-gateway.md`: updated paths and a "Where the code lives"
     section.
   - `services/redis/README.md`: the targets and variables the module uses
@@ -281,3 +281,10 @@ Reference material:
     and, for tasks 21-22, `iam-compatible-auth`.
   - `doc/TODO.md` row updated to done.
   - _Requirements: 8.1-8.3, 9.1-9.3_
+  - Done: `doc/redis-gateway.md` gained "Where the code lives" (its paths
+    were already rewritten by task 4). The README sections were written by
+    tasks 4-7. `redis-compatible-kv/design.md` and
+    `disk-backed-build-cache/tasks.md` open with a path note rather than
+    having their historical paths rewritten, since those records describe
+    what was built where at the time. `iam-compatible-auth` task 21 names the
+    seam and the config fields it wires.
