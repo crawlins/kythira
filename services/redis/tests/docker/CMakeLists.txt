@@ -49,6 +49,7 @@ if(_RUNTIME_EXE)
     set(_SCCACHE_E2E_COMPOSE_FILE        "${KYTHIRA_REDIS_DOCKER_DIR}/sccache-e2e-compose.yml")
     set(_CACHE_CLUSTER_DOCKERFILE        "${KYTHIRA_REDIS_DOCKER_DIR}/cache-cluster/Dockerfile")
     set(_CACHE_CLUSTER_COMPOSE_FILE      "${KYTHIRA_REDIS_DOCKER_DIR}/cache-cluster/compose.yml")
+    set(_CACHE_ROLLING_UPGRADE_FILE      "${KYTHIRA_REDIS_DOCKER_DIR}/cache-cluster/rolling-upgrade.yml")
     set(_CACHE_CLIENT_DOCKERFILE         "${KYTHIRA_REDIS_DOCKER_DIR}/cache-cluster/client/Dockerfile")
     set(_TXN_CHAOS_DOCKERFILE            "${KYTHIRA_REDIS_DOCKER_DIR}/txn-chaos/Dockerfile")
     set(_TXN_CHAOS_COMPOSE_FILE          "${KYTHIRA_REDIS_DOCKER_DIR}/txn-chaos-compose.yml")
@@ -153,6 +154,50 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
     )
 
+    # Rolling upgrade (.kiro/specs/redis-gateway-module/ task 7): a
+    # cluster that mixes the gateway built from an older commit with the
+    # one from this tree. The old binary is built out of tree (CI checks
+    # out the last pre-move commit into a worktree) and handed in here;
+    # it goes into the same Dockerfile so only the binary differs.
+    set(KYTHIRA_REDIS_OLD_GATEWAY_BINARY "" CACHE FILEPATH
+        "redis_gateway_node built from an older commit, for docker-cache-rolling-upgrade-tests")
+    if(KYTHIRA_REDIS_OLD_GATEWAY_BINARY)
+        add_custom_target(docker-cache-cluster-old-image
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${KYTHIRA_REDIS_DOCKER_DIR}/cache-cluster/dist-old"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "${KYTHIRA_REDIS_OLD_GATEWAY_BINARY}"
+                    "${KYTHIRA_REDIS_DOCKER_DIR}/cache-cluster/dist-old/redis_gateway_node"
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
+                    --file "${_CACHE_CLUSTER_DOCKERFILE}"
+                    --build-arg GATEWAY_BINARY=services/redis/docker/cache-cluster/dist-old/redis_gateway_node
+                    --tag kythira-cache-cluster:old
+                    "${KYTHIRA_IMAGE_CONTEXT}"
+            COMMENT "Staging the older redis_gateway_node and building kythira-cache-cluster:old image"
+            WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
+        )
+    else()
+        add_custom_target(docker-cache-cluster-old-image
+            COMMAND ${CMAKE_COMMAND} -E echo
+                    "'docker-cache-cluster-old-image' needs -DKYTHIRA_REDIS_OLD_GATEWAY_BINARY=<redis_gateway_node from an older commit>"
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endif()
+
+    add_custom_target(docker-cache-rolling-upgrade-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_CACHE_CLUSTER_COMPOSE_FILE=${_CACHE_CLUSTER_COMPOSE_FILE}
+                KYTHIRA_CACHE_CLUSTER_COMPOSE_OVERRIDE=${_CACHE_ROLLING_UPGRADE_FILE}
+                $<TARGET_FILE:docker_cache_cluster_test>
+                --run_test=rolling_upgrade
+                --log_level=message
+        DEPENDS docker-cache-cluster-old-image docker-cache-cluster-image
+                docker-cache-client-image docker_cache_cluster_test
+        COMMENT "Running the cache cluster rolling-upgrade test, old and new gateway builds mixed (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
+    )
+
     # Transactions under faults (.kiro/specs/multi-raft-transactions/
     # task 15): the daemon's snapshot-isolation variant, built whatever
     # the Kconfig selects for redis_gateway_node itself.
@@ -193,12 +238,14 @@ if(_RUNTIME_EXE)
     message(STATUS
         "Container runtime: docker-redis-gateway-image, docker-sccache-runner-image, "
         "docker-sccache-e2e-tests, docker-cache-cluster-image, docker-cache-client-image, "
-        "docker-cache-cluster-tests, docker-txn-chaos-image, docker-txn-chaos-tests "
+        "docker-cache-cluster-tests, docker-cache-cluster-old-image, "
+        "docker-cache-rolling-upgrade-tests, docker-txn-chaos-image, docker-txn-chaos-tests "
         "targets available")
 else()
     foreach(_t
         docker-redis-gateway-image docker-sccache-runner-image docker-sccache-e2e-tests
         docker-cache-cluster-image docker-cache-client-image docker-cache-cluster-tests
+        docker-cache-cluster-old-image docker-cache-rolling-upgrade-tests
         docker-txn-chaos-image docker-txn-chaos-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo

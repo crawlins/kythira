@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Rolling upgrade (.kiro/specs/redis-gateway-module/ task 7, Requirement
+# 7.5): an override for compose.yml that runs two nodes on an older build
+# and one on this tree's, so the scenario can prove the two interoperate.
+#
+#   compose -f compose.yml -f rolling-upgrade.yml up -d
+#
+# kythira-cache-cluster:old is redis_gateway_node built from the last commit
+# before the module move, packaged by docker-cache-cluster-old-image. The
+# scenario swaps one node's build mid-run by setting KYTHIRA_CACHE_<n>_IMAGE
+# and recreating only that service; the volume, and so the node's Raft state
+# and chunk store, carries over as it would in a real rolling upgrade.
+#
+# Everything else (service names, volumes, ports, no static IPs, no
+# capabilities) is compose.yml's.
+
+services:
+  cache-1:
+    image: ${KYTHIRA_CACHE_1_IMAGE:-kythira-cache-cluster:old}
+  cache-2:
+    image: ${KYTHIRA_CACHE_2_IMAGE:-kythira-cache-cluster:old}
+  cache-3:
+    image: ${KYTHIRA_CACHE_3_IMAGE:-kythira-cache-cluster:dev}

@@ -38,7 +38,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chown 10001:10001 /data \
     && chmod 0750 /data
 
-COPY services/redis/docker/cache-cluster/dist/redis_gateway_node /usr/local/bin/redis_gateway_node
+# The binary to package. The default is what docker-cache-cluster-image
+# stages; docker-cache-cluster-old-image points it at a build of an older
+# commit for the rolling-upgrade scenario (.kiro/specs/redis-gateway-module/
+# task 7).
+ARG GATEWAY_BINARY=services/redis/docker/cache-cluster/dist/redis_gateway_node
+COPY ${GATEWAY_BINARY} /usr/local/bin/redis_gateway_node
 
 ENV KYTHIRA_CACHE_PERSISTENCE=file \
     KYTHIRA_CACHE_DATA_DIR=/data

@@ -82,9 +82,20 @@ std::string compose_file() {
     return "services/redis/docker/cache-cluster/compose.yml";
 }
 
+/// An override applied on top of compose_file(), or empty. The rolling-upgrade
+/// target sets it to rolling-upgrade.yml, which puts two nodes on an older
+/// build (.kiro/specs/redis-gateway-module/ task 7).
+std::string compose_override() {
+    const char* env = std::getenv("KYTHIRA_CACHE_CLUSTER_COMPOSE_OVERRIDE");
+    return ((env != nullptr) && (*env != 0)) ? std::string(env) : std::string();
+}
+
 std::vector<std::string> compose_cmd(std::initializer_list<std::string> args) {
     auto cmd = os::compose_prefix();
     cmd.insert(cmd.end(), {"-f", compose_file()});
+    if (auto extra = compose_override(); !extra.empty()) {
+        cmd.insert(cmd.end(), {"-f", extra});
+    }
     cmd.insert(cmd.end(), args);
     return cmd;
 }
@@ -1058,3 +1069,109 @@ BOOST_AUTO_TEST_CASE(builds_pass_with_every_node_stopped, *boost::unit_test::tim
     BOOST_TEST(installs[0].at("status") == "ok");
     BOOST_TEST(field_num(installs[0], "built") == 1);
 }
+
+// ── rolling upgrade (redis-gateway-module task 7, Requirement 7.5) ───────────
+//
+// Run only by docker-cache-rolling-upgrade-tests, which sets
+// KYTHIRA_CACHE_CLUSTER_COMPOSE_OVERRIDE to rolling-upgrade.yml and names
+// this suite: cache-1 and cache-2 run kythira-cache-cluster:old (the last
+// commit before the module move), cache-3 runs this tree's build. Disabled
+// otherwise, so docker-cache-cluster-tests skips it.
+
+namespace {
+
+auto image_of(const char* container) -> std::string {
+    auto out = os::checked_exec(os::real_exec, {os::container_runtime(), "inspect", "--format",
+                                                "{{.Config.Image}}", container});
+    return out.substr(0, out.find_first_of("\r\n"));
+}
+
+/// Whether a container runs the given tag. A substring match: Podman
+/// reports locally built images as localhost/<name>:<tag>.
+auto runs(const char* container, const std::string& tag) -> bool {
+    return image_of(container).find("kythira-cache-cluster:" + tag) != std::string::npos;
+}
+
+/// Recreate one node on another build, keeping its volume: what a rolling
+/// upgrade (or a rollback) does to a real node.
+auto swap_build(std::size_t node, const std::string& image) -> void {
+    const auto var = "KYTHIRA_CACHE_" + std::to_string(node + 1) + "_IMAGE";
+    ::setenv(var.c_str(), image.c_str(), 1);
+    os::checked_exec(os::real_exec,
+                     compose_cmd({"up", "-d", "--no-deps", "cache-" + std::to_string(node + 1)}));
+}
+
+auto expect_sccache_warm_hits(const client_report& r) -> void {
+    const auto stats = r.all("STATS");
+    BOOST_REQUIRE_EQUAL(stats.size(), 2u);
+    const auto cold = sccache_stats(stats[0]);
+    BOOST_TEST(cold.requests >= 5);
+    BOOST_TEST(cold.hits == 0);
+    BOOST_TEST(cold.misses == cold.requests);
+    BOOST_TEST(cold.writes == cold.misses);
+    BOOST_TEST(cold.write_errors == 0);
+    const auto warm = sccache_stats(stats[1]);
+    BOOST_TEST(warm.requests == cold.requests);
+    BOOST_TEST(warm.hits == cold.misses);
+    BOOST_TEST(warm.misses == 0);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(rolling_upgrade, *boost::unit_test::disabled())
+
+BOOST_AUTO_TEST_CASE(two_old_nodes_and_one_new_serve_sccache, *boost::unit_test::timeout(600)) {
+    BOOST_REQUIRE(!compose_override().empty());
+    BOOST_CHECK(runs(k_containers[0], "old"));
+    BOOST_CHECK(runs(k_containers[1], "old"));
+    BOOST_CHECK(runs(k_containers[2], "dev"));
+    auto r = run_client("sccache", {{"KYTHIRA_SALT", next_salt()}});
+    BOOST_REQUIRE_EQUAL(r.exit_code, 0);
+    expect_sccache_warm_hits(r);
+}
+
+// A node moves to the other build between the cold build and the warm one:
+// cache-1 is upgraded and cache-3 rolled back, each keeping its volume. The
+// warm build must still hit every object the cold build wrote, from a
+// cluster whose members changed build under it, and a key written before
+// the swap reads back from every node.
+BOOST_AUTO_TEST_CASE(a_node_restarted_on_the_other_build_keeps_serving,
+                     *boost::unit_test::timeout(900)) {
+    const auto salt = next_salt();
+    auto cold = run_client("sccache", {{"KYTHIRA_SALT", salt}});
+    BOOST_REQUIRE_EQUAL(cold.exit_code, 0);
+    BOOST_REQUIRE_EQUAL(
+        http_call(k_http_ports[2], "PUT", "/sccache/rolling/" + salt, "before-swap").status, 201);
+
+    swap_build(0, "kythira-cache-cluster:dev");
+    BOOST_REQUIRE(wait_cluster_ready(120s));
+    swap_build(2, "kythira-cache-cluster:old");
+    BOOST_REQUIRE(wait_cluster_ready(120s));
+    BOOST_CHECK(runs(k_containers[0], "dev"));
+    BOOST_CHECK(runs(k_containers[2], "old"));
+
+    for (std::size_t n = 0; n < k_http_ports.size(); ++n) {
+        BOOST_TEST_INFO("node " << n + 1);
+        BOOST_CHECK(eventually([&] {
+            auto g = http_call(k_http_ports[n], "GET", "/sccache/rolling/" + salt, {}, "ci-pr");
+            return g.status == 200 && g.body == "before-swap";
+        }));
+    }
+    // Same salt: the same compiles, so a warm run must hit everything the
+    // cold run wrote before the swap.
+    auto warm = run_client("sccache", {{"KYTHIRA_SALT", salt}});
+    BOOST_REQUIRE_EQUAL(warm.exit_code, 0);
+    const auto stats = warm.all("STATS");
+    BOOST_REQUIRE_EQUAL(stats.size(), 2u);
+    const auto first = sccache_stats(stats[0]);
+    BOOST_TEST(first.requests >= 5);
+    BOOST_TEST(first.misses == 0);
+    BOOST_TEST(first.hits == first.requests);
+
+    // Back to the layout the suite started from, for any case after this.
+    swap_build(0, "kythira-cache-cluster:old");
+    swap_build(2, "kythira-cache-cluster:dev");
+    BOOST_CHECK(wait_cluster_ready(120s));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
