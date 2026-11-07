@@ -1,6 +1,6 @@
 # Implementation Plan — clang-tidy Result Cache and Shard Balancing
 
-## Status: 1/9 tasks complete
+## Status: 3/9 tasks complete
 
 **Last Updated**: November 6, 2026 (spec written; Requirement 4 amended the
 same day so every same-repository branch writes, not only `main`; task 1
@@ -111,7 +111,7 @@ Reference material to read before starting:
     uncached. Tasks 2-9 proceed.
   - _Requirements: 1.1-1.6_
 
-- [ ] 2. Cost-weighted shard planner
+- [x] 2. Cost-weighted shard planner
   - `scripts/tidy-shard.py` (plan and `--refresh` modes) per design
     Component 1, with its own unit test (LPT order, ties, median for unknown
     files, determinism, `--count 1` keeps every file).
@@ -126,8 +126,23 @@ Reference material to read before starting:
     fastest's prediction (Requirement 8.3); record the run ID.
   - Can merge before task 1's gate is decided if task 1 produced the costs.
   - _Requirements: 8.1-8.3, 8.5_
+  - **Done in #716 (f3d67db), November 7, 2026.** Two deviations. CI
+    checks `build/tidy-shard-sources.txt` is non-empty after configure (the
+    round-robin fallback removes it) in place of a check-build-config.py
+    assertion. And `plan --jobs J` charges each shard's first, longest file
+    J times: run-clang-tidy walks its files as a Python set, so with -j4
+    the longest can start last, and plain LPT gave the shard holding
+    `object_store_persistence_unit_test.cpp` (1,896 s) a 52-minute run.
+  - **Criterion 8.3 is not met on GitHub's runners, and cannot be by
+    balancing.** Measured on the #716 head 9050050 (static-analysis step, seconds, by runner CPU): EPYC
+    7763 3,362 and 3,174; EPYC 9V74 2,396 and 2,352; EPYC 9V45 1,886;
+    Xeon 8573C 1,689 (the light 4,758 CPU-s shard). Each shard's CPU-s
+    were within 10% of the others but the runners differ by up to 1.8x in
+    speed, so the slowest shard is whichever lands on an EPYC 7763. The
+    cache (tasks 4-6) removes the dependence: a warm run is about 2% of
+    the work. Each shard now logs its CPU model next to its file count.
 
-- [ ] 3. Cache key library and its unit tests
+- [x] 3. Cache key library and its unit tests
   - The key computation as a module inside `scripts/tidy-cache.py` (or a
     sibling `scripts/tidy_cache_key.py`): version string, tool version and
     binary hash, per-directory `--dump-config`, normalised command, `-M`
@@ -142,6 +157,17 @@ Reference material to read before starting:
     `configs/no-folly-test-allowlist.txt` if it only registers in the folly
     block.
   - _Requirements: 2.1-2.7_
+  - **Done.** `scripts/tidy_cache_key.py` (KeyContext, KeyUnavailable,
+    scan_argv, parse_deps) and `scripts/tests/test_tidy_cache_key.py`, 21
+    cases. Deviation: not a ctest. No test leg has both clang++-18 and
+    clang-tidy-18, so it runs as a step in clang-tidy shard 0 with
+    `TIDY_CACHE_KEY_TESTS_REQUIRED=1` (missing tools fail, not skip),
+    like the other script tests. The workspace-move case found a bug the
+    task 1 prototype shared: dependencies were sorted by absolute path
+    before tokenising, so moving the workspace reordered workspace
+    headers against /usr ones and changed every key. CI's workspace path
+    never changes, so task 1's results stand; the library sorts by the
+    tokenised path.
 
 - [ ] 4. Cache driver
   - `scripts/tidy-cache.py run` per design Component 2: thread pool,
