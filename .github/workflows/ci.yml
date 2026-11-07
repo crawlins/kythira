@@ -998,7 +998,8 @@ jobs:
 
       # Only the ion-gated targets, not the whole tree: everything else here is
       # byte-identical to what the build-and-test legs already build, and this
-      # job is not a second full build.
+      # job is not a second full build. The ledger module (services/ledger/)
+      # needs ion-c, so this is the job that builds and tests it.
       - name: Build Ion targets
         run: |
           cmake --build build -j$(nproc) --target \
@@ -1009,7 +1010,10 @@ jobs:
             ion_serializer_range_property_test \
             ion_json_serializer_equivalence_property_test \
             shard_group_id_ion_wire_property_test \
-            ion_http_coap_end_to_end_test
+            ion_http_coap_end_to_end_test \
+            ion_hash_test \
+            ledger_merkle_test \
+            ledger_node
 
       # Same check as build-and-test's; see scripts/check-linker.sh.
       - name: Assert binaries were linked by mold
@@ -1033,7 +1037,7 @@ jobs:
       - name: Run Ion tests
         run: |
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_serializer_range_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test)$'
+            -R '^(ion_binary_decimal_regression_test|ion_serializer_concept_test|ion_serialization_property_test|ion_malformed_message_property_test|ion_serializer_range_property_test|ion_json_serializer_equivalence_property_test|shard_group_id_ion_wire_property_test|ion_http_coap_end_to_end_test|ion_hash_test|ledger_merkle_test|ledger_node_self_test)$'
 
   # ── Config variants (minimal, no-cloud, dependency isolation, node ids) ─────
   # .kiro/specs/ci-build-matrix-coverage/ Requirements 5 and 6, plus the
