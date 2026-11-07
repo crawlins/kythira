@@ -520,6 +520,44 @@ jobs:
         if: success() || failure()
         run: cmake --build build --target docker-txn-chaos-tests -j"$(nproc)"
 
+      # Rolling upgrade (redis-gateway-module task 7): build the gateway
+      # from the last commit before Redis moved into services/redis/ and
+      # mix it with this tree's build in one cluster. The old tree is
+      # built out of source and deleted once its binary is copied out,
+      # so it never lands in an image build context.
+      - name: Check out the pre-move gateway
+        if: success() || failure()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fe53e33152424bb64a63a6a2d7d8a95c3ca9e9ea
+          path: old-tree
+          persist-credentials: false
+
+      - name: Build the pre-move gateway
+        id: old-gateway
+        if: success() || failure()
+        run: |
+          # The old tree's CMake looks for vcpkg packages under its own
+          # source dir; point it at the ones this job installed (the
+          # manifests are identical). rm -rf below drops only the link.
+          ln -s "$GITHUB_WORKSPACE/vcpkg_installed" old-tree/vcpkg_installed
+          cmake -S old-tree -B "$RUNNER_TEMP/old-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+          cmake --build "$RUNNER_TEMP/old-build" --target redis_gateway_node -j"$(nproc)"
+          bin=$(find "$RUNNER_TEMP/old-build" -type f -name redis_gateway_node -perm -u+x | head -n1)
+          test -n "$bin"
+          cp "$bin" "$RUNNER_TEMP/redis_gateway_node.old"
+          rm -rf old-tree "$RUNNER_TEMP/old-build"
+          cmake -B build -DKYTHIRA_REDIS_OLD_GATEWAY_BINARY="$RUNNER_TEMP/redis_gateway_node.old"
+
+      - name: docker-cache-rolling-upgrade-tests
+        if: (success() || failure()) && steps.old-gateway.outcome == 'success'
+        run: cmake --build build --target docker-cache-rolling-upgrade-tests -j"$(nproc)"
+
       - name: Assert binaries were linked by mold
         if: success() || failure()
         run: scripts/check-linker.sh mold build

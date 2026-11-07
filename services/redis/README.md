@@ -41,7 +41,7 @@ the boundary checker, the test helpers), weekly, and on dispatch. Its jobs:
 | `boundary` | the boundary check and its fixture tests pass |
 | `module-off` | core builds and its ctest passes with `configs/ci_no_redis_defconfig`, and no module target or test is configured |
 | `module-tests` | the module's targets build and every test under `services/redis/` passes |
-| `containers` (docker, podman) | `docker-sccache-e2e-tests`, `docker-cache-cluster-tests` and `docker-txn-chaos-tests` pass under rootful Docker and rootless Podman |
+| `containers` (docker, podman) | `docker-sccache-e2e-tests`, `docker-cache-cluster-tests`, `docker-txn-chaos-tests` and `docker-cache-rolling-upgrade-tests` pass under rootful Docker and rootless Podman |
 
 **It is not a required check.** GitHub reports nothing for a workflow its
 `paths` filter skips, so requiring it would hang every unrelated pull
@@ -49,6 +49,30 @@ request, and the project's auto-merge waits on required checks only. If you
 own a pull request that touches those paths, wait for this workflow to finish
 green before merging, as well as for `ci.yml`. `ci.yml` still builds the
 module and runs its ctest on every pull request.
+
+### Rolling upgrade
+
+`docker-cache-rolling-upgrade-tests` runs the cache cluster with two nodes
+on an older gateway build and one on this tree's, using the override
+`docker/cache-cluster/rolling-upgrade.yml`. An sccache build misses and
+then hits. Then cache-1 moves to the new build and cache-3 to the old one,
+each keeping its volume, and a warm build still hits every object the cold
+build wrote. The older binary comes from
+`-DKYTHIRA_REDIS_OLD_GATEWAY_BINARY=<path>`; `docker-cache-cluster-old-image`
+stages it into `docker/cache-cluster/dist-old/` and tags
+`kythira-cache-cluster:old` from the same Dockerfile. CI builds it from
+`fe53e33`, the last commit before the module move. To run it locally:
+
+```sh
+git worktree add ../kythira-old fe53e33
+cmake -S ../kythira-old -B ../kythira-old/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build ../kythira-old/build --target redis_gateway_node
+cmake -B build -DKYTHIRA_REDIS_OLD_GATEWAY_BINARY="$(find ../kythira-old/build -name redis_gateway_node -type f -perm -u+x | head -n1)"
+cmake --build build --target docker-cache-rolling-upgrade-tests
+```
+
+When a release line exists, point CI at the previous release's commit
+instead of the pre-move commit.
 
 The Podman setup lives in `.github/actions/setup-container-runtime`, which
 `container-tests.yml` uses too. `container-tests.yml` no longer runs the

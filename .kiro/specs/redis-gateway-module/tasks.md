@@ -1,6 +1,6 @@
 # Implementation Plan — Redis Gateway as a Self-Contained Module
 
-## Status: 6/8 tasks complete (tasks 1-6)
+## Status: 7/8 tasks complete (tasks 1-7)
 
 **Written**: November 2, 2026, at Clark's request ("move redis into its own
 sub-module in the kythira tree like IAM is now"). The module pattern follows
@@ -249,13 +249,28 @@ Reference material:
     - Task 1 already pinned the `auth=iam`-as-prefix parse in
       `redis_acl_unit_test`.
 
-- [ ] 7. Rolling-upgrade scenario
+- [x] 7. Rolling-upgrade scenario
   - A cache-cluster variant with two gateways built from the last pre-move
     `main` commit (image pulled by digest from the CI cache, or built from
     that commit in the job) and one from the head. sccache misses then hits,
     and a node is restarted on the other build mid-run.
   - Runs in the module workflow's container matrix, under Docker and Podman.
   - _Requirements: 7.5_
+  - Done: the old gateway is built in the job from `fe53e33` (the parent of
+    the move commit), not pulled by digest; no registry holds CI images, and
+    the build is cheap with sccache. It is checked out next to the tree,
+    built out of source, and deleted once its binary is copied out, so it
+    never enters an image build context. `docker-cache-cluster-old-image`
+    puts that binary into the same Dockerfile through a new
+    `GATEWAY_BINARY` build arg, so the two images differ only in the binary.
+    `rolling-upgrade.yml` is a compose override: cache-1 and cache-2 on
+    `:old`, cache-3 on `:dev`, each overridable by `KYTHIRA_CACHE_<n>_IMAGE`.
+    The suite `rolling_upgrade` in `cache_cluster_test.cpp` is disabled by
+    default and named by `docker-cache-rolling-upgrade-tests`. Case one runs
+    an sccache cold/warm pair on the mixed cluster. Case two writes a cold
+    build and a key, then moves cache-1 to `:dev` and cache-3 to `:old` with
+    `compose up -d --no-deps` (volumes kept), and checks the key on every
+    node and that a warm build with the same salt hits every object.
 
 - [ ] 8. Docs and cross-references
   - `doc/redis-gateway.md`: updated paths and a "Where the code lives"
