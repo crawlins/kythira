@@ -256,6 +256,14 @@ Reference material to read before starting:
     maintainer can set `TIDY_CACHE_DISABLED=true`.
   - Dispatch it once and record the run ID.
   - _Requirements: 7.4, 8.4_
+  - **Written; the first dispatch is owed after it merges** (dispatch
+    needs the workflow on `main`). Each shard runs the driver with
+    `--mode off`, which is run-clang-tidy plus per-TU timings, and the
+    driver's stats now list `finding_tus`. The report job fetches the
+    shards' stats with `gh run download` (no new pinned action), uploads
+    a refreshed `tidy-file-costs` artifact, and on failure checks the
+    latest `ci.yml` run on the same SHA to name a false clean. It passes
+    only the read-only build-cache key, so it never writes the bucket.
 
 - [ ] 9. Docs and post-merge confirmation
   - `doc/ci_build_cache.md`: a "clang-tidy result cache" section (key,

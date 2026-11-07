@@ -308,7 +308,7 @@ class Driver:
         self.stats = {
             "mode": "", "tus": 0, "skipped_no_command": 0, "hits": 0, "misses": 0,
             "stores": 0, "already_present": 0, "lookups_ok": 0, "backend_errors": 0,
-            "backend_disabled": False, "key_unavailable": 0, "findings": 0,
+            "backend_disabled": False, "key_unavailable": 0, "findings": 0, "finding_tus": [],
             "verified": 0, "false_cleans": [], "key_s": 0.0, "analysis_s": 0.0,
             "saved_s_estimate": 0.0, "wall_s": 0.0, "per_tu": [],
         }
@@ -405,6 +405,7 @@ class Driver:
                 s["saved_s_estimate"] += self.costs.get(rel.removeprefix("@SRC@/"), 0.0)
             if not ok:
                 s["findings"] += 1
+                s["finding_tus"].append(rel)
             s["per_tu"].append(rec)
         return ok
 
@@ -423,6 +424,7 @@ class Driver:
         s = self.stats
         s["wall_s"] = time.monotonic() - t0
         s["per_tu"].sort(key=lambda r: r["tu"])
+        s["finding_tus"].sort()
         for k in ("key_s", "analysis_s", "saved_s_estimate", "wall_s"):
             s[k] = round(s[k], 1)
         if s["false_cleans"]:

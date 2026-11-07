@@ -1,0 +1,242 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Weekly uncached clang-tidy audit (.kiro/specs/clang-tidy-result-cache/
+# Requirement 7.4 and 8.4, task 8).
+#
+# ci.yml's six clang-tidy shards skip every translation unit whose cache key
+# matches a stored clean result. This workflow analyses all of them fresh on
+# main's head, with the same shards, defconfig and clang-tidy, so a key that
+# missed an input cannot hide a finding for more than a week:
+#
+# - Each shard runs scripts/tidy-cache.py with --mode off: nothing is looked
+#   up or stored, and every TU's seconds are recorded.
+# - The report job merges those timings into configs/tidy-file-costs.txt
+#   (scripts/tidy-shard.py refresh) and uploads the result, so refreshing the
+#   checked-in costs is a download and a commit.
+# - If a shard found something, the report job looks up the latest ci.yml run
+#   on the same commit. If that run passed, the cache served a clean result
+#   that is not clean -- a false clean -- and the summary says so with the TU
+#   names. Set the TIDY_CACHE_DISABLED repository variable to true until the
+#   key is fixed.
+
+name: clang-tidy audit
+
+on:
+  schedule:
+    - cron: "0 6 * * 0"   # Sunday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tidy-audit
+  cancel-in-progress: false
+
+jobs:
+  shard:
+    name: uncached clang-tidy (shard ${{ matrix.shard }} of 6)
+    runs-on: ubuntu-24.04
+    # An uncached shard took up to 56 minutes on an EPYC 7763 runner
+    # (November 7, 2026), plus setup.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 clang-tidy-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      # Read-only: only the read-only key is passed, so vcpkg and sccache
+      # read the build cache and this workflow never writes to it.
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # The same key as ci.yml's x64 legs and clang-tidy shards; restore only.
+      - name: Restore vcpkg packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # ci.yml's clang-tidy shard configuration, with the cache off.
+      - name: Configure (ci_full_defconfig, strict)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DKYTHIRA_TIDY_SHARD_COUNT=6 \
+            -DKYTHIRA_TIDY_SHARD_INDEX=${{ matrix.shard }} \
+            -DKYTHIRA_TIDY_CACHE=off
+          echo "This shard analyses $(wc -l < build/tidy-sources.txt) files" \
+               "on $(nproc) x $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)."
+          test -s build/tidy-shard-sources.txt
+
+      - name: Build generated sources and precompiled headers
+        run: scripts/build-tidy-prerequisites.sh build
+
+      # The driver in mode off is run-clang-tidy plus per-TU timings: no
+      # lookup, no store, exit 1 on any finding.
+      - name: Uncached clang-tidy
+        run: |
+          python3 scripts/tidy-cache.py run -p build --src . --mode off \
+            --clang-tidy "$(command -v clang-tidy-18)" --jobs "$(nproc)" \
+            --costs configs/tidy-file-costs.txt \
+            --stats build/tidy-cache-stats.json \
+            --files-from build/tidy-sources.txt
+
+      - name: Upload timings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tidy-audit-stats-shard-${{ matrix.shard }}
+          path: build/tidy-cache-stats.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  report:
+    name: audit report
+    needs: shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read   # look up ci.yml's run on the same commit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # gh, preinstalled on the runner, rather than another pinned action;
+      # upload-artifact v4+ artifacts are downloadable as soon as each shard
+      # uploads them, within the same run.
+      - name: Download timings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'tidy-audit-stats-shard-*' --dir stats \
+            || echo "::warning::no shard timings to download"
+
+      - name: Refresh the costs file
+        run: |
+          shopt -s nullglob
+          files=(stats/*/tidy-cache-stats.json)
+          if [ "${#files[@]}" -ne 6 ]; then
+            echo "::warning::${#files[@]} of 6 shards uploaded timings; costs refreshed from those only"
+          fi
+          [ "${#files[@]}" -gt 0 ] || exit 0
+          cp configs/tidy-file-costs.txt build-costs.txt
+          python3 scripts/tidy-shard.py refresh --costs build-costs.txt \
+            --source "tidy-audit run ${GITHUB_RUN_ID} on ${GITHUB_SHA:0:7}" \
+            --stats "${files[@]}"
+          diff -u configs/tidy-file-costs.txt build-costs.txt | head -40 || true
+
+      - name: Upload the refreshed costs file
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tidy-file-costs
+          path: build-costs.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Findings and false cleans
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARDS: ${{ needs.shard.result }}
+        run: |
+          shopt -s nullglob
+          findings=$(python3 - stats/*/tidy-cache-stats.json <<'PY'
+          import json, sys
+          tus = sorted({t for p in sys.argv[1:] for t in json.load(open(p)).get("finding_tus", [])})
+          print("\n".join(tus))
+          PY
+          )
+          {
+            echo "### clang-tidy audit on ${GITHUB_SHA:0:7}"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${SHARDS}" = "success" ]; then
+            echo "Every TU is clean uncached; no false clean." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          ci=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&per_page=1" \
+                 --jq '.workflow_runs[0] | "\(.conclusion) \(.html_url)"' 2>/dev/null || true)
+          verdict="${ci%% *}"
+          {
+            if [ "${verdict}" = "success" ] && [ -n "${findings}" ]; then
+              echo "**FALSE CLEAN.** ci.yml passed on this commit with the cache (${ci#* }),"
+              echo "but these TUs have findings when analysed fresh. Set the repository"
+              echo "variable TIDY_CACHE_DISABLED=true until the key is fixed."
+            elif [ -n "${findings}" ]; then
+              echo "Findings uncached; ci.yml on this commit was '${verdict:-not found}', so"
+              echo "this is not a false clean."
+            else
+              echo "A shard failed (${SHARDS}) without recording a finding; see its log."
+            fi
+            if [ -n "${findings}" ]; then
+              echo
+              echo '```'
+              echo "${findings}"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
