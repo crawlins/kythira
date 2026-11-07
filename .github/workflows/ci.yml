@@ -2084,8 +2084,17 @@ jobs:
   # Sharded, not diff-scoped: one full run is about 2.5 hours on a 4-core
   # runner (9111 s measured 2026-10-06), and a change to a widely included
   # header reaches most translation units anyway, so a diff-scoped pull
-  # request run would often be a full run. Six shards take 27-40 minutes
-  # each; every event, pull request or main push, analyses the full tree.
+  # request run would often be a full run. Every event, pull request or main
+  # push, considers the full tree.
+  #
+  # The clang-tidy result cache (.kiro/specs/clang-tidy-result-cache/)
+  # skips every TU whose key matches a stored clean result, so a shard
+  # analyses only what changed. Measured 2026-11-07: cold (PR run
+  # 42351017144, every TU a miss and stored) the static-analysis step took
+  # 1456-3389 s per shard, about 3340 s on EPYC 7763 runners; warm (main
+  # run 42356568825, 760/760 hits) it took 12-22 s, about 0.7 s of keying
+  # per TU, and each shard job about 90 s. A change to a header that most
+  # TUs include is still close to a cold run.
   # KYTHIRA_TIDY_SHARD_COUNT/INDEX pick one of six shards that
   # scripts/tidy-shard.py balances by the measured per-file cost in
   # configs/tidy-file-costs.txt (clang-tidy-result-cache Requirement 8).
@@ -2101,10 +2110,9 @@ jobs:
   static-analysis:
     name: clang-tidy (shard ${{ matrix.shard }} of 6)
     runs-on: ubuntu-24.04
-    # Slowest measured shard: 40 minutes, plus about 3 minutes of setup on a
-    # warm vcpkg cache. On main the six shards took 21-45 min (runs
-    # 37567880231 and 37584489048); clang-tidy only parses, so sccache does
-    # not change this and there is no separate cold figure.
+    # Sized for a cold cache (or the cache off): the slowest cold shard took
+    # 57 minutes on an EPYC 7763 runner (run 42351017144), plus about 3
+    # minutes of setup. Warm shards finish in under 2 minutes.
     timeout-minutes: 90
     strategy:
       fail-fast: false
