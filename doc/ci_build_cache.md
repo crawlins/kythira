@@ -1,6 +1,8 @@
 # CI build caches
 
-This repository keeps two caches, and they cache different things.
+This repository keeps two build caches, and they cache different things. A
+third, the clang-tidy result cache, shares their bucket; see
+[clang-tidy result cache](#clang-tidy-result-cache).
 
 | | vcpkg binary cache | compiler cache |
 |---|---|---|
@@ -282,6 +284,75 @@ environment exists to prevent.
 
 A missing **variable** fails the job at the action, with an `::error::` naming
 it. Missing **secrets** are the fork case and disable the caches instead.
+
+## clang-tidy result cache
+
+A third cache shares the bucket, under `clang-tidy/`. It stores one small
+JSON object per translation unit that clang-tidy found **clean**, so the six
+clang-tidy shards in `ci.yml` analyse only what changed. The spec is
+`.kiro/specs/clang-tidy-result-cache/`; the driver is
+`scripts/tidy-cache.py`, and the key is `scripts/tidy_cache_key.py`.
+
+**What a hit saves.** On November 7, 2026, a cold run took 1456-3389 s of
+clang-tidy per shard (PR run 42351017144). The warm `main` run after it hit
+760 of 760 TUs and took 12-22 s per shard (run 42356568825). The whole CI run
+went from 62-71 minutes to 21. A change to a header that most TUs include is
+still close to a cold run.
+
+**The key** is a SHA-256 over, in order:
+
+- the key format;
+- clang-tidy's `--version` and the hash of its binary;
+- `clang-tidy --dump-config` for the TU's directory and any extra arguments;
+- the compile command, with workspace paths replaced and the launcher,
+  `-o`, `-c` and the `-M*` options dropped;
+- the TU's path;
+- the path and **raw-byte** hash of every file a `-M` scan of the same
+  command lists, including system and `vcpkg_installed/` headers.
+
+Raw bytes, not preprocessed text, so removing a `NOLINT` changes the key. If
+any part cannot be computed, the TU is analysed and its result is not stored.
+
+**Trust model.** Only clean results are stored. A finding is never cached, so
+it reappears on every run until it is fixed. Writers are the same as for
+sccache: `main` with the read-write key, and same-repository pull requests
+with the create-only PR key. A PR key cannot overwrite an existing object, so
+a pull request can add results but cannot replace one. Fork pull requests get
+no secrets and run uncached. Every backend error falls back to analysing:
+each request has a 10 s timeout and 2 retries, and after 20 consecutive
+errors the driver stops using the backend for the rest of the run.
+
+**Modes** (`-DKYTHIRA_TIDY_CACHE=`, default `off`):
+
+| Mode | What it does |
+|---|---|
+| `off` | the original `run-clang-tidy` target, unchanged |
+| `read` | looks results up and never stores |
+| `readwrite` | looks up and stores clean results |
+| `env` | `read` or `readwrite` from the build-cache action's `OCI_BUILD_CACHE_MODE`; what CI uses |
+| `local:<dir>` | a directory backend, for trying it on a workstation |
+
+A requested cache that makes no successful lookup fails the shard (exit 2),
+so a broken key or policy shows up as red, not as a green run at the old
+speed. Each shard uploads `tidy-cache-stats-shard-<n>` with its hits,
+misses, stores, backend errors and per-TU seconds.
+
+**The weekly audit.** `.github/workflows/tidy-audit.yml` runs every Sunday at
+06:00 UTC, and on demand. It analyses every TU on `main`'s head with the cache
+off. If it finds something that the cached `ci.yml` run on the same commit
+passed, its summary says **FALSE CLEAN** and names the TUs. The first run,
+42359957647, was clean.
+
+**Refreshing the shard costs.** `configs/tidy-file-costs.txt` drives
+`scripts/tidy-shard.py`'s shard balancing. Each audit uploads a refreshed
+copy as the `tidy-file-costs` artifact. To update the checked-in file,
+download it, rename it to `configs/tidy-file-costs.txt` and commit it.
+
+**Turning it off.** Set the repository variable `TIDY_CACHE_DISABLED` to
+`true`. Every shard then runs `off`, uncached and exactly as before, and no
+code change is needed. Use it on a false clean until the key is fixed. Expiry
+is the `expire-clang-tidy-results` lifecycle rule, 30 days, set by
+`scripts/oci-build-cache/provision.sh`.
 
 ## Cost
 

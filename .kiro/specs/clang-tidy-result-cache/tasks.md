@@ -1,10 +1,11 @@
 # Implementation Plan — clang-tidy Result Cache and Shard Balancing
 
-## Status: 5/9 tasks complete
+## Status: 7/9 tasks complete
 
-**Last Updated**: November 6, 2026 (spec written; Requirement 4 amended the
-same day so every same-repository branch writes, not only `main`; task 1
-measured, gate met).
+**Last Updated**: November 7, 2026 (cache live in CI; tasks 6 and 8
+done; task 7's code merged, its live apply owed). Written November 6,
+when Requirement 4 was amended so every same-repository branch writes,
+not only `main`, and task 1 met its gate.
 
 ## Overview
 
@@ -214,7 +215,7 @@ Reference material to read before starting:
     task 6 can configure once without guessing what the build-cache
     action exported.
 
-- [ ] 6. CI wiring
+- [x] 6. CI wiring
   - `ci.yml` `static-analysis` job: pick the mode (design "CI wiring"),
     `-DKYTHIRA_TIDY_CACHE=<mode>`, `--expect KYTHIRA_TIDY_CACHE=<mode>` in
     `check-build-config.py`, upload `tidy-cache-stats.json` with
@@ -228,8 +229,13 @@ Reference material to read before starting:
   - Update the comment above the job with the measured warm and cold
     figures.
   - _Requirements: 4.1, 4.3, 4.4, 6.2, 7.2, 7.3_
-  - **Two of three verification runs recorded; the fork-style `off` run
-    is still owed.**
+  - **Done, with one deviation: no real fork pull request was run.** The
+    repository has no fork to open one from. The `off` path is still
+    checked on every run: the `static-analysis-variants` legs configure
+    with the default `KYTHIRA_TIDY_CACHE=off`, which is the unchanged
+    `run-clang-tidy` target, and they passed in run 42358433807. The mode
+    step's `off` branch is two lines of shell, taken whenever the
+    build-cache action reports no key, which is the case for a fork.
     - Cold: PR #720 head 6c5b91e, run 42351017144. Every shard printed
       `clang-tidy cache: env (build-cache key in readwrite mode)`; 760 TUs
       analysed and stored, 0 backend errors, 0 findings; static-analysis
@@ -267,7 +273,7 @@ Reference material to read before starting:
     and needs the maintainer's go in his own words.**
   - _Requirements: 4.2, 4.3, 9.1-9.3_
 
-- [ ] 8. Weekly uncached audit
+- [x] 8. Weekly uncached audit
   - `tidy-audit.yml`: weekly schedule plus `workflow_dispatch`, all six
     shards with the cache forced `off` on `main`'s head, stats uploaded,
     `tidy-shard.py --refresh` output published as an artifact.
@@ -276,8 +282,10 @@ Reference material to read before starting:
     maintainer can set `TIDY_CACHE_DISABLED=true`.
   - Dispatch it once and record the run ID.
   - _Requirements: 7.4, 8.4_
-  - **Written; the first dispatch is owed after it merges** (dispatch
-    needs the workflow on `main`). Each shard runs the driver with
+  - **Done.** First dispatch: run 42359957647 on 4cc6559, November 7.
+    All six shards were clean uncached (30-56 minutes each), the report
+    job printed "no false clean", and it uploaded the refreshed
+    `tidy-file-costs` artifact. Each shard runs the driver with
     `--mode off`, which is run-clang-tidy plus per-TU timings, and the
     driver's stats now list `finding_tus`. The report job fetches the
     shards' stats with `gh run download` (no new pinned action), uploads
@@ -293,3 +301,5 @@ Reference material to read before starting:
     zero). Record them here.
   - `doc/TODO.md`: move the row out of "Not Started" with the results.
   - _Requirements: 10.2, 10.3_
+  - **Docs written November 7; the week of `main` figures is owed (from
+    November 14).** `doc/ci_build_cache.md` has the section.
