@@ -137,6 +137,14 @@ struct cache_http_config {
     std::size_t _auth_failure_limit = 10;
     std::chrono::seconds _auth_failure_window{60};
     std::size_t _max_concurrent_auth = 4;
+    /// The authentication seam (.kiro/specs/redis-gateway-module/
+    /// Requirement 6.6), as on the RESP listener: credentials
+    /// `_credential_verifier_selects` picks are checked by the verifier
+    /// (verify_cache_http_credential) instead of against ACL secrets, under
+    /// the same rate limiter. Both empty, which is the only state until IAM
+    /// task 21, means every request authenticates exactly as without them.
+    credential_verifier_fn _credential_verifier;
+    std::function<bool(const cache_http_credentials&)> _credential_verifier_selects;
 
     /// The gateway's internal secret: the only credential `/_chunk/` takes.
     std::string _internal_secret;
@@ -1013,7 +1021,9 @@ auto cache_http_front_end<Host, Logger>::authenticate(
     std::optional<redis_identity> id;
     bool limited = false;
     bool busy = false;
-    id = _auth_cache.authenticate(_acl, *creds, [&]() -> std::optional<redis_identity> {
+    // One attempt under the limiter: charged before `check` runs, refunded
+    // if it succeeds.
+    auto limited_check = [&](auto&& check) -> std::optional<redis_identity> {
         switch (_auth_limiter.begin(rate_key)) {
             case redis_auth_limiter::verdict::rate_limited:
                 limited = true;
@@ -1026,16 +1036,29 @@ auto cache_http_front_end<Host, Logger>::authenticate(
         }
         std::optional<redis_identity> got;
         try {
-            got = creds->_scheme == cache_http_credentials::scheme::bearer
-                      ? cache_http_auth_cache::verify_bearer(_acl, creds->_secret)
-                      : _acl.authenticate(creds->_user, creds->_secret);
+            got = check();
         } catch (...) {
             _auth_limiter.finish(rate_key, false);
             throw;
         }
         _auth_limiter.finish(rate_key, got.has_value());
         return got;
-    });
+    };
+    if (_config._credential_verifier && _config._credential_verifier_selects &&
+        _config._credential_verifier_selects(*creds)) {
+        id = limited_check([&] {
+            return verify_cache_http_credential(_config._credential_verifier, _acl, *creds, peer,
+                                                _config._command_timeout);
+        });
+    } else {
+        id = _auth_cache.authenticate(_acl, *creds, [&]() -> std::optional<redis_identity> {
+            return limited_check([&] {
+                return creds->_scheme == cache_http_credentials::scheme::bearer
+                           ? cache_http_auth_cache::verify_bearer(_acl, creds->_secret)
+                           : _acl.authenticate(creds->_user, creds->_secret);
+            });
+        });
+    }
     if (id) {
         return principal{std::move(id), false};
     }

@@ -30,6 +30,7 @@
 #include <kythira/redis/redis_gateway_value_access.hpp>
 #include <kythira/redis/redis_kv_state_machine.hpp>
 #include <kythira/redis/resp_protocol.hpp>
+#include <raft/credential_verifier.hpp>
 #include <raft/future_default.hpp>
 #include <raft/raft_timestamp_oracle.hpp>
 #include <raft/shard_exceptions.hpp>
@@ -201,6 +202,21 @@ struct redis_gateway_config {
     std::chrono::milliseconds _txn_lock_ttl{3000};
     /// Automatic retries of a transaction that met a conflict.
     std::size_t _txn_max_retries = 2;
+
+    /// The authentication seam (.kiro/specs/redis-gateway-module/
+    /// Requirement 6): something outside the gateway that can vouch for a
+    /// credential a password check cannot, such as an IAM token. `AUTH` and
+    /// `HELLO ... AUTH` for a user `_credential_verifier_users` selects go to
+    /// it instead of the ACL's password check; every other user, and every
+    /// user while either field is empty, authenticates exactly as without
+    /// them. An accepted credential takes the ACL user's role and key
+    /// prefixes, and its expiry closes the connection.
+    ///
+    /// Nothing sets these yet. IAM task 21 sets the verifier when
+    /// `CONFIG_REDIS_GATEWAY_IAM` is on and selects users from the ACL's
+    /// `auth=` attribute (services/redis/README.md, "Authentication seam").
+    credential_verifier_fn _credential_verifier;
+    std::function<bool(std::string_view user)> _credential_verifier_users;
 };
 
 /// Counters the gateway keeps for INFO and for the metrics back-end.
@@ -218,6 +234,9 @@ struct redis_gateway_stats {
     std::atomic<std::uint64_t> _auth_failures{0};
     /// AUTHs refused because too many KDFs were already running.
     std::atomic<std::uint64_t> _auth_busy{0};
+    /// Connections closed, or commands refused, because the credential the
+    /// connection authenticated with had expired.
+    std::atomic<std::uint64_t> _credential_expiries{0};
     std::atomic<std::uint64_t> _authz_denials{0};
     std::atomic<std::uint64_t> _forwards{0};
     std::atomic<std::uint64_t> _forward_failures{0};
@@ -392,6 +411,11 @@ private:
         /// gets a fresh source port, so a guesser just opened a new
         /// connection per attempt.
         std::string _rate_key;
+        /// When the credential this session authenticated with stops being
+        /// good: set only by a credential verifier's acceptance, cleared by
+        /// a password AUTH and by RESET. The connection's idle timer closes
+        /// the connection at this time, and a command after it is refused.
+        std::optional<std::chrono::system_clock::time_point> _expires;
         std::string _client_name;
         std::string _lib_name;
         std::string _lib_version;
@@ -451,6 +475,13 @@ private:
     // ---- command dispatch ----------------------------------------------------
     auto execute(session& s, const resp_command& cmd) -> std::string;
     auto handle_auth(session& s, const resp_command& cmd) -> std::string;
+    /// Admission for one AUTH attempt (redis_auth_limiter). Returns the
+    /// refusal to send, or nullopt when the attempt may proceed, in which
+    /// case `_auth_limiter.finish()` must follow.
+    auto admit_auth(session& s) -> std::optional<std::string>;
+    /// `handle_auth` for a user the credential verifier vouches for.
+    auto auth_with_verifier(session& s, const std::string& user, const std::string& credential)
+        -> std::string;
     auto handle_hello(session& s, const resp_command& cmd) -> std::string;
     auto handle_client(session& s, const resp_command& cmd) -> std::string;
     auto handle_get(session& s, const resp_command& cmd) -> std::string;

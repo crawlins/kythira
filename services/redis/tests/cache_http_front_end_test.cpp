@@ -16,6 +16,7 @@
 
 #include <kythira/redis/cache_http_auth.hpp>
 #include <kythira/redis/cache_http_front_end.hpp>
+#include <raft/credential_verifier.hpp>
 #include <kythira/redis/cache_kv_state_machine.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/future_default.hpp>
@@ -918,6 +919,66 @@ BOOST_AUTO_TEST_CASE(authentication_and_authorization, *boost::unit_test::timeou
     BOOST_CHECK_EQUAL(client.call("GET", "/sccache/k", {}, "Bearer reader-secret")._body, "v");
     // Repeated requests hit the auth cache rather than the KDF.
     BOOST_CHECK_GE(c.front_end(leader).auth_cache().hits(), 3U);
+}
+
+// redis-gateway-module task 6: the authentication seam on the HTTP front
+// end. Selected credentials go to the verifier, on every request (never the
+// success cache), and the ACL user they name keeps its role and prefixes.
+BOOST_AUTO_TEST_CASE(a_credential_verifier_checks_selected_credentials,
+                     *boost::unit_test::timeout(120)) {
+    auto calls = std::make_shared<std::atomic<int>>(0);
+    auto cfg = cache_http_config{};
+    cfg._credential_verifier = [calls](const kythira::credential_request& r)
+        -> kythira::future_default<kythira::credential_result> {
+        using clock = std::chrono::system_clock;
+        calls->fetch_add(1);
+        kythira::promise_default<kythira::credential_result> p;
+        auto f = p.getFuture();
+        const std::string cred(r.credential);
+        if (r.service != "cache-http") {
+            p.setValue(kythira::credential_denied{"wrong service"});
+        } else if (cred == "good") {
+            p.setValue(kythira::credential_accepted{"farm", clock::now() + std::chrono::hours{1}});
+        } else if (cred == "tok-good") {
+            // A bearer token names no user; the principal names the ACL user.
+            p.setValue(
+                kythira::credential_accepted{"reader", clock::now() + std::chrono::hours{1}});
+        } else if (cred == "stale") {
+            p.setValue(
+                kythira::credential_accepted{"farm", clock::now() - std::chrono::seconds{1}});
+        } else {
+            p.setValue(kythira::credential_denied{"unknown"});
+        }
+        return f;
+    };
+    cfg._credential_verifier_selects = [](const kythira::cache_http_credentials& c) {
+        return c._user == "farm" || (c._scheme == kythira::cache_http_credentials::scheme::bearer &&
+                                     c._secret.rfind("tok-", 0) == 0);
+    };
+    cluster c(3, cfg);
+    BOOST_REQUIRE(c.await_leaders(std::chrono::seconds{20}));
+    const auto leader = c.leader_of(k_sccache_group);
+    http_client client(c.port(leader));
+
+    BOOST_CHECK_EQUAL(client.call("PUT", "/sccache/seam", "v", basic("farm", "good"))._status, 201);
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/seam", {}, basic("farm", "good"))._body, "v");
+    BOOST_CHECK_EQUAL(client.call("PUT", "/other/seam", "v", basic("farm", "good"))._status, 403);
+    // Asked on every request: nothing came from the success cache.
+    BOOST_CHECK_EQUAL(calls->load(), 3);
+    BOOST_CHECK_EQUAL(c.front_end(leader).auth_cache().size(), 0U);
+    // The ACL secret of a selected user no longer opens anything, nor does an
+    // expired acceptance.
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/seam", {}, basic("farm", "farm-secret"))._status,
+                      401);
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/seam", {}, basic("farm", "stale"))._status, 401);
+    // Bearer: the principal's ACL user, with its role.
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/seam", {}, "Bearer tok-good")._body, "v");
+    BOOST_CHECK_EQUAL(client.call("PUT", "/sccache/seam", "w", "Bearer tok-good")._status, 403);
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/seam", {}, "Bearer tok-bad")._status, 401);
+    // Unselected credentials authenticate as before.
+    BOOST_CHECK_EQUAL(
+        client.call("GET", "/sccache/seam", {}, basic("reader", "reader-secret"))._body, "v");
+    BOOST_CHECK_EQUAL(client.call("GET", "/sccache/seam", {}, "Bearer reader-secret")._body, "v");
 }
 
 BOOST_AUTO_TEST_CASE(over_the_maximum_is_413, *boost::unit_test::timeout(120)) {
