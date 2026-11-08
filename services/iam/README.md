@@ -28,6 +28,8 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `docker/iam_node/` | the image the compose scenario runs | 9 |
 | `tests/iam_admin_test.cpp`, `tests/iam_node_test.cpp` | the admin operations, and the binaries as a three-node cluster with a replica | 9 |
 | `tests/iam_test_pki.hpp`, `tests/iam_test_certs.cpp` | the throwaway test PKI, in process and as a tool | 9 |
+| `include/kythira/iam/iam_validation.hpp` | AWS's IAM and STS request-parameter rules (names, tags, durations, session policies and tags, what each credential may call), for the Query and STS handlers | invariants |
+| `tests/iam_validation_test.cpp` | one case per invariant group in `.kiro/specs/iam-compatible-auth/invariants.md` | invariants |
 | `tests/docker/` | the compose scenario (three voters and a replica, by service name) | 9 |
 | `tools/` | the pinned AWS-managed policies (`aws_managed_policies.json`), the configure-time generator for `<kythira/iam/aws_managed_policies_data.hpp>`, and the script that refreshes the JSON from AWS | 8 |
 

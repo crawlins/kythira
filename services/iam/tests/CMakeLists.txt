@@ -34,6 +34,12 @@ set_tests_properties(iam_policy_test PROPERTIES LABELS "unit;iam;iam-module" TIM
 kythira_iam_test(iam_state_machine_test iam_state_machine_test.cpp)
 set_tests_properties(iam_state_machine_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 120)
 
+# The request-parameter rules of AWS's IAM and STS API references
+# (iam_validation.hpp), one case per invariant group in
+# .kiro/specs/iam-compatible-auth/invariants.md.
+kythira_iam_test(iam_validation_test iam_validation_test.cpp)
+set_tests_properties(iam_validation_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
+
 # Task 9: the admin operations behind iam_node's /v1/admin/* routes, and
 # the request routing, against a bare state machine.
 kythira_iam_test(iam_admin_test iam_admin_test.cpp)

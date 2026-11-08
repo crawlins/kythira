@@ -9,6 +9,9 @@ the `redis-gateway-module` spec (PR #675), at Clark's request.
 Amended November 6, 2026, at Clark's request ("Add STS support to the IAM
 spec"): task 26 completes STS with GetFederationToken,
 DecodeAuthorizationMessage and AWS's limits on temporary credentials.
+Amended November 8, 2026, at Clark's request: `invariants.md` catalogues
+the rules AWS's IAM and STS docs require, with the test or owning task for
+each. Tasks below name the invariants they own.
 
 ## Overview
 
@@ -615,6 +618,8 @@ because each has a zero-spend fallback.
   - At least one corpus case per operator and per variable, including the
     tricky AWS-documented ones: `ForAllValues` with an empty set, negated
     operators with multiple values, and `IfExists` on a missing key.
+  - Invariants (`invariants.md`): INV-COND-1..6 and INV-VAR-1..3. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 5.4–5.6_
 
 - [ ] 12. Evaluator and corpus
@@ -628,6 +633,8 @@ because each has a zero-spend fallback.
     - deciding-statement reporting.
   - Grow the corpus to at least 300 cases from the AWS IAM User Guide
     examples. Every case cites its source page.
+  - Invariants (`invariants.md`): INV-EVAL-1..12. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 6.1–6.7_
 
 - [ ] 13. Authorizer hook, service registry and replicas
@@ -648,6 +655,8 @@ because each has a zero-spend fallback.
     - a policy change reaches a replica within 5 s;
     - a replica with a blocked network fails closed after the bound;
     - the audit lines hold no secrets.
+  - Invariants (`invariants.md`): INV-KEY-4. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 7.1–7.6, 14.2–14.4_
 
 ### Phase C — IAM Query API
@@ -663,6 +672,8 @@ because each has a zero-spend fallback.
   - Tests with the AWS CLI v2 container: create a user, create a key, call
     with the key, deactivate the key (the next call fails after
     propagation), delete.
+  - Invariants (`invariants.md`): INV-KEY-3 and INV-KEY-4, and calls the `iam_validation.hpp` checks for INV-NAME-4, INV-TAG-1..6 and INV-ACCT-2. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 9.1–9.3, 9.8, 9.9_
 
 - [ ] 15. Roles, policies, versions, attachments and boundaries
@@ -678,6 +689,8 @@ because each has a zero-spend fallback.
     recorded list.
   - `iam:PassedToService`, `iam:PolicyARN` and `iam:PermissionsBoundary`
     condition keys.
+  - Invariants (`invariants.md`): INV-ROLE-1 and INV-ROLE-2 (CreateRole and UpdateRole call `iam_validation.hpp`), INV-POL-1 and INV-POL-6. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 9.4, 9.5, 9.7, 9.8_
 
 - [ ] 16. OIDC providers, simulation and account calls
@@ -687,6 +700,8 @@ because each has a zero-spend fallback.
   - `NotImplemented` for every other action.
   - The simulation calls go through `evaluate()`. Tests compare them with
     corpus decisions.
+  - Invariants (`invariants.md`): INV-OIDC-1..3 (CreateOpenIDConnectProvider calls `iam_validation.hpp`). Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 9.6, 9.7, 6.7_
 
 ### Phase D — STS and federation
@@ -704,6 +719,8 @@ because each has a zero-spend fallback.
     - a token across a key rotation;
     - an expired token;
     - GetCallerIdentity never denied.
+  - Invariants (`invariants.md`): INV-STS-1, INV-STS-3..5, INV-STS-7, INV-DUR-1, INV-DUR-2, INV-DUR-5, INV-DUR-6 and INV-STS-B1..B4, INV-STS-B8. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 10.1–10.4, 10.7_
 
 - [ ] 18. Session policies, tags, source identity and revocation
@@ -712,6 +729,8 @@ because each has a zero-spend fallback.
   - A 1-hour cap for role chaining, packed-size limits, and
     `aws:TokenIssueTime`.
   - A test of AWS's "revoke older sessions" inline-deny pattern.
+  - Invariants (`invariants.md`): INV-STS-6, INV-DUR-3, INV-SPOL-1..4 and INV-STAG-1..5. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 10.2, 10.5, 10.6_
 
 - [ ] 26. GetFederationToken, DecodeAuthorizationMessage and credential limits
@@ -738,6 +757,8 @@ because each has a zero-spend fallback.
     - an encoded message that round-trips, one decoded from another
       account, a session token fed to DecodeAuthorizationMessage, and an
       expired message.
+  - Invariants (`invariants.md`): INV-STS-2, INV-DUR-5, INV-DUR-6, INV-CRED-1..6, INV-EVAL-7 and INV-STS-B5. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 10.1, 10.8–10.10_
 
 - [ ] 19. AssumeRoleWithWebIdentity (external OIDC)
@@ -751,6 +772,8 @@ because each has a zero-spend fallback.
     - an unknown `kid` that triggers a single refetch;
     - an expired token;
     - an SSRF attempt at `169.254.169.254` refused.
+  - Invariants (`invariants.md`): INV-STS-1, INV-WEB-1, INV-DUR-4, INV-STS-B6 and INV-STS-B7. Each one needs a named
+    unit test, and the PR updates its row there.
   - _Requirements: 11.1–11.4_
 
 - [ ] 20. Kythira-CA web identity
