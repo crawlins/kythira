@@ -86,6 +86,9 @@ BOOST_AUTO_TEST_CASE(create_account_validates_and_conflicts) {
     BOOST_TEST(admin::create_account(c, {{"account_id", "12345678901a"}}).status == 400U);
     BOOST_TEST(admin::create_account(c, {{"alias", "Upper"}}).status == 400U);
     BOOST_TEST(admin::create_account(c, {{"alias", "-a-"}}).status == 400U);
+    // INV-ACCT-2: no two hyphens in a row, and not a 12-digit number.
+    BOOST_TEST(admin::create_account(c, {{"alias", "a--b"}}).status == 400U);
+    BOOST_TEST(admin::create_account(c, {{"alias", "123456789012"}}).status == 400U);
     BOOST_TEST(c.submits == 0U);
     BOOST_TEST(
         admin::create_account(c, {{"account_id", "111111111111"}, {"alias", "dup"}}).status ==

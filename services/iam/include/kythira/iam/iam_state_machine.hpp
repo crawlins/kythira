@@ -138,7 +138,8 @@ struct iam_limits {
     std::size_t user_inline_total = 2048;
     std::size_t group_inline_total = 5120;
     std::size_t role_inline_total = 10240;
-    std::size_t attached_per_entity = 10;
+    std::size_t attached_per_entity = 10;  // users and groups
+    std::size_t attached_per_role = 20;
     std::size_t policy_versions = 5;
     std::size_t access_keys_per_user = 2;
     std::size_t groups_per_user = 10;
@@ -329,14 +330,38 @@ namespace iam_detail {
     return o.at(key).to_number<std::int64_t>();
 }
 
-[[nodiscard]] inline auto tags_from(const boost::json::value* v) -> tag_map {
+/// Sets a tag. IAM matches tag keys case-insensitively on users and roles
+/// (`fold`): tagging `department=hr` onto a user tagged `Department=finance`
+/// replaces that tag, and the new spelling is kept. On every other resource
+/// the two are separate keys.
+inline void put_tag(tag_map& tags, const std::string& key, std::string value, bool fold) {
+    if (fold) {
+        const auto k = lower(key);
+        std::erase_if(tags, [&](const auto& kv) { return lower(kv.first) == k; });
+    }
+    tags[key] = std::move(value);
+}
+
+/// Removes a tag, matching the key as `put_tag` does.
+inline void erase_tag(tag_map& tags, const std::string& key, bool fold) {
+    if (!fold) {
+        tags.erase(key);
+        return;
+    }
+    const auto k = lower(key);
+    std::erase_if(tags, [&](const auto& kv) { return lower(kv.first) == k; });
+}
+
+/// Tags from a command or snapshot. Snapshots pass `fold = false` so stored
+/// keys come back exactly as they were.
+[[nodiscard]] inline auto tags_from(const boost::json::value* v, bool fold = false) -> tag_map {
     tag_map out;
     if (v == nullptr) {
         return out;
     }
     for (const auto& t : v->as_array()) {
         const auto& o = t.as_object();
-        out[str(o, "Key")] = str(o, "Value");
+        put_tag(out, str(o, "Key"), str(o, "Value"), fold);
     }
     return out;
 }
@@ -1085,7 +1110,7 @@ private:
         u.path = iam_detail::opt_str(cmd, "path").value_or("/");
         u.id = iam_detail::str(cmd, "id");
         u.create_date = iam_detail::i64(cmd, "now");
-        u.tags = iam_detail::tags_from(cmd.if_contains("tags"));
+        u.tags = iam_detail::tags_from(cmd.if_contains("tags"), true);
         if (u.tags.size() > _config.limits.tags_per_entity) {
             return error(iam_errors::limit_exceeded, "Cannot exceed quota for TagsPerUser.");
         }
@@ -1221,10 +1246,15 @@ private:
         if (tags == nullptr) {
             return no_such(kind, name);
         }
+        const bool fold = kind == "user" || kind == "role";
         if (add) {
             auto merged = *tags;
-            for (auto& [k, v] : iam_detail::tags_from(cmd.if_contains("tags"))) {
-                merged[k] = v;
+            if (const auto* list = cmd.if_contains("tags")) {
+                for (const auto& t : list->as_array()) {
+                    const auto& o = t.as_object();
+                    iam_detail::put_tag(merged, iam_detail::str(o, "Key"),
+                                        iam_detail::str(o, "Value"), fold);
+                }
             }
             if (merged.size() > _config.limits.tags_per_entity) {
                 return error(iam_errors::limit_exceeded, "Cannot exceed quota for TagsPerEntity.");
@@ -1232,7 +1262,7 @@ private:
             *tags = std::move(merged);
         } else {
             for (const auto& k : iam_detail::string_vec(cmd.if_contains("keys"))) {
-                tags->erase(k);
+                iam_detail::erase_tag(*tags, k, fold);
             }
         }
         return ok();
@@ -1375,7 +1405,7 @@ private:
         if (const auto* d = cmd.if_contains("max_session_duration")) {
             r.max_session_duration = d->to_number<std::int64_t>();
         }
-        r.tags = iam_detail::tags_from(cmd.if_contains("tags"));
+        r.tags = iam_detail::tags_from(cmd.if_contains("tags"), true);
         if (r.tags.size() > _config.limits.tags_per_entity) {
             return error(iam_errors::limit_exceeded, "Cannot exceed quota for TagsPerRole.");
         }
@@ -1475,6 +1505,9 @@ private:
         p.id = iam_detail::str(cmd, "id");
         p.create_date = iam_detail::i64(cmd, "now");
         p.tags = iam_detail::tags_from(cmd.if_contains("tags"));
+        if (p.tags.size() > _config.limits.tags_per_entity) {
+            return error(iam_errors::limit_exceeded, "Cannot exceed quota for TagsPerEntity.");
+        }
         auto out = boost::json::object{{"name", p.name},
                                        {"id", p.id},
                                        {"path", p.path},
@@ -1560,6 +1593,9 @@ private:
         p.create_date = p.update_date = iam_detail::i64(cmd, "now");
         p.description = iam_detail::opt_str(cmd, "description").value_or("");
         p.tags = iam_detail::tags_from(cmd.if_contains("tags"));
+        if (p.tags.size() > _config.limits.tags_per_entity) {
+            return error(iam_errors::limit_exceeded, "Cannot exceed quota for TagsPerEntity.");
+        }
         auto doc = iam_detail::str(cmd, "document");
         if (detail::policy_size(doc) > _config.limits.managed_policy_size) {
             return error(iam_errors::limit_exceeded,
@@ -1708,6 +1744,7 @@ private:
         std::map<std::string, inline_policy>* inline_policies = nullptr;
         std::optional<std::string>* boundary = nullptr;  // null for groups
         std::size_t inline_limit = 0;
+        std::size_t attached_limit = 0;
     };
 
     [[nodiscard]] auto principal(iam_account& a, std::string_view kind, std::string_view name)
@@ -1719,7 +1756,8 @@ private:
                 return std::nullopt;
             }
             return principal_ref{&it->second.attached, &it->second.inline_policies,
-                                 &it->second.boundary, _config.limits.user_inline_total};
+                                 &it->second.boundary, _config.limits.user_inline_total,
+                                 _config.limits.attached_per_entity};
         }
         if (kind == "group") {
             const auto it = a.groups.find(key);
@@ -1727,7 +1765,8 @@ private:
                 return std::nullopt;
             }
             return principal_ref{&it->second.attached, &it->second.inline_policies, nullptr,
-                                 _config.limits.group_inline_total};
+                                 _config.limits.group_inline_total,
+                                 _config.limits.attached_per_entity};
         }
         if (kind == "role") {
             const auto it = a.roles.find(key);
@@ -1735,7 +1774,8 @@ private:
                 return std::nullopt;
             }
             return principal_ref{&it->second.attached, &it->second.inline_policies,
-                                 &it->second.boundary, _config.limits.role_inline_total};
+                                 &it->second.boundary, _config.limits.role_inline_total,
+                                 _config.limits.attached_per_role};
         }
         throw std::invalid_argument("unknown principal kind " + std::string(kind));
     }
@@ -1760,10 +1800,10 @@ private:
             if (target->attached->contains(parn)) {
                 return ok();  // AWS treats a repeat attach as success
             }
-            if (target->attached->size() >= _config.limits.attached_per_entity) {
+            if (target->attached->size() >= target->attached_limit) {
                 return error(iam_errors::limit_exceeded,
                              "Cannot exceed quota for PoliciesPerEntity: " +
-                                 std::to_string(_config.limits.attached_per_entity));
+                                 std::to_string(target->attached_limit));
             }
             target->attached->insert(parn);
             if (mp != nullptr) {
@@ -1965,6 +2005,9 @@ private:
         p.thumbprints = iam_detail::string_vec(cmd.if_contains("thumbprints"));
         p.create_date = iam_detail::i64(cmd, "now");
         p.tags = iam_detail::tags_from(cmd.if_contains("tags"));
+        if (p.tags.size() > _config.limits.tags_per_entity) {
+            return error(iam_errors::limit_exceeded, "Cannot exceed quota for TagsPerEntity.");
+        }
         if (p.client_ids.size() > _config.limits.client_ids_per_oidc_provider ||
             p.thumbprints.size() > _config.limits.thumbprints_per_oidc_provider) {
             return error(iam_errors::limit_exceeded,
@@ -2494,9 +2537,14 @@ struct new_access_key {
 }
 
 /// AWS's path rule: "/" alone, or "/" ... "/" of at most 512 printable ASCII
-/// characters (U+0021–U+007E).
+/// characters (U+0021–U+007E) with at least one between the slashes.
 [[nodiscard]] inline auto valid_path(std::string_view path) -> bool {
-    if (path.empty() || path.size() > 512 || path.front() != '/' || path.back() != '/') {
+    if (path == "/") {
+        return true;
+    }
+    // Otherwise at least one character between the slashes: "//" is not a
+    // path, though "///" is (AWS's pattern is (/)|(/[!-~]+/)).
+    if (path.size() < 3 || path.size() > 512 || path.front() != '/' || path.back() != '/') {
         return false;
     }
     return std::ranges::all_of(path, [](char c) { return c >= '!' && c <= '~'; });

@@ -464,6 +464,7 @@ BOOST_AUTO_TEST_CASE(every_bundled_policy_parses) {
 BOOST_AUTO_TEST_CASE(attachments_count_and_block_delete) {
     iam::iam_config cfg;
     cfg.limits.attached_per_entity = 2;
+    cfg.limits.attached_per_role = 2;
     fixture f(cfg);
     f.run(iam_command::create_role, {{"name", "r"}, {"id", "AROA1"}, {"trust_policy", trust_ec2}});
     f.run(iam_command::create_group, {{"name", "g"}, {"id", "AGPA1"}});
@@ -1038,3 +1039,217 @@ BOOST_AUTO_TEST_CASE(property_replicas_and_restores_agree) {
     }
     BOOST_TEST(keys_left > 0U);
 }
+
+// ── AWS invariants (invariants.md) ─────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(aws_invariants)
+
+// INV-NAME-1..3: every kind's length bound, and the shared character set.
+BOOST_AUTO_TEST_CASE(entity_name_bounds_per_kind) {
+    for (const char* kind : {"user", "role"}) {
+        BOOST_TEST(leader::valid_name(kind, std::string(64, 'a')), kind);
+        BOOST_TEST(!leader::valid_name(kind, std::string(65, 'a')), kind);
+    }
+    for (const char* kind : {"group", "policy", "instance-profile"}) {
+        BOOST_TEST(leader::valid_name(kind, std::string(128, 'a')), kind);
+        BOOST_TEST(!leader::valid_name(kind, std::string(129, 'a')), kind);
+    }
+    for (const char* bad : {"a/b", "a:b", "a*b", "a#b", "caf\xC3\xA9", "a\tb"}) {
+        BOOST_TEST(!leader::valid_name("user", bad), bad);
+    }
+}
+
+// INV-PATH-1: "/" or slash-delimited printable ASCII with something between
+// the slashes, at most 512 characters.
+BOOST_AUTO_TEST_CASE(path_bounds) {
+    BOOST_TEST(!leader::valid_path(""));
+    BOOST_TEST(!leader::valid_path("//"));
+    BOOST_TEST(leader::valid_path("///"));
+    BOOST_TEST(leader::valid_path("/" + std::string(510, 'a') + "/"));
+    BOOST_TEST(!leader::valid_path("/" + std::string(511, 'a') + "/"));
+    BOOST_TEST(!leader::valid_path("/caf\xC3\xA9/"));
+    BOOST_TEST(!leader::valid_path("/a\x7F/"));
+}
+
+// INV-NAME-5: names are unique case-insensitively for every entity kind.
+BOOST_AUTO_TEST_CASE(names_unique_case_insensitively_for_every_kind) {
+    fixture f;
+    f.run(iam_command::create_group, {{"name", "Ops"}, {"id", "AGPA1"}});
+    BOOST_TEST(f.err(iam_command::create_group, {{"name", "OPS"}, {"id", "AGPA2"}}) ==
+               "EntityAlreadyExists");
+    f.run(iam_command::create_role,
+          {{"name", "Web"}, {"id", "AROA1"}, {"trust_policy", trust_ec2}});
+    BOOST_TEST(f.err(iam_command::create_role,
+                     {{"name", "wEB"}, {"id", "AROA2"}, {"trust_policy", trust_ec2}}) ==
+               "EntityAlreadyExists");
+    f.run(iam_command::create_instance_profile, {{"name", "Ip"}, {"id", "AIPA1"}});
+    BOOST_TEST(f.err(iam_command::create_instance_profile, {{"name", "iP"}, {"id", "AIPA2"}}) ==
+               "EntityAlreadyExists");
+}
+
+// INV-QUOTA-1: AWS's default managed-policy attachment quotas are 20 per
+// role and 10 per user or group.
+BOOST_AUTO_TEST_CASE(default_attachment_quotas_differ_by_kind) {
+    const iam::iam_limits defaults;
+    BOOST_TEST(defaults.attached_per_role == 20U);
+    BOOST_TEST(defaults.attached_per_entity == 10U);
+    fixture f;
+    f.run(iam_command::create_role, {{"name", "r"}, {"id", "AROA1"}, {"trust_policy", trust_ec2}});
+    f.run(iam_command::create_user, {{"name", "u"}, {"id", "AIDA1"}});
+    f.run(iam_command::create_group, {{"name", "g"}, {"id", "AGPA1"}});
+    for (int i = 0; i <= 20; ++i) {
+        const auto n = "p" + std::to_string(i);
+        f.run(iam_command::create_policy,
+              {{"name", n}, {"id", "ANPA" + std::to_string(i)}, {"document", allow_all}});
+    }
+    auto attach = [&](const char* kind, const char* name, int i) {
+        return f.err(
+            iam_command::attach_policy,
+            {{"kind", kind}, {"name", name}, {"arn", f.policy_arn("p" + std::to_string(i))}});
+    };
+    for (int i = 0; i < 20; ++i) {
+        BOOST_TEST(attach("role", "r", i).empty(), "role attachment " << i);
+    }
+    BOOST_TEST(attach("role", "r", 20) == "LimitExceeded");
+    for (const char* kind : {"user", "group"}) {
+        const char* name = std::string_view(kind) == "user" ? "u" : "g";
+        for (int i = 0; i < 10; ++i) {
+            BOOST_TEST(attach(kind, name, i).empty(), kind << " attachment " << i);
+        }
+        BOOST_TEST(attach(kind, name, 10) == "LimitExceeded", kind);
+    }
+}
+
+// INV-QUOTA-2: AWS's other default quotas, as configured.
+BOOST_AUTO_TEST_CASE(default_quotas_match_aws) {
+    const iam::iam_limits d;
+    BOOST_TEST(d.managed_policy_size == 6144U);
+    BOOST_TEST(d.trust_policy_size == 2048U);
+    BOOST_TEST(d.user_inline_total == 2048U);
+    BOOST_TEST(d.group_inline_total == 5120U);
+    BOOST_TEST(d.role_inline_total == 10240U);
+    BOOST_TEST(d.policy_versions == 5U);
+    BOOST_TEST(d.access_keys_per_user == 2U);
+    BOOST_TEST(d.groups_per_user == 10U);
+    BOOST_TEST(d.roles_per_instance_profile == 1U);
+    BOOST_TEST(d.tags_per_entity == 50U);
+    BOOST_TEST(d.client_ids_per_oidc_provider == 100U);
+    BOOST_TEST(d.thumbprints_per_oidc_provider == 5U);
+}
+
+// INV-TAG-5: tag keys on users and roles are case-insensitive, with the
+// latest spelling kept; on other resources case makes a different key.
+BOOST_AUTO_TEST_CASE(tag_key_case_by_resource_kind) {
+    fixture f;
+    auto tag = [](const char* k, const char* val) {
+        return boost::json::object{{"Key", k}, {"Value", val}};
+    };
+    f.run(iam_command::create_user, {{"name", "u"},
+                                     {"id", "AIDA1"},
+                                     {"tags", boost::json::array{tag("Department", "finance")}}});
+    BOOST_TEST(
+        f.err(iam_command::tag_entity, {{"kind", "user"},
+                                        {"name", "u"},
+                                        {"tags", boost::json::array{tag("department", "hr")}}})
+            .empty());
+    const auto& ut = f.sm.user(account_id, "u")->tags;
+    BOOST_TEST(ut.size() == 1U);
+    BOOST_TEST(ut.at("department") == "hr");
+    f.run(iam_command::untag_entity,
+          {{"kind", "user"}, {"name", "u"}, {"keys", boost::json::array{"DEPARTMENT"}}});
+    BOOST_TEST(f.sm.user(account_id, "u")->tags.empty());
+
+    // On create, two spellings of one key collapse to the later.
+    f.run(iam_command::create_role,
+          {{"name", "r"},
+           {"id", "AROA1"},
+           {"trust_policy", trust_ec2},
+           {"tags", boost::json::array{tag("Team", "a"), tag("TEAM", "b")}}});
+    const auto& rt = f.sm.role(account_id, "r")->tags;
+    BOOST_TEST(rt.size() == 1U);
+    BOOST_TEST(rt.at("TEAM") == "b");
+
+    f.run(iam_command::create_policy, {{"name", "p"},
+                                       {"id", "ANPA1"},
+                                       {"document", allow_all},
+                                       {"tags", boost::json::array{tag("Costcenter", "1")}}});
+    BOOST_TEST(
+        f.err(iam_command::tag_entity, {{"kind", "policy"},
+                                        {"name", "p"},
+                                        {"tags", boost::json::array{tag("costcenter", "2")}}})
+            .empty());
+    BOOST_TEST(f.sm.managed_policy(account_id, "p")->tags.size() == 2U);
+    f.run(iam_command::untag_entity,
+          {{"kind", "policy"}, {"name", "p"}, {"keys", boost::json::array{"COSTCENTER"}}});
+    BOOST_TEST(f.sm.managed_policy(account_id, "p")->tags.size() == 2U);
+}
+
+// INV-TAG-1: the tag quota holds when a policy, instance profile or OIDC
+// provider is created with tags, not only for users and roles.
+BOOST_AUTO_TEST_CASE(tag_quota_on_every_create) {
+    iam::iam_config cfg;
+    cfg.limits.tags_per_entity = 1;
+    fixture f(cfg);
+    const boost::json::array two{{{"Key", "a"}, {"Value", "1"}}, {{"Key", "b"}, {"Value", "2"}}};
+    BOOST_TEST(f.err(iam_command::create_policy,
+                     {{"name", "p"}, {"id", "ANPA1"}, {"document", allow_all}, {"tags", two}}) ==
+               "LimitExceeded");
+    BOOST_TEST(f.err(iam_command::create_instance_profile,
+                     {{"name", "ip"}, {"id", "AIPA1"}, {"tags", two}}) == "LimitExceeded");
+    BOOST_TEST(f.err(iam_command::create_oidc_provider,
+                     {{"url", "issuer.example.com"}, {"tags", two}}) == "LimitExceeded");
+    BOOST_TEST(f.err(iam_command::create_user, {{"name", "u"}, {"id", "AIDA1"}, {"tags", two}}) ==
+               "LimitExceeded");
+    BOOST_TEST(
+        f.err(iam_command::create_role,
+              {{"name", "r"}, {"id", "AROA1"}, {"trust_policy", trust_ec2}, {"tags", two}}) ==
+        "LimitExceeded");
+    // Nothing was created by any refused request.
+    BOOST_TEST(f.sm.managed_policy(account_id, "p") == nullptr);
+    BOOST_TEST(f.sm.user(account_id, "u") == nullptr);
+    BOOST_TEST(f.sm.role(account_id, "r") == nullptr);
+    BOOST_TEST(f.sm.account(account_id)->instance_profiles.empty());
+    BOOST_TEST(f.sm.account(account_id)->oidc_providers.empty());
+}
+
+// INV-OIDC-4: the thumbprint quota (5), at and past the bound.
+BOOST_AUTO_TEST_CASE(oidc_thumbprint_quota) {
+    fixture f;
+    boost::json::array five;
+    for (int i = 0; i < 5; ++i) {
+        five.emplace_back(std::string(40, static_cast<char>('a' + i)));
+    }
+    BOOST_TEST(
+        f.err(iam_command::create_oidc_provider, {{"url", "a.example.com"}, {"thumbprints", five}})
+            .empty());
+    auto six = five;
+    six.emplace_back(std::string(40, 'f'));
+    BOOST_TEST(f.err(iam_command::create_oidc_provider,
+                     {{"url", "b.example.com"}, {"thumbprints", six}}) == "LimitExceeded");
+}
+
+// INV-GRP-1, INV-DEL-1..4: an entity with dependants cannot be deleted.
+BOOST_AUTO_TEST_CASE(delete_conflicts_for_groups_and_roles) {
+    fixture f;
+    f.run(iam_command::create_group, {{"name", "g"}, {"id", "AGPA1"}});
+    f.run(iam_command::create_user, {{"name", "u"}, {"id", "AIDA1"}});
+    f.run(iam_command::add_user_to_group, {{"group", "g"}, {"user", "u"}});
+    BOOST_TEST(f.err(iam_command::delete_group, {{"name", "g"}}) == "DeleteConflict");
+    f.run(iam_command::remove_user_from_group, {{"group", "g"}, {"user", "u"}});
+    f.run(iam_command::put_inline_policy,
+          {{"kind", "group"}, {"name", "g"}, {"policy_name", "i"}, {"document", allow_all}});
+    BOOST_TEST(f.err(iam_command::delete_group, {{"name", "g"}}) == "DeleteConflict");
+    f.run(iam_command::delete_inline_policy,
+          {{"kind", "group"}, {"name", "g"}, {"policy_name", "i"}});
+    BOOST_TEST(f.err(iam_command::delete_group, {{"name", "g"}}).empty());
+
+    f.run(iam_command::create_role, {{"name", "r"}, {"id", "AROA1"}, {"trust_policy", trust_ec2}});
+    f.run(iam_command::put_inline_policy,
+          {{"kind", "role"}, {"name", "r"}, {"policy_name", "i"}, {"document", allow_all}});
+    BOOST_TEST(f.err(iam_command::delete_role, {{"name", "r"}}) == "DeleteConflict");
+    f.run(iam_command::delete_inline_policy,
+          {{"kind", "role"}, {"name", "r"}, {"policy_name", "i"}});
+    BOOST_TEST(f.err(iam_command::delete_role, {{"name", "r"}}).empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()

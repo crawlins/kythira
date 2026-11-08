@@ -23,6 +23,7 @@
 
 #include <kythira/iam/iam_seal.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
+#include <kythira/iam/iam_validation.hpp>
 
 #include <boost/json.hpp>
 
@@ -172,14 +173,9 @@ namespace detail {
     return id.size() == 12 && std::ranges::all_of(id, [](char c) { return c >= '0' && c <= '9'; });
 }
 
-/// AWS's alias rule: 3–63 lower-case letters, digits and hyphens, not
-/// starting or ending with a hyphen.
+/// AWS's alias rule (INV-ACCT-2, iam_validation.hpp).
 [[nodiscard]] inline auto valid_alias(std::string_view a) -> bool {
-    if (a.size() < 3 || a.size() > 63 || a.front() == '-' || a.back() == '-') {
-        return false;
-    }
-    return std::ranges::all_of(
-        a, [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; });
+    return validate::account_alias(a);
 }
 
 }  // namespace detail
@@ -201,7 +197,8 @@ template<admin_cluster C>
         alias = std::string(v->as_string());
         if (!alias.empty() && !detail::valid_alias(alias)) {
             return error_reply(400, iam_errors::invalid_input,
-                               "alias must be 3-63 lower-case letters, digits and hyphens.");
+                               "alias must be 3-63 lower-case letters, digits and single hyphens, "
+                               "and not a 12-digit number.");
         }
     }
 

@@ -273,7 +273,8 @@ node makes the same decision.
    - names are case-insensitively unique per account;
    - size quotas are enforced: a managed policy at most 6144 characters, a
      role trust policy 2048, inline policies 2048 per user, 5120 per group and
-     10240 per role, and 10 managed policies attached per entity. These are
+     10240 per role, and 20 managed policies attached per role and 10 per
+     user or group (AWS's defaults; `invariants.md` INV-QUOTA-1). These are
      configurable upward.
 5. Access-key secrets SHALL be sealed with AES-256-GCM under a key-encryption
    key derived from the unseal passphrase, with the access key id as
