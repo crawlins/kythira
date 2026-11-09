@@ -33,6 +33,11 @@ set_tests_properties(iam_policy_test PROPERTIES LABELS "unit;iam;iam-module" TIM
 kythira_iam_test(iam_evaluator_test iam_evaluator_test.cpp)
 set_tests_properties(iam_evaluator_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
 
+# Task 13: the authorizer hook (AKIA authentication, authorization through
+# evaluate(), the audit trail) and the service registry.
+kythira_iam_test(iam_authorizer_test iam_authorizer_test.cpp)
+set_tests_properties(iam_authorizer_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
+
 # Task 8: the IAM state machine and its secret sealing, with property tests
 # that replicas and snapshot restores agree and no plaintext secret reaches
 # the log or a snapshot.

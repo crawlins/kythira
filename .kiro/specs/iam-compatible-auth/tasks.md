@@ -664,6 +664,13 @@ because each has a zero-spend fallback.
   - Invariants (`invariants.md`): INV-KEY-4. Each one needs a named
     unit test, and the PR updates its row there.
   - _Requirements: 7.1–7.6, 14.2–14.4_
+  - Part 1 done: core `aws_request_authorizer.hpp`;
+    `iam_service_registry.hpp`; `services/iam_actions.hpp` (99 actions)
+    and `services/sts_actions.hpp` (9); `iam_authorizer.hpp`
+    (`authenticate` for AKIA keys, ASIA stubbed as InvalidClientTokenId,
+    `authorize`, `audit_log`); `iam_authorizer_test.cpp` (INV-KEY-4,
+    no secrets in audit lines). Part 2 left: the `elasticache` table,
+    replicas, the lag metric, fail-closed staleness, `--arn-partition`.
 
 ### Phase C — IAM Query API
 

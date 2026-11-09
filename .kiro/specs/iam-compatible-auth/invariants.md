@@ -22,6 +22,7 @@ Test files are under `services/iam/tests/` unless a path says otherwise:
 - `sm` is `iam_state_machine_test.cpp`;
 - `adm` is `iam_admin_test.cpp`;
 - `ev` is `iam_evaluator_test.cpp`;
+- `az` is `iam_authorizer_test.cpp`;
 - `pol` is `iam_policy_test.cpp` with its corpus, where `corpus:<file>`
   names a file under `corpus/`;
 - `sigv4` is `tests/sigv4_verifier_test.cpp`.
@@ -139,7 +140,7 @@ Source: [CreateAccessKey][cak].
 | INV-KEY-1 | The secret is returned once, and never stored or logged in plaintext | Tested: sm `access_keys`, `property_replicas_and_restores_agree` (no plaintext in the log or a snapshot), adm `list_accounts_carries_no_secrets` |
 | INV-KEY-2 | A new key is Active, and status is only Active or Inactive | Tested: sm `access_keys` |
 | INV-KEY-3 | With no UserName, the key belongs to the signer, who can be the root | Task 14 (sm `access_keys` covers the root's own keys) |
-| INV-KEY-4 | An inactive or deleted key cannot authenticate | Task 13 (authorizer) and task 14 (CLI test) |
+| INV-KEY-4 | An inactive or deleted key cannot authenticate | Tested: az `inv_key_4_unknown_inactive_deleted_and_temporary_keys_are_invalid_tokens` (CLI test: task 14) |
 
 ## OIDC providers
 
