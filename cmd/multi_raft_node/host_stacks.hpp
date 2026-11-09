@@ -390,6 +390,28 @@ auto run_host(const node_options& opt, Capacity capacity = {}) -> int {
             std::this_thread::sleep_for(opt._tick_interval);
         }
     });
+    // Stops and joins the driver if anything below throws. Without it a
+    // data or control server that failed to start (a port already taken)
+    // unwound past a joinable std::thread, and the host died in
+    // std::terminate -- "terminate called without an active exception",
+    // SIGABRT, no message -- instead of main() printing the error and
+    // exiting 1. The normal path below joins first, so this does nothing.
+    struct driver_guard {
+        std::atomic<bool>& _driving;
+        std::thread& _driver;
+        driver_guard(std::atomic<bool>& driving_flag, std::thread& driver_thread)
+            : _driving(driving_flag), _driver(driver_thread) {}
+        driver_guard(const driver_guard&) = delete;
+        auto operator=(const driver_guard&) -> driver_guard& = delete;
+        driver_guard(driver_guard&&) = delete;
+        auto operator=(driver_guard&&) -> driver_guard& = delete;
+        ~driver_guard() {
+            _driving.store(false, std::memory_order_release);
+            if (_driver.joinable()) {
+                _driver.join();
+            }
+        }
+    } const stop_driver_on_unwind{driving, driver};
 
     // Hoisted: `types` is dependent, so `types::serializer_type{}` inside the
     // braced-init below would need a `typename` the parser cannot supply there.
