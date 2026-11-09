@@ -569,6 +569,17 @@ the free-space and inode floors work as in file mode, voters' reports
 included. `KYTHIRA_CACHE_MIN_FREE_BYTES` is also the margin a follower keeps
 beyond an incoming snapshot's size. `KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES`
 sets how many command bytes are applied between log compactions.
+`KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC` (engine only, default `0`,
+unlimited) caps the snapshot bytes per second this node sends to followers
+it catches up, across all its shards, so a restarted or replaced node does
+not take the whole link. It is refused in the other modes, where it would do
+nothing: file mode catches a follower up by fetching chunks, at
+`KYTHIRA_CACHE_FETCH_BYTES_PER_SEC`.
+
+`services/redis/docker/engine-chaos-compose.yml` runs three nodes this way,
+and `docker-engine-chaos-tests` SIGKILLs and restarts them under load
+(the history must be linearizable) and kills a follower in the middle of a
+snapshot transfer (it must still catch up), under Docker and rootless Podman.
 
 ## Transactions
 

@@ -295,7 +295,7 @@ RocksDB is linked. Each task is one PR unless noted.
       killed and restarted, and served every value again from their
       databases.
 
-- [ ] 8. Crash and chaos
+- [x] 8. Crash and chaos
   - Failpoints between batch commit and sync, and between checkpoint and
     compaction; kill tests
   - docker-chaos scenario: `SIGKILL` replicas under write load, Redis
@@ -313,11 +313,39 @@ RocksDB is linked. Each task is one PR unless noted.
       them from the log, once each. Killing between the snapshot and the
       truncation leaves log entries the engine already holds; none applies
       again.
-    - Open: the docker-chaos scenario (SIGKILL under write load with the
-      Redis linearizability checker). It needs a container job that builds
-      `redis_gateway_node` with `CONFIG_REDIS_GATEWAY_ENGINE=y`, so RocksDB
-      in that job's vcpkg tree; file-install-snapshot task 8.3 rides on the
-      same scenario.
+    - docker-chaos scenario (November 9, 2026):
+      `services/redis/tests/docker/engine_chaos_test.cpp` over
+      `services/redis/docker/engine-chaos-compose.yml`, three
+      `redis_gateway_node` replicas with `KYTHIRA_CACHE_PERSISTENCE=engine`
+      (target `docker-engine-chaos-tests`). Six clients GET and SET 30 keys
+      across both shards with linearizable reads while the test SIGKILLs and
+      restarts each node in turn (twice), two at once (no quorum until they
+      return), then all three. Every operation goes into a Jepsen-style
+      history (`tests/docker_chaos/history.hpp`); errors after a write was
+      sent count as indeterminate. The final reads go through every node,
+      and the WGL checker must answer `ok` for every key (`unknown` fails
+      too). It runs in `redis-module.yml`'s new `engine-containers` job,
+      under Docker and rootless Podman, on the Ion Serializer Build job's
+      tree (`configs/ci_ion_defconfig`, g++-14, the same vcpkg cache key).
+      Locally both cases pass under Docker (about 2,650 acknowledged
+      writes and as many reads, 101 indeterminate) and rootless Podman
+      (2,879 writes, 2,877 reads, 135 indeterminate); every key `ok`, each
+      search under 310 steps.
+    - Found by it: `persistent_kv_state_machine` had no `sync_durable()`,
+      so on RocksDB (which syncs only when asked) its durable applied index
+      never moved, and a gateway on engine storage never compacted a log:
+      the scenario's 38 MB bulk load logged "snapshotting" on every entry
+      and kept the whole log. The node tests had not seen it because their
+      register machine has `sync_durable()`. `persistent_kv_state_machine`
+      and `persistent_test_kv_state_machine` now have it, and
+      `transactional_state_machine` forwards it when its inner machine
+      does, with unit tests for each.
+    - Seen on the way, not fixed here: the daemon built on the Boost future
+      backend segfaults when a peer is SIGKILLed: the backtrace ends in an
+      asio strand enqueue, run from a failed pre-vote response's
+      continuation. It matches the unfiled
+      "Boost-backend pre-vote crash" in TODO.md's disk-backed-build-cache
+      row. CI's gateway is the Folly build, which the local runs used.
 
 - [ ] 9. Measurement and docs
   - Bench rows: in-memory vs RocksDB (proposals/s, p99), restart time for a

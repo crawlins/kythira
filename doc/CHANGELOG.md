@@ -122,6 +122,28 @@ current list of outstanding work, see [TODO.md](TODO.md).
   `doc/persistent_state_machines.md` describes persistent groups for
   operators.
 
+- **A gateway on RocksDB compacts its log.** `persistent_kv_state_machine`
+  could not be asked to sync, and RocksDB syncs only when asked, so the
+  durable applied index never moved and a `redis_gateway_node` with
+  `KYTHIRA_CACHE_PERSISTENCE=engine` kept its whole Raft log, however long.
+  It now has `sync_durable()`, and `transactional_state_machine` passes it
+  through, so the node syncs before compacting as it already did for the
+  test machines.
+
+- **Engine storage survives SIGKILL, checked against a linearizability
+  checker.** `docker-engine-chaos-tests` runs three gateway replicas on
+  RocksDB under a read and write load and SIGKILLs them, one at a time,
+  two at once and all three, starting each again from its volume. The
+  history must pass the WGL checker on every key. A second case cuts off
+  and kills a lagging replica in the middle of a snapshot transfer; it
+  must still catch up. Both run under Docker and rootless Podman in
+  `redis-module.yml`'s new `engine-containers` job.
+
+- **Engine-mode snapshot sends can be paced.**
+  `KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC` caps the snapshot bytes per second
+  a gateway on engine storage sends to the followers it catches up, across
+  all its shards (default unlimited). Other persistence modes refuse it.
+
 - **Node metrics are safe to emit from any thread.** `node<Types>` built
   metrics from several threads at once, some without its mutex, which
   could mix dimensions between metrics or crash a back-end. It now holds

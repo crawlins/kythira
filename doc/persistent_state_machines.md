@@ -23,6 +23,13 @@ The RocksDB engine opens one database per node, with column families `data`,
 `txn` and `meta`. Every group on the node lives in its own key range of that
 database. Writes go to the WAL without fsync, and `sync` makes them durable.
 
+Because RocksDB syncs only when asked, a state machine on it should offer
+`sync_durable()`, which makes every batch it has applied durable. The node
+calls it before compacting (`_persistent_sync_lag_entries`). Without it the
+durable applied index never moves and the group's log is never compacted.
+`persistent_kv_state_machine`, the test machines and
+`transactional_state_machine` (when its inner machine has one) all do.
+
 ## What the node does differently
 
 - **Restart:** the node starts at the engine's applied index and reloads
@@ -56,7 +63,8 @@ Versioned (`mvcc::on`) hosts are not supported on the persistent path yet.
 `redis_gateway_node` built with `CONFIG_REDIS_GATEWAY_ENGINE=y` and started
 with `KYTHIRA_CACHE_PERSISTENCE=engine` runs its shards on
 `persistent_kv_state_machine` over RocksDB. See *Engine storage* in
-`doc/redis-gateway.md` for the data directory layout and the disk budget.
+`doc/redis-gateway.md` for the data directory layout, the disk budget and
+`KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC`, which sets the node's snapshot pacer.
 
 ## Catching up a follower
 
@@ -158,3 +166,8 @@ fault points:
 - `txn_state_machine_persistent_test` holds the persistent transaction
   wrapper to the in-memory one, and `multi_raft_txn_bank_persistent_test`
   runs the bank workload on a persistent host.
+- `docker-engine-chaos-tests` (`services/redis/tests/docker/engine_chaos_test.cpp`)
+  runs three gateway replicas on RocksDB in containers. It SIGKILLs them under
+  load and checks the history for linearizability, and it kills a lagging
+  replica in the middle of a snapshot transfer. It runs under Docker and
+  rootless Podman.
