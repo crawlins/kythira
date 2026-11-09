@@ -38,11 +38,19 @@ asked.
   - `aws_eventstream.hpp`: prelude, headers, CRCs; AWS's published vectors
   - _Requirements: 4.1-4.3_
 
-- [ ] 3. Record segment store (core)
+- [x] 3. Record segment store (core)
   - `record_segment_store.hpp`: append with durable barrier, roll, read,
     peer fetch with SHA-256, seal, trim, restart truncation of unacknowledged
     tails
   - Conformance suite reusable by DynamoDB's change log
+  - Done: `include/raft/record_segment_store.hpp`,
+    `tests/record_segment_store_conformance.hpp` (17 cases, macro
+    `KYTHIRA_RECORD_SEGMENT_CONFORMANCE`), `tests/record_segment_store_test.cpp`
+    runs it for Kinesis-shaped and change-log-shaped streams. Rolls depend
+    only on record sizes and timestamps, so replicas write byte-identical
+    segments and an active segment's prefix digest is fetchable and
+    verifiable after a snapshot restore. Tiering (task 10) and encryption
+    (task 14) build on it.
   - _Requirements: 11.1, 11.5_
 
 ### Phase 2: core data plane
