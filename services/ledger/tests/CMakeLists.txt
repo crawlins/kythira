@@ -37,6 +37,11 @@ set_tests_properties(ledger_merkle_test PROPERTIES LABELS "unit;ledger" TIMEOUT 
 kythira_ledger_test(ledger_state_machine_test ledger_state_machine_test.cpp)
 set_tests_properties(ledger_state_machine_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
 
+# Task 5: transactions: snapshot reads, read-set validation, limits,
+# session expiry and leader change, and the serializability property test.
+kythira_ledger_test(ledger_transactions_test ledger_transactions_test.cpp)
+set_tests_properties(ledger_transactions_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+
 # Task 1: ledger_node links and runs.
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)
 set_tests_properties(ledger_node_self_test PROPERTIES LABELS "unit;ledger" TIMEOUT 60)
