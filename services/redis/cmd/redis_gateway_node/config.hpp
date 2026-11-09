@@ -39,6 +39,12 @@ enum class cache_persistence : std::uint8_t {
     /// Values in the chunk store under `KYTHIRA_CACHE_DATA_DIR`, Raft state
     /// in the binary segmented engine beside it.
     file = 1,
+    /// Values in a RocksDB database under `KYTHIRA_CACHE_DATA_DIR/engine`,
+    /// one per node, run by `persistent_kv_state_machine`; Raft logs in
+    /// `raft/<group>` and snapshot transfers staged in `snapshots/` beside it
+    /// (.kiro/specs/persistent-state-machine/ task 7). Needs a build with
+    /// `CONFIG_REDIS_GATEWAY_ENGINE=y`.
+    engine = 2,
 };
 
 /// The disk-backed cache's knobs (.kiro/specs/disk-backed-build-cache/

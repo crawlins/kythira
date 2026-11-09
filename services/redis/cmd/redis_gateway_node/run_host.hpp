@@ -35,6 +35,10 @@
 #include <kythira/redis/redis_kv_mvcc_state_machine.hpp>
 #include <kythira/redis/redis_kv_state_machine.hpp>
 #include <raft/txn_state_machine.hpp>
+#if defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
+#include <raft/rocksdb_kv_engine.hpp>
+#include <kythira/redis/persistent_kv_state_machine.hpp>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -168,6 +172,7 @@ template<typename Serializer> struct beast_stack {
 /// Values and Raft state in RAM: the gateway before the disk-backed cache.
 struct memory_storage {
     static constexpr bool on_disk = false;
+    static constexpr bool engine = false;
     // CONFIG_REDIS_GATEWAY_TRANSACTIONS=y wraps the KV state machine for
     // cross-shard transactions (multi-raft-transactions task 9). A build
     // choice, not a runtime one: the wrapper's snapshot format differs, so
@@ -195,11 +200,52 @@ struct memory_storage {
 /// engine (.kiro/specs/disk-backed-build-cache/).
 struct file_storage {
     static constexpr bool on_disk = true;
+    static constexpr bool engine = false;
     using state_machine_type = kythira::cache_kv_state_machine<std::uint64_t>;
     using persistence_engine_type =
         kythira::binary_file_persistence_engine<kythira::host_node_id, std::uint64_t,
                                                 std::uint64_t>;
 };
+
+#if defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
+/// Values in the node's RocksDB database, Raft logs in the binary segmented
+/// engine beside it (.kiro/specs/persistent-state-machine/ task 7). Not the
+/// chunk store's `on_disk`: no chunk store, fetcher or HTTP front end.
+/// Transactions wrap the persistent machine, whose intents then live in the
+/// database too (task 6); snapshot isolation is not built for it.
+struct engine_storage {
+    static constexpr bool on_disk = false;
+    static constexpr bool engine = true;
+    using kv_type = kythira::persistent_kv_state_machine<kythira::rocksdb_kv_engine, std::uint64_t>;
+#if defined(KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
+#error "CONFIG_REDIS_GATEWAY_ENGINE does not combine with CONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION"
+#elif defined(KYTHIRA_REDIS_GATEWAY_TRANSACTIONS)
+    using state_machine_type =
+        kythira::transactional_state_machine<kv_type, std::string, kythira::redis_kv_partitioner>;
+#else
+    using state_machine_type = kv_type;
+#endif
+    using persistence_engine_type =
+        kythira::binary_file_persistence_engine<kythira::host_node_id, std::uint64_t,
+                                                std::uint64_t>;
+};
+
+/// Bytes under `dir`, for the engine's disk budget. Files can vanish while
+/// RocksDB compacts, so a file that cannot be sized counts as empty.
+inline auto directory_bytes(const std::filesystem::path& dir) -> std::uint64_t {
+    std::uint64_t total = 0;
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(dir, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        std::error_code size_ec;
+        if (it->is_regular_file(size_ec)) {
+            const auto n = it->file_size(size_ec);
+            total += size_ec ? 0 : n;
+        }
+    }
+    return total;
+}
+#endif
 
 template<typename Stack, typename Storage> struct host_types {
     using future_type = kythira::future_default<std::vector<std::byte>>;
@@ -419,7 +465,7 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
         .network_server = typename types::network_server_type{stack._server},
         .store_factory =
             [&opt](const std::uint64_t& group) {
-                if constexpr (Storage::on_disk) {
+                if constexpr (Storage::on_disk || Storage::engine) {
                     return typename types::persistence_engine_type{opt._cache._data_dir / "raft" /
                                                                    std::to_string(group)};
                 } else {
@@ -444,6 +490,42 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
         };
         cfg.config._snapshot_threshold_bytes = opt._cache._snapshot_threshold_bytes;
     }
+    // The engine node's guard: free space and the database's size against
+    // the floors and the budget, with the peers' reports, as the chunk store
+    // node's (disk-backed-build-cache task 7).
+    std::unique_ptr<kythira::cache_disk_guard> engine_guard;
+    std::function<kythira::cache_node_report()> engine_refresh;
+#if defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
+    if constexpr (Storage::engine) {
+        // Layout: engine/ (the database), raft/<group> (Raft logs) and
+        // snapshots/ (checkpoints and incoming transfers, on the database's
+        // filesystem so ingest hard-links rather than copies).
+        const auto engine_dir = opt._cache._data_dir / "engine";
+        std::filesystem::create_directories(engine_dir);
+        std::filesystem::create_directories(opt._cache._data_dir / "raft");
+        std::filesystem::create_directories(opt._cache._data_dir / "snapshots");
+        cfg.state_engine = std::make_shared<kythira::rocksdb_kv_engine>(engine_dir);
+        cfg.config._snapshot_staging_directory = opt._cache._data_dir / "snapshots";
+        cfg.config._snapshot_disk_margin_bytes = opt._cache._min_free_bytes;
+        cfg.config._snapshot_threshold_bytes = opt._cache._snapshot_threshold_bytes;
+        engine_guard = std::make_unique<kythira::cache_disk_guard>(
+            node_text(opt._node_id), kythira::cache_disk_guard_options{
+                                         ._max_disk_bytes = opt._cache._max_disk_bytes,
+                                         ._min_free_bytes = opt._cache._min_free_bytes,
+                                         ._min_free_inodes = opt._cache._min_free_inodes,
+                                     });
+        engine_refresh = [g = engine_guard.get(), dir = opt._cache._data_dir, engine_dir] {
+            const auto space = kythira::probe_filesystem_space(dir);
+            return g->set_local(kythira::cache_node_report{
+                ._free_bytes = space._free_bytes,
+                ._free_inodes = space._free_inodes,
+                ._store_bytes = directory_bytes(engine_dir),
+                ._pinned_bytes = 0,
+            });
+        };
+        engine_refresh();
+    }
+#endif
     cfg.logger = kythira::console_logger{opt._log_level};
     cfg.logger_factory = [level = opt._log_level](const std::uint64_t&) {
         return kythira::console_logger{level};
@@ -464,7 +546,7 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
     // tiling below can reach (shards count up from 1). Only the in-memory
     // store is transactional; config.cpp refuses transactions with file
     // persistence, and the file stack has no wrapper to hold the oracle.
-    if constexpr (!Storage::on_disk) {
+    if constexpr (!Storage::on_disk && !Storage::engine) {
         cfg.oracle_group = k_oracle_group;
     }
 #endif
@@ -489,7 +571,7 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
         start = end;
     }
 #if defined(KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
-    if constexpr (!Storage::on_disk) {
+    if constexpr (!Storage::on_disk && !Storage::engine) {
         host->create_oracle_group(voters);
     }
 #endif
@@ -673,6 +755,70 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
         });
     }
 
+    if (engine_guard) {
+        auto voter_names = [](const std::vector<node_id_type>& v) {
+            std::vector<std::string> out;
+            out.reserve(v.size());
+            for (const auto& id : v) {
+                out.push_back(node_text(id));
+            }
+            return out;
+        };
+        auto* guard = engine_guard.get();
+        typename gateway_type::cache_hooks hooks;
+        hooks._write_refusal = [guard, voter_names](const std::uint64_t&,
+                                                    const std::vector<node_id_type>& v) {
+            return guard->refusal(voter_names(v));
+        };
+        auto evicted_at = std::make_shared<std::pair<
+            std::mutex, std::map<std::uint64_t, kythira::cache_disk_guard::clock::time_point>>>();
+        hooks._excess_bytes = [guard, voter_names, evicted_at](const std::uint64_t& group,
+                                                               const std::vector<node_id_type>& v) {
+            const auto now = kythira::cache_disk_guard::clock::now();
+            const std::lock_guard lock(evicted_at->first);
+            auto& last = evicted_at->second[group];
+            const auto excess = guard->excess_bytes(voter_names(v), now, last);
+            if (excess > 0) {
+                last = now;
+            }
+            return excess;
+        };
+        hooks._advisory = [guard, refresh = engine_refresh] {
+            return guard->self() + ";" + refresh().encode();
+        };
+        hooks._on_advisory = [guard](std::string_view payload) {
+            auto semi = payload.find(';');
+            if (semi == std::string_view::npos) {
+                return;
+            }
+            if (auto r = kythira::cache_node_report::decode(payload.substr(semi + 1))) {
+                guard->record(std::string(payload.substr(0, semi)), *r);
+            }
+        };
+        hooks._info = [guard, h = host.get()] {
+            const auto local = guard->local().value_or(kythira::cache_node_report{});
+            std::uint64_t keys = 0;
+            for (const auto& g : h->group_ids()) {
+                if (auto* node = h->group_node(g)) {
+                    keys += node->with_state_machine(
+                        [](auto& sm) -> std::uint64_t { return sm.approximate_key_count(); });
+                }
+            }
+            std::ostringstream out;
+            out << "# Cache\r\n"
+                << "cache_persistence:engine\r\n"
+                << "cache_keys:" << keys << "\r\n"
+                << "cache_store_bytes:" << local._store_bytes << "\r\n"
+                << "cache_max_disk_bytes:" << guard->options()._max_disk_bytes << "\r\n"
+                << "cache_fs_free_bytes:" << local._free_bytes << "\r\n"
+                << "cache_fs_free_inodes:" << local._free_inodes << "\r\n"
+                << "cache_space_refusals:" << guard->refusals() << "\r\n"
+                << "cache_peer_reports:" << guard->fresh_peers() << "\r\n";
+            return out.str();
+        };
+        gateway.set_cache_hooks(std::move(hooks));
+    }
+
     gateway.start();
     if constexpr (Storage::on_disk) {
         if (!opt._cache._http_listen.empty() || !opt._cache._https_listen.empty()) {
@@ -692,11 +838,15 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
         while (driving.load(std::memory_order_acquire)) {
             auto report = host->tick();
             if (report._policy_ran) {
-                if (disk) {
+                if (disk || engine_refresh) {
                     // Fresh figures for the write gate and the budget
                     // before the gateway evicts or advises against them.
                     try {
-                        disk->refresh();
+                        if (disk) {
+                            disk->refresh();
+                        } else {
+                            engine_refresh();
+                        }
                     } catch (const std::exception& e) {
                         logger.log(kythira::log_level::warning, "cache: statvfs failed",
                                    {{"error", e.what()}});
@@ -743,7 +893,8 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
     std::cout << "redis_gateway_node " << opt._node_id << " ready: raft=" << opt._raft_port
               << " redis=" << gateway.port() << " tls=" << gateway.tls_port()
               << " shards=" << (cuts.size() + 1) << " serializer=" << Serializer{}.media_type()
-              << " persistence=" << (Storage::on_disk ? "file" : "memory");
+              << " persistence="
+              << (Storage::on_disk ? "file" : (Storage::engine ? "engine" : "memory"));
     if constexpr (Storage::on_disk) {
         std::cout << " http=" << front_end->port() << " https=" << front_end->tls_port();
     }

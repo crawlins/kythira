@@ -51,6 +51,13 @@ engine on restart. Memory therefore grows with the number of open
 transactions and with records not yet cleaned up, not with the data.
 Versioned (`mvcc::on`) hosts are not supported on the persistent path yet.
 
+## The Redis gateway
+
+`redis_gateway_node` built with `CONFIG_REDIS_GATEWAY_ENGINE=y` and started
+with `KYTHIRA_CACHE_PERSISTENCE=engine` runs its shards on
+`persistent_kv_state_machine` over RocksDB. See *Engine storage* in
+`doc/redis-gateway.md` for the data directory layout and the disk budget.
+
 ## Catching up a follower
 
 If a follower falls behind the leader's compacted log, the leader sends a

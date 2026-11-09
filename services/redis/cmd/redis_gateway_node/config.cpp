@@ -129,6 +129,56 @@ auto is_set(const char* name) -> bool {
     return v != nullptr && *v != '\0';
 }
 
+/// `KYTHIRA_CACHE_PERSISTENCE=engine` (.kiro/specs/persistent-state-machine/
+/// task 7): values in the node's RocksDB database. The data directory and
+/// the disk budget mean what they mean in file mode; the chunk store's and
+/// the HTTP front end's variables have nothing to apply to, so they are
+/// refused rather than ignored.
+void read_engine_options(node_options& o) {
+#if !defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
+    (void)o;
+    throw std::invalid_argument(
+        "redis_gateway_node: KYTHIRA_CACHE_PERSISTENCE=engine needs a build with "
+        "CONFIG_REDIS_GATEWAY_ENGINE=y");
+#else
+    auto& c = o._cache;
+    c._persistence = cache_persistence::engine;
+    if (o._serializer != wire_serializer::cbor) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_PERSISTENCE=engine needs "
+            "KYTHIRA_WIRE_SERIALIZER=cbor");
+    }
+    for (const char* name :
+         {"KYTHIRA_CACHE_HTTP_LISTEN", "KYTHIRA_CACHE_HTTPS_LISTEN", "KYTHIRA_CACHE_PEER_HTTP",
+          "KYTHIRA_CACHE_CHUNK_BYTES", "KYTHIRA_CACHE_MAX_VALUE_BYTES",
+          "KYTHIRA_CACHE_PACK_THRESHOLD_BYTES", "KYTHIRA_CACHE_ORPHAN_GRACE_ENTRIES",
+          "KYTHIRA_CACHE_FETCH_BYTES_PER_SEC"}) {
+        if (is_set(name)) {
+            throw std::invalid_argument(std::string("redis_gateway_node: ") + name +
+                                        " needs KYTHIRA_CACHE_PERSISTENCE=file");
+        }
+    }
+    c._data_dir = get_required("KYTHIRA_CACHE_DATA_DIR");
+    c._max_disk_bytes =
+        to_u64("KYTHIRA_CACHE_MAX_DISK_BYTES", get_required("KYTHIRA_CACHE_MAX_DISK_BYTES"));
+    if (c._max_disk_bytes == 0) {
+        throw std::invalid_argument("redis_gateway_node: KYTHIRA_CACHE_MAX_DISK_BYTES must be > 0");
+    }
+    c._min_free_bytes = to_u64("KYTHIRA_CACHE_MIN_FREE_BYTES",
+                               get_opt("KYTHIRA_CACHE_MIN_FREE_BYTES", "1073741824"));
+    c._min_free_inodes =
+        to_u64("KYTHIRA_CACHE_MIN_FREE_INODES", get_opt("KYTHIRA_CACHE_MIN_FREE_INODES", "10000"));
+    c._snapshot_threshold_bytes =
+        to_u64("KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES",
+               get_opt("KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES", "268435456"));
+    // As in file mode, the disk budget bounds the values, so the memory
+    // mode's per-shard RAM bound applies only when set explicitly.
+    if (const char* v = std::getenv("KYTHIRA_REDIS_MAX_SHARD_BYTES"); v == nullptr || *v == '\0') {
+        o._gateway._max_shard_bytes = std::numeric_limits<std::size_t>::max();
+    }
+#endif
+}
+
 /// `KYTHIRA_CACHE_*` (.kiro/specs/disk-backed-build-cache/ design
 /// "Configuration"). Runs after the gateway's own variables, whose TLS and
 /// forwarding choices it follows.
@@ -149,10 +199,14 @@ void read_cache_options(node_options& o) {
         }
         return;
     }
+    if (mode == "engine") {
+        read_engine_options(o);
+        return;
+    }
     if (mode != "file") {
         throw std::invalid_argument(
-            "redis_gateway_node: KYTHIRA_CACHE_PERSISTENCE must be file or memory, got '" + mode +
-            "'");
+            "redis_gateway_node: KYTHIRA_CACHE_PERSISTENCE must be file, engine or memory, got '" +
+            mode + "'");
     }
     c._persistence = cache_persistence::file;
     if (o._serializer != wire_serializer::cbor) {
@@ -463,13 +517,13 @@ auto from_env() -> node_options {
         }
     }
     read_cache_options(o);
-    if (g._transactions && o._cache._persistence != cache_persistence::memory) {
+    if (g._transactions && o._cache._persistence == cache_persistence::file) {
         // The disk-backed cache's state machine is not wrapped for
         // transactions (its chunk-referencing snapshots are untested under
-        // the intent layer), so only the in-memory store offers them.
+        // the intent layer). The in-memory and engine stores offer them.
         throw std::invalid_argument(
             "redis_gateway_node: KYTHIRA_REDIS_TRANSACTIONS=on needs "
-            "KYTHIRA_CACHE_PERSISTENCE=memory");
+            "KYTHIRA_CACHE_PERSISTENCE=memory or engine");
     }
     return o;
 }
@@ -546,11 +600,12 @@ auto usage() -> std::string {
            "\n"
            "\n"
            "Disk-backed cache (environment; .kiro/specs/disk-backed-build-cache/):\n"
-           "  KYTHIRA_CACHE_PERSISTENCE        file | memory (values and Raft state in RAM) "
-           "[file]\n"
-           "  KYTHIRA_CACHE_DATA_DIR           chunk store and Raft state (required for file)\n"
-           "  KYTHIRA_CACHE_MAX_DISK_BYTES     chunk-store budget per node; evicts above it "
-           "(required for file)\n"
+           "  KYTHIRA_CACHE_PERSISTENCE        file | engine (RocksDB, needs "
+           "CONFIG_REDIS_GATEWAY_ENGINE=y) | memory (values and Raft state in RAM) [file]\n"
+           "  KYTHIRA_CACHE_DATA_DIR           chunk store or engine, and Raft state (required "
+           "for file and engine)\n"
+           "  KYTHIRA_CACHE_MAX_DISK_BYTES     store budget per node; evicts above it "
+           "(required for file and engine)\n"
            "  KYTHIRA_CACHE_MIN_FREE_BYTES     refuse writes below this free space   "
            "[1073741824]\n"
            "  KYTHIRA_CACHE_MIN_FREE_INODES    refuse writes below this many inodes  [10000]\n"

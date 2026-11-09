@@ -108,6 +108,16 @@ if(folly_FOUND)
                           OpenSSL::SSL OpenSSL::Crypto)
     set_tests_properties(redis_gateway_disk_store_integration_test PROPERTIES
         LABELS "multi-raft;redis;cache" TIMEOUT 600)
+    # The same cases over the persistent persistent_kv_state_machine, one
+    # memory_kv_engine per host (.kiro/specs/persistent-state-machine/ task 7).
+    kythira_redis_test(redis_gateway_engine_store_integration_test
+                       redis_gateway_engine_store_integration_test.cpp)
+    target_compile_definitions(redis_gateway_engine_store_integration_test PRIVATE
+        KYTHIRA_REDIS_GOLDEN_DIR="${KYTHIRA_REDIS_GOLDEN_DIR}")
+    target_link_libraries(redis_gateway_engine_store_integration_test PRIVATE
+                          OpenSSL::SSL OpenSSL::Crypto)
+    set_tests_properties(redis_gateway_engine_store_integration_test PROPERTIES
+        LABELS "multi-raft;redis" TIMEOUT 600)
     # Task 6: the cache's HTTP front end over three in-process hosts,
     # including a 1 GiB PUT whose peak RSS must stay under 64 MiB.
     kythira_redis_test(cache_http_front_end_test cache_http_front_end_test.cpp)

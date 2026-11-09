@@ -1009,7 +1009,9 @@ jobs:
       # job is not a second full build. The ledger module (services/ledger/)
       # needs ion-c, so this is the job that builds and tests it. The RocksDB
       # engine (persistent-state-machine task 5) is the other opt-in port in
-      # this tree, so its conformance test is built and run here too.
+      # this tree, so its conformance test is built and run here too, and so
+      # is redis_gateway_node with its engine storage (task 7), the one
+      # target that links it.
       - name: Build Ion targets
         run: |
           cmake --build build -j$(nproc) --target \
@@ -1035,7 +1037,8 @@ jobs:
             ledger_host_test \
             ledger_ctl \
             ledger_node \
-            rocksdb_kv_engine_test
+            rocksdb_kv_engine_test \
+            redis_gateway_node
 
       # Same check as build-and-test's; see scripts/check-linker.sh.
       - name: Assert binaries were linked by mold
