@@ -28,7 +28,10 @@
 // - rejected: no block. Codes: invalid_entry (malformed entry), stale_block
 //   (the entry's seq, previous hash or timestamp no longer follow the last
 //   block: the leader prepared it against a state another entry has since
-//   changed, and retries), and per-statement codes table_exists,
+//   changed, and retries), occ_conflict (the entry's read set no longer
+//   holds: something it read changed in a block at or after its snapshot,
+//   see ledger_sessions.hpp), transaction_too_large (over ledger_options),
+//   and per-statement codes table_exists,
 //   table_not_found, table_inactive, table_active, document_exists,
 //   document_not_found, version_mismatch, invalid_path, document_too_large.
 //   The applied index still advances.
@@ -243,8 +246,21 @@ struct proven_revision {
     hash256 digest{};
 };
 
+/// Limits apply() enforces. They must be the same on every replica of a
+/// ledger, since a rejection is part of the replicated outcome.
 struct ledger_options {
     std::size_t max_document_bytes = default_max_document_bytes;
+    /// Document statements per transaction (Requirement 7.5).
+    std::size_t max_changed_documents = 40;
+    /// Total Ion binary size of a transaction's statements (Requirement
+    /// 7.5); below the Raft entry limit.
+    std::size_t max_statement_bytes = std::size_t{4} << 20U;
+};
+
+/// One page of a snapshot table scan.
+struct scan_page {
+    std::vector<revision> documents;
+    std::optional<std::string> next;  // id to resume after, if more remain
 };
 
 template<kythira::kv_engine Engine> class basic_ledger_state_machine {
@@ -371,7 +387,8 @@ public:
     /// next seq, the last block's hash, `timestamp` clamped to the last
     /// block's, and the block hash every replica will recompute.
     [[nodiscard]] auto prepare(std::string tx_id, std::int64_t timestamp,
-                               const std::vector<ion_value>& statement_ions) const
+                               const std::vector<ion_value>& statement_ions,
+                               std::optional<read_set> reads = std::nullopt) const
         -> prepared_transaction {
         const std::lock_guard lock(mutex_);
         prepared_transaction out;
@@ -380,6 +397,7 @@ public:
         e.block_timestamp = tip_ ? std::max(timestamp, tip_->timestamp) : timestamp;
         e.seq = tip_ ? tip_->seq + 1 : 0;
         e.previous_block_hash = tip_ ? tip_->hash : genesis_previous_hash;
+        e.reads = std::move(reads);
         try {
             if (!valid_id(e.tx_id)) {
                 throw ledger_format_error("invalid transaction id");
@@ -445,6 +463,56 @@ public:
             return std::nullopt;
         }
         return stored_revision(table_name, id, cur->version);
+    }
+
+    /// The number of blocks, i.e. the snapshot a transaction beginning now
+    /// reads at (Requirement 7.1).
+    [[nodiscard]] auto block_count() const -> std::uint64_t {
+        const std::lock_guard lock(mutex_);
+        return tip_ ? tip_->seq + 1 : 0;
+    }
+
+    /// A document as of the first `blocks` blocks: its newest revision in
+    /// a block below `blocks`, or nullopt if it did not exist or was
+    /// deleted then.
+    [[nodiscard]] auto get_document_at(std::string_view table_name, std::string_view id,
+                                       std::uint64_t blocks) const -> std::optional<revision> {
+        const std::lock_guard lock(mutex_);
+        auto r = revision_before(table_name, id, blocks);
+        if (r && !r->data) {
+            return std::nullopt;
+        }
+        return r;
+    }
+
+    /// Up to `limit` live documents of a table as of the first `blocks`
+    /// blocks, in id order, after `after` (exclusive) when given.
+    [[nodiscard]] auto scan_table_at(std::string_view table_name, std::uint64_t blocks,
+                                     std::optional<std::string> after, std::size_t limit) const
+        -> scan_page {
+        const std::lock_guard lock(mutex_);
+        scan_page page;
+        const std::string from = prefix_ + "current/" + std::string(table_name) + "/";
+        kythira::key_range range = prefix_range(from);
+        if (after) {
+            range.start = from + *after + '\0';
+        }
+        engine_->scan(kythira::column_family::data, range, kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view) {
+                          const std::string id(key.substr(from.size()));
+                          if (page.documents.size() == limit) {
+                              page.next = page.documents.empty()
+                                              ? std::nullopt
+                                              : std::optional(page.documents.back().id);
+                              return false;
+                          }
+                          auto r = revision_before(table_name, id, blocks);
+                          if (r && r->data) {
+                              page.documents.push_back(std::move(*r));
+                          }
+                          return true;
+                      });
+        return page;
     }
 
     /// One revision of a document, a delete's included.
@@ -585,6 +653,72 @@ private:
     [[nodiscard]] auto key_table_change(std::string_view table_name) const -> std::string {
         return prefix_ + "tchg/" + std::string(table_name);
     }
+    [[nodiscard]] auto key_index_change(std::string_view table_name, std::string_view index,
+                                        const hash256& value_hash) const -> std::string {
+        return prefix_ + "ichg/" + std::string(table_name) + "/" + std::string(index) + "/" +
+               to_hex(value_hash);
+    }
+
+    /// A change marker's block seq, if the marker exists.
+    [[nodiscard]] auto marker(const std::string& key) const -> std::optional<std::uint64_t> {
+        const auto v = engine_->get(kythira::column_family::data, key);
+        if (!v) {
+            return std::nullopt;
+        }
+        return std::stoull(*v);
+    }
+
+    /// Why `reads` no longer hold, or nullopt if they all do.
+    [[nodiscard]] auto read_conflict(const read_set& reads) const -> std::optional<std::string> {
+        for (const auto& d : reads.documents) {
+            const auto cur = stored_current(d.table, d.id);
+            if (cur && cur->seq >= reads.blocks) {
+                return "document " + d.table + "/" + d.id + " changed in block " +
+                       std::to_string(cur->seq);
+            }
+        }
+        for (const auto& i : reads.indexes) {
+            if (const auto m = marker(key_index_change(i.table, i.index, i.value_hash));
+                m && *m >= reads.blocks) {
+                return "index key " + i.table + "." + i.index + " changed in block " +
+                       std::to_string(*m);
+            }
+        }
+        for (const auto& t : reads.tables) {
+            if (const auto m = marker(key_table_change(t)); m && *m >= reads.blocks) {
+                return "table " + t + " changed in block " + std::to_string(*m);
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// The newest revision of a document in a block below `blocks`.
+    [[nodiscard]] auto revision_before(std::string_view table_name, std::string_view id,
+                                       std::uint64_t blocks) const -> std::optional<revision> {
+        const auto cur = stored_current(table_name, id);
+        if (!cur) {
+            return std::nullopt;
+        }
+        if (cur->seq < blocks) {
+            return stored_revision(table_name, id, cur->version);
+        }
+        // Changed since: walk back from the newest version (a reverse seek;
+        // only the revisions written after the snapshot are passed over).
+        std::optional<revision> found;
+        const std::string from =
+            prefix_ + "rev/" + std::string(table_name) + "/" + std::string(id) + "/";
+        engine_->scan(kythira::column_family::data, prefix_range(from),
+                      kythira::scan_direction::reverse,
+                      [&](std::string_view, std::string_view value) {
+                          auto r = revision::from_ion(parse_stored(value));
+                          if (r.seq < blocks) {
+                              found = std::move(r);
+                              return false;
+                          }
+                          return true;
+                      });
+        return found;
+    }
 
     // ── Stored records ──────────────────────────────────────────────────────
 
@@ -698,6 +832,33 @@ private:
             return apply_result::rejected("stale_block",
                                           "entry prepared for block " + std::to_string(e.seq) +
                                               ", next block is " + std::to_string(next_seq));
+        }
+
+        if (e.reads) {
+            if (e.reads->blocks > next_seq) {
+                return apply_result::rejected("invalid_entry", "read set from a future block");
+            }
+            if (auto why = read_conflict(*e.reads)) {
+                return apply_result::rejected("occ_conflict", std::move(*why));
+            }
+        }
+        std::size_t changed_documents = 0;
+        std::size_t statement_bytes = 0;
+        for (const auto& st : e.statements) {
+            changed_documents += st.is_document_op() ? 1U : 0U;
+            statement_bytes += st.ion.to_binary().size();
+        }
+        if (changed_documents > options_.max_changed_documents) {
+            return apply_result::rejected("transaction_too_large",
+                                          std::to_string(changed_documents) +
+                                              " document statements, limit " +
+                                              std::to_string(options_.max_changed_documents));
+        }
+        if (statement_bytes > options_.max_statement_bytes) {
+            return apply_result::rejected("transaction_too_large",
+                                          std::to_string(statement_bytes) +
+                                              " bytes of statements, limit " +
+                                              std::to_string(options_.max_statement_bytes));
         }
 
         std::map<std::string, table_info, std::less<>> tables;

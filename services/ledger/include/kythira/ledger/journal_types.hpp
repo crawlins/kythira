@@ -11,7 +11,7 @@
 //
 //   { type: ledger_txn, txId: "<22 base62>", blockTimestamp: <timestamp>,
 //     seq: <block seq>, previousBlockHash: {{...}}, blockHash: {{...}},
-//     statements: [ <statement>, ... ] }
+//     statements: [ <statement>, ... ], readSet: <read set, optional> }
 //
 // The leader fills in seq, previousBlockHash and blockHash from its own
 // applied state (ledger_state_machine::prepare). Every replica recomputes
@@ -585,6 +585,102 @@ inline auto patch_remove_path(ion_value& root, const document_path& path) -> voi
 
 // ── Transaction entries ─────────────────────────────────────────────────────
 
+/// What a transaction read, for optimistic validation in apply
+/// (Requirement 7.2-7.3). The reads saw the first `blocks` blocks (seq <
+/// blocks). Apply rejects the transaction with occ_conflict if any document
+/// read, any index key looked up or any table scanned has changed in a
+/// block at or after that.
+struct read_set {
+    struct document_read {
+        std::string table;
+        std::string id;
+        std::int64_t version = -1;  // -1: the read found no document
+    };
+    struct index_read {
+        std::string table;
+        std::string index;
+        hash256 value_hash{};  // ionhash of the looked-up value
+    };
+
+    std::uint64_t blocks = 0;
+    std::vector<document_read> documents;
+    std::vector<index_read> indexes;
+    std::vector<std::string> tables;
+
+    [[nodiscard]] auto empty() const -> bool {
+        return documents.empty() && indexes.empty() && tables.empty();
+    }
+
+    [[nodiscard]] auto to_ion() const -> ion_value {
+        ion_value docs = ion_value::make_list();
+        for (const auto& d : documents) {
+            ion_value v = ion_value::make_struct();
+            v.set("table", ion_value::string(d.table))
+                .set("id", ion_value::string(d.id))
+                .set("version", ion_value::integer(d.version));
+            docs.push_back(std::move(v));
+        }
+        ion_value idx = ion_value::make_list();
+        for (const auto& i : indexes) {
+            ion_value v = ion_value::make_struct();
+            v.set("table", ion_value::string(i.table))
+                .set("index", ion_value::string(i.index))
+                .set("valueHash", hash_value(i.value_hash));
+            idx.push_back(std::move(v));
+        }
+        ion_value tbl = ion_value::make_list();
+        for (const auto& t : tables) {
+            tbl.push_back(ion_value::string(t));
+        }
+        ion_value r = ion_value::make_struct();
+        r.set("blocks", ion_value::integer(static_cast<std::int64_t>(blocks)))
+            .set("documents", std::move(docs))
+            .set("indexes", std::move(idx))
+            .set("tables", std::move(tbl));
+        return r;
+    }
+
+    static auto from_ion(const ion_value& v) -> read_set {
+        namespace jd = journal_detail;
+        if (!v.is_struct()) {
+            throw ledger_format_error("a read set is a struct");
+        }
+        read_set r;
+        r.blocks = jd::uint_field(v, "blocks");
+        const auto list = [&](std::string_view name) -> const std::vector<ion_value>& {
+            const ion_value& l = jd::required(v, name);
+            if (!l.is_sequence()) {
+                throw ledger_format_error("read set " + std::string(name) + " is a list");
+            }
+            return l.items();
+        };
+        for (const auto& d : list("documents")) {
+            document_read dr{jd::text_field(d, "table"), jd::text_field(d, "id"),
+                             jd::int_field(d, "version")};
+            if (!valid_table_name(dr.table) || !valid_id(dr.id) || dr.version < -1) {
+                throw ledger_format_error("invalid document read");
+            }
+            r.documents.push_back(std::move(dr));
+        }
+        for (const auto& i : list("indexes")) {
+            index_read ir{jd::text_field(i, "table"), jd::text_field(i, "index"),
+                          jd::hash_field(i, "valueHash")};
+            if (!valid_table_name(ir.table) || !valid_table_name(ir.index)) {
+                throw ledger_format_error("invalid index read");
+            }
+            r.indexes.push_back(std::move(ir));
+        }
+        for (const auto& t : list("tables")) {
+            auto name = t.as_text();
+            if (!name || !valid_table_name(*name)) {
+                throw ledger_format_error("invalid table read");
+            }
+            r.tables.push_back(std::move(*name));
+        }
+        return r;
+    }
+};
+
 struct transaction_entry {
     std::string tx_id;
     std::int64_t block_timestamp = 0;  // ms since the epoch
@@ -592,6 +688,7 @@ struct transaction_entry {
     hash256 previous_block_hash{};
     hash256 block_hash{};
     std::vector<statement> statements;
+    std::optional<read_set> reads;  // absent: blind writes
 };
 
 inline constexpr std::string_view entry_type = "ledger_txn";
@@ -609,6 +706,9 @@ inline auto encode_entry(const transaction_entry& e) -> std::vector<std::uint8_t
         .set("previousBlockHash", hash_value(e.previous_block_hash))
         .set("blockHash", hash_value(e.block_hash))
         .set("statements", std::move(list));
+    if (e.reads) {
+        v.set("readSet", e.reads->to_ion());
+    }
     return v.to_binary();
 }
 
@@ -634,6 +734,9 @@ inline auto decode_entry(std::span<const std::uint8_t> bytes) -> transaction_ent
     }
     for (const auto& s : list.items()) {
         e.statements.push_back(parse_statement(s));
+    }
+    if (const ion_value* r = v.find("readSet"); r != nullptr) {
+        e.reads = read_set::from_ion(*r);
     }
     return e;
 }

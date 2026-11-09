@@ -25,10 +25,12 @@ builds and tests it; every other configuration leaves it off.
 | `include/kythira/ledger/journal_types.hpp` | the transaction entry, statements, patch paths, revisions and blocks in Ion, and their hashes | 3 |
 | `include/kythira/ledger/engine_merkle_store.hpp` | the Merkle node store over a `kv_engine`, buffering writes so they join the block's batch | 4 |
 | `include/kythira/ledger/ledger_state_machine.hpp` | `basic_ledger_state_machine<Engine>`: tables, document writes, the journal, the leader's block hash and the replica check, digests and block and revision proofs at any tip, on the persistent state machine contract | 3, 4 |
+| `include/kythira/ledger/ledger_sessions.hpp` | leader-side transactions: snapshot reads, read sets, buffered statements, limits, expiry and leader change | 5 |
 | `cmd/ledger_node/` | placeholder daemon (`--self-test`); the server is task 7 | 1 |
 | `tests/ion_hash_test.cpp` | the amazon-ion/ion-hash-test suite (`tests/vectors/`) and the properties the ledger relies on | 2 |
 | `tests/ledger_merkle_test.cpp` | `dot` and folding against the AWS QLDB tutorial's functions, the tree shape, every proof at every tip, reopening, tampering | 2 |
 | `tests/ledger_state_machine_test.cpp` | the state machine on `memory_kv_engine`: every statement, rejections, stale and diverging entries, replicas, restart, checkpoint, the split veto, and every block and revision proof at every tip | 3, 4 |
+| `tests/ledger_transactions_test.cpp` | snapshot reads, read-set validation, limits, sessions, and the serializability property test | 5 |
 | `tests/tools/qldb_dot_vectors.py` | prints the vectors `ledger_merkle_test` checks, from the tutorial's published Python | 2 |
 | `tests/vectors/` | `ion_hash_tests.ion`, copied unchanged from amazon-ion/ion-hash-test (Apache-2.0; see its README) | 2 |
 

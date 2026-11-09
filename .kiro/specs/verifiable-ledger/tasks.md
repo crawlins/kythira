@@ -118,11 +118,39 @@ task is one PR unless noted.
     - The linearizable read path for `GetDigest` (Requirement 4.2) is the
       node's, in task 7.
 
-- [ ] 5. Transactions and OCC
+- [x] 5. Transactions and OCC
   - Leader session manager, reads at S, read sets, change markers,
     validation in apply, limits, leader-change failure, retryable errors
   - Serializability property test
   - _Requirements: 7.1-7.7, 12.3_
+  - Done 2026-11-09. As built:
+    - S is the number of blocks applied at begin; reads see the newest
+      revision in a block below S (`get_document_at`, `scan_table_at`,
+      reverse seek over `rev/`). The entry carries an optional `readSet`
+      {blocks, documents [{table, id, version}], indexes [{table, index,
+      valueHash}], tables}.
+    - Apply (and prepare, so the leader fails early) rejects with
+      `occ_conflict` when a read document's `current` pointer, an index
+      key's `ichg` marker or a scanned table's `tchg` marker names a block
+      at or after S. One rule covers changed, deleted and newly created
+      documents, so a read that found nothing conflicts with a later
+      insert of that id. `ichg` markers are written by task 6; the check
+      is here and tested against a hand-written marker.
+    - Limits: apply rejects `transaction_too_large` over 40 document
+      statements or 4 MiB of statement Ion (`ledger_options`); the
+      session manager refuses the statement that would cross them, and
+      expires sessions after 30 s.
+    - `ledger_session_manager` keeps sessions in leader memory with tokens
+      `<term>:<id>`; `leadership_changed` and a newer term fail them with
+      retryable `session_expired`. `retryable_rejection` names the codes a
+      client retries (`occ_conflict`, `stale_block`, `session_expired`);
+      the client's retry loop is task 7. Reads do not see the session's own
+      buffered writes.
+    - The property test runs five seeds of 600 interleaved steps: up to
+      four sessions read, scan and write values computed from their reads,
+      with blind writes mixed in. Every commit must have read exactly the
+      state it serializes after (commit order), and every `occ_conflict`
+      must have had a read that no longer held.
 
 - [ ] 6. History and equality indexes
   - `history()` by document and time range; index definition, backfill,
