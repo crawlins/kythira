@@ -52,11 +52,47 @@ task is one PR unless noted.
       the interior nodes. The tree is RFC 6962's shape with `dot`; its
       roots for 1-9 leaves are pinned in the test.
 
-- [ ] 3. Ledger state machine: tables, documents, journal
+- [x] 3. Ledger state machine: tables, documents, journal
   - `ledger_state_machine` on the persistent concept: catalog keys, tables,
     insert/replace/patch/delete, revisions, block building and hashing,
     leader hash in the entry and replica check, split/merge veto
   - _Requirements: 2.1, 2.2, 3.1-3.4, 5.1-5.5_
+  - Done 2026-11-09, on persistent-state-machine task 1 (the concepts and
+    `memory_kv_engine`); it does not need that spec's tasks 2-3. As built:
+    - `basic_ledger_state_machine<Engine>` satisfies
+      `persistent_splittable_state_machine`. Its whole state, the applied
+      index included, is under the ledger's range `l/<id>/` (key layout in
+      the header comment), so checkpoint, ingest and drop move the ledger
+      as one range.
+    - The entry and statement formats are in `journal_types.hpp`. The
+      leader's `prepare()` fills in seq, previousBlockHash, the clamped
+      timestamp and blockHash. A replica tells two failures apart: an entry
+      whose seq, previous hash or timestamp no longer follow the last block
+      is `stale_block` (rejected, nothing written but the applied index;
+      the leader prepared it against a tip another entry has since moved),
+      while a different blockHash for the same inputs throws
+      `ledger_divergence_error`, a `persistent_storage_error`, before
+      anything is written. Task 5's session layer must therefore keep one
+      transaction per ledger in flight, or re-prepare on `stale_block`.
+    - Every rejection (malformed entry, OCC-style statement failures:
+      `table_exists`, `table_not_found`, `table_inactive`, `table_active`,
+      `document_exists`, `document_not_found`, `version_mismatch`,
+      `invalid_path`, `document_too_large`) writes no block; a transaction
+      is all or nothing. Each statement that writes a document makes one
+      revision, so a document written twice in a transaction gets two
+      versions.
+    - Documents go through `ion_value.hpp`, a small Ion tree: containers
+      are parsed, scalars keep their own binary, so arbitrary-precision
+      numbers and timestamp precision survive a patch unchanged. It writes
+      through ion-c's stream writer, because copying from a reader cannot
+      be rerun into a bigger fixed buffer.
+    - Block seq starts at 0 and the first block's previousBlockHash is 32
+      zero bytes. Patch path steps are field names or list indexes; setting
+      index n of an n-element list appends.
+    - Not here: the Merkle nodes in the block's batch (task 4), the
+      split/merge policy-hook veto and its metric (task 7, with the host;
+      `split_at` and `adopt` throw `ledger_split_vetoed` as the backstop),
+      and the ledger-catalog group (Requirement 2.3-2.4, task 7).
 
 - [ ] 4. Digests and proofs
   - Engine-backed Merkle store, frontier rebuild on open, `GetDigest`,
@@ -77,8 +113,9 @@ task is one PR unless noted.
 - [ ] 7. Native HTTP API, client and `ledger_node`
   - HTTP/JSON and Ion API with mTLS roles and request limits; C++ client
     with OCC retry; the daemon with config and data-directory layout; the
-    ledger catalog group
-  - _Requirements: 2.3, 2.4, 8.1-8.4_
+    ledger catalog group; the split/merge policy veto for ledger ranges and
+    its metric
+  - _Requirements: 2.2, 2.3, 2.4, 8.1-8.4_
 
 - [ ] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and
