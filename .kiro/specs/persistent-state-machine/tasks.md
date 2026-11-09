@@ -347,11 +347,41 @@ RocksDB is linked. Each task is one PR unless noted.
       "Boost-backend pre-vote crash" in TODO.md's disk-backed-build-cache
       row. CI's gateway is the Folly build, which the local runs used.
 
-- [ ] 9. Measurement and docs
+- [x] 9. Measurement and docs
   - Bench rows: in-memory vs RocksDB (proposals/s, p99), restart time for a
     10 GB group
   - `doc/` page for the persistent path and its limits
   - _Requirements: 4.4, 9.4_
+  - As built:
+    - A `persistence` axis in `multi_raft_performance_report`
+      (`services/redis/tests/multi_raft_persistence_bench_rows.hpp`, one
+      translation unit per arm in `services/redis/tests/bench_rows/`):
+      `redis_kv_state_machine`, `persistent_kv_state_machine` over
+      `memory_kv_engine`, and over `rocksdb_kv_engine` where
+      `raft_rocksdb_engine` is built. Every arm logs to the fsynced
+      `binary_file_persistence_engine`, so only the state machine differs.
+    - Write rows (three hosts, two shards, 16 in flight, 128 B and 4 KiB)
+      report proposals/s and p50/p95/p99. Restart rows (one host) load
+      `--state-bytes` of 64 KiB values, then stop and start the host five
+      times over the same directories, timing each to a leader, a new
+      commit and a read of the last loaded value on every shard.
+      `benchmark_result` gained `_state_machine`, `_restart_time` and
+      `_state_bytes`, written to the CSV and JSON; `--data-dir` puts the
+      rows on a chosen disk.
+    - Measured November 9, 2026 (4 vCPU, 15 GiB, ext4): a 10 GB RocksDB
+      group restarts in 0.92-1.02 s (median of five, two runs) with a
+      303 MiB peak RSS; the in-memory machine takes 4.5 s at 1 GiB and
+      8.6 s at 2 GiB, peaks at 12.1 GiB of RAM at 2 GiB, and ran out of
+      memory loading 4 GiB. Write rows run at 1,900-2,050 SETs/s on every
+      arm, bound by the fsynced log. Table in
+      `doc/persistent_state_machines.md`, *Measurements*.
+    - The measurement found RocksDB's default `max_total_wal_size` let the
+      `meta` column family's small writes keep about 1 GiB of WAL alive,
+      replayed on the first open after a load (2.4 s at 1 GiB).
+      `rocksdb_kv_engine_options::max_total_wal_bytes` (256 MiB) cuts that
+      to 0.9 s.
+    - `multi_raft_performance_report_persistence` (label `performance`)
+      runs the axis at a tenth of its budget.
 
 Tasks 1-4 need no new dependency. Task 3's compaction and catch-up become
 fully usable only with `.kiro/specs/file-install-snapshot/` (which needs

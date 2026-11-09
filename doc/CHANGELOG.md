@@ -139,6 +139,18 @@ current list of outstanding work, see [TODO.md](TODO.md).
   must still catch up. Both run under Docker and rootless Podman in
   `redis-module.yml`'s new `engine-containers` job.
 
+- **A 10 GB group on RocksDB restarts in about a second.** The
+  performance report's new `persistence` axis compares the gateway's
+  state machine in RAM, on `memory_kv_engine` and on RocksDB, in write
+  throughput and in restart time. Measured on a 4-vCPU VM: a 10 GB RocksDB
+  group restarted in 0.92-1.02 s and peaked at 303 MiB of RAM, while the
+  in-memory machine took 8.6 s at 2 GiB, peaked at 12.1 GiB, and ran out
+  of memory loading 4 GiB. Writes ran at the same rate on every arm,
+  bound by the fsynced log. The run also showed that RocksDB kept about
+  1 GiB of WAL alive behind the `meta` column family's small writes and
+  replayed it on the first restart (2.4 s at 1 GiB). The engine now caps
+  the WAL at 256 MiB (`max_total_wal_bytes`), which brings that to 0.9 s.
+
 - **Engine-mode snapshot sends can be paced.**
   `KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC` caps the snapshot bytes per second
   a gateway on engine storage sends to the followers it catches up, across

@@ -174,6 +174,13 @@ struct selection {
     /// program nobody runs.
     double _budget_scale{1.0};
     std::filesystem::path _out_dir{"test_results"};
+    /// What each host of a `persistence` restart row holds when it is stopped
+    /// (`.kiro/specs/persistent-state-machine/` Requirement 4.4 asks for a
+    /// 10 GB group; the default is what a report run can afford by default).
+    std::uint64_t _state_bytes{std::uint64_t{256} << 20U};
+    /// Where `persistence` rows put their logs and databases. Empty means the
+    /// temp directory, which may be RAM; a restart number wants a real disk.
+    std::filesystem::path _data_dir{};
     bool _list{false};
 };
 
@@ -308,6 +315,66 @@ auto build_catalog(const selection& sel) -> catalog {
         drop("transactions", scenario,
              "KYTHIRA_BENCH_HAS_TXN undefined (requires KYTHIRA_BUILD_REDIS_GATEWAY)");
     }
+#endif
+
+#if defined(KYTHIRA_BENCH_HAS_TXN)
+    // `.kiro/specs/persistent-state-machine/` Requirements 4.4 and 9.4: the
+    // in-memory state machine against the engine-backed one, every arm over
+    // the same fsynced file log, so a difference is the state machine's.
+    const auto add_persistence = [&](std::string scenario, kythira::testing::persistence_runner run,
+                                     kythira::testing::persistence_row_spec spec) {
+        spec._operations = scaled(spec._operations, spec._in_flight, scale);
+        spec._data_dir = sel._data_dir;
+        out._entries.push_back(catalog_entry{
+            ._axis = "persistence",
+            ._scenario = std::move(scenario),
+            ._tier = deployment_tier::a_fabric,
+            ._run = [spec, run](const row_observer& observer) { return run(spec, observer); }});
+    };
+    using kythira::testing::persistence_row_kind;
+    using kythira::testing::persistence_row_spec;
+    struct persistence_arm {
+        const char* _name;
+        kythira::testing::persistence_runner _run;
+        bool _restarts;
+    };
+    std::vector<persistence_arm> arms{
+        {"memory", rows::persistence_memory, true},
+        {"engine-memory", rows::persistence_engine_memory, false},
+    };
+#if defined(KYTHIRA_BENCH_HAS_ROCKSDB)
+    arms.push_back({"engine-rocksdb", rows::persistence_engine_rocksdb, true});
+#else
+    for (const auto* scenario :
+         {"fabric/engine-rocksdb/write/128B/16", "fabric/engine-rocksdb/write/4KiB/16",
+          "fabric/engine-rocksdb/restart"}) {
+        drop("persistence", scenario,
+             "KYTHIRA_BENCH_HAS_ROCKSDB undefined (requires CONFIG_ENGINE_ROCKSDB and the "
+             "rocksdb vcpkg feature)");
+    }
+#endif
+    // Restart rows: one host, so the number is one node's and the disk holds
+    // one copy of the state; 64 KiB values, so a 10 GB load is 160k writes.
+    const auto state_bytes = std::max<std::uint64_t>(
+        std::uint64_t{1} << 20U,
+        static_cast<std::uint64_t>(static_cast<double>(sel._state_bytes) * scale));
+    for (const auto& arm : arms) {
+        const std::string prefix = std::string("fabric/") + arm._name;
+        add_persistence(prefix + "/write/128B/16", arm._run, persistence_row_spec{});
+        add_persistence(prefix + "/write/4KiB/16", arm._run,
+                        persistence_row_spec{._value_bytes = 4096});
+        if (arm._restarts) {
+            add_persistence(prefix + "/restart", arm._run,
+                            persistence_row_spec{._kind = persistence_row_kind::restart,
+                                                 ._hosts = 1,
+                                                 ._in_flight = 8,
+                                                 ._value_bytes = std::size_t{64} << 10U,
+                                                 ._state_bytes = state_bytes});
+        }
+    }
+#else
+    drop("persistence", "every row",
+         "KYTHIRA_BENCH_HAS_TXN undefined (requires KYTHIRA_BUILD_REDIS_GATEWAY)");
 #endif
 
 #if defined(KYTHIRA_BENCH_HAS_BEAST)
@@ -470,6 +537,10 @@ auto print_usage(std::ostream& out, const char* program) -> void {
         << "  --rate OPS             offered rate for the open-loop axis (default 400)\n"
         << "  --budget-scale F       multiply every row's operation budget by F\n"
         << "  --out-dir DIR          where the CSV and JSON go (default test_results)\n"
+        << "  --state-bytes N        bytes each host holds before a persistence restart row\n"
+        << "                         stops it (default 268435456; Requirement 4.4: 10 GB)\n"
+        << "  --data-dir DIR         where persistence rows put logs and databases\n"
+        << "                         (default the temp directory)\n"
         << "  --help                 this text\n"
         << "\nWith no selector, every row in the catalog runs. That is the full\n"
         << "matrix and is measured in hours; --list first.\n";
@@ -498,6 +569,10 @@ auto parse(int argc, char** argv, selection& sel, bool& want_help) -> bool {
             sel._budget_scale = std::stod(value("--budget-scale"));
         } else if (arg == "--out-dir") {
             sel._out_dir = value("--out-dir");
+        } else if (arg == "--state-bytes") {
+            sel._state_bytes = std::stoull(value("--state-bytes"));
+        } else if (arg == "--data-dir") {
+            sel._data_dir = value("--data-dir");
         } else if (arg == "--help" || arg == "-h") {
             want_help = true;
         } else {
@@ -511,17 +586,16 @@ auto parse(int argc, char** argv, selection& sel, bool& want_help) -> bool {
 /// @brief The machine, printed the way the suite prints it, so two logs of the
 ///        same host are comparable by eye.
 auto report_machine(const machine_description& m) -> void {
-    std::cout << std::fixed << std::setprecision(2) << "machine (Requirement 6.4):"
-              << "\n    cpu:      " << m._cpu_model << " x" << m._logical_cpus << " logical"
+    std::cout << std::fixed << std::setprecision(2)
+              << "machine (Requirement 6.4):" << "\n    cpu:      " << m._cpu_model << " x"
+              << m._logical_cpus << " logical"
               << "\n    memory:   " << static_cast<double>(m._memory_bytes) / (1024.0 * 1024 * 1024)
-              << " GiB"
-              << "\n    kernel:   " << m._kernel << "\n    storage:  " << m._described_path
-              << " on " << m._filesystem << ", device " << m._device << " (" << m._device_kind
-              << ")"
-              << "\n    build:    " << m._compiler << ", " << m._build_type << ", sanitizer "
-              << m._sanitizer << ", future backend " << m._future_backend
-              << "\n    flags:    " << m._cxx_flags << "\n    load:     " << m._load_average_1m
-              << " (1m) — "
+              << " GiB" << "\n    kernel:   " << m._kernel
+              << "\n    storage:  " << m._described_path << " on " << m._filesystem << ", device "
+              << m._device << " (" << m._device_kind << ")" << "\n    build:    " << m._compiler
+              << ", " << m._build_type << ", sanitizer " << m._sanitizer << ", future backend "
+              << m._future_backend << "\n    flags:    " << m._cxx_flags
+              << "\n    load:     " << m._load_average_1m << " (1m) — "
               << (m._quiet_at_start ? "machine was quiet at start"
                                     : "OTHER LOAD WAS PRESENT AT START; these numbers are not "
                                       "publication-grade (Requirement 6.5)")
@@ -566,6 +640,13 @@ auto report_row_summary(const report_row& row) -> void {
         std::cout << " at " << m._offered_rate_per_second << " ops/sec, mean schedule lag "
                   << us(m._mean_schedule_lag) << "us";
     }
+    if (m._restart_time.has_value()) {
+        std::cout << "\n      restart:  "
+                  << std::chrono::duration<double, std::milli>(*m._restart_time).count()
+                  << " ms (median run) with "
+                  << static_cast<double>(m._state_bytes) / (1024.0 * 1024.0 * 1024.0)
+                  << " GiB of state, state machine " << m._state_machine;
+    }
     std::cout << "\n      headline: ";
     if (const auto headline = r.headline_ops_per_second()) {
         std::cout << *headline << " ops/sec (median of " << r.runs() << " runs)";
@@ -577,8 +658,7 @@ auto report_row_summary(const report_row& row) -> void {
     // printing only that would read as the most stable measurement in the
     // suite while its p50 ranged over two orders of magnitude.
     std::cout << " | throughput spread " << (r.spread() * 100.0) << "%, p50 spread "
-              << (r.p50_spread() * 100.0) << "%"
-              << "\n      verdict:  " << to_string(r.verdict())
+              << (r.p50_spread() * 100.0) << "%" << "\n      verdict:  " << to_string(r.verdict())
               << (m._load == load_mode::open_loop
                       ? " (judged on the p50 spread; in open loop the offered rate is an input, "
                         "so its spread is a tautology)"
