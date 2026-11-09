@@ -134,8 +134,7 @@ task is one PR unless noted.
       key's `ichg` marker or a scanned table's `tchg` marker names a block
       at or after S. One rule covers changed, deleted and newly created
       documents, so a read that found nothing conflicts with a later
-      insert of that id. `ichg` markers are written by task 6; the check
-      is here and tested against a hand-written marker.
+      insert of that id. `ichg` markers are written by task 6.
     - Limits: apply rejects `transaction_too_large` over 40 document
       statements or 4 MiB of statement Ion (`ledger_options`); the
       session manager refuses the statement that would cross them, and
@@ -152,10 +151,40 @@ task is one PR unless noted.
       state it serializes after (commit order), and every `occ_conflict`
       must have had a read that no longer held.
 
-- [ ] 6. History and equality indexes
+- [x] 6. History and equality indexes
   - `history()` by document and time range; index definition, backfill,
     activation entry; bounded scans
   - _Requirements: 6.1-6.3_
+  - As built:
+    - `history(table, id?, start?, end?, after?, limit)` returns revisions
+      in commit order, deletes included, with inclusive time bounds and a
+      cursor. By document it walks `rev/`; by table it walks
+      `hist/<t>/<seq>/<id>/<v>` keys written with each block, and turns
+      the time bounds into block bounds by binary search over block
+      timestamps (they never decrease).
+    - `create_index` is a statement (`{op: create_index, table, index,
+      path}`), checked for `index_exists` and `index_limit` (20 per
+      table). On a table with no live document the index is active at
+      once. Otherwise it builds: `ledger_index_build` entries each index
+      up to `limit` documents past a stored cursor, and the step that
+      reaches the end activates the index, so the "activation entry" is
+      the last build step. Build steps write no block (the index is
+      derived state, rebuilt identically on every replica). Proposing
+      them is the node's job (task 7).
+    - Every write maintains every index on its table, building ones
+      included, and sets the `ichg/<t>/<i>/<valueHash>` marker of each
+      key a document moves into or out of, which is what session lookups
+      are validated against.
+    - `find_by_index` is refused (`ledger_query_error`) until the index
+      is active. It reads the snapshot: the index holds the current
+      state, so when the key changed since the snapshot, or the index is
+      newer than it, the lookup falls back to a filtered snapshot scan.
+      A session lookup through an index newer than its snapshot is
+      recorded as a table read, since the index has no markers for what
+      happened before it existed.
+    - Scans take `scan_options`: a cursor, a document limit, a byte
+      budget (1 MiB default; a page always holds at least one document)
+      and an equality filter on a path.
 
 - [ ] 7. Native HTTP API, client and `ledger_node`
   - HTTP/JSON and Ion API with mTLS roles and request limits; C++ client

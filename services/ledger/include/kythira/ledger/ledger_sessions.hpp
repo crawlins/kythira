@@ -46,6 +46,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -151,6 +152,34 @@ public:
                                   std::max<std::size_t>(limit, 1));
     }
 
+    /// Look documents up by an active equality index at the session's
+    /// snapshot (Requirement 6.2); the looked-up key goes into the read
+    /// set, so a document moving into or out of it later conflicts.
+    /// Throws ledger_query_error if the index is missing or still building.
+    auto lookup(const std::string& token, std::string_view table, std::string_view index,
+                const ion_value& value, std::optional<std::string> after = std::nullopt,
+                std::size_t limit = 100) -> scan_page {
+        const std::lock_guard lock(mutex_);
+        auto& s = find_locked(token);
+        auto page = sm_->find_by_index(table, index, value, s.reads.blocks, std::move(after),
+                                       std::max<std::size_t>(limit, 1));
+        // An index created at or after the snapshot has no change markers
+        // for what happened before it existed, so the lookup is recorded as
+        // a table read instead: any change since the snapshot conflicts.
+        const auto info = sm_->get_index(table, index);
+        if (info && info->created_seq >= s.reads.blocks) {
+            if (s.tables_read.insert(std::string(table)).second) {
+                s.reads.tables.emplace_back(table);
+            }
+            return page;
+        }
+        const auto key = std::make_tuple(std::string(table), std::string(index), value.hash());
+        if (s.index_keys_read.insert(key).second) {
+            s.reads.indexes.push_back({std::string(table), std::string(index), value.hash()});
+        }
+        return page;
+    }
+
     /// Buffer a statement (journal_types.hpp `statements::` builders).
     auto add(const std::string& token, const ion_value& statement_ion) -> void {
         const std::lock_guard lock(mutex_);
@@ -233,6 +262,7 @@ private:
         read_set reads;
         std::set<std::pair<std::string, std::string>> documents_read;
         std::set<std::string> tables_read;
+        std::set<std::tuple<std::string, std::string, hash256>> index_keys_read;
         std::vector<ion_value> statements;
         std::size_t changed_documents = 0;
         std::size_t statement_bytes = 0;
