@@ -61,8 +61,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
   are deleted at start, and every refusal now carries a reason code
   (`format_mismatch`, `manifest_invalid`, `disk_space`, `checksum`,
   `io_error`, and format 0's `stale_term`, `stale_snapshot`,
-  `offset_mismatch`, `missing_first_chunk`). Leaders do not send format 1
-  yet.
+  `offset_mismatch`, `missing_first_chunk`).
+
+- **A persistent leader sends its snapshot as files.** When a follower is
+  behind a persistent group's compacted log, the leader checkpoints its
+  engine at the applied index and streams the files one chunk at a time.
+  Followers at the same point share one checkpoint; an unused one is kept
+  for `_snapshot_checkpoint_max_unused_age` (10 minutes) so a retry reuses
+  it, and is deleted when a newer one is taken or the node steps down.
+  `raft_snapshot_checkpoints` and `raft_snapshot_checkpoint_bytes` report
+  what is held. Log compaction for persistent groups stays off by default
+  for now.
 
 ### What Changed (November 5, 2026)
 

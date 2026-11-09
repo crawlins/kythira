@@ -23,6 +23,7 @@
 #include <folly/init/Init.h>
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -30,6 +31,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <thread>
 #include <vector>
@@ -302,6 +304,121 @@ auto staging_entries(const harness& h) -> std::size_t {
     return n;
 }
 
+// Three persistent replicas on the simulator, each with its own engine, log
+// store and staging directory. Every store starts from a metadata snapshot
+// at index 0 naming all three, so no bootstrap is needed.
+struct persistent_cluster {
+    struct member {
+        shared_persistence persistence;
+        std::shared_ptr<kythira::memory_kv_engine> engine =
+            std::make_shared<kythira::memory_kv_engine>();
+        std::shared_ptr<kythira::testing::metric_recorder> metrics =
+            std::make_shared<kythira::testing::metric_recorder>();
+        kythira::test::format1::temp_dir staging;
+        std::unique_ptr<node_type> node;
+    };
+
+    simulator_type sim;
+    std::vector<std::unique_ptr<member>> members;
+
+    explicit persistent_cluster(const kythira::raft_configuration& base) {
+        sim.start();
+        connect_all();
+        for (std::uint64_t id = 1; id <= 3; ++id) {
+            auto m = std::make_unique<member>();
+            m->persistence.save_snapshot(persistent_raft_types::snapshot_type{
+                ._last_included_index = 0,
+                ._last_included_term = 0,
+                ._configuration =
+                    kythira::cluster_configuration<std::uint64_t>{._nodes = {1, 2, 3},
+                                                                  ._is_joint_consensus = false,
+                                                                  ._old_nodes = std::nullopt},
+                ._state_machine_state = marker()});
+            auto cfg = base;
+            cfg._snapshot_staging_directory = m->staging.path();
+            auto net = sim.create_node(std::to_string(id));
+            register_sm sm;
+            sm.open(*m->engine, group_range);
+            auto serializer = persistent_raft_types::serializer_type{};
+            m->node = std::make_unique<node_type>(kythira::node_config<persistent_raft_types>{
+                .node_id = id,
+                .network_client = persistent_raft_types::network_client_type{net, serializer},
+                .network_server = persistent_raft_types::network_server_type{net, serializer},
+                .persistence = m->persistence,
+                .logger = kythira::console_logger{kythira::log_level::error},
+                .metrics = kythira::testing::recording_metrics{m->metrics},
+                .membership = kythira::default_membership_manager<std::uint64_t>{},
+                .state_machine = std::move(sm),
+                .config = cfg,
+            });
+            members.push_back(std::move(m));
+        }
+        for (auto& m : members) {
+            m->node->start();
+        }
+        std::this_thread::sleep_for(base._election_timeout_max + std::chrono::milliseconds{30});
+        leader().check_election_timeout();
+    }
+    ~persistent_cluster() {
+        for (auto& m : std::views::reverse(members)) {
+            m->node->stop();
+        }
+    }
+    persistent_cluster(const persistent_cluster&) = delete;
+    auto operator=(const persistent_cluster&) -> persistent_cluster& = delete;
+    persistent_cluster(persistent_cluster&&) = delete;
+    auto operator=(persistent_cluster&&) -> persistent_cluster& = delete;
+
+    auto leader() -> node_type& { return *members[0]->node; }
+    auto at(std::size_t i) -> node_type& { return *members[i]->node; }
+
+    auto connect_all() -> void {
+        const network_simulator::NetworkEdge edge{std::chrono::milliseconds{0}, 1.0};
+        for (const auto* from : {"1", "2", "3"}) {
+            for (const auto* to : {"1", "2", "3"}) {
+                if (std::string(from) != to) {
+                    sim.add_edge(from, to, edge);
+                }
+            }
+        }
+    }
+    auto cut(const std::string& id) -> void {
+        for (const auto* peer : {"1", "2", "3"}) {
+            if (peer != id) {
+                sim.remove_edge(peer, id);
+                sim.remove_edge(id, peer);
+            }
+        }
+    }
+
+    // Drives heartbeats until `pred` holds or the deadline passes.
+    template<typename Pred>
+    auto pump_until(Pred pred, std::chrono::milliseconds deadline = std::chrono::milliseconds{5000})
+        -> bool {
+        const auto end = std::chrono::steady_clock::now() + deadline;
+        while (!pred()) {
+            if (std::chrono::steady_clock::now() > end) {
+                return false;
+            }
+            leader().check_heartbeat_timeout();
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        return true;
+    }
+
+    // Submits register i and reports whether it committed.
+    auto commit(int i) -> bool {
+        const auto v = std::string("v") + (i < 10 ? "0" : "") + std::to_string(i);
+        auto done = std::make_shared<std::atomic<int>>(0);
+        leader()
+            .submit_command(bytes(key(i) + "=" + v), std::chrono::milliseconds{3000})
+            .thenValue([done](std::vector<std::byte>) { *done = 1; })
+            .thenError([done](const std::exception_ptr&) { *done = 2; })
+            .detach();
+        pump_until([&] { return done->load() != 0; });
+        return done->load() == 1;
+    }
+};
 }  // namespace
 
 // Requirement 5.1: a linearizable read confirms the read index and returns
@@ -796,4 +913,60 @@ BOOST_AUTO_TEST_CASE(crash_between_ingest_and_metadata_save_recovers,
     BOOST_TEST(value_of(*node, 12) == "v12");
     BOOST_TEST(!h.persistence.load_snapshot().has_value());
     node->stop();
+}
+
+// ── Format-1 send (.kiro/specs/file-install-snapshot/ task 5) ──
+
+// Requirements 5.1-5.3: a follower cut off while the leader compacts past
+// it catches up through a format-1 snapshot streamed from a checkpoint,
+// then by AppendEntries. The checkpoint is kept, unused, for reuse; the
+// follower's staging directory is empty afterwards.
+BOOST_AUTO_TEST_CASE(follower_behind_compaction_catches_up_by_format1_snapshot,
+                     *boost::unit_test::timeout(60)) {
+    auto cfg = make_config();
+    cfg._persistent_log_compaction = true;
+    cfg._snapshot_threshold_bytes = 7 * 4;  // about four puts
+    cfg._snapshot_chunk_size = 16;
+    cfg._install_snapshot_timeout = std::chrono::milliseconds{300};
+    persistent_cluster c(cfg);
+    BOOST_REQUIRE(c.pump_until([&] { return c.leader().is_leader(); }));
+
+    BOOST_REQUIRE(c.commit(1));
+    BOOST_REQUIRE(c.pump_until([&] { return value_of(c.at(2), 1) == "v01"; }));
+    const auto follower_last = c.at(2).last_applied_index();
+
+    c.cut("3");
+    constexpr int writes = 12;
+    for (int i = 2; i < 2 + writes; ++i) {
+        BOOST_REQUIRE(c.commit(i));
+    }
+    const auto leader_last = c.leader().last_applied_index();
+    const auto retained = c.leader().log_entries_between(1, leader_last);
+    BOOST_REQUIRE(!retained.empty());
+    BOOST_REQUIRE_GT(retained.front().index(), follower_last + 1);
+
+    c.connect_all();
+    BOOST_REQUIRE(c.commit(50));
+    BOOST_CHECK(c.pump_until([&] { return value_of(c.at(2), 50) == "v50"; }));
+    for (int i = 2; i < 2 + writes; ++i) {
+        BOOST_CHECK_MESSAGE(!value_of(c.at(2), i).empty(),
+                            key(i) << " missing on the follower that caught up by snapshot");
+    }
+    BOOST_TEST(c.members[0]->metrics->count_named("raft_install_snapshot_success") >= 1U);
+    const auto installed = c.members[2]->persistence.load_snapshot();
+    BOOST_REQUIRE(installed.has_value());
+    BOOST_TEST(installed->last_included_index() > follower_last);
+    BOOST_TEST((installed->state_machine_state() == marker()));
+
+    const auto entries_named = [](const std::filesystem::path& dir, std::string_view prefix) {
+        std::size_t n = 0;
+        for (const auto& e : std::filesystem::directory_iterator(dir)) {
+            n += e.path().filename().string().starts_with(prefix) ? 1 : 0;
+        }
+        return n;
+    };
+    BOOST_TEST(entries_named(c.members[2]->staging.path(), "kythira-staging-") == 0U);
+    // Superseded checkpoints are deleted as newer ones are taken.
+    BOOST_TEST(entries_named(c.members[0]->staging.path(), "kythira-checkpoint-") <= 2U);
+    BOOST_TEST(c.members[0]->metrics->count_named("raft_snapshot_checkpoints") >= 1U);
 }

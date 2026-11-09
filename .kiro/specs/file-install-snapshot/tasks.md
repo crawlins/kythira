@@ -111,11 +111,43 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
       disk space; abandonment by a later snapshot and by a new leader;
       start-up cleanup; and a crash between ingest and the metadata save.
 
-- [ ] 5. Leader send and checkpoint registry
+- [x] 5. Leader send and checkpoint registry
   - Format-1 branch in `send_install_snapshot_to` / `_chunk`;
     `checkpoint_registry` with refcounts, age GC and metrics; release on
     leadership loss
   - _Requirements: 5.1-5.4_
+  - As built (November 9, 2026):
+    - `include/raft/checkpoint_registry.hpp`: one checkpoint per (index,
+      term), in `kythira-checkpoint-<index>-<term>-<n>` under the node's
+      `_snapshot_staging_directory`. Leases are counted; a checkpoint
+      nobody leases is kept for
+      `raft_configuration::_snapshot_checkpoint_max_unused_age` (10
+      minutes) so a failed transfer starts again from the same files, and
+      is deleted sooner when a newer checkpoint is taken. Deleting on the
+      last release instead would make every retry take a new checkpoint.
+    - `send_install_snapshot_to` sends a persistent group's snapshot with
+      `send_format1_snapshot_to`: under the node mutex it leases a
+      checkpoint at `applied_index()` (with that entry's term), then
+      `send_format1_chunk` reads one `snapshot_chunk_size` chunk at a time
+      with `snapshot_stream_reader` (5.1), the manifest on the first.
+      Several followers at the same point share the checkpoint (5.2).
+    - Metrics (5.3): `raft_snapshot_checkpoints` and
+      `raft_snapshot_checkpoint_bytes` after each acquire and release
+      pass; `raft_install_snapshot_refused{reason}` when a follower
+      refuses a chunk. A refusal ends the transfer; the next heartbeat
+      that finds the follower behind starts again (longer back-off for
+      `disk_space` and `checksum` is left to task 6's pacing).
+    - 5.4: a chunk reply that finds the node no longer leader, or in a
+      later term, ends the transfer and drops its lease; stepping down
+      deletes every unused checkpoint at once. Start deletes leftover
+      `kythira-checkpoint-*` entries with the staging leftovers.
+    - Compaction for persistent groups is still off by default; task 7
+      turns it on.
+    - Tests: `tests/checkpoint_registry_test.cpp` (sharing, leases, age,
+      superseding, a failed checkpoint) and, in
+      `persistent_node_integration_test`, a three-node cluster where a
+      follower cut off while the leader compacts catches up through a
+      format-1 snapshot and then AppendEntries.
 
 - [ ] 6. Resume and pacing
   - `bytes_received` resume for a matching transfer; node-wide
