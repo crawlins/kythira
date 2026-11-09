@@ -1,0 +1,362 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The IAM conformance stack (.kiro/specs/iam-compatible-auth/ task 23,
+# Requirements 10.11, 15.1, 15.3 and 15.4), driven by iam_conformance_test:
+#
+#   iam-1..iam-3   the IAM voters, which trust the test issuer (oidc-issuer)
+#                  and the Kythira CA (ca-1) as web identity issuers;
+#   ca-1           one ca_cluster_node with its OIDC issuer on, at
+#                  https://ca-1 (the Kythira issuer);
+#   redis-1/-2     two Redis gateways forming one cache cluster, each with an
+#                  embedded IAM replica (ids 6 and 7), so AUTH takes an
+#                  ElastiCache IAM token and is checked locally;
+#   oidc-issuer    a test OIDC identity provider serving the issuer-www
+#                  volume, which the driver writes;
+#   driver         boto3 at a pinned version, running conformance/driver.py;
+#   aws-cli        the AWS CLI v2 at a pinned version.
+#
+# The rules of compose.yml apply (CLAUDE.md): service names only, no static
+# IPs, no runtime named, no capabilities, privileged mode or host
+# networking, nothing published on the host. The same `certs` one-shot
+# writes the test PKI; every TLS listener here, ca-1's and oidc-issuer's
+# included, uses a certificate from it, so one CA file (/pki/ca.pem) is all
+# any client trusts.
+#
+# The accounts are fixed (111111111111 and 222222222222, made by the test
+# with `kythira-iam create-account --account-id`), so the gateways can name
+# theirs in their environment before it exists. Their replicas join when the
+# test runs `kythira-iam replica-add` for ids 6 and 7; until then they
+# refuse IAM logins as stale, and password logins work throughout.
+#
+# One image, kythira-iam-conformance:dev, holds iam_node, kythira-iam,
+# iam_test_certs, ca_cluster_node and redis_gateway_node, staged from the
+# host build; each service picks its binary with `entrypoint`.
+
+name: kythira-iam-conformance
+
+x-iam: &iam
+  image: kythira-iam-conformance:dev
+  entrypoint: ["/usr/local/bin/iam_node"]
+  networks:
+    - conformance_net
+  depends_on:
+    certs:
+      condition: service_completed_successfully
+  environment:
+    IAM_UNSEAL_KEY_FILE: /pki/unseal.txt
+    IAM_DATA_DIR: /var/lib/iam_node
+    KYTHIRA_IAM_CERT: /pki/admin.pem
+    KYTHIRA_IAM_KEY: /pki/admin.key
+    KYTHIRA_IAM_CA: /pki/ca.pem
+
+x-redis: &redis
+  image: kythira-iam-conformance:dev
+  entrypoint: ["/usr/local/bin/redis_gateway_node"]
+  networks:
+    - conformance_net
+  depends_on:
+    certs:
+      condition: service_completed_successfully
+
+x-redis-env: &redis-env
+  KYTHIRA_PEERS: "1=http://redis-1:7000,2=http://redis-2:7000"
+  KYTHIRA_RAFT_PORT: "7000"
+  KYTHIRA_ALLOW_PLAINTEXT_RAFT: "true"
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "1000"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "2000"
+  KYTHIRA_REDIS_LISTEN: "0.0.0.0:6379"
+  KYTHIRA_REDIS_ACL_FILE: "/etc/kythira/acl.txt"
+  KYTHIRA_REDIS_INTERNAL_SECRET: "conformance-internal"
+  KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING: "true"
+  KYTHIRA_REDIS_PEER_GATEWAYS: "1=redis-1:6379,2=redis-2:6379"
+  KYTHIRA_CACHE_PERSISTENCE: "file"
+  KYTHIRA_CACHE_DATA_DIR: "/data"
+  KYTHIRA_CACHE_MAX_DISK_BYTES: "1073741824"
+  KYTHIRA_CACHE_MIN_FREE_BYTES: "67108864"
+  # The embedded IAM replica (services/redis/cmd/redis_gateway_node/
+  # iam_auth.cpp). Its RPC certificate carries its id's reserved peer SAN.
+  KYTHIRA_IAM_VOTERS: "1:iam-1:7100,2:iam-2:7100,3:iam-3:7100"
+  KYTHIRA_IAM_REPLICA_RPC_PORT: "7100"
+  KYTHIRA_IAM_DATA_DIR: "/data/iam"
+  KYTHIRA_IAM_UNSEAL_KEY_FILE: "/pki/unseal.txt"
+  KYTHIRA_IAM_RPC_TLS_CA: "/pki/ca.pem"
+  KYTHIRA_IAM_MAX_STALENESS_SECS: "30"
+  KYTHIRA_IAM_ACCOUNT_ID: "111111111111"
+  KYTHIRA_IAM_REGION: "us-east-1"
+  KYTHIRA_IAM_CACHE_NAME: "kythira-cache"
+
+services:
+  certs:
+    image: kythira-iam-conformance:dev
+    entrypoint: ["/usr/local/bin/iam_test_certs"]
+    command:
+      - --out
+      - /pki
+      - --if-absent
+      - --node
+      - "1=iam-1"
+      - --node
+      - "2=iam-2"
+      - --node
+      - "3=iam-3"
+      - --node
+      - "5=oidc-issuer"
+      - --node
+      - "6=redis-1"
+      - --node
+      - "7=redis-2"
+      - --node
+      - "8=ca-1"
+    volumes:
+      - pki:/pki
+    networks:
+      - conformance_net
+
+  iam-1:
+    <<: *iam
+    command:
+      - --node-id
+      - "1"
+      - --peers
+      - "2:iam-2:7100@https://iam-2:8443,3:iam-3:7100@https://iam-3:8443"
+      - --tls-cert
+      - /pki/node-1.pem
+      - --tls-key
+      - /pki/node-1.key
+      - --rpc-tls-cert
+      - /pki/node-1.pem
+      - --rpc-tls-key
+      - /pki/node-1.key
+      - --rpc-tls-ca
+      - /pki/ca.pem
+      # Both web identity issuers, trusted through the test CA.
+      - --admin-uri-san
+      - spiffe://kythira.test/iam-admin
+      - --oidc-ca-file
+      - /pki/ca.pem
+      - --kythira-issuer
+      - https://ca-1
+      - --kythira-issuer-local
+      - https://ca-1/.well-known/jwks.json
+      - --election-timeout-min-ms
+      - "1000"
+      - --election-timeout-max-ms
+      - "2000"
+    volumes:
+      - pki:/pki:ro
+      - iam-1-data:/var/lib/iam_node
+
+  iam-2:
+    <<: *iam
+    command:
+      - --node-id
+      - "2"
+      - --peers
+      - "1:iam-1:7100@https://iam-1:8443,3:iam-3:7100@https://iam-3:8443"
+      - --tls-cert
+      - /pki/node-2.pem
+      - --tls-key
+      - /pki/node-2.key
+      - --rpc-tls-cert
+      - /pki/node-2.pem
+      - --rpc-tls-key
+      - /pki/node-2.key
+      - --rpc-tls-ca
+      - /pki/ca.pem
+      # Both web identity issuers, trusted through the test CA.
+      - --admin-uri-san
+      - spiffe://kythira.test/iam-admin
+      - --oidc-ca-file
+      - /pki/ca.pem
+      - --kythira-issuer
+      - https://ca-1
+      - --kythira-issuer-local
+      - https://ca-1/.well-known/jwks.json
+      - --election-timeout-min-ms
+      - "1000"
+      - --election-timeout-max-ms
+      - "2000"
+    volumes:
+      - pki:/pki:ro
+      - iam-2-data:/var/lib/iam_node
+
+  iam-3:
+    <<: *iam
+    command:
+      - --node-id
+      - "3"
+      - --peers
+      - "1:iam-1:7100@https://iam-1:8443,2:iam-2:7100@https://iam-2:8443"
+      - --tls-cert
+      - /pki/node-3.pem
+      - --tls-key
+      - /pki/node-3.key
+      - --rpc-tls-cert
+      - /pki/node-3.pem
+      - --rpc-tls-key
+      - /pki/node-3.key
+      - --rpc-tls-ca
+      - /pki/ca.pem
+      # Both web identity issuers, trusted through the test CA.
+      - --admin-uri-san
+      - spiffe://kythira.test/iam-admin
+      - --oidc-ca-file
+      - /pki/ca.pem
+      - --kythira-issuer
+      - https://ca-1
+      - --kythira-issuer-local
+      - https://ca-1/.well-known/jwks.json
+      - --election-timeout-min-ms
+      - "1000"
+      - --election-timeout-max-ms
+      - "2000"
+    volumes:
+      - pki:/pki:ro
+      - iam-3-data:/var/lib/iam_node
+
+  # The Kythira CA, alone: it bootstraps its own CA and OIDC signing key.
+  # Its Raft RPC stays on loopback (a one-member cluster never sends one);
+  # its client API is HTTPS on 443 with the test PKI's certificate for
+  # ca-1, so the issuer URL is plain https://ca-1. The bearer token is
+  # the test's, for issuing workload certificates.
+  ca-1:
+    image: kythira-iam-conformance:dev
+    entrypoint: ["/usr/local/bin/ca_cluster_node"]
+    networks:
+      - conformance_net
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    environment:
+      CA_SERVICE_AUTH_TOKEN: "conformance-ca-token"
+    command:
+      - --node-id
+      - "1"
+      - --rpc-address
+      - 127.0.0.1
+      - --rpc-port
+      - "7200"
+      - --http-address
+      - 0.0.0.0
+      - --http-port
+      - "443"
+      - --data-dir
+      - /var/lib/ca_cluster_node
+      - --unseal-key-file
+      - /pki/unseal.txt
+      - --peers
+      - "1:127.0.0.1:7200@https://ca-1:443"
+      - --bootstrap-ca
+      - --tls-cert
+      - /pki/node-8.pem
+      - --tls-key
+      - /pki/node-8.key
+      - --peer-tls-ca
+      - /pki/ca.pem
+      - --oidc-issuer-url
+      - https://ca-1
+      - --oidc-audience
+      - sts.amazonaws.com
+      - --oidc-workload-uri-prefix
+      - spiffe://kythira.test/wl/
+    volumes:
+      - pki:/pki:ro
+      - ca-1-data:/var/lib/ca_cluster_node
+
+  redis-1:
+    <<: *redis
+    environment:
+      <<: *redis-env
+      KYTHIRA_NODE_ID: "1"
+      KYTHIRA_IAM_REPLICA_NODE_ID: "6"
+      KYTHIRA_IAM_RPC_TLS_CERT: "/pki/node-6.pem"
+      KYTHIRA_IAM_RPC_TLS_KEY: "/pki/node-6.key"
+    volumes:
+      - ./conformance/acl.txt:/etc/kythira/acl.txt:ro
+      - pki:/pki:ro
+      - redis-1-data:/data
+
+  redis-2:
+    <<: *redis
+    environment:
+      <<: *redis-env
+      KYTHIRA_NODE_ID: "2"
+      KYTHIRA_IAM_REPLICA_NODE_ID: "7"
+      KYTHIRA_IAM_RPC_TLS_CERT: "/pki/node-7.pem"
+      KYTHIRA_IAM_RPC_TLS_KEY: "/pki/node-7.key"
+    volumes:
+      - ./conformance/acl.txt:/etc/kythira/acl.txt:ro
+      - pki:/pki:ro
+      - redis-2-data:/data
+
+  # The test OIDC identity provider of compose.yml, serving the issuer-www
+  # volume the driver writes its discovery document and JWKS into.
+  oidc-issuer:
+    image: docker.io/library/python:3.12-alpine
+    networks:
+      - conformance_net
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    command:
+      - python3
+      - -c
+      - |
+        import functools, http.server, ssl
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="/srv/www")
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", 443), handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain("/pki/node-5.pem", "/pki/node-5.key")
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        server.serve_forever()
+    volumes:
+      - pki:/pki:ro
+      - issuer-www:/srv/www
+
+  # boto3 (pinned in conformance/Dockerfile), run by the test as
+  # `compose --profile cli run --rm driver`.
+  driver:
+    image: kythira-iam-conformance-driver:dev
+    profiles: ["cli"]
+    networks:
+      - conformance_net
+    environment:
+      AWS_CA_BUNDLE: /pki/ca.pem
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+    volumes:
+      - pki:/pki:ro
+      - issuer-www:/srv/www
+      - shared:/shared
+
+  # The AWS CLI v2. The driver leaves its config and credentials files and
+  # a web identity token in the shared volume for the provider checks.
+  aws-cli:
+    image: docker.io/amazon/aws-cli:2.17.0
+    profiles: ["cli"]
+    networks:
+      - conformance_net
+    environment:
+      AWS_CA_BUNDLE: /pki/ca.pem
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_PAGER: ""
+    volumes:
+      - pki:/pki:ro
+      - shared:/shared
+
+networks:
+  conformance_net:
+    driver: bridge
+
+volumes:
+  pki:
+  iam-1-data:
+  iam-2-data:
+  iam-3-data:
+  ca-1-data:
+  redis-1-data:
+  redis-2-data:
+  issuer-www:
+  shared:

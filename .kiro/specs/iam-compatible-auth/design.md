@@ -827,6 +827,39 @@ the adapter, so a build without `CONFIG_REDIS_GATEWAY_IAM` has none of them.
   the container scenario, which has no IAM cluster; `iam_embedded_replica_test`
   and the gateway tests cover it.
 
+**As built (task 23).**
+- `services/iam/tests/docker/conformance.yml` is one stack: three voters,
+  one `ca_cluster_node` with its OIDC issuer at `https://ca-1` (HTTPS on
+  443 with a test-PKI certificate, so the issuer URL needs no port), a
+  test issuer serving a volume the driver writes, and two Redis gateways
+  forming one cache cluster, each with an embedded IAM replica (ids 6 and
+  7). One image, `kythira-iam-conformance:dev`, carries all five binaries;
+  each service picks its own with `entrypoint`.
+- The accounts are fixed with `create-account --account-id`
+  (111111111111 and 222222222222), so the gateways name theirs in their
+  environment before it exists. The first STS key is rotated in after the
+  first account, because that account sets the sealing salt.
+- The checks are in `conformance/driver.py`, run in a pinned boto3 image
+  (Alpine, the base the test issuer already pulls). It prints one
+  `PASS`/`FAIL` line per check and the harness turns each `FAIL` into a
+  test error. The SDK credential providers run in child processes with
+  only `AWS_ENDPOINT_URL_STS` and the standard files or variables, as in a
+  user's shell; the harness then runs the same three providers in the AWS
+  CLI v2 from files the driver leaves in a shared volume.
+- DecodeAuthorizationMessage is checked on what the stack can produce: a
+  message it did not seal is refused and a caller without the permission
+  is denied. No service here asks for an encoded message (IAM's Query API
+  does not, matching AWS), so a message from a denied request is decoded
+  only in `iam_sts_test`. The first service module that sets
+  `want_encoded_message` adds the end-to-end check.
+- STS allows five minutes of clock skew, so the expired-token check uses
+  a token that expired ten minutes before.
+- `KYTHIRA_IAM_CONFORMANCE_NO_REDIS=1` leaves the gateways out, for a host
+  that cannot build `redis_gateway_node`; the driver skips its Redis checks.
+  CI always runs the whole stack, under Docker and rootless Podman, in
+  `iam-module.yml`'s container job, which now sets up its runtime with the
+  shared `setup-container-runtime` action.
+
 ## Configuration
 
 | Flag | Daemon | Default |
