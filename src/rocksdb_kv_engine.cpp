@@ -173,6 +173,7 @@ rocksdb_kv_engine::rocksdb_kv_engine(const std::filesystem::path& path,
     _impl->options = options;
     _impl->db_options.create_if_missing = options.create_if_missing;
     _impl->db_options.create_missing_column_families = options.create_if_missing;
+    _impl->db_options.max_total_wal_size = options.max_total_wal_bytes;
     std::vector<rocksdb::ColumnFamilyDescriptor> descriptors;
     descriptors.emplace_back(rocksdb::kDefaultColumnFamilyName, _impl->cf_options);
     for (const auto name : k_cf_names) {
