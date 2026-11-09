@@ -460,6 +460,14 @@ target_link_libraries(snapshot_stream_test PRIVATE OpenSSL::Crypto)
 # and paced.
 add_raft_completion_test(persistent_node_integration_test persistent_node_integration_test.cpp)
 target_link_libraries(persistent_node_integration_test PRIVATE OpenSSL::Crypto)
+# persistent-state-machine task 5: rocksdb_kv_engine, through the same
+# conformance suite as memory_kv_engine plus reopen and ingest cases. Only
+# built when the opt-in RocksDB feature was found (raft_rocksdb_engine in the
+# root CMakeLists.txt); ci.yml's Ion Serializer Build job runs it.
+if(TARGET raft_rocksdb_engine)
+    add_raft_completion_test(rocksdb_kv_engine_test rocksdb_kv_engine_test.cpp)
+    target_link_libraries(rocksdb_kv_engine_test PRIVATE raft_rocksdb_engine OpenSSL::Crypto)
+endif()
 # file-install-snapshot task 5: the leader's shared, refcounted checkpoints.
 add_raft_completion_test(checkpoint_registry_test checkpoint_registry_test.cpp)
 target_link_libraries(checkpoint_registry_test PRIVATE OpenSSL::Crypto)

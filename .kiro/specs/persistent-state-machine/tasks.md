@@ -177,6 +177,38 @@ RocksDB is linked. Each task is one PR unless noted.
   - Conformance suite on RocksDB; one CI leg with the option on
   - Record the build-time delta in this task
   - _Requirements: 7.2-7.5_
+  - As built:
+    - `include/raft/rocksdb_kv_engine.hpp` is a pimpl that names no
+      RocksDB type; only `src/rocksdb_kv_engine.cpp` includes RocksDB.
+      Kconfig `ENGINE_ROCKSDB` (default n, menu "Storage Engines"), vcpkg
+      feature `rocksdb`, CMake library `raft_rocksdb_engine`, which defines
+      `KYTHIRA_ENGINE_ROCKSDB_AVAILABLE`.
+    - One database per node with column families `data`, `txn` and `meta`
+      next to RocksDB's empty `default`. `write` is one `WriteBatch` under
+      a write lock; its sequence is RocksDB's latest sequence after it.
+      `erase_range` and `drop` are `DeleteRange`; an unbounded end is
+      bounded at the column family's last key, read under the lock.
+    - Writes go to the WAL unsynced. `sync` is `SyncWAL`, and
+      `durable_sequence()` is the latest sequence it covered; what a reopen
+      recovers counts as durable.
+    - Deviation from 7.2: `checkpoint` writes the range's keys, read at one
+      RocksDB snapshot, as one SST per non-empty column family instead of
+      calling RocksDB's `Checkpoint`. A RocksDB checkpoint copies the whole
+      database, which holds every group on the node, and could not be
+      ingested into one range.
+    - `ingest` verifies the manifest and every file's SHA-256, then hands a
+      range-tombstone SST and the checkpoint's SST for each column family
+      to one `IngestExternalFiles` call. That call is atomic, so a crash
+      never leaves the range half replaced. Files are moved (hard links)
+      where the filesystem allows, so the checkpoint directory is spent.
+    - Tests: `tests/rocksdb_kv_engine_test.cpp` runs the shared conformance
+      suite (15 cases) plus reopen, ingest between other groups' keys,
+      ingest then reopen, `create_if_missing = false`, and
+      `sync_every_write`.
+    - CI: the RocksDB feature rides in the Ion Serializer Build job's tree
+      (`configs/ci_ion_defconfig`, the only image with opt-in ports), which
+      builds and runs `rocksdb_kv_engine_test`; clang-tidy covers both new
+      files in its `ion` variant.
 
 - [ ] 6. Transaction state in the engine
   - Persistent storage for `_intents`, `_records`, `_settled` and the

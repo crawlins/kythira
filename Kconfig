@@ -256,6 +256,26 @@ config PROTOBUF_SERIALIZER
 
 endmenu # Serialization
 
+menu "Storage Engines"
+
+config ENGINE_ROCKSDB
+	bool "RocksDB kv_engine for persistent state machines"
+	default n
+	help
+	  find_package(RocksDB CONFIG). Backs KYTHIRA_ENGINE_ROCKSDB_AVAILABLE.
+	  vcpkg feature: rocksdb (not built by default). Provides
+	  kythira::rocksdb_kv_engine (include/raft/rocksdb_kv_engine.hpp,
+	  src/rocksdb_kv_engine.cpp) in the raft_rocksdb_engine library: one
+	  RocksDB database per node holding every persistent group's keys.
+	  The header names no RocksDB type, so with this off no RocksDB header
+	  or library is built or linked anywhere
+	  (.kiro/specs/persistent-state-machine/ Requirement 7.3). Same
+	  gracefully-optional pattern as ION_SERIALIZER: when RocksDB is not
+	  found the target is skipped with a status message, unless
+	  KYTHIRA_KCONFIG_STRICT=ON forces a hard failure.
+
+endmenu # Storage Engines
+
 menu "Peer Discovery"
 
 config DNS_DISCOVERY

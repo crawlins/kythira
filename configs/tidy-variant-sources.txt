@@ -25,7 +25,7 @@
 # Variants and the configuration each one analyses under:
 #   dns       configs/ci_dns_defconfig (libldns + Poco DNSSD)
 #   gcp       configs/ci_gcp_defconfig with KYTHIRA_GCP_REAL_TESTS=ON
-#   ion       configs/ci_ion_defconfig (ion-c)
+#   ion       configs/ci_ion_defconfig (ion-c, RocksDB)
 #   no-cloud  configs/no_cloud_defconfig (no AWS S3, so multi_raft_node
 #             builds its "S3 unavailable" test instead of the S3 ones)
 
@@ -54,6 +54,8 @@ ion tests/ion_serializer_range_property_test.cpp
 ion tests/shard_group_id_ion_wire_property_test.cpp
 ion services/ledger/cmd/ledger_ctl/main.cpp
 ion services/ledger/cmd/ledger_node/main.cpp
+ion src/rocksdb_kv_engine.cpp
+ion tests/rocksdb_kv_engine_test.cpp
 ion services/ledger/tests/ion_hash_test.cpp
 ion services/ledger/tests/ledger_merkle_test.cpp
 ion services/ledger/tests/ledger_state_machine_test.cpp
