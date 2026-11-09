@@ -32,11 +32,18 @@ struct run_options {
     mix weights{};
     std::uint64_t seed{0};  // worker i uses seed + i
     std::string key_prefix{"k"};
+    /// The first process id to hand out, and an offset added to every
+    /// event time. A workload that continues an earlier one's history sets
+    /// both past that history's last process id and time, so the two read
+    /// as one history: no process id is reused and real-time order holds.
+    std::int64_t first_process{0};
+    std::int64_t time_offset_ns{0};
 };
 
 /// Runs workers until `should_stop` returns true, then joins them. `emit` is
 /// called from the worker threads and must be thread-safe. Event times are
-/// nanoseconds since `start`. Returns the number of process ids used.
+/// nanoseconds since `start`, plus `opts.time_offset_ns`. Returns the next
+/// unused process id (the number used, when `opts.first_process` is 0).
 ///
 /// A worker checks `should_stop` before each invoke, never between an
 /// invoke and its completion, so every invoke it emits is completed.
@@ -52,8 +59,9 @@ inline auto run(const std::map<int, std::string>& nodes,
     if (nodes.empty()) {
         throw std::invalid_argument("workload: no nodes");
     }
-    auto now_ns = [start] {
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - start).count();
+    auto now_ns = [start, offset = opts.time_offset_ns] {
+        return offset +
+               std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - start).count();
     };
     // Each worker runs its share of the total rate.
     const auto gap =
@@ -61,7 +69,7 @@ inline auto run(const std::map<int, std::string>& nodes,
             ? clock::duration::zero()
             : std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(
                   static_cast<double>(opts.concurrency) / static_cast<double>(opts.rate)));
-    std::atomic<std::int64_t> next_process{0};
+    std::atomic<std::int64_t> next_process{opts.first_process};
 
     std::vector<std::thread> workers;
     workers.reserve(opts.concurrency);

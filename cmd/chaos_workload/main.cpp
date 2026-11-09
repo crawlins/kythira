@@ -72,6 +72,11 @@ int main() {
         const auto seed = env_uint(
             "WORKLOAD_SEED", static_cast<std::uint64_t>(clock::now().time_since_epoch().count()));
         const auto timeout = std::chrono::milliseconds{env_uint("WORKLOAD_TIMEOUT_MS", 3000)};
+        // Set by chaos_ctl when this workload continues an earlier one's
+        // history (runner.hpp's run_options).
+        const auto first_process = static_cast<std::int64_t>(env_uint("WORKLOAD_FIRST_PROCESS", 0));
+        const auto time_offset_ns =
+            static_cast<std::int64_t>(env_uint("WORKLOAD_TIME_OFFSET_NS", 0));
         std::cerr << "[chaos_workload] nodes=" << nodes.size() << " keys=" << keys
                   << " concurrency=" << concurrency << " rate=" << rate
                   << " duration_s=" << duration.count() << " seed=" << seed << "\n";
@@ -95,12 +100,15 @@ int main() {
                                         .rate = rate,
                                         .weights = weights,
                                         .seed = seed,
-                                        .key_prefix = "k"},
+                                        .key_prefix = "k",
+                                        .first_process = first_process,
+                                        .time_offset_ns = time_offset_ns},
             [deadline, forever] {
                 return g_stop_requested.load() || (!forever && clock::now() >= deadline);
             },
             emit, start);
-        std::cerr << "[chaos_workload] done, " << processes << " processes used\n";
+        std::cerr << "[chaos_workload] done, " << (processes - first_process)
+                  << " processes used\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "chaos_workload: " << e.what() << "\n";

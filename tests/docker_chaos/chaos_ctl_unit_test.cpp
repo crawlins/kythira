@@ -529,6 +529,56 @@ BOOST_FIXTURE_TEST_CASE(workload_start_logs_its_resolved_seed_and_stop_signals_i
     BOOST_TEST(!fs::exists(ctx.paths.workload()));
 }
 
+// A second workload continues the first one's history: process ids and
+// times start past it, and a half-written last line (a SIGKILLed worker)
+// is cut off so the next line does not land on the end of it.
+BOOST_FIXTURE_TEST_CASE(a_later_workload_continues_the_history, fixture) {
+    using dc::history::event_type;
+    using dc::history::op_kind;
+    {
+        auto ev = [](std::int64_t process, event_type type, std::int64_t t) {
+            dc::history::event e;
+            e.process = process;
+            e.type = type;
+            e.f = op_kind::write;
+            e.key = "k0";
+            e.value = "1";
+            e.time_ns = t;
+            return e;
+        };
+        std::ofstream h(ctx.paths.history());
+        h << dc::history::to_line(ev(0, event_type::invoke, 1'000)) << "\n"
+          << dc::history::to_line(ev(4, event_type::invoke, 5'000)) << "\n"
+          << dc::history::to_line(ev(0, event_type::ok, 7'000)) << "\n"
+          << R"({"process":4,"type":"o)";
+    }
+    auto out = chaos_ctl::call(ctx, "workload.start", {});
+    BOOST_TEST(out.at("status").as_string() == "ok", boost::json::serialize(out));
+    const auto& cont = out.at("result").as_object().at("continues_history").as_object();
+    BOOST_TEST(cont.at("events").to_number<int>() == 3);
+    BOOST_TEST(cont.at("first_process").to_number<int>() == 5);
+    bool first = false;
+    bool offset = false;
+    for (const auto& e : spawned_env) {
+        first = first || e == "WORKLOAD_FIRST_PROCESS=5";
+        offset = offset || e == "WORKLOAD_TIME_OFFSET_NS=1007000";
+    }
+    BOOST_TEST(first);
+    BOOST_TEST(offset);
+    BOOST_TEST(chaos_ctl::count_lines(ctx.paths.history()) == 3u);
+    std::ifstream in(ctx.paths.history());
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    BOOST_TEST(text.back() == '\n');
+}
+
+BOOST_FIXTURE_TEST_CASE(a_first_workload_gets_no_continuation, fixture) {
+    auto out = chaos_ctl::call(ctx, "workload.start", {});
+    BOOST_TEST(!out.at("result").as_object().contains("continues_history"));
+    for (const auto& e : spawned_env) {
+        BOOST_TEST(e.find("WORKLOAD_FIRST_PROCESS") == std::string::npos);
+    }
+}
+
 BOOST_FIXTURE_TEST_CASE(check_run_reads_the_history_file, fixture) {
     {
         // Write 1, then a read that sees 2: no order explains it.

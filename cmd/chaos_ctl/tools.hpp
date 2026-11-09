@@ -640,16 +640,51 @@ inline void normalize_workload_start(const context& ctx, boost::json::object& a,
     }
 }
 
+/// Where a new workload picks up the run's history.
+struct history_tail {
+    std::size_t events{0};
+    std::int64_t next_process{0};
+    std::int64_t next_time_ns{0};
+};
+
+/// Readies the history for another workload to append to. A workload
+/// stopped with SIGKILL can leave a last line half written; it is cut off
+/// here, since the next workload's first line would otherwise be glued to
+/// it. The new times start a millisecond past the last event's.
+inline auto continue_history(context& ctx) -> history_tail {
+    const auto path = ctx.paths.history();
+    if (!fs::exists(path) || fs::file_size(path) == 0) {
+        return {};
+    }
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (text.back() != '\n') {
+            const auto nl = text.rfind('\n');
+            fs::resize_file(path, nl == std::string::npos ? 0 : nl + 1);
+        }
+    }
+    history_tail t;
+    for (const auto& e : read_history(ctx.paths)) {
+        ++t.events;
+        t.next_process = std::max(t.next_process, e.process + 1);
+        t.next_time_ns = std::max(t.next_time_ns, e.time_ns + 1'000'000);
+    }
+    return t;
+}
+
 inline auto workload_start(context& ctx, const boost::json::object& a, call_state& /*st*/)
     -> boost::json::value {
     if (workload_pid(ctx) != 0) {
         throw tool_error("a workload is already running; stop it first");
     }
-    // One workload per run: a second would number its processes from 0
-    // again, and the two histories would not read as one.
-    if (count_lines(ctx.paths.history()) != 0) {
-        throw tool_error("this run already has a workload history; one workload per run");
-    }
+    // A later workload continues the run's history rather than starting a
+    // second one: its process ids start past the last one used and its
+    // times past the last event, so the checkers read one history. (M3
+    // run 1 spent 156 calls on a refusal that allowed one workload per
+    // run.) Every earlier invoke left without a completion keeps its
+    // process id to itself, as WGL needs.
+    const auto prior = continue_history(ctx);
     const auto concurrency = args::integer(a, "concurrency");
     const auto rate = args::integer(a, "rate");
     const auto keys = args::integer(a, "keys");
@@ -678,11 +713,20 @@ inline auto workload_start(context& ctx, const boost::json::object& a, call_stat
     if (args::has(a, "mix")) {
         env.push_back("WORKLOAD_MIX=" + args::string(a, "mix"));
     }
+    if (prior.events != 0) {
+        env.push_back("WORKLOAD_FIRST_PROCESS=" + std::to_string(prior.next_process));
+        env.push_back("WORKLOAD_TIME_OFFSET_NS=" + std::to_string(prior.next_time_ns));
+    }
     const int pid = ctx.procs.spawn({ctx.cfg.workload_binary}, env, ctx.paths.history().string(),
                                     ctx.paths.workload_log().string());
     write_json_file(ctx.paths.workload(),
                     boost::json::object{{"pid", pid}, {"started_mono_ms", ctx.mono_ms()}});
-    return boost::json::object{{"pid", pid}, {"seed", a.at("seed")}};
+    boost::json::object out{{"pid", pid}, {"seed", a.at("seed")}};
+    if (prior.events != 0) {
+        out["continues_history"] =
+            boost::json::object{{"events", prior.events}, {"first_process", prior.next_process}};
+    }
+    return out;
 }
 
 inline auto workload_stop(context& ctx, const boost::json::object& /*a*/, call_state& st)
@@ -875,8 +919,9 @@ inline auto reset(context& ctx, const boost::json::object& /*a*/, call_state& st
          tool::remove_member,
          {}},
         {"workload.start",
-         "Start the workload (reads, writes, CAS). Args, all optional: seed, concurrency, rate, "
-         "keys, values, mix.",
+         "Start the workload (reads, writes, CAS). Runs until workload.stop, through faults and "
+         "run.reset. A later start continues the same history. Args, all optional: seed, "
+         "concurrency, rate, keys, values, mix.",
          false, false, tool::workload_start, tool::normalize_workload_start},
         {"workload.stop",
          "Stop the workload; each worker finishes its operation in flight.",
