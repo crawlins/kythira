@@ -7063,7 +7063,19 @@ auto node<Types>::handle_format1_install_snapshot_locked(
         }
 
         auto& transfer = *_format1_transfer;
-        if (!guarded([&] { transfer.writer->write(request.offset(), request.data()); })) {
+        if (!guarded([&] {
+                // Failpoint (file-install-snapshot Requirement 8.1): a chunk
+                // damaged in transit. The file it completes fails its
+                // SHA-256 and the transfer is refused with `checksum`.
+                if (fiu_fail("raft/snapshot/corrupt_chunk") != 0 && !request.data().empty()) {
+                    auto damaged = request.data();
+                    damaged.front() =
+                        static_cast<std::byte>(~std::to_integer<unsigned>(damaged.front()));
+                    transfer.writer->write(request.offset(), damaged);
+                    return;
+                }
+                transfer.writer->write(request.offset(), request.data());
+            })) {
             return *failure;
         }
 
@@ -7104,6 +7116,12 @@ auto node<Types>::handle_format1_install_snapshot_locked(
             })) {
             return *failure;
         }
+        // Failpoint (Requirement 8.1): the follower dies after the engine
+        // has the snapshot and before the metadata is saved. The node
+        // object is torn down by the test; restart must take the engine's
+        // applied index (Requirement 4.2).
+        fiu_do_on("raft/snapshot/crash_after_ingest",
+                  throw std::runtime_error("chaos: crash after ingest"););
         snapshot_type snap{index, term, _configuration, persistent_snapshot_marker()};
         try {
             complete_snapshot_install_locked(snap, static_cast<std::size_t>(total));

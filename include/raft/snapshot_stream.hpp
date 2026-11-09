@@ -31,6 +31,7 @@
 /// report how far it got (`snapshot_stream_writer::reopen`, used by task 6's
 /// resume). A checkpoint file of that name is therefore refused.
 
+#include <raft/fault_injection.hpp>
 #include <raft/persistent_state_machine.hpp>
 #include <raft/types.hpp>
 
@@ -519,6 +520,10 @@ private:
         while (_file < _manifest.files.size() && _in_file == _manifest.files.at(_file).size) {
             const auto& f = _manifest.files.at(_file);
             const auto path = current_path();
+            // Failpoint (file-install-snapshot Requirement 8.1): the file's
+            // fsync fails, as on a full or failing disk.
+            fiu_do_on("raft/snapshot/fsync_file", d::fail(install_snapshot_reject_reason::io_error,
+                                                          "chaos: fsync " + path.string()););
             d::fsync_fd(_fd.get(), path.string());
             _fd.reset();
             if (_hasher->finish() != f.sha256) {
