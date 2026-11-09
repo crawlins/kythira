@@ -894,16 +894,20 @@ struct raft_configuration {
     std::size_t _snapshot_chunk_size{1'000'000};  ///< Chunk size for InstallSnapshot transfers.
     /// Persistent state machines only (`.kiro/specs/persistent-state-machine/`):
     /// whether the node compacts its log, through the state machine's durable
-    /// applied index. Off by default until the node can send a persistent
-    /// snapshot to a follower (`.kiro/specs/file-install-snapshot/`): a
-    /// follower that falls behind a compacted log could not catch up
-    /// (Requirement 10.2).
-    bool _persistent_log_compaction{false};
+    /// applied index. On by default: a follower that falls behind a compacted
+    /// log catches up through a format-1 snapshot
+    /// (`.kiro/specs/file-install-snapshot/` Requirement 7.1). Off keeps the
+    /// whole log, which is logged once at start.
+    bool _persistent_log_compaction{true};
     /// Persistent state machines only: when compaction finds the durable
     /// applied index more than this many entries behind the applied index,
     /// it asks the state machine to sync first, if it can
-    /// (`sync_durable()`). 0 never syncs (Requirement 3.3).
-    std::size_t _persistent_sync_lag_entries{0};
+    /// (`sync_durable()`). 0 never syncs (Requirement 3.3). The default, 1,
+    /// syncs at nearly every compaction, which runs once per
+    /// `_snapshot_threshold_bytes` applied: an engine that only makes writes
+    /// durable when asked (RocksDB with an unsynced WAL) would otherwise
+    /// never let the log compact at all.
+    std::size_t _persistent_sync_lag_entries{1};
     /// Persistent state machines only (`.kiro/specs/file-install-snapshot/`
     /// Requirement 3): where a follower stages the files of an incoming
     /// snapshot before the state machine ingests them. It should be on the

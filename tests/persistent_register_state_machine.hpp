@@ -6,7 +6,9 @@
 // The smallest persistent state machine that exercises `node<Types>`'s
 // persistent path (.kiro/specs/persistent-state-machine/ task 3): a map of
 // registers kept in a `memory_kv_engine`. A command is `key=value` and sets
-// one register. Every apply writes the value and the applied index in one
+// one register. The engine is a template parameter, `memory_kv_engine` by
+// default; the RocksDB build of the node suite uses `rocksdb_kv_engine`.
+// Every apply writes the value and the applied index in one
 // batch, and `durable_applied_index()` follows the engine's durable
 // sequence, so a test can hold durability back, crash the engine, and watch
 // the node replay from the log.
@@ -29,13 +31,13 @@
 
 namespace kythira::testing {
 
-class persistent_register_state_machine {
+template<kv_engine Engine = memory_kv_engine> class basic_persistent_register_state_machine {
 public:
-    using engine_type = memory_kv_engine;
+    using engine_type = Engine;
 
     static constexpr std::string_view k_applied_key = "applied";
 
-    persistent_register_state_machine() = default;
+    basic_persistent_register_state_machine() = default;
 
     // -- persistent_state_machine ------------------------------------------
 
@@ -135,6 +137,8 @@ private:
     std::size_t _syncs{0};
     std::size_t _opens{0};
 };
+
+using persistent_register_state_machine = basic_persistent_register_state_machine<>;
 
 static_assert(persistent_state_machine<persistent_register_state_machine>);
 static_assert(!state_machine<persistent_register_state_machine, std::uint64_t>);

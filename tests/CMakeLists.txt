@@ -467,6 +467,12 @@ target_link_libraries(persistent_node_integration_test PRIVATE OpenSSL::Crypto)
 if(TARGET raft_rocksdb_engine)
     add_raft_completion_test(rocksdb_kv_engine_test rocksdb_kv_engine_test.cpp)
     target_link_libraries(rocksdb_kv_engine_test PRIVATE raft_rocksdb_engine OpenSSL::Crypto)
+    # file-install-snapshot task 7: the node suite again on RocksDB, plus the
+    # 1 GB catch-up with a bounded resident set (Requirement 7.2).
+    add_raft_completion_test(persistent_node_rocksdb_test persistent_node_integration_test.cpp)
+    target_compile_definitions(persistent_node_rocksdb_test PRIVATE KYTHIRA_PERSISTENT_TEST_ROCKSDB)
+    target_link_libraries(persistent_node_rocksdb_test PRIVATE raft_rocksdb_engine OpenSSL::Crypto)
+    set_tests_properties(persistent_node_rocksdb_test PROPERTIES TIMEOUT 3600)
 endif()
 # file-install-snapshot task 5: the leader's shared, refcounted checkpoints.
 add_raft_completion_test(checkpoint_registry_test checkpoint_registry_test.cpp)

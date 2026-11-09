@@ -186,10 +186,49 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
       progress (same leader and a new one), and a paced three-node
       transfer whose follower is cut off mid-transfer and resumes.
 
-- [ ] 7. Turn on compaction for persistent groups
+- [x] 7. Turn on compaction for persistent groups
   - Lift persistent-state-machine Requirement 10.2; the RSS-bounded catch-up
     integration test on a 1 GB group (RocksDB leg)
   - _Requirements: 7.1, 7.2_
+  - As built:
+    - 7.1: `raft_configuration::_persistent_log_compaction` defaults to
+      true (a configuration type without the field compacts too). Turned
+      off, the node keeps the whole log and says so once at start.
+    - Also changed: `_persistent_sync_lag_entries` defaults to 1 instead
+      of 0 (never sync). With 0, an engine that makes writes durable only
+      when asked (RocksDB with an unsynced WAL) never advanced its durable
+      applied index, so compaction, which stops there (persistent-state-
+      machine Requirement 3.1), never ran: the RocksDB build of the node
+      suite showed it at once. At 1 the node syncs at nearly every
+      compaction, once per `_snapshot_threshold_bytes` applied.
+    - 7.2: `persistent_node_integration_test.cpp` builds a second time as
+      `persistent_node_rocksdb_test` (`KYTHIRA_PERSISTENT_TEST_ROCKSDB`)
+      on `rocksdb_kv_engine`. It runs every case except the three that
+      hold durability back or simulate a crash, which only
+      `memory_kv_engine` can do, and adds
+      `follower_catches_up_a_1gb_group_with_bounded_rss`: three replicas,
+      one cut off while 1024 incompressible 1 MiB values are written past
+      compaction, healed, caught up by a format-1 snapshot, with the
+      process's peak RSS growth during catch-up checked against 64 MB. All
+      three replicas share the process, so the bound covers leader and
+      follower together. RSS is read after `malloc_trim(0)`: without it,
+      memory glibc caches in per-thread arenas after a free varied from 4
+      to 70 MB between identical runs. The test compacts every 8 MB,
+      because the follower takes the log tail after the snapshot into the
+      harness's in-memory log store and that tail is resident. CI runs it
+      in the Ion Serializer Build job, which has RocksDB. Measured locally
+      (November 9, 2026, 4-core sandbox, unoptimized test build): 1024 MiB
+      caught up with 0 MiB RSS growth (bound 64 MB), process peak RSS
+      449 MB, 15 min 41 s wall clock for the whole case. At 64 MiB, before
+      the trim and the 8 MB threshold, growth ranged 36-82 MB.
+    - `rocksdb_kv_engine::checkpoint` reads with `fill_cache = false`, so
+      a snapshot scan neither evicts the group's hot blocks nor grows the
+      process by the block cache's size.
+    - Found on the way: `node<Types>` emitted metrics from many threads
+      without serializing them. Fixed in PR #735 with `serialized_metrics`.
+    - The resume test now compacts once, at its last write: on RocksDB an
+      earlier checkpoint, larger than the memory engine's, was still being
+      sent at 150 B/s when the test cut the follower.
 
 - [ ] 8. Faults and chaos
   - Failpoints (corrupt chunk, fsync failure, kill after ingest), leader
