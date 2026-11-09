@@ -224,7 +224,7 @@ are the only place several refutations are written down in one paragraph.
 | `object-store-group-commit` | **4/4** | Moved from "Partially Implemented" October 23, 2026, where it already read 4/4. Written and built October 21, 2026, from the object-store-batched-layout spec's open question 1. Leader group commit for the object-store engine: `node` already coalesces concurrent `submit_command` calls through the durability barrier, but the object-store engine is not a `barriered_persistence_engine`, so each command is one synchronous PUT and the cluster commits at about `1 / p50(PUT)`. Opt-in `write_behind` stages appends and flushes them at the barrier as one `append_log_entries` run (one segment under `log_layout::segmented`). Adds `durability_class::synchronous` so the default keeps today's requests and locking. One `node` change: a follower run on a synchronous engine stays one bulk call. Measured on the mock: 24 concurrent commands, 2 leader log PUTs. On the five real providers (October 22, 2026, object-store-batched-layout task 10) 16 submitters gave `B` of 2.5-4 and 2.2-4.5x the synchronous commit rate, at about 3x the median commit latency and a 2-4.5x lower p99. Part of open-tasks item 15. |
 | `object-backup-s3-endpoint` | **7/7** | Written October 22, 2026; built October 23 (PR #609). `raft_object_backup --provider s3` takes `--region` and `--endpoint`; `AWS_ENDPOINT_URL`, which CI points at Oracle's build cache, stays unread and now draws a warning when set. Found on the way: the S3 provider crashed on every run because it never called `Aws::InitAPI`. LocalStack 4.14 honours `If-None-Match` and `If-Match`, so CI now runs a create, list, verify and restore-clone cycle against it. |
 | `multi-raft-node-s3-persistence` | **10/10** | Written October 22, 2026 (PR #602); built October 23 (PR #612). `multi_raft_node --persistence s3` keeps every group's Raft state in a bucket, one prefix per host, with conditional-write fencing on by default and the object-store engine's combined hard state, segmented log and write-behind group commit behind flags; `/describe` reports the layout and flush counts. The fencing owner is `<node>@<own raft URL>` rather than the bare node id, because the engine treats an equal owner as a restart and a bare id could not refuse a duplicate host. A three-host process test on the mock and a LocalStack restart cycle in CI cover it; group commit batched 4.3 commands per leader log PUT locally against 1.0 for the baseline. |
-| `disk-backed-build-cache` | **13/13** | **Closed November 5, 2026.** Written October 15, 2026; built November 1-5 (PRs #650, #653, #655, #657, #659, #671, #682, #689, #692, #695). The Redis gateway's disk mode keeps values in a per-node, content-addressed chunk store with pack files, the index in RAM, binary file-backed Raft state and index-only snapshots; replicas fetch missing chunks from peers. An HTTP front end serves GET, HEAD, PUT and the WebDAV subset sccache 0.17 actually sends, so sccache (WebDAV) and vcpkg (`http` source) share one cluster of minimal containers (`services/redis/docker/cache-cluster/`), with chaos scenarios green under Docker and rootless Podman. Task 11 built the full tree through it on GitHub-hosted runners: warm builds at 0.94-0.96x the OCI cache's time, 99.87-100% hits, 3-5.5 ms per hit against 135-191 ms. Task 9's large uploads found three Raft and gateway faults (no AppendEntries byte limit, file mode evicting at the RAM limit, lagging followers flooded), fixed there. tasks.md task 13 sets each design assumption against what was measured. Open, outside the spec: one clang++-18 unit whose cache key is unstable, `redis_gateway_disk_store_integration_test` still retry-allowlisted, and an unfiled Boost-backend pre-vote crash. |
+| `disk-backed-build-cache` | **13/13** | **Closed November 5, 2026.** Written October 15, 2026; built November 1-5 (PRs #650, #653, #655, #657, #659, #671, #682, #689, #692, #695). The Redis gateway's disk mode keeps values in a per-node, content-addressed chunk store with pack files, the index in RAM, binary file-backed Raft state and index-only snapshots; replicas fetch missing chunks from peers. An HTTP front end serves GET, HEAD, PUT and the WebDAV subset sccache 0.17 actually sends, so sccache (WebDAV) and vcpkg (`http` source) share one cluster of minimal containers (`services/redis/docker/cache-cluster/`), with chaos scenarios green under Docker and rootless Podman. Task 11 built the full tree through it on GitHub-hosted runners: warm builds at 0.94-0.96x the OCI cache's time, 99.87-100% hits, 3-5.5 ms per hit against 135-191 ms. Task 9's large uploads found three Raft and gateway faults (no AppendEntries byte limit, file mode evicting at the RAM limit, lagging followers flooded), fixed there. tasks.md task 13 sets each design assumption against what was measured. Open, outside the spec: one clang++-18 unit whose cache key is unstable, and an unfiled Boost-backend pre-vote crash. `redis_gateway_disk_store_integration_test`'s retry rescues (15 in 52 runs to November 9) are fixed: see "Disk mode applies under the node mutex" below. |
 
 ### Not Started
 
@@ -1913,7 +1913,27 @@ unverified completion claim.
       `raft_batched_durable_writes_test`, `coap_io_wait_mode_test`,
       `http_pre_vote_timeout_now_test` and `ca_cluster_node_rpc_tls_test`.
       `redis_gateway_disk_store_integration_test` (new on November 1) was
-      rescued once and is left to the disk-backed cache work.
+      rescued once and is left to the disk-backed cache work. **Fixed
+      November 9, 2026**, with `cache_http_front_end_test` and
+      `redis_gateway_integration_test` (rescued 15, 8 and 2 times in 52
+      runs): see "Disk mode applies under the node mutex".
+  - **Disk mode applies under the node mutex. OPEN** (found November 9,
+    2026). `cache_kv_state_machine` fsyncs a chunk, its pack record and
+    the directory inside `apply()`, and `apply_committed_entries()` runs
+    under the Raft node's `_mutex`, which `tick()` needs to send
+    heartbeats. A slow fsync therefore silences the whole node: under
+    `ctest -j` beside the 1 GiB PUT, one apply stalled a leader for
+    ~850 ms and its followers elected a new one. That was the retry
+    rescue in the three Redis module tests above, which now keep their
+    in-process chunk stores on tmpfs (`services/redis/tests/scratch_dir.hpp`)
+    and use 500-1000 ms election timeouts. A production node runs
+    150-300 ms by default, so a disk that stalls fsync for more than
+    ~150 ms causes leader churn there too. The chunk bytes travel in the
+    log (`put_chunk`), so apply is where they reach disk. Options: apply
+    committed entries outside `_mutex` in core (the bigger change, and it
+    helps every slow state machine), or have the cache machine hand chunk
+    writes to a writer thread and acknowledge them before the next
+    snapshot or commit point that needs them durable.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`

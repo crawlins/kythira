@@ -27,6 +27,7 @@
 
 #include "multi_raft_test_fabric.hpp"
 #include "redis_golden_bytes.hpp"
+#include "scratch_dir.hpp"
 
 #include <raft/bounded_resolver.hpp>
 #include <raft/console_logger.hpp>
@@ -168,7 +169,7 @@ using gateway_type = redis_gateway<host_type, kythira::console_logger, kythira::
 /// when the process exits.
 auto disk_store_root() -> const std::filesystem::path& {
     struct root {
-        std::filesystem::path _path = std::filesystem::temp_directory_path() /
+        std::filesystem::path _path = kythira::testing::fast_scratch_root() /
                                       ("kythira-gw-disk-" + std::to_string(::getpid()));
         root() {
             std::filesystem::remove_all(_path);
@@ -668,9 +669,9 @@ private:
             .store_factory =
                 [](const group_id_type&) { return host_types::persistence_engine_type{}; },
         };
-        cfg.config._election_timeout_min = std::chrono::milliseconds{120};
-        cfg.config._election_timeout_max = std::chrono::milliseconds{260};
-        cfg.config._heartbeat_interval = std::chrono::milliseconds{25};
+        cfg.config._election_timeout_min = std::chrono::milliseconds{500};
+        cfg.config._election_timeout_max = std::chrono::milliseconds{1000};
+        cfg.config._heartbeat_interval = std::chrono::milliseconds{50};
         cfg.hibernation = hibernation_mode::off;
         cfg.executor_stripes = 2;
         cfg.partitioner = kythira::make_partitioner<key_type>(kythira::redis_kv_partitioner{});

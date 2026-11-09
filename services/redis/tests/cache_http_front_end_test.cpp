@@ -13,6 +13,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "multi_raft_test_fabric.hpp"
+#include "scratch_dir.hpp"
 
 #include <kythira/redis/cache_http_auth.hpp>
 #include <kythira/redis/cache_http_front_end.hpp>
@@ -476,7 +477,9 @@ public:
                      std::size_t snapshot_threshold = 0)
         : _nodes(nodes) {
         static std::atomic<int> counter{0};
-        _root = std::filesystem::temp_directory_path() /
+        // A one-node cluster is the 1 GiB PUT: kept on disk, see scratch_dir.hpp.
+        _root = (nodes == 1 ? std::filesystem::temp_directory_path()
+                            : kythira::testing::fast_scratch_root()) /
                 ("kythira-cache-http-" + std::to_string(::getpid()) + "-" +
                  std::to_string(counter.fetch_add(1)));
         std::filesystem::remove_all(_root);
@@ -649,9 +652,9 @@ private:
                 [](const group_id_type&) { return host_types::persistence_engine_type{}; },
             .on_group_destroyed = {},
         };
-        cfg.config._election_timeout_min = std::chrono::milliseconds{120};
-        cfg.config._election_timeout_max = std::chrono::milliseconds{260};
-        cfg.config._heartbeat_interval = std::chrono::milliseconds{25};
+        cfg.config._election_timeout_min = std::chrono::milliseconds{500};
+        cfg.config._election_timeout_max = std::chrono::milliseconds{1000};
+        cfg.config._heartbeat_interval = std::chrono::milliseconds{50};
         if (snapshot_threshold != 0) {
             cfg.config._snapshot_threshold_bytes = snapshot_threshold;
         }
