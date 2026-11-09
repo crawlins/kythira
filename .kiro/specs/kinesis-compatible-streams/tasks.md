@@ -78,11 +78,23 @@ asked.
   - Compatibility profile resolution
   - _Requirements: 3.1-3.4, 4.4, 5.1-5.4_
 
-- [ ] 5. Catalog and stream state machine
+- [x] 5. Catalog and stream state machine
   - Catalog range, stream ids, status transitions, shard tables with hash
     ranges, the split hook that protects routing keys
   - `stream_state_machine`: per-shard counters, arrival timestamps, segment
     index, snapshots without record bytes
+  - Done: `services/kinesis/include/kythira/kinesis/` `kinesis_hash.hpp`,
+    `kinesis_sequence.hpp`, `kinesis_catalog.hpp` and
+    `kinesis_stream_state_machine.hpp` (the design's `catalog.hpp` and
+    `stream_state_machine.hpp`, named with the module prefix as IAM and
+    ledger headers are); tests `kinesis_catalog_test`,
+    `kinesis_stream_state_machine_test`; clock assumption in
+    `services/kinesis/doc/sequence-numbers.md`. The record segment store is
+    shared by a node's groups, so splits and merges move no bytes; a
+    snapshot carries each shard's active-segment descriptor, and a
+    restoring replica fetches that prefix through a `segment_fetcher` hook
+    before it appends. Throttle configuration in the shard state comes with
+    task 8.
   - _Requirements: 6.2-6.4, 8.1, 8.3, 8.4_
 
 - [ ] 6. Stream lifecycle and writes

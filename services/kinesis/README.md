@@ -23,6 +23,11 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `doc/unsupported.md` | every other operation, with its planned task, reason and the exact error it returns | 1 onward |
 | `tools/check_coverage.py`, `tools/test_check_coverage.py` | the coverage check (Requirement 2.2) and its fixture tests | 1 |
 | `cmd/kinesis_gateway_node/` | the daemon; a placeholder with `--self-test` until task 6 | 1 |
+| `include/kythira/kinesis/kinesis_hash.hpp` | the 128-bit hash-key space: MD5 routing, decimal hash keys, `CreateStream`'s even ranges | 5 |
+| `include/kythira/kinesis/kinesis_sequence.hpp` | sequence numbers (`aws` and `compact` forms) and shard ids | 5 |
+| `include/kythira/kinesis/kinesis_catalog.hpp` | catalog keys, routing keys, stream records and their codec | 5 |
+| `include/kythira/kinesis/kinesis_stream_state_machine.hpp` | the replicated state: catalog commands, per-shard counters, arrival clocks, segment index, the split hook | 5 |
+| `doc/sequence-numbers.md` | sequence-number layout and the clock assumption behind arrival timestamps | 5 |
 
 Core pieces the module builds on live in `include/raft/`, because DynamoDB
 uses them too: `record_segment_store.hpp` (task 3), and later the CBOR and
@@ -45,8 +50,8 @@ package to export.
 | `kythira_core_headers` | `include/` and `generated/`, through `kythira_kinesis` |
 | `OpenSSL::Crypto` | SigV4, segment digests and iterator tokens, through `kythira_kinesis` |
 | `Python3_EXECUTABLE` | the coverage and generated-header tests |
-| `kythira_test_pch` | the guard the tests are entered under |
-| `cmake/kythira_test_helpers.cmake` | `kythira_scale_test_timeouts` |
+| `kythira_test_pch` | the guard the tests are entered under, and what the C++ tests link |
+| `cmake/kythira_test_helpers.cmake` | `kythira_scale_test_timeouts`, `add_raft_completion_test` |
 
 ## What a split would still need
 
