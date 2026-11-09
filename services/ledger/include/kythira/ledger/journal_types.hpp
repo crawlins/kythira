@@ -23,6 +23,7 @@
 //
 //   {op: create_table, table: "t"}       {op: drop_table, table: "t"}
 //   {op: undrop_table, table: "t"}
+//   {op: create_index, table: "t", index: "by_vin", path: ["vin"]}
 //   {op: insert,  table: "t", id: "<22 base62>", value: <document>}
 //   {op: replace, table: "t", id: "...", value: <document>, ifVersion: 3}
 //   {op: patch,   table: "t", id: "...", set: [{path: ["a", 0], value: v}],
@@ -275,6 +276,7 @@ enum class statement_op : std::uint8_t {
     replace,
     patch,
     remove,  // `delete` in Ion
+    create_index,
 };
 
 inline auto op_name(statement_op op) -> std::string_view {
@@ -293,14 +295,16 @@ inline auto op_name(statement_op op) -> std::string_view {
             return "patch";
         case statement_op::remove:
             return "delete";
+        case statement_op::create_index:
+            return "create_index";
     }
     return "";
 }
 
 inline auto op_from_name(std::string_view name) -> std::optional<statement_op> {
-    for (const auto op :
-         {statement_op::create_table, statement_op::drop_table, statement_op::undrop_table,
-          statement_op::insert, statement_op::replace, statement_op::patch, statement_op::remove}) {
+    for (const auto op : {statement_op::create_table, statement_op::drop_table,
+                          statement_op::undrop_table, statement_op::insert, statement_op::replace,
+                          statement_op::patch, statement_op::remove, statement_op::create_index}) {
         if (op_name(op) == name) {
             return op;
         }
@@ -326,6 +330,8 @@ struct statement {
     std::optional<std::int64_t> if_version;
     std::vector<patch_set> sets;         // patch
     std::vector<document_path> removes;  // patch
+    std::string index;                   // create_index
+    document_path index_path;            // create_index
     ion_value ion;
 
     [[nodiscard]] auto is_document_op() const -> bool {
@@ -397,6 +403,13 @@ inline auto parse_statement(const ion_value& ion) -> statement {
         }
     }
     switch (out.op) {
+        case statement_op::create_index:
+            out.index = jd::text_field(ion, "index");
+            if (!valid_table_name(out.index)) {
+                throw ledger_format_error("invalid index name");
+            }
+            out.index_path = jd::path_from_ion(jd::required(ion, "path"));
+            break;
         case statement_op::insert:
         case statement_op::replace:
             out.value = jd::required(ion, "value");
@@ -451,6 +464,15 @@ inline auto drop_table(std::string_view table) -> ion_value {
 }
 inline auto undrop_table(std::string_view table) -> ion_value {
     return table_op(statement_op::undrop_table, table);
+}
+
+/// An equality index named `index` on the value at `path` (Requirement
+/// 6.2).
+inline auto create_index(std::string_view table, std::string_view index, const document_path& path)
+    -> ion_value {
+    ion_value s = table_op(statement_op::create_index, table);
+    s.set("index", ion_value::string(index)).set("path", journal_detail::path_to_ion(path));
+    return s;
 }
 
 inline auto document_op(statement_op op, std::string_view table, std::string_view id,
@@ -583,6 +605,23 @@ inline auto patch_remove_path(ion_value& root, const document_path& path) -> voi
     parent.items().erase(parent.items().begin() + static_cast<std::ptrdiff_t>(index));
 }
 
+/// The value at `path` in `root`, or nullptr when the path is absent.
+inline auto value_at(const ion_value& root, const document_path& path) -> const ion_value* {
+    const ion_value* at = &root;
+    for (const auto& step : path) {
+        if (const auto* name = std::get_if<std::string>(&step)) {
+            at = at->find(*name);
+        } else {
+            const auto index = std::get<std::size_t>(step);
+            at = at->is_sequence() && index < at->items().size() ? &at->items()[index] : nullptr;
+        }
+        if (at == nullptr) {
+            return nullptr;
+        }
+    }
+    return at;
+}
+
 // ── Transaction entries ─────────────────────────────────────────────────────
 
 /// What a transaction read, for optimistic validation in apply
@@ -713,9 +752,8 @@ inline auto encode_entry(const transaction_entry& e) -> std::vector<std::uint8_t
 }
 
 /// Throws ledger_format_error (or ion_value_error) for anything malformed.
-inline auto decode_entry(std::span<const std::uint8_t> bytes) -> transaction_entry {
+inline auto decode_entry(const ion_value& v) -> transaction_entry {
     namespace jd = journal_detail;
-    const ion_value v = ion_value::parse(bytes);
     if (!v.is_struct() || jd::text_field(v, "type") != entry_type) {
         throw ledger_format_error("not a ledger transaction entry");
     }
@@ -737,6 +775,44 @@ inline auto decode_entry(std::span<const std::uint8_t> bytes) -> transaction_ent
     }
     if (const ion_value* r = v.find("readSet"); r != nullptr) {
         e.reads = read_set::from_ion(*r);
+    }
+    return e;
+}
+
+inline auto decode_entry(std::span<const std::uint8_t> bytes) -> transaction_entry {
+    return decode_entry(ion_value::parse(bytes));
+}
+
+// ── Index build entries ─────────────────────────────────────────────────────
+
+/// Backfill of an index created on a non-empty table (Requirement 6.2):
+/// {type: ledger_index_build, table, index, limit}. Each one indexes up to
+/// `limit` more documents past the index's stored cursor; the one that
+/// reaches the end of the table activates the index. The leader proposes
+/// them in the background; they write no block, since no document changes.
+struct index_build_entry {
+    std::string table;
+    std::string index;
+    std::uint64_t limit = 0;
+};
+
+inline constexpr std::string_view index_build_type = "ledger_index_build";
+
+inline auto encode_index_build(const index_build_entry& e) -> std::vector<std::uint8_t> {
+    ion_value v = ion_value::make_struct();
+    v.set("type", ion_value::symbol(index_build_type))
+        .set("table", ion_value::string(e.table))
+        .set("index", ion_value::string(e.index))
+        .set("limit", ion_value::integer(static_cast<std::int64_t>(e.limit)));
+    return v.to_binary();
+}
+
+inline auto decode_index_build(const ion_value& v) -> index_build_entry {
+    namespace jd = journal_detail;
+    index_build_entry e{jd::text_field(v, "table"), jd::text_field(v, "index"),
+                        jd::uint_field(v, "limit")};
+    if (!valid_table_name(e.table) || !valid_table_name(e.index) || e.limit == 0) {
+        throw ledger_format_error("invalid index build entry");
     }
     return e;
 }

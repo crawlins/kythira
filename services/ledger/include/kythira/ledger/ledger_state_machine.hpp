@@ -33,8 +33,18 @@
 //   see ledger_sessions.hpp), transaction_too_large (over ledger_options),
 //   and per-statement codes table_exists,
 //   table_not_found, table_inactive, table_active, document_exists,
-//   document_not_found, version_mismatch, invalid_path, document_too_large.
+//   document_not_found, version_mismatch, invalid_path, document_too_large,
+//   index_exists, index_limit.
 //   The applied index still advances.
+// - index build step: a {type: ledger_index_build, table, index, limit}
+//   entry indexes up to `limit` more documents of an index still building
+//   and, once none remain, activates it; it writes no block, since the
+//   index is derived state, and returns {status: index_building |
+//   index_active, indexed} (or index_not_found / index_active). An index
+//   created on a table with no live document is active at once. Proposing
+//   the steps is the node's job (task 7). Every write maintains every
+//   index on its table, building ones included, so the entries are exact
+//   once the cursor reaches the end (Requirement 6.2).
 // - divergence: seq and previous hash match but the recomputed blockHash
 //   differs from the leader's. apply throws ledger_divergence_error before
 //   writing anything; it derives from persistent_storage_error, which the
@@ -59,6 +69,12 @@
 //   data  P rev/<table>/<id>/<v>    revision (committed view), v zero-padded
 //   data  P journal/<seq>           block, seq zero-padded
 //   data  P tchg/<table>            seq of the last block that changed the table
+//   meta  P meta/index/<t>/<name>   {path, active, cursor?, createdSeq}
+//   data  P idx/<t>/<name>/<h>/<id> index entry (empty): the value at the
+//                                   path hashes to h (hex Ion hash)
+//   data  P ichg/<t>/<name>/<h>     seq of the last block that moved a
+//                                   document into or out of key h
+//   data  P hist/<t>/<seq>/<id>/<v> table history key (empty), commit order
 //   data  P merkle/<level>/<index>  Merkle node, 32 bytes (engine_merkle_store.hpp)
 //
 // Everything is inside the range, so checkpoint, ingest and drop move the
@@ -80,6 +96,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -255,6 +272,33 @@ struct ledger_options {
     /// Total Ion binary size of a transaction's statements (Requirement
     /// 7.5); below the Raft entry limit.
     std::size_t max_statement_bytes = std::size_t{4} << 20U;
+    /// Indexes per table (Requirement 6.2).
+    std::size_t max_indexes_per_table = 20;
+};
+
+/// An equality index's catalog record (Requirement 6.2).
+struct index_info {
+    std::string table;
+    std::string name;
+    document_path path;
+    bool active = false;                // queries use it only once active
+    std::optional<std::string> cursor;  // backfill progress while building
+    std::uint64_t created_seq = 0;
+};
+
+/// A scan's bounds and filter (Requirement 6.3).
+struct scan_options {
+    std::optional<std::string> after;               // resume after this id (exclusive)
+    std::size_t limit = 100;                        // documents per page
+    std::size_t max_bytes = std::size_t{1} << 20U;  // document bytes per page
+    /// Only documents whose value at the path hashes to this.
+    std::optional<std::pair<document_path, hash256>> filter;
+};
+
+/// One page of history, in commit order.
+struct history_page {
+    std::vector<revision> revisions;
+    std::optional<std::string> next;  // cursor for the next page
 };
 
 /// One page of a snapshot table scan.
@@ -287,10 +331,17 @@ public:
         }
         kythira::write_batch batch;
         apply_result result;
+        std::optional<std::vector<std::byte>> raw_result;
         std::optional<block_tip> new_tip;
         try {
-            const auto entry = decode_entry(std::span<const std::uint8_t>(
+            const ion_value parsed = ion_value::parse(std::span<const std::uint8_t>(
                 reinterpret_cast<const std::uint8_t*>(command.data()), command.size()));
+            const ion_value* type = parsed.find("type");
+            if (type != nullptr && type->as_text() == index_build_type) {
+                raw_result = build_index_locked(decode_index_build(parsed), batch);
+                throw index_build_done{};
+            }
+            const auto entry = decode_entry(parsed);
             auto outcome = build_locked(entry);
             if (auto* b = std::get_if<built>(&outcome)) {
                 if (b->blk.block_hash != entry.block_hash) {
@@ -311,9 +362,15 @@ public:
             } else {
                 result = std::move(std::get<apply_result>(outcome));
             }
+        } catch (const index_build_done&) {
+            // raw_result and batch hold the build step
         } catch (const ledger_format_error& e) {
+            batch = {};
+            raw_result.reset();
             result = apply_result::rejected("invalid_entry", e.what());
         } catch (const ion_value_error& e) {
+            batch = {};
+            raw_result.reset();
             result = apply_result::rejected("invalid_entry", e.what());
         }
         batch.put(kythira::column_family::meta, key_applied(), std::to_string(index));
@@ -330,7 +387,7 @@ public:
         }
         seqs_.emplace_back(index, seq);
         prune_locked();
-        return result.encode();
+        return raw_result ? std::move(*raw_result) : result.encode();
     }
 
     [[nodiscard]] auto applied_index() const -> std::uint64_t {
@@ -490,28 +547,169 @@ public:
     [[nodiscard]] auto scan_table_at(std::string_view table_name, std::uint64_t blocks,
                                      std::optional<std::string> after, std::size_t limit) const
         -> scan_page {
+        scan_options o;
+        o.after = std::move(after);
+        o.limit = limit;
+        o.max_bytes = std::numeric_limits<std::size_t>::max();
+        return scan_table_at(table_name, blocks, o);
+    }
+
+    /// A snapshot table scan with a filter and a byte budget (Requirement
+    /// 6.3): a page ends at `limit` documents or once its documents reach
+    /// `max_bytes` of Ion binary, and always holds at least one document
+    /// when any remain.
+    [[nodiscard]] auto scan_table_at(std::string_view table_name, std::uint64_t blocks,
+                                     const scan_options& options) const -> scan_page {
         const std::lock_guard lock(mutex_);
+        return scan_locked(table_name, blocks, options);
+    }
+
+    /// An index's catalog record.
+    [[nodiscard]] auto get_index(std::string_view table_name, std::string_view name) const
+        -> std::optional<index_info> {
+        const std::lock_guard lock(mutex_);
+        return stored_index(table_name, name);
+    }
+
+    /// A table's indexes, in name order.
+    [[nodiscard]] auto indexes(std::string_view table_name) const -> std::vector<index_info> {
+        const std::lock_guard lock(mutex_);
+        return stored_indexes(table_name);
+    }
+
+    /// Live documents whose value at the index path equals `value`, as of
+    /// the first `blocks` blocks, in id order (Requirement 6.2). Refused
+    /// with ledger_query_error unless the index is active. The index holds
+    /// the current state; when no document moved into or out of this key
+    /// since the snapshot (its ichg marker is below `blocks`) its entries
+    /// are exactly the snapshot's; otherwise, or when the index is newer
+    /// than the snapshot, the lookup falls back to a filtered snapshot scan
+    /// so it still reads the snapshot.
+    [[nodiscard]] auto find_by_index(std::string_view table_name, std::string_view index,
+                                     const ion_value& value, std::uint64_t blocks,
+                                     std::optional<std::string> after = std::nullopt,
+                                     std::size_t limit = 100) const -> scan_page {
+        const std::lock_guard lock(mutex_);
+        const auto info = stored_index(table_name, index);
+        if (!info) {
+            throw ledger_query_error("no index " + std::string(table_name) + "." +
+                                     std::string(index));
+        }
+        if (!info->active) {
+            throw ledger_query_error("index " + std::string(table_name) + "." + std::string(index) +
+                                     " is still building");
+        }
+        limit = std::max<std::size_t>(limit, 1);
+        const hash256 h = value.hash();
+        const auto m = marker(key_index_change(table_name, index, h));
+        if (info->created_seq >= blocks || (m && *m >= blocks)) {
+            scan_options o;
+            o.after = std::move(after);
+            o.limit = limit;
+            o.max_bytes = std::numeric_limits<std::size_t>::max();
+            o.filter = std::make_pair(info->path, h);
+            return scan_locked(table_name, blocks, o);
+        }
         scan_page page;
-        const std::string from = prefix_ + "current/" + std::string(table_name) + "/";
+        const std::string from = index_entry_prefix(table_name, index, h);
         kythira::key_range range = prefix_range(from);
         if (after) {
             range.start = from + *after + '\0';
         }
+        std::vector<std::string> ids;
         engine_->scan(kythira::column_family::data, range, kythira::scan_direction::forward,
                       [&](std::string_view key, std::string_view) {
-                          const std::string id(key.substr(from.size()));
-                          if (page.documents.size() == limit) {
-                              page.next = page.documents.empty()
-                                              ? std::nullopt
-                                              : std::optional(page.documents.back().id);
-                              return false;
-                          }
-                          auto r = revision_before(table_name, id, blocks);
-                          if (r && r->data) {
-                              page.documents.push_back(std::move(*r));
-                          }
+                          ids.emplace_back(key.substr(from.size()));
                           return true;
                       });
+        for (const auto& id : ids) {
+            if (page.documents.size() == limit) {
+                page.next = page.documents.back().id;
+                break;
+            }
+            auto r = revision_before(table_name, id, blocks);
+            if (r && index_hash(r->data, info->path) == h) {
+                page.documents.push_back(std::move(*r));
+            }
+        }
+        return page;
+    }
+
+    /// A document's or a table's revisions in commit order, deletes
+    /// included, optionally only those committed in [start_ms, end_ms]
+    /// (Requirement 6.1). `after` is the `next` of the previous page.
+    [[nodiscard]] auto history(std::string_view table_name, std::optional<std::string> id,
+                               std::optional<std::int64_t> start_ms,
+                               std::optional<std::int64_t> end_ms,
+                               std::optional<std::string> after = std::nullopt,
+                               std::size_t limit = 100) const -> history_page {
+        const std::lock_guard lock(mutex_);
+        limit = std::max<std::size_t>(limit, 1);
+        history_page page;
+        const auto in_range = [&](std::int64_t t) {
+            return (!start_ms || t >= *start_ms) && (!end_ms || t <= *end_ms);
+        };
+        if (id) {
+            const std::string from = prefix_ + "rev/" + std::string(table_name) + "/" + *id + "/";
+            kythira::key_range range = prefix_range(from);
+            if (after) {
+                range.start = from + *after + '\0';
+            }
+            engine_->scan(
+                kythira::column_family::data, range, kythira::scan_direction::forward,
+                [&](std::string_view, std::string_view value) {
+                    auto r = revision::from_ion(parse_stored(value));
+                    if (end_ms && r.tx_time > *end_ms) {
+                        return false;  // revisions are in time order
+                    }
+                    if (!in_range(r.tx_time)) {
+                        return true;
+                    }
+                    if (page.revisions.size() == limit) {
+                        page.next = pad(static_cast<std::uint64_t>(page.revisions.back().version));
+                        return false;
+                    }
+                    page.revisions.push_back(std::move(r));
+                    return true;
+                });
+            return page;
+        }
+        // A table: the hist/ keys are in (seq, id, version) order; the time
+        // bounds become seq bounds by binary search over the block
+        // timestamps, which never decrease.
+        if (!tip_) {
+            return page;
+        }
+        const std::uint64_t first =
+            start_ms ? first_block_at_or_after(*start_ms) : std::uint64_t{0};
+        const std::uint64_t last_excl = end_ms ? first_block_after(*end_ms) : tip_->seq + 1;
+        if (first >= last_excl) {
+            return page;
+        }
+        const std::string from = history_prefix(table_name);
+        kythira::key_range range{from + pad(first), from + pad(last_excl)};
+        if (after) {
+            range.start = std::max(range.start, from + *after + '\0');
+        }
+        std::vector<std::string> keys;
+        engine_->scan(kythira::column_family::data, range, kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view) {
+                          keys.emplace_back(key.substr(from.size()));
+                          return keys.size() <= limit;
+                      });
+        if (keys.size() > limit) {
+            keys.pop_back();
+            page.next = keys.back();
+        }
+        for (const auto& k : keys) {
+            // <seq20>/<id>/<version20>
+            const auto slash = k.rfind('/');
+            const std::string doc_id = k.substr(21, slash - 21);
+            const auto version = static_cast<std::int64_t>(std::stoull(k.substr(slash + 1)));
+            if (auto r = stored_revision(table_name, doc_id, version)) {
+                page.revisions.push_back(std::move(*r));
+            }
+        }
         return page;
     }
 
@@ -613,6 +811,8 @@ private:
         bool data_loaded = false;
     };
 
+    struct index_build_done {};
+
     struct built {
         block blk;
         kythira::write_batch batch;
@@ -653,6 +853,160 @@ private:
     [[nodiscard]] auto key_table_change(std::string_view table_name) const -> std::string {
         return prefix_ + "tchg/" + std::string(table_name);
     }
+    [[nodiscard]] auto key_index(std::string_view table_name, std::string_view index) const
+        -> std::string {
+        return prefix_ + "meta/index/" + std::string(table_name) + "/" + std::string(index);
+    }
+    [[nodiscard]] auto index_entry_prefix(std::string_view table_name, std::string_view index,
+                                          const hash256& value_hash) const -> std::string {
+        return prefix_ + "idx/" + std::string(table_name) + "/" + std::string(index) + "/" +
+               to_hex(value_hash) + "/";
+    }
+    [[nodiscard]] auto history_prefix(std::string_view table_name) const -> std::string {
+        return prefix_ + "hist/" + std::string(table_name) + "/";
+    }
+    [[nodiscard]] auto key_history(const revision& r) const -> std::string {
+        return history_prefix(r.table) + pad(r.seq) + "/" + r.id + "/" +
+               pad(static_cast<std::uint64_t>(r.version));
+    }
+
+    static auto index_record(const index_info& i) -> std::string {
+        ion_value v = ion_value::make_struct();
+        v.set("path", journal_detail::path_to_ion(i.path))
+            .set("active", ion_value::boolean(i.active))
+            .set("createdSeq", ion_value::integer(static_cast<std::int64_t>(i.created_seq)));
+        if (i.cursor) {
+            v.set("cursor", ion_value::string(*i.cursor));
+        }
+        return as_string(v.to_binary());
+    }
+
+    static auto index_from(std::string_view table_name, std::string_view name,
+                           std::string_view value) -> index_info {
+        namespace jd = journal_detail;
+        const ion_value v = parse_stored(value);
+        index_info i;
+        i.table = table_name;
+        i.name = name;
+        i.path = jd::path_from_ion(jd::required(v, "path"));
+        i.active = jd::required(v, "active").as_bool().value_or(false);
+        i.created_seq = jd::uint_field(v, "createdSeq");
+        if (const ion_value* c = v.find("cursor"); c != nullptr) {
+            i.cursor = c->as_text();
+        }
+        return i;
+    }
+
+    [[nodiscard]] auto stored_index(std::string_view table_name, std::string_view name) const
+        -> std::optional<index_info> {
+        const auto v = engine_->get(kythira::column_family::meta, key_index(table_name, name));
+        if (!v) {
+            return std::nullopt;
+        }
+        return index_from(table_name, name, *v);
+    }
+
+    [[nodiscard]] auto stored_indexes(std::string_view table_name) const
+        -> std::vector<index_info> {
+        std::vector<index_info> out;
+        const std::string from = prefix_ + "meta/index/" + std::string(table_name) + "/";
+        engine_->scan(kythira::column_family::meta, prefix_range(from),
+                      kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view value) {
+                          out.push_back(index_from(table_name, key.substr(from.size()), value));
+                          return true;
+                      });
+        return out;
+    }
+
+    /// True if the table holds a live document.
+    [[nodiscard]] auto has_live_document(std::string_view table_name) const -> bool {
+        bool live = false;
+        const std::string from = prefix_ + "current/" + std::string(table_name) + "/";
+        engine_->scan(kythira::column_family::data, prefix_range(from),
+                      kythira::scan_direction::forward,
+                      [&](std::string_view, std::string_view value) {
+                          const ion_value c = parse_stored(value);
+                          live = !journal_detail::required(c, "deleted").as_bool().value_or(true);
+                          return !live;
+                      });
+        return live;
+    }
+
+    /// The live data of a document as stored (before the block being
+    /// built), or nullopt.
+    [[nodiscard]] auto stored_data(std::string_view table_name, std::string_view id) const
+        -> std::optional<ion_value> {
+        const auto cur = stored_current(table_name, id);
+        if (!cur || cur->deleted) {
+            return std::nullopt;
+        }
+        const auto rev = stored_revision(table_name, id, cur->version);
+        return rev ? rev->data : std::nullopt;
+    }
+
+    static auto index_hash(const std::optional<ion_value>& data, const document_path& path)
+        -> std::optional<hash256> {
+        if (!data) {
+            return std::nullopt;
+        }
+        const ion_value* v = value_at(*data, path);
+        if (v == nullptr) {
+            return std::nullopt;
+        }
+        return v->hash();
+    }
+
+    /// Index one build step (index_build_entry) into `batch`.
+    auto build_index_locked(const index_build_entry& b, kythira::write_batch& batch)
+        -> std::vector<std::byte> {
+        auto info = stored_index(b.table, b.index);
+        if (!info) {
+            return apply_result::rejected("index_not_found", "no index " + b.index).encode();
+        }
+        if (info->active) {
+            return apply_result::rejected("index_active", "index " + b.index + " is active")
+                .encode();
+        }
+        const std::string from = prefix_ + "current/" + b.table + "/";
+        kythira::key_range range = prefix_range(from);
+        if (info->cursor) {
+            range.start = from + *info->cursor + '\0';
+        }
+        std::vector<std::string> ids;
+        engine_->scan(kythira::column_family::data, range, kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view) {
+                          ids.emplace_back(key.substr(from.size()));
+                          return ids.size() <= b.limit;  // one past the limit: more remain
+                      });
+        const bool done = ids.size() <= b.limit;
+        if (!done) {
+            ids.pop_back();
+        }
+        std::size_t indexed = 0;
+        for (const auto& id : ids) {
+            if (const auto h = index_hash(stored_data(b.table, id), info->path)) {
+                batch.put(kythira::column_family::data,
+                          index_entry_prefix(b.table, b.index, *h) + id, "");
+                ++indexed;
+            }
+        }
+        if (done) {
+            info->active = true;
+            info->cursor.reset();
+        } else if (!ids.empty()) {
+            info->cursor = ids.back();
+        }
+        batch.put(kythira::column_family::meta, key_index(b.table, b.index), index_record(*info));
+        ion_value v = ion_value::make_struct();
+        v.set("status", ion_value::symbol(done ? "index_active" : "index_building"))
+            .set("indexed", ion_value::integer(static_cast<std::int64_t>(indexed)));
+        const auto bytes = v.to_binary();
+        std::vector<std::byte> out(bytes.size());
+        std::memcpy(out.data(), bytes.data(), bytes.size());
+        return out;
+    }
+
     [[nodiscard]] auto key_index_change(std::string_view table_name, std::string_view index,
                                         const hash256& value_hash) const -> std::string {
         return prefix_ + "ichg/" + std::string(table_name) + "/" + std::string(index) + "/" +
@@ -862,6 +1216,7 @@ private:
         }
 
         std::map<std::string, table_info, std::less<>> tables;
+        std::map<std::pair<std::string, std::string>, index_info> new_indexes;
         std::map<std::pair<std::string, std::string>, doc_state> docs;
         std::map<std::string, bool, std::less<>> changed_tables;
 
@@ -930,6 +1285,32 @@ private:
                         t->active = true;
                         tables[s.table] = *t;
                         break;
+                    case statement_op::create_index: {
+                        if (!t) {
+                            return reject("table_not_found", "no table " + s.table);
+                        }
+                        if (!t->active) {
+                            return reject("table_inactive", "table " + s.table + " is dropped");
+                        }
+                        const auto key = std::make_pair(s.table, s.index);
+                        if (new_indexes.contains(key) || stored_index(s.table, s.index)) {
+                            return reject("index_exists", "index " + s.index + " exists");
+                        }
+                        std::size_t count = stored_indexes(s.table).size();
+                        for (const auto& [k, i] : new_indexes) {
+                            count += k.first == s.table ? 1U : 0U;
+                        }
+                        if (count >= options_.max_indexes_per_table) {
+                            return reject("index_limit", "table " + s.table + " has " +
+                                                             std::to_string(count) + " indexes");
+                        }
+                        // On an empty table the index is active at once;
+                        // otherwise it builds (index_build_entry).
+                        new_indexes[key] = index_info{s.table,      s.index,
+                                                      s.index_path, !has_live_document(s.table),
+                                                      std::nullopt, e.seq};
+                        break;
+                    }
                     default:
                         break;
                 }
@@ -1034,6 +1415,52 @@ private:
         for (const auto& [name, changed] : changed_tables) {
             batch.put(column_family::data, key_table_change(name), std::to_string(e.seq));
         }
+        for (const auto& [key, info] : new_indexes) {
+            batch.put(column_family::meta, key_index(key.first, key.second), index_record(info));
+        }
+        for (const auto& r : blk.revisions) {
+            batch.put(column_family::data, key_history(r), "");
+        }
+        // Index maintenance: every index on a changed table, building ones
+        // included, follows each document from its state before the block
+        // to its state after; a value moving in or out of a key moves its
+        // entry and marks the key changed for read-set validation.
+        std::map<std::string, std::vector<index_info>, std::less<>> table_indexes;
+        for (const auto& [name, changed] : changed_tables) {
+            auto list = stored_indexes(name);
+            for (const auto& [key, info] : new_indexes) {
+                if (key.first == name) {
+                    list.push_back(info);
+                }
+            }
+            table_indexes[name] = std::move(list);
+        }
+        for (const auto& [key, doc] : docs) {
+            const auto& list = table_indexes[key.first];
+            if (doc.current.seq != e.seq || list.empty()) {
+                continue;
+            }
+            const auto before = stored_data(key.first, key.second);
+            for (const auto& idx : list) {
+                const auto old_hash = index_hash(before, idx.path);
+                const auto new_hash = index_hash(doc.data, idx.path);
+                if (old_hash == new_hash) {
+                    continue;
+                }
+                if (old_hash) {
+                    batch.erase(column_family::data,
+                                index_entry_prefix(key.first, idx.name, *old_hash) + key.second);
+                    batch.put(column_family::data, key_index_change(key.first, idx.name, *old_hash),
+                              std::to_string(e.seq));
+                }
+                if (new_hash) {
+                    batch.put(column_family::data,
+                              index_entry_prefix(key.first, idx.name, *new_hash) + key.second, "");
+                    batch.put(column_family::data, key_index_change(key.first, idx.name, *new_hash),
+                              std::to_string(e.seq));
+                }
+            }
+        }
         batch.put(column_family::data, key_journal(e.seq), as_string(blk.to_ion().to_binary()));
         ion_value tip = ion_value::make_struct();
         tip.set("seq", ion_value::integer(static_cast<std::int64_t>(blk.seq)))
@@ -1047,6 +1474,66 @@ private:
         out.result = std::move(result);
         out.blk = std::move(blk);
         return out;
+    }
+
+    auto scan_locked(std::string_view table_name, std::uint64_t blocks,
+                     const scan_options& options) const -> scan_page {
+        scan_page page;
+        const std::size_t limit = std::max<std::size_t>(options.limit, 1);
+        std::size_t bytes = 0;
+        const std::string from = prefix_ + "current/" + std::string(table_name) + "/";
+        kythira::key_range range = prefix_range(from);
+        if (options.after) {
+            range.start = from + *options.after + '\0';
+        }
+        engine_->scan(kythira::column_family::data, range, kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view) {
+                          if (!page.documents.empty() &&
+                              (page.documents.size() == limit || bytes >= options.max_bytes)) {
+                              page.next = page.documents.back().id;
+                              return false;
+                          }
+                          const std::string id(key.substr(from.size()));
+                          auto r = revision_before(table_name, id, blocks);
+                          if (!r || !r->data) {
+                              return true;
+                          }
+                          if (options.filter && index_hash(r->data, options.filter->first) !=
+                                                    options.filter->second) {
+                              return true;
+                          }
+                          bytes += r->data->to_binary().size();
+                          page.documents.push_back(std::move(*r));
+                          return true;
+                      });
+        return page;
+    }
+
+    /// The first block with a timestamp at or after `ms` (tip + 1 if none).
+    [[nodiscard]] auto first_block_at_or_after(std::int64_t ms) const -> std::uint64_t {
+        return block_partition([&](std::int64_t t) { return t < ms; });
+    }
+
+    /// The first block with a timestamp after `ms` (tip + 1 if none).
+    [[nodiscard]] auto first_block_after(std::int64_t ms) const -> std::uint64_t {
+        return block_partition([&](std::int64_t t) { return t <= ms; });
+    }
+
+    /// The first block for which `below(timestamp)` is false; block
+    /// timestamps never decrease, so `below` is true for a prefix.
+    template<typename Pred> [[nodiscard]] auto block_partition(Pred below) const -> std::uint64_t {
+        std::uint64_t lo = 0;
+        std::uint64_t hi = tip_ ? tip_->seq + 1 : 0;
+        while (lo < hi) {
+            const std::uint64_t mid = lo + ((hi - lo) / 2);
+            const auto blk = stored_block(mid);
+            if (blk && below(blk->timestamp)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
     }
 
     auto check_tip(std::uint64_t seq, std::uint64_t tip) const -> void {
