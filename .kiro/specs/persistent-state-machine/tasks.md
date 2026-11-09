@@ -210,12 +210,53 @@ RocksDB is linked. Each task is one PR unless noted.
       builds and runs `rocksdb_kv_engine_test`; clang-tidy covers both new
       files in its `ion` variant.
 
-- [ ] 6. Transaction state in the engine
+- [x] 6. Transaction state in the engine
   - Persistent storage for `_intents`, `_records`, `_settled` and the
     deadline index in the `txn` column family, same batch as inner effects
   - Split/merge partition by range
   - Bank workload on a persistent host
   - _Requirements: 8.1-8.4_
+  - As built:
+    - New concept `persistent_staged_state_machine`
+      (`persistent_state_machine.hpp`): `stage(command, batch)`,
+      `commit_staged(batch, index)`, `discard_staged()` and `key_prefix()`.
+      One transaction entry can apply several inner commands (a commit rolls
+      every intent forward), and a second `apply` with the same index would
+      be taken for a replay, so the wrapper stages them into one batch it
+      owns. `persistent_kv_state_machine` and
+      `persistent_test_kv_state_machine` implement it; later stages of an
+      entry read earlier ones' writes.
+    - `transactional_state_machine` over such a machine is itself a
+      persistent splittable state machine (`k_persistent`), with no
+      `get_state`, so `node<Types>` and `multi_raft` take the persistent
+      path. Each entry writes the keys whose transaction state it changed
+      into the batch that carries the inner writes and the applied index
+      (8.1). A command that throws part way leaves nothing: the batch is
+      discarded and the maps are read back.
+    - Layout deviation: one `txn` value per key at the key's own engine
+      key, holding its intent, the records it is primary of and its
+      settled entries; the high-water mark and safe point ride in the value
+      at the range's start. The design's suffixed keys (`<key>/i`, ...) can
+      sort past a range end that extends the key, which would put them in
+      the neighbouring group.
+    - Deviation: the maps stay in memory as a cache of the column family,
+      read back at `open`, `ingest` and `adopt`. Restart therefore reads
+      the transaction state held (locks, and records not yet cleaned up),
+      never the data, and the resolver keeps scanning the cache, so the
+      deadline index is not built. Moving the maps out of memory is a
+      follow-up if transaction state ever outgrows it.
+    - The snapshot is the engine checkpoint, which covers every column
+      family (8.2). `split_at` forgets the children's part; `adopt` reads
+      the source's part back and merges the high-water marks and safe
+      points by maximum, in a second batch whose loss is harmless (8.3).
+    - `mvcc::on` over a persistent machine is refused at compile time.
+    - Tests: `txn_state_machine_persistent_test` (a random workload held
+      to the in-memory wrapper, reply by reply, with reopen checks; a power
+      cut; a throwing command; split and merge against `split_state` and
+      `absorb`; adopt from below; drop), staging cases in
+      `persistent_kv_state_machine_test`, and
+      `multi_raft_txn_bank_persistent_test` (8.4: 833 commits through 11
+      splits, 10 merges and 11 leader moves on a local run, total kept).
 
 - [ ] 7. Gateway wiring
   - `redis_gateway_node` build option selecting `persistent_kv_state_machine`

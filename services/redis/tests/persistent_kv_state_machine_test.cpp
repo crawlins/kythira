@@ -35,6 +35,7 @@ static_assert(kythira::persistent_state_machine<psm>);
 static_assert(kythira::persistent_splittable_state_machine<psm>);
 static_assert(kythira::storage_kind_of<psm> == kythira::state_machine_storage::persistent);
 static_assert(!kythira::state_machine<psm, std::uint64_t>);
+static_assert(kythira::persistent_staged_state_machine<psm>);
 
 class temp_dir {
 public:
@@ -226,6 +227,48 @@ BOOST_AUTO_TEST_CASE(each_apply_is_one_batch_with_the_applied_index) {
     psm reopened;
     reopened.open(engine, k_everything);
     BOOST_TEST(reopened.applied_index() == 2U);
+}
+
+// Requirement 8.1: a transactional wrapper stages several commands of one
+// entry into one batch. Later commands see earlier ones, the counters carry
+// across them, and the engine sees one write.
+BOOST_AUTO_TEST_CASE(staged_commands_share_one_batch_and_see_each_other) {
+    memory_kv_engine engine;
+    psm p;
+    p.open(engine, k_everything);
+    p.apply(set("a", "old"), 1);
+    const auto before = engine.latest_sequence();
+
+    kythira::write_batch batch;
+    BOOST_TEST((p.stage(set("b", "1"), batch) == std::vector<std::byte>{std::byte{1}}));
+    BOOST_TEST((p.stage(del("a"), batch) == std::vector<std::byte>{std::byte{1}}));
+    // "a" is already deleted in this entry, so a second delete changes
+    // nothing.
+    BOOST_TEST((p.stage(del("a"), batch) == std::vector<std::byte>{std::byte{0}}));
+    BOOST_TEST(engine.latest_sequence() == before);
+    p.commit_staged(batch, 2);
+
+    BOOST_TEST(engine.latest_sequence() == before + 1);
+    BOOST_TEST(p.applied_index() == 2U);
+    BOOST_TEST(p.approximate_key_count() == 1U);
+    BOOST_TEST(!p.lookup("a"));
+    psm reopened;
+    reopened.open(engine, k_everything);
+    BOOST_TEST(reopened.approximate_key_count() == 1U);
+    BOOST_TEST(reopened.applied_index() == 2U);
+}
+
+BOOST_AUTO_TEST_CASE(discarded_stages_leave_nothing) {
+    memory_kv_engine engine;
+    psm p;
+    p.open(engine, k_everything);
+    p.apply(set("a", "1"), 1);
+    kythira::write_batch batch;
+    std::ignore = p.stage(del("a"), batch);
+    p.discard_staged();
+    // A fresh entry reads the engine again, not the discarded delete.
+    BOOST_TEST((p.apply(del("a"), 2) == std::vector<std::byte>{std::byte{1}}));
+    BOOST_TEST(p.approximate_key_count() == 0U);
 }
 
 BOOST_AUTO_TEST_CASE(crash_loses_only_undurable_batches_and_replay_restores_them) {

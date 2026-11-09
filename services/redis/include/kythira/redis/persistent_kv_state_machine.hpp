@@ -176,6 +176,7 @@ public:
         _engine = &engine;
         _range = range;
         _seqs.clear();
+        discard_staged();
         const auto stored = engine.get(column_family::meta, meta_key());
         _meta = stored.has_value() ? persistent_kv_detail::meta_record::decode(*stored)
                                    : persistent_kv_detail::meta_record{};
@@ -192,17 +193,47 @@ public:
         if (static_cast<std::uint64_t>(index) <= _meta.applied) {
             return {std::byte{0}};
         }
-        _pending.clear();
-        auto decoded = decode_redis_kv_command(command);
         write_batch batch;
-        auto next = _meta;
+        auto reply = stage(command, batch);
+        commit_staged(batch, index);
+        return reply;
+    }
+
+    // ---- persistent_staged_state_machine ----------------------------------
+
+    /// Adds `command`'s effects to `batch` (Requirement 8.1). Later `stage`
+    /// calls of the same entry read what this one wrote, and the counters
+    /// carry over until `commit_staged`.
+    auto stage(const std::vector<std::byte>& command, write_batch& batch)
+        -> std::vector<std::byte> {
+        require_open();
+        if (!_staged.has_value()) {
+            _pending.clear();
+            _staged = _meta;
+        }
+        auto decoded = decode_redis_kv_command(command);
         const bool changed =
-            std::visit([&](auto& c) { return apply_one(c, batch, next); }, decoded);
+            std::visit([&](auto& c) { return apply_one(c, batch, *_staged); }, decoded);
+        return {changed ? std::byte{1} : std::byte{0}};
+    }
+
+    /// Writes `batch` with `index` as the applied index and the staged
+    /// counters, in one write.
+    auto commit_staged(write_batch& batch, LogIndex index) -> void {
+        require_open();
+        auto next = _staged.value_or(_meta);
+        _staged.reset();
         next.applied = static_cast<std::uint64_t>(index);
         batch.put(column_family::meta, meta_key(), next.encode());
         commit(batch, next);
-        return {changed ? std::byte{1} : std::byte{0}};
     }
+
+    auto discard_staged() -> void {
+        _staged.reset();
+        _pending.clear();
+    }
+
+    [[nodiscard]] auto key_prefix() const noexcept -> const std::string& { return _ns; }
 
     [[nodiscard]] auto applied_index() const -> LogIndex {
         return static_cast<LogIndex>(_meta.applied);
@@ -569,6 +600,9 @@ private:
     /// Data keys this entry has already written (nullopt = erased), so later
     /// commands of the same entry read them; cleared at commit.
     std::map<std::string, std::optional<std::string>, std::less<>> _pending;
+    /// The counters as the entry being staged has left them; empty between
+    /// entries.
+    std::optional<persistent_kv_detail::meta_record> _staged;
 };
 
 }  // namespace kythira

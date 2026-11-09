@@ -1288,6 +1288,12 @@ add_raft_completion_test(txn_envelope_test txn_envelope_test.cpp)
 # round-trip law over random locks and records.
 add_raft_completion_test(txn_state_machine_test txn_state_machine_test.cpp)
 add_raft_completion_test(txn_split_absorb_property_test txn_split_absorb_property_test.cpp)
+# persistent-state-machine task 6: the wrapper over a persistent state
+# machine keeps its intents, records and settled entries in the engine's txn
+# column family, in the same batch as the inner writes, held to the
+# in-memory wrapper.
+add_raft_completion_test(txn_state_machine_persistent_test txn_state_machine_persistent_test.cpp)
+target_link_libraries(txn_state_machine_persistent_test PRIVATE OpenSSL::Crypto)
 # Task 5: the host's transaction surface (plain envelopes, submit_txn), and
 # proof that an unwrapped host logs exactly what it did before.
 add_raft_completion_test(multi_raft_txn_host_test multi_raft_txn_host_test.cpp)
@@ -1299,6 +1305,12 @@ add_raft_completion_test(multi_raft_txn_test multi_raft_txn_test.cpp)
 # coordinators under leader moves, splits and merges; the total is constant
 # and read_committed never sees an uncommitted value.
 add_raft_completion_test(multi_raft_txn_bank_test multi_raft_txn_bank_test.cpp)
+# persistent-state-machine task 6 (Requirement 8.4): the bank workload on a
+# persistent host, its transaction state in each node's engine.
+add_raft_completion_test(multi_raft_txn_bank_persistent_test multi_raft_txn_bank_test.cpp)
+target_compile_definitions(multi_raft_txn_bank_persistent_test PRIVATE
+                           KYTHIRA_PERSISTENT_STATE_MACHINE)
+target_link_libraries(multi_raft_txn_bank_persistent_test PRIVATE OpenSSL::Crypto)
 # Task 10: the timestamp oracle. Unique, increasing values under concurrent
 # callers, across leader changes and a whole-cluster restart (Raft state on
 # disk), none from a deposed leader; the oracle group is not a shard.
