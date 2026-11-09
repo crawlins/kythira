@@ -649,8 +649,19 @@ BOOST_AUTO_TEST_CASE(an_abandoned_transaction_clears_within_ttl_plus_two_interva
                 BOOST_TEST(c.value(k) ==
                            (committed ? std::optional<std::string>("v") : std::nullopt));
             }
-            const auto stats = c.resolver_stats();
-            BOOST_TEST((committed ? stats._committed : stats._aborted) >= 1U);
+            // The resolver counts an outcome after its commit or abort
+            // returns, and the intents are already gone by then, so the
+            // count can trail the poll above by a moment (8 CI retries,
+            // 2026-11-06..07, all after step primary_committed).
+            const auto resolved = [&] {
+                const auto stats = c.resolver_stats();
+                return (committed ? stats._committed : stats._aborted) >= 1U;
+            };
+            const auto count_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (!resolved() && std::chrono::steady_clock::now() < count_deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+            BOOST_TEST(resolved());
         }
     }
 }
