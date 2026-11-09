@@ -465,6 +465,8 @@ add_raft_completion_test(checkpoint_registry_test checkpoint_registry_test.cpp)
 target_link_libraries(checkpoint_registry_test PRIVATE OpenSSL::Crypto)
 # file-install-snapshot task 6: the node-wide InstallSnapshot pacer.
 add_raft_completion_test(snapshot_pacer_test snapshot_pacer_test.cpp)
+# The node's metrics wrapper: many threads emitting on one back-end.
+add_raft_completion_test(serialized_metrics_test serialized_metrics_test.cpp)
 set_tests_properties(state_machine_apply_performance_property_test PROPERTIES
     # Measures real elapsed-time thresholds for state machine apply
     # throughput — CPU contention from co-scheduled tests under `ctest -j`
