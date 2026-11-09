@@ -87,6 +87,8 @@ inline constexpr std::string_view k_cairn_version = "v0.2.1 (e0ef2f85)";
                  R"(^node -?[0-9]+ is in two groups$)",
                  R"(^every node must be in exactly one group$)",
                  R"(^node -?[0-9]+ has no address \(is it running\?\)$)",
+                 R"(^node -?[0-9]+ is not reachable for failpoints )",
+                 R"(^node -?[0-9]+ is already down; )",
                  R"(^delay_ms must be in )",
                  R"(^apply_loss: percentage outside )",
                  R"(^give exactly one of delay_ms, fail_puts or clear)",

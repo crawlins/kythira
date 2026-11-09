@@ -29,6 +29,9 @@
 
 #include <boost/json.hpp>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -334,6 +337,45 @@ inline auto run_liveness(context& ctx, call_state& st, unsigned k) -> boost::jso
 
 namespace tool {
 
+/// Sends one fiu command, turning "nothing was sent" into a refusal. A node
+/// that is down has no DNS name on the compose network and nothing
+/// listening, so libfiu's control socket fails to resolve or to connect
+/// before any command leaves (M3 run 2 sent four failpoints to killed
+/// nodes). "no reply" stays an error: the command went out and may have
+/// taken effect.
+inline void send_failpoint(context& ctx, docker_chaos::ChaosNode& n, const std::string& cmd) {
+    try {
+        ctx.fiu_send(n, cmd);
+    } catch (const std::runtime_error& e) {
+        const std::string_view what = e.what();
+        if (what.starts_with("fiu: bad host address: ") ||
+            (what.starts_with("fiu: connect to ") && what.ends_with(" failed"))) {
+            throw tool_error("node " + std::to_string(n.id()) +
+                             " is not reachable for failpoints (is it down? fault.restart or "
+                             "run.reset brings it back): " +
+                             std::string(what));
+        }
+        throw;
+    }
+}
+
+/// True for a runtime's refusal to kill a container that is not running:
+/// Podman's "can only kill running containers" and Docker's "is not
+/// running".
+[[nodiscard]] inline auto already_stopped(std::string_view err) -> bool {
+    return err.find("can only kill running containers") != std::string_view::npos ||
+           err.find(" is not running") != std::string_view::npos;
+}
+
+/// True for a text that is a numeric IPv4 or IPv6 address. A stopped
+/// container's inspect can answer with an empty string or, through the
+/// cairn container API proxy, a placeholder such as "invalid IP".
+[[nodiscard]] inline auto is_ip_literal(const std::string& s) -> bool {
+    in6_addr buf{};
+    return ::inet_pton(AF_INET, s.c_str(), &buf) == 1 ||
+           ::inet_pton(AF_INET6, s.c_str(), &buf) == 1;
+}
+
 inline auto failpoint(context& ctx, const boost::json::object& a, call_state& st)
     -> boost::json::value {
     auto& n = args::node(ctx, a);
@@ -371,7 +413,7 @@ inline auto failpoint(context& ctx, const boost::json::object& a, call_state& st
         // not a failure: a restart, kill or run.reset disarms every
         // failpoint on that node, and workers routinely disarm afterwards.
         try {
-            ctx.fiu_send(n, cmd);
+            send_failpoint(ctx, n, cmd);
         } catch (const std::runtime_error& e) {
             if (std::string_view(e.what()).ends_with("failed with code -1")) {
                 st.note("failpoint " + name + " was not armed on node " + std::to_string(n.id()) +
@@ -384,7 +426,7 @@ inline auto failpoint(context& ctx, const boost::json::object& a, call_state& st
         return boost::json::object{
             {"node", n.id()}, {"name", name}, {"mode", mode}, {"was_armed", true}};
     }
-    ctx.fiu_send(n, cmd);
+    send_failpoint(ctx, n, cmd);
     return boost::json::object{{"node", n.id()}, {"name", name}, {"mode", mode}};
 }
 
@@ -429,7 +471,7 @@ inline auto partition(context& ctx, const boost::json::object& a, call_state& /*
     std::map<int, std::string> ip;
     for (auto* n : nodes) {
         ip[n->id()] = n->container_ip();
-        if (ip[n->id()].empty()) {
+        if (!is_ip_literal(ip[n->id()])) {
             throw tool_error("node " + std::to_string(n->id()) +
                              " has no address (is it running?)");
         }
@@ -488,7 +530,17 @@ inline auto drop(context& ctx, const boost::json::object& a, call_state& /*st*/)
 inline auto kill(context& ctx, const boost::json::object& a, call_state& /*st*/)
     -> boost::json::value {
     auto& n = args::node(ctx, a);
-    n.kill();
+    try {
+        n.kill();
+    } catch (const std::runtime_error& e) {
+        // M3 run 3 sent 60 kills in a row to a node it had already killed.
+        // Say so plainly, as a refusal, so the worker restarts it instead.
+        if (already_stopped(e.what())) {
+            throw tool_error("node " + std::to_string(n.id()) +
+                             " is already down; fault.restart brings it back");
+        }
+        throw;
+    }
     return boost::json::object{{"node", n.id()}};
 }
 

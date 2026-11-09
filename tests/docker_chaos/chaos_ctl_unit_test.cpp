@@ -48,6 +48,9 @@ struct fake_cluster {
     std::vector<std::string> trace;
     std::vector<std::vector<std::string>> commands;
     std::function<void(const std::vector<std::string>&)> on_command;
+    /// Canned answers by runtime subcommand ("kill", "inspect"), replacing
+    /// the default success.
+    std::map<std::string, dc::os::CmdResult> answer;
     /// Called before each GET is answered, to change the cluster mid-read.
     std::function<void(int id, const std::string& path)> on_get;
 
@@ -131,6 +134,11 @@ struct fake_cluster {
         trace.push_back("EXEC " + joined);
         if (on_command) {
             on_command(argv);
+        }
+        if (argv.size() > 1) {
+            if (auto it = answer.find(argv[1]); it != answer.end()) {
+                return it->second;
+            }
         }
         if (argv.size() > 1 && argv[1] == "inspect") {
             const auto& c = argv.back();
@@ -954,6 +962,63 @@ BOOST_FIXTURE_TEST_CASE(refused_calls_reach_nothing_and_are_classified_refused, 
     for (const auto& c : chaos_ctl::read_calls(ctx.paths.schedule().string())) {
         BOOST_TEST(chaos_ctl::report::refused(c), c.tool << ": " << c.error);
     }
+}
+
+// Faults sent to a node that is already down: nothing reaches the cluster,
+// so each is a refusal with a message that says what to do (M3 runs 1-3).
+BOOST_FIXTURE_TEST_CASE(faults_on_a_down_node_are_refused_with_a_way_out, fixture) {
+    ctx.fiu_send = [](dc::ChaosNode&, const std::string&) {
+        throw std::runtime_error("fiu: bad host address: node1 (Name or service not known)");
+    };
+    auto fp = chaos_ctl::call(
+        ctx, "fault.failpoint",
+        {{"node", 1}, {"name", "raft/persistence/save_current_term"}, {"mode", "once"}});
+    BOOST_TEST(std::string(fp.at("error").as_string()).starts_with("node 1 is not reachable"));
+
+    ctx.fiu_send = [](dc::ChaosNode&, const std::string&) {
+        throw std::runtime_error("fiu: connect to node2:9000 failed");
+    };
+    auto off = chaos_ctl::call(
+        ctx, "fault.failpoint",
+        {{"node", 2}, {"name", "raft/persistence/save_current_term"}, {"mode", "off"}});
+    BOOST_TEST(std::string(off.at("error").as_string()).starts_with("node 2 is not reachable"));
+
+    fake.answer["kill"] = {1,
+                           "Error response from daemon: can only kill running containers. abc is "
+                           "in state exited: container state improper\n"};
+    auto k = chaos_ctl::call(ctx, "fault.kill", {{"node", 1}});
+    BOOST_TEST(std::string(k.at("error").as_string()) ==
+               "node 1 is already down; fault.restart brings it back");
+    fake.answer["kill"] = {1, "Error response from daemon: Container abc is not running\n"};
+    BOOST_TEST(
+        std::string(chaos_ctl::call(ctx, "fault.kill", {{"node", 2}}).at("error").as_string())
+            .starts_with("node 2 is already down"));
+
+    fake.answer.erase("kill");
+    fake.answer["inspect"] = {0, "invalid IP\n"};
+    auto part = chaos_ctl::call(
+        ctx, "fault.partition",
+        {{"groups", boost::json::array{boost::json::array{1}, boost::json::array{2, 3}}}});
+    BOOST_TEST(std::string(part.at("error").as_string()) ==
+               "node 1 has no address (is it running?)");
+
+    for (const auto& c : chaos_ctl::read_calls(ctx.paths.schedule().string())) {
+        BOOST_TEST(chaos_ctl::report::refused(c), c.tool << ": " << c.error);
+    }
+}
+
+// "no reply" means the command went out, so it may have taken effect.
+BOOST_FIXTURE_TEST_CASE(a_failpoint_with_no_reply_is_not_refused, fixture) {
+    ctx.fiu_send = [](dc::ChaosNode&, const std::string&) {
+        throw std::runtime_error("fiu: no reply from node2:9000");
+    };
+    chaos_ctl::call(
+        ctx, "fault.failpoint",
+        {{"node", 2}, {"name", "raft/persistence/save_current_term"}, {"mode", "once"}});
+    const auto calls = chaos_ctl::read_calls(ctx.paths.schedule().string());
+    BOOST_REQUIRE_EQUAL(calls.size(), 1u);
+    BOOST_TEST(calls[0].status == "error");
+    BOOST_TEST(!chaos_ctl::report::refused(calls[0]));
 }
 
 BOOST_AUTO_TEST_CASE(a_call_that_failed_part_way_or_succeeded_is_not_refused) {
