@@ -460,7 +460,10 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
     cluster.create_group(k_group);
     cluster.start();
 
-    const auto from = cluster.require_leader(k_group);
+    // Settled, not just elected: a leader deposed by a fresh cluster's second
+    // election refuses the transfer outright ("not the leader"), and the
+    // target is never set.
+    const auto from = cluster.require_settled_leader(k_group);
     std::uint64_t to = 0;
     for (auto id : cluster.nodes()) {
         if (id != from) {
@@ -472,6 +475,15 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
     auto* node = cluster.host(from).group_node(k_group);
     BOOST_REQUIRE(node != nullptr);
 
+    // Hold the transfer open. The target is already caught up in a fresh
+    // cluster, so the leader sends TimeoutNow at once, and as soon as the
+    // target accepts it the transfer is over and the block lifted. On a fast
+    // runner that happened before the next line read the target back (24 CI
+    // retries, 2026-11-06..08). An unreachable target fails every TimeoutNow,
+    // which the leader retries until the deadline, so the block is still in
+    // place for the checks below. The other two nodes keep a quorum.
+    cluster.fabric().kill(to);
+
     auto transfer = node->transfer_leadership(to, std::chrono::milliseconds{3000});
     BOOST_REQUIRE(node->leadership_transfer_target() == std::optional{to});
 
@@ -481,7 +493,9 @@ BOOST_AUTO_TEST_CASE(the_old_leader_refuses_commands_while_transferring,
     }
     BOOST_CHECK(is_a<leader_transfer_exception>(
         cluster.settle(node->submit_command(command, std::chrono::milliseconds{500}))));
+    BOOST_CHECK(node->leadership_transfer_target() == std::optional{to});
 
+    cluster.fabric().revive(to);
     cluster.tick_until([&] { return cluster.leader_of(k_group) == std::optional{to}; },
                        std::chrono::milliseconds{8000});
     // The transfer's own outcome is the previous test's subject; what matters
