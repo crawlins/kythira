@@ -24,6 +24,7 @@
 #include "fault_control.hpp"
 #include "harness.hpp"
 #include "history.hpp"
+#include "report.hpp"
 #include "run_state.hpp"
 #include "schedule_log.hpp"
 
@@ -826,9 +827,112 @@ inline auto workload_history(context& ctx, const boost::json::object& a, call_st
                                {"tail", std::move(lines)}};
 }
 
+/// The faults the schedule log says may still be in place: every fault
+/// call since the last run.reset that was not undone by its own clear,
+/// heal, resume, off or restart. A refused call changed nothing and is
+/// skipped. A call that failed part way may have taken effect, so it is
+/// counted. A "once" failpoint or a fail_puts count may have expired
+/// already; it is still counted, because the log cannot tell.
+[[nodiscard]] inline auto faults_in_place(const context& ctx) -> std::vector<std::string> {
+    std::set<std::string> on;
+    auto drop_node = [&on](const std::string& node) {
+        std::erase_if(on, [&node](const std::string& k) {
+            return k.starts_with("failpoint " + node + " ") || k == "netem " + node ||
+                   k == "paused " + node;
+        });
+    };
+    for (const auto& c : read_calls(ctx.paths.schedule().string())) {
+        if (c.status == "started" || c.status == "unsupported" || report::refused(c)) {
+            continue;
+        }
+        const bool ok = c.status == "ok";
+        const auto& a = c.args;
+        auto text = [&a](std::string_view k) -> std::string {
+            const auto* v = a.if_contains(k);
+            if (v == nullptr) {
+                return {};
+            }
+            return v->is_string() ? std::string(v->as_string()) : boost::json::serialize(*v);
+        };
+        auto set = [&a](std::string_view k) {
+            const auto* v = a.if_contains(k);
+            return v != nullptr && v->is_bool() && v->as_bool();
+        };
+        const auto node = text("node");
+        if (c.tool == "run.reset") {
+            if (ok) {
+                on.clear();
+            }
+        } else if (c.tool == "fault.failpoint") {
+            const auto key = "failpoint " + node + " " + text("name");
+            if (text("mode") == "off") {
+                if (ok) {
+                    on.erase(key);
+                }
+            } else {
+                on.insert(key);
+            }
+        } else if (c.tool == "fault.partition") {
+            if (set("heal")) {
+                if (ok) {
+                    on.erase("partition");
+                }
+            } else {
+                on.insert("partition");
+            }
+        } else if (c.tool == "fault.delay" || c.tool == "fault.drop") {
+            if (set("clear")) {
+                if (ok) {
+                    on.erase("netem " + node);
+                }
+            } else {
+                on.insert("netem " + node);
+            }
+        } else if (c.tool == "fault.pause") {
+            if (set("resume")) {
+                if (ok) {
+                    on.erase("paused " + node);
+                }
+            } else {
+                on.insert("paused " + node);
+            }
+        } else if (c.tool == "fault.kill") {
+            // A killed node loses its failpoints and its tc rules with it.
+            drop_node(node);
+            on.insert("down " + node);
+        } else if (c.tool == "fault.restart") {
+            if (ok) {
+                drop_node(node);
+                on.erase("down " + node);
+            }
+        } else if (c.tool == "fault.s3") {
+            if (set("clear")) {
+                if (ok) {
+                    std::erase_if(on, [](const std::string& k) { return k.starts_with("s3 "); });
+                }
+            } else if (a.contains("delay_ms")) {
+                if (text("delay_ms") == "0") {
+                    if (ok) {
+                        on.erase("s3 delay");
+                    }
+                } else {
+                    on.insert("s3 delay");
+                }
+            } else {
+                on.insert("s3 fail_puts" + (node.empty() ? std::string{} : " " + node));
+            }
+        }
+    }
+    return {on.begin(), on.end()};
+}
+
 /// {"checks": ["raft_safety", "linearizability", "liveness"]}. Liveness is
-/// measured from now, so heal first (run.reset) unless the point is to see
-/// whether the cluster makes progress under the faults in place.
+/// measured from now, and only once every fault is healed (Requirement
+/// 5.3: a leader and commit progress within the bound after the last
+/// heal). With faults still in place it returns "not_judged" and names
+/// them, rather than a violation: in M3 run 2 a node down, two failpoints
+/// and S3 put failures left recovery at about 5 s against a 6 s bound, so
+/// a liveness verdict under faults measured the faults, not Kythira.
 inline auto check_run(context& ctx, const boost::json::object& a, call_state& st)
     -> boost::json::value {
     std::vector<std::string> checks{"raft_safety", "linearizability"};
@@ -857,6 +961,20 @@ inline auto check_run(context& ctx, const boost::json::object& a, call_state& st
             const auto k = args::integer_or(a, "k", 2 * checkers::liveness::default_k);
             if (k < 1 || k > 100) {
                 throw tool_error("k must be in [1, 100]");
+            }
+            if (const auto faults = faults_in_place(ctx); !faults.empty()) {
+                boost::json::array names;
+                for (const auto& f : faults) {
+                    names.emplace_back(f);
+                }
+                st.note("liveness not judged: faults may still be in place; run.reset first");
+                out["liveness"] = boost::json::object{
+                    {"verdict", "not_judged"},
+                    {"faults_in_place", std::move(names)},
+                    {"detail",
+                     "liveness is judged once every fault is healed; call run.reset, then "
+                     "check.run with liveness"}};
+                continue;
             }
             out["liveness"] = run_liveness(ctx, st, static_cast<unsigned>(k));
         } else {
@@ -988,8 +1106,9 @@ inline auto reset(context& ctx, const boost::json::object& /*a*/, call_state& st
          tool::workload_history,
          {}},
         {"check.run",
-         "Run checkers: raft_safety and linearizability by default; liveness on request. Args: "
-         "checks, k (liveness bound in election timeouts).",
+         "Run checkers: raft_safety and linearizability by default; liveness on request, "
+         "judged only after run.reset has healed every fault. Args: checks, k (liveness bound in "
+         "election timeouts).",
          false,
          false,
          tool::check_run,

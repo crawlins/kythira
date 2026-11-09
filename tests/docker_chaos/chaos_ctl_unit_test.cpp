@@ -1007,6 +1007,46 @@ BOOST_FIXTURE_TEST_CASE(faults_on_a_down_node_are_refused_with_a_way_out, fixtur
     }
 }
 
+// Liveness is judged only after the last heal (Requirement 5.3); under
+// faults it is "not_judged", names them, and records no violation.
+BOOST_FIXTURE_TEST_CASE(liveness_is_not_judged_while_faults_are_in_place, fixture) {
+    const std::string fp = "raft/persistence/save_current_term";
+    using chaos_ctl::tool::faults_in_place;
+    using V = std::vector<std::string>;
+    BOOST_TEST(faults_in_place(ctx).empty());
+    chaos_ctl::call(ctx, "fault.kill", {{"node", 1}});
+    chaos_ctl::call(ctx, "fault.failpoint", {{"node", 2}, {"name", fp}, {"mode", "always"}});
+    chaos_ctl::call(ctx, "fault.delay", {{"node", 3}, {"delay_ms", 200}});
+    BOOST_TEST(faults_in_place(ctx) == (V{"down 1", "failpoint 2 " + fp, "netem 3"}),
+               boost::test_tools::per_element());
+
+    auto out = chaos_ctl::call(ctx, "check.run", {{"checks", boost::json::array{"liveness"}}});
+    const auto& l = out.at("result").as_object().at("liveness").as_object();
+    BOOST_TEST(l.at("verdict").as_string() == "not_judged");
+    BOOST_TEST(l.at("faults_in_place").as_array().size() == 3u);
+    BOOST_TEST(out.at("violations").as_array().empty());
+
+    // Each fault's own undo clears it; a refused call changes nothing.
+    chaos_ctl::call(ctx, "fault.failpoint", {{"node", 2}, {"name", fp}, {"mode", "off"}});
+    chaos_ctl::call(ctx, "fault.delay", {{"node", 3}, {"clear", true}});
+    chaos_ctl::call(ctx, "fault.failpoint", {{"node", 2}, {"name", "nope"}, {"mode", "always"}});
+    BOOST_TEST(faults_in_place(ctx) == (V{"down 1"}), boost::test_tools::per_element());
+
+    // A kill takes the node's failpoints with it, and run.reset clears all.
+    chaos_ctl::call(ctx, "fault.failpoint", {{"node", 3}, {"name", fp}, {"mode", "once"}});
+    chaos_ctl::call(ctx, "fault.kill", {{"node", 3}});
+    BOOST_TEST(faults_in_place(ctx) == (V{"down 1", "down 3"}), boost::test_tools::per_element());
+    fake.on_command = [&](const std::vector<std::string>& argv) {
+        if (argv.size() > 2 && argv[1] == "start") {
+            for (auto& [id, n] : fake.nodes) {
+                n.up = true;
+            }
+        }
+    };
+    chaos_ctl::call(ctx, "run.reset", {});
+    BOOST_TEST(faults_in_place(ctx).empty());
+}
+
 // "no reply" means the command went out, so it may have taken effect.
 BOOST_FIXTURE_TEST_CASE(a_failpoint_with_no_reply_is_not_refused, fixture) {
     ctx.fiu_send = [](dc::ChaosNode&, const std::string&) {
