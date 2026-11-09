@@ -61,6 +61,17 @@ set_tests_properties(ledger_verifier_test PROPERTIES LABELS "unit;ledger" TIMEOU
 kythira_ledger_test(ledger_api_test ledger_api_test.cpp)
 set_tests_properties(ledger_api_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
 
+# Task 7: the API over HTTPS with mTLS and the C++ client, against
+# certificates from the test CA (certificate_authority, which needs OpenSSL
+# and a future backend; the Ion job has both).
+if(TARGET certificate_authority)
+    kythira_ledger_test(ledger_http_test ledger_http_test.cpp)
+    target_link_libraries(ledger_http_test PRIVATE certificate_authority OpenSSL::SSL)
+    set_tests_properties(ledger_http_test PROPERTIES LABELS "unit;ledger;https" TIMEOUT 180)
+else()
+    message(STATUS "ledger_http_test: skipped (requires certificate_authority)")
+endif()
+
 # Task 1: ledger_node links and runs.
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)
 set_tests_properties(ledger_node_self_test PROPERTIES LABELS "unit;ledger" TIMEOUT 60)
