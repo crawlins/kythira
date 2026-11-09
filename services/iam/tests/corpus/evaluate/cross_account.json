@@ -1,0 +1,593 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic-cross-account.html",
+  "description": "Cross-account requests: the principal side and the resource policy must both allow (INV-EVAL-9).",
+  "cases": [
+    {
+      "name": "cross-account: both sides allow (INV-EVAL-9)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::444455556666:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "allow"
+    },
+    {
+      "name": "cross-account: resource policy only",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::444455556666:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "cross-account: identity policy only",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "cross-account: resource policy names the other account",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "444455556666"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "allow"
+    },
+    {
+      "name": "cross-account: resource policy names the other account root ARN",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::444455556666:root"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "allow"
+    },
+    {
+      "name": "cross-account: resource policy names a different account",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "cross-account: resource policy Principal *",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "allow"
+    },
+    {
+      "name": "cross-account: identity explicit deny wins",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "cross-account: resource explicit deny wins",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          },
+          {
+            "Effect": "Deny",
+            "Principal": {
+              "AWS": "444455556666"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "cross-account: boundary still limits",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::444455556666:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "cross-account role session: role ARN grant plus identity allow",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::444455556666:role/reader"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "allow"
+    },
+    {
+      "name": "cross-account role session: a direct grant still needs the identity side",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:sts::444455556666:assumed-role/reader/s1"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "cross-account role session: session policy still limits",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "cross-account AssumeRole: trust names the other account, identity allows",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "sts:AssumeRole",
+              "Resource": "arn:aws:iam::111122223333:role/admin"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "444455556666"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "allow"
+    },
+    {
+      "name": "cross-account AssumeRole: trust allows but identity does not",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::444455556666:user/alice"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "cross-account root: resource policy names the account",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "444455556666"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "allow"
+    },
+    {
+      "name": "cross-account root: no resource policy",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "explicit resource_account equal to the principal account is same-account",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_account": "111122223333",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    }
+  ]
+}

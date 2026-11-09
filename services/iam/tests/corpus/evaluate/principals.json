@@ -1,0 +1,599 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic_policy-eval-denyallow.html",
+  "description": "The root user, service and web-identity principals, anonymous callers and NotPrincipal (INV-EVAL-10, -11).",
+  "cases": [
+    {
+      "name": "root user is allowed without policies (INV-EVAL-10)",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html",
+      "decided_by": null,
+      "expect": "allow"
+    },
+    {
+      "name": "root user is allowed any action",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "iam:DeleteAccountAlias",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html",
+      "expect": "allow"
+    },
+    {
+      "name": "root user: resource policy explicit deny wins (INV-EVAL-10)",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Deny",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "decided_by": "resource#R",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "root user: resource policy Principal * deny wins",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "root user: a deny for another principal does not apply",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/bob"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "root user still needs the trust policy to allow it",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "service principal allowed by the trust policy",
+      "kind": "evaluate",
+      "principal": "service/ec2.amazonaws.com",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/ec2-role",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "ec2.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "another service is not allowed",
+      "kind": "evaluate",
+      "principal": "service/lambda.amazonaws.com",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/ec2-role",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "ec2.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "service principal with a list of services",
+      "kind": "evaluate",
+      "principal": "service/lambda.amazonaws.com",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/r",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [
+                "ec2.amazonaws.com",
+                "lambda.amazonaws.com"
+              ]
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "AWS:* does not name a service",
+      "kind": "evaluate",
+      "principal": "service/ec2.amazonaws.com",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/r",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "*"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "web identity allowed by a Federated trust",
+      "kind": "evaluate",
+      "principal": "web/accounts.google.com",
+      "action": "sts:AssumeRoleWithWebIdentity",
+      "resource": "arn:aws:iam::111122223333:role/web",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "accounts.google.com"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+              "StringEquals": {
+                "accounts.google.com:aud": "client-1"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "accounts.google.com:aud": "client-1"
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "web identity with the wrong audience",
+      "kind": "evaluate",
+      "principal": "web/accounts.google.com",
+      "action": "sts:AssumeRoleWithWebIdentity",
+      "resource": "arn:aws:iam::111122223333:role/web",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "accounts.google.com"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+              "StringEquals": {
+                "accounts.google.com:aud": "client-1"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "accounts.google.com:aud": "client-2"
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "web identity from another provider",
+      "kind": "evaluate",
+      "principal": "web/token.actions.example.com",
+      "action": "sts:AssumeRoleWithWebIdentity",
+      "resource": "arn:aws:iam::111122223333:role/web",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "accounts.google.com"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "anonymous caller allowed by Principal *",
+      "kind": "evaluate",
+      "principal": "anonymous",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "anonymous caller is not AWS:*",
+      "kind": "evaluate",
+      "principal": "anonymous",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "*"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "anonymous caller without a resource policy",
+      "kind": "evaluate",
+      "principal": "anonymous",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html",
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "Deny NotPrincipal denies unlisted principals (INV-EVAL-11)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": [
+                "arn:aws:iam::111122223333:user/bob",
+                "111122223333"
+              ]
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "Deny NotPrincipal exempts a listed user with its account",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": [
+                "arn:aws:iam::111122223333:user/alice",
+                "111122223333"
+              ]
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "Deny NotPrincipal: a user listed without its account is still denied",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "Deny NotPrincipal exempts a role session listing session, role and account",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": [
+                "arn:aws:sts::111122223333:assumed-role/reader/s1",
+                "arn:aws:iam::111122223333:role/reader",
+                "arn:aws:iam::111122223333:root"
+              ]
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "Deny NotPrincipal: listing only the role does not exempt its session",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": [
+                "arn:aws:iam::111122223333:role/reader",
+                "111122223333"
+              ]
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "Deny NotPrincipal exempts the root user when the account is listed",
+      "kind": "evaluate",
+      "principal": "root",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Deny",
+            "NotPrincipal": {
+              "AWS": "111122223333"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "Allow NotPrincipal grants unlisted principals",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "NotPrincipal": {
+              "AWS": [
+                "arn:aws:iam::111122223333:user/bob",
+                "111122223333"
+              ]
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "Allow NotPrincipal does not grant the exempt principal",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notprincipal.html",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "NotPrincipal": {
+              "AWS": [
+                "arn:aws:iam::111122223333:user/alice",
+                "111122223333"
+              ]
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    }
+  ]
+}

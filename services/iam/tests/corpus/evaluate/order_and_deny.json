@@ -1,0 +1,805 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic_policy-eval-denyallow.html",
+  "description": "Default deny, the explicit-deny scan over every policy type, statement matching, NotAction and NotResource (INV-EVAL-1, -2, -3, -11).",
+  "cases": [
+    {
+      "name": "no policies: default deny (INV-EVAL-1)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "decided_by": null,
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "identity allow grants",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "identity[0]#AllowGet",
+      "expect": "allow"
+    },
+    {
+      "name": "allow for another action does not grant (INV-EVAL-1)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:PutObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "allow for another resource does not grant",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::other/*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "explicit deny in the same policy wins (INV-EVAL-2)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            },
+            {
+              "Sid": "NoGet",
+              "Effect": "Deny",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "identity[0]#NoGet",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "explicit deny in another identity policy wins",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "D",
+              "Effect": "Deny",
+              "Action": "s3:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "identity[1]#D",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "explicit deny in the boundary wins",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          },
+          {
+            "Sid": "B",
+            "Effect": "Deny",
+            "Action": "s3:GetObject",
+            "Resource": "*"
+          }
+        ]
+      },
+      "decided_by": "boundary#B",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "explicit deny in a session policy wins",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "S",
+              "Effect": "Deny",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "session[0]#S",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "explicit deny in the resource policy wins over an identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "decided_by": "resource#R",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "explicit deny in the resource policy wins over a resource allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          },
+          {
+            "Sid": "R",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "deny wins over a direct resource grant (INV-EVAL-3: deny scan first)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "I",
+              "Effect": "Deny",
+              "Action": "s3:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "decided_by": "identity[0]#I",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "a deny whose condition fails does not apply",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": "s3:GetObject",
+              "Resource": "*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "context": {
+        "aws:SecureTransport": "true"
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "a deny whose condition holds applies",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": "s3:GetObject",
+              "Resource": "*",
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "context": {
+        "aws:SecureTransport": "false"
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "an allow whose condition fails does not grant",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*",
+              "Condition": {
+                "IpAddress": {
+                  "aws:SourceIp": "203.0.113.0/24"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "context": {
+        "aws:SourceIp": "198.51.100.7"
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "an allow whose condition holds grants",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*",
+              "Condition": {
+                "IpAddress": {
+                  "aws:SourceIp": "203.0.113.0/24"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "context": {
+        "aws:SourceIp": "203.0.113.9"
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "action matching is case-insensitive",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "S3:getobject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "wildcard action",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:Get*",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "resource matching is case-sensitive",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::BUCKET/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "the first deny decides",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "First",
+              "Effect": "Deny",
+              "Action": "s3:*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "Second",
+              "Effect": "Deny",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "identity[0]#First",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "statement without Sid reports the policy",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "identity[0]",
+      "expect": "allow"
+    },
+    {
+      "name": "a deny in a boundary applies even without an identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "B",
+            "Effect": "Deny",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "NotAction allow covers other actions (INV-EVAL-11)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notaction.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "NotAction": "iam:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "NotAction allow excludes listed actions",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:CreateUser",
+      "resource": "arn:aws:iam::111122223333:user/bob",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notaction.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "NotAction": "iam:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "NotAction deny: deny all except IAM",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notaction.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "NotAction": "iam:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "NotAction deny leaves the listed action allowed",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:ListUsers",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notaction.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "NotAction": "iam:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "NotResource allow covers other resources",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notresource.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:*",
+              "NotResource": "arn:aws:s3:::secret/*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "NotResource allow excludes listed resources",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::secret/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notresource.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:*",
+              "NotResource": "arn:aws:s3:::secret/*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "NotResource deny: deny everything outside the bucket",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::other/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notresource.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": "s3:*",
+              "NotResource": [
+                "arn:aws:s3:::bucket",
+                "arn:aws:s3:::bucket/*"
+              ]
+            }
+          ]
+        }
+      ],
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "NotResource deny leaves the listed resource allowed",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notresource.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": "s3:*",
+              "NotResource": [
+                "arn:aws:s3:::bucket",
+                "arn:aws:s3:::bucket/*"
+              ]
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "NotAction and NotResource together",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::other/k",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_notaction.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "NotAction": "s3:DeleteObject",
+              "NotResource": "arn:aws:s3:::locked/*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    }
+  ]
+}

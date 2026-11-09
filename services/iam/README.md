@@ -19,6 +19,8 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `tests/iam_policy_test.cpp` | its unit tests and the corpus runner | 10 |
 | `tests/corpus/` | the policy corpus (format in its README) | 10 onward |
 | `include/kythira/iam/iam_conditions.hpp` | condition operators, policy variables, the request context and the global condition keys | 11 |
+| `include/kythira/iam/iam_evaluator.hpp` | `evaluate()`, the one place an allow or deny is decided | 12 |
+| `tests/iam_evaluator_test.cpp` | one case per evaluation invariant (the corpus holds the rest) | 12 |
 | `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
 | `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |
 | `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |
@@ -34,9 +36,8 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `tests/docker/` | the compose scenario (three voters and a replica, by service name) | 9 |
 | `tools/` | the pinned AWS-managed policies (`aws_managed_policies.json`), the configure-time generator for `<kythira/iam/aws_managed_policies_data.hpp>`, and the script that refreshes the JSON from AWS | 8 |
 
-Condition operators and
-variables (task 11), the evaluator (task 12) and the rest follow the plan in
-the spec's `tasks.md`.
+The authorizer (task 13) and the rest follow the plan in the spec's
+`tasks.md`.
 
 Shared pieces live in core `include/raft/`, because core or other modules
 use them: `jwt.hpp`, the cloud credential sources, and later the SigV4

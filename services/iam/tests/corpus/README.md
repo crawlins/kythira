@@ -54,7 +54,23 @@ has no value.
 element, substituting variables from `context` unless `version` is
 `2008-10-17`, expecting the boolean `match`.
 
-For the last three, `context` maps each condition key to a string
+**`evaluate`** (task 12): a whole request through `evaluate()`.
+
+| Field | Meaning |
+|---|---|
+| `principal` | `root`, `user/NAME`, `role/ROLE/SESSION` (a role session), `federated/NAME/USER` (a GetFederationToken session of IAM user USER), `service/NAME`, `web/PROVIDER` or `anonymous` |
+| `principal_account` | optional, default `111122223333` |
+| `action`, `resource` | the request; `resource` defaults to `*` |
+| `resource_account` | optional: the resource's account, when not the principal's |
+| `context` | as below |
+| `identity`, `session` | optional arrays of policy documents |
+| `boundary` | optional permissions boundary document |
+| `resource_policy` | optional resource-based document; with `resource_kind` `trust` it is parsed as a trust policy |
+| `resource_kind` | optional: `ordinary` (default), `trust` or `key` |
+| `expect` | `allow`, `explicit_deny` or `implicit_deny` |
+| `decided_by` | optional: `identity[0]#Sid`, `resource`, `boundary#Sid`, ... (without `#` when the statement has no Sid), or `null` when no statement decided |
+
+For `condition`, `variable`, `resource_match` and `evaluate`, `context` maps each condition key to a string
 (single-valued) or an array (multivalued, possibly empty); a key not
 listed is absent from the request.
 

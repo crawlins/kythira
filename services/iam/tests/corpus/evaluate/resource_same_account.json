@@ -1,0 +1,1330 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic_policy-eval-denyallow.html",
+  "description": "Resource-based policies within one account: whom a grant names decides whether the boundary and session policy limit it; trust and key policies must allow themselves (INV-EVAL-4, -5, -6, -7, -12).",
+  "cases": [
+    {
+      "name": "resource policy naming the user grants without an identity allow (INV-EVAL-4)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "decided_by": "resource#R",
+      "expect": "allow"
+    },
+    {
+      "name": "resource policy naming another user does not grant",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/bob"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "resource policy naming the account needs an identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "resource policy naming the account root ARN needs an identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:root"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "account grant plus identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "identity[0]#AllowGet",
+      "expect": "allow"
+    },
+    {
+      "name": "identity allow alone grants for an ordinary resource",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/bob"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "Principal * grants directly",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "Principal AWS:* grants directly",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "*"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "user ARN grant is not limited by the boundary (INV-EVAL-5)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "user ARN grant is not limited by an identity implicit deny",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "identity allow is limited by the boundary (INV-EVAL-5)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "account grant plus identity allow is limited by the boundary",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "role ARN grant stands in for an identity allow (INV-EVAL-6)",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:role/reader"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "decided_by": "resource#R",
+      "expect": "allow"
+    },
+    {
+      "name": "role ARN grant is limited by the boundary (INV-EVAL-6)",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:role/reader"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "role ARN grant within the boundary",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:role/reader"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "role ARN grant is limited by the session policy (INV-EVAL-6)",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:role/reader"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "role ARN grant within the session policy",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:role/reader"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "session ARN grant is not limited by the boundary (INV-EVAL-6)",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:sts::111122223333:assumed-role/reader/s1"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "session ARN grant is not limited by the session policy (INV-EVAL-6)",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:sts::111122223333:assumed-role/reader/s1"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "another session of the role is not named by a session ARN",
+      "kind": "evaluate",
+      "principal": "role/reader/s2",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:sts::111122223333:assumed-role/reader/s1"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "a session of another role is not named by the role ARN",
+      "kind": "evaluate",
+      "principal": "role/writer/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:role/reader"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "role ARN in aws:PrincipalArn with Principal * is not limited (INV-EVAL-12)",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*",
+            "Condition": {
+              "ArnEquals": {
+                "aws:PrincipalArn": "arn:aws:iam::111122223333:role/reader"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "aws:PrincipalArn": "arn:aws:iam::111122223333:role/reader"
+      },
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "Principal * narrowed to another role does not grant",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*",
+            "Condition": {
+              "ArnEquals": {
+                "aws:PrincipalArn": "arn:aws:iam::111122223333:role/writer"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "aws:PrincipalArn": "arn:aws:iam::111122223333:role/reader"
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "Principal * narrowed by aws:PrincipalArn: an identity explicit deny still wins",
+      "kind": "evaluate",
+      "principal": "role/reader/s1",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*",
+            "Condition": {
+              "ArnEquals": {
+                "aws:PrincipalArn": "arn:aws:iam::111122223333:role/reader"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "aws:PrincipalArn": "arn:aws:iam::111122223333:role/reader"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Deny",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "federated-user ARN grant is not limited by the session policy (INV-EVAL-7)",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:sts::111122223333:federated-user/fed1"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "federated-user ARN grant needs no session policy",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:sts::111122223333:federated-user/fed1"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "grant to the federating user is limited by the session policy",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "grant to the federating user within the session policy",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "grant to the federating user without a session policy grants nothing",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "grant to the federating user is limited by the boundary",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "R",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "trust policy naming the user allows AssumeRole (INV-EVAL-4)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "decided_by": "resource#T",
+      "expect": "allow"
+    },
+    {
+      "name": "identity allow alone cannot assume a role (INV-EVAL-4)",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "sts:AssumeRole",
+              "Resource": "arn:aws:iam::111122223333:role/admin"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/bob"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "trust policy naming the account needs an identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "trust policy naming the account plus identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "sts:AssumeRole",
+              "Resource": "arn:aws:iam::111122223333:role/admin"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "trust policy with no matching principal",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/bob"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "trust policy for another action",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:TagSession",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "trust policy allowing AssumeRole and TagSession",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:TagSession",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": [
+              "sts:AssumeRole",
+              "sts:TagSession"
+            ]
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "missing trust policy: no one may assume",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "key policy naming the account plus identity allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "kms:Decrypt",
+      "resource": "arn:aws:kms:us-east-1:111122223333:key/k1",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_resource-based.html",
+      "resource_kind": "key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "kms:Decrypt",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "identity allow alone cannot use a key whose policy does not allow",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "kms:Decrypt",
+      "resource": "arn:aws:kms:us-east-1:111122223333:key/k1",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_resource-based.html",
+      "resource_kind": "key",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/bob"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "kms:Decrypt",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "trust policy explicit deny wins",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "111122223333"
+            },
+            "Action": "sts:AssumeRole"
+          },
+          {
+            "Sid": "NoAlice",
+            "Effect": "Deny",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "decided_by": "resource#NoAlice",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "trust policy condition on sts:ExternalId holds",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {
+              "StringEquals": {
+                "sts:ExternalId": "ext-123"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "sts:ExternalId": "ext-123"
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "trust policy condition on sts:ExternalId fails",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html",
+      "resource_kind": "trust",
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "T",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::111122223333:user/alice"
+            },
+            "Action": "sts:AssumeRole",
+            "Condition": {
+              "StringEquals": {
+                "sts:ExternalId": "ext-123"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "sts:ExternalId": "wrong"
+      },
+      "expect": "implicit_deny"
+    }
+  ]
+}

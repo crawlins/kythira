@@ -286,6 +286,12 @@ struct decision {
 auto evaluate(const iam_view&, const request_context&) -> decision;
 ```
 
+As built (task 12, `iam_evaluator.hpp`), `evaluate` takes one
+`evaluation_request` holding the principal, the request and the policies
+already gathered, so it has no view of the state machine and the same call
+serves the authorizer, STS and the Simulate* actions. Gathering (step 1
+below) belongs to the caller, which holds the `iam_view`.
+
 `evaluate` is a direct transcription of AWS's "Policy evaluation logic"
 pages.
 
