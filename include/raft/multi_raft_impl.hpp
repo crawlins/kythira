@@ -807,10 +807,26 @@ auto multi_raft<Types, Key, GroupId>::tick() -> tick_report {
                 }
                 std::chrono::steady_clock::time_point frozen_at{};
                 GroupId merge_target{};
+                std::function<void()> redrive;
                 {
                     std::lock_guard lock(g->_merge_mutex);
                     frozen_at = g->_merge_frozen_at;
                     merge_target = g->_merge_target.value_or(GroupId{});
+                    redrive = g->_merge_redrive;
+                }
+                // The prepare's apply asks the target's leader to propose
+                // `merge_commit` once. When leadership of the target moved
+                // around that moment, nobody did, and nothing else ever
+                // would: the source stayed frozen until an operator abandoned
+                // the merge (multi_raft_txn_bank_test, 11 CI retries
+                // 2026-11-06..07, "frozen for merge into 1" for 30 s). Ask
+                // again on every policy tick; it is a no-op unless this
+                // machine leads the target and no commit is under way.
+                if (redrive) {
+                    if (auto target = find_group(merge_target);
+                        target && target->_node->is_leader()) {
+                        defer_to_apply_phase(merge_target, std::move(redrive));
+                    }
                 }
                 if (now - frozen_at >= _cfg.merge_stall_warning_after) {
                     _stalled_merges.fetch_add(1, std::memory_order_relaxed);
@@ -2709,6 +2725,7 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_prepare(group_state& source,
         source._merge_prepare_index = at_index;
         source._merge_min_index = static_cast<log_index_type>(cmd._min_index);
         source._merge_frozen_at = std::chrono::steady_clock::now();
+        source._merge_redrive = [this, cmd] { this->maybe_propose_merge_commit(cmd); };
     }
     // From here the source rejects proposals and reads. It is released ONLY by
     // a `merge_rollback` in its own log — never by a timer. There is no
@@ -2745,7 +2762,10 @@ auto multi_raft<Types, Key, GroupId>::maybe_propose_merge_commit(
     const merge_prepare_command_type& cmd) -> void {
     auto target = find_group(cmd._target._group_id);
     if (!target || !target->_node->is_leader()) {
-        return;  // some other machine leads the target; it will do this.
+        // Some other machine leads the target, and its own call does this. If
+        // it misses (it led the target only after applying the prepare), the
+        // policy tick calls this again through the source's `_merge_redrive`.
+        return;
     }
 
     {
@@ -2756,10 +2776,18 @@ auto multi_raft<Types, Key, GroupId>::maybe_propose_merge_commit(
             // one log, which is what makes them mutually exclusive.
             return;
         }
-        if (target->_merge_commit_proposed) {
+        const auto now = std::chrono::steady_clock::now();
+        if (target->_merge_commit_proposed &&
+            now - target->_merge_commit_proposed_at < k_merge_commit_retry_after) {
             return;  // already under way
         }
+        // A proposal older than that was lost (the leader that made it lost
+        // its term before the entry committed), or this is the first. Proposing
+        // again is safe: a second `merge_commit` that applies after the first
+        // finds the range absorbed and the source gone, and returns. The flag
+        // stays set throughout, so the target still refuses to abandon.
         target->_merge_commit_proposed = true;
+        target->_merge_commit_proposed_at = now;
         target->_merge_source = cmd._source._group_id;
     }
     target->_holder.store(channel_of(cmd._reason), std::memory_order_release);
@@ -2976,6 +3004,7 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_rollback(group_state& source,
         source._merge_target.reset();
         source._merge_prepare_index = 0;
         source._merge_min_index = 0;
+        source._merge_redrive = nullptr;
     }
     release(source);
     _rolled_back_merges.fetch_add(1, std::memory_order_relaxed);
