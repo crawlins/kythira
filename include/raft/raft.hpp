@@ -571,6 +571,24 @@ public:
         return std::forward<F>(f)(_state_machine);
     }
 
+    /// @brief Whether this node's log holds an administration entry from an
+    /// earlier term that it has not yet applied.
+    ///
+    /// A leader elected with another leader's split (or merge step) in its
+    /// log, uncommitted, does not know the entry is there until it applies
+    /// it, and nothing the sharding host keeps says a split is in flight:
+    /// the host that admitted the split was the old leader. A command this
+    /// node appends meanwhile goes in AFTER the inherited entry, so it
+    /// applies after the cut, to a range that may no longer own its key.
+    /// `multi_raft` asks this before it lets a write through; with an
+    /// admin-entry handler installed, `submit_command` refuses such a
+    /// command itself as well (`inherited_admin_entry_pending_exception`).
+    ///
+    /// Cheap in the steady state: log terms never decrease along the log, so
+    /// earlier-term entries are a prefix of the unapplied suffix, and the
+    /// scan stops at the first entry of the current term.
+    [[nodiscard]] auto has_inherited_admin_entry_pending() const -> bool;
+
     /// @brief The highest log index this replica has applied to its state machine.
     ///
     /// Read under the node's lock, unlike `debug_state()`, whose span is only
@@ -1608,6 +1626,11 @@ private:
     /// uses the latest configuration in its log, committed or not (Raft
     /// §6), so a committed entry with a later one behind it is stale.
     [[nodiscard]] auto has_later_configuration_entry(log_index_type index) const -> bool;
+    [[nodiscard]] auto has_inherited_admin_entry_pending_locked() const -> bool;
+    /// Fails `submit_command` / `submit_command_with_session` when a command
+    /// appended now would follow an unapplied inherited admin entry. Empty
+    /// when the command may proceed.
+    [[nodiscard]] auto refuse_behind_inherited_admin_entry_locked() -> std::optional<future_type>;
 
     // Replication helpers
     auto send_append_entries_to(node_id_type target) -> void;
@@ -3045,6 +3068,10 @@ auto node<Types>::submit_command(const std::vector<std::byte>& command,
         return future;
     }
 
+    if (auto refused = refuse_behind_inherited_admin_entry_locked()) {
+        return std::move(*refused);
+    }
+
     auto submission_start = std::chrono::steady_clock::now();
 
     _logger.info("Received client command", {{"node_id", node_id_to_string(_node_id)},
@@ -3765,6 +3792,10 @@ auto node<Types>::submit_command_with_session(client_id_t client_id, serial_numb
         auto future = promise.getFuture();
         promise.setException(std::make_exception_ptr(std::runtime_error("Not leader")));
         return future;
+    }
+
+    if (auto refused = refuse_behind_inherited_admin_entry_locked()) {
+        return std::move(*refused);
     }
 
     // Check if this is a new client or existing client
@@ -8282,6 +8313,55 @@ auto node<Types>::term_at(log_index_type index) const -> std::optional<term_id_t
         return _snapshot_term;
     }
     return std::nullopt;
+}
+
+template<raft_types Types> auto node<Types>::has_inherited_admin_entry_pending() const -> bool {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return has_inherited_admin_entry_pending_locked();
+}
+
+template<raft_types Types>
+auto node<Types>::has_inherited_admin_entry_pending_locked() const -> bool {
+    if (_log.empty()) {
+        return false;
+    }
+    const auto first = _log.front().index();
+    // Entries at or below `_last_applied` are applied; anything compacted is
+    // below the snapshot, which is applied too.
+    const auto start = std::max(first, _last_applied + 1);
+    for (auto i = static_cast<std::size_t>(start - first); i < _log.size(); ++i) {
+        const auto& entry = _log[i];
+        if (entry.term() >= _current_term) {
+            return false;
+        }
+        if (is_admin_entry_type(entry.type())) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template<raft_types Types>
+auto node<Types>::refuse_behind_inherited_admin_entry_locked() -> std::optional<future_type> {
+    // Only a sharding host gives admin entries a meaning; without a handler
+    // they apply as no-ops and cannot change what a later command means.
+    if (!_admin_entry_handler || !has_inherited_admin_entry_pending_locked()) {
+        return std::nullopt;
+    }
+    _logger.debug("Rejected command submission: inherited admin entry not yet applied",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"term", std::to_string(_current_term)},
+                   {"last_applied", std::to_string(_last_applied)}});
+    _metrics.set_metric_name("command_rejected");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("reason", "inherited_admin_entry_pending");
+    _metrics.add_one();
+    _metrics.emit();
+    promise_type promise;
+    auto future = promise.getFuture();
+    promise.setException(std::make_exception_ptr(kythira::inherited_admin_entry_pending_exception(
+        "an administration entry from an earlier term is not yet applied; retry")));
+    return future;
 }
 
 template<raft_types Types>

@@ -3373,6 +3373,36 @@ auto multi_raft<Types, Key, GroupId>::route_and_run(std::optional<Key> key,
             }
         }
 
+        // ── an inherited split ───────────────────────────────────────────────
+        //
+        // The freeze above is set by the leader that ADMITTED a split. A
+        // leader elected with that split entry in its log, uncommitted, never
+        // admitted anything: its shard reads `stable` and its epoch is the
+        // parent's until the entry applies. A write let through now is
+        // appended after the inherited entry and applies after the cut, to
+        // the narrowed parent, for a key a child may own: acknowledged, and
+        // lost. The same holds for an inherited `merge_prepare`. So a write
+        // waits until no admin entry from an earlier term is left unapplied,
+        // which is as soon as this leader's election no-op commits. After
+        // that the split has applied, and the epoch check below redirects.
+        //
+        // Only a leader is asked: anywhere else the leadership check below
+        // gives the better answer. `submit_command` repeats this check under
+        // the node's own lock, so a node that lost and regained leadership
+        // between here and there still cannot append behind such an entry.
+        if (!is_read && local->_node->is_leader() &&
+            local->_node->has_inherited_admin_entry_pending()) {
+            gate = {};
+            last_error = std::make_exception_ptr(shard_busy_exception<GroupId>{
+                desc->_group_id, "inherited split or merge not yet applied"});
+            if (attempt < _cfg.max_route_retries) {
+                std::this_thread::sleep_for(_cfg.route_retry_backoff);
+                refresh_map_from_local_groups();
+                continue;
+            }
+            break;
+        }
+
         // ── epoch ────────────────────────────────────────────────────────────
         //
         // The local replica's own descriptor is the authority; the map is a
