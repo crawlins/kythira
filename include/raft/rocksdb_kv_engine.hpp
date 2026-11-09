@@ -41,6 +41,7 @@
 
 #include <raft/persistent_state_machine.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -55,6 +56,16 @@ struct rocksdb_kv_engine_options {
     /// Fsync the WAL on every write, making every write durable at once.
     /// Off by default: the node syncs when it compacts (Requirement 3.3).
     bool sync_every_write = false;
+    /// The WAL bytes kept before RocksDB flushes the column family holding
+    /// the oldest live log file (`max_total_wal_size`). Every WAL byte not
+    /// yet flushed is replayed on the next open, so this bounds the extra
+    /// time a restart after a write burst takes. RocksDB's own default is
+    /// four times the write buffers of every column family; the meta column
+    /// family's applied-index writes are small and rarely fill a buffer, so
+    /// it keeps every log file alive up to that default. Measured
+    /// (doc/persistent_state_machines.md): a restart after a 1 GiB load took
+    /// 2.4 s to open on the default and 0.9 s with this one.
+    std::uint64_t max_total_wal_bytes = std::uint64_t{256} << 20U;
 };
 
 class rocksdb_kv_engine {
