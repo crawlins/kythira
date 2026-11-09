@@ -454,3 +454,489 @@ BOOST_AUTO_TEST_CASE(inv_acct_2_aliases_are_validated_set_listed_and_deleted) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ── Task 15: roles, managed policies, attachments, boundaries and instance
+// profiles (Requirements 9.4, 9.5, 9.7, 9.8) ──
+
+namespace {
+
+constexpr std::string_view k_trust =
+    R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]})";
+constexpr std::string_view k_doc =
+    R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]})";
+constexpr std::string_view k_doc2 =
+    R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"*"}]})";
+constexpr std::string_view k_policy_arn = "arn:aws:iam::111122223333:policy/p1";
+constexpr std::string_view k_readonly = "arn:aws:iam::aws:policy/ReadOnlyAccess";
+
+auto enc(std::string_view s) -> std::string {
+    return q::url_encode(s);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(roles_and_policies)
+
+BOOST_FIXTURE_TEST_CASE(a_role_is_created_read_listed_updated_and_deleted, fixture) {
+    auto r = as_root(
+        "Action=CreateRole&RoleName=app&Path=%2Fsvc%2F&Description=App+role&"
+        "Tags.member.1.Key=team&Tags.member.1.Value=iam&AssumeRolePolicyDocument=" +
+        enc(k_trust));
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "Arn") == "arn:aws:iam::111122223333:role/svc/app");
+    BOOST_TEST(element(r.body, "RoleId").starts_with("AROA"));
+    BOOST_TEST(element(r.body, "MaxSessionDuration") == "3600");
+    // The trust policy comes back URL-encoded, as AWS returns it.
+    BOOST_TEST(element(r.body, "AssumeRolePolicyDocument") == enc(k_trust));
+    BOOST_TEST(code_of(as_root("Action=CreateRole&RoleName=APP&AssumeRolePolicyDocument=" +
+                               enc(k_trust))) == "EntityAlreadyExists");
+
+    r = as_root("Action=GetRole&RoleName=app");
+    BOOST_TEST(element(r.body, "Description") == "App role");
+    BOOST_TEST(count(r.body, "<RoleLastUsed>") == 1U);
+    BOOST_TEST(element(r.body, "Value") == "iam");
+
+    BOOST_TEST(as_root("Action=UpdateRole&RoleName=app&MaxSessionDuration=7200").status == 200U);
+    r = as_root("Action=UpdateRoleDescription&RoleName=app&Description=Changed");
+    BOOST_TEST(element(r.body, "Description") == "Changed");
+    BOOST_TEST(element(r.body, "MaxSessionDuration") == "7200");
+
+    constexpr std::string_view other =
+        R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::111122223333:root"},"Action":"sts:AssumeRole"}]})";
+    BOOST_TEST(
+        as_root("Action=UpdateAssumeRolePolicy&RoleName=app&PolicyDocument=" + enc(other)).status ==
+        200U);
+    BOOST_TEST(element(as_root("Action=GetRole&RoleName=app").body, "AssumeRolePolicyDocument") ==
+               enc(other));
+
+    r = as_root("Action=ListRoles&PathPrefix=%2Fsvc%2F");
+    BOOST_TEST(count(r.body, "<RoleName>app</RoleName>") == 1U);
+    BOOST_TEST(count(r.body, "<RoleLastUsed>") == 0U);  // only GetRole has it
+    BOOST_TEST(count(as_root("Action=ListRoles&PathPrefix=%2Fother%2F").body, "<member>") == 0U);
+
+    BOOST_TEST(as_root("Action=TagRole&RoleName=app&Tags.member.1.Key=env&Tags.member.1.Value=dev")
+                   .status == 200U);
+    BOOST_TEST(count(as_root("Action=ListRoleTags&RoleName=app").body, "<Key>") == 2U);
+    BOOST_TEST(as_root("Action=UntagRole&RoleName=app&TagKeys.member.1=team").status == 200U);
+    BOOST_TEST(count(as_root("Action=ListRoleTags&RoleName=app").body, "<Key>") == 1U);
+
+    BOOST_TEST(as_root("Action=DeleteRole&RoleName=app").status == 200U);
+    r = as_root("Action=GetRole&RoleName=app");
+    BOOST_TEST(r.status == 404U);
+    BOOST_TEST(code_of(r) == "NoSuchEntity");
+}
+
+BOOST_FIXTURE_TEST_CASE(trust_policies_are_parsed_as_trust_policies, fixture) {
+    // INV-ROLE-3 through the API: a trust policy names a Principal and no
+    // Resource; an identity document is not a trust policy.
+    const auto r = as_root("Action=CreateRole&RoleName=app&AssumeRolePolicyDocument=" + enc(k_doc));
+    BOOST_TEST(r.status == 400U);
+    BOOST_TEST(code_of(r) == "MalformedPolicyDocument");
+    BOOST_TEST(code_of(as_root("Action=CreateRole&RoleName=app&AssumeRolePolicyDocument=%7Bnot")) ==
+               "MalformedPolicyDocument");
+    BOOST_TEST(code_of(as_root("Action=CreateRole&RoleName=app")) == "ValidationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_role_1_create_and_update_role_check_max_session_duration, fixture) {
+    const auto create = [&](const std::string& extra) {
+        return as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust) +
+                       extra);
+    };
+    BOOST_TEST(code_of(create("&MaxSessionDuration=3599")) == "ValidationError");
+    BOOST_TEST(code_of(create("&MaxSessionDuration=43201")) == "ValidationError");
+    BOOST_TEST(code_of(create("&MaxSessionDuration=1h")) == "ValidationError");
+    BOOST_TEST(create("&MaxSessionDuration=43200").status == 200U);
+    BOOST_TEST(element(as_root("Action=GetRole&RoleName=r").body, "MaxSessionDuration") == "43200");
+    // UpdateRole checks it too, and a refused update changes nothing.
+    BOOST_TEST(code_of(as_root("Action=UpdateRole&RoleName=r&MaxSessionDuration=3000")) ==
+               "ValidationError");
+    BOOST_TEST(as_root("Action=UpdateRole&RoleName=r&MaxSessionDuration=3600").status == 200U);
+    BOOST_TEST(element(as_root("Action=GetRole&RoleName=r").body, "MaxSessionDuration") == "3600");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_role_2_role_descriptions_are_checked, fixture) {
+    const std::string long_text(1001, 'a');
+    const auto base = "Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust);
+    BOOST_TEST(code_of(as_root(base + "&Description=" + long_text)) == "ValidationError");
+    BOOST_TEST(code_of(as_root(base + "&Description=a%01b")) == "ValidationError");
+    BOOST_TEST(as_root(base + "&Description=" + std::string(1000, 'a')).status == 200U);
+    BOOST_TEST(code_of(as_root("Action=UpdateRole&RoleName=r&Description=" + long_text)) ==
+               "ValidationError");
+    BOOST_TEST(code_of(as_root("Action=UpdateRoleDescription&RoleName=r&Description=" +
+                               long_text)) == "ValidationError");
+    BOOST_TEST(code_of(as_root("Action=UpdateRoleDescription&RoleName=r")) == "ValidationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_pol_1_policy_documents_are_checked_before_parsing, fixture) {
+    // Characters outside tab, LF, CR and U+0020-U+00FF, and an empty
+    // document, are ValidationError: the parser never sees them.
+    BOOST_TEST(code_of(as_root("Action=CreatePolicy&PolicyName=p&PolicyDocument=")) ==
+               "ValidationError");
+    BOOST_TEST(code_of(as_root("Action=CreatePolicy&PolicyName=p&PolicyDocument=" +
+                               enc(std::string(k_doc).insert(1, "\x01")))) == "ValidationError");
+    // U+0100 (two UTF-8 bytes) is outside the set; U+00E9 is inside it.
+    BOOST_TEST(code_of(as_root("Action=CreatePolicy&PolicyName=p&PolicyDocument=" +
+                               enc(std::string(k_doc).insert(1, "\xC4\x80")))) ==
+               "ValidationError");
+    BOOST_TEST(code_of(as_root("Action=CreatePolicy&PolicyName=p&PolicyDocument=" +
+                               enc(std::string(k_doc).insert(1, "\xC3\xA9")))) ==
+               "MalformedPolicyDocument");
+    // Longer than the managed quota but inside the outer bound: LimitExceeded.
+    const auto big = R"({"Version":"2012-10-17","Statement":[{"Sid":")" + std::string(7000, 'x') +
+                     R"(","Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]})";
+    BOOST_TEST(code_of(as_root("Action=CreatePolicy&PolicyName=p&PolicyDocument=" + enc(big))) ==
+               "LimitExceeded");
+    // The same rule guards inline policies and policy versions.
+    BOOST_TEST(as_root("Action=CreateUser&UserName=u").status == 200U);
+    BOOST_TEST(code_of(as_root("Action=PutUserPolicy&UserName=u&PolicyName=i&PolicyDocument=")) ==
+               "ValidationError");
+    BOOST_TEST(as_root("Action=CreatePolicy&PolicyName=p1&PolicyDocument=" + enc(k_doc)).status ==
+               200U);
+    BOOST_TEST(code_of(as_root("Action=CreatePolicyVersion&PolicyArn=" + std::string(k_policy_arn) +
+                               "&PolicyDocument=%01")) == "ValidationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_pol_6_version_ids_are_checked, fixture) {
+    BOOST_TEST(as_root("Action=CreatePolicy&PolicyName=p1&PolicyDocument=" + enc(k_doc)).status ==
+               200U);
+    const auto get = [&](const std::string& vid) {
+        return as_root("Action=GetPolicyVersion&PolicyArn=" + std::string(k_policy_arn) +
+                       "&VersionId=" + vid);
+    };
+    for (const auto* bad : {"v0", "1", "v", "V1", "v1.%21", "v01"}) {
+        BOOST_TEST(code_of(get(bad)) == "ValidationError", bad);
+    }
+    // Well formed but absent is the state's answer.
+    BOOST_TEST(code_of(get("v9")) == "NoSuchEntity");
+    BOOST_TEST(code_of(get("v1.beta-2")) == "NoSuchEntity");
+    BOOST_TEST(get("v1").status == 200U);
+    BOOST_TEST(code_of(as_root("Action=SetDefaultPolicyVersion&PolicyArn=" +
+                               std::string(k_policy_arn) + "&VersionId=v0")) == "ValidationError");
+    BOOST_TEST(code_of(as_root("Action=DeletePolicyVersion&PolicyArn=" + std::string(k_policy_arn) +
+                               "&VersionId=x")) == "ValidationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(a_policy_has_versions_and_is_deleted_only_when_unused, fixture) {
+    auto r =
+        as_root("Action=CreatePolicy&PolicyName=p1&Description=Reads&PolicyDocument=" + enc(k_doc) +
+                "&Tags.member.1.Key=Team&Tags.member.1.Value=iam");
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "Arn") == k_policy_arn);
+    BOOST_TEST(element(r.body, "PolicyId").starts_with("ANPA"));
+    BOOST_TEST(element(r.body, "DefaultVersionId") == "v1");
+    BOOST_TEST(element(r.body, "Description") == "Reads");
+
+    const auto parn = "&PolicyArn=" + std::string(k_policy_arn);
+    r = as_root("Action=CreatePolicyVersion" + parn +
+                "&SetAsDefault=true&PolicyDocument=" + enc(k_doc2));
+    BOOST_TEST(element(r.body, "VersionId") == "v2");
+    BOOST_TEST(element(r.body, "IsDefaultVersion") == "true");
+    r = as_root("Action=GetPolicyVersion" + parn + "&VersionId=v2");
+    BOOST_TEST(element(r.body, "Document") == enc(k_doc2));
+    r = as_root("Action=ListPolicyVersions" + parn);
+    BOOST_TEST(count(r.body, "<member>") == 2U);
+    BOOST_TEST(element(as_root("Action=GetPolicy" + parn).body, "DefaultVersionId") == "v2");
+
+    BOOST_TEST(code_of(as_root("Action=DeletePolicyVersion" + parn + "&VersionId=v2")) ==
+               "DeleteConflict");  // INV-POL-3
+    BOOST_TEST(as_root("Action=SetDefaultPolicyVersion" + parn + "&VersionId=v1").status == 200U);
+    BOOST_TEST(as_root("Action=DeletePolicyVersion" + parn + "&VersionId=v2").status == 200U);
+
+    BOOST_TEST(as_root("Action=CreateUser&UserName=u").status == 200U);
+    BOOST_TEST(as_root("Action=AttachUserPolicy&UserName=u" + parn).status == 200U);
+    BOOST_TEST(element(as_root("Action=GetPolicy" + parn).body, "AttachmentCount") == "1");
+    r = as_root("Action=ListEntitiesForPolicy" + parn);
+    BOOST_TEST(element(r.body, "UserName") == "u");
+    BOOST_TEST(count(r.body, "<PolicyGroups></PolicyGroups>") == 1U);
+    BOOST_TEST(code_of(as_root("Action=DeletePolicy" + parn)) == "DeleteConflict");
+    BOOST_TEST(as_root("Action=DetachUserPolicy&UserName=u" + parn).status == 200U);
+    BOOST_TEST(code_of(as_root("Action=DetachUserPolicy&UserName=u" + parn)) == "NoSuchEntity");
+
+    BOOST_TEST(as_root("Action=TagPolicy" + parn + "&Tags.member.1.Key=team&Tags.member.1.Value=x")
+                   .status == 200U);
+    // Policy tag keys are case-sensitive, unlike a user's or a role's.
+    BOOST_TEST(count(as_root("Action=ListPolicyTags" + parn).body, "<Key>") == 2U);
+    BOOST_TEST(as_root("Action=UntagPolicy" + parn + "&TagKeys.member.1=Team").status == 200U);
+
+    BOOST_TEST(as_root("Action=DeletePolicy" + parn).status == 200U);
+    BOOST_TEST(code_of(as_root("Action=GetPolicy" + parn)) == "NoSuchEntity");
+}
+
+BOOST_FIXTURE_TEST_CASE(aws_managed_policies_are_listed_and_read_but_not_changed, fixture) {
+    const auto parn = "&PolicyArn=" + std::string(k_readonly);
+    auto r = as_root("Action=GetPolicy" + parn);
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "PolicyName") == "ReadOnlyAccess");
+    // Its id is derived, so every member and every call agree on it.
+    BOOST_TEST(element(r.body, "PolicyId") ==
+               element(as_root("Action=GetPolicy" + parn).body, "PolicyId"));
+    const auto v = element(r.body, "DefaultVersionId");
+    BOOST_TEST(as_root("Action=GetPolicyVersion" + parn + "&VersionId=" + v).status == 200U);
+    BOOST_TEST(code_of(as_root("Action=CreatePolicyVersion" + parn +
+                               "&PolicyDocument=" + enc(k_doc))) == "InvalidInput");
+    BOOST_TEST(code_of(as_root("Action=TagPolicy" + parn +
+                               "&Tags.member.1.Key=a&Tags.member.1.Value=b")) == "InvalidInput");
+    BOOST_TEST(code_of(as_root("Action=DeletePolicy" + parn)) == "InvalidInput");
+
+    BOOST_TEST(as_root("Action=CreatePolicy&PolicyName=p1&PolicyDocument=" + enc(k_doc)).status ==
+               200U);
+    r = as_root("Action=ListPolicies");
+    BOOST_TEST(count(r.body, "<PolicyName>ReadOnlyAccess</PolicyName>") == 1U);
+    BOOST_TEST(count(r.body, "<PolicyName>p1</PolicyName>") == 1U);
+    r = as_root("Action=ListPolicies&Scope=Local");
+    BOOST_TEST(count(r.body, "<PolicyName>ReadOnlyAccess</PolicyName>") == 0U);
+    BOOST_TEST(count(r.body, "<member>") == 1U);
+    BOOST_TEST(
+        count(as_root("Action=ListPolicies&Scope=AWS").body, "<PolicyName>p1</PolicyName>") == 0U);
+    BOOST_TEST(code_of(as_root("Action=ListPolicies&Scope=Mine")) == "ValidationError");
+
+    // OnlyAttached counts this account's uses of an AWS-managed policy.
+    BOOST_TEST(as_root("Action=CreateGroup&GroupName=g").status == 200U);
+    BOOST_TEST(as_root("Action=AttachGroupPolicy&GroupName=g" + parn).status == 200U);
+    r = as_root("Action=ListPolicies&OnlyAttached=true");
+    BOOST_TEST(count(r.body, "<member>") == 1U);
+    BOOST_TEST(element(r.body, "AttachmentCount") == "1");
+    BOOST_TEST(element(as_root("Action=ListAttachedGroupPolicies&GroupName=g").body, "PolicyArn") ==
+               k_readonly);
+    BOOST_TEST(count(as_root("Action=ListPolicies&OnlyAttached=true&PolicyUsageFilter="
+                             "PermissionsBoundary")
+                         .body,
+                     "<member>") == 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(inline_policies_round_trip_for_users_groups_and_roles, fixture) {
+    BOOST_TEST(as_root("Action=CreateUser&UserName=u").status == 200U);
+    BOOST_TEST(as_root("Action=CreateGroup&GroupName=g").status == 200U);
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    for (const auto& [kind, param] :
+         {std::pair{"User", "UserName=u"}, std::pair{"Group", "GroupName=g"},
+          std::pair{"Role", "RoleName=r"}}) {
+        const std::string k(kind);
+        const std::string p(param);
+        BOOST_TEST(as_root("Action=Put" + k + "Policy&" + p +
+                           "&PolicyName=Read&PolicyDocument=" + enc(k_doc))
+                           .status == 200U,
+                   k);
+        auto r = as_root("Action=Get" + k + "Policy&" + p + "&PolicyName=read");
+        BOOST_TEST(element(r.body, "PolicyName") == "Read");
+        BOOST_TEST(element(r.body, "PolicyDocument") == enc(k_doc));
+        BOOST_TEST(element(as_root("Action=List" + k + "Policies&" + p).body, "member") == "Read");
+        BOOST_TEST(code_of(as_root("Action=Put" + k + "Policy&" + p +
+                                   "&PolicyName=bad%20name&PolicyDocument=" + enc(k_doc))) ==
+                   "ValidationError");
+        BOOST_TEST(code_of(as_root("Action=Put" + k + "Policy&" + p +
+                                   "&PolicyName=x&PolicyDocument=" + enc(k_trust))) ==
+                   "MalformedPolicyDocument");
+        BOOST_TEST(as_root("Action=Delete" + k + "Policy&" + p + "&PolicyName=Read").status ==
+                   200U);
+        BOOST_TEST(code_of(as_root("Action=Get" + k + "Policy&" + p + "&PolicyName=Read")) ==
+                   "NoSuchEntity");
+    }
+    BOOST_TEST(code_of(as_root("Action=GetRolePolicy&RoleName=nobody&PolicyName=x")) ==
+               "NoSuchEntity");
+}
+
+BOOST_FIXTURE_TEST_CASE(policy_arn_and_permissions_boundary_reach_the_condition_keys, fixture) {
+    BOOST_TEST(as_root("Action=CreatePolicy&PolicyName=p1&PolicyDocument=" + enc(k_doc)).status ==
+               200U);
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    // iam:PolicyARN: may attach only p1; iam:PermissionsBoundary: may set
+    // only p1 as a boundary, and create roles only with it.
+    allow(
+        "admin",
+        R"({"Effect":"Allow","Action":["iam:AttachRolePolicy","iam:DetachRolePolicy"],"Resource":"*","Condition":{"ArnEquals":{"iam:PolicyARN":"arn:aws:iam::111122223333:policy/p1"}}},)"
+        R"({"Effect":"Allow","Action":["iam:PutRolePermissionsBoundary","iam:CreateRole"],"Resource":"*","Condition":{"StringEquals":{"iam:PermissionsBoundary":"arn:aws:iam::111122223333:policy/p1"}}},)"
+        R"({"Effect":"Allow","Action":"iam:DeleteRolePermissionsBoundary","Resource":"*","Condition":{"StringEquals":{"iam:PermissionsBoundary":"arn:aws:iam::aws:policy/ReadOnlyAccess"}}})");
+    const auto admin = user("admin");
+    const auto attach = [&](std::string_view parn) {
+        return call(admin, "Action=AttachRolePolicy&RoleName=r&PolicyArn=" + std::string(parn));
+    };
+    BOOST_TEST(attach(k_policy_arn).status == 200U);
+    BOOST_TEST(code_of(attach(k_readonly)) == "AccessDenied");
+    BOOST_TEST(
+        call(admin, "Action=DetachRolePolicy&RoleName=r&PolicyArn=" + std::string(k_policy_arn))
+            .status == 200U);
+
+    BOOST_TEST(code_of(call(admin,
+                            "Action=PutRolePermissionsBoundary&RoleName=r&"
+                            "PermissionsBoundary=" +
+                                std::string(k_readonly))) == "AccessDenied");
+    BOOST_TEST(call(admin, "Action=PutRolePermissionsBoundary&RoleName=r&PermissionsBoundary=" +
+                               std::string(k_policy_arn))
+                   .status == 200U);
+    BOOST_TEST(element(as_root("Action=GetRole&RoleName=r").body, "PermissionsBoundaryArn") ==
+               k_policy_arn);
+    BOOST_TEST(element(as_root("Action=GetPolicy&PolicyArn=" + std::string(k_policy_arn)).body,
+                       "PermissionsBoundaryUsageCount") == "1");
+    // Delete is keyed on the boundary being removed: p1 here, so denied.
+    BOOST_TEST(code_of(call(admin, "Action=DeleteRolePermissionsBoundary&RoleName=r")) ==
+               "AccessDenied");
+    BOOST_TEST(as_root("Action=DeleteRolePermissionsBoundary&RoleName=r").status == 200U);
+    BOOST_TEST(code_of(as_root("Action=DeleteRolePermissionsBoundary&RoleName=r")) ==
+               "NoSuchEntity");
+
+    const auto create = [&](const std::string& extra) {
+        return call(admin, "Action=CreateRole&RoleName=r2&AssumeRolePolicyDocument=" +
+                               enc(k_trust) + extra);
+    };
+    BOOST_TEST(code_of(create("")) == "AccessDenied");
+    BOOST_TEST(create("&PermissionsBoundary=" + std::string(k_policy_arn)).status == 200U);
+
+    // A user boundary works the same way; a missing policy is NoSuchEntity.
+    BOOST_TEST(as_root("Action=PutUserPermissionsBoundary&UserName=admin&PermissionsBoundary=" +
+                       std::string(k_readonly))
+                   .status == 200U);
+    BOOST_TEST(code_of(as_root("Action=PutUserPermissionsBoundary&UserName=admin&"
+                               "PermissionsBoundary=arn:aws:iam::111122223333:policy/none")) ==
+               "NoSuchEntity");
+    BOOST_TEST(code_of(as_root("Action=PutUserPermissionsBoundary&UserName=admin&"
+                               "PermissionsBoundary=short")) == "ValidationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(adding_a_role_to_an_instance_profile_needs_pass_role_to_ec2, fixture) {
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    auto r = as_root("Action=CreateInstanceProfile&InstanceProfileName=ip&Path=%2Fweb%2F");
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "InstanceProfileId").starts_with("AIPA"));
+    BOOST_TEST(element(r.body, "Arn") == "arn:aws:iam::111122223333:instance-profile/web/ip");
+
+    // iam:PassedToService: PassRole is allowed only towards Lambda, so the
+    // EC2 instance profile is refused until it is allowed towards EC2.
+    allow(
+        "ops",
+        R"({"Effect":"Allow","Action":"iam:AddRoleToInstanceProfile","Resource":"*"},)"
+        R"({"Effect":"Allow","Action":"iam:PassRole","Resource":"*","Condition":{"StringEquals":{"iam:PassedToService":"lambda.amazonaws.com"}}})");
+    const auto ops = user("ops");
+    const std::string add = "Action=AddRoleToInstanceProfile&InstanceProfileName=ip&RoleName=r";
+    r = call(ops, add);
+    BOOST_TEST(code_of(r) == "AccessDenied");
+    BOOST_TEST(r.body.find("iam:PassRole") != std::string::npos);
+    (void)c.submit(leader::command(
+        iam_command::put_inline_policy,
+        {{"account", k_account},
+         {"kind", "user"},
+         {"name", "ops"},
+         {"policy_name", "p"},
+         {"document",
+          R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"iam:AddRoleToInstanceProfile","Resource":"*"},{"Effect":"Allow","Action":"iam:PassRole","Resource":"*","Condition":{"StringEquals":{"iam:PassedToService":"ec2.amazonaws.com"},"ArnLike":{"iam:AssociatedResourceArn":"arn:aws:iam::111122223333:instance-profile/web/*"}}}]})"}}));
+    BOOST_TEST(call(ops, add).status == 200U);
+
+    r = as_root("Action=GetInstanceProfile&InstanceProfileName=ip");
+    BOOST_TEST(element(r.body, "RoleName") == "r");
+    r = as_root("Action=ListInstanceProfilesForRole&RoleName=r");
+    BOOST_TEST(element(r.body, "InstanceProfileName") == "ip");
+    BOOST_TEST(count(as_root("Action=ListInstanceProfiles&PathPrefix=%2Fweb%2F").body,
+                     "<InstanceProfileName>") == 1U);
+    // One role per profile, and a role in a profile cannot be deleted.
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r2&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    BOOST_TEST(
+        code_of(as_root("Action=AddRoleToInstanceProfile&InstanceProfileName=ip&RoleName=r2")) ==
+        "LimitExceeded");
+    BOOST_TEST(code_of(as_root("Action=DeleteRole&RoleName=r")) == "DeleteConflict");
+    BOOST_TEST(code_of(as_root("Action=DeleteInstanceProfile&InstanceProfileName=ip")) ==
+               "DeleteConflict");
+
+    BOOST_TEST(as_root("Action=TagInstanceProfile&InstanceProfileName=ip&Tags.member.1.Key=a&"
+                       "Tags.member.1.Value=b")
+                   .status == 200U);
+    BOOST_TEST(count(as_root("Action=ListInstanceProfileTags&InstanceProfileName=ip").body,
+                     "<Key>") == 1U);
+    BOOST_TEST(
+        as_root("Action=UntagInstanceProfile&InstanceProfileName=ip&TagKeys.member.1=a").status ==
+        200U);
+
+    // Removing needs no PassRole; then both deletes succeed.
+    BOOST_TEST(
+        as_root("Action=RemoveRoleFromInstanceProfile&InstanceProfileName=ip&RoleName=r").status ==
+        200U);
+    BOOST_TEST(as_root("Action=DeleteInstanceProfile&InstanceProfileName=ip").status == 200U);
+    BOOST_TEST(as_root("Action=DeleteRole&RoleName=r").status == 200U);
+    BOOST_TEST(code_of(as_root("Action=GetInstanceProfile&InstanceProfileName=ip")) ==
+               "NoSuchEntity");
+}
+
+BOOST_FIXTURE_TEST_CASE(a_role_with_policies_cannot_be_deleted_until_they_are_removed, fixture) {
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    BOOST_TEST(
+        as_root("Action=AttachRolePolicy&RoleName=r&PolicyArn=" + std::string(k_readonly)).status ==
+        200U);
+    BOOST_TEST(as_root("Action=PutRolePolicy&RoleName=r&PolicyName=i&PolicyDocument=" + enc(k_doc))
+                   .status == 200U);
+    BOOST_TEST(code_of(as_root("Action=DeleteRole&RoleName=r")) == "DeleteConflict");
+    BOOST_TEST(count(as_root("Action=ListAttachedRolePolicies&RoleName=r").body,
+                     "<PolicyName>ReadOnlyAccess</PolicyName>") == 1U);
+    BOOST_TEST(count(as_root("Action=ListAttachedRolePolicies&RoleName=r&PathPrefix=%2Fx%2F").body,
+                     "<member>") == 0U);
+    BOOST_TEST(
+        as_root("Action=DetachRolePolicy&RoleName=r&PolicyArn=" + std::string(k_readonly)).status ==
+        200U);
+    BOOST_TEST(as_root("Action=DeleteRolePolicy&RoleName=r&PolicyName=i").status == 200U);
+    BOOST_TEST(as_root("Action=DeleteRole&RoleName=r").status == 200U);
+}
+
+BOOST_FIXTURE_TEST_CASE(task_15_actions_are_authorized_on_their_resources, fixture) {
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    BOOST_TEST(as_root("Action=CreatePolicy&PolicyName=p1&PolicyDocument=" + enc(k_doc)).status ==
+               200U);
+    allow(
+        "reader",
+        R"({"Effect":"Allow","Action":["iam:GetRole","iam:GetPolicy"],"Resource":["arn:aws:iam::111122223333:role/r","arn:aws:iam::111122223333:policy/p1"]})");
+    const auto reader = user("reader");
+    BOOST_TEST(call(reader, "Action=GetRole&RoleName=r").status == 200U);
+    BOOST_TEST(call(reader, "Action=GetPolicy&PolicyArn=" + std::string(k_policy_arn)).status ==
+               200U);
+    BOOST_TEST(code_of(call(reader, "Action=ListRoles")) == "AccessDenied");
+    BOOST_TEST(code_of(call(reader, "Action=DeleteRole&RoleName=r")) == "AccessDenied");
+    // A missing role is authorized first, so it reads as AccessDenied.
+    BOOST_TEST(code_of(call(reader, "Action=GetRole&RoleName=ghost")) == "AccessDenied");
+    BOOST_TEST(code_of(call(reader, "Action=GetPolicy&PolicyArn=" + std::string(k_readonly))) ==
+               "AccessDenied");
+    // Another account's policy is as unknown as a missing one.
+    BOOST_TEST(code_of(as_root("Action=GetPolicy&PolicyArn=arn:aws:iam::444455556666:policy/p1")) ==
+               "NoSuchEntity");
+}
+
+BOOST_FIXTURE_TEST_CASE(policy_versions_page_in_version_order, fixture) {
+    BOOST_TEST(as_root("Action=CreatePolicy&PolicyName=p1&PolicyDocument=" + enc(k_doc)).status ==
+               200U);
+    const auto parn = "&PolicyArn=" + std::string(k_policy_arn);
+    for (int i = 0; i < 4; ++i) {
+        BOOST_TEST(as_root("Action=CreatePolicyVersion" + parn + "&PolicyDocument=" + enc(k_doc2))
+                       .status == 200U);
+    }
+    // A sixth version is LimitExceeded (INV-POL-2).
+    BOOST_TEST(code_of(as_root("Action=CreatePolicyVersion" + parn +
+                               "&PolicyDocument=" + enc(k_doc2))) == "LimitExceeded");
+    std::vector<std::string> seen;
+    std::string marker;
+    for (int i = 0; i < 5; ++i) {
+        const auto r = as_root("Action=ListPolicyVersions" + parn + "&MaxItems=2" +
+                               (marker.empty() ? "" : "&Marker=" + marker));
+        std::string body = r.body;
+        static const std::regex re("<VersionId>([^<]*)</VersionId>");
+        for (auto it = std::sregex_iterator(body.begin(), body.end(), re);
+             it != std::sregex_iterator(); ++it) {
+            seen.push_back((*it)[1].str());
+        }
+        marker = element(r.body, "Marker");
+        if (element(r.body, "IsTruncated") == "false") {
+            break;
+        }
+    }
+    BOOST_TEST(seen == (std::vector<std::string>{"v1", "v2", "v3", "v4", "v5"}),
+               boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_SUITE_END()

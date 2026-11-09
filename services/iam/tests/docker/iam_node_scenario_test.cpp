@@ -84,11 +84,11 @@ os::CmdResult iam_cli(int on, int target, std::initializer_list<std::string> arg
 /// The AWS CLI v2 (compose's `aws-cli` service) against `target`, signing
 /// with `key_id`/`secret`.
 os::CmdResult aws_cli(int target, const std::string& key_id, const std::string& secret,
-                      std::initializer_list<std::string> args) {
+                      const std::vector<std::string>& args) {
     auto cmd = compose_cmd({"--profile", "cli", "run", "--rm", "-T", "-e",
                             "AWS_ACCESS_KEY_ID=" + key_id, "-e", "AWS_SECRET_ACCESS_KEY=" + secret,
                             "aws-cli", "--endpoint-url", endpoint(target), "--output", "json"});
-    cmd.insert(cmd.end(), args);
+    cmd.insert(cmd.end(), args.begin(), args.end());
     return os::real_exec(cmd);
 }
 
@@ -336,6 +336,77 @@ BOOST_AUTO_TEST_CASE(cluster_by_service_name) {
         auto as_user = aws_cli(leader, id, secret, {"iam", "get-user"});
         BOOST_TEST(as_user.code != 0);
         BOOST_TEST(as_user.out.find("AccessDenied") != std::string::npos, as_user.out);
+
+        // Task 15: a customer policy, a role with a trust policy and an
+        // attached policy, and an instance profile holding the role, all
+        // driven by the CLI; then an AWS-managed policy lets the user in.
+        const std::string doc =
+            R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]})";
+        const std::string trust =
+            R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]})";
+        auto pol = aws_cli(
+            leader, root_id, root_secret,
+            {"iam", "create-policy", "--policy-name", "cli-read", "--policy-document", doc});
+        BOOST_REQUIRE_MESSAGE(pol.code == 0, "aws iam create-policy failed:\n" << pol.out);
+        const auto policy_arn = json_field(pol.out, "Policy", "Arn");
+        BOOST_TEST(policy_arn == "arn:aws:iam::111111111111:policy/cli-read");
+        auto role =
+            aws_cli(leader, root_id, root_secret,
+                    {"iam", "create-role", "--role-name", "cli-role",
+                     "--assume-role-policy-document", trust, "--max-session-duration", "7200"});
+        BOOST_REQUIRE_MESSAGE(role.code == 0, "aws iam create-role failed:\n" << role.out);
+        BOOST_TEST(aws_cli(leader, root_id, root_secret,
+                           {"iam", "attach-role-policy", "--role-name", "cli-role", "--policy-arn",
+                            policy_arn})
+                       .code == 0);
+        // The CLI decodes the URL-encoded trust policy back into JSON.
+        auto got =
+            aws_cli(leader, root_id, root_secret, {"iam", "get-role", "--role-name", "cli-role"});
+        BOOST_TEST(got.code == 0, got.out);
+        BOOST_TEST(got.out.find("ec2.amazonaws.com") != std::string::npos, got.out);
+        BOOST_TEST(got.out.find("7200") != std::string::npos, got.out);
+        BOOST_TEST(
+            aws_cli(leader, root_id, root_secret,
+                    {"iam", "create-instance-profile", "--instance-profile-name", "cli-profile"})
+                .code == 0);
+        BOOST_TEST(aws_cli(leader, root_id, root_secret,
+                           {"iam", "add-role-to-instance-profile", "--instance-profile-name",
+                            "cli-profile", "--role-name", "cli-role"})
+                       .code == 0);
+        auto profiles =
+            aws_cli(leader, root_id, root_secret,
+                    {"iam", "list-instance-profiles-for-role", "--role-name", "cli-role"});
+        BOOST_TEST(profiles.out.find("cli-profile") != std::string::npos, profiles.out);
+        auto attached = aws_cli(leader, root_id, root_secret,
+                                {"iam", "list-attached-role-policies", "--role-name", "cli-role"});
+        BOOST_TEST(attached.out.find(policy_arn) != std::string::npos, attached.out);
+        auto blocked = aws_cli(leader, root_id, root_secret,
+                               {"iam", "delete-role", "--role-name", "cli-role"});
+        BOOST_TEST(blocked.out.find("DeleteConflict") != std::string::npos, blocked.out);
+        for (const auto& step : std::vector<std::vector<std::string>>{
+                 {"iam", "remove-role-from-instance-profile", "--instance-profile-name",
+                  "cli-profile", "--role-name", "cli-role"},
+                 {"iam", "delete-instance-profile", "--instance-profile-name", "cli-profile"},
+                 {"iam", "detach-role-policy", "--role-name", "cli-role", "--policy-arn",
+                  policy_arn},
+                 {"iam", "delete-role", "--role-name", "cli-role"},
+                 {"iam", "delete-policy", "--policy-arn", policy_arn}}) {
+            const auto r = aws_cli(leader, root_id, root_secret, step);
+            BOOST_TEST(r.code == 0, step[1] << " failed:\n" << r.out);
+        }
+
+        BOOST_TEST(aws_cli(leader, root_id, root_secret,
+                           {"iam", "attach-user-policy", "--user-name", "cli-user", "--policy-arn",
+                            "arn:aws:iam::aws:policy/IAMReadOnlyAccess"})
+                       .code == 0);
+        BOOST_TEST(
+            eventually([&] { return aws_cli(leader, id, secret, {"iam", "get-user"}).code == 0; },
+                       30s),
+            "IAMReadOnlyAccess did not let cli-user read itself");
+        BOOST_TEST(aws_cli(leader, root_id, root_secret,
+                           {"iam", "detach-user-policy", "--user-name", "cli-user", "--policy-arn",
+                            "arn:aws:iam::aws:policy/IAMReadOnlyAccess"})
+                       .code == 0);
 
         auto off = aws_cli(leader, root_id, root_secret,
                            {"iam", "update-access-key", "--user-name", "cli-user",

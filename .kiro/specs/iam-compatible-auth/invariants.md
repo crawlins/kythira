@@ -58,7 +58,7 @@ Sources: [IAM quotas][quotas], [CreateUser][createuser],
 | INV-NAME-1 | User and role names are 1–64 characters | Tested: sm `entity_name_bounds_per_kind` |
 | INV-NAME-2 | Group, policy and instance-profile names are 1–128 characters | Tested: sm `entity_name_bounds_per_kind` |
 | INV-NAME-3 | Entity names use only `[A-Za-z0-9+=,.@_-]` | Tested: sm `names_paths_and_ids`, `entity_name_bounds_per_kind` |
-| INV-NAME-4 | Inline policy names are 1–128 Basic Latin characters other than `\ / * ?` and white space | Tested: val `inline_policy_names` (the Put*Policy actions that call it arrive with task 15) |
+| INV-NAME-4 | Inline policy names are 1–128 Basic Latin characters other than `\ / * ?` and white space | Tested: val `inline_policy_names`, qa `inline_policies_round_trip_for_users_groups_and_roles` |
 | INV-NAME-5 | Names are unique case-insensitively within an account, for every entity kind | Tested: sm `users_are_case_insensitive`, `names_unique_case_insensitively_for_every_kind`, `versions` (policies) |
 | INV-NAME-6 | Inline policy names are unique per entity, and putting an existing name replaces that policy | Tested: sm `inline_size_quota_is_a_total` |
 | INV-PATH-1 | A path is `/`, or `/…/` of 3–512 printable ASCII characters | Tested: sm `names_paths_and_ids`, `path_bounds` |
@@ -66,7 +66,7 @@ Sources: [IAM quotas][quotas], [CreateUser][createuser],
 | INV-ACCT-1 | An account id is 12 digits | Tested: adm `create_account_validates_and_conflicts` |
 | INV-ACCT-2 | An alias is 3–63 of `[a-z0-9-]`, with no leading, trailing or doubled hyphen, and is not a 12-digit number | Tested: val `account_aliases`, adm `create_account_validates_and_conflicts`, qa `inv_acct_2_aliases_are_validated_set_listed_and_deleted` |
 | INV-ACCT-3 | Aliases are unique | Tested: sm `aliases_are_unique` |
-| INV-ARN-1 | ARN parameters are 20–2048 characters | Tested: val `arn_lengths` |
+| INV-ARN-1 | ARN parameters are 20–2048 characters | Tested: val `arn_lengths`, qa `policy_arn_and_permissions_boundary_reach_the_condition_keys` |
 
 ## Tags
 
@@ -78,7 +78,7 @@ Sources: [Tag][tag], [Tagging IAM resources][idtags], [IAM quotas][quotas].
 | INV-TAG-2 | Keys are 1–128 characters of letters, numbers, spaces and `_ . : / = + - @` | Tested: val `tag_keys_and_values`, qa `inv_tag_bad_tags_fail_the_whole_request` |
 | INV-TAG-3 | Values are 0–256 characters from the same set | Tested: val `tag_keys_and_values`, qa `inv_tag_bad_tags_fail_the_whole_request` |
 | INV-TAG-4 | Neither a key nor a value may begin with `aws:` | Tested: val `tag_keys_and_values`, qa `inv_tag_bad_tags_fail_the_whole_request` |
-| INV-TAG-5 | Keys are case-insensitive on users, roles and STS sessions, keeping the latest spelling, and case-sensitive on every other resource | Tested: val `tag_lists`, sm `tag_key_case_by_resource_kind`, qa `inv_tag_bad_tags_fail_the_whole_request` |
+| INV-TAG-5 | Keys are case-insensitive on users, roles and STS sessions, keeping the latest spelling, and case-sensitive on every other resource | Tested: val `tag_lists`, sm `tag_key_case_by_resource_kind`, qa `inv_tag_bad_tags_fail_the_whole_request`, `a_policy_has_versions_and_is_deleted_only_when_unused` (policy keys) |
 | INV-TAG-6 | One invalid tag fails the whole request, and nothing is created | Tested: val `tag_lists`, sm `tag_quota_on_every_create` (the check runs before any mutation), qa `inv_tag_bad_tags_fail_the_whole_request` |
 
 ## Quotas
@@ -105,13 +105,13 @@ Sources: [CreatePolicyVersion][cpv], [DeletePolicyVersion][dpv],
 
 | Id | Invariant | Status |
 |---|---|---|
-| INV-POL-1 | A PolicyDocument is 1–131072 characters of tab, LF, CR and U+0020–U+00FF | Tested: val `policy_document_characters` |
-| INV-POL-2 | At most 5 versions; a sixth create is LimitExceeded | Tested: sm `versions` |
-| INV-POL-3 | The default version cannot be deleted | Tested: sm `versions` (DeleteConflict) |
+| INV-POL-1 | A PolicyDocument is 1–131072 characters of tab, LF, CR and U+0020–U+00FF | Tested: val `policy_document_characters`, qa `inv_pol_1_policy_documents_are_checked_before_parsing` |
+| INV-POL-2 | At most 5 versions; a sixth create is LimitExceeded | Tested: sm `versions`, qa `policy_versions_page_in_version_order` |
+| INV-POL-3 | The default version cannot be deleted | Tested: sm `versions` (DeleteConflict), qa `a_policy_has_versions_and_is_deleted_only_when_unused` |
 | INV-POL-4 | Version ids are never reused | Tested: sm `versions` |
-| INV-POL-5 | A policy can be deleted only when it is unattached and has no version but the default | Tested: sm `versions`, `attachments_count_and_block_delete` |
-| INV-POL-6 | VersionId matches `v[1-9][0-9]*(\.[A-Za-z0-9-]*)?` | Tested: val `policy_version_ids` |
-| INV-POL-7 | AWS-managed policies cannot be changed or deleted | Tested: sm `aws_managed_policies_are_read_only` |
+| INV-POL-5 | A policy can be deleted only when it is unattached and has no version but the default | Tested: sm `versions`, `attachments_count_and_block_delete`, qa `a_policy_has_versions_and_is_deleted_only_when_unused` |
+| INV-POL-6 | VersionId matches `v[1-9][0-9]*(\.[A-Za-z0-9-]*)?` | Tested: val `policy_version_ids`, qa `inv_pol_6_version_ids_are_checked` |
+| INV-POL-7 | AWS-managed policies cannot be changed or deleted | Tested: sm `aws_managed_policies_are_read_only`, qa `aws_managed_policies_are_listed_and_read_but_not_changed` |
 
 ## Deleting entities
 
@@ -119,8 +119,8 @@ Sources: [CreatePolicyVersion][cpv], [DeletePolicyVersion][dpv],
 |---|---|---|
 | INV-DEL-1 | A user with keys, group memberships, inline or attached policies cannot be deleted (DeleteConflict) | Tested: sm `delete_user_conflicts` |
 | INV-DEL-2 | A group with members, inline or attached policies cannot be deleted | Tested: sm `delete_conflicts_for_groups_and_roles` |
-| INV-DEL-3 | A role with inline or attached policies, or in an instance profile, cannot be deleted | Tested: sm `delete_conflicts_for_groups_and_roles`, `roles_and_instance_profiles`, `attachments_count_and_block_delete` |
-| INV-DEL-4 | An instance profile holding a role cannot be deleted | Tested: sm `roles_and_instance_profiles` |
+| INV-DEL-3 | A role with inline or attached policies, or in an instance profile, cannot be deleted | Tested: sm `delete_conflicts_for_groups_and_roles`, `roles_and_instance_profiles`, `attachments_count_and_block_delete`, qa `a_role_with_policies_cannot_be_deleted_until_they_are_removed`, scn |
+| INV-DEL-4 | An instance profile holding a role cannot be deleted | Tested: sm `roles_and_instance_profiles`, qa `adding_a_role_to_an_instance_profile_needs_pass_role_to_ec2` |
 
 ## Roles
 
@@ -128,9 +128,9 @@ Source: [CreateRole][createrole].
 
 | Id | Invariant | Status |
 |---|---|---|
-| INV-ROLE-1 | MaxSessionDuration is 3600–43200, default 3600 | Tested: val `role_parameters`. Task 15 calls it from CreateRole and UpdateRole. |
-| INV-ROLE-2 | A description is at most 1000 characters from AWS's set | Tested: val `role_parameters` |
-| INV-ROLE-3 | A trust policy must name a Principal and must not name Resource or NotResource | Tested: pol `corpus:parse/policy_types.json` |
+| INV-ROLE-1 | MaxSessionDuration is 3600–43200, default 3600 | Tested: val `role_parameters`; CreateRole and UpdateRole call it: qa `inv_role_1_create_and_update_role_check_max_session_duration` |
+| INV-ROLE-2 | A description is at most 1000 characters from AWS's set | Tested: val `role_parameters`; CreateRole, UpdateRole and UpdateRoleDescription call it: qa `inv_role_2_role_descriptions_are_checked` |
+| INV-ROLE-3 | A trust policy must name a Principal and must not name Resource or NotResource | Tested: pol `corpus:parse/policy_types.json`, qa `trust_policies_are_parsed_as_trust_policies` |
 
 ## Access keys
 
