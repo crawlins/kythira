@@ -7,7 +7,8 @@ transactions. Each ledger is one Raft group on a persistent state machine.
 The spec is `.kiro/specs/verifiable-ledger/`; this directory follows
 `services/README.md`. QLDB wire compatibility is out of scope, but block and
 revision hashing follow QLDB's published conventions, so its verification
-procedure works on Kythira's proofs.
+procedure works on Kythira's proofs. The user and operator guide (model,
+API, limits, verification) is `doc/verifiable_ledger.md`.
 
 Built when `CONFIG_LEDGER=y` (`services/ledger/Kconfig`, off by default). It
 needs ion-c (`CONFIG_ION_SERIALIZER`, the opt-in `ion` vcpkg feature), so
