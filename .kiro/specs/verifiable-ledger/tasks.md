@@ -280,9 +280,10 @@ task is one PR unless noted.
   - `verify` and `prove` (API, data directory, export); optional CA-signed
     digests; metrics and the hash-mismatch alert path; tamper tests
   - _Requirements: 4.5, 9.1-9.3, 11.1, 11.2, 12.3_
-  - Done so far (offline verification and digest signing; metrics, the
-    hash-mismatch alert and `verify` through the API or a live data
-    directory need `ledger_node`, task 7):
+  - Done so far (offline verification, digest signing, and the state
+    machine side of metrics and the hash-mismatch alert; exporting them
+    and `verify` through the API or a live data directory need
+    `ledger_node`, task 7):
     - `journal_verifier` checks blocks in order: sequence, previous hash
       chain, timestamps never running backwards, every revision hash,
       entriesHash, blockHash, and the digest at a saved digest's tip. It
@@ -315,6 +316,15 @@ task is one PR unless noted.
       digests (off by default, which answers design open question 2 for
       now: the node signs when it is given a key). `ledger_ctl --ca`
       requires and checks the signature.
+    - Metrics (11.1) and the alert (11.2), state machine side:
+      `stats()` returns blocks, blocks applied and rejections by code
+      since open (the node derives commit and OCC conflict rates),
+      hash-check failures, unsealed, local and offloaded journal bytes,
+      segment count and indexes still backfilling.
+      `set_hash_mismatch_handler` is called with the block and both
+      hashes before apply throws `ledger_divergence_error`, so the node
+      can log it with its replica id and raise the alert metric. Digest
+      latency is measured by the node.
 
 - [ ] 11. Crash, chaos and docs
   - Failpoint kills during apply, sealing and offload; identical journals

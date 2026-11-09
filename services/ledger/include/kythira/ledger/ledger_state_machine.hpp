@@ -232,6 +232,30 @@ struct block_tip {
     std::int64_t timestamp = 0;
 };
 
+/// A replica's hash check failing (Requirement 3.3): the leader's block
+/// hash and the one this replica computed from the same entry.
+struct ledger_hash_mismatch {
+    std::uint64_t seq = 0;
+    hash256 leader{};
+    hash256 replica{};
+};
+
+/// What a node exports as the ledger's metrics (Requirement 11.1). The
+/// counters run from open() on this replica; the rest is read from the
+/// ledger's state. Commit and conflict rates are the node's rates of
+/// blocks_applied and rejections["occ_conflict"].
+struct ledger_stats {
+    std::uint64_t blocks = 0;                         // in the journal
+    std::uint64_t blocks_applied = 0;                 // committed by this replica since open
+    std::map<std::string, std::uint64_t> rejections;  // by code, since open
+    std::uint64_t hash_mismatches = 0;                // since open
+    std::uint64_t journal_bytes_unsealed = 0;         // blocks still in the engine
+    std::uint64_t journal_bytes_local = 0;            // sealed, with a local copy
+    std::uint64_t journal_bytes_offloaded = 0;        // sealed and in object storage
+    std::size_t segments = 0;
+    std::size_t indexes_building = 0;  // being backfilled
+};
+
 /// A table's catalog record.
 struct table_info {
     std::string name;
@@ -385,6 +409,11 @@ public:
             auto outcome = build_locked(entry);
             if (auto* b = std::get_if<built>(&outcome)) {
                 if (b->blk.block_hash != entry.block_hash) {
+                    ++hash_mismatches_;
+                    if (on_hash_mismatch_) {
+                        on_hash_mismatch_(
+                            ledger_hash_mismatch{entry.seq, entry.block_hash, b->blk.block_hash});
+                    }
                     throw ledger_divergence_error(
                         "ledger block " + std::to_string(entry.seq) + " hash mismatch: leader " +
                         to_hex(entry.block_hash) + ", replica " + to_hex(b->blk.block_hash));
@@ -427,6 +456,13 @@ public:
         if (new_tip) {
             tip_ = new_tip;
         }
+        if (!raw_result) {
+            if (result.committed) {
+                ++blocks_applied_;
+            } else {
+                ++rejections_[result.code];
+            }
+        }
         if (delete_after) {
             std::error_code ignored;
             std::filesystem::remove(*delete_after, ignored);  // load_locked retries
@@ -439,6 +475,58 @@ public:
     [[nodiscard]] auto applied_index() const -> std::uint64_t {
         const std::lock_guard lock(mutex_);
         return applied_;
+    }
+
+    /// Called, on the apply thread and under the state machine's lock,
+    /// when this replica's block hash disagrees with the leader's, before
+    /// apply throws ledger_divergence_error (Requirement 11.2). The node
+    /// logs it with its replica id and raises its alert metric; the
+    /// handler must not call back into the state machine.
+    auto set_hash_mismatch_handler(std::function<void(const ledger_hash_mismatch&)> handler)
+        -> void {
+        const std::lock_guard lock(mutex_);
+        on_hash_mismatch_ = std::move(handler);
+    }
+
+    /// The ledger's metrics now. Reads the unsealed journal, which the
+    /// seal policy keeps under one segment's worth, plus the segment and
+    /// index records.
+    [[nodiscard]] auto stats() const -> ledger_stats {
+        const std::lock_guard lock(mutex_);
+        ledger_stats out;
+        out.blocks = tip_ ? tip_->seq + 1 : 0;
+        out.blocks_applied = blocks_applied_;
+        out.rejections = rejections_;
+        out.hash_mismatches = hash_mismatches_;
+        engine_->scan(kythira::column_family::data, prefix_range(prefix_ + "journal/"),
+                      kythira::scan_direction::forward,
+                      [&out](std::string_view /*key*/, std::string_view value) {
+                          out.journal_bytes_unsealed += value.size();
+                          return true;
+                      });
+        for (const auto& seg : stored_segments()) {
+            ++out.segments;
+            if (seg.object_key) {
+                out.journal_bytes_offloaded += seg.size;
+            }
+            if (!seg.object_key || options_.keep_offloaded_segments) {
+                out.journal_bytes_local += seg.size;
+            }
+        }
+        const std::string from = prefix_ + "meta/table/";
+        std::vector<std::string> names;
+        engine_->scan(kythira::column_family::meta, prefix_range(from),
+                      kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view value) {
+                          names.push_back(table_from(key.substr(from.size()), value).name);
+                          return true;
+                      });
+        for (const auto& t : names) {
+            for (const auto& i : stored_indexes(t)) {
+                out.indexes_building += i.active ? 0U : 1U;
+            }
+        }
+        return out;
     }
 
     [[nodiscard]] auto durable_applied_index() const -> std::uint64_t {
@@ -1969,6 +2057,10 @@ private:
     std::optional<merkle_accumulator<engine_merkle_store<Engine>>> accumulator_;
     std::function<std::optional<std::string>(const std::string&)> fetcher_;
     mutable std::map<std::uint64_t, std::shared_ptr<const std::vector<block>>> segment_cache_;
+    std::function<void(const ledger_hash_mismatch&)> on_hash_mismatch_;
+    std::uint64_t blocks_applied_ = 0;
+    std::map<std::string, std::uint64_t> rejections_;
+    std::uint64_t hash_mismatches_ = 0;
 };
 
 }  // namespace kythira::ledger

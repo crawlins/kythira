@@ -352,9 +352,16 @@ BOOST_AUTO_TEST_CASE(an_offloaded_segment_is_read_back_from_the_object_store) {
     replica follower;
     std::int64_t clock = t0;
     commit_blocks(leader, {&follower}, 6, clock);
+    const auto unsealed_before = leader.sm->stats().journal_bytes_unsealed;
     const auto seal = to_command(encode_seal({0, 3}));
     BOOST_TEST(status_of(leader.apply(seal)) == "sealed");
     BOOST_TEST(status_of(follower.apply(seal)) == "sealed");
+    auto stats = leader.sm->stats();
+    BOOST_TEST(stats.segments == 1U);
+    BOOST_TEST(stats.journal_bytes_local == leader.sm->segments().at(0).size);
+    BOOST_TEST(stats.journal_bytes_offloaded == 0U);
+    BOOST_TEST(stats.journal_bytes_unsealed < unsealed_before);
+    BOOST_TEST(stats.blocks == 6U);
 
     memory_store store;
     const segment_offload_target target{"bucket", "ledgers/audit/segments/"};
@@ -369,6 +376,9 @@ BOOST_AUTO_TEST_CASE(an_offloaded_segment_is_read_back_from_the_object_store) {
     BOOST_TEST(status_of(leader.apply(offload)) == "offloaded");
     BOOST_TEST(status_of(follower.apply(offload)) == "offloaded");
     BOOST_TEST(leader.sm->segments().at(0).object_key.value_or("") == key);
+    stats = leader.sm->stats();
+    BOOST_TEST(stats.journal_bytes_local == 0U);
+    BOOST_TEST(stats.journal_bytes_offloaded == seg.size);
 
     // Both local copies are gone; reads fetch the object.
     BOOST_TEST(!std::filesystem::exists(leader.options.segment_directory / seg.file));

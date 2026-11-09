@@ -409,6 +409,51 @@ BOOST_AUTO_TEST_CASE(table_lifecycle) {
     BOOST_TEST(all[1].name == "u");
 }
 
+BOOST_AUTO_TEST_CASE(a_hash_mismatch_is_reported_and_counted) {
+    fixture f;
+    std::vector<ledger_hash_mismatch> seen;
+    f.sm.set_hash_mismatch_handler([&seen](const ledger_hash_mismatch& m) { seen.push_back(m); });
+    f.run({statements::create_table("t")});
+    auto p = f.prepare({statements::insert("t", new_id(), doc("{a: 1}"))});
+    BOOST_REQUIRE(p.entry.has_value());
+    auto tampered = *p.entry;
+    tampered.block_hash[0] ^= 0x80U;
+    BOOST_CHECK_THROW(f.sm.apply(to_bytes(encode_entry(tampered)), f.index + 1),
+                      ledger_divergence_error);
+    BOOST_REQUIRE_EQUAL(seen.size(), 1U);
+    BOOST_TEST(seen[0].seq == p.entry->seq);
+    BOOST_TEST(seen[0].leader == tampered.block_hash);
+    BOOST_TEST(seen[0].replica == p.entry->block_hash);  // what the leader should have sent
+    BOOST_TEST(f.sm.stats().hash_mismatches == 1U);
+}
+
+BOOST_AUTO_TEST_CASE(stats_count_blocks_rejections_and_indexes) {
+    fixture f;
+    auto s = f.sm.stats();
+    BOOST_TEST(s.blocks == 0U);
+    BOOST_TEST(s.journal_bytes_unsealed == 0U);
+    const auto a = new_id();
+    BOOST_REQUIRE(f.run({statements::create_table("t"), statements::insert("t", a, doc("{n: 1}"))})
+                      .committed);
+    BOOST_REQUIRE(!f.run({statements::insert("t", a, doc("{n: 2}"))}).committed);  // exists
+    // A rejection from prepare never reaches apply, so feed one through apply:
+    // an entry prepared against the old tip goes stale once another applies.
+    auto stale = f.prepare({statements::replace("t", a, doc("{n: 3}"))});
+    BOOST_REQUIRE(f.run({statements::replace("t", a, doc("{n: 4}"))}).committed);
+    BOOST_REQUIRE(!f.apply(stale.command).committed);
+    BOOST_REQUIRE(f.run({statements::create_index("t", "by_n", {std::string("n")})}).committed);
+
+    s = f.sm.stats();
+    BOOST_TEST(s.blocks == 3U);
+    BOOST_TEST(s.blocks_applied == 3U);
+    BOOST_TEST(s.rejections["stale_block"] == 1U);
+    BOOST_TEST(s.hash_mismatches == 0U);
+    BOOST_TEST(s.journal_bytes_unsealed > 0U);
+    BOOST_TEST(s.segments == 0U);
+    BOOST_TEST(s.journal_bytes_local == 0U);
+    BOOST_TEST(s.indexes_building == 1U);  // a non-empty table backfills first
+}
+
 BOOST_AUTO_TEST_CASE(a_rejected_transaction_writes_nothing_but_the_applied_index) {
     fixture f;
     const auto a = new_id();
