@@ -17,7 +17,9 @@ set(KYTHIRA_DYNAMODB_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(KYTHIRA_DYNAMODB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 add_library(kythira_dynamodb INTERFACE)
 target_include_directories(kythira_dynamodb INTERFACE "${KYTHIRA_DYNAMODB_INCLUDE_DIR}")
-target_link_libraries(kythira_dynamodb INTERFACE kythira_core_headers boost_json)
+# OpenSSL for SigV4 (front_end.hpp through core's sigv4_verifier).
+target_link_libraries(kythira_dynamodb INTERFACE kythira_core_headers boost_json
+    OpenSSL::SSL OpenSSL::Crypto)
 target_compile_features(kythira_dynamodb INTERFACE cxx_std_23)
 
 # The tests, under the guard the top level enters tests/ with. tests/

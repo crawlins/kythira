@@ -32,9 +32,10 @@ inline constexpr std::string_view k_streams_target_prefix = "DynamoDBStreams_201
 /// `aws_json::error_style::coral`.
 inline constexpr std::string_view k_dynamodb_error_namespace = "com.amazonaws.dynamodb.v20120810";
 
-/// Implemented DynamoDB operations. None yet: task 4 adds
-/// DescribeEndpoints, task 7 the control plane and single-item API.
-inline constexpr std::array<std::string_view, 0> k_implemented_dynamodb_operations{};
+/// Implemented DynamoDB operations: DescribeEndpoints (task 4, built into
+/// the front end). Task 7 adds the control plane and single-item API.
+inline constexpr std::array<std::string_view, 1> k_implemented_dynamodb_operations{
+    "DescribeEndpoints"};
 
 /// Implemented DynamoDB Streams operations (task 16).
 inline constexpr std::array<std::string_view, 0> k_implemented_streams_operations{};
