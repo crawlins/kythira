@@ -372,7 +372,7 @@ inline auto configuration_entries(const test_node& n)
 /// or not, which the cases then add.
 class cluster {
 public:
-    explicit cluster(kythira::raft_configuration cfg = make_fast_config()) : _cfg(cfg) {
+    explicit cluster(kythira::raft_configuration cfg = make_fast_config()) : _cfg(std::move(cfg)) {
         _sim.start();
         for (std::uint64_t id : {1u, 2u, 3u}) {
             create(id);

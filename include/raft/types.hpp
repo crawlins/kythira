@@ -13,6 +13,7 @@
 #include <raft/peer2peer_replication.hpp>
 #include <concepts>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -901,6 +902,17 @@ struct raft_configuration {
     /// it asks the state machine to sync first, if it can
     /// (`sync_durable()`). 0 never syncs (Requirement 3.3).
     std::size_t _persistent_sync_lag_entries{0};
+    /// Persistent state machines only (`.kiro/specs/file-install-snapshot/`
+    /// Requirement 3): where a follower stages the files of an incoming
+    /// snapshot before the state machine ingests them. It should be on the
+    /// same filesystem as the engine's data, so ingest can link instead of
+    /// copy. Each group needs its own; empty refuses every format-1 transfer
+    /// with `io_error`. The node owns the `kythira-staging-*` entries in it
+    /// and deletes them at start (Requirement 3.5).
+    std::filesystem::path _snapshot_staging_directory{};
+    /// Free space a follower requires beyond a snapshot's size before it
+    /// stages one (Requirement 3.1).
+    std::uint64_t _snapshot_disk_margin_bytes{64ULL * 1024 * 1024};
 
     // ── Retry policies ────────────────────────────────────────────────────────
     retry_policy_config _heartbeat_retry_policy{.initial_delay = std::chrono::milliseconds{50},
@@ -1036,6 +1048,12 @@ struct raft_configuration {
     }
     [[nodiscard]] auto persistent_sync_lag_entries() const -> std::size_t {
         return _persistent_sync_lag_entries;
+    }
+    [[nodiscard]] auto snapshot_staging_directory() const -> const std::filesystem::path& {
+        return _snapshot_staging_directory;
+    }
+    [[nodiscard]] auto snapshot_disk_margin_bytes() const -> std::uint64_t {
+        return _snapshot_disk_margin_bytes;
     }
     [[nodiscard]] auto heartbeat_retry_policy() const -> const retry_policy_config& {
         return _heartbeat_retry_policy;

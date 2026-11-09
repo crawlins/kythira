@@ -19,6 +19,7 @@
 
 #include <raft/future_default.hpp>
 #include <raft/persistent_state_machine.hpp>
+#include <raft/snapshot_stream.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/configuration_synchronizer.hpp>
@@ -47,6 +48,7 @@
 #include <condition_variable>
 #include <stop_token>
 #include <thread>
+#include <variant>
 
 namespace kythira {
 
@@ -1006,6 +1008,20 @@ private:
     std::vector<std::byte> _snapshot_buffer;
     bool _snapshot_buffer_open{false};
 
+    // The format-1 transfer a persistent follower is staging, guarded by
+    // `_mutex` (file-install-snapshot Requirement 3). `leader_term` is the
+    // term of the leader sending it, so a new leader's transfer replaces it
+    // (Requirement 3.4). A byte-buffer node has no slot: naming the writer
+    // there would pull its SHA-256 code into every node.
+    struct format1_transfer {
+        std::unique_ptr<snapshot_stream_writer> writer;
+        log_index_type index{};
+        term_id_type term{};
+        term_id_type leader_term{};
+    };
+    std::conditional_t<k_persistent_state, std::optional<format1_transfer>, std::monostate>
+        _format1_transfer{};
+
     // Configuration synchronizer for safe configuration changes. Its internal
     // "did this phase commit" signal is bool-valued, distinct from
     // future_type/promise_type above (which are std::vector<std::byte>-valued,
@@ -1602,6 +1618,9 @@ private:
     // not the state, which stays in the engine (Requirement 3.2). Restart
     // checks for it so a byte-buffer snapshot is never taken for metadata.
     static auto persistent_snapshot_marker() -> const std::vector<std::byte>&;
+    // Names of the staging directories a node owns under
+    // snapshot_staging_directory (file-install-snapshot Requirement 3.5).
+    static constexpr std::string_view k_snapshot_staging_prefix = "kythira-staging-";
     // Whether this group compacts its log (the config's
     // persistent_log_compaction, Requirement 10.2).
     [[nodiscard]] auto persistent_compaction_enabled() const -> bool;
@@ -1614,6 +1633,31 @@ private:
     // raft_persistent_apply_lag: last_applied minus the durable applied index
     // (Requirement 3.4).
     auto emit_persistent_apply_lag() -> void;
+
+    // ── Format-1 InstallSnapshot, follower side (.kiro/specs/file-install-snapshot/) ──
+    //
+    // A response carrying `reason` and `bytes_received` when the response
+    // type has those fields (format 0's rejections gain codes too, design
+    // "Reject reasons").
+    [[nodiscard]] auto install_snapshot_response_locked(
+        std::optional<install_snapshot_reject_reason> reason = std::nullopt,
+        std::optional<std::uint64_t> bytes_received = std::nullopt) const
+        -> install_snapshot_response_type;
+    auto emit_install_snapshot_rejected(install_snapshot_reject_reason reason) -> void;
+    // handle_install_snapshot() for a persistent group, after the term rules:
+    // stages each chunk with snapshot_stream_writer and ingests on `done`
+    // (Requirements 3 and 4).
+    auto handle_format1_install_snapshot_locked(const install_snapshot_request_type& request)
+        -> install_snapshot_response_type;
+    // Drops the staging transfer in progress and deletes its directory.
+    auto abandon_format1_transfer_locked(std::string_view why) -> void;
+    // Deletes staging directories a crash left behind (Requirement 3.5).
+    auto remove_stale_staging_directories() -> void;
+    // Rules 6-9 of InstallSnapshot once the state is in place: the log
+    // retention rule, the indices, the saved snapshot and the durability
+    // watermark. Shared by both formats.
+    auto complete_snapshot_install_locked(const snapshot_type& snap, std::size_t installed_bytes)
+        -> void;
 
     // ── Peer-to-peer catch-up helpers (.kiro/specs/peer2peer-log-replication/) ──
 
@@ -5613,11 +5657,13 @@ auto node<Types>::initialize_from_storage() -> void {
                              {"applied_index", std::to_string(applied)},
                              {"last_log_index", std::to_string(get_last_log_index())}});
         }
+        // file-install-snapshot Requirement 3.5.
+        remove_stale_staging_directories();
         if (!persistent_compaction_enabled() && !_persistent_compaction_off_logged) {
             _persistent_compaction_off_logged = true;
             _logger.info(
-                "Persistent state machine: log compaction is off and InstallSnapshot is "
-                "refused until file-install-snapshot sending lands",
+                "Persistent state machine: log compaction is off until the leader can send "
+                "format-1 snapshots (file-install-snapshot task 5)",
                 {{"node_id", node_id_to_string(_node_id)}});
         }
     }
@@ -6441,13 +6487,8 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
                        {"request_term", std::to_string(request.term())},
                        {"current_term", std::to_string(_current_term)}});
 
-        _metrics.set_metric_name("raft_install_snapshot_rejected");
-        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_dimension("reason", "stale_term");
-        _metrics.add_one();
-        _metrics.emit();
-
-        return install_snapshot_response_type{_current_term};
+        emit_install_snapshot_rejected(install_snapshot_reject_reason::stale_term);
+        return install_snapshot_response_locked(install_snapshot_reject_reason::stale_term);
     }
 
     // Rule 2: If request term > current term, update current term and become follower
@@ -6463,25 +6504,22 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // Reset election timer on valid InstallSnapshot
     reset_election_timer();
 
-    // persistent-state-machine Requirement 10.2: a persistent group cannot
-    // install a snapshot until format-1 transfers land
-    // (.kiro/specs/file-install-snapshot/). Refusing keeps its state intact;
-    // its leader keeps the log, so AppendEntries can still catch it up.
+    // A persistent group takes format-1 transfers only, staged as files and
+    // ingested by its state machine (file-install-snapshot Requirements 3
+    // and 4); a byte-buffer group takes format 0 only (Requirement 4.3).
     if constexpr (k_persistent_state) {
-        _logger.warning("Refusing InstallSnapshot: persistent group",
-                        {{"node_id", node_id_to_string(_node_id)},
-                         {"from_leader", node_id_to_string(request.leader_id())},
-                         {"last_included_index", std::to_string(request.last_included_index())}});
-        _metrics.set_metric_name("raft_install_snapshot_rejected");
-        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_dimension("reason", "persistent_group");
-        _metrics.add_one();
-        _metrics.emit();
-        install_snapshot_response_type response{_current_term};
-        if constexpr (requires { response._reject_reason; }) {
-            response._reject_reason = install_snapshot_reject_reason::format_mismatch;
+        return handle_format1_install_snapshot_locked(request);
+    }
+    if constexpr (requires { request.format(); }) {
+        if (request.format() != install_snapshot_format::byte_buffer) {
+            _logger.warning("Rejecting InstallSnapshot: format 1 sent to a byte-buffer group",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"from_leader", node_id_to_string(request.leader_id())},
+                             {"format", std::to_string(request.format())}});
+            emit_install_snapshot_rejected(install_snapshot_reject_reason::format_mismatch);
+            return install_snapshot_response_locked(
+                install_snapshot_reject_reason::format_mismatch);
         }
-        return response;
     }
 
     // Rule 3: Create new snapshot file if first chunk (offset is 0)
@@ -6516,13 +6554,9 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
                           {{"node_id", node_id_to_string(_node_id)},
                            {"offset", std::to_string(request.offset())}});
 
-            _metrics.set_metric_name("raft_install_snapshot_rejected");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("reason", "missing_first_chunk");
-            _metrics.add_one();
-            _metrics.emit();
-
-            return install_snapshot_response_type{_current_term};
+            emit_install_snapshot_rejected(install_snapshot_reject_reason::missing_first_chunk);
+            return install_snapshot_response_locked(
+                install_snapshot_reject_reason::missing_first_chunk);
         }
 
         auto& buffer = _snapshot_buffer;
@@ -6533,13 +6567,9 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
                            {"expected_offset", std::to_string(buffer.size())},
                            {"actual_offset", std::to_string(request.offset())}});
 
-            _metrics.set_metric_name("raft_install_snapshot_rejected");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("reason", "offset_mismatch");
-            _metrics.add_one();
-            _metrics.emit();
-
-            return install_snapshot_response_type{_current_term};
+            emit_install_snapshot_rejected(install_snapshot_reject_reason::offset_mismatch);
+            return install_snapshot_response_locked(install_snapshot_reject_reason::offset_mismatch,
+                                                    buffer.size());
         }
 
         // Append chunk data
@@ -6574,13 +6604,8 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         _snapshot_buffer.shrink_to_fit();
         _snapshot_buffer_open = false;
 
-        _metrics.set_metric_name("raft_install_snapshot_rejected");
-        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_dimension("reason", "stale_snapshot");
-        _metrics.add_one();
-        _metrics.emit();
-
-        return install_snapshot_response_type{_current_term};
+        emit_install_snapshot_rejected(install_snapshot_reject_reason::stale_snapshot);
+        return install_snapshot_response_locked(install_snapshot_reject_reason::stale_snapshot);
     }
 
     // Rule 5: Save snapshot file, discard any existing or partial snapshot with smaller index
@@ -6598,19 +6623,32 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         _configuration,  // Use current configuration (leader will send updated config if needed)
         complete_snapshot_data};
 
+    complete_snapshot_install_locked(snap, _snapshot_buffer.size());
+
+    _snapshot_buffer.clear();
+    _snapshot_buffer.shrink_to_fit();
+    _snapshot_buffer_open = false;
+
+    // Rule 9: Reply with current term
+    return install_snapshot_response_type{_current_term};
+}
+
+template<raft_types Types>
+auto node<Types>::complete_snapshot_install_locked(const snapshot_type& snap,
+                                                   std::size_t installed_bytes) -> void {
     // Rule 6: If existing log entry has same index and term as snapshot's last included entry,
     // retain log entries following it and reply
     bool retain_log = false;
-    if (request.last_included_index() <= get_last_log_index()) {
-        auto entry_at_snapshot_index = get_log_entry(request.last_included_index());
+    if (snap.last_included_index() <= get_last_log_index()) {
+        auto entry_at_snapshot_index = get_log_entry(snap.last_included_index());
         if (entry_at_snapshot_index.has_value() &&
-            entry_at_snapshot_index->term() == request.last_included_term()) {
+            entry_at_snapshot_index->term() == snap.last_included_term()) {
             // Log entry matches snapshot - retain entries after snapshot
             retain_log = true;
 
             _logger.debug("Retaining log entries after snapshot",
                           {{"node_id", node_id_to_string(_node_id)},
-                           {"snapshot_index", std::to_string(request.last_included_index())},
+                           {"snapshot_index", std::to_string(snap.last_included_index())},
                            {"last_log_index", std::to_string(get_last_log_index())}});
         }
     }
@@ -6629,7 +6667,7 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         _logger.info("Discarding entire log for snapshot installation",
                      {{"node_id", node_id_to_string(_node_id)},
                       {"old_log_size", std::to_string(_log.size())},
-                      {"snapshot_index", std::to_string(request.last_included_index())}});
+                      {"snapshot_index", std::to_string(snap.last_included_index())}});
 
         _log.clear();
         _persistence.truncate_log(1);  // Clear all log entries
@@ -6640,12 +6678,12 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         // truncate_log(last_included_index + 1), which deletes entries >= that
         // index — i.e. exactly the entries being retained — so they vanished
         // from disk and were lost on the next restart.)
-        _persistence.delete_log_entries_before(request.last_included_index() + 1);
+        _persistence.delete_log_entries_before(snap.last_included_index() + 1);
     }
 
     // Update commit index and last applied to snapshot's last included index
-    _commit_index = std::max(_commit_index, request.last_included_index());
-    _last_applied = request.last_included_index();
+    _commit_index = std::max(_commit_index, snap.last_included_index());
+    _last_applied = snap.last_included_index();
 
     // Persist snapshot
     _persistence.save_snapshot(snap);
@@ -6657,23 +6695,16 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // entries above it keep whatever durability they already had rather than
     // being credited with the snapshot's.
     _durable_log_index =
-        std::max(request.last_included_index(), std::min(_durable_log_index, get_last_log_index()));
+        std::max(snap.last_included_index(), std::min(_durable_log_index, get_last_log_index()));
     // Sequences of entries the snapshot covers or the truncation removed are
     // discarded by the engine; none may be barriered on again.
     _undurable_seqs.erase(_undurable_seqs.upper_bound(get_last_log_index()), _undurable_seqs.end());
     _undurable_seqs.erase(_undurable_seqs.begin(), _undurable_seqs.upper_bound(_durable_log_index));
 
-    // Clean up snapshot buffer. Copied out first: `complete_snapshot_data` is a
-    // reference INTO it, and the metric below still reads the size.
-    const auto installed_bytes = _snapshot_buffer.size();
-    _snapshot_buffer.clear();
-    _snapshot_buffer.shrink_to_fit();
-    _snapshot_buffer_open = false;
-
     _logger.info("Successfully installed snapshot",
                  {{"node_id", node_id_to_string(_node_id)},
-                  {"last_included_index", std::to_string(request.last_included_index())},
-                  {"last_included_term", std::to_string(request.last_included_term())},
+                  {"last_included_index", std::to_string(snap.last_included_index())},
+                  {"last_included_term", std::to_string(snap.last_included_term())},
                   {"commit_index", std::to_string(_commit_index)},
                   {"last_applied", std::to_string(_last_applied)},
                   {"remaining_log_entries", std::to_string(_log.size())}});
@@ -6683,9 +6714,298 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     _metrics.add_dimension("snapshot_size", std::to_string(installed_bytes));
     _metrics.add_one();
     _metrics.emit();
+}
 
-    // Rule 9: Reply with current term
-    return install_snapshot_response_type{_current_term};
+template<raft_types Types>
+auto node<Types>::install_snapshot_response_locked(
+    std::optional<install_snapshot_reject_reason> reason,
+    std::optional<std::uint64_t> bytes_received) const -> install_snapshot_response_type {
+    install_snapshot_response_type response{_current_term};
+    if constexpr (requires {
+                      response._reject_reason;
+                      response._bytes_received;
+                  }) {
+        response._reject_reason = reason;
+        response._bytes_received = bytes_received;
+    }
+    return response;
+}
+
+template<raft_types Types>
+auto node<Types>::emit_install_snapshot_rejected(install_snapshot_reject_reason reason) -> void {
+    _metrics.set_metric_name("raft_install_snapshot_rejected");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("reason", std::string(to_string(reason)));
+    _metrics.add_one();
+    _metrics.emit();
+}
+
+template<raft_types Types>
+auto node<Types>::abandon_format1_transfer_locked(std::string_view why) -> void {
+    if constexpr (k_persistent_state) {
+        if (!_format1_transfer.has_value()) {
+            return;
+        }
+        const auto dir = _format1_transfer->writer->directory();
+        _logger.info(
+            "Abandoning staged snapshot transfer",
+            {{"node_id", node_id_to_string(_node_id)},
+             {"last_included_index", std::to_string(_format1_transfer->index)},
+             {"last_included_term", std::to_string(_format1_transfer->term)},
+             {"bytes_received", std::to_string(_format1_transfer->writer->bytes_received())},
+             {"why", std::string(why)}});
+        _format1_transfer.reset();
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        if (ec) {
+            _logger.warning("Could not delete a snapshot staging directory",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"directory", dir.string()},
+                             {"error", ec.message()}});
+        }
+    } else {
+        (void)why;
+    }
+}
+
+template<raft_types Types> auto node<Types>::remove_stale_staging_directories() -> void {
+    const auto& root = _config.snapshot_staging_directory();
+    if (root.empty()) {
+        return;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(root, ec)) {
+        return;
+    }
+    std::size_t removed = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
+        if (entry.path().filename().string().starts_with(k_snapshot_staging_prefix)) {
+            std::error_code rm;
+            std::filesystem::remove_all(entry.path(), rm);
+            if (rm) {
+                _logger.warning("Could not delete a snapshot staging directory",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"directory", entry.path().string()},
+                                 {"error", rm.message()}});
+            } else {
+                ++removed;
+            }
+        }
+    }
+    if (removed > 0) {
+        _logger.info("Deleted snapshot staging directories left by an earlier run",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"count", std::to_string(removed)},
+                      {"directory", root.string()}});
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::handle_format1_install_snapshot_locked(
+    const install_snapshot_request_type& request) -> install_snapshot_response_type {
+    if constexpr (!k_persistent_state) {
+        (void)request;
+        throw std::logic_error("format-1 InstallSnapshot on a byte-buffer group");
+    } else {
+        static_assert(
+            requires {
+                request.format();
+                request.manifest();
+            },
+            "a persistent state machine needs an InstallSnapshot request with format() and "
+            "manifest() (file-install-snapshot Requirement 1)");
+
+        const auto index = request.last_included_index();
+        const auto term = request.last_included_term();
+        const auto received = [&]() -> std::optional<std::uint64_t> {
+            if (_format1_transfer.has_value()) {
+                return _format1_transfer->writer->bytes_received();
+            }
+            return std::nullopt;
+        };
+        const auto reject = [&](install_snapshot_reject_reason reason, const std::string& detail) {
+            _logger.warning("Rejecting format-1 InstallSnapshot",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"reason", std::string(to_string(reason))},
+                             {"detail", detail},
+                             {"last_included_index", std::to_string(index)},
+                             {"offset", std::to_string(request.offset())}});
+            emit_install_snapshot_rejected(reason);
+            return install_snapshot_response_locked(reason, received());
+        };
+        // Whether the request belongs to a newer transfer than the staged
+        // one: a newer leader, or the same leader's later snapshot.
+        const auto newer_than_staged = [&]() {
+            const auto& t = *_format1_transfer;
+            if (request.term() != t.leader_term) {
+                return request.term() > t.leader_term;
+            }
+            return std::pair{index, term} > std::pair{t.index, t.term};
+        };
+        const auto same_as_staged = [&]() {
+            const auto& t = *_format1_transfer;
+            return request.term() == t.leader_term && index == t.index && term == t.term;
+        };
+
+        // Requirement 4.3.
+        if (request.format() != install_snapshot_format::file_set) {
+            return reject(install_snapshot_reject_reason::format_mismatch,
+                          "a persistent group installs format-1 snapshots only");
+        }
+        if (_config.snapshot_staging_directory().empty()) {
+            return reject(install_snapshot_reject_reason::io_error,
+                          "no snapshot_staging_directory is configured");
+        }
+
+        // Run a step of the writer, turning its failures into rejections. A
+        // checksum or I/O failure poisons the staged files, so the transfer
+        // is abandoned; an offset mismatch leaves it, so the leader can go on
+        // from bytes_received.
+        std::optional<install_snapshot_response_type> failure;
+        const auto guarded = [&](auto&& step) -> bool {
+            try {
+                step();
+                return true;
+            } catch (const snapshot_stream_error& e) {
+                const auto r = e.reason();
+                if (r != install_snapshot_reject_reason::offset_mismatch) {
+                    abandon_format1_transfer_locked(e.what());
+                }
+                failure = reject(r, e.what());
+            } catch (const snapshot_manifest_error& e) {
+                abandon_format1_transfer_locked(e.what());
+                failure = reject(install_snapshot_reject_reason::manifest_invalid, e.what());
+            } catch (const std::exception& e) {
+                abandon_format1_transfer_locked(e.what());
+                failure = reject(install_snapshot_reject_reason::io_error, e.what());
+            }
+            return false;
+        };
+
+        if (request.offset() == 0) {
+            // A first chunk starts a transfer. A stale one is refused before
+            // anything is written (the same rule format 0 applies on `done`).
+            if (index <= _commit_index) {
+                return reject(install_snapshot_reject_reason::stale_snapshot,
+                              "at or below commit index " + std::to_string(_commit_index));
+            }
+            if (_format1_transfer.has_value()) {
+                if (!same_as_staged() && !newer_than_staged()) {
+                    // A delayed first chunk of an older transfer.
+                    return reject(install_snapshot_reject_reason::stale_snapshot,
+                                  "older than the transfer being staged");
+                }
+                // Requirement 3.4 for a newer transfer; for the same one, the
+                // leader started over, so the staged prefix goes too.
+                abandon_format1_transfer_locked(same_as_staged() ? "the leader restarted it"
+                                                                 : "a newer transfer started");
+            }
+            const auto& encoded = request.manifest();
+            if (encoded.empty()) {
+                return reject(install_snapshot_reject_reason::manifest_invalid,
+                              "the first chunk carries no manifest");
+            }
+            std::optional<snapshot_manifest> manifest;
+            if (!guarded([&] {
+                    manifest = snapshot_manifest::decode(std::string_view(
+                        reinterpret_cast<const char*>(encoded.data()), encoded.size()));
+                })) {
+                return *failure;
+            }
+            const auto digest = manifest->digest();
+            std::string tag;
+            for (std::size_t i = 0; i < 8; ++i) {
+                tag += std::format("{:02x}", digest[i]);
+            }
+            const auto dir = _config.snapshot_staging_directory() /
+                             std::format("{}{}-{}-{}", k_snapshot_staging_prefix, index, term, tag);
+            snapshot_stream_writer_options options;
+            options.disk_margin_bytes = _config.snapshot_disk_margin_bytes();
+            std::unique_ptr<snapshot_stream_writer> writer;
+            if (!guarded([&] {
+                    std::filesystem::create_directories(_config.snapshot_staging_directory());
+                    // A directory of this name can only be the leftover of an
+                    // abandoned identical transfer whose delete failed.
+                    std::filesystem::remove_all(dir);
+                    writer = snapshot_stream_writer::create(dir, std::move(*manifest), options);
+                })) {
+                return *failure;
+            }
+            _format1_transfer.emplace(
+                format1_transfer{std::move(writer), index, term, request.term()});
+            _logger.info(
+                "Started staging a format-1 snapshot",
+                {{"node_id", node_id_to_string(_node_id)},
+                 {"last_included_index", std::to_string(index)},
+                 {"last_included_term", std::to_string(term)},
+                 {"total_bytes", std::to_string(_format1_transfer->writer->total_bytes())},
+                 {"files", std::to_string(_format1_transfer->writer->manifest().files.size())},
+                 {"directory", dir.string()}});
+        } else if (!_format1_transfer.has_value()) {
+            return reject(install_snapshot_reject_reason::missing_first_chunk,
+                          "no transfer is being staged");
+        } else if (!same_as_staged()) {
+            if (!newer_than_staged()) {
+                return reject(install_snapshot_reject_reason::stale_snapshot,
+                              "older than the transfer being staged");
+            }
+            abandon_format1_transfer_locked("a newer transfer started");
+            return reject(install_snapshot_reject_reason::missing_first_chunk,
+                          "a newer transfer must start from offset 0");
+        }
+
+        auto& transfer = *_format1_transfer;
+        if (!guarded([&] { transfer.writer->write(request.offset(), request.data()); })) {
+            return *failure;
+        }
+
+        // Rule 4: more to come.
+        if (!request.done()) {
+            return install_snapshot_response_locked(std::nullopt,
+                                                    _format1_transfer->writer->bytes_received());
+        }
+
+        if (!_format1_transfer->writer->complete()) {
+            return reject(install_snapshot_reject_reason::offset_mismatch,
+                          "done before the stream is complete");
+        }
+        // Rule 5's staleness check, as format 0 applies it: the commit index
+        // may have moved past the snapshot while it streamed.
+        if (index <= _commit_index) {
+            abandon_format1_transfer_locked("stale on completion");
+            emit_install_snapshot_rejected(install_snapshot_reject_reason::stale_snapshot);
+            return install_snapshot_response_locked(install_snapshot_reject_reason::stale_snapshot);
+        }
+        if (!guarded([&] { _format1_transfer->writer->finish(); })) {
+            return *failure;
+        }
+
+        // Requirement 4.1: ingest under the node mutex, then the metadata
+        // snapshot and the log rule. A crash between the two is safe
+        // (Requirement 4.2): restart takes the applied index from the
+        // engine, which already says `index`.
+        const auto dir = _format1_transfer->writer->directory();
+        const auto total = _format1_transfer->writer->total_bytes();
+        _logger.info("Installing staged format-1 snapshot",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"last_included_index", std::to_string(index)},
+                      {"last_included_term", std::to_string(term)},
+                      {"total_bytes", std::to_string(total)}});
+        if (!guarded([&] {
+                _state_machine.ingest(dir, _format1_transfer->writer->manifest(), index);
+            })) {
+            return *failure;
+        }
+        snapshot_type snap{index, term, _configuration, persistent_snapshot_marker()};
+        try {
+            complete_snapshot_install_locked(snap, static_cast<std::size_t>(total));
+        } catch (...) {
+            abandon_format1_transfer_locked("install failed after ingest");
+            throw;
+        }
+        abandon_format1_transfer_locked("installed");
+        return install_snapshot_response_locked(std::nullopt, total);
+    }
 }
 
 template<raft_types Types>
@@ -9878,12 +10198,16 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
                   {"snapshot_size", std::to_string(snap.state_machine_state().size())}});
 
     try {
-        // Restore state machine from snapshot. handle_install_snapshot refuses
-        // every chunk for a persistent group, so it never gets here.
+        // Restore state machine from snapshot. A persistent group's state
+        // machine has already ingested the staged files
+        // (handle_format1_install_snapshot_locked); its snapshot is the
+        // metadata marker.
         if constexpr (k_persistent_state) {
-            throw std::logic_error(
-                "install_snapshot: a persistent group cannot install a "
-                "byte-buffer snapshot");
+            if (snap.state_machine_state() != persistent_snapshot_marker()) {
+                throw std::logic_error(
+                    "install_snapshot: a persistent group cannot install a "
+                    "byte-buffer snapshot");
+            }
         } else {
             _state_machine.restore_from_snapshot(snap.state_machine_state(),
                                                  snap.last_included_index());

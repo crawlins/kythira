@@ -53,6 +53,17 @@ current list of outstanding work, see [TODO.md](TODO.md).
   key; set `multi_raft_config::state_engine`. The Redis command set runs on
   the engine as `persistent_kv_state_machine` (Redis module).
 
+- **A persistent follower installs a snapshot sent as files.** A format-1
+  InstallSnapshot is staged chunk by chunk in
+  `raft_configuration::_snapshot_staging_directory`, each file is fsynced
+  and checked against the manifest's SHA-256, and the state machine
+  ingests the result. A newer transfer replaces an older one, leftovers
+  are deleted at start, and every refusal now carries a reason code
+  (`format_mismatch`, `manifest_invalid`, `disk_space`, `checksum`,
+  `io_error`, and format 0's `stale_term`, `stale_snapshot`,
+  `offset_mismatch`, `missing_first_chunk`). Leaders do not send format 1
+  yet.
+
 ### What Changed (November 5, 2026)
 
 - **Network tests pick their ports at run time.** Tests that listened on

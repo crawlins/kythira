@@ -38,6 +38,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // ── Folly global fixture ──────────────────────────────────────────────────────
@@ -370,7 +371,7 @@ auto fast_config() -> kythira::raft_configuration {
 // ticker thread per running node drives both timers, as an event loop would.
 class test_cluster {
 public:
-    explicit test_cluster(kythira::raft_configuration cfg) : _cfg(cfg) { _sim.start(); }
+    explicit test_cluster(kythira::raft_configuration cfg) : _cfg(std::move(cfg)) { _sim.start(); }
 
     test_cluster(const test_cluster&) = delete;
     auto operator=(const test_cluster&) -> test_cluster& = delete;
