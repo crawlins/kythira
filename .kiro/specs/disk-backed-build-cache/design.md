@@ -75,6 +75,17 @@ DATA_DIR/
   `tmp/<random>`, `fsync` it, `rename` it into place and `fsync` the
   directory. Writing an existing chunk is a no-op, which makes replay
   idempotent.
+  *Amended November 9, 2026:* the state machine's and the fetcher's writes
+  (through `chunk_refcounts`) are `chunk_durability::deferred`. They write
+  `tmp/<random>` and return; the store's syncer thread does the `fsync`,
+  the link into place and the directory `fsync`, and the chunk is read
+  from its temporary name meanwhile. An fsync inside `apply()` held the
+  Raft node mutex that heartbeats need, and one stalled fsync cost a
+  leader (doc/TODO.md, "Disk mode applies under the node mutex"). The
+  Raft log holds the same bytes and covers a crash before the fsync;
+  snapshots and splits call `wait_durable()` first, since the log may be
+  compacted after them. Appends and dead-record appends below are
+  deferred the same way.
 - `open(sha)` returns a read handle. `verify(sha)` streams the file through
   SHA-256 (OpenSSL EVP, already a dependency).
 - `remove(sha)` unlinks. It is only ever called from `apply()`, or from start-up

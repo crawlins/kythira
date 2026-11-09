@@ -66,11 +66,38 @@
 /// chunks differently and remain identical, because the state machine names
 /// chunks by hash and never by location.
 ///
+/// **Deferred durability.** A `put` with `chunk_durability::deferred` (what
+/// `chunk_refcounts`, and so the state machine's `apply()`, uses) writes the
+/// bytes and returns without an fsync. The state machine applies under the
+/// Raft node's mutex, which `tick()` needs to send heartbeats, so an fsync
+/// there silenced the whole node for as long as the disk stalled: ~850 ms
+/// was measured, against 150-300 ms election timeouts. The store's syncer
+/// thread does the fsyncs instead, and the bytes are readable from the page
+/// cache meanwhile. A deferred large chunk stays at its temporary name
+/// (`_staged`, which `read`, `contains` and `remove` consult) until the
+/// syncer has fsynced it; only then is it linked into place, so the
+/// "a valid name never holds partial contents" rule above still holds and a
+/// crash leaves only a temporary file for the next open to wipe. A deferred
+/// pack record is appended at once and fsynced by the syncer, so a crash can
+/// tear the unsynced tail, which the open scan truncates. Dead-record
+/// appends (`remove`) are deferred the same way.
+///
+/// This is safe because a `put_chunk`'s bytes are also in the Raft log, which
+/// is durable before the entry commits: a chunk lost to a crash before its
+/// fsync is written again when the log is replayed. The one thing that would
+/// break that is dropping the log entries first, so `wait_durable()` blocks
+/// until everything deferred so far is on disk, and the state machine calls
+/// it before every snapshot (after which Raft compacts the log) and split.
+/// An fsync failure on the syncer is sticky: every later `put` and
+/// `wait_durable` throws it, so `apply()` stops the node (Requirement 2.4).
+///
 /// **Thread safety.** Every member may be called from any thread. The pack
-/// index, the open pack and the counters are guarded by one mutex. Loose
-/// chunk writes do their I/O outside it. Compaction holds the mutex while it
-/// copies, which stalls small-chunk `put`s for the length of one pack's copy
-/// (at most the pack size, 64 MiB by default).
+/// index, the open pack, the staged chunks and the counters are guarded by
+/// one mutex. Loose chunk writes and the syncer's fsyncs do their I/O outside
+/// it; the syncer takes it only to link a synced chunk into place. Compaction
+/// holds the mutex while it copies and fsyncs, which stalls small-chunk
+/// `put`s for the length of one pack's copy (at most the pack size, 64 MiB by
+/// default).
 
 #include <raft/crc32.hpp>
 #include <raft/fault_injection.hpp>
@@ -81,9 +108,11 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <limits>
@@ -94,10 +123,12 @@
 #include <random>
 #include <set>
 #include <span>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -183,6 +214,14 @@ public:
     return out;
 }
 
+/// Whether a `put` returns only once the chunk is on disk (`now`), or once
+/// its bytes are written, leaving the fsync to the store's syncer thread
+/// (`deferred`; see the file comment).
+enum class chunk_durability : std::uint8_t {
+    now,
+    deferred
+};
+
 /// What `statvfs` says is left for an unprivileged writer.
 struct filesystem_space {
     std::uint64_t _free_bytes = 0;
@@ -226,6 +265,11 @@ struct cache_chunk_store_options {
     /// most 16 MiB (Requirement 3.1); this bound is also what the open scan
     /// uses to recognise a record length that can only be garbage.
     std::size_t _max_chunk_bytes = std::size_t{16} * 1024 * 1024;
+    /// Called with the path before every fsync the store issues, on
+    /// whichever thread issues it. A test seam: a hook that sleeps stands in
+    /// for a disk whose fsync stalls (cache_fsync_stall_test). Empty in
+    /// production.
+    std::function<void(const std::filesystem::path&)> _before_fsync;
 };
 
 /// Counters for `INFO` and `/_metrics` (Requirement 6.5) and the disk budget.
@@ -272,6 +316,7 @@ public:
         wipe_tmp();
         open_packs();
         count_loose();
+        _syncer = std::jthread([this](const std::stop_token& stop) { sync_loop(stop); });
     }
 
     cache_chunk_store(const cache_chunk_store&) = delete;
@@ -279,7 +324,13 @@ public:
     cache_chunk_store(cache_chunk_store&&) = delete;
     auto operator=(cache_chunk_store&&) -> cache_chunk_store& = delete;
 
+    /// Finishes every deferred write first, so a clean shutdown leaves
+    /// nothing for the log replay to redo.
     ~cache_chunk_store() {
+        _syncer.request_stop();
+        if (_syncer.joinable()) {
+            _syncer.join();
+        }
         if (_open_fd >= 0) {
             ::close(_open_fd);
         }
@@ -292,7 +343,8 @@ public:
         return _options._data_dir;
     }
 
-    /// Store `bytes` under `sha`, durably, before returning. Returns `true` if
+    /// Store `bytes` under `sha`, durably before returning unless `durability`
+    /// is `deferred` (see the file comment). Returns `true` if
     /// this call created the chunk and `false` if it was already present (a
     /// replayed `put_chunk`). Throws `std::invalid_argument` if `bytes` does
     /// not hash to `sha` or exceeds the largest chunk, and
@@ -301,26 +353,45 @@ public:
     /// The store's one invariant is that a name is its content's hash.
     /// Checking here costs one SHA-256 against an fsync, and turns a caller
     /// bug into an exception instead of a chunk that fails every later read.
-    auto put(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
+    auto put(const chunk_sha& sha, std::span<const std::byte> bytes,
+             chunk_durability durability = chunk_durability::now) -> bool {
         if (sha256_of(bytes) != sha) {
             throw std::invalid_argument("cache_chunk_store: bytes do not hash to " + to_hex(sha));
         }
-        return put_verified(sha, bytes);
+        return put_verified(sha, bytes, durability);
     }
 
     /// `put` for a caller that has already hashed `bytes` and found `sha`
     /// (the state machine checks every `put_chunk` before storing it, so a
     /// second SHA-256 of a 4 MiB chunk here would be pure cost).
-    auto put_verified(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
+    auto put_verified(const chunk_sha& sha, std::span<const std::byte> bytes,
+                      chunk_durability durability = chunk_durability::now) -> bool {
         if (bytes.size() > _options._max_chunk_bytes) {
             throw std::invalid_argument("cache_chunk_store: chunk of " +
                                         std::to_string(bytes.size()) +
                                         " bytes exceeds the largest chunk");
         }
         if (is_packed_size(bytes.size())) {
-            return put_packed(sha, bytes);
+            return put_packed(sha, bytes, durability);
         }
-        return put_loose(sha, bytes);
+        {
+            const std::lock_guard lock(_mu);
+            rethrow_sync_error_locked();
+        }
+        return durability == chunk_durability::now ? put_loose(sha, bytes)
+                                                   : stage_loose(sha, bytes);
+    }
+
+    /// Block until every deferred write made before this call is on disk,
+    /// names included. Throws the syncer's first fsync failure, if any. The
+    /// state machine calls it before a snapshot or split, after which the
+    /// log entries that carried the bytes may be gone.
+    void wait_durable() {
+        std::unique_lock lock(_mu);
+        const std::uint64_t target = _sync_queued;
+        _sync_cv.notify_all();
+        _synced_cv.wait(lock, [&] { return _sync_done >= target || _sync_error; });
+        rethrow_sync_error_locked();
     }
 
     /// Whether a chunk of this name is stored. It says nothing about whether
@@ -328,7 +399,7 @@ public:
     [[nodiscard]] auto contains(const chunk_sha& sha) const -> bool {
         {
             const std::lock_guard lock(_mu);
-            if (_packed.contains(sha)) {
+            if (_packed.contains(sha) || _staged.contains(sha)) {
                 return true;
             }
         }
@@ -342,6 +413,9 @@ public:
             const std::lock_guard lock(_mu);
             if (auto it = _packed.find(sha); it != _packed.end()) {
                 return it->second._len;
+            }
+            if (auto it = _staged.find(sha); it != _staged.end()) {
+                return it->second._size;
             }
         }
         std::error_code ec;
@@ -391,10 +465,13 @@ public:
 private:
     [[nodiscard]] auto verify_counting(const chunk_sha& sha, bool count) const -> bool {
         std::optional<pack_location> where;
+        std::optional<std::filesystem::path> staged;
         {
             const std::lock_guard lock(_mu);
             if (auto it = _packed.find(sha); it != _packed.end()) {
                 where = it->second;
+            } else if (auto st = _staged.find(sha); st != _staged.end()) {
+                staged = st->second._tmp;
             }
         }
         std::unique_ptr<::EVP_MD_CTX, decltype(&::EVP_MD_CTX_free)> ctx(::EVP_MD_CTX_new(),
@@ -402,8 +479,8 @@ private:
         if (!ctx || ::EVP_DigestInit_ex(ctx.get(), ::EVP_sha256(), nullptr) != 1) {
             throw cache_chunk_store_error("cache_chunk_store: EVP_DigestInit_ex failed");
         }
-        const auto path = where ? pack_path(where->_pack) : loose_path(sha);
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        const int fd = where ? ::open(pack_path(where->_pack).c_str(), O_RDONLY | O_CLOEXEC)
+                             : open_loose(sha, staged);
         if (fd < 0) {
             return false;
         }
@@ -458,6 +535,15 @@ public:
     auto remove(const chunk_sha& sha) -> bool {
         {
             const std::lock_guard lock(_mu);
+            if (auto it = _staged.find(sha); it != _staged.end()) {
+                // Not linked yet: dropping the temporary file is the whole
+                // removal, and the syncer skips a chunk no longer staged.
+                ::unlink(it->second._tmp.c_str());
+                --_stats._loose_files;
+                _stats._loose_bytes -= it->second._size;
+                _staged.erase(it);
+                return true;
+            }
             if (auto it = _packed.find(sha); it != _packed.end()) {
                 const pack_location where = it->second;
                 append_dead_locked(where._pack, where._offset);
@@ -493,14 +579,23 @@ public:
     /// before the walk, so `fn` may call `remove`.
     void for_each_chunk(const std::function<void(const chunk_sha&, std::uint64_t)>& fn) const {
         std::vector<std::pair<chunk_sha, std::uint64_t>> packed;
+        std::unordered_map<chunk_sha, std::uint64_t, chunk_sha_hash> staged;
         {
             const std::lock_guard lock(_mu);
             packed.reserve(_packed.size());
             for (const auto& [sha, where] : _packed) {
                 packed.emplace_back(sha, where._len);
             }
+            for (const auto& [sha, st] : _staged) {
+                staged.emplace(sha, st._size);
+            }
         }
         for (const auto& [sha, size] : packed) {
+            fn(sha, size);
+        }
+        // Staged chunks the syncer links during the walk below are skipped
+        // there, so each is reported once.
+        for (const auto& [sha, size] : staged) {
             fn(sha, size);
         }
         std::error_code ec;
@@ -513,7 +608,8 @@ public:
             if (!it->is_regular_file()) {
                 continue;
             }
-            if (auto sha = chunk_sha_from_hex(it->path().filename().string())) {
+            if (auto sha = chunk_sha_from_hex(it->path().filename().string());
+                sha && !staged.contains(*sha)) {
                 fn(*sha, it->file_size());
             }
         }
@@ -643,7 +739,10 @@ private:
         return true;
     }
 
-    static void fsync_fd(int fd, const std::filesystem::path& path) {
+    void fsync_fd(int fd, const std::filesystem::path& path) const {
+        if (_options._before_fsync) {
+            _options._before_fsync(path);
+        }
         if (::fsync(fd) != 0) {
             throw cache_chunk_store_error(errno_message("fsync(" + path.string() + ")"));
         }
@@ -652,7 +751,10 @@ private:
     /// fsync a directory so a name created or removed in it is durable. A
     /// directory that cannot be opened is not fatal on every filesystem, so
     /// only a failing fsync is.
-    static void fsync_dir(const std::filesystem::path& dir) {
+    void fsync_dir(const std::filesystem::path& dir) const {
+        if (_options._before_fsync) {
+            _options._before_fsync(dir);
+        }
         const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (fd < 0) {
             return;
@@ -666,8 +768,29 @@ private:
         }
     }
 
+    /// fsync the file at `path` through a fresh descriptor (the syncer does
+    /// not share the writers' descriptors). `false` if it no longer exists:
+    /// removed, or compacted away, since it was queued.
+    auto fsync_path(const std::filesystem::path& path) const -> bool {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            if (errno == ENOENT) {
+                return false;
+            }
+            throw cache_chunk_store_error(errno_message("open(" + path.string() + ")"));
+        }
+        try {
+            fsync_fd(fd, path);
+        } catch (...) {
+            ::close(fd);
+            throw;
+        }
+        ::close(fd);
+        return true;
+    }
+
     /// Create `dir` (one level) if absent and make its name durable.
-    static void ensure_dir(const std::filesystem::path& dir) {
+    void ensure_dir(const std::filesystem::path& dir) const {
         if (::mkdir(dir.c_str(), 0750) == 0) {
             fsync_dir(dir.parent_path());
             return;
@@ -857,6 +980,12 @@ private:
 
     auto put_loose(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
         const auto final_path = loose_path(sha);
+        {
+            const std::lock_guard lock(_mu);
+            if (_staged.contains(sha)) {
+                return false;
+            }
+        }
         std::error_code ec;
         if (std::filesystem::exists(final_path, ec)) {
             return false;
@@ -902,6 +1031,64 @@ private:
         return true;
     }
 
+    /// `put_loose` without the fsync: the bytes go to a temporary file that
+    /// `_staged` names, and the syncer fsyncs and links it (file comment,
+    /// "Deferred durability").
+    auto stage_loose(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
+        const auto final_path = loose_path(sha);
+        {
+            const std::lock_guard lock(_mu);
+            if (_staged.contains(sha)) {
+                return false;
+            }
+        }
+        std::error_code ec;
+        if (std::filesystem::exists(final_path, ec)) {
+            return false;
+        }
+        const auto tmp_path = _tmp_dir / unique_tmp_name();
+        const int fd = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0640);
+        if (fd < 0) {
+            throw cache_chunk_store_error(errno_message("create " + tmp_path.string()));
+        }
+        try {
+            fiu_do_on("raft/cache/chunk_store/write",
+                      throw cache_chunk_store_error("cache_chunk_store: injected write failure"););
+            pwrite_all(fd, bytes, 0, tmp_path);
+        } catch (...) {
+            ::close(fd);
+            ::unlink(tmp_path.c_str());
+            throw;
+        }
+        ::close(fd);
+        const std::lock_guard lock(_mu);
+        if (_staged.contains(sha) || std::filesystem::exists(final_path, ec)) {
+            // Another writer of the same bytes got there first.
+            ::unlink(tmp_path.c_str());
+            return false;
+        }
+        _staged.emplace(sha, staged_chunk{._tmp = tmp_path, ._size = bytes.size()});
+        ++_stats._loose_files;
+        _stats._loose_bytes += bytes.size();
+        queue_sync_locked();
+        return true;
+    }
+
+    /// Open a loose chunk for reading: its temporary file while it is staged,
+    /// else its final name. A staged file the syncer links and unlinks after
+    /// `staged` was read is found at its final name instead, since the link
+    /// comes before the unlink.
+    [[nodiscard]] auto open_loose(const chunk_sha& sha,
+                                  const std::optional<std::filesystem::path>& staged) const -> int {
+        if (staged) {
+            const int fd = ::open(staged->c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) {
+                return fd;
+            }
+        }
+        return ::open(loose_path(sha).c_str(), O_RDONLY | O_CLOEXEC);
+    }
+
     [[nodiscard]] auto unique_tmp_name() -> std::string {
         thread_local std::mt19937_64 rng{std::random_device{}()};
         return std::to_string(::getpid()) + "." + std::to_string(rng()) + "." +
@@ -911,10 +1098,13 @@ private:
     [[nodiscard]] auto read_unverified(const chunk_sha& sha) const
         -> std::optional<std::vector<std::byte>> {
         std::optional<pack_location> where;
+        std::optional<std::filesystem::path> staged;
         {
             const std::lock_guard lock(_mu);
             if (auto it = _packed.find(sha); it != _packed.end()) {
                 where = it->second;
+            } else if (auto st = _staged.find(sha); st != _staged.end()) {
+                staged = st->second._tmp;
             }
         }
         if (where) {
@@ -928,8 +1118,7 @@ private:
             ::close(fd);
             return ok ? std::optional(std::move(out)) : std::nullopt;
         }
-        const auto path = loose_path(sha);
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        const int fd = open_loose(sha, staged);
         if (fd < 0) {
             return std::nullopt;
         }
@@ -947,13 +1136,17 @@ private:
 
     // ---- packs ------------------------------------------------------------
 
-    auto put_packed(const chunk_sha& sha, std::span<const std::byte> bytes) -> bool {
+    auto put_packed(const chunk_sha& sha, std::span<const std::byte> bytes,
+                    chunk_durability durability) -> bool {
         const std::lock_guard lock(_mu);
+        rethrow_sync_error_locked();
         if (_packed.contains(sha)) {
             return false;
         }
         const pack_location where = append_record_locked(sha, bytes);
-        fsync_fd(_open_fd, pack_path(_open_pack));
+        if (durability == chunk_durability::now) {
+            flush_dirty_packs_locked();
+        }
         index_record_locked(sha, where);
         return true;
     }
@@ -968,19 +1161,22 @@ private:
         _open_pack = n;
     }
 
-    /// Close the open pack (fsynced) so the next append starts a new one.
+    /// Close the open pack so the next append starts a new one. Its unsynced
+    /// appends stay in `_dirty_packs`, for the syncer or the next
+    /// `flush_dirty_packs_locked()`.
     void close_open_pack_locked() {
         if (_open_fd < 0) {
             return;
         }
-        fsync_fd(_open_fd, pack_path(_open_pack));
         ::close(_open_fd);
         _open_fd = -1;
         _open_pack = no_pack;
     }
 
-    /// Append one record to the open pack, starting a new pack if needed. The
-    /// caller fsyncs and then indexes it.
+    /// Append one record to the open pack, starting a new pack if needed, and
+    /// mark the pack (and a new pack's directory entry) for the syncer. A
+    /// caller that needs it durable now calls `flush_dirty_packs_locked()`;
+    /// either way it then indexes the record.
     auto append_record_locked(const chunk_sha& sha, std::span<const std::byte> bytes)
         -> pack_location {
         if (_open_fd >= 0 && _packs.at(_open_pack)._size >= _options._pack_max_bytes) {
@@ -989,7 +1185,7 @@ private:
         if (_open_fd < 0) {
             const std::uint64_t n = _next_pack++;
             open_for_append(n);
-            fsync_dir(_packs_dir);
+            _packs_dir_dirty = true;
             _packs.emplace(n, pack_info{});
             ++_stats._pack_files;
         }
@@ -1017,12 +1213,32 @@ private:
         }
         info._size += record.size();
         _stats._pack_bytes += record.size();
+        _dirty_packs.insert(_open_pack);
+        queue_sync_locked();
         return pack_location{._pack = _open_pack, ._offset = offset, ._len = len};
     }
 
     void index_record_locked(const chunk_sha& sha, const pack_location& where) {
         _packed.insert_or_assign(sha, where);
         ++_stats._packed_chunks;
+    }
+
+    /// fsync every pack with unsynced appends, and the pack directory if a
+    /// pack was created, before returning: for `chunk_durability::now` and
+    /// compaction. Holds the mutex throughout, as both callers already do.
+    void flush_dirty_packs_locked() {
+        for (const std::uint64_t n : _dirty_packs) {
+            if (n == _open_pack && _open_fd >= 0) {
+                fsync_fd(_open_fd, pack_path(n));
+            } else {
+                (void)fsync_path(pack_path(n));
+            }
+        }
+        _dirty_packs.clear();
+        if (_packs_dir_dirty) {
+            fsync_dir(_packs_dir);
+            _packs_dir_dirty = false;
+        }
     }
 
     void append_dead_locked(std::uint64_t n, std::uint64_t offset) {
@@ -1045,12 +1261,18 @@ private:
                 }
                 done += static_cast<std::size_t>(w);
             }
-            fsync_fd(fd, path);
         } catch (...) {
             ::close(fd);
             throw;
         }
         ::close(fd);
+        // Deferred like a chunk write. Losing the offset to a crash only
+        // brings the record back as a live chunk nothing references, which
+        // the start-up orphan collection removes (Requirement 2.6); a `del`
+        // still in the log removes it again on replay.
+        _dirty_sidecars.insert(n);
+        _packs_dir_dirty = true;
+        queue_sync_locked();
     }
 
     void compact_one_locked(std::uint64_t n) {
@@ -1079,11 +1301,12 @@ private:
                         throw cache_chunk_store_error("cache_chunk_store: short read of " +
                                                       old_path.string());
                     }
-                    // A roll to a new pack inside this call fsyncs the
-                    // previous one, so only the last needs the fsync below.
+                    // A roll to a new pack inside this call leaves the
+                    // previous one in _dirty_packs, so the flush below
+                    // covers every pack the copies landed in.
                     moved.emplace_back(sha, append_record_locked(sha, body));
                 }
-                fsync_fd(_open_fd, pack_path(_open_pack));
+                flush_dirty_packs_locked();
             } catch (...) {
                 ::close(fd);
                 throw;
@@ -1111,6 +1334,100 @@ private:
         ++_stats._compactions;
     }
 
+    // ---- the syncer ---------------------------------------------------------
+
+    /// One more batch of deferred work for the syncer. Under `_mu`.
+    void queue_sync_locked() {
+        ++_sync_queued;
+        _sync_cv.notify_all();
+    }
+
+    void rethrow_sync_error_locked() const {
+        if (_sync_error) {
+            std::rethrow_exception(_sync_error);
+        }
+    }
+
+    /// The syncer thread: take everything queued, fsync it outside the
+    /// mutex, link synced chunks into place, and wake `wait_durable()`. On
+    /// stop it drains what is queued first (see the destructor).
+    void sync_loop(const std::stop_token& stop) {
+        std::unique_lock lock(_mu);
+        while (true) {
+            _sync_cv.wait(lock, stop, [this] { return _sync_done < _sync_queued; });
+            if (_sync_done >= _sync_queued) {
+                return;  // stop requested, nothing left
+            }
+            const std::uint64_t target = _sync_queued;
+            std::vector<std::pair<chunk_sha, std::filesystem::path>> staged;
+            staged.reserve(_staged.size());
+            for (const auto& [sha, st] : _staged) {
+                staged.emplace_back(sha, st._tmp);
+            }
+            const auto packs = std::exchange(_dirty_packs, {});
+            const auto sidecars = std::exchange(_dirty_sidecars, {});
+            const bool packs_dir = std::exchange(_packs_dir_dirty, false);
+            lock.unlock();
+            std::exception_ptr error;
+            try {
+                sync_batch(staged, packs, sidecars, packs_dir);
+            } catch (...) {
+                error = std::current_exception();
+            }
+            lock.lock();
+            if (error && !_sync_error) {
+                _sync_error = error;
+            }
+            _sync_done = target;
+            _synced_cv.notify_all();
+        }
+    }
+
+    void sync_batch(const std::vector<std::pair<chunk_sha, std::filesystem::path>>& staged,
+                    const std::set<std::uint64_t>& packs, const std::set<std::uint64_t>& sidecars,
+                    bool packs_dir) {
+        for (const std::uint64_t n : packs) {
+            (void)fsync_path(pack_path(n));
+        }
+        for (const std::uint64_t n : sidecars) {
+            (void)fsync_path(dead_path(n));
+        }
+        if (packs_dir) {
+            fsync_dir(_packs_dir);
+        }
+        std::set<std::filesystem::path> dirs;
+        for (const auto& [sha, tmp] : staged) {
+            if (!fsync_path(tmp)) {
+                continue;  // removed since it was staged
+            }
+            const auto final_path = loose_path(sha);
+            ensure_dir(final_path.parent_path().parent_path());
+            ensure_dir(final_path.parent_path());
+            const std::lock_guard lock(_mu);
+            auto it = _staged.find(sha);
+            if (it == _staged.end() || it->second._tmp != tmp) {
+                continue;  // removed, and perhaps staged again, meanwhile
+            }
+            if (::link(tmp.c_str(), final_path.c_str()) != 0) {
+                if (errno != EEXIST) {
+                    // Left staged and still readable; the error is sticky.
+                    throw cache_chunk_store_error(
+                        errno_message("link(" + final_path.string() + ")"));
+                }
+                // A `now` put of the same bytes linked it first and counted
+                // it too.
+                --_stats._loose_files;
+                _stats._loose_bytes -= it->second._size;
+            }
+            ::unlink(tmp.c_str());
+            _staged.erase(it);
+            dirs.insert(final_path.parent_path());
+        }
+        for (const auto& dir : dirs) {
+            fsync_dir(dir);
+        }
+    }
+
     static constexpr std::uint64_t no_pack = std::numeric_limits<std::uint64_t>::max();
 
     cache_chunk_store_options _options;
@@ -1126,6 +1443,29 @@ private:
     std::uint64_t _next_pack = 1;
     mutable cache_chunk_store_stats _stats;
     std::atomic<std::uint64_t> _tmp_counter{0};
+
+    /// A large chunk written with `chunk_durability::deferred`, still at its
+    /// temporary name until the syncer has fsynced and linked it.
+    struct staged_chunk {
+        std::filesystem::path _tmp;
+        std::uint64_t _size = 0;
+    };
+    std::unordered_map<chunk_sha, staged_chunk, chunk_sha_hash> _staged;
+    /// Packs and sidecars with unsynced appends, and whether the pack
+    /// directory has an unsynced entry.
+    std::set<std::uint64_t> _dirty_packs;
+    std::set<std::uint64_t> _dirty_sidecars;
+    bool _packs_dir_dirty = false;
+    /// Batches queued and synced: `wait_durable()` waits for done to reach
+    /// what was queued when it was called.
+    std::uint64_t _sync_queued = 0;
+    std::uint64_t _sync_done = 0;
+    std::exception_ptr _sync_error;
+    std::condition_variable_any _sync_cv;
+    std::condition_variable _synced_cv;
+    /// Last, so it starts after, and is joined (in the destructor) before,
+    /// everything it uses.
+    std::jthread _syncer;
 };
 
 /// Node-wide reference counts for the chunks in one store (design Component
@@ -1140,8 +1480,13 @@ private:
 /// Every operation that can create or delete a chunk file runs under one
 /// mutex, so a `release` on one shard cannot remove a chunk between another
 /// shard's `put` of the same bytes and its `acquire`. The cost is that a
-/// large chunk's write and fsync hold the mutex, which serialises chunk
-/// writes across the node's shards; on one disk they would contend anyway.
+/// large chunk's write holds the mutex, which serialises chunk writes across
+/// the node's shards; on one disk they would contend anyway. Every write here
+/// is `chunk_durability::deferred`, so no fsync runs under this mutex, nor
+/// under the Raft node mutex `apply()` holds: the store's syncer does them,
+/// and the state machine calls `cache_chunk_store::wait_durable()` before a
+/// snapshot. The fetcher's writes are deferred too; they were blocking
+/// `apply()` on this mutex for the length of their fsync.
 class chunk_refcounts {
 public:
     explicit chunk_refcounts(cache_chunk_store& store) : _store(store) {}
@@ -1153,7 +1498,8 @@ public:
     auto put_and_acquire(const chunk_sha& sha, std::span<const std::byte> bytes,
                          bool verified = false) -> bool {
         const std::lock_guard lock(_mu);
-        const bool written = verified ? _store.put_verified(sha, bytes) : _store.put(sha, bytes);
+        const bool written =
+            verified ? _store.put_verified(sha, bytes, deferred) : _store.put(sha, bytes, deferred);
         ++_counts[sha];
         return written;
     }
@@ -1189,7 +1535,8 @@ public:
     auto put_referenced(const chunk_sha& sha, std::span<const std::byte> bytes,
                         bool verified = false) -> bool {
         const std::lock_guard lock(_mu);
-        return verified ? _store.put_verified(sha, bytes) : _store.put(sha, bytes);
+        return verified ? _store.put_verified(sha, bytes, deferred)
+                        : _store.put(sha, bytes, deferred);
     }
 
     /// Store fetched `bytes` only if some replica on this node still
@@ -1203,7 +1550,8 @@ public:
         if (!_counts.contains(sha)) {
             return false;
         }
-        (void)(verified ? _store.put_verified(sha, bytes) : _store.put(sha, bytes));
+        (void)(verified ? _store.put_verified(sha, bytes, deferred)
+                        : _store.put(sha, bytes, deferred));
         return true;
     }
 
@@ -1263,6 +1611,8 @@ public:
     [[nodiscard]] auto store() const noexcept -> const cache_chunk_store& { return _store; }
 
 private:
+    static constexpr chunk_durability deferred = chunk_durability::deferred;
+
     cache_chunk_store& _store;
     mutable std::mutex _mu;
     std::unordered_map<chunk_sha, std::uint64_t, chunk_sha_hash> _counts;

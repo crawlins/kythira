@@ -356,7 +356,16 @@ public:
 
     /// The index and pending table in key order, in design.md Component 3's
     /// format. Also the format of every `split_state` blob.
+    ///
+    /// Waits first for every chunk write the node has deferred to reach the
+    /// disk (`cache_chunk_store::wait_durable`): Raft compacts the log once
+    /// the snapshot is saved, and until then the log is what would rewrite a
+    /// chunk a crash lost. The syncer runs continuously, so this usually
+    /// waits for at most the fsync in flight.
     [[nodiscard]] auto get_state() const -> std::vector<std::byte> {
+        if (_refs) {
+            _refs->store().wait_durable();
+        }
         return serialize(_index.begin(), _index.end(), _index.size(), _pending);
     }
 
@@ -466,6 +475,11 @@ public:
     /// when the grace period passes.
     [[nodiscard]] auto split_state(const std::vector<key_type>& keys)
         -> std::vector<std::vector<std::byte>> {
+        // The children start from these blobs, not from the parent's log;
+        // see get_state().
+        if (_refs) {
+            _refs->store().wait_durable();
+        }
         std::vector<key_type> cuts = keys;
         std::sort(cuts.begin(), cuts.end());
         cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
