@@ -381,6 +381,11 @@ jobs:
           # that pass 0/12 under clang fail up to 89% under g++. Scaling here
           # covers every leg rather than only Coverage. See
           # doc/coap-flake-investigation.md.
+          #
+          # arm64 caps concurrent links at two: with the IAM module's large
+          # static test binaries the final link wave (mold, every core per
+          # link) exhausted the arm runner's memory and the runner was shut
+          # down mid-link, twice in a row, on PR #744.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
@@ -388,6 +393,7 @@ jobs:
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_LINKER=mold \
+            -DKYTHIRA_LINK_JOBS=${{ matrix.arch_label == 'arm64' && '2' || '' }} \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DKYTHIRA_TEST_REPORT_DIR=${{ github.workspace }}/case-reports \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
