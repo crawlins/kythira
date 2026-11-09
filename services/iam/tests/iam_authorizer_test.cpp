@@ -20,6 +20,7 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <mutex>
@@ -454,7 +455,12 @@ BOOST_AUTO_TEST_CASE(a_full_queue_counts_drops_instead_of_blocking) {
         hold.unlock();
         log.flush();
     }
-    BOOST_TEST(out.back().find(R"("audit":"dropped")") != std::string::npos);
+    // The writer may take its first batch before the queue fills, report
+    // the drops after that batch, and then write lines queued later, so the
+    // drop report is somewhere in the output, not necessarily last.
+    BOOST_TEST(std::any_of(out.begin(), out.end(), [](const std::string& l) {
+        return l.find(R"("audit":"dropped")") != std::string::npos;
+    }));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
