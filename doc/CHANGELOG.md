@@ -97,6 +97,13 @@ current list of outstanding work, see [TODO.md](TODO.md).
   and a build without them never sees a RocksDB header. A 1 GB group
   catches up a lagging follower with less than 64 MB of memory growth.
 
+- **redis_gateway_node can keep its values in RocksDB.** A build with
+  `CONFIG_REDIS_GATEWAY_ENGINE=y` accepts `KYTHIRA_CACHE_PERSISTENCE=engine`.
+  Each node then keeps one RocksDB database under its data directory, a
+  restart reloads nothing, and a lagging follower is caught up by streaming
+  checkpoint files. The disk budget and free-space floors work as in file
+  mode. Transactions work in this mode too.
+
 - **Transactions run on persistent hosts.** `transactional_state_machine`
   now wraps a persistent state machine, and keeps its locks, records and
   settled entries in the engine's `txn` column family. Each entry's inner

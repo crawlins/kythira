@@ -5,8 +5,8 @@
 # That job's vcpkg install is `--x-feature=edhoc --x-feature=ion
 # --x-feature=rocksdb`, i.e. the edhoc image ci_full_defconfig models plus
 # ion-c and RocksDB, so this file is ci_full_defconfig with
-# CONFIG_ION_SERIALIZER, the ion-c-only ledger module and CONFIG_ENGINE_ROCKSDB
-# turned on and nothing else changed. Written, like ci_full_defconfig, against
+# CONFIG_ION_SERIALIZER, the ion-c-only ledger module, CONFIG_ENGINE_ROCKSDB
+# and the gateway's engine storage turned on and nothing else changed. Written, like ci_full_defconfig, against
 # `-DKYTHIRA_KCONFIG_STRICT=ON` (Requirement 5.1) — see that file's header for
 # the reasoning; only the difference is annotated here.
 #
@@ -30,6 +30,11 @@
 #                             tree rather than a job of its own. It adds
 #                             raft_rocksdb_engine and rocksdb_kv_engine_test
 #                             only.
+#   REDIS_GATEWAY_ENGINE    — redis_gateway_node's KYTHIRA_CACHE_PERSISTENCE=
+#                             engine (persistent-state-machine task 7), which
+#                             needs ENGINE_ROCKSDB, so only this tree can
+#                             build it. It adds one translation unit to
+#                             redis_gateway_node, which this job builds.
 #
 # Everything else is verbatim from ci_full_defconfig and must stay that way —
 # the job builds the ion targets out of the same tree the main legs build, and
@@ -38,6 +43,7 @@
 CONFIG_ION_SERIALIZER=y
 CONFIG_LEDGER=y
 CONFIG_ENGINE_ROCKSDB=y
+CONFIG_REDIS_GATEWAY_ENGINE=y
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y

@@ -65,6 +65,19 @@ if(KCONFIG_REDIS_GATEWAY_IAM AND KYTHIRA_BUILD_IAM AND TARGET certificate_author
     # replica's TLS RPC headers need, as for iam_node.
     target_link_libraries(redis_gateway_node PRIVATE kythira_iam certificate_authority)
 endif()
+# persistent-state-machine task 7: KYTHIRA_CACHE_PERSISTENCE=engine keeps
+# values in a RocksDB database per node. Its stack is one more translation
+# unit, built only when Kconfig asks, so other builds never compile or link
+# RocksDB.
+if(KCONFIG_REDIS_GATEWAY_ENGINE)
+    if(NOT TARGET raft_rocksdb_engine)
+        message(FATAL_ERROR
+            "CONFIG_REDIS_GATEWAY_ENGINE needs CONFIG_ENGINE_ROCKSDB and the vcpkg feature rocksdb")
+    endif()
+    target_sources(redis_gateway_node PRIVATE run_cbor_engine.cpp)
+    target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_REDIS_GATEWAY_ENGINE)
+    target_link_libraries(redis_gateway_node PRIVATE raft_rocksdb_engine)
+endif()
 target_compile_features(redis_gateway_node PRIVATE cxx_std_23)
 
 set_target_properties(redis_gateway_node PROPERTIES

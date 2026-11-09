@@ -21,6 +21,11 @@
 /// `redis_gateway_disk_store_integration_test` over
 /// `cache_kv_state_machine`, each host with its own chunk store under a
 /// per-process temporary directory. Every case runs unchanged over both.
+///
+/// Built a third time through redis_gateway_engine_store_integration_test.cpp,
+/// which defines `KYTHIRA_GATEWAY_TEST_ENGINE_STORE`, over the persistent
+/// `persistent_kv_state_machine` with one `memory_kv_engine` per host
+/// (.kiro/specs/persistent-state-machine/ task 7, Requirement 9.1).
 
 #define BOOST_TEST_MODULE redis_gateway_integration_test
 #include <boost/test/unit_test.hpp>
@@ -41,6 +46,10 @@
 #if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
 #include <kythira/redis/cache_chunk_fetcher.hpp>
 #include <kythira/redis/cache_kv_state_machine.hpp>
+#endif
+#if defined(KYTHIRA_GATEWAY_TEST_ENGINE_STORE)
+#include <raft/memory_kv_engine.hpp>
+#include <kythira/redis/persistent_kv_state_machine.hpp>
 #endif
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
@@ -134,6 +143,9 @@ struct host_types {
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
 #if defined(KYTHIRA_GATEWAY_TEST_DISK_STORE)
     using state_machine_type = kythira::cache_kv_state_machine<log_index_type>;
+#elif defined(KYTHIRA_GATEWAY_TEST_ENGINE_STORE)
+    using state_machine_type =
+        kythira::persistent_kv_state_machine<kythira::memory_kv_engine, log_index_type>;
 #else
     using state_machine_type = kythira::redis_kv_state_machine<log_index_type>;
 #endif
@@ -207,6 +219,9 @@ auto with_state_machines(config_type& cfg) -> void {
     cfg.state_machine_factory = [refs](const group_id_type&) {
         return host_types::state_machine_type(refs);
     };
+#elif defined(KYTHIRA_GATEWAY_TEST_ENGINE_STORE)
+    // One engine per host, shared by its groups, as a real node has.
+    cfg.state_engine = std::make_shared<kythira::memory_kv_engine>();
 #else
     (void)cfg;
 #endif

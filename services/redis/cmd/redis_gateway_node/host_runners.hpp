@@ -12,6 +12,9 @@ namespace kythira::redis_node {
 
 auto run_cbor(const node_options& opt) -> int;
 auto run_cbor_file(const node_options& opt) -> int;
+#if defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
+auto run_cbor_engine(const node_options& opt) -> int;
+#endif
 auto run_json(const node_options& opt) -> int;
 
 }  // namespace kythira::redis_node

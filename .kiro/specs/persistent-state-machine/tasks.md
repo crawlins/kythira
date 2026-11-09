@@ -258,10 +258,42 @@ RocksDB is linked. Each task is one PR unless noted.
       `multi_raft_txn_bank_persistent_test` (8.4: 833 commits through 11
       splits, 10 merges and 11 leader moves on a local run, total kept).
 
-- [ ] 7. Gateway wiring
+- [x] 7. Gateway wiring
   - `redis_gateway_node` build option selecting `persistent_kv_state_machine`
     on RocksDB; data directory layout and disk budget in config
   - _Requirements: 9.1_
+  - As built:
+    - Kconfig `REDIS_GATEWAY_ENGINE` (default n; depends on `REDIS_GATEWAY`,
+      `ENGINE_ROCKSDB` and not `REDIS_GATEWAY_SNAPSHOT_ISOLATION`) adds one
+      translation unit, `run_cbor_engine.cpp`, and links
+      `raft_rocksdb_engine`. The state machine is a build choice, as the
+      requirement says; which storage a node runs is still the runtime
+      `KYTHIRA_CACHE_PERSISTENCE`, now with a third value, `engine`, which
+      a build without the option refuses.
+    - With `CONFIG_REDIS_GATEWAY_TRANSACTIONS=y` the engine store is
+      wrapped in `transactional_state_machine` (task 6), so transactions
+      are allowed with `engine` as with `memory`.
+    - Layout under `KYTHIRA_CACHE_DATA_DIR`: `engine/` (the database),
+      `raft/<group>` (binary segmented Raft logs; the log must be durable
+      because engine writes are not synced) and `snapshots/` (the staging
+      directory, on the database's filesystem).
+    - Disk budget: the file mode's `cache_disk_guard`, with the size of
+      `engine/` as the store bytes, so `KYTHIRA_CACHE_MAX_DISK_BYTES`
+      evicts least-recently-read keys and the free-space floors refuse
+      writes, voters' reports included. `KYTHIRA_CACHE_MIN_FREE_BYTES` is
+      also `_snapshot_disk_margin_bytes`. The chunk store's and the HTTP
+      front end's variables are refused in this mode.
+    - `redis_gateway_value_access` gains a specialization for
+      `persistent_kv_state_machine`.
+    - Tests: `redis_gateway_engine_store_integration_test` runs all 32
+      gateway integration cases over the persistent machine with one
+      `memory_kv_engine` per host. The Ion Serializer Build job turns the
+      option on (`configs/ci_ion_defconfig`) and builds
+      `redis_gateway_node`, the only tree with RocksDB.
+    - Smoke run (local, RocksDB 8.9): three nodes with
+      `KYTHIRA_CACHE_PERSISTENCE=engine` and two shards took SETs, were all
+      killed and restarted, and served every value again from their
+      databases.
 
 - [ ] 8. Crash and chaos
   - Failpoints between batch commit and sync, and between checkpoint and

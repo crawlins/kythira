@@ -29,6 +29,7 @@
 
 #include <kythira/redis/cache_kv_state_machine.hpp>
 #include <kythira/redis/redis_kv_mvcc_state_machine.hpp>
+#include <kythira/redis/persistent_kv_state_machine.hpp>
 #include <kythira/redis/redis_kv_state_machine.hpp>
 #include <raft/txn_state_machine.hpp>
 
@@ -85,6 +86,18 @@ template<typename LogIndex>
 struct redis_gateway_value_access<redis_kv_mvcc_state_machine<LogIndex>>
     : redis_gateway_value_access<redis_kv_state_machine<LogIndex>> {
     using state_machine_type = redis_kv_mvcc_state_machine<LogIndex>;
+    using entry_handle = typename state_machine_type::entry_handle;
+    using typename redis_gateway_value_access<redis_kv_state_machine<LogIndex>>::context;
+
+    [[nodiscard]] static auto context_of(const state_machine_type&) -> context { return {}; }
+};
+
+/// The persistent KV (persistent-state-machine task 7) decodes each looked-up
+/// value from its engine into the same entry type, which the handle owns.
+template<typename Engine, typename LogIndex>
+struct redis_gateway_value_access<persistent_kv_state_machine<Engine, LogIndex>>
+    : redis_gateway_value_access<redis_kv_state_machine<LogIndex>> {
+    using state_machine_type = persistent_kv_state_machine<Engine, LogIndex>;
     using entry_handle = typename state_machine_type::entry_handle;
     using typename redis_gateway_value_access<redis_kv_state_machine<LogIndex>>::context;
 

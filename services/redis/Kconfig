@@ -64,3 +64,19 @@ config REDIS_GATEWAY_IAM
 	  IAM code. The Redis module itself never
 	  includes IAM: only the daemon's composition root does. See
 	  .kiro/specs/iam-compatible-auth/ task 21.
+
+config REDIS_GATEWAY_ENGINE
+	bool "Persistent engine storage in redis_gateway_node (KYTHIRA_CACHE_PERSISTENCE=engine)"
+	default n
+	depends on REDIS_GATEWAY && ENGINE_ROCKSDB && !REDIS_GATEWAY_SNAPSHOT_ISOLATION
+	help
+	  Lets redis_gateway_node keep its values in a RocksDB database per
+	  node (persistent_kv_state_machine) when started with
+	  KYTHIRA_CACHE_PERSISTENCE=engine. A group's state is then bounded
+	  by disk, not memory, a restart reloads nothing, and a follower that
+	  falls behind is caught up by streaming checkpoint files. The data
+	  directory holds engine/, raft/<group> and snapshots/, and
+	  KYTHIRA_CACHE_MAX_DISK_BYTES and the free-space floors apply as in
+	  file mode. With REDIS_GATEWAY_TRANSACTIONS the transaction state
+	  lives in the database too. See .kiro/specs/persistent-state-machine/
+	  task 7 and doc/persistent_state_machines.md.

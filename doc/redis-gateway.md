@@ -120,7 +120,7 @@ The Redis front end:
 | `KYTHIRA_REDIS_IO_THREADS` | `2` | Listener/IO threads |
 | `KYTHIRA_REDIS_WORKER_THREADS` | `8` | Command workers |
 | `KYTHIRA_REDIS_LOG_COMMANDS` | `false` | Log every command (keys, never values or secrets) at debug |
-| `KYTHIRA_REDIS_TRANSACTIONS` | `off` | Run `MSET`, multi-key `DEL`, `MGET` and `MULTI`/`EXEC`/`DISCARD` as cross-shard transactions; see *Transactions*. Refused at startup by a build without `CONFIG_REDIS_GATEWAY_TRANSACTIONS=y`, and with `KYTHIRA_CACHE_PERSISTENCE=file` |
+| `KYTHIRA_REDIS_TRANSACTIONS` | `off` | Run `MSET`, multi-key `DEL`, `MGET` and `MULTI`/`EXEC`/`DISCARD` as cross-shard transactions; see *Transactions*. Refused at startup by a build without `CONFIG_REDIS_GATEWAY_TRANSACTIONS=y`, and with `KYTHIRA_CACHE_PERSISTENCE=file` (allowed with `memory` and `engine`) |
 | `KYTHIRA_REDIS_TXN_ISOLATION` | `read_committed` | Each connection's isolation until it sends `KYTHIRA.ISOLATION`. A level the build cannot give refuses to start |
 | `KYTHIRA_REDIS_TXN_MAX_RETRIES` | `2` | Automatic retries of a transaction that met another one's lock, each under a fresh transaction id |
 | `KYTHIRA_REDIS_TXN_LOCK_TTL_MS` | `3000` | How long a prepared write stays locked without its coordinator's heartbeat before any party may abort the transaction |
@@ -384,6 +384,8 @@ RESP, which is what sccache's WebDAV backend and vcpkg's `http` binary
 source speak. `KYTHIRA_CACHE_PERSISTENCE=memory` is the older mode with
 every value in RAM. It refuses the variables below that need a data
 directory, and the rest of this section does not apply to it.
+`KYTHIRA_CACHE_PERSISTENCE=engine` keeps values in a RocksDB database per
+node instead; see *Engine storage* below.
 
 `services/redis/docker/cache-cluster/compose.yml` runs three nodes this way as uid 10001,
 with no capabilities, under Docker or rootless Podman, and
@@ -394,7 +396,7 @@ The design is `.kiro/specs/disk-backed-build-cache/`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KYTHIRA_CACHE_PERSISTENCE` | `file` | `file`, or `memory` for values in RAM. `file` needs `KYTHIRA_WIRE_SERIALIZER=cbor` |
+| `KYTHIRA_CACHE_PERSISTENCE` | `file` | `file`, `engine` (RocksDB; needs `CONFIG_REDIS_GATEWAY_ENGINE=y`), or `memory` for values in RAM. `file` and `engine` need `KYTHIRA_WIRE_SERIALIZER=cbor` |
 | `KYTHIRA_CACHE_DATA_DIR` | required | Chunk store and Raft state; see *Disk layout* |
 | `KYTHIRA_CACHE_MAX_DISK_BYTES` | required | This node's disk budget. Over it, shard leaders evict least-recently-read keys, counting reads served by followers |
 | `KYTHIRA_CACHE_MIN_FREE_BYTES` | `1073741824` | Below this much free space on the data filesystem, writes are refused with a retryable error and reads continue |
@@ -548,6 +550,26 @@ commit. All 752 objects were hits, at 3.8 ms each against OCI's 168 ms,
 with no read or write errors. Each node's memory peaked at 240 MiB or
 less. The full numbers are in `.kiro/specs/disk-backed-build-cache/tasks.md`.
 
+### Engine storage
+
+A daemon built with `CONFIG_REDIS_GATEWAY_ENGINE=y` (which needs
+`CONFIG_ENGINE_ROCKSDB=y` and the vcpkg feature `rocksdb`) and started with
+`KYTHIRA_CACHE_PERSISTENCE=engine` runs each shard on
+`persistent_kv_state_machine`: values live in one RocksDB database per node,
+a restart reloads nothing, and a follower that falls behind is caught up by
+streaming checkpoint files rather than one snapshot buffer
+(`.kiro/specs/persistent-state-machine/`, `doc/persistent_state_machines.md`).
+There is no chunk store and no HTTP object API, so the chunk store's and the
+HTTP front end's variables are refused.
+
+`KYTHIRA_CACHE_DATA_DIR` holds `engine/` (the database), `raft/<group>` (each
+shard's Raft log) and `snapshots/` (checkpoints and incoming transfers).
+`KYTHIRA_CACHE_MAX_DISK_BYTES` is checked against the size of `engine/`, and
+the free-space and inode floors work as in file mode, voters' reports
+included. `KYTHIRA_CACHE_MIN_FREE_BYTES` is also the margin a follower keeps
+beyond an incoming snapshot's size. `KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES`
+sets how many command bytes are applied between log compactions.
+
 ## Transactions
 
 A daemon built with `CONFIG_REDIS_GATEWAY_TRANSACTIONS=y` and run with
@@ -555,9 +577,11 @@ A daemon built with `CONFIG_REDIS_GATEWAY_TRANSACTIONS=y` and run with
 transactions across shards (`.kiro/specs/multi-raft-transactions/`, task 9).
 The build option wraps the key/value state machine in
 `transactional_state_machine`, which changes its snapshot format, so every
-node of a cluster must be built the same way. Only the in-memory store is
-wrapped: transactions need `KYTHIRA_CACHE_PERSISTENCE=memory`, and a node
-with file persistence refuses `KYTHIRA_REDIS_TRANSACTIONS=on` at startup.
+node of a cluster must be built the same way. The in-memory store and the
+engine store are wrapped (with the engine, locks and records live in the
+database too): transactions need `KYTHIRA_CACHE_PERSISTENCE=memory` or
+`engine`, and a node with file persistence refuses
+`KYTHIRA_REDIS_TRANSACTIONS=on` at startup.
 With the option off, or
 transactions off, nothing below exists: those commands answer `unknown
 command`, and `DEL` takes one key, as before.
