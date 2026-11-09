@@ -535,14 +535,47 @@ concept persistent_state_machine =
 /// Range-only split and merge (Requirement 1.3): `split_at(keys)` narrows
 /// this state machine's range to the part below the first key and returns
 /// the child ranges in key order; `adopt(range)` widens it over an adjacent
-/// range already in the same engine. Neither copies a key.
+/// range already in the same engine. Neither copies a key. `range()` is the
+/// range it owns now, which is how a host replaying a split entry after a
+/// crash sees that the cut already happened (`split_at` narrowed the range
+/// and wrote the children's records in one batch).
 template<typename SM, typename LogIndex = std::uint64_t>
 concept persistent_splittable_state_machine =
     persistent_state_machine<SM, LogIndex> &&
     requires(SM& sm, const std::vector<std::string>& keys, const key_range& range) {
         { sm.split_at(keys) } -> std::same_as<std::vector<key_range>>;
         { sm.adopt(range) } -> std::same_as<void>;
+        { std::as_const(sm).range() } -> std::convertible_to<const key_range&>;
     };
+
+/// What a persistent group saves as its snapshot's state: a marker, not the
+/// state, which stays in the engine (Requirement 3.2). `node<Types>` checks
+/// for it at restart, so byte-buffer state is never taken for metadata.
+inline auto persistent_snapshot_marker() -> const std::vector<std::byte>& {
+    static const std::vector<std::byte> marker = [] {
+        constexpr std::string_view text = "kythira-persistent-snapshot/1";
+        std::vector<std::byte> out;
+        out.reserve(text.size());
+        for (const char c : text) {
+            out.push_back(static_cast<std::byte>(c));
+        }
+        return out;
+    }();
+    return marker;
+}
+
+/// The engine a persistent state machine opens on, or `std::monostate` for a
+/// byte-buffer one, so a host can declare an engine field for either kind.
+template<typename SM, typename LogIndex = std::uint64_t> struct persistent_engine_of {
+    using type = std::monostate;
+};
+template<typename SM, typename LogIndex>
+requires persistent_state_machine<SM, LogIndex>
+struct persistent_engine_of<SM, LogIndex> {
+    using type = typename SM::engine_type;
+};
+template<typename SM, typename LogIndex = std::uint64_t>
+using persistent_engine_of_t = typename persistent_engine_of<SM, LogIndex>::type;
 
 /// Which path `node<Types>` takes for a state machine type.
 enum class state_machine_storage : std::uint8_t {

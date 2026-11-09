@@ -1252,6 +1252,19 @@ add_raft_completion_test(multi_raft_split_integration_test
                          multi_raft_split_integration_test.cpp)
 add_raft_completion_test(multi_raft_merge_integration_test
                          multi_raft_merge_integration_test.cpp)
+# persistent-state-machine task 4: the same two suites over a persistent state
+# machine (include/raft/persistent_test_state_machine.hpp), which splits by
+# range and merges by adopting a range of the host's engine, with no copies.
+add_raft_completion_test(multi_raft_split_integration_persistent_test
+                         multi_raft_split_integration_test.cpp)
+target_compile_definitions(multi_raft_split_integration_persistent_test PRIVATE
+                           KYTHIRA_PERSISTENT_STATE_MACHINE)
+target_link_libraries(multi_raft_split_integration_persistent_test PRIVATE OpenSSL::Crypto)
+add_raft_completion_test(multi_raft_merge_integration_persistent_test
+                         multi_raft_merge_integration_test.cpp)
+target_compile_definitions(multi_raft_merge_integration_persistent_test PRIVATE
+                           KYTHIRA_PERSISTENT_STATE_MACHINE)
+target_link_libraries(multi_raft_merge_integration_persistent_test PRIVATE OpenSSL::Crypto)
 add_raft_completion_test(split_merge_policy_unit_test split_merge_policy_unit_test.cpp)
 add_raft_completion_test(multi_raft_arbiter_unit_test multi_raft_arbiter_unit_test.cpp)
 # elastic-shard-capacity spec, tasks 1-2: the quorum-manager shadow, the split
@@ -1726,6 +1739,16 @@ if(FIU_FOUND)
     target_compile_definitions(multi_raft_crash_consistency_test PRIVATE FIU_ENABLE)
     target_link_libraries(multi_raft_crash_consistency_test PRIVATE ${FIU_LDFLAGS})
     target_include_directories(multi_raft_crash_consistency_test PRIVATE ${FIU_INCLUDE_DIRS})
+    # persistent-state-machine task 4 (Requirement 6.4): the same fault points
+    # over a persistent state machine.
+    add_raft_completion_test(multi_raft_crash_consistency_persistent_test
+                             multi_raft_crash_consistency_test.cpp)
+    target_compile_definitions(multi_raft_crash_consistency_persistent_test PRIVATE FIU_ENABLE
+                               KYTHIRA_PERSISTENT_STATE_MACHINE)
+    target_link_libraries(multi_raft_crash_consistency_persistent_test PRIVATE ${FIU_LDFLAGS}
+                          OpenSSL::Crypto)
+    target_include_directories(multi_raft_crash_consistency_persistent_test PRIVATE
+                               ${FIU_INCLUDE_DIRS})
 endif()
 add_raft_completion_test(multi_raft_oscillation_test multi_raft_oscillation_test.cpp)
 add_raft_completion_test(load_split_sampler_unit_test load_split_sampler_unit_test.cpp)

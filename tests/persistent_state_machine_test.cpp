@@ -410,6 +410,7 @@ public:
     }
 
     auto adopt(const key_range& range) -> void { _range.end = range.end; }
+    [[nodiscard]] auto range() const -> const key_range& { return _range; }
 
     [[nodiscard]] auto value(const std::string& key) const -> std::optional<std::string> {
         return _engine->get(column_family::data, _range.start + key);

@@ -488,6 +488,15 @@ struct multi_raft_config {
     // ── optional ─────────────────────────────────────────────────────────────
 
     std::function<typename Types::state_machine_type(const GroupId&)> state_machine_factory{};
+    /// Persistent state machines only (.kiro/specs/persistent-state-machine/):
+    /// the node's one engine. The host opens every group's state machine on
+    /// that group's shard range of it, after `state_machine_factory` builds it,
+    /// and hands split children and merge survivors their ranges in it with
+    /// no copies (Requirement 6). Required when the state machine is
+    /// persistent; unused otherwise.
+    std::shared_ptr<
+        persistent_engine_of_t<typename Types::state_machine_type, typename Types::log_index_type>>
+        state_engine{};
     std::function<typename Types::membership_manager_type(const GroupId&)> membership_factory{};
     std::function<typename Types::logger_type(const GroupId&)> logger_factory{};
     std::function<typename Types::metrics_type(const GroupId&)> metrics_factory{};

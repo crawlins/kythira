@@ -30,6 +30,19 @@ current list of outstanding work, see [TODO.md](TODO.md).
   define it. M3 run 2's liveness flag replayed 0/3 under its faults
   (recovery about 5 s against a 6 s bound) and 0/3 healed (0.1 s).
 
+- **Raft groups can keep their state in a key-value engine.** A state
+  machine satisfying `persistent_state_machine` keeps its state in the
+  node's `kv_engine` (`memory_kv_engine` for now; RocksDB is next), and
+  `node<Types>` takes a separate path for it. A restart starts at the
+  engine's applied index without reloading anything, snapshots are
+  metadata only, and reads return no bytes. Log compaction is off by
+  default (`raft_configuration::_persistent_log_compaction`) until a leader
+  can send such a group's snapshot, and object-store persistence engines
+  are refused at compile time. `multi_raft` splits a persistent group by
+  range and merges by adopting the neighbour's range, so neither copies a
+  key; set `multi_raft_config::state_engine`. The Redis command set runs on
+  the engine as `persistent_kv_state_machine` (Redis module).
+
 ### What Changed (November 5, 2026)
 
 - **Network tests pick their ports at run time.** Tests that listened on

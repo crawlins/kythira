@@ -9725,16 +9725,7 @@ auto node<Types>::compact_log() -> void {
 
 template<raft_types Types>
 auto node<Types>::persistent_snapshot_marker() -> const std::vector<std::byte>& {
-    static const std::vector<std::byte> marker = [] {
-        constexpr std::string_view text = "kythira-persistent-snapshot/1";
-        std::vector<std::byte> out;
-        out.reserve(text.size());
-        for (const char c : text) {
-            out.push_back(static_cast<std::byte>(c));
-        }
-        return out;
-    }();
-    return marker;
+    return kythira::persistent_snapshot_marker();
 }
 
 template<raft_types Types> auto node<Types>::persistent_compaction_enabled() const -> bool {

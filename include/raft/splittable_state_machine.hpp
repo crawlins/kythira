@@ -58,30 +58,43 @@ namespace kythira {
 /// replica applies anything, so they may consult a cache, sample, or change
 /// their mind between calls.
 ///
+/// `split_policy_state_machine` is the policy half, which every splittable
+/// state machine provides: sizes and the leader-only hooks.
+/// `splittable_state_machine` adds the byte-buffer cut and absorb.
+///
 /// @tparam SM  The state machine type.
 /// @tparam Key Must satisfy `shard_key`.
 template<typename SM, typename Key>
+concept split_policy_state_machine = requires(SM& sm, const SM& csm, const Key& k) {
+    // Stated as a nested requirement rather than as `shard_key Key` in the
+    // template head: a concept may not have associated constraints, so a
+    // constrained template parameter is ill-formed here.
+    requires shard_key<Key>;
+
+    /// Approximate bytes held. Approximate on purpose: an exact figure
+    /// would cost a full scan on every policy tick.
+    { csm.approximate_size_bytes() } -> std::same_as<std::size_t>;
+    { csm.approximate_key_count() } -> std::same_as<std::size_t>;
+
+    /// Leader-only, advisory: up to `max` good places to cut. May return
+    /// fewer, including none.
+    { sm.suggest_split_keys(std::size_t{}) } -> std::same_as<std::vector<Key>>;
+
+    /// Leader-only, authoritative: the application's veto. A key this
+    /// returns `false` for is never proposed as a split point.
+    { csm.can_split_at(k) } -> std::same_as<bool>;
+};
+
+/// The byte-buffer half: a state machine that satisfies the policy hooks
+/// above and moves its parts as blobs. A persistent state machine instead
+/// satisfies `split_policy_state_machine` and
+/// `persistent_splittable_state_machine` (persistent_state_machine.hpp), and
+/// splits by range with no copies.
+template<typename SM, typename Key>
 concept splittable_state_machine =
-    requires(SM& sm, const SM& csm, const Key& k, const std::vector<Key>& keys,
-             const std::vector<std::byte>& blob, const shard_range<Key>& r) {
-        // Stated as a nested requirement rather than as `shard_key Key` in the
-        // template head: a concept may not have associated constraints, so a
-        // constrained template parameter is ill-formed here.
-        requires shard_key<Key>;
-
-        /// Approximate bytes held. Approximate on purpose: an exact figure
-        /// would cost a full scan on every policy tick.
-        { csm.approximate_size_bytes() } -> std::same_as<std::size_t>;
-        { csm.approximate_key_count() } -> std::same_as<std::size_t>;
-
-        /// Leader-only, advisory: up to `max` good places to cut. May return
-        /// fewer, including none.
-        { sm.suggest_split_keys(std::size_t{}) } -> std::same_as<std::vector<Key>>;
-
-        /// Leader-only, authoritative: the application's veto. A key this
-        /// returns `false` for is never proposed as a split point.
-        { csm.can_split_at(k) } -> std::same_as<bool>;
-
+    split_policy_state_machine<SM, Key> &&
+    requires(SM& sm, const std::vector<Key>& keys, const std::vector<std::byte>& blob,
+             const shard_range<Key>& r) {
         /// Every replica, at apply. Returns `keys.size() + 1` blobs, in key
         /// order: everything below `keys[0]`, then each `[keys[i], keys[i+1])`,
         /// then everything at or above the last key. MUST be deterministic.
