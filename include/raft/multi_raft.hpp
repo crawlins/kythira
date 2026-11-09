@@ -1467,6 +1467,11 @@ public:
     /// per-group work (admin-entry dispatch from Phase 6 onward, policy
     /// follow-ups) needs a place that is already ordered after the send phase.
     auto defer_to_apply_phase(const GroupId& group, std::function<void()> work) -> bool;
+
+    /// How long a target waits for its `merge_commit` to apply before it
+    /// proposes it again. A proposal outstanding that long was almost always
+    /// lost to a leadership change; a duplicate is harmless either way.
+    static constexpr std::chrono::seconds k_merge_commit_retry_after{5};
     /// @}
 
     /// @name Hibernation
@@ -1760,6 +1765,14 @@ private:
         bool _merge_abandoned{false};
         /// When the source was frozen, for the stall warning.
         std::chrono::steady_clock::time_point _merge_frozen_at{};
+        /// Set on a frozen source: proposes this merge's `merge_commit` on the
+        /// target, if this machine leads it. The policy tick calls it again
+        /// while the source stays frozen, because the call made when the
+        /// prepare applied is the only other one, and it can miss.
+        std::function<void()> _merge_redrive;
+        /// When this target last proposed `merge_commit`, so a proposal lost
+        /// to a leadership change is retried rather than waited on forever.
+        std::chrono::steady_clock::time_point _merge_commit_proposed_at{};
 
         // ── arbiter history (the anti-oscillation inputs) ────────────────────
         std::atomic<std::int64_t> _last_split_ns{0};
