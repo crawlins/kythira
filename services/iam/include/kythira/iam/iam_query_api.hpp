@@ -108,6 +108,29 @@ concept query_cluster = requires(C& c, const std::function<void(const iam_state_
     return 400;  // InvalidInput, ValidationError, MalformedPolicyDocument, ...
 }
 
+namespace detail {
+
+/// The kind of credential `who` signed with (Requirement 10.10).
+[[nodiscard]] inline auto credential_of(const aws_auth::principal_context& who)
+    -> validate::credential_kind {
+    if (who.session_token) {
+        return validate::credential_kind::session_token;
+    }
+    switch (who.type) {
+        case aws_auth::principal_type::root:
+            return validate::credential_kind::root;
+        case aws_auth::principal_type::user:
+            return validate::credential_kind::user;
+        case aws_auth::principal_type::assumed_role:
+            return validate::credential_kind::assumed_role;
+        case aws_auth::principal_type::federated_user:
+            return validate::credential_kind::federated_user;
+    }
+    return validate::credential_kind::user;
+}
+
+}  // namespace detail
+
 /// An error a handler answers with.
 class api_error : public std::runtime_error {
 public:
@@ -408,6 +431,12 @@ private:
             if (it == table.end()) {
                 detail::fail("NotImplemented",
                              "The action " + action + " is not implemented by this endpoint.");
+            }
+            // INV-CRED-5, INV-CRED-6: GetSessionToken credentials need MFA
+            // in the session, which none can have, and GetFederationToken
+            // credentials never may. Not a policy decision: none lifts it.
+            if (!validate::iam_api_allowed(detail::credential_of(who), false)) {
+                detail::fail("AccessDenied", "Cannot call " + action + " with session credentials");
             }
             return it->second(*this);
         }

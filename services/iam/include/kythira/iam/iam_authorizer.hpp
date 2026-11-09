@@ -239,6 +239,15 @@ void add_entity_policies(gathered& g, const iam_state_machine& sm, const Entity&
             add_user(who.username);
             break;
         case aws_auth::principal_type::federated_user: {
+            if (who.user_arn.empty()) {
+                // The root federated: it may do anything in its account,
+                // so the session policies alone limit the session.
+                add_parsed(g, g.identity, "root",
+                           R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow",)"
+                           R"("Action":"*","Resource":"*"}]})",
+                           policy_type::identity);
+                break;
+            }
             // The federating user's current policies, as AWS applies them.
             const auto slash = who.user_arn.rfind('/');
             add_user(slash == std::string::npos ? who.user_arn : who.user_arn.substr(slash + 1));
@@ -308,6 +317,9 @@ public:
     /// to answer from (`replica_freshness::fresh`). Unset, the state is
     /// the leader's own and always is.
     void set_freshness(std::function<bool()> fresh) { _fresh = std::move(fresh); }
+
+    /// The authorizer's clock, so a caller dates what it checks the same way.
+    [[nodiscard]] auto now() const -> std::chrono::system_clock::time_point { return _clock(); }
 
     /// Requirement 7.1: who signed `req`, or the AWS error to answer with.
     [[nodiscard]] auto authenticate(const sigv4::request& req, const sigv4::service_rules& rules)
@@ -453,8 +465,60 @@ public:
             out.sid = d.deciding->sid;
         }
         out.reason = d.reason;
+        if (!out.allowed && r.want_encoded_message) {
+            out.encoded_message = encoded_message(who, r, d, req.context);
+        }
         record(who, r, out);
         return out;
+    }
+
+    /// Requirement 10.9: the denial as DecodeAuthorizationMessage renders
+    /// it (AWS's JSON shape), sealed under the newest STS key for the
+    /// caller's account. Nothing when no STS key exists yet.
+    [[nodiscard]] auto encoded_message(const aws_auth::principal_context& who,
+                                       const aws_auth::authz_request& r, const decision& d,
+                                       const context_keys& ctx) -> std::optional<std::string> {
+        std::optional<sts::sts_key> key;
+        _state([&](const iam_state_machine& sm) {
+            if (!sm.kek_salt().empty()) {
+                key = sts::signing_key(sm, _kek(sm.kek_salt()));
+            }
+        });
+        if (!key) {
+            return std::nullopt;
+        }
+        const auto items = [](boost::json::array a) { return boost::json::object{{"items", a}}; };
+        boost::json::array matched;
+        if (d.result == decision::outcome::explicit_deny && d.deciding) {
+            matched.push_back(
+                boost::json::object{{"statementId", d.deciding->sid}, {"effect", "DENY"}});
+        }
+        boost::json::array conditions;
+        ctx.for_each([&](const std::string& k, const std::vector<std::string>& values) {
+            boost::json::array vs;
+            for (const auto& v : values) {
+                vs.push_back(boost::json::object{{"value", v}});
+            }
+            conditions.push_back(boost::json::object{{"key", k}, {"values", items(vs)}});
+        });
+        const auto name = who.type == aws_auth::principal_type::user ? who.username
+                          : who.session_name.empty()                 ? who.arn
+                                                                     : who.session_name;
+        boost::json::object message{
+            {"iat",
+             std::chrono::duration_cast<std::chrono::seconds>(_clock().time_since_epoch()).count()},
+            {"allowed", false},
+            {"explicitDeny", d.result == decision::outcome::explicit_deny},
+            {"matchedStatements", items(std::move(matched))},
+            {"failures", items({})},
+            {"context", boost::json::object{{"principal", boost::json::object{{"id", who.userid},
+                                                                              {"name", name},
+                                                                              {"arn", who.arn}}},
+                                            {"action", r.action},
+                                            {"resource", r.resource},
+                                            {"conditions", items(std::move(conditions))}}},
+        };
+        return sts::seal_message(*key, who.account, message);
     }
 
     /// AssumeRoleWithWebIdentity's check (task 19): the request is unsigned,

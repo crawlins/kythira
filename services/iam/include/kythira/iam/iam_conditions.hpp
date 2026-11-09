@@ -116,6 +116,13 @@ public:
 
     [[nodiscard]] auto size() const noexcept -> std::size_t { return _keys.size(); }
 
+    /// Calls `f(key, values)` for every key, in key order.
+    template<typename F> void for_each(F&& f) const {
+        for (const auto& [k, e] : _keys) {
+            f(k, e.values);
+        }
+    }
+
 private:
     struct entry {
         std::vector<std::string> values;
