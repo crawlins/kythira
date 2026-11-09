@@ -255,6 +255,21 @@ private:
     std::optional<std::string> leader_;
 };
 
+/// The group could not confirm an entry: it timed out, or leadership moved
+/// while it was in flight. The entry may still commit, so the request is
+/// not safe to resend blindly (`retryable` false) unless it was a read.
+class ledger_unavailable : public std::runtime_error {
+public:
+    ledger_unavailable(std::string code, const std::string& message, bool retryable)
+        : std::runtime_error(message), code_(std::move(code)), retryable_(retryable) {}
+    [[nodiscard]] auto code() const -> const std::string& { return code_; }
+    [[nodiscard]] auto retryable() const -> bool { return retryable_; }
+
+private:
+    std::string code_;
+    bool retryable_;
+};
+
 /// What the API needs of one ledger hosted (and led) here.
 template<typename StateMachine> struct ledger_handle {
     const StateMachine* sm = nullptr;
@@ -266,6 +281,9 @@ template<typename StateMachine> struct ledger_handle {
     /// Run an export job that has just been recorded (in the background;
     /// the runner proposes its finish entry).
     std::function<void(const export_job&)> start_export;
+    /// The ledger group's current term, when it has its own; unset means
+    /// the backend's term().
+    std::function<std::uint64_t()> term;
 };
 
 /// Backend requirements:
@@ -273,8 +291,15 @@ template<typename StateMachine> struct ledger_handle {
 ///   b.propose_catalog(bytes)       -> bytes (the catalog's apply result)
 ///   b.open(record)                 -> std::optional<ledger_handle<SM>>
 ///                                     (nullopt: not hosted here)
-///   b.term()                       -> std::uint64_t (this leader's term)
+///   b.term()                       -> std::uint64_t (this leader's term;
+///                                     a handle's own term() wins)
 ///   b.now_ms()                     -> std::int64_t (wall clock)
+/// and optionally
+///   b.place_ledger(name)           -> std::vector<std::string> (the voters
+///                                     a new ledger's group is placed on)
+///   b.confirm_missing(name)        -> void; throws ledger_not_leader when
+///                                     only the catalog leader can say a
+///                                     ledger does not exist
 template<typename Backend, typename StateMachine> class ledger_api {
 public:
     ledger_api(Backend& backend, ledger_roles roles)
@@ -299,6 +324,8 @@ public:
                              .to_json();
             }
             return r;
+        } catch (const ledger_unavailable& e) {
+            return error(503, e.code(), e.what(), e.retryable());
         } catch (const ledger_session_error& e) {
             return error(status_for(e.code()), e.code(), e.what(), e.retryable());
         } catch (const ledger_query_error& e) {
@@ -455,8 +482,13 @@ private:
             throw api_error(400, "invalid_request",
                             "a ledger name is 1-32 letters, digits and hyphens, from a letter");
         }
+        std::vector<std::string> voters;
+        if constexpr (requires { backend_->place_ledger(name); }) {
+            voters = backend_->place_ledger(name);
+        }
         return catalog_change(
-            req, catalog_entries::create(name, new_id(), protection, backend_->now_ms()), 201);
+            req, catalog_entries::create(name, new_id(), protection, backend_->now_ms(), voters),
+            201);
     }
 
     auto update_ledger(const api_request& req, const std::string& name) -> api_response {
@@ -490,9 +522,21 @@ private:
         require(req, name, role);
         auto r = backend_->catalog().get(name);
         if (!r || r->state == "purged") {
+            // A catalog replica that is not the leader may not have applied
+            // a create the client has already seen succeed: such a backend
+            // sends the request to the catalog leader instead.
+            if constexpr (requires { backend_->confirm_missing(name); }) {
+                backend_->confirm_missing(name);
+            }
             throw api_error(404, "ledger_not_found", "no ledger " + name);
         }
         return *r;
+    }
+
+    /// The term sessions are tied to: the ledger group's when the backend
+    /// gives one (a multi-group node), else the backend's.
+    auto term_of(const ledger_handle<StateMachine>& h) -> std::uint64_t {
+        return h.term ? h.term() : backend_->term();
     }
 
     /// An active ledger's handle, for data routes.
@@ -534,7 +578,7 @@ private:
     auto execute(const api_request& req, const std::string& name) -> api_response {
         auto h = handle_for(req, name, ledger_role::write);
         const ion_value body = parse_body(req);
-        const auto pending = h.sessions->execute_pending(backend_->term(), statement_list(body));
+        const auto pending = h.sessions->execute_pending(term_of(h), statement_list(body));
         return commit_result(req, commit(h, pending));
     }
 
@@ -577,7 +621,7 @@ private:
             if (req.method != "POST") {
                 throw method_not_allowed();
             }
-            const auto token = h.sessions->begin(backend_->term());
+            const auto token = h.sessions->begin(term_of(h));
             ion_value v = ion_value::make_struct();
             v.set("token", ion_value::string(token))
                 .set("snapshot",

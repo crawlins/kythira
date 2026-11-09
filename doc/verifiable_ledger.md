@@ -9,9 +9,10 @@ its spec is `.kiro/specs/verifiable-ledger/`.
 
 Status: the state machine, transactions, indexes, segments, export,
 offline verification, signed digests, the native API with its HTTPS server
-and the C++ client are built and tested. The `ledger_node` daemon (task 7c)
-and snapshot catch-up (task 9) wait on the persistent-state-machine node;
-until then the API runs in tests over an in-process backend.
+and the C++ client are built and tested, and so is the node's core over
+multi_raft (ledger placement, routing, background index builds and seals),
+which runs in tests on an in-process network. The `ledger_node` daemon
+waits on the RocksDB engine, and snapshot catch-up (task 9) after it.
 
 ## Model
 
@@ -55,6 +56,22 @@ until then the API runs in tests over an in-process backend.
   (64 MiB by default) that are byte-identical on every replica, and from
   there optionally to object storage. Reads and proofs fetch them back
   and check each one's SHA-256.
+
+## Placement and routing
+
+The catalog group runs on every member. When a ledger is created, the
+catalog leader places its group on three members (all of them, in a
+smaller cluster), round robin, and the catalog assigns the group id, so
+every member reads the same placement and creates the groups it is a
+voter of. Any member answers any request: catalog reads come from its own
+replica, and anything else that it does not lead gets `not_leader` with
+the leader's URL. A member that is not the catalog leader never says a
+ledger does not exist; it redirects instead, since its replica may not
+have applied a create yet. A new group leader catches up on everything
+committed before its term before it prepares a transaction. If a commit
+cannot be confirmed (a timeout, or leadership moving mid-flight) the
+answer is 503 `commit_unconfirmed` with `retryable: false`: the
+transaction may still commit, so check before resending it.
 
 ## API
 
@@ -119,7 +136,8 @@ Errors are `{code, message, retryable}` with these statuses: 400 for a
 malformed request, 403 for a missing role, 404 for something not found,
 409 for conflicts (`occ_conflict`, `stale_block` and `session_expired` are
 retryable), 429 for too many sessions, 503 `not_leader` (with the leader's
-URL when known), and 507 `insufficient_storage`.
+URL when known, retryable) or `commit_unconfirmed` (not retryable, see
+above), and 507 `insufficient_storage`.
 
 ### C++ client
 

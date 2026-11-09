@@ -27,13 +27,22 @@
 //
 // Engine layout under the range's start P:
 //   meta  P meta/applied        applied log index (decimal)
-//   data  P ledger/<name>       {ledgerId, state, deletionProtection, created, deleted?}
+//   meta  P meta/next_group     the next ledger group id (decimal)
+//   data  P ledger/<name>       {ledgerId, state, deletionProtection, created, deleted?,
+//                                group?, voters?}
+//
+// Placement (task 7c): a create entry may carry `voters`, the node ids
+// (as text) the leader chose for the ledger's group. The catalog then
+// assigns the group id, counting up from first_ledger_group, so ids are
+// unique without a separate allocator. Every node reads the records and
+// creates the groups it is a voter of.
 
 #include <kythira/ledger/ion_value.hpp>
 #include <kythira/ledger/journal_types.hpp>
 
 #include <raft/persistent_state_machine.hpp>
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -67,6 +76,11 @@ struct ledger_record {
     bool deletion_protection = true;
     std::int64_t created = 0;
     std::optional<std::int64_t> deleted;
+    /// Where the ledger's group runs (task 7c): the Raft group id the
+    /// catalog assigned and the voters the leader placed it on. Absent for
+    /// a ledger created without placement (a single-process backend).
+    std::optional<std::uint64_t> group;
+    std::vector<std::string> voters;
 
     [[nodiscard]] auto to_ion() const -> ion_value {
         ion_value v = ion_value::make_struct();
@@ -77,6 +91,14 @@ struct ledger_record {
             .set("created", timestamp_value(created));
         if (deleted) {
             v.set("deleted", timestamp_value(*deleted));
+        }
+        if (group) {
+            ion_value list = ion_value::make_list();
+            for (const auto& n : voters) {
+                list.push_back(ion_value::string(n));
+            }
+            v.set("group", ion_value::integer(static_cast<std::int64_t>(*group)))
+                .set("voters", std::move(list));
         }
         return v;
     }
@@ -92,7 +114,30 @@ struct ledger_record {
         if (v.find("deleted") != nullptr) {
             r.deleted = jd::time_field(v, "deleted");
         }
+        if (v.find("group") != nullptr) {
+            r.group = jd::uint_field(v, "group");
+            r.voters = voter_list(v);
+        }
         return r;
+    }
+
+    /// The `voters` list of a record or create entry: node ids as text,
+    /// at least one, no repeats.
+    static auto voter_list(const ion_value& v) -> std::vector<std::string> {
+        namespace jd = journal_detail;
+        const auto& list = jd::required(v, "voters");
+        if (list.type() != ion_type::list || list.size() == 0) {
+            throw ledger_format_error("voters must be a non-empty list");
+        }
+        std::vector<std::string> out;
+        for (const auto& item : list.items()) {
+            auto t = item.as_text();
+            if (!t || t->empty() || std::ranges::find(out, *t) != out.end()) {
+                throw ledger_format_error("voters must be distinct node ids");
+            }
+            out.push_back(std::move(*t));
+        }
+        return out;
     }
 };
 
@@ -107,14 +152,24 @@ inline auto encode(const ion_value& v) -> std::vector<std::byte> {
     return out;
 }
 
+/// `voters`, when given, places the ledger's group on those nodes; the
+/// catalog then assigns it the next group id.
 inline auto create(std::string_view name, std::string_view ledger_id, bool deletion_protection,
-                   std::int64_t time) -> std::vector<std::byte> {
+                   std::int64_t time, const std::vector<std::string>& voters = {})
+    -> std::vector<std::byte> {
     ion_value v = ion_value::make_struct();
     v.set("type", ion_value::symbol("catalog_create"))
         .set("name", ion_value::string(name))
         .set("ledgerId", ion_value::string(ledger_id))
         .set("deletionProtection", ion_value::boolean(deletion_protection))
         .set("time", timestamp_value(time));
+    if (!voters.empty()) {
+        ion_value list = ion_value::make_list();
+        for (const auto& n : voters) {
+            list.push_back(ion_value::string(n));
+        }
+        v.set("voters", std::move(list));
+    }
     return encode(v);
 }
 
@@ -169,6 +224,10 @@ class ledger_catalog_error : public std::logic_error {
 public:
     using std::logic_error::logic_error;
 };
+
+/// The catalog's own Raft group id, and the first id it assigns a ledger.
+inline constexpr std::uint64_t catalog_group = 1;
+inline constexpr std::uint64_t first_ledger_group = 2;
 
 template<kythira::kv_engine Engine> class basic_ledger_catalog {
 public:
@@ -301,6 +360,13 @@ private:
             }
             r.deletion_protection = jd::required(v, "deletionProtection").as_bool().value_or(true);
             r.created = jd::time_field(v, "time");
+            if (v.find("voters") != nullptr) {
+                r.voters = ledger_record::voter_list(v);
+                r.group = next_group_;
+                batch.put(kythira::column_family::meta, key_next_group(),
+                          std::to_string(next_group_ + 1));
+                ++next_group_;  // undone by load_locked() if the write throws
+            }
             return put(r, batch);
         }
         if (!current || current->state == "purged") {
@@ -366,6 +432,7 @@ private:
     }
 
     [[nodiscard]] auto key_applied() const -> std::string { return prefix_ + "meta/applied"; }
+    [[nodiscard]] auto key_next_group() const -> std::string { return prefix_ + "meta/next_group"; }
     [[nodiscard]] auto key_ledger(std::string_view name) const -> std::string {
         return prefix_ + "ledger/" + std::string(name);
     }
@@ -373,6 +440,8 @@ private:
     auto load_locked() -> void {
         const auto applied = engine_->get(kythira::column_family::meta, key_applied());
         applied_ = applied ? std::stoull(*applied) : 0U;
+        const auto next = engine_->get(kythira::column_family::meta, key_next_group());
+        next_group_ = next ? std::stoull(*next) : first_ledger_group;
         seqs_.clear();
         durable_floor_ = applied_;
     }
@@ -392,6 +461,7 @@ private:
     kythira::key_range range_;
     std::string prefix_;
     std::uint64_t applied_ = 0;
+    std::uint64_t next_group_ = first_ledger_group;
     std::uint64_t durable_floor_ = 0;
     std::vector<std::pair<std::uint64_t, kythira::engine_sequence>> seqs_;
 };

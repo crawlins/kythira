@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Core *_impl.hpp headers the ledger module may include, one per line, with
+# the reason (services/README.md, "Boundary rules"). Only the composition
+# root and tests that stand up an in-process cluster may be listed: both
+# instantiate core templates the way an application would.
+#
+# file                          allowed core *_impl.hpp   why
+tests/ledger_host_test.cpp      multi_raft_impl.hpp       stands up in-process hosts
