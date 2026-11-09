@@ -1174,4 +1174,25 @@ BOOST_AUTO_TEST_CASE(a_node_restarted_on_the_other_build_keeps_serving,
     BOOST_CHECK(wait_cluster_ready(120s));
 }
 
+// IAM task 22 (Requirement 13.1): an `auth=iam` user in an ACL that old and
+// new builds share. acl.txt gives it the secret `disabled`, as the
+// rolling-upgrade rule in doc/redis-gateway.md says to: the old build reads
+// `auth=iam` as a key prefix and refuses the disabled user, and the new one
+// refuses its password (no IAM verifier is configured here). Neither build
+// rejects the file, so the password users beside it still log in.
+BOOST_AUTO_TEST_CASE(an_iam_only_user_is_refused_by_old_and_new_builds,
+                     *boost::unit_test::timeout(120)) {
+    BOOST_CHECK(runs(k_containers[0], "old"));
+    BOOST_CHECK(runs(k_containers[2], "dev"));
+    const std::string wrongpass =
+        "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+    for (std::size_t n = 0; n < k_resp_ports.size(); ++n) {
+        BOOST_TEST_INFO("node " << n + 1);
+        resp_client c(k_resp_ports[n]);
+        BOOST_CHECK_EQUAL(c.call({"AUTH", "iam-cache", "disabled"}), wrongpass);
+        BOOST_CHECK_EQUAL(c.call({"AUTH", "iam-cache", "iam-cache-secret"}), wrongpass);
+        BOOST_CHECK(connect_as(k_resp_ports[n], "ci-main").has_value());
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

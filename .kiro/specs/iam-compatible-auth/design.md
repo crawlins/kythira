@@ -777,6 +777,26 @@ the adapter, so a build without `CONFIG_REDIS_GATEWAY_IAM` has none of them.
 - `CONFIG_REDIS_GATEWAY_IAM` defaults to `y` whenever the gateway and IAM
   are both on, so every CI leg that builds both covers the wiring.
 
+**As built (task 22).**
+- The connection deadline, its re-arming on re-AUTH, and the per-address
+  failure budget were already in the gateway from `redis-gateway-module`
+  task 6, so this task is mostly tests: re-AUTH moving the deadline, refused
+  tokens spending the budget until even a good token is turned away, and an
+  IAM user's commands forwarded from a follower over the internal link.
+- Requirement 3.8 also names a per-access-key budget, which the gateway's
+  limiter cannot keep (it never sees the key id). `iam_redis_verifier`
+  keeps it with core's `sigv4::failure_limiter` in per-key-only mode:
+  100 failed signatures per key per minute by default, charged only for
+  authentication failures, never for a stale replica. Key ids are not
+  secret, so the budget is generous: anyone can spend it.
+- The verifier takes a second, steady clock for those windows, so the
+  tests drive both the 12-hour deadline and the failure window by hand.
+- The rolling-upgrade scenario's ACL gains `iam-cache`, an `auth=iam`
+  user with the secret `disabled`. The new case proves old and new builds
+  load that file and both refuse the user. The token path itself is not in
+  the container scenario, which has no IAM cluster; `iam_embedded_replica_test`
+  and the gateway tests cover it.
+
 ## Configuration
 
 | Flag | Daemon | Default |

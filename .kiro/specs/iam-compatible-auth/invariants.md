@@ -30,8 +30,9 @@ Test files are under `services/iam/tests/` unless a path says otherwise:
   (the CA cluster and `iam_node` as processes);
 - `rv` is `iam_redis_verifier_test.cpp`, `er` is
   `iam_embedded_replica_test.cpp`, `acl` is
-  `services/redis/tests/redis_acl_unit_test.cpp` and `gw` is
-  `services/redis/tests/redis_gateway_integration_test.cpp`;
+  `services/redis/tests/redis_acl_unit_test.cpp`, `gw` is
+  `services/redis/tests/redis_gateway_integration_test.cpp` and `cc` is
+  `services/redis/tests/docker/cache_cluster_test.cpp` (the containers);
 - `sigv4` is `tests/sigv4_verifier_test.cpp`.
 
 ## Gaps this review found and fixed
@@ -297,6 +298,11 @@ are this design's, not AWS's.
 | INV-REDIS-7 | Kythira rule (Requirement 13.1): `auth=` is a reserved ACL attribute (`password` by default, `iam`, `both`), never a key prefix; a repeated or unknown value is rejected; an `auth=iam` user's password is never accepted; for `iam` and `both`, `nopass` needs no `cert=` and `disabled` means no password | Tested: acl `auth_attribute_is_reserved_not_a_key_prefix`, `auth_attribute_rejects_repeated_and_unknown_values`, `an_iam_user_needs_no_password_and_disabled_keeps_it_iam_only` |
 | INV-REDIS-8 | Kythira rule (Requirements 13.4, 13.7): the verifier handles exactly the `iam` and `both` users; a `both` user it refuses may use its password; the ACL user's role and prefixes apply; the internal user is never vouched for | Tested: gw `auth_attribute_selects_the_verifier_and_both_falls_back_to_the_password`, `a_credential_verifier_vouches_only_for_selected_users` |
 | INV-REDIS-9 | Kythira rule (Requirement 13.6): a build without `CONFIG_REDIS_GATEWAY_IAM` has no IAM variables and no IAM code | Tested: CTest `redis_gateway_node_iam_switch` (`--help`); `iam_auth.cpp` is compiled only with the option |
+| INV-REDIS-10 | Requirement 13.5: each accepted IAM `AUTH` opens 12 hours from its own moment (an injected clock), the gateway closes the connection at its deadline, and re-AUTH with a fresh token on the open connection moves the deadline; the re-AUTH is authorized afresh | Tested: rv `inv_redis_10_reauth_with_a_fresh_token_extends_the_deadline`; gw `reauth_extends_a_verified_connection_and_denials_spend_the_budget`, `a_credential_verifier_vouches_only_for_selected_users` (expiry closes a busy connection) |
+| INV-REDIS-11 | Kythira rule (Requirement 13.5): a refused token spends the source address's `AUTH` failure budget as a wrong password does; once it is spent, `AUTH` is refused before the verifier is asked, on any connection, until the window lapses | Tested: gw `reauth_extends_a_verified_connection_and_denials_spend_the_budget` |
+| INV-REDIS-12 | Requirement 13.7: an IAM user's commands forwarded to another shard's leader travel over the internal link, which authenticates with the internal secret and never through the verifier | Tested: gw `reauth_extends_a_verified_connection_and_denials_spend_the_budget` (from a follower) |
+| INV-REDIS-13 | Requirement 13.1's rolling-upgrade rule: an `auth=iam` user with the secret `disabled` is refused by a pre-`auth=` build and by a new build without a verifier, and neither rejects the ACL file | Tested: cc `an_iam_only_user_is_refused_by_old_and_new_builds` (`docker-cache-rolling-upgrade-tests`) |
+| INV-REDIS-14 | Requirement 3.8: failed token signatures are charged to the token's access key id from any address; a key past its budget is refused unchecked until its window ends, other keys are unaffected, and a stale-replica refusal is not charged | Tested: rv `inv_redis_11_failed_signatures_spend_the_key_budget` |
 
 ## SigV4
 

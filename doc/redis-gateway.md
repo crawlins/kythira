@@ -247,6 +247,17 @@ cache's account, region and name. A replica that falls more than
 `KYTHIRA_IAM_MAX_STALENESS_SECS` behind refuses IAM logins until it
 catches up; password logins are unaffected.
 
+As on ElastiCache, an IAM-authenticated connection lasts 12 hours, or less
+when the token's signer used temporary credentials that expire sooner. The
+gateway closes it at that deadline, idle or not, and a command that arrives
+after it gets `-NOAUTH credential expired`. A client keeps the connection by
+sending `AUTH` again with a fresh token before then: each accepted `AUTH`
+starts its own 12 hours, and is authorized afresh, so a revoked policy
+stops the extension. A refused re-`AUTH` leaves the connection on its
+earlier login and deadline, as a refused `AUTH` does in Redis. A password
+`AUTH` on the same connection drops the deadline. Refused tokens spend
+the source address's failure budget (above) exactly as wrong passwords do.
+
 ## Configuring sccache
 
 sccache's `redis` backend needs nothing beyond its standard variables:

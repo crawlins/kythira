@@ -28,6 +28,11 @@
 ///   4. accept until the earlier of 12 hours from now and the session's own
 ///      expiry.
 ///
+/// Failed signatures are also charged to the token's access key id
+/// (Requirement 3.8), so guesses at one key spread over many addresses
+/// still run out; the gateway's `redis_auth_limiter` keeps the per-address
+/// budget, and charges every refusal from here to it as a wrong password.
+///
 /// The Redis module never includes this header: redis_gateway_node's
 /// composition root wires it in when built with `CONFIG_REDIS_GATEWAY_IAM`.
 /// A denial's reason goes to the gateway's audit log, never to the client,
@@ -38,12 +43,14 @@
 #include <raft/aws_request_authorizer.hpp>
 #include <raft/credential_verifier.hpp>
 #include <raft/future_default.hpp>
+#include <raft/sigv4_failure_limiter.hpp>
 #include <raft/sigv4_verifier.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -61,16 +68,32 @@ struct redis_verifier_config {
     std::chrono::seconds max_token_lifetime{900};
     /// How long an accepted `AUTH` keeps a connection (ElastiCache's 12 h).
     std::chrono::seconds max_connection{12 * 60 * 60};
+    /// Failed signatures one access key id may collect per window before
+    /// its tokens are refused unchecked; 0 turns the budget off. Key ids
+    /// are not secret, so this is generous: anyone can spend it.
+    std::size_t per_key_failure_limit = 100;
+    std::chrono::seconds failure_window{60};
 };
 
 class iam_redis_verifier {
 public:
     using clock_fn = std::function<std::chrono::system_clock::time_point()>;
+    using steady_fn = std::function<std::chrono::steady_clock::time_point()>;
 
-    iam_redis_verifier(iam_authorizer& authz, redis_verifier_config cfg, clock_fn clock = nullptr)
-        : _authz(&authz), _cfg(std::move(cfg)), _clock(clock ? std::move(clock) : clock_fn([] {
-              return std::chrono::system_clock::now();
-          })) {
+    /// `clock` dates the connection deadline; `steady` times the per-key
+    /// failure windows. Both default to the real clocks.
+    iam_redis_verifier(iam_authorizer& authz, redis_verifier_config cfg, clock_fn clock = nullptr,
+                       steady_fn steady = nullptr)
+        : _authz(&authz),
+          _cfg(std::move(cfg)),
+          _clock(clock ? std::move(clock)
+                       : clock_fn([] { return std::chrono::system_clock::now(); })),
+          _steady(steady ? std::move(steady)
+                         : steady_fn([] { return std::chrono::steady_clock::now(); })),
+          _failures(std::make_shared<sigv4::failure_limiter>(
+              sigv4::failure_limits{.per_source = 0,
+                                    .per_key = _cfg.per_key_failure_limit,
+                                    .window = _cfg.failure_window})) {
         _cfg.cache_name = lower(_cfg.cache_name);
     }
 
@@ -111,7 +134,13 @@ public:
             return credential_denied{"the token is presigned for longer than 15 minutes"};
         }
 
-        // 2. Who signed it.
+        // 2. Who signed it, unless its key has run out of failures.
+        const auto* credential = sigv4::detail::query_param(params, "X-Amz-Credential");
+        const std::string key_id =
+            credential == nullptr ? std::string() : credential->substr(0, credential->find('/'));
+        if (_failures->check({}, key_id, _steady()) != sigv4::failure_limiter::verdict::allowed) {
+            return credential_denied{"too many failed signatures for this access key"};
+        }
         sigv4::request req;
         req.method = "GET";
         req.raw_path = "/";
@@ -124,6 +153,10 @@ public:
             who = _authz->authenticate(req, rules);
         }
         if (!who.has_value()) {
+            // A stale replica is not the signer's fault: do not charge it.
+            if (who.error().code != "ServiceUnavailable") {
+                _failures->record_failure({}, key_id, _steady());
+            }
             return credential_denied{"authentication failed: " + who.error().code};
         }
         const auto& principal = who.value();
@@ -166,6 +199,10 @@ private:
     iam_authorizer* _authz;
     redis_verifier_config _cfg;
     clock_fn _clock;
+    steady_fn _steady;
+    // Behind a pointer so `check()` stays const; shared so a copy of the
+    // verifier charges the same budgets.
+    std::shared_ptr<sigv4::failure_limiter> _failures;
 };
 
 static_assert(credential_verifier<iam_redis_verifier>);

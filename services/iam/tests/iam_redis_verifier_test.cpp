@@ -286,4 +286,76 @@ BOOST_FIXTURE_TEST_CASE(inv_redis_6_a_session_bounds_the_connection, fixture) {
              .empty());
 }
 
+// Requirement 13.5, with an injected clock: every accepted AUTH opens 12
+// hours from its own moment, so a client that re-AUTHs on the open
+// connection with a fresh token moves its deadline; a token from before the
+// first AUTH cannot, being past its 15 minutes.
+BOOST_FIXTURE_TEST_CASE(inv_redis_10_reauth_with_a_fresh_token_extends_the_deadline, fixture) {
+    allow(connect_policy());
+    const auto first = check(k_botocore_token);
+    const auto* opened = std::get_if<kythira::credential_accepted>(&first);
+    BOOST_TEST_REQUIRE(opened != nullptr, denied(first));
+    BOOST_TEST((opened->expires == clock + 12h));
+
+    // Eleven hours on, the old token is long expired; a fresh one is not.
+    const auto later = k_signed_at + std::int64_t{11 * 3600};
+    clock = std::chrono::system_clock::time_point{std::chrono::seconds{later + 60}};
+    BOOST_TEST(!denied(check(k_botocore_token)).empty());
+    const auto again = check(presign(k_botocore_key_id, k_botocore_secret, later));
+    const auto* extended = std::get_if<kythira::credential_accepted>(&again);
+    BOOST_TEST_REQUIRE(extended != nullptr, denied(again));
+    BOOST_TEST((extended->expires == clock + 12h));
+    BOOST_TEST((extended->expires > opened->expires));
+
+    // The re-AUTH is authorized afresh: with the policy gone it is refused,
+    // and the connection keeps only its first deadline.
+    run(iam_command::delete_inline_policy,
+        {{"kind", "user"}, {"name", "redis-client"}, {"policy_name", "redis"}});
+    BOOST_TEST(denied(check(presign(k_botocore_key_id, k_botocore_secret, later)))
+                   .find("elasticache:Connect denied") != std::string::npos);
+}
+
+// Requirement 3.8, with an injected clock: failed signatures are charged to
+// the token's access key id wherever they come from; once its budget is
+// spent even a good token for that key is refused unchecked, other keys are
+// not, and the budget returns when the window ends. A refusal for a stale
+// replica is not the signer's fault and is not charged.
+BOOST_AUTO_TEST_CASE(inv_redis_11_failed_signatures_spend_the_key_budget) {
+    fixture f;
+    f.allow(connect_policy());
+    std::chrono::steady_clock::time_point steady{};
+    iam::iam_redis_verifier limited{f.authz,
+                                    {.account = std::string(k_account),
+                                     .region = std::string(k_region),
+                                     .cache_name = std::string(k_cache),
+                                     .per_key_failure_limit = 3,
+                                     .failure_window = 60s},
+                                    [&f] { return f.clock; },
+                                    [&steady] { return steady; }};
+    const auto check = [&](const std::string& token) {
+        return limited.check({"redis", "farm", token, "198.51.100.7"});
+    };
+    const auto forged = presign(k_botocore_key_id, "not-the-secret", k_signed_at);
+    BOOST_TEST(denied(check(std::string(k_botocore_token))).empty());
+    for (int i = 0; i < 3; ++i) {
+        BOOST_TEST(denied(check(forged)).find("authentication failed") != std::string::npos);
+    }
+    BOOST_TEST(denied(check(std::string(k_botocore_token))).find("too many failed signatures") !=
+               std::string::npos);
+    // Another key id is not held up by this one's failures.
+    BOOST_TEST(denied(check(presign("AKIAKYTHIRAREDIS7777", k_botocore_secret, k_signed_at)))
+                   .find("authentication failed") != std::string::npos);
+    steady += 61s;
+    BOOST_TEST(denied(check(std::string(k_botocore_token))).empty());
+
+    // Stale: refused, but the key keeps its whole budget.
+    bool fresh = false;
+    f.authz.set_freshness([&fresh] { return fresh; });
+    for (int i = 0; i < 5; ++i) {
+        BOOST_TEST(denied(check(forged)).find("Unavailable") != std::string::npos);
+    }
+    fresh = true;
+    BOOST_TEST(denied(check(std::string(k_botocore_token))).empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
