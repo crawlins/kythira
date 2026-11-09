@@ -45,3 +45,9 @@ multi_raft_node_s3_process_test                    no lost write; 4 rescues in 9
 # multi_raft_scale_test, raft_multi_node_fixture_test, and the three EDHOC
 # repeaters coap_cantcoap_integration_test, coap_cantcoap_interop_test and
 # coap_libnyoci_interop_test (one handshake in 256 derived equal OSCORE ids).
+
+# Added 2026-11-09 from the re-survey of 52 ci.yml runs since 2026-11-05:
+# 10 rescues. The redirect race is fixed (#731) and oidc_token_unit_test by
+# #726, but a restarted ex-leader can miss log index 1 and stall its apply
+# (iam_node_test.cpp:543, maybe priority item AD). Remove once that is fixed.
+iam_node_test                                      10/52 runs, apply stall after ex-leader restart
