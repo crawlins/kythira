@@ -258,6 +258,54 @@ earlier login and deadline, as a refused `AUTH` does in Redis. A password
 `AUTH` on the same connection drops the deadline. Refused tokens spend
 the source address's failure budget (above) exactly as wrong passwords do.
 
+An example: the ACL line
+
+```
+user app disabled read_write app/ auth=iam
+```
+
+and a token made with botocore, the way the ElastiCache documentation does
+it, signed by credentials Kythira's IAM issued (an IAM user's key, or
+temporary credentials from its STS):
+
+```python
+import urllib.parse
+import botocore.session
+from botocore.model import ServiceId
+from botocore.signers import RequestSigner
+
+def iam_auth_token(cache_name, user, region="us-east-1"):
+    session = botocore.session.get_session()
+    signer = RequestSigner(ServiceId("elasticache"), region, "elasticache", "v4",
+                           session.get_credentials(), session.get_component("event_emitter"))
+    query = urllib.parse.urlencode({"Action": "connect", "User": user})
+    url = signer.generate_presigned_url(
+        {"method": "GET", "url": f"https://{cache_name}/?{query}", "body": {},
+         "headers": {}, "context": {}},
+        operation_name="connect", expires_in=900, region_name=region)
+    return url.removeprefix("https://")
+
+print(iam_auth_token("kythira-cache", "app"))
+```
+
+then
+
+```sh
+redis-cli -h gateway.example.internal --user app --pass "$(python3 token.py)" PING
+```
+
+The signer needs a policy like:
+
+```json
+{"Version": "2012-10-17", "Statement": [{"Effect": "Allow",
+  "Action": "elasticache:Connect",
+  "Resource": ["arn:aws:elasticache:us-east-1:111111111111:user:app",
+               "arn:aws:elasticache:us-east-1:111111111111:replicationgroup:kythira-cache"]}]}
+```
+
+The IAM conformance job (`services/iam/tests/docker/conformance/driver.py`)
+runs exactly this against two gateways.
+
 ## Configuring sccache
 
 sccache's `redis` backend needs nothing beyond its standard variables:
