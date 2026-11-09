@@ -174,19 +174,26 @@ pages. All of these rows are tested by pol and its corpus (147 cases), in
 ## Conditions and variables (task 11)
 
 Source: [condition operators][condops], [policy variables][vars],
-[multivalued keys][multi]. The tests are corpus cases in task 11's PR.
+[multivalued keys][multi]. Built in `iam_conditions.hpp`; the tests are
+pol corpus files under `corpus/condition/` and `corpus/parse/condition_operators.json`,
+plus pol suite `iam_conditions`.
 
 | Id | Invariant | Status |
 |---|---|---|
-| INV-COND-1 | Condition blocks, the keys within a block, and the operators are ANDed; a key's values are ORed | Task 11 |
-| INV-COND-2 | A negated operator with several values is true only when none match (NOR) | Task 11 |
-| INV-COND-3 | A missing key makes a positive operator false, and an `…IfExists` operator true | Task 11 |
-| INV-COND-4 | `ForAllValues` with an empty or missing set is true, and `ForAnyValue` is false | Task 11 |
-| INV-COND-5 | `Null` tests whether the key is present | Task 11 |
-| INV-COND-6 | Unknown operators are MalformedPolicyDocument | Task 11 |
-| INV-VAR-1 | Variables are substituted only under Version 2012-10-17. Under 2008-10-17 the text `${…}` is literal. | Task 11 |
-| INV-VAR-2 | `${*}`, `${?}` and `${$}` escape, and `${key, 'default'}` supplies a default | Task 11 |
-| INV-VAR-3 | An unresolvable variable never matches: the resource or condition is false | Task 11 |
+| INV-COND-1 | Condition blocks, the keys within a block, and the operators are ANDed; a key's values are ORed | Tested: `corpus:condition/logic_and_sets.json`, `string.json` |
+| INV-COND-2 | A negated operator with several values is true only when none match (NOR) | Tested: `corpus:condition/string.json` |
+| INV-COND-3 | A missing key makes a positive operator false, and a negated or `…IfExists` operator true | Tested: `corpus:condition/logic_and_sets.json` (IfExists on every family) |
+| INV-COND-4 | `ForAllValues` with an empty or missing set is true, and `ForAnyValue` is false | Tested: `corpus:condition/logic_and_sets.json` |
+| INV-COND-5 | `Null` tests whether the key is present | Tested: `corpus:condition/other_families.json` |
+| INV-COND-6 | Unknown operators, and `Null` with `IfExists` or a set prefix, are MalformedPolicyDocument | Tested: `corpus:parse/condition_operators.json`, pol `operator_table_resolves_every_name` |
+| INV-COND-7 | Each family compares as its type: String (exact, IgnoreCase, Like), Numeric, Date (ISO 8601 and epoch, as instants), Bool, BinaryEquals (base64), IpAddress (IPv4 and IPv6 CIDR), Arn (segment by segment, case-sensitive); a value that cannot be read as the type matches nothing | Tested: `corpus:condition/string.json`, `numeric.json`, `date.json`, `other_families.json` |
+| INV-COND-8 | Condition key names are case-insensitive; the tag part of `aws:RequestTag/` and `aws:ResourceTag/` keys is not | Tested: `corpus:condition/logic_and_sets.json` |
+| INV-COND-9 | Global condition keys are present only when Kythira knows them, never invented | Tested: pol `global_condition_keys_present_only_when_known` |
+| INV-VAR-1 | Variables are substituted only under Version 2012-10-17. Under 2008-10-17 the text `${…}` is literal. | Tested: `corpus:condition/variables.json` |
+| INV-VAR-2 | `${*}`, `${?}` and `${$}` produce literal characters, and `${key, 'default'}` supplies a default | Tested: `corpus:condition/variables.json`, pol `pattern_substitution_escapes_literals` |
+| INV-VAR-3 | A variable with no value matches nothing: a positive operator is false, a negated one true, and a resource pattern matches no resource | Tested: `corpus:condition/variables.json` |
+| INV-VAR-4 | Variables are substituted only in Resource and in String, Bool and Arn values, and a substituted value is always literal (never a wildcard) | Tested: `corpus:condition/variables.json` |
+| INV-VAR-5 | Only single-valued keys can be variables | Tested: `corpus:condition/variables.json` |
 
 ## Evaluation (task 12)
 

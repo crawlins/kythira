@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 10/26 tasks complete
+## Status: 11/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -610,7 +610,7 @@ because each has a zero-spend fallback.
       should not specify a principal.", "Has prohibited field Resource",
       "Statement IDs (SID) in a single policy must be unique.").
 
-- [ ] 11. Condition operators, variables and context keys
+- [x] 11. Condition operators, variables and context keys
   - The operator table with every family, `IfExists`, the set prefixes, and
     the `Null` semantics.
   - Policy variables with escapes, and unresolved-variable behaviour.
@@ -618,8 +618,10 @@ because each has a zero-spend fallback.
   - At least one corpus case per operator and per variable, including the
     tricky AWS-documented ones: `ForAllValues` with an empty set, negated
     operators with multiple values, and `IfExists` on a missing key.
-  - Invariants (`invariants.md`): INV-COND-1..6 and INV-VAR-1..3. Each one needs a named
-    unit test, and the PR updates its row there.
+  - Invariants (`invariants.md`): INV-COND-1..9 and INV-VAR-1..5, all
+    tested.
+  - Done: `iam_conditions.hpp`; 181 corpus cases in `corpus/condition/`
+    and `corpus/parse/condition_operators.json` (328 in all).
   - _Requirements: 5.4–5.6_
 
 - [ ] 12. Evaluator and corpus

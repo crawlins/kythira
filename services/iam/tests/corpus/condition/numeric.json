@@ -1,0 +1,240 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html",
+  "description": "The Numeric operator family, integers and decimals; an unreadable value matches nothing.",
+  "cases": [
+    {
+      "name": "NumericEquals 10 vs 10",
+      "kind": "condition",
+      "condition": {
+        "NumericEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericEquals 10 vs 10.0",
+      "kind": "condition",
+      "condition": {
+        "NumericEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10.0"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericEquals 10 vs 11",
+      "kind": "condition",
+      "condition": {
+        "NumericEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "11"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericNotEquals 10 vs 11",
+      "kind": "condition",
+      "condition": {
+        "NumericNotEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "11"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericNotEquals 10 vs 10",
+      "kind": "condition",
+      "condition": {
+        "NumericNotEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericLessThan 10 vs 9",
+      "kind": "condition",
+      "condition": {
+        "NumericLessThan": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "9"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericLessThan 10 vs 10",
+      "kind": "condition",
+      "condition": {
+        "NumericLessThan": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericLessThanEquals 10 vs 10",
+      "kind": "condition",
+      "condition": {
+        "NumericLessThanEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericLessThanEquals 10 vs 11",
+      "kind": "condition",
+      "condition": {
+        "NumericLessThanEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "11"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericGreaterThan 10 vs 11",
+      "kind": "condition",
+      "condition": {
+        "NumericGreaterThan": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "11"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericGreaterThan 10 vs 10",
+      "kind": "condition",
+      "condition": {
+        "NumericGreaterThan": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericGreaterThanEquals 10 vs 10",
+      "kind": "condition",
+      "condition": {
+        "NumericGreaterThanEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericGreaterThanEquals 10 vs 9",
+      "kind": "condition",
+      "condition": {
+        "NumericGreaterThanEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "9"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericLessThan 0 vs -1.5",
+      "kind": "condition",
+      "condition": {
+        "NumericLessThan": {
+          "s3:max-keys": "0"
+        }
+      },
+      "context": {
+        "s3:max-keys": "-1.5"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericEquals 10 vs abc",
+      "kind": "condition",
+      "condition": {
+        "NumericEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "abc"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericEquals ten vs 10",
+      "kind": "condition",
+      "condition": {
+        "NumericEquals": {
+          "s3:max-keys": "ten"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": false
+    },
+    {
+      "name": "NumericNotEquals with an unreadable context value holds (nothing matches)",
+      "kind": "condition",
+      "condition": {
+        "NumericNotEquals": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {
+        "s3:max-keys": "x"
+      },
+      "match": true
+    },
+    {
+      "name": "NumericLessThanEquals takes a JSON number",
+      "kind": "condition",
+      "condition": {
+        "NumericLessThanEquals": {
+          "s3:max-keys": 10
+        }
+      },
+      "context": {
+        "s3:max-keys": "7"
+      },
+      "match": true
+    }
+  ]
+}

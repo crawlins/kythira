@@ -1,0 +1,724 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html",
+  "description": "How condition blocks, keys and values combine; missing keys; IfExists on every family; ForAllValues and ForAnyValue, positive and negated, with AWS's empty-set results.",
+  "cases": [
+    {
+      "name": "missing key: a positive operator is false",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:PrincipalTag/team": "blue"
+        }
+      },
+      "context": {},
+      "match": false
+    },
+    {
+      "name": "missing key: a negated operator is true",
+      "kind": "condition",
+      "condition": {
+        "StringNotEquals": {
+          "aws:PrincipalTag/team": "blue"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "missing key: ArnNotLike is true",
+      "kind": "condition",
+      "condition": {
+        "ArnNotLike": {
+          "aws:SourceArn": "arn:aws:sns:*:*:*"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "missing key: NotIpAddress is true",
+      "kind": "condition",
+      "condition": {
+        "NotIpAddress": {
+          "aws:SourceIp": "203.0.113.0/24"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "IfExists on a missing key is true",
+      "kind": "condition",
+      "condition": {
+        "StringLikeIfExists": {
+          "ec2:InstanceType": [
+            "t1.*",
+            "t2.*",
+            "m3.*"
+          ]
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "IfExists on a present key evaluates it: match",
+      "kind": "condition",
+      "condition": {
+        "StringLikeIfExists": {
+          "ec2:InstanceType": [
+            "t1.*",
+            "t2.*",
+            "m3.*"
+          ]
+        }
+      },
+      "context": {
+        "ec2:InstanceType": "t2.micro"
+      },
+      "match": true
+    },
+    {
+      "name": "IfExists on a present key evaluates it: no match",
+      "kind": "condition",
+      "condition": {
+        "StringLikeIfExists": {
+          "ec2:InstanceType": [
+            "t1.*",
+            "t2.*",
+            "m3.*"
+          ]
+        }
+      },
+      "context": {
+        "ec2:InstanceType": "c5.large"
+      },
+      "match": false
+    },
+    {
+      "name": "negated IfExists on a missing key is true",
+      "kind": "condition",
+      "condition": {
+        "StringNotEqualsIfExists": {
+          "aws:PrincipalTag/team": "blue"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "NumericLessThanIfExists missing",
+      "kind": "condition",
+      "condition": {
+        "NumericLessThanIfExists": {
+          "s3:max-keys": "10"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "DateGreaterThanIfExists present and false",
+      "kind": "condition",
+      "condition": {
+        "DateGreaterThanIfExists": {
+          "aws:TokenIssueTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:TokenIssueTime": "2019-01-01T00:00:00Z"
+      },
+      "match": false
+    },
+    {
+      "name": "BoolIfExists missing",
+      "kind": "condition",
+      "condition": {
+        "BoolIfExists": {
+          "aws:MultiFactorAuthPresent": "false"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "IpAddressIfExists missing",
+      "kind": "condition",
+      "condition": {
+        "IpAddressIfExists": {
+          "aws:SourceIp": "203.0.113.0/24"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "ArnLikeIfExists missing",
+      "kind": "condition",
+      "condition": {
+        "ArnLikeIfExists": {
+          "aws:SourceArn": "arn:aws:sns:*:*:*"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "BinaryEqualsIfExists missing",
+      "kind": "condition",
+      "condition": {
+        "BinaryEqualsIfExists": {
+          "ex:blob": "QQ=="
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "operator names are case-insensitive",
+      "kind": "condition",
+      "condition": {
+        "stringequals": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "alice"
+      },
+      "match": true
+    },
+    {
+      "name": "key names are case-insensitive",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "AWS:UserName": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "alice"
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_variables.html"
+    },
+    {
+      "name": "the tag part of a request tag key is case-sensitive",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "prod"
+        }
+      },
+      "context": {
+        "aws:RequestTag/environment": "prod"
+      },
+      "match": false
+    },
+    {
+      "name": "the tag part of a principal tag key is case-insensitive",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:PrincipalTag/Team": "blue"
+        }
+      },
+      "context": {
+        "aws:PrincipalTag/team": "blue"
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_tags.html"
+    },
+    {
+      "name": "keys in one block are ANDed: both hold",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:username": "alice",
+          "aws:PrincipalTag/team": "blue"
+        }
+      },
+      "context": {
+        "aws:username": "alice",
+        "aws:PrincipalTag/team": "blue"
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html"
+    },
+    {
+      "name": "keys in one block are ANDed: one fails",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:username": "alice",
+          "aws:PrincipalTag/team": "blue"
+        }
+      },
+      "context": {
+        "aws:username": "alice",
+        "aws:PrincipalTag/team": "red"
+      },
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html"
+    },
+    {
+      "name": "operator blocks are ANDed",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:username": "alice"
+        },
+        "Bool": {
+          "aws:SecureTransport": "true"
+        }
+      },
+      "context": {
+        "aws:username": "alice",
+        "aws:SecureTransport": "false"
+      },
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html"
+    },
+    {
+      "name": "an empty Condition holds",
+      "kind": "condition",
+      "condition": {},
+      "context": {},
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html"
+    },
+    {
+      "name": "ForAllValues:StringEquals ['environment']",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment"
+        ]
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAllValues:StringEquals ['cost-center']",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "cost-center"
+        ]
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAllValues:StringEquals ['environment', 'cost-center']",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment",
+          "cost-center"
+        ]
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAllValues:StringEquals ['environment', 'dept']",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment",
+          "dept"
+        ]
+      },
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAllValues:StringEquals []",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": []
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAllValues:StringEquals None",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {},
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAnyValue:StringEquals ['environment']",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment"
+        ]
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAnyValue:StringEquals ['environment', 'dept']",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment",
+          "dept"
+        ]
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAnyValue:StringEquals ['dept']",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "dept"
+        ]
+      },
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAnyValue:StringEquals []",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": []
+      },
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAnyValue:StringEquals None",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {},
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAllValues with a Null false guard refuses an absent key",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        },
+        "Null": {
+          "aws:TagKeys": "false"
+        }
+      },
+      "context": {},
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAllValues:StringNotEquals: no value may match",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringNotEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "dept",
+          "owner"
+        ]
+      },
+      "match": true
+    },
+    {
+      "name": "ForAllValues:StringNotEquals: one match fails",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringNotEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "dept",
+          "environment"
+        ]
+      },
+      "match": false
+    },
+    {
+      "name": "ForAnyValue:StringNotEquals: one non-matching value suffices",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringNotEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment",
+          "dept"
+        ]
+      },
+      "match": true
+    },
+    {
+      "name": "ForAnyValue:StringNotEquals: all matching fails",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringNotEquals": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment"
+        ]
+      },
+      "match": false
+    },
+    {
+      "name": "ForAllValues:StringLike",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringLike": {
+          "aws:TagKeys": [
+            "env*",
+            "cost-*"
+          ]
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "environment",
+          "cost-center"
+        ]
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "ForAnyValue:StringNotLike missing key is false",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringNotLike": {
+          "aws:TagKeys": [
+            "env*"
+          ]
+        }
+      },
+      "context": {},
+      "match": false
+    },
+    {
+      "name": "ForAllValues:StringNotLike missing key is true",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:StringNotLike": {
+          "aws:TagKeys": [
+            "env*"
+          ]
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "ForAnyValue:Bool",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:Bool": {
+          "ex:flags": "true"
+        }
+      },
+      "context": {
+        "ex:flags": [
+          "false",
+          "true"
+        ]
+      },
+      "match": true
+    },
+    {
+      "name": "ForAllValues:ArnLike",
+      "kind": "condition",
+      "condition": {
+        "ForAllValues:ArnLike": {
+          "aws:CalledVia": "arn:aws:*:*:*:*"
+        }
+      },
+      "context": {
+        "aws:CalledVia": [
+          "arn:aws:s3:::a",
+          "x"
+        ]
+      },
+      "match": false
+    },
+    {
+      "name": "ForAllValuesIfExists-style suffix with a prefix on a missing key is true",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringEqualsIfExists": {
+          "aws:TagKeys": [
+            "environment",
+            "cost-center"
+          ]
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "a prefix on a single-valued key treats it as a set of one",
+      "kind": "condition",
+      "condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:username": [
+            "alice",
+            "bob"
+          ]
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    },
+    {
+      "name": "no prefix on a multivalued key: positive is any-match",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:TagKeys": "environment"
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "dept",
+          "environment"
+        ]
+      },
+      "match": true
+    },
+    {
+      "name": "no prefix on a multivalued key: negated is none-match",
+      "kind": "condition",
+      "condition": {
+        "StringNotEquals": {
+          "aws:TagKeys": "environment"
+        }
+      },
+      "context": {
+        "aws:TagKeys": [
+          "dept",
+          "environment"
+        ]
+      },
+      "match": false
+    }
+  ]
+}

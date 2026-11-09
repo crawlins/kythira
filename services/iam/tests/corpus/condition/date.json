@@ -1,0 +1,201 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html",
+  "description": "The Date operator family: W3C ISO 8601 profiles and epoch seconds, compared as instants; a time without a zone, or an impossible date, matches nothing.",
+  "cases": [
+    {
+      "name": "DateEquals 2020-01-01T00:00:01Z vs 2020-01-01T00:00:01Z",
+      "kind": "condition",
+      "condition": {
+        "DateEquals": {
+          "aws:CurrentTime": "2020-01-01T00:00:01Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00:01Z"
+      },
+      "match": true
+    },
+    {
+      "name": "DateEquals 2020-01-01T00:00:01Z vs 2020-01-01T01:00:01+01:00",
+      "kind": "condition",
+      "condition": {
+        "DateEquals": {
+          "aws:CurrentTime": "2020-01-01T00:00:01Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T01:00:01+01:00"
+      },
+      "match": true
+    },
+    {
+      "name": "DateEquals 2020-01-01 vs 2020-01-01T00:00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateEquals": {
+          "aws:CurrentTime": "2020-01-01"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00:00Z"
+      },
+      "match": true
+    },
+    {
+      "name": "DateEquals 2020-01-01T00:00:01Z vs 1577836801",
+      "kind": "condition",
+      "condition": {
+        "DateEquals": {
+          "aws:CurrentTime": "2020-01-01T00:00:01Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "1577836801"
+      },
+      "match": true
+    },
+    {
+      "name": "DateNotEquals 2020-01-01T00:00:00Z vs 2020-01-02T00:00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateNotEquals": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-02T00:00:00Z"
+      },
+      "match": true
+    },
+    {
+      "name": "DateNotEquals 2020-01-01T00:00:00Z vs 2020-01-01T00:00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateNotEquals": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00:00Z"
+      },
+      "match": false
+    },
+    {
+      "name": "DateLessThan 2020-01-01T00:00:00Z vs 2019-12-31T23:59:59Z",
+      "kind": "condition",
+      "condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2019-12-31T23:59:59Z"
+      },
+      "match": true
+    },
+    {
+      "name": "DateLessThan 2020-01-01T00:00:00Z vs 2020-01-01T00:00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00:00Z"
+      },
+      "match": false
+    },
+    {
+      "name": "DateLessThanEquals 2020-01-01T00:00:00Z vs 2020-01-01T00:00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateLessThanEquals": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00:00Z"
+      },
+      "match": true
+    },
+    {
+      "name": "DateGreaterThan 2020-01-01T00:00:00Z vs 2020-01-01T00:00:00.5Z",
+      "kind": "condition",
+      "condition": {
+        "DateGreaterThan": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00:00.5Z"
+      },
+      "match": true
+    },
+    {
+      "name": "DateGreaterThan 2020-01-01T00:00:00Z vs 2020-01-01T00:00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateGreaterThan": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00:00Z"
+      },
+      "match": false
+    },
+    {
+      "name": "DateGreaterThanEquals 2020-01-01T00:00:00Z vs 2020-01-01T00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateGreaterThanEquals": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2020-01-01T00:00Z"
+      },
+      "match": true
+    },
+    {
+      "name": "DateLessThan 2020-01-01T00:00:00Z vs not-a-date",
+      "kind": "condition",
+      "condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "not-a-date"
+      },
+      "match": false
+    },
+    {
+      "name": "DateLessThan 2020-02-30T00:00:00Z vs 2019-01-01T00:00:00Z",
+      "kind": "condition",
+      "condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "2020-02-30T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2019-01-01T00:00:00Z"
+      },
+      "match": false
+    },
+    {
+      "name": "DateLessThan 2020-01-01T00:00:00Z vs 2019-01-01T00:00:00",
+      "kind": "condition",
+      "condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "2020-01-01T00:00:00Z"
+        }
+      },
+      "context": {
+        "aws:CurrentTime": "2019-01-01T00:00:00"
+      },
+      "match": false
+    }
+  ]
+}
