@@ -1,0 +1,275 @@
+{
+ "client": "kpl-0.15.12",
+ "requests": [
+  {
+   "operation": "sts:GetCallerIdentity",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-www-form-urlencoded",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/sts/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-api-version;x-amz-content-sha256;x-amz-date, Signature=<hex>"
+    ],
+    [
+     "content-length",
+     "43"
+    ],
+    [
+     "content-type",
+     "application/x-www-form-urlencoded"
+    ],
+    [
+     "user-agent",
+     "KinesisProducerLibrary/0.15.12N | Linux | <kernel> | <kernel-version> | x86_64 api/STS"
+    ],
+    [
+     "x-amz-api-version",
+     "2011-06-15"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "x-amz-date",
+     "<amz-date>"
+    ],
+    [
+     "Expect",
+     "100-continue"
+    ]
+   ],
+   "body_sha256": "ab821ae955788b0e33ebd34c208442ccfc2d406e2edc5e7a39bd6458fbb4f843",
+   "body": {
+    "Action": "GetCallerIdentity",
+    "Version": "2011-06-15"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "ListShards",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-api-version;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "content-length",
+     "166"
+    ],
+    [
+     "content-type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "user-agent",
+     "KinesisProducerLibrary/0.15.12N | Linux | <kernel> | <kernel-version> | x86_64 api/Kinesis"
+    ],
+    [
+     "x-amz-api-version",
+     "2013-12-02"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "x-amz-date",
+     "<amz-date>"
+    ],
+    [
+     "x-amz-target",
+     "Kinesis_20131202.ListShards"
+    ],
+    [
+     "Expect",
+     "100-continue"
+    ]
+   ],
+   "body_sha256": "072aa1f53d84e1355e2f52e8ea7b463193cab140f158782b8402b86e830705ef",
+   "body": {
+    "StreamName": "evidence",
+    "MaxResults": 1000,
+    "ShardFilter": {
+     "Type": "AT_LATEST"
+    },
+    "StreamARN": "arn:aws:kinesis:us-east-1:123456789012:stream/evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "PutRecords",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-api-version;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "content-length",
+     "1362"
+    ],
+    [
+     "content-type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "user-agent",
+     "KinesisProducerLibrary/0.15.12N | Linux | <kernel> | <kernel-version> | x86_64 api/Kinesis"
+    ],
+    [
+     "x-amz-api-version",
+     "2013-12-02"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "x-amz-date",
+     "<amz-date>"
+    ],
+    [
+     "x-amz-target",
+     "Kinesis_20131202.PutRecords"
+    ],
+    [
+     "Expect",
+     "100-continue"
+    ]
+   ],
+   "body_sha256": "a7da5695a967fdc65af109ad5b11507abe3eb715a54734f42278e5f1e84c6ebb",
+   "body": {
+    "Records": [
+     {
+      "Data": "cmVjb3JkIDA=",
+      "ExplicitHashKey": "318996840767547934070577442296912359277",
+      "PartitionKey": "pk-0"
+     },
+     {
+      "Data": "cmVjb3JkIDE=",
+      "ExplicitHashKey": "273922656776327812788301823748127981641",
+      "PartitionKey": "pk-1"
+     },
+     {
+      "Data": "cmVjb3JkIDI=",
+      "ExplicitHashKey": "312950817501407239400439179232862430554",
+      "PartitionKey": "pk-2"
+     },
+     {
+      "Data": "cmVjb3JkIDM=",
+      "ExplicitHashKey": "20993191229325758342412920619827293048",
+      "PartitionKey": "pk-3"
+     },
+     {
+      "Data": "cmVjb3JkIDQ=",
+      "ExplicitHashKey": "16390319114270132944153944998830698016",
+      "PartitionKey": "pk-4"
+     },
+     {
+      "Data": "cmVjb3JkIDU=",
+      "ExplicitHashKey": "259713207387768007643041536787561842699",
+      "PartitionKey": "pk-5"
+     },
+     {
+      "Data": "cmVjb3JkIDY=",
+      "ExplicitHashKey": "18943535899583212026956531549319605813",
+      "PartitionKey": "pk-6"
+     },
+     {
+      "Data": "cmVjb3JkIDc=",
+      "ExplicitHashKey": "121962178105360590717983723395158885768",
+      "PartitionKey": "pk-7"
+     },
+     {
+      "Data": "cmVjb3JkIDg=",
+      "ExplicitHashKey": "331558953134715811080733615997401218482",
+      "PartitionKey": "pk-8"
+     },
+     {
+      "Data": "cmVjb3JkIDk=",
+      "ExplicitHashKey": "177607499287508254181606286949525152523",
+      "PartitionKey": "pk-9"
+     }
+    ],
+    "StreamName": "evidence",
+    "StreamARN": "arn:aws:kinesis:us-east-1:123456789012:stream/evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  }
+ ],
+ "summary": {
+  "operations": [
+   "sts:GetCallerIdentity",
+   "ListShards",
+   "PutRecords"
+  ],
+  "content_types": [
+   "application/x-amz-json-1.1",
+   "application/x-www-form-urlencoded"
+  ],
+  "http_versions": [
+   "HTTP/1.1"
+  ]
+ }
+}

@@ -1,0 +1,417 @@
+{
+ "client": "awscli-2.31.0",
+ "requests": [
+  {
+   "operation": "CreateStream",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.CreateStream"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/N,b,Z,E cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.create-stream"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "43"
+    ]
+   ],
+   "body_sha256": "a5cfed0d890228db7c33467754cc2264a942f0b5cbb75833fb3f07bb5cddda57",
+   "body": {
+    "StreamName": "evidence",
+    "ShardCount": 1
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "DescribeStreamSummary",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.DescribeStreamSummary"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/Z,b,N,E cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.describe-stream-summary"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "26"
+    ]
+   ],
+   "body_sha256": "ee9d5e45a6a74cf71d10846d8563b637ceb7d25928c089ed1d5c0d84d1a56a21",
+   "body": {
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "ListShards",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.ListShards"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/b,N,C,Z,E cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.list-shards"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "26"
+    ]
+   ],
+   "body_sha256": "ee9d5e45a6a74cf71d10846d8563b637ceb7d25928c089ed1d5c0d84d1a56a21",
+   "body": {
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "PutRecord",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.PutRecord"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/E,b,Z,N cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.put-record"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "70"
+    ]
+   ],
+   "body_sha256": "c6a29f539ecff708395def9c91a5e85d2f958fa6e34a5f6bf6d5bf8e91bab238",
+   "body": {
+    "StreamName": "evidence",
+    "Data": "aGVsbG8=",
+    "PartitionKey": "pk-1"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "PutRecords",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.PutRecords"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/N,Z,b,E cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.put-records"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "148"
+    ]
+   ],
+   "body_sha256": "89076611fb058dc6476a747a2fd958ead99a40dee2bc968c7f594a110c523634",
+   "body": {
+    "Records": [
+     {
+      "Data": "b25l",
+      "PartitionKey": "pk-2"
+     },
+     {
+      "Data": "dHdv",
+      "PartitionKey": "pk-3",
+      "ExplicitHashKey": "42"
+     }
+    ],
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "GetShardIterator",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.GetShardIterator"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/Z,b,E,N cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.get-shard-iterator"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "98"
+    ]
+   ],
+   "body_sha256": "09e740e205bd1641234efaa88cf6e7cb6c7264845d7d859e4a99e8cbb267bd23",
+   "body": {
+    "StreamName": "evidence",
+    "ShardId": "shardId-000000000000",
+    "ShardIteratorType": "TRIM_HORIZON"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "GetRecords",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.GetRecords"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/b,N,E,Z cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.get-records"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "46"
+    ]
+   ],
+   "body_sha256": "89f8af6eddede6989494fe967ebb2de41421cea9c8ab84dc6cff0c6bf2ae15b2",
+   "body": {
+    "ShardIterator": "AAAAAAAAAAE",
+    "Limit": 100
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "DeleteStream",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.DeleteStream"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-cli/2.31.0 md/awscrt#0.27.6 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.7 md/pyimpl#CPython m/Z,N,b,E cfg/retry-mode#standard md/installer#exe md/distrib#ubuntu.24 md/prompt#off md/command#kinesis.delete-stream"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Length",
+     "59"
+    ]
+   ],
+   "body_sha256": "5b1de6d2008dcbeccafee9d793bf62d4097bbb4dfc698d934fa0a7a3238af5c8",
+   "body": {
+    "StreamName": "evidence",
+    "EnforceConsumerDeletion": true
+   },
+   "response_status": 200,
+   "response_type": null
+  }
+ ],
+ "summary": {
+  "operations": [
+   "CreateStream",
+   "DescribeStreamSummary",
+   "ListShards",
+   "PutRecord",
+   "PutRecords",
+   "GetShardIterator",
+   "GetRecords",
+   "DeleteStream"
+  ],
+  "content_types": [
+   "application/x-amz-json-1.1"
+  ],
+  "http_versions": [
+   "HTTP/1.1"
+  ]
+ }
+}

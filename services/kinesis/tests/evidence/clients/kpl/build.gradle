@@ -1,0 +1,30 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+// The evidence scenario through the Kinesis Producer Library: its Java
+// wrapper drives the bundled native producer, which talks HTTPS to Kinesis
+// and sends aggregated records with PutRecords. Version pinned.
+
+plugins {
+    id 'application'
+}
+
+repositories {
+    // repo1 is the same Maven Central; the CI proxy rate-limits the other name less.
+    maven { url = 'https://repo1.maven.org/maven2' }
+}
+
+dependencies {
+    implementation 'com.amazonaws:amazon-kinesis-producer:0.15.12'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.17'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+application {
+    mainClass = 'kythira.evidence.KplClient'
+}

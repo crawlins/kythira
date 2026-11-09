@@ -1,0 +1,33 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+// The evidence scenario through aws-sdk-java-v2's synchronous Kinesis client
+// (CBOR by default) and its async client (HTTP/2 for SubscribeToShard, used
+// by task 13's evidence). Versions are pinned: the evidence records what
+// exactly these versions send.
+
+plugins {
+    id 'application'
+}
+
+repositories {
+    // repo1 is the same Maven Central; the CI proxy rate-limits the other name less.
+    maven { url = 'https://repo1.maven.org/maven2' }
+}
+
+dependencies {
+    implementation platform('software.amazon.awssdk:bom:2.57.11')
+    implementation 'software.amazon.awssdk:kinesis'
+    implementation 'software.amazon.awssdk:url-connection-client'
+    runtimeOnly 'org.slf4j:slf4j-nop:2.0.17'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+application {
+    mainClass = 'kythira.evidence.JavaSdkV2Client'
+}

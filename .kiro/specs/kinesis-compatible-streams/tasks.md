@@ -35,9 +35,15 @@ asked.
     module-on tests, module-off assertion), the pinned model (botocore
     1.43.100), the generated operation table with its `--check` test, and
     the coverage test with every one of the 44 operations listed in
-    `services/kinesis/doc/unsupported.md`. Still open: the recording stub
-    and wire evidence, and the workflow's container job, which joins with
-    task 7 when there is a daemon to run. The model's five Channel
+    `services/kinesis/doc/unsupported.md`. The recording stub and wire
+    evidence for the AWS CLI v2, boto3, aws-sdk-java-v2 and KPL are in
+    `services/kinesis/tests/evidence/` (README there: CBOR from the Java
+    SDK, KPL's `Expect: 100-continue`, STS `GetCallerIdentity` and
+    `StreamARN`). Moved to later tasks, with reasons in that README:
+    aws-sdk-cpp (task 7), KCL 2.x and 3.x (tasks 9 and 16, they need a
+    lease table first), the Flink connector (task 17) and `SubscribeToShard`
+    (task 13), plus the workflow's container job, which joins with task 7
+    when there is a daemon to run. The model's five Channel
     operations (delivery to S3 and S3 Tables) are not in the spec and are
     listed as unplanned pending the owner's call.
 

@@ -1,0 +1,551 @@
+{
+ "client": "aws-sdk-java-v2-2.57.11",
+ "requests": [
+  {
+   "operation": "CreateStream",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.CreateStream"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "34"
+    ]
+   ],
+   "body_sha256": "86c02234b27373b67a8d385c7087c2a6547851c42ddd4294b533f962b3e68b36",
+   "body": {
+    "StreamName": "evidence",
+    "ShardCount": 1
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "DescribeStreamSummary",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.DescribeStreamSummary"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "22"
+    ]
+   ],
+   "body_sha256": "926bc5ec5521ef9c3090869bca94656f5fd1dfd3f6b0038ebd78c879537cc314",
+   "body": {
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "ListShards",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.ListShards"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "22"
+    ]
+   ],
+   "body_sha256": "926bc5ec5521ef9c3090869bca94656f5fd1dfd3f6b0038ebd78c879537cc314",
+   "body": {
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "PutRecord",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.PutRecord"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "51"
+    ]
+   ],
+   "body_sha256": "575da04ab4b356b7ddb96d0eeb4aef11cf286d2b4c5503c43937cacdb3d83cc4",
+   "body": {
+    "StreamName": "evidence",
+    "Data": {
+     "$bytes": "aGVsbG8="
+    },
+    "PartitionKey": "pk-1"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "PutRecords",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.PutRecords"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "109"
+    ]
+   ],
+   "body_sha256": "85cd61c1596fe47804f62191c20b8fc84a5f6e124a832e687f403f1f6a427c17",
+   "body": {
+    "Records": [
+     {
+      "Data": {
+       "$bytes": "b25l"
+      },
+      "PartitionKey": "pk-2"
+     },
+     {
+      "Data": {
+       "$bytes": "dHdv"
+      },
+      "ExplicitHashKey": "42",
+      "PartitionKey": "pk-3"
+     }
+    ],
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "GetShardIterator",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.GetShardIterator"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "82"
+    ]
+   ],
+   "body_sha256": "eef42523b7881f363baf5aebc5332db7f5a7811f701491d6fea7f331959fd5b1",
+   "body": {
+    "StreamName": "evidence",
+    "ShardId": "shardId-000000000000",
+    "ShardIteratorType": "TRIM_HORIZON"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "GetRecords",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.GetRecords"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "77"
+    ]
+   ],
+   "body_sha256": "45afd567df5b3b6cf831bc3c89652a64ad47544fe043ddd2fe11030e647aad97",
+   "body": {
+    "ShardIterator": "AAAAAAAAAAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "Limit": 100
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "DeleteStream",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-cbor-1.1",
+   "headers": [
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1; max=4"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-cbor-1.1"
+    ],
+    [
+     "User-Agent",
+     "aws-sdk-java/2.57.11 md/io#sync md/http#UrlConnection ua/2.1 api/Kinesis#2.57.x os/Linux#<kernel> lang/java#21.0.12.1 md/OpenJDK_64-Bit_Server_VM#21.0.12.1+1-1-24.04.4-Ubuntu md/vendor#Ubuntu md/en_US m/D,AK,N,P,g"
+    ],
+    [
+     "x-amz-content-sha256",
+     "<sha256-hex>"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.DeleteStream"
+    ],
+    [
+     "Accept",
+     "*/*"
+    ],
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "Content-Length",
+     "47"
+    ]
+   ],
+   "body_sha256": "24a8981f76799d664aa24b331bb8cce81fe2e4ca849b952b65ddbcaef23f9998",
+   "body": {
+    "StreamName": "evidence",
+    "EnforceConsumerDeletion": true
+   },
+   "response_status": 200,
+   "response_type": null
+  }
+ ],
+ "summary": {
+  "operations": [
+   "CreateStream",
+   "DescribeStreamSummary",
+   "ListShards",
+   "PutRecord",
+   "PutRecords",
+   "GetShardIterator",
+   "GetRecords",
+   "DeleteStream"
+  ],
+  "content_types": [
+   "application/x-amz-cbor-1.1"
+  ],
+  "http_versions": [
+   "HTTP/1.1"
+  ]
+ }
+}
