@@ -759,7 +759,7 @@ because each has a zero-spend fallback.
     unit test, and the PR updates its row there.
   - _Requirements: 10.1–10.4, 10.7_
 
-- [ ] 18. Session policies, tags, source identity and revocation
+- [x] 18. Session policies, tags, source identity and revocation
   - `Policy` and `PolicyArns`, `Tags` and `TransitiveTagKeys` with
     `sts:TagSession`, and `SourceIdentity` with `sts:SetSourceIdentity`.
   - A 1-hour cap for role chaining, packed-size limits, and

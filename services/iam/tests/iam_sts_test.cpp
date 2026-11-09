@@ -259,6 +259,26 @@ struct fixture {
 const std::string k_get_object = R"({"Effect":"Allow","Action":"s3:GetObject","Resource":"*"})";
 const std::string k_alice = "arn:aws:iam::111122223333:user/alice";
 
+/// A trust policy letting `principal` assume the role, tag the session
+/// and set its source identity.
+auto trust_tagging(const std::string& principal, const std::string& condition = "") -> std::string {
+    return R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":")" +
+           principal +
+           R"("},"Action":["sts:AssumeRole","sts:TagSession","sts:SetSourceIdentity"])" +
+           (condition.empty() ? "" : R"(,"Condition":)" + condition) + "}]}";
+}
+
+/// `Tags.member.N` parameters for `tags`.
+auto tag_params(const std::vector<std::pair<std::string, std::string>>& tags) -> std::string {
+    std::string out;
+    for (std::size_t i = 0; i < tags.size(); ++i) {
+        const auto n = std::to_string(i + 1);
+        out += "&Tags.member." + n + ".Key=" + enc(tags[i].first) + "&Tags.member." + n +
+               ".Value=" + enc(tags[i].second);
+    }
+    return out;
+}
+
 }  // namespace
 
 BOOST_AUTO_TEST_SUITE(tokens)
@@ -469,7 +489,7 @@ BOOST_FIXTURE_TEST_CASE(inv_dur_1_and_2_assume_role_durations, fixture) {
                "ValidationError");
 }
 
-BOOST_FIXTURE_TEST_CASE(a_role_session_can_assume_another_role_for_at_most_an_hour, fixture) {
+BOOST_FIXTURE_TEST_CASE(inv_dur_3_role_chaining_is_capped_at_an_hour, fixture) {
     user("alice");
     role("first", trust_for(k_alice), 43200,
          R"({"Effect":"Allow","Action":"sts:AssumeRole","Resource":"*"})");
@@ -484,15 +504,8 @@ BOOST_FIXTURE_TEST_CASE(a_role_session_can_assume_another_role_for_at_most_an_ho
     BOOST_TEST(chained->arn == "arn:aws:sts::111122223333:assumed-role/second/s1");
 }
 
-BOOST_FIXTURE_TEST_CASE(parameters_of_later_tasks_are_refused_not_ignored, fixture) {
+BOOST_FIXTURE_TEST_CASE(actions_of_later_tasks_are_not_implemented, fixture) {
     user("alice");
-    role("app", trust_for(k_alice));
-    for (const auto* extra :
-         {"&Policy=%7B%7D", "&PolicyArns.member.1.arn=arn:aws:iam::aws:policy/ReadOnlyAccess",
-          "&Tags.member.1.Key=a&Tags.member.1.Value=b", "&TransitiveTagKeys.member.1=a",
-          "&SourceIdentity=me"}) {
-        BOOST_TEST(code_of(assume(principal("alice"), "app", extra)) == "NotImplemented", extra);
-    }
     for (const auto* action : {"AssumeRoleWithSAML", "AssumeRoot", "AssumeRoleWithWebIdentity",
                                "GetFederationToken", "DecodeAuthorizationMessage"}) {
         const auto r = call(principal("alice"), std::string("Action=") + action);
@@ -500,6 +513,246 @@ BOOST_FIXTURE_TEST_CASE(parameters_of_later_tasks_are_refused_not_ignored, fixtu
     }
     BOOST_TEST(code_of(call(principal("alice"), "Action=GetCallerIdentity&Version=2010-05-08")) ==
                "InvalidParameterValue");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(session_policies_tags_and_identity)
+
+BOOST_FIXTURE_TEST_CASE(inv_spol_1_to_4_session_policies_are_checked, fixture) {
+    user("alice");
+    role("app", trust_for(k_alice), 3600, k_get_object);
+    // INV-SPOL-1: 1-2048 characters, then a policy that parses.
+    BOOST_TEST(code_of(assume(principal("alice"), "app", "&Policy=" + std::string(2049, 'a'))) ==
+               "MalformedPolicyDocument");
+    BOOST_TEST(code_of(assume(principal("alice"), "app", "&Policy=" + enc("{not json"))) ==
+               "MalformedPolicyDocument");
+    // INV-SPOL-2: at most 10 ARNs.
+    std::string eleven;
+    for (int i = 1; i <= 11; ++i) {
+        eleven += "&PolicyArns.member." + std::to_string(i) +
+                  ".arn=" + enc("arn:aws:iam::aws:policy/P" + std::to_string(i));
+    }
+    BOOST_TEST(code_of(assume(principal("alice"), "app", eleven)) == "InvalidInput");
+    // INV-SPOL-3: the role's own account, or AWS-managed.
+    BOOST_TEST(code_of(assume(
+                   principal("alice"), "app",
+                   "&PolicyArns.member.1.arn=" + enc("arn:aws:iam::444455556666:policy/theirs"))) ==
+               "InvalidInput");
+    BOOST_TEST(assume(principal("alice"), "app",
+                      "&PolicyArns.member.1.arn=" + enc("arn:aws:iam::111122223333:policy/ours"))
+                   .status == 200U);
+    // INV-SPOL-4: policy characters plus ARNs at most 2048, reported as a
+    // percentage when accepted.
+    const auto sid = std::string(1930, 'a');
+    const auto big = R"({"Version":"2012-10-17","Statement":[{"Sid":")" + sid +
+                     R"(","Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]})";
+    const auto ok = assume(principal("alice"), "app", "&Policy=" + enc(big));
+    BOOST_TEST(ok.status == 200U, ok.body);
+    BOOST_TEST(std::stoi(element(ok.body, "PackedPolicySize")) >= 95);
+    BOOST_TEST(code_of(assume(principal("alice"), "app",
+                              "&Policy=" + enc(big) + "&PolicyArns.member.1.arn=" +
+                                  enc("arn:aws:iam::aws:policy/ReadOnlyAccess"))) ==
+               "PackedPolicyTooLarge");
+}
+
+BOOST_FIXTURE_TEST_CASE(a_session_policy_limits_the_session_to_the_intersection, fixture) {
+    user("alice");
+    role("app", trust_for(k_alice), 3600,
+         k_get_object + R"(,{"Effect":"Allow","Action":"iam:ListRoles","Resource":"*"})");
+    const auto session_with = [&](const std::string& extra) {
+        const auto r = assume(principal("alice"), "app", extra);
+        BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+        auto who = authenticate(creds_of(r));
+        BOOST_TEST_REQUIRE(who.has_value());
+        return *who;
+    };
+    const auto can = [&](const aws_auth::principal_context& who, const char* action) {
+        return authz.authorize(who, {.action = action, .resource = "arn:aws:s3:::b/k"}).allowed;
+    };
+    // No session policy: the role's permissions.
+    const auto plain = session_with("");
+    BOOST_TEST(can(plain, "s3:GetObject"));
+    BOOST_TEST(can(plain, "iam:ListRoles"));
+    // An inline session policy narrows them, and grants nothing the role lacks.
+    const auto narrowed = session_with(
+        "&Policy=" +
+        enc(R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","iam:ListUsers"],"Resource":"*"}]})"));
+    BOOST_TEST(can(narrowed, "s3:GetObject"));
+    BOOST_TEST(!can(narrowed, "iam:ListRoles"));
+    BOOST_TEST(!can(narrowed, "iam:ListUsers"));
+    // A managed policy by ARN is read at request time.
+    run(iam_command::create_policy,
+        {{"name", "Roles"},
+         {"id", "ANPAROLES00000000001"},
+         {"document",
+          R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"iam:ListRoles","Resource":"*"}]})"}});
+    const auto by_arn =
+        session_with("&PolicyArns.member.1.arn=" + enc("arn:aws:iam::111122223333:policy/Roles"));
+    BOOST_TEST(!can(by_arn, "s3:GetObject"));
+    BOOST_TEST(can(by_arn, "iam:ListRoles"));
+    // One that does not exist still limits the session, to nothing.
+    const auto ghost =
+        session_with("&PolicyArns.member.1.arn=" + enc("arn:aws:iam::111122223333:policy/ghost"));
+    BOOST_TEST(!can(ghost, "s3:GetObject"));
+    BOOST_TEST(!can(ghost, "iam:ListRoles"));
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_stag_4_session_tags_need_tag_session_in_the_trust_policy, fixture) {
+    user("alice");
+    const std::string blue_only =
+        R"({"Effect":"Allow","Action":"s3:GetObject","Resource":"*","Condition":{"StringEquals":{"aws:PrincipalTag/team":"blue"}}})";
+    role("plain", trust_for(k_alice), 3600, blue_only);
+    role("tagging", trust_tagging(k_alice), 3600, blue_only);
+    const auto r = assume(principal("alice"), "plain", tag_params({{"team", "blue"}}));
+    BOOST_TEST(code_of(r) == "AccessDenied");
+    BOOST_TEST(r.body.find("sts:TagSession") != std::string::npos, r.body);
+    // The tags reach the session as principal tags, and conditions on
+    // aws:RequestTag in the trust policy see them.
+    role("only-blue-requests",
+         trust_tagging(k_alice, R"({"StringEquals":{"aws:RequestTag/team":"blue"}})"), 3600,
+         blue_only);
+    const auto can_get = [&](const std::string& role_name, const std::string& team) {
+        const auto rr = assume(principal("alice"), role_name, tag_params({{"team", team}}));
+        BOOST_TEST_REQUIRE(rr.status == 200U, rr.body);
+        const auto who = authenticate(creds_of(rr));
+        BOOST_TEST_REQUIRE(who.has_value());
+        return authz.authorize(*who, {.action = "s3:GetObject", .resource = "arn:aws:s3:::b/k"})
+            .allowed;
+    };
+    BOOST_TEST(can_get("tagging", "blue"));
+    BOOST_TEST(!can_get("tagging", "red"));
+    BOOST_TEST(can_get("only-blue-requests", "blue"));
+    BOOST_TEST(code_of(assume(principal("alice"), "only-blue-requests",
+                              tag_params({{"team", "red"}}))) == "AccessDenied");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_stag_5_session_tags_override_the_roles_tags, fixture) {
+    user("alice");
+    role(
+        "app", trust_tagging(k_alice), 3600,
+        R"({"Effect":"Allow","Action":"s3:GetObject","Resource":"*","Condition":{"StringEquals":{"aws:PrincipalTag/Team":"blue"}}})");
+    run(iam_command::tag_entity,
+        {{"kind", "role"},
+         {"name", "app"},
+         {"tags", boost::json::array{{{"Key", "Team"}, {"Value", "red"}}}}});
+    const auto can = [&](const std::string& extra) {
+        const auto r = assume(principal("alice"), "app", extra);
+        BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+        const auto who = authenticate(creds_of(r));
+        BOOST_TEST_REQUIRE(who.has_value());
+        return authz.authorize(*who, {.action = "s3:GetObject", .resource = "arn:aws:s3:::b/k"})
+            .allowed;
+    };
+    BOOST_TEST(!can(""));                             // the role's own Team=red
+    BOOST_TEST(can(tag_params({{"team", "blue"}})));  // overridden, case-insensitively
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_stag_1_to_3_session_tags_are_checked_and_pass_down_a_chain, fixture) {
+    user("alice");
+    role("first", trust_tagging(k_alice));
+    // INV-STAG-1: at most 50, keys unique case-insensitively.
+    std::vector<std::pair<std::string, std::string>> many;
+    for (int i = 0; i < 51; ++i) {
+        many.emplace_back("k" + std::to_string(i), "v");
+    }
+    BOOST_TEST(code_of(assume(principal("alice"), "first", tag_params(many))) == "ValidationError");
+    BOOST_TEST(code_of(assume(principal("alice"), "first",
+                              tag_params({{"Team", "a"}, {"team", "b"}}))) == "ValidationError");
+    // INV-STAG-2: at most 50 transitive keys of 1-128 characters, each a tag.
+    BOOST_TEST(code_of(assume(principal("alice"), "first",
+                              tag_params({{"team", "blue"}}) + "&TransitiveTagKeys.member.1=" +
+                                  std::string(129, 'k'))) == "ValidationError");
+    BOOST_TEST(
+        code_of(assume(principal("alice"), "first",
+                       tag_params({{"team", "blue"}}) + "&TransitiveTagKeys.member.1=project")) ==
+        "InvalidParameterValue");
+    // A transitive tag passes to the next role in the chain...
+    const auto r =
+        assume(principal("alice"), "first",
+               tag_params({{"team", "blue"}, {"cost", "1"}}) + "&TransitiveTagKeys.member.1=team");
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    const auto first = authenticate(creds_of(r));
+    BOOST_TEST_REQUIRE(first.has_value());
+    role(
+        "second", trust_tagging("arn:aws:iam::111122223333:role/first"), 3600,
+        R"({"Effect":"Allow","Action":"s3:GetObject","Resource":"*","Condition":{"StringEquals":{"aws:PrincipalTag/team":"blue"},"Null":{"aws:PrincipalTag/cost":"true"}}})");
+    const auto r2 = assume(*first, "second");
+    BOOST_TEST_REQUIRE(r2.status == 200U, r2.body);
+    const auto second = authenticate(creds_of(r2));
+    BOOST_TEST_REQUIRE(second.has_value());
+    BOOST_TEST(authz.authorize(*second, {.action = "s3:GetObject", .resource = "arn:aws:s3:::b/k"})
+                   .allowed);
+    // ...needs sts:TagSession there...
+    role("untagged", trust_for("arn:aws:iam::111122223333:role/first"));
+    BOOST_TEST(code_of(assume(*first, "untagged")) == "AccessDenied");
+    // ...and (INV-STAG-3) cannot be overridden on the way.
+    BOOST_TEST(code_of(assume(*first, "second", tag_params({{"TEAM", "red"}}))) ==
+               "InvalidParameterValue");
+    // A non-transitive tag may be.
+    BOOST_TEST(assume(*first, "second", tag_params({{"cost", "2"}})).status == 200U);
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_sts_6_source_identity_is_checked_and_kept_down_a_chain, fixture) {
+    user("alice");
+    role("plain", trust_for(k_alice));
+    role("first", trust_tagging(k_alice));
+    for (const auto* bad : {"x", "aws:me", "has space"}) {
+        BOOST_TEST(code_of(assume(principal("alice"), "first", "&SourceIdentity=" + enc(bad))) ==
+                       "ValidationError",
+                   bad);
+    }
+    BOOST_TEST(code_of(assume(principal("alice"), "plain", "&SourceIdentity=alice-ci")) ==
+               "AccessDenied");
+    const auto r = assume(principal("alice"), "first", "&SourceIdentity=alice-ci");
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "SourceIdentity") == "alice-ci");
+    const auto first = authenticate(creds_of(r));
+    BOOST_TEST_REQUIRE(first.has_value());
+    BOOST_TEST(first->source_identity == "alice-ci");
+    // Down the chain it is kept, needs sts:SetSourceIdentity, and cannot change.
+    role("second", trust_tagging("arn:aws:iam::111122223333:role/first"));
+    role("strict", trust_for("arn:aws:iam::111122223333:role/first"));
+    BOOST_TEST(code_of(assume(*first, "strict")) == "AccessDenied");
+    BOOST_TEST(code_of(assume(*first, "second", "&SourceIdentity=bob-ci")) ==
+               "InvalidParameterValue");
+    const auto r2 = assume(*first, "second");
+    BOOST_TEST_REQUIRE(r2.status == 200U, r2.body);
+    const auto second = authenticate(creds_of(r2));
+    BOOST_TEST_REQUIRE(second.has_value());
+    BOOST_TEST(second->source_identity == "alice-ci");
+}
+
+BOOST_FIXTURE_TEST_CASE(older_sessions_are_revoked_by_a_token_issue_time_deny, fixture) {
+    // AWS's "Revoke active sessions": an inline deny on the role for any
+    // token issued before a time. aws:TokenIssueTime comes from the token.
+    user("alice");
+    role("app", trust_for(k_alice), 3600, k_get_object);
+    const auto r = assume(principal("alice"), "app");
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    const auto old_session = authenticate(creds_of(r));
+    BOOST_TEST_REQUIRE(old_session.has_value());
+    BOOST_TEST_REQUIRE(old_session->token_issue_time.has_value());
+    const auto issued = std::chrono::duration_cast<std::chrono::seconds>(
+                            old_session->token_issue_time->time_since_epoch())
+                            .count();
+    const auto get = [&](const aws_auth::principal_context& who) {
+        return authz.authorize(who, {.action = "s3:GetObject", .resource = "arn:aws:s3:::b/k"})
+            .allowed;
+    };
+    BOOST_TEST(get(*old_session));
+    run(iam_command::put_inline_policy,
+        {{"kind", "role"},
+         {"name", "app"},
+         {"policy_name", "AWSRevokeOlderSponsoredSessions"},
+         {"document",
+          R"({"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*","Condition":{"DateLessThan":{"aws:TokenIssueTime":")" +
+              iam::query::iso8601(issued + 5) + R"("}}}]})"}});
+    BOOST_TEST(!get(*old_session));
+    // A session issued after the cut-off is unaffected.
+    auto newer = *old_session;
+    newer.token_issue_time = *old_session->token_issue_time + std::chrono::seconds(10);
+    BOOST_TEST(get(newer));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -33,6 +33,8 @@
 
 #include <openssl/crypto.h>
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <concepts>
 #include <cstdint>
@@ -43,6 +45,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace kythira::iam::sts {
 
@@ -239,17 +242,127 @@ private:
             return n;
         }
 
-        /// The parameters task 18 adds: refused rather than ignored, since
-        /// ignoring a session policy would grant more than was asked.
-        void refuse_unsupported() const {
-            for (const auto* p : {"Policy", "PolicyArns.member.1.arn", "Tags.member.1.Key",
-                                  "TransitiveTagKeys.member.1", "SourceIdentity"}) {
-                if (f.contains(p)) {
-                    query::detail::fail("NotImplemented",
-                                        "Session policies, session tags and source identity are "
-                                        "not supported by this endpoint yet.");
+        /// What a request asks to put in its session beyond the role:
+        /// session policies, session tags and a source identity (task 18).
+        struct session_request {
+            std::optional<std::string> policy;  // inline JSON
+            std::vector<std::string> policy_arns;
+            validate::tag_list tags;              // the request's own
+            std::vector<std::string> transitive;  // of `tags`
+            std::optional<std::string> source_identity;
+            std::size_t packed = 0;  // characters counted toward 2048
+        };
+
+        /// The calling session's transitive tags, which pass on down a
+        /// role chain and cannot be overridden there (INV-STAG-3).
+        [[nodiscard]] auto inherited_tags() const -> validate::tag_list {
+            validate::tag_list out;
+            if (who.type != aws_auth::principal_type::assumed_role) {
+                return out;
+            }
+            for (const auto& [k, v] : who.tags) {
+                const auto folded = validate::detail::fold(k);
+                if (std::ranges::any_of(who.transitive_tag_keys, [&](const auto& t) {
+                        return validate::detail::fold(t) == folded;
+                    })) {
+                    out.emplace_back(k, v);
                 }
             }
+            return out;
+        }
+
+        /// INV-SPOL-1..4, INV-STAG-1..3 and INV-STS-6, checked before any
+        /// authorization; `account` is the account the session will be in.
+        [[nodiscard]] auto session_parameters(const std::string& account) const -> session_request {
+            session_request out;
+            if (const auto p = f.get("Policy")) {
+                out.policy = std::string(*p);
+            }
+            static constexpr std::array<std::string_view, 1> arn_field{"arn"};
+            const auto arns = f.member_structs("PolicyArns", arn_field);
+            if (!arns) {
+                query::detail::fail("ValidationError", "The PolicyArns parameter is malformed.");
+            }
+            for (const auto& a : *arns) {
+                const auto it = a.find("arn");
+                if (it == a.end()) {
+                    query::detail::fail("ValidationError", "Every PolicyArns entry needs an arn.");
+                }
+                out.policy_arns.push_back(it->second);
+            }
+            if (const auto e =
+                    validate::session_policies_error(out.policy, out.policy_arns, account)) {
+                query::detail::fail(e->first, e->second);
+            }
+            if (out.policy) {
+                try {
+                    (void)parse_policy(*out.policy, policy_type::session,
+                                       parse_options{.max_size = 2048 * 4});
+                } catch (const policy_error& e) {
+                    query::detail::fail("MalformedPolicyDocument", e.what());
+                }
+                const auto cps = validate::detail::decode_utf8(*out.policy);
+                out.packed += cps ? validate::detail::non_whitespace_chars(*cps) : 0;
+            }
+            for (const auto& a : out.policy_arns) {
+                out.packed += a.size();
+            }
+
+            static constexpr std::array<std::string_view, 2> tag_fields{"Key", "Value"};
+            const auto tags = f.member_structs("Tags", tag_fields);
+            if (!tags) {
+                query::detail::fail("ValidationError", "The Tags parameter is malformed.");
+            }
+            for (const auto& t : *tags) {
+                const auto k = t.find("Key");
+                if (k == t.end()) {
+                    query::detail::fail("ValidationError", "Every tag needs a Key.");
+                }
+                const auto v = t.find("Value");
+                out.tags.emplace_back(k->second, v == t.end() ? std::string{} : v->second);
+            }
+            const auto transitive = f.members("TransitiveTagKeys");
+            if (!transitive) {
+                query::detail::fail("ValidationError",
+                                    "The TransitiveTagKeys parameter is malformed.");
+            }
+            out.transitive = *transitive;
+            if (const auto e =
+                    validate::session_tags_error(out.tags, out.transitive, inherited_tags())) {
+                query::detail::fail(
+                    e->find("transitive tag of the calling session") != std::string::npos
+                        ? "InvalidParameterValue"
+                        : "ValidationError",
+                    *e);
+            }
+            // A transitive key names one of this request's tags.
+            for (const auto& key : out.transitive) {
+                const auto fk = validate::detail::fold(key);
+                if (!std::ranges::any_of(out.tags, [&](const auto& t) {
+                        return validate::detail::fold(t.first) == fk;
+                    })) {
+                    query::detail::fail(
+                        "InvalidParameterValue",
+                        "TransitiveTagKeys entry " + key + " is not a key of the session tags.");
+                }
+            }
+
+            if (const auto si = f.get("SourceIdentity")) {
+                if (!validate::source_identity(*si)) {  // INV-STS-6
+                    query::detail::fail("ValidationError",
+                                        "1 validation error detected: Value at 'sourceIdentity' "
+                                        "failed to satisfy constraint: Member must satisfy "
+                                        "regular expression pattern: [\\w+=,.@-]* and have "
+                                        "length between 2 and 64, and not begin with aws:");
+                }
+                // Once set, a source identity holds for the whole chain.
+                if (!who.source_identity.empty() && who.source_identity != *si) {
+                    query::detail::fail("InvalidParameterValue",
+                                        "The source identity of a role chain cannot be changed.");
+                }
+                out.source_identity = std::string(*si);
+            }
+            return out;
         }
 
         /// INV-STS-7, checked wherever it is accepted.
@@ -316,7 +429,6 @@ private:
             }
             const auto requested = optional_int("DurationSeconds");
             check_token_size();
-            refuse_unsupported();
 
             // The role, in whichever account its ARN names. A missing role
             // is AccessDenied, as on AWS, so roles cannot be probed.
@@ -351,6 +463,11 @@ private:
             if (!role) {
                 denied();
             }
+            const auto extra = session_parameters(role_account);
+            const auto inherited = inherited_tags();
+            const auto source_identity = extra.source_identity
+                                             ? *extra.source_identity
+                                             : who.source_identity;  // kept down a chain
             const bool chained = who.type == aws_auth::principal_type::assumed_role;
             const auto duration =
                 validate::assume_role_duration(requested, role->max_session_duration, chained);
@@ -372,12 +489,42 @@ private:
             if (external_id) {
                 r.keys.push_back({"sts:ExternalId", {std::string(*external_id)}});
             }
+            if (!extra.transitive.empty()) {
+                r.keys.push_back({"sts:TransitiveTagKeys", extra.transitive});
+            }
+            if (!source_identity.empty()) {
+                r.keys.push_back({"sts:SourceIdentity", {source_identity}});
+            }
+            // Session tags, the request's and those inherited down the
+            // chain, are the request tags of every check below.
+            const auto session_tags = validate::merge_session_tags({}, extra.tags, inherited);
+            if (!session_tags.empty()) {
+                r.request_tags = session_tags;
+            }
             r.source_ip = facts.source_ip;
             r.user_agent = facts.user_agent;
             r.region = facts.region;
             r.secure_transport = facts.secure_transport;
             if (!api._authz->authorize(who, r).allowed) {
                 denied();
+            }
+            // INV-STAG-4: session tags need sts:TagSession, and a source
+            // identity sts:SetSourceIdentity, from the same trust policy
+            // (and, across accounts, the caller's own policies).
+            const auto also = [&](const char* action) {
+                auto extra_check = r;
+                extra_check.action = action;
+                if (!api._authz->authorize(who, extra_check).allowed) {
+                    query::detail::fail("AccessDenied", "User: " + who.arn +
+                                                            " is not authorized to perform: " +
+                                                            action + " on resource: " + role_arn);
+                }
+            };
+            if (!session_tags.empty()) {
+                also("sts:TagSession");
+            }
+            if (!source_identity.empty()) {
+                also("sts:SetSourceIdentity");
             }
 
             session s;
@@ -391,12 +538,30 @@ private:
                               role->name + "/" + session_name;
             s.userid = role->id + ":" + session_name;
             s.chained = chained;
+            if (extra.policy) {
+                s.session_policies.push_back(*extra.policy);
+            }
+            s.session_policies.insert(s.session_policies.end(), extra.policy_arns.begin(),
+                                      extra.policy_arns.end());
+            s.tags = session_tags;
+            s.transitive_tag_keys = extra.transitive;
+            for (const auto& [k, v] : inherited) {
+                s.transitive_tag_keys.push_back(k);
+            }
+            s.source_identity = source_identity;
             aws_query::xml_writer w;
             mint(s, duration.value(), w);
             w.open("AssumedRoleUser")
                 .element("AssumedRoleId", s.userid)
                 .element("Arn", s.principal_arn)
                 .close();
+            if (extra.policy || !extra.policy_arns.empty() || !session_tags.empty()) {
+                // AWS reports the packed size as a percentage of its limit.
+                w.element("PackedPolicySize", std::to_string(extra.packed * 100 / 2048));
+            }
+            if (!source_identity.empty()) {
+                w.element("SourceIdentity", source_identity);
+            }
             return w.str();
         }
 

@@ -177,6 +177,26 @@ inline void add_managed(gathered& g, std::vector<named_policy>& into, const iam_
     }
 }
 
+/// One session policy a token carries: inline JSON, or a managed policy's
+/// ARN (`PolicyArns`), read at request time as AWS does. One that no
+/// longer parses or exists still counts, as a policy granting nothing:
+/// dropping it would leave a role session with no session policy, and so
+/// unlimited by one, which is broader than the caller asked for.
+inline void add_session_policy(gathered& g, const iam_state_machine& sm, std::string name,
+                               const std::string& entry) {
+    const auto before = g.session.size();
+    if (entry.starts_with("arn:")) {
+        add_managed(g, g.session, sm, entry);
+    } else {
+        add_parsed(g, g.session, name, entry, policy_type::session);
+    }
+    if (g.session.size() == before) {
+        auto none = std::make_shared<const policy_document>();
+        g.session.push_back({std::move(name), none.get()});
+        g.keep.push_back(std::move(none));
+    }
+}
+
 template<class Entity>
 void add_entity_policies(gathered& g, const iam_state_machine& sm, const Entity& e,
                          std::string_view label) {
@@ -240,8 +260,7 @@ void add_entity_policies(gathered& g, const iam_state_machine& sm, const Entity&
             break;
     }
     for (std::size_t i = 0; i < who.session_policies.size(); ++i) {
-        add_parsed(g, g.session, "session[" + std::to_string(i) + "]", who.session_policies[i],
-                   policy_type::session);
+        add_session_policy(g, sm, "session[" + std::to_string(i) + "]", who.session_policies[i]);
     }
     return g;
 }

@@ -233,24 +233,24 @@ them from its handler, and its handler test shows one refusal per rule.
 | INV-STS-3 | ExternalId is 2–1224 characters of `[\w+=,.@:/-]` | Tested: val `external_ids`; handler: sts `inv_sts_3_external_ids_are_checked` (task 17) |
 | INV-STS-4 | An MFA SerialNumber is 9–256 characters of `[\w+=/:,.@-]` | Tested: val `mfa_parameters`; handler: sts `inv_sts_4_and_5_mfa_parameters_are_checked_then_refused` (task 17) |
 | INV-STS-5 | TokenCode is exactly 6 digits | Tested: val `mfa_parameters`; handler: sts `inv_sts_4_and_5_mfa_parameters_are_checked_then_refused` (task 17) |
-| INV-STS-6 | SourceIdentity is 2–64 characters and never starts with `aws:` | Tested: val `source_identity_and_sizes` (task 18) |
+| INV-STS-6 | SourceIdentity is 2–64 characters and never starts with `aws:` | Tested: val `source_identity_and_sizes`; handler: sts `inv_sts_6_source_identity_is_checked_and_kept_down_a_chain` (task 18) |
 | INV-STS-7 | MinimumSessionTokenSize is 0–4096 | Tested: val `source_identity_and_sizes`; handler: sts `inv_sts_7_minimum_session_token_size_is_checked` (task 17; task 26 owes GetFederationToken) |
 | INV-WEB-1 | A WebIdentityToken is 4–20000 characters | Tested: val `source_identity_and_sizes` (task 19) |
 | INV-DUR-1 | AssumeRole defaults to 3600 seconds, within 900–43200 | Tested: val `assume_role`; handler: sts `inv_dur_1_and_2_assume_role_durations` (task 17) |
 | INV-DUR-2 | The duration may not exceed the role's MaxSessionDuration: the request is refused, not shortened | Tested: val `assume_role`; handler: sts `inv_dur_1_and_2_assume_role_durations` (task 17) |
-| INV-DUR-3 | Role chaining is capped at 1 hour: a longer request fails | Tested: val `assume_role` (task 18) |
+| INV-DUR-3 | Role chaining is capped at 1 hour: a longer request fails | Tested: val `assume_role`; handler: sts `inv_dur_3_role_chaining_is_capped_at_an_hour` (task 18) |
 | INV-DUR-4 | AssumeRoleWithWebIdentity follows the AssumeRole rules | Tested: val `web_identity` (task 19) |
 | INV-DUR-5 | GetSessionToken and GetFederationToken allow 900–129600 seconds, default 43200 | Tested: val `session_and_federation_tokens`; handler: sts `inv_dur_5_and_6_session_token_durations` (task 17; task 26 owes GetFederationToken) |
 | INV-DUR-6 | For the root, those two default to 3600, and a longer request is shortened to 3600 | Tested: val `session_and_federation_tokens`; handler: sts `inv_dur_5_and_6_session_token_durations` (task 17; task 26 owes GetFederationToken) |
-| INV-SPOL-1 | An inline session Policy is 1–2048 characters of the policy character set | Tested: val `session_policies` (task 18) |
-| INV-SPOL-2 | At most 10 PolicyArns | Tested: val `session_policies` (task 18) |
-| INV-SPOL-3 | PolicyArns name policies in the role's or user's own account, or AWS-managed ones | Tested: val `session_policies` (task 18) |
-| INV-SPOL-4 | The inline policy plus the ARNs total at most 2048 characters (PackedPolicyTooLarge) | Tested: val `session_policies` (task 18) |
-| INV-STAG-1 | At most 50 session tags, with valid keys and values, unique case-insensitively | Tested: val `session_tags` (task 18) |
-| INV-STAG-2 | At most 50 TransitiveTagKeys, each 1–128 characters | Tested: val `session_tags` (task 18) |
-| INV-STAG-3 | A tag that the calling session carries as transitive cannot be passed again | Tested: val `session_tags` (task 18) |
-| INV-STAG-4 | Session tags need `sts:TagSession` in the trust policy | Task 18 |
-| INV-STAG-5 | Session tags override the principal's tags of the same key, case-insensitively | Tested: val `session_tags_override_principal_tags` (task 18) |
+| INV-SPOL-1 | An inline session Policy is 1–2048 characters of the policy character set | Tested: val `session_policies`; handler: sts `inv_spol_1_to_4_session_policies_are_checked` (task 18) |
+| INV-SPOL-2 | At most 10 PolicyArns | Tested: val `session_policies`; handler: sts `inv_spol_1_to_4_session_policies_are_checked` (task 18) |
+| INV-SPOL-3 | PolicyArns name policies in the role's or user's own account, or AWS-managed ones | Tested: val `session_policies`; handler: sts `inv_spol_1_to_4_session_policies_are_checked` (task 18) |
+| INV-SPOL-4 | The inline policy plus the ARNs total at most 2048 characters (PackedPolicyTooLarge) | Tested: val `session_policies`; handler: sts `inv_spol_1_to_4_session_policies_are_checked` (task 18) |
+| INV-STAG-1 | At most 50 session tags, with valid keys and values, unique case-insensitively | Tested: val `session_tags`; handler: sts `inv_stag_1_to_3_session_tags_are_checked_and_pass_down_a_chain` (task 18) |
+| INV-STAG-2 | At most 50 TransitiveTagKeys, each 1–128 characters | Tested: val `session_tags`; handler: sts `inv_stag_1_to_3_session_tags_are_checked_and_pass_down_a_chain` (task 18) |
+| INV-STAG-3 | A tag that the calling session carries as transitive cannot be passed again | Tested: val `session_tags`; handler: sts `inv_stag_1_to_3_session_tags_are_checked_and_pass_down_a_chain` (task 18) |
+| INV-STAG-4 | Session tags need `sts:TagSession` in the trust policy | Tested: sts `inv_stag_4_session_tags_need_tag_session_in_the_trust_policy` (task 18) |
+| INV-STAG-5 | Session tags override the principal's tags of the same key, case-insensitively | Tested: val `session_tags_override_principal_tags`; sts `inv_stag_5_session_tags_override_the_roles_tags` (task 18) |
 
 ## STS behaviour and temporary credentials
 
