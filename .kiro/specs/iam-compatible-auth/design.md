@@ -860,6 +860,25 @@ the adapter, so a build without `CONFIG_REDIS_GATEWAY_IAM` has none of them.
   `iam-module.yml`'s container job, which now sets up its runtime with the
   shared `setup-container-runtime` action.
 
+**As built (task 24, Terraform half).**
+- `conformance/terraform/main.tf` pins Terraform 1.9.8 and the AWS
+  provider 5.70.0 and covers Requirement 15.2: two users (one with a
+  permissions boundary, tags, an inline policy and an attachment), a group
+  with a member, an inline policy and an attachment, a boundary policy and
+  a customer managed policy, an OIDC provider, a web identity role with a
+  boundary, inline policy and attachment, and an EC2 role with an AWS
+  managed attachment and an instance profile.
+- The conformance harness runs it in the pinned `hashicorp/terraform`
+  image as the account root: apply, a second plan with
+  `-detailed-exitcode` that must find no changes (so every resource reads
+  back as written, including policy JSON and tags), then destroy. Any
+  `NotImplemented` in the output fails the case even when the provider
+  tolerates it. Users are created without `force_destroy`, so destroy does
+  not call the out-of-scope credential listings (signing certificates, SSH
+  keys, MFA, login profiles).
+- The configuration was written without a local run (the sandbox may not
+  fetch Terraform); the first CI run is its test.
+
 ## Configuration
 
 | Flag | Daemon | Default |

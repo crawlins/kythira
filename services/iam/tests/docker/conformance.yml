@@ -14,7 +14,8 @@
 #   oidc-issuer    a test OIDC identity provider serving the issuer-www
 #                  volume, which the driver writes;
 #   driver         boto3 at a pinned version, running conformance/driver.py;
-#   aws-cli        the AWS CLI v2 at a pinned version.
+#   aws-cli        the AWS CLI v2 at a pinned version;
+#   terraform      Terraform and the AWS provider at pinned versions (task 24).
 #
 # The rules of compose.yml apply (CLAUDE.md): service names only, no static
 # IPs, no runtime named, no capabilities, privileged mode or host
@@ -345,6 +346,31 @@ services:
     volumes:
       - pki:/pki:ro
       - shared:/shared
+
+  # Terraform with the AWS provider pinned in conformance/terraform/main.tf
+  # (task 24). The configuration is copied to a scratch directory, since
+  # init writes beside it; the provider plugin is downloaded at init.
+  terraform:
+    image: docker.io/hashicorp/terraform:1.9.8
+    profiles: ["cli"]
+    networks:
+      - conformance_net
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mkdir -p /tmp/tf && cp /src/main.tf /tmp/tf/ && cd /tmp/tf &&
+        terraform init -input=false -no-color &&
+        terraform apply -input=false -auto-approve -no-color -var endpoint=$$IAM_ENDPOINT &&
+        terraform plan -input=false -detailed-exitcode -no-color -var endpoint=$$IAM_ENDPOINT &&
+        terraform destroy -input=false -auto-approve -no-color -var endpoint=$$IAM_ENDPOINT
+    environment:
+      AWS_CA_BUNDLE: /pki/ca.pem
+      SSL_CERT_FILE: /pki/ca.pem
+      AWS_EC2_METADATA_DISABLED: "true"
+      TF_IN_AUTOMATION: "1"
+    volumes:
+      - ./conformance/terraform:/src:ro
+      - pki:/pki:ro
 
 networks:
   conformance_net:
