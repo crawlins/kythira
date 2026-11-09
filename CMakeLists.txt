@@ -827,6 +827,21 @@ else()
 endif()
 kythira_kconfig_require(LEDGER KYTHIRA_BUILD_LEDGER "ion-c and OpenSSL")
 
+# kinesis-compatible-streams spec: the services/kinesis/ module (a Kinesis
+# Data Streams-compatible service). Off unless CONFIG_KINESIS=y, like every
+# new module; needs OpenSSL (SigV4, segment digests, iterator tokens) and
+# Boost (the Beast front end). Entered with add_subdirectory(services/kinesis)
+# below, after tests/.
+kythira_kconfig_gate(KINESIS)
+set(KYTHIRA_BUILD_KINESIS FALSE)
+if(_KYTHIRA_GATE_KINESIS AND DEFINED KCONFIG_KINESIS AND OpenSSL_FOUND AND Boost_FOUND)
+    set(KYTHIRA_BUILD_KINESIS TRUE)
+    message(STATUS "Kinesis module enabled (services/kinesis/, .kiro/specs/kinesis-compatible-streams/)")
+else()
+    message(STATUS "Kinesis module disabled (CONFIG_KINESIS=n, or OpenSSL/Boost not found)")
+endif()
+kythira_kconfig_require(KINESIS KYTHIRA_BUILD_KINESIS "OpenSSL and Boost")
+
 if(NOT stdexec_FOUND)
     message(WARNING "stdexec not found. The stdexec-backed Future/Promise implementation will not be available.")
 endif()
@@ -2178,6 +2193,12 @@ endif()
 # .kiro/specs/verifiable-ledger/), entered likewise.
 if(KYTHIRA_BUILD_LEDGER)
     add_subdirectory(services/ledger)
+endif()
+
+# The Kinesis module (services/README.md,
+# .kiro/specs/kinesis-compatible-streams/), entered likewise.
+if(KYTHIRA_BUILD_KINESIS)
+    add_subdirectory(services/kinesis)
 endif()
 
 # Installation rules

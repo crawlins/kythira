@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Kinesis operations the gateway implements, one per line, as named in the
+# pinned model (model/service-2.json). Every other model operation must be
+# listed in doc/unsupported.md; tools/check_coverage.py (the ctest
+# kinesis_model_coverage) enforces it. A task that implements an operation
+# moves it from there to here.

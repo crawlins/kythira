@@ -26,3 +26,8 @@ CONFIG_PROTOBUF_SERIALIZER=y
 # CONFIG_DNS_DISCOVERY is not set
 # CONFIG_POCO_DISCOVERY is not set
 CONFIG_IAM=y
+# The Kinesis module (services/kinesis/, .kiro/specs/kinesis-compatible-streams/).
+# Off by default like every new module; on here so the build-and-test legs,
+# coverage and clang-tidy cover it. Needs only OpenSSL and Boost, which every
+# leg has. configs/ci_no_kinesis_defconfig is this file without it.
+CONFIG_KINESIS=y

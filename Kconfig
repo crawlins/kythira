@@ -624,6 +624,7 @@ menu "Service Modules"
 
 source "services/iam/Kconfig"
 source "services/ledger/Kconfig"
+source "services/kinesis/Kconfig"
 
 endmenu # Service Modules
 
