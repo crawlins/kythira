@@ -21,16 +21,19 @@ builds and tests it; every other configuration leaves it off.
 | `include/kythira/ledger/ledger_hash.hpp` | `hash256` and SHA-256 | 2 |
 | `include/kythira/ledger/ion_hash.hpp` | the Amazon Ion hash over ion-c's reader, with any hash function (SHA-256 for the ledger) | 2 |
 | `include/kythira/ledger/merkle.hpp` | QLDB's `dot`, proof folding, in-memory Merkle roots and proofs, and the append-only accumulator over an abstract node store | 2 |
-| `include/kythira/ledger/ion_value.hpp` | a small Ion value tree (containers parsed, scalars kept as their own binary) for taking entries apart, patching documents and building records | 3 |
+| `include/kythira/ledger/ion_value.hpp` | a small Ion value tree (containers parsed, scalars kept as their own binary) for taking entries apart, patching documents and building records, written as Ion binary, Ion text or JSON | 3, 8 |
 | `include/kythira/ledger/journal_types.hpp` | the transaction entry, statements, patch paths, revisions and blocks in Ion, and their hashes | 3 |
 | `include/kythira/ledger/engine_merkle_store.hpp` | the Merkle node store over a `kv_engine`, buffering writes so they join the block's batch | 4 |
-| `include/kythira/ledger/ledger_state_machine.hpp` | `basic_ledger_state_machine<Engine>`: tables, document writes, the journal, the leader's block hash and the replica check, digests and block and revision proofs at any tip, snapshot reads and OCC, history, equality indexes and bounded scans, on the persistent state machine contract | 3-6 |
-| `include/kythira/ledger/ledger_sessions.hpp` | leader-side transactions: snapshot reads and index lookups, read sets, buffered statements, limits, expiry and leader change | 5, 6 |
+| `include/kythira/ledger/ledger_state_machine.hpp` | `basic_ledger_state_machine<Engine>`: tables, document writes, the journal, the leader's block hash and the replica check, digests and block and revision proofs at any tip, snapshot reads and OCC, history, equality indexes and bounded scans, sealed segments and export job state, on the persistent state machine contract | 3-6, 8 |
+| `include/kythira/ledger/ledger_sessions.hpp` | leader-side transactions: snapshot reads and index lookups, read sets, buffered statements, limits, expiry, leader change, and the disk floor | 5, 6, 8 |
+| `include/kythira/ledger/journal_segments.hpp` | segment files, seal and offload entries, durable file writes, upload to and fetch from any `key_object_store` | 8 |
+| `include/kythira/ledger/journal_export.hpp` | `ExportJournal` jobs: start and finish entries and the leader's export to an object-store prefix as Ion text, Ion binary or JSON with a manifest | 8 |
 | `cmd/ledger_node/` | placeholder daemon (`--self-test`); the server is task 7 | 1 |
 | `tests/ion_hash_test.cpp` | the amazon-ion/ion-hash-test suite (`tests/vectors/`) and the properties the ledger relies on | 2 |
 | `tests/ledger_merkle_test.cpp` | `dot` and folding against the AWS QLDB tutorial's functions, the tree shape, every proof at every tip, reopening, tampering | 2 |
 | `tests/ledger_state_machine_test.cpp` | the state machine on `memory_kv_engine`: every statement, rejections, stale and diverging entries, replicas, restart, checkpoint, the split veto, and every block and revision proof at every tip | 3, 4 |
 | `tests/ledger_transactions_test.cpp` | snapshot reads, read-set validation, limits, sessions, and the serializability property test | 5 |
+| `tests/ledger_segments_test.cpp` | sealing into identical files on every replica, proofs over sealed blocks, redone and rejected seals, damaged and offloaded segments, export in every format | 8 |
 | `tests/ledger_history_index_test.cpp` | history by document and table with time bounds and pages, index creation, build steps and maintenance, snapshot lookups and their conflicts, filtered scans with a byte budget | 6 |
 | `tests/tools/qldb_dot_vectors.py` | prints the vectors `ledger_merkle_test` checks, from the tutorial's published Python | 2 |
 | `tests/vectors/` | `ion_hash_tests.ion`, copied unchanged from amazon-ion/ion-hash-test (Apache-2.0; see its README) | 2 |

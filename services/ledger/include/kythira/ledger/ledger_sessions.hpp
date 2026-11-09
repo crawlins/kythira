@@ -38,6 +38,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -78,6 +79,29 @@ struct session_limits {
     std::size_t max_open_sessions = 10'000;
 };
 
+/// The disk floor (Requirement 10.3): transactions stop with
+/// insufficient_storage before the data directory's free space falls below
+/// `floor_bytes`. Sealing, offload and reads keep running, since they are
+/// how space comes back.
+struct disk_guard {
+    std::filesystem::path path;
+    std::uint64_t floor_bytes = std::uint64_t{1} << 30U;
+    /// Free bytes at a path; std::filesystem::space by default, a stub in
+    /// tests.
+    std::function<std::uint64_t(const std::filesystem::path&)> free_bytes =
+        [](const std::filesystem::path& p) { return std::filesystem::space(p).available; };
+
+    /// Why transactions must stop, or nullopt if there is room.
+    [[nodiscard]] auto check() const -> std::optional<std::string> {
+        const auto free = free_bytes(path);
+        if (free < floor_bytes) {
+            return path.string() + " has " + std::to_string(free) + " bytes free, below the " +
+                   std::to_string(floor_bytes) + " byte floor";
+        }
+        return std::nullopt;
+    }
+};
+
 /// True for apply/prepare rejection codes a client should retry by running
 /// the transaction again (Requirement 7.6).
 inline auto retryable_rejection(std::string_view code) -> bool {
@@ -94,10 +118,18 @@ public:
         clock_fn now = [] { return clock::now(); })
         : sm_(&sm), limits_(limits), now_(std::move(now)) {}
 
+    /// Refuse new transactions and commits while `guard` says the disk is
+    /// too full (Requirement 10.3).
+    auto set_disk_guard(disk_guard guard) -> void {
+        const std::lock_guard lock(mutex_);
+        guard_ = std::move(guard);
+    }
+
     /// Start a transaction on the leader of `term`; returns its token.
     auto begin(std::uint64_t term) -> std::string {
         const std::lock_guard lock(mutex_);
         expire_locked();
+        check_disk_locked();
         if (term < term_) {
             throw ledger_session_error("session_expired",
                                        "term " + std::to_string(term) + " is not the current term",
@@ -212,6 +244,7 @@ public:
             const std::lock_guard lock(mutex_);
             s = std::move(find_locked(token));
             sessions_.erase(token);
+            check_disk_locked();
         }
         if (s.statements.empty()) {
             throw ledger_session_error("empty_transaction", "nothing to commit", false);
@@ -268,6 +301,14 @@ private:
         std::size_t statement_bytes = 0;
     };
 
+    auto check_disk_locked() const -> void {
+        if (guard_) {
+            if (auto why = guard_->check()) {
+                throw ledger_session_error("insufficient_storage", *why, false);
+            }
+        }
+    }
+
     auto expire_locked() -> void {
         const auto now = now_();
         std::erase_if(sessions_, [&](const auto& kv) { return kv.second.deadline <= now; });
@@ -288,6 +329,7 @@ private:
     clock_fn now_;
     std::mutex mutex_;
     std::uint64_t term_ = 0;
+    std::optional<disk_guard> guard_;
     std::map<std::string, session, std::less<>> sessions_;
 };
 

@@ -43,6 +43,8 @@ kythira_ledger_test(ledger_transactions_test ledger_transactions_test.cpp)
 set_tests_properties(ledger_transactions_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
 kythira_ledger_test(ledger_history_index_test ledger_history_index_test.cpp)
 set_tests_properties(ledger_history_index_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+kythira_ledger_test(ledger_segments_test ledger_segments_test.cpp)
+set_tests_properties(ledger_segments_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
 
 # Task 1: ledger_node links and runs.
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)

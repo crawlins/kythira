@@ -58,5 +58,6 @@ ion services/ledger/tests/ledger_merkle_test.cpp
 ion services/ledger/tests/ledger_state_machine_test.cpp
 ion services/ledger/tests/ledger_transactions_test.cpp
 ion services/ledger/tests/ledger_history_index_test.cpp
+ion services/ledger/tests/ledger_segments_test.cpp
 
 no-cloud tests/multi_raft_node_s3_unavailable_test.cpp

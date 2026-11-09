@@ -45,6 +45,11 @@
 //   the steps is the node's job (task 7). Every write maintains every
 //   index on its table, building ones included, so the entries are exact
 //   once the cursor reaches the end (Requirement 6.2).
+// - seal, offload, export start and finish entries (journal_segments.hpp,
+//   journal_export.hpp): no block either; each returns {status: ...} or
+//   a rejection (invalid_seal, segment_not_found, segment_offloaded,
+//   export_exists, export_not_found, export_finished). A seal writes its
+//   segment file before the batch, so a replayed seal rewrites it.
 // - divergence: seq and previous hash match but the recomputed blockHash
 //   differs from the leader's. apply throws ledger_divergence_error before
 //   writing anything; it derives from persistent_storage_error, which the
@@ -70,6 +75,9 @@
 //   data  P journal/<seq>           block, seq zero-padded
 //   data  P tchg/<table>            seq of the last block that changed the table
 //   meta  P meta/index/<t>/<name>   {path, active, cursor?, createdSeq}
+//   meta  P meta/segment/<first>    sealed segment {first, last, file, size,
+//                                   sha256, objectKey?} (journal_segments.hpp)
+//   meta  P meta/export/<job id>    export job (journal_export.hpp)
 //   data  P idx/<t>/<name>/<h>/<id> index entry (empty): the value at the
 //                                   path hashes to h (hex Ion hash)
 //   data  P ichg/<t>/<name>/<h>     seq of the last block that moved a
@@ -82,6 +90,8 @@
 
 #include <kythira/ledger/engine_merkle_store.hpp>
 #include <kythira/ledger/ion_value.hpp>
+#include <kythira/ledger/journal_export.hpp>
+#include <kythira/ledger/journal_segments.hpp>
 #include <kythira/ledger/journal_types.hpp>
 #include <kythira/ledger/ledger_hash.hpp>
 #include <kythira/ledger/merkle.hpp>
@@ -274,6 +284,15 @@ struct ledger_options {
     std::size_t max_statement_bytes = std::size_t{4} << 20U;
     /// Indexes per table (Requirement 6.2).
     std::size_t max_indexes_per_table = 20;
+    /// Where this ledger's sealed segment files live (Requirement 3.5);
+    /// one directory per ledger. A seal entry on a replica without one is
+    /// a configuration error and throws.
+    std::filesystem::path segment_directory{};
+    /// Unsealed journal bytes at which seal_candidate() proposes a seal,
+    /// and so the size of a segment (Requirement 3.5).
+    std::uint64_t segment_bytes = std::uint64_t{64} << 20U;
+    /// Keep a local copy of a segment once it is offloaded.
+    bool keep_offloaded_segments = false;
 };
 
 /// An equality index's catalog record (Requirement 6.2).
@@ -311,7 +330,8 @@ template<kythira::kv_engine Engine> class basic_ledger_state_machine {
 public:
     using engine_type = Engine;
 
-    explicit basic_ledger_state_machine(ledger_options options = {}) : options_(options) {}
+    explicit basic_ledger_state_machine(ledger_options options = {})
+        : options_(std::move(options)) {}
 
     // ── persistent_state_machine ────────────────────────────────────────────
 
@@ -333,13 +353,33 @@ public:
         apply_result result;
         std::optional<std::vector<std::byte>> raw_result;
         std::optional<block_tip> new_tip;
+        std::optional<std::filesystem::path> delete_after;  // offloaded local copy
         try {
             const ion_value parsed = ion_value::parse(std::span<const std::uint8_t>(
                 reinterpret_cast<const std::uint8_t*>(command.data()), command.size()));
             const ion_value* type = parsed.find("type");
-            if (type != nullptr && type->as_text() == index_build_type) {
-                raw_result = build_index_locked(decode_index_build(parsed), batch);
-                throw index_build_done{};
+            if (type != nullptr) {
+                const auto name = type->as_text().value_or("");
+                if (name == index_build_type) {
+                    raw_result = build_index_locked(decode_index_build(parsed), batch);
+                    throw raw_entry_done{};
+                }
+                if (name == seal_type) {
+                    raw_result = seal_locked(decode_seal(parsed), batch);
+                    throw raw_entry_done{};
+                }
+                if (name == offload_type) {
+                    raw_result = offload_locked(decode_offload(parsed), batch, delete_after);
+                    throw raw_entry_done{};
+                }
+                if (name == export_start_type) {
+                    raw_result = export_start_locked(decode_export_start(parsed), batch);
+                    throw raw_entry_done{};
+                }
+                if (name == export_finish_type) {
+                    raw_result = export_finish_locked(decode_export_finish(parsed), batch);
+                    throw raw_entry_done{};
+                }
             }
             const auto entry = decode_entry(parsed);
             auto outcome = build_locked(entry);
@@ -362,15 +402,17 @@ public:
             } else {
                 result = std::move(std::get<apply_result>(outcome));
             }
-        } catch (const index_build_done&) {
-            // raw_result and batch hold the build step
+        } catch (const raw_entry_done&) {
+            // raw_result and batch hold the entry's effect
         } catch (const ledger_format_error& e) {
             batch = {};
             raw_result.reset();
+            delete_after.reset();
             result = apply_result::rejected("invalid_entry", e.what());
         } catch (const ion_value_error& e) {
             batch = {};
             raw_result.reset();
+            delete_after.reset();
             result = apply_result::rejected("invalid_entry", e.what());
         }
         batch.put(kythira::column_family::meta, key_applied(), std::to_string(index));
@@ -384,6 +426,10 @@ public:
         applied_ = index;
         if (new_tip) {
             tip_ = new_tip;
+        }
+        if (delete_after) {
+            std::error_code ignored;
+            std::filesystem::remove(*delete_after, ignored);  // load_locked retries
         }
         seqs_.emplace_back(index, seq);
         prune_locked();
@@ -424,6 +470,12 @@ public:
 
     auto drop() -> void {
         const std::lock_guard lock(mutex_);
+        if (!options_.segment_directory.empty()) {
+            for (const auto& seg : stored_segments()) {
+                std::error_code ignored;
+                std::filesystem::remove(options_.segment_directory / seg.file, ignored);
+            }
+        }
         engine_->drop(range_);
         load_locked();  // an empty range: no applied index, no tip, no leaves
     }
@@ -720,6 +772,109 @@ public:
         return stored_revision(table_name, id, version);
     }
 
+    // ── Segments (Requirements 3.5, 3.6, 10.2) ──────────────────────────────
+
+    /// How offloaded segments are read back: object key to bytes, or
+    /// nullopt if the object is missing (journal_segments.hpp
+    /// segment_fetcher). Without one, an offloaded segment whose local copy
+    /// is gone cannot be read.
+    auto set_segment_fetcher(std::function<std::optional<std::string>(const std::string&)> fetch)
+        -> void {
+        const std::lock_guard lock(mutex_);
+        fetcher_ = std::move(fetch);
+    }
+
+    /// Every sealed segment, oldest first.
+    [[nodiscard]] auto segments() const -> std::vector<segment_info> {
+        const std::lock_guard lock(mutex_);
+        return stored_segments();
+    }
+
+    /// The first block still in the engine's journal (tip + 1 when every
+    /// block is sealed, 0 for an empty ledger).
+    [[nodiscard]] auto first_unsealed() const -> std::uint64_t {
+        const std::lock_guard lock(mutex_);
+        return first_unsealed_locked();
+    }
+
+    /// The seal the leader should propose now: the oldest unsealed blocks
+    /// once they reach `max_bytes` of block Ion (default
+    /// ledger_options::segment_bytes), or nullopt while they do not.
+    [[nodiscard]] auto seal_candidate(std::optional<std::uint64_t> max_bytes = std::nullopt) const
+        -> std::optional<seal_entry> {
+        const std::lock_guard lock(mutex_);
+        const std::uint64_t bound = max_bytes.value_or(options_.segment_bytes);
+        std::optional<seal_entry> out;
+        std::uint64_t bytes = 0;
+        const std::string from = prefix_ + "journal/";
+        engine_->scan(kythira::column_family::data, prefix_range(from),
+                      kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view value) {
+                          const auto seq = std::stoull(std::string(key.substr(from.size())));
+                          if (!out) {
+                              out = seal_entry{seq, seq};
+                          }
+                          out->last = seq;
+                          bytes += value.size();
+                          return bytes < bound;
+                      });
+        if (bytes < bound) {
+            return std::nullopt;
+        }
+        return out;
+    }
+
+    /// A sealed segment's bytes, checked against its SHA-256: the local
+    /// copy, or the offloaded object when the local one is missing or
+    /// damaged. Throws ledger_segment_error if neither is good.
+    [[nodiscard]] auto read_segment(std::uint64_t first) const -> std::string {
+        const std::lock_guard lock(mutex_);
+        const auto seg = stored_segment(first);
+        if (!seg) {
+            throw ledger_query_error("no segment starts at block " + std::to_string(first));
+        }
+        return segment_bytes_locked(*seg);
+    }
+
+    // ── Export jobs (Requirement 10.4) ──────────────────────────────────────
+
+    [[nodiscard]] auto get_export(std::string_view job_id) const -> std::optional<export_job> {
+        const std::lock_guard lock(mutex_);
+        const auto v = engine_->get(kythira::column_family::meta, key_export(job_id));
+        if (!v) {
+            return std::nullopt;
+        }
+        return export_job::from_ion(parse_stored(*v));
+    }
+
+    /// Every export job, by job id.
+    [[nodiscard]] auto exports() const -> std::vector<export_job> {
+        const std::lock_guard lock(mutex_);
+        std::vector<export_job> out;
+        engine_->scan(kythira::column_family::meta, prefix_range(prefix_ + "meta/export/"),
+                      kythira::scan_direction::forward,
+                      [&](std::string_view, std::string_view value) {
+                          out.push_back(export_job::from_ion(parse_stored(value)));
+                          return true;
+                      });
+        return out;
+    }
+
+    /// The blocks [first, end) whose timestamps fall in [start_ms, end_ms]
+    /// (inclusive), among blocks up to `tip` (default: the last block).
+    [[nodiscard]] auto blocks_between(std::int64_t start_ms, std::int64_t end_ms,
+                                      std::optional<std::uint64_t> tip = std::nullopt) const
+        -> std::pair<std::uint64_t, std::uint64_t> {
+        const std::lock_guard lock(mutex_);
+        std::uint64_t limit = tip_ ? tip_->seq + 1 : 0;
+        if (tip) {
+            limit = std::min(limit, *tip + 1);
+        }
+        const auto first = std::min(first_block_at_or_after(start_ms), limit);
+        const auto end = std::min(first_block_after(end_ms), limit);
+        return {first, std::max(first, end)};
+    }
+
     [[nodiscard]] auto get_block(std::uint64_t seq) const -> std::optional<block> {
         const std::lock_guard lock(mutex_);
         return stored_block(seq);
@@ -811,7 +966,9 @@ private:
         bool data_loaded = false;
     };
 
-    struct index_build_done {};
+    /// Thrown inside apply once a non-transaction entry (an index build
+    /// step, a seal, an offload) has filled in the batch and raw result.
+    struct raw_entry_done {};
 
     struct built {
         block blk;
@@ -1001,10 +1158,7 @@ private:
         ion_value v = ion_value::make_struct();
         v.set("status", ion_value::symbol(done ? "index_active" : "index_building"))
             .set("indexed", ion_value::integer(static_cast<std::int64_t>(indexed)));
-        const auto bytes = v.to_binary();
-        std::vector<std::byte> out(bytes.size());
-        std::memcpy(out.data(), bytes.data(), bytes.size());
-        return out;
+        return raw_bytes(v);
     }
 
     [[nodiscard]] auto key_index_change(std::string_view table_name, std::string_view index,
@@ -1160,6 +1314,17 @@ private:
         merkle_store_ =
             std::make_unique<engine_merkle_store<Engine>>(*engine_, prefix_ + "merkle/");
         accumulator_.emplace(*merkle_store_, tip_ ? tip_->seq + 1 : 0);
+        segment_cache_.clear();
+        // A crash between an offload's batch and removing the local copy
+        // leaves the copy behind; remove it now.
+        if (!options_.keep_offloaded_segments && !options_.segment_directory.empty()) {
+            for (const auto& seg : stored_segments()) {
+                if (seg.object_key) {
+                    std::error_code ignored;
+                    std::filesystem::remove(options_.segment_directory / seg.file, ignored);
+                }
+            }
+        }
     }
 
     /// Forget sequence pairs the engine has made durable.
@@ -1546,13 +1711,250 @@ private:
         }
     }
 
+    /// A block from the journal, or from its sealed segment.
     [[nodiscard]] auto stored_block(std::uint64_t seq) const -> std::optional<block> {
-        const auto v = engine_->get(kythira::column_family::data, key_journal(seq));
+        if (const auto v = engine_->get(kythira::column_family::data, key_journal(seq))) {
+            return block::from_ion(parse_stored(*v));
+        }
+        const auto seg = segment_containing(seq);
+        if (!seg) {
+            return std::nullopt;
+        }
+        const auto& blocks = segment_blocks_locked(*seg);
+        return blocks.at(seq - seg->first);
+    }
+
+    // ── Segments ────────────────────────────────────────────────────────────
+
+    [[nodiscard]] auto key_segment(std::uint64_t first) const -> std::string {
+        return prefix_ + "meta/segment/" + pad(first);
+    }
+
+    [[nodiscard]] auto stored_segment(std::uint64_t first) const -> std::optional<segment_info> {
+        const auto v = engine_->get(kythira::column_family::meta, key_segment(first));
         if (!v) {
             return std::nullopt;
         }
-        return block::from_ion(parse_stored(*v));
+        return segment_info::from_ion(parse_stored(*v));
     }
+
+    [[nodiscard]] auto stored_segments() const -> std::vector<segment_info> {
+        std::vector<segment_info> out;
+        engine_->scan(kythira::column_family::meta, prefix_range(prefix_ + "meta/segment/"),
+                      kythira::scan_direction::forward,
+                      [&](std::string_view, std::string_view value) {
+                          out.push_back(segment_info::from_ion(parse_stored(value)));
+                          return true;
+                      });
+        return out;
+    }
+
+    /// The segment holding block `seq`, if one does.
+    [[nodiscard]] auto segment_containing(std::uint64_t seq) const -> std::optional<segment_info> {
+        std::optional<segment_info> out;
+        const std::string from = prefix_ + "meta/segment/";
+        engine_->scan(kythira::column_family::meta, {from, key_segment(seq) + '\0'},
+                      kythira::scan_direction::reverse,
+                      [&](std::string_view, std::string_view value) {
+                          out = segment_info::from_ion(parse_stored(value));
+                          return false;
+                      });
+        if (out && out->last < seq) {
+            return std::nullopt;
+        }
+        return out;
+    }
+
+    [[nodiscard]] auto first_unsealed_locked() const -> std::uint64_t {
+        std::optional<std::uint64_t> first;
+        const std::string from = prefix_ + "journal/";
+        engine_->scan(kythira::column_family::data, prefix_range(from),
+                      kythira::scan_direction::forward,
+                      [&](std::string_view key, std::string_view) {
+                          first = std::stoull(std::string(key.substr(from.size())));
+                          return false;
+                      });
+        return first.value_or(tip_ ? tip_->seq + 1 : 0);
+    }
+
+    static auto segment_matches(const segment_info& seg, const std::string& bytes) -> bool {
+        return bytes.size() == seg.size && sha256_of(bytes) == seg.sha256;
+    }
+
+    [[nodiscard]] auto segment_bytes_locked(const segment_info& seg) const -> std::string {
+        std::string problem = "segment " + seg.file;
+        if (!options_.segment_directory.empty()) {
+            if (auto local = read_file(options_.segment_directory / seg.file)) {
+                if (segment_matches(seg, *local)) {
+                    return std::move(*local);
+                }
+                problem += ": local copy does not match its SHA-256";
+            } else {
+                problem += ": no local copy";
+            }
+        } else {
+            problem += ": no segment directory";
+        }
+        if (seg.object_key && fetcher_) {
+            auto fetched = fetcher_(*seg.object_key);
+            if (fetched && segment_matches(seg, *fetched)) {
+                return std::move(*fetched);
+            }
+            problem += fetched ? "; offloaded copy does not match its SHA-256"
+                               : "; offloaded copy is missing";
+        } else if (seg.object_key) {
+            problem += "; offloaded, but no fetcher is set";
+        }
+        throw ledger_segment_error(problem);
+    }
+
+    /// A segment's blocks, through a small cache (reads of nearby blocks
+    /// hit the same segment).
+    [[nodiscard]] auto segment_blocks_locked(const segment_info& seg) const
+        -> const std::vector<block>& {
+        if (const auto it = segment_cache_.find(seg.first); it != segment_cache_.end()) {
+            return *it->second;
+        }
+        auto blocks =
+            std::make_shared<const std::vector<block>>(decode_segment(segment_bytes_locked(seg)));
+        if (blocks->size() != seg.last - seg.first + 1) {
+            throw ledger_segment_error("segment " + seg.file + " holds the wrong number of blocks");
+        }
+        if (segment_cache_.size() >= segment_cache_entries) {
+            segment_cache_.erase(segment_cache_.begin());
+        }
+        return *segment_cache_.emplace(seg.first, std::move(blocks)).first->second;
+    }
+
+    /// Apply a seal entry: write blocks first..last to a segment file, then
+    /// record it and drop them from the journal in `batch`.
+    auto seal_locked(const seal_entry& e, kythira::write_batch& batch) -> std::vector<std::byte> {
+        const std::uint64_t first = first_unsealed_locked();
+        if (!tip_ || e.first != first || e.last > tip_->seq) {
+            return apply_result::rejected("invalid_seal",
+                                          "seal of blocks " + std::to_string(e.first) + "-" +
+                                              std::to_string(e.last) +
+                                              " does not start at the first unsealed block " +
+                                              std::to_string(first) + " or ends past the tip")
+                .encode();
+        }
+        if (options_.segment_directory.empty()) {
+            throw kythira::persistent_storage_error("ledger has no segment directory to seal into");
+        }
+        std::vector<block> blocks;
+        blocks.reserve(e.last - e.first + 1);
+        for (std::uint64_t seq = e.first; seq <= e.last; ++seq) {
+            const auto v = engine_->get(kythira::column_family::data, key_journal(seq));
+            if (!v) {
+                throw kythira::persistent_storage_error("ledger journal is missing block " +
+                                                        std::to_string(seq));
+            }
+            blocks.push_back(block::from_ion(parse_stored(*v)));
+        }
+        const std::string bytes = encode_segment(blocks);
+        segment_info seg;
+        seg.first = e.first;
+        seg.last = e.last;
+        seg.file = segment_info::file_name(e.first, e.last);
+        seg.size = bytes.size();
+        seg.sha256 = sha256_of(bytes);
+        std::filesystem::create_directories(options_.segment_directory);
+        write_file_durably(options_.segment_directory / seg.file, bytes);
+        batch.put(kythira::column_family::meta, key_segment(seg.first),
+                  as_string(seg.to_ion().to_binary()));
+        batch.erase_range(kythira::column_family::data,
+                          {key_journal(e.first), key_journal(e.last + 1)});
+        ion_value v = ion_value::make_struct();
+        v.set("status", ion_value::symbol("sealed"))
+            .set("first", ion_value::integer(static_cast<std::int64_t>(seg.first)))
+            .set("last", ion_value::integer(static_cast<std::int64_t>(seg.last)))
+            .set("size", ion_value::integer(static_cast<std::int64_t>(seg.size)))
+            .set("sha256", hash_value(seg.sha256));
+        return raw_bytes(v);
+    }
+
+    /// Apply an offload entry: record the object key; the local copy is
+    /// removed once the batch is written unless kept by option.
+    auto offload_locked(const offload_entry& e, kythira::write_batch& batch,
+                        std::optional<std::filesystem::path>& delete_after)
+        -> std::vector<std::byte> {
+        auto seg = stored_segment(e.first);
+        if (!seg) {
+            return apply_result::rejected("segment_not_found",
+                                          "no segment starts at block " + std::to_string(e.first))
+                .encode();
+        }
+        if (seg->object_key) {
+            return apply_result::rejected("segment_offloaded",
+                                          "segment " + seg->file + " is already offloaded")
+                .encode();
+        }
+        seg->object_key = e.object_key;
+        batch.put(kythira::column_family::meta, key_segment(seg->first),
+                  as_string(seg->to_ion().to_binary()));
+        if (!options_.keep_offloaded_segments && !options_.segment_directory.empty()) {
+            delete_after = options_.segment_directory / seg->file;
+        }
+        ion_value v = ion_value::make_struct();
+        v.set("status", ion_value::symbol("offloaded"))
+            .set("first", ion_value::integer(static_cast<std::int64_t>(seg->first)));
+        return raw_bytes(v);
+    }
+
+    [[nodiscard]] auto key_export(std::string_view job_id) const -> std::string {
+        return prefix_ + "meta/export/" + std::string(job_id);
+    }
+
+    /// Apply an export start entry: record the job as in_progress, with
+    /// the tip it covers.
+    auto export_start_locked(export_job job, kythira::write_batch& batch)
+        -> std::vector<std::byte> {
+        if (engine_->get(kythira::column_family::meta, key_export(job.job_id))) {
+            return apply_result::rejected("export_exists", "export job " + job.job_id + " exists")
+                .encode();
+        }
+        job.status = "in_progress";
+        job.tip = tip_ ? std::optional(tip_->seq) : std::nullopt;
+        batch.put(kythira::column_family::meta, key_export(job.job_id),
+                  as_string(job.to_ion().to_binary()));
+        ion_value v = ion_value::make_struct();
+        v.set("status", ion_value::symbol("export_started"))
+            .set("jobId", ion_value::string(job.job_id));
+        return raw_bytes(v);
+    }
+
+    /// Apply an export finish entry: record how the job ended.
+    auto export_finish_locked(const export_outcome& o, kythira::write_batch& batch)
+        -> std::vector<std::byte> {
+        const auto v = engine_->get(kythira::column_family::meta, key_export(o.job_id));
+        if (!v) {
+            return apply_result::rejected("export_not_found", "no export job " + o.job_id).encode();
+        }
+        auto job = export_job::from_ion(parse_stored(*v));
+        if (job.status != "in_progress") {
+            return apply_result::rejected("export_finished",
+                                          "export job " + o.job_id + " is " + job.status)
+                .encode();
+        }
+        job.status = o.completed ? "completed" : "failed";
+        job.objects = o.objects;
+        job.manifest = o.manifest;
+        job.message = o.message;
+        batch.put(kythira::column_family::meta, key_export(job.job_id),
+                  as_string(job.to_ion().to_binary()));
+        ion_value r = ion_value::make_struct();
+        r.set("status", ion_value::symbol(job.status)).set("jobId", ion_value::string(job.job_id));
+        return raw_bytes(r);
+    }
+
+    static auto raw_bytes(const ion_value& v) -> std::vector<std::byte> {
+        const auto bytes = v.to_binary();
+        std::vector<std::byte> out(bytes.size());
+        std::memcpy(out.data(), bytes.data(), bytes.size());
+        return out;
+    }
+
+    static constexpr std::size_t segment_cache_entries = 2;
 
     ledger_options options_;
     mutable std::mutex mutex_;
@@ -1565,6 +1967,8 @@ private:
     std::optional<block_tip> tip_;
     std::unique_ptr<engine_merkle_store<Engine>> merkle_store_;
     std::optional<merkle_accumulator<engine_merkle_store<Engine>>> accumulator_;
+    std::function<std::optional<std::string>(const std::string&)> fetcher_;
+    mutable std::map<std::uint64_t, std::shared_ptr<const std::vector<block>>> segment_cache_;
 };
 
 }  // namespace kythira::ledger
