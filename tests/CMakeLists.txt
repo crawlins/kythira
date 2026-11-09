@@ -765,6 +765,29 @@ if(FIU_FOUND)
     target_include_directories(durable_append_barrier_test PRIVATE ${FIU_INCLUDE_DIRS})
 endif()
 
+# .kiro/specs/kinesis-compatible-streams/ task 3: the core record segment
+# store, held to its conformance suite twice (Kinesis shard streams and
+# DynamoDB change-log streams, the store's two users). Header-only, no
+# module or cloud gate. The failed-barrier case needs libfiu's control API
+# and compiles away without it.
+add_executable(record_segment_store_test record_segment_store_test.cpp)
+target_link_libraries(record_segment_store_test PRIVATE
+    Boost::unit_test_framework
+    OpenSSL::Crypto
+    Threads::Threads
+)
+target_compile_features(record_segment_store_test PRIVATE cxx_std_23)
+add_test(NAME record_segment_store_test COMMAND record_segment_store_test)
+set_tests_properties(record_segment_store_test PROPERTIES
+    TIMEOUT 300
+    LABELS "unit;persistence;kinesis"
+)
+if(FIU_FOUND)
+    target_compile_definitions(record_segment_store_test PRIVATE FIU_ENABLE)
+    target_link_libraries(record_segment_store_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(record_segment_store_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+
 # Cloud key-object persistence: the generic engine and its conformance suite
 # (.kiro/specs/cloud-object-persistence/ tasks 1-2).
 #
