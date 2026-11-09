@@ -878,6 +878,14 @@ the adapter, so a build without `CONFIG_REDIS_GATEWAY_IAM` has none of them.
   keys, MFA, login profiles).
 - The configuration was written without a local run (the sandbox may not
   fetch Terraform); the first CI run is its test.
+- The simulator half is `tests/tools/simulate_corpus_on_aws.py`: the 73
+  corpus `evaluate` cases iam_query_api_test already sends to Kythira's
+  SimulateCustomPolicy, sent to AWS's with the example account replaced by
+  the caller's and each context value typed (`ip`, `date`, `numeric`,
+  `boolean`, else `string`, with the `List` form for arrays). Each
+  disagreement becomes a case in `corpus/evaluate/aws_simulator.json` with
+  AWS's decision expected. It needs only `iam:SimulateCustomPolicy` on
+  `*`, creates nothing and is free; it runs by hand, not in CI.
 
 ## Configuration
 
