@@ -192,6 +192,22 @@ task is one PR unless noted.
     ledger catalog group; the split/merge policy veto for ledger ranges and
     its metric
   - _Requirements: 2.2, 2.3, 2.4, 8.1-8.4_
+  - Done so far (7a, transport-free):
+    - `ledger_catalog.hpp`: the catalog group's persistent state machine
+      (create, update, delete, purge; deletion protection; names checked
+      against the QLDB rules). It refuses splits and merges.
+    - `ledger_api.hpp`: request routing for ledgers, tables, indexes,
+      documents, history, sessions, digests, proofs and exports, over an
+      `api_request`/`api_response` pair so any HTTP server can host it.
+      Roles are read/write/admin per ledger with a `*` wildcard. Commits
+      hold a per-ledger lock across prepare, propose and apply and retry
+      `stale_block` up to three times. Errors are `{code, message,
+      retryable}`; not-leader is 503 with the leader's address.
+    - `ledger_sessions.hpp`: `pending_transaction`, `finish` and
+      `execute_pending` split prepare from apply so a node can propose
+      between them.
+  - Still owed: the HTTPS server and C++ client (7b) and `ledger_node`
+    over multi_raft with the split/merge veto (7c).
 
 - [x] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and
