@@ -94,11 +94,17 @@ auto ephemeral_port_floor() -> std::uint16_t {
 /// "host N never became ready" (3 of 20 CI rescues, 2026-11-02..05). A port
 /// below the range is never assigned to an outgoing connection.
 ///
+/// Never the same port twice in one test process: a random pick can repeat,
+/// and nothing is bound between picks, so two of a cluster's nine ports
+/// could collide. One host then failed to bind its data or control port
+/// (seen once, 2026-11-06, as a host abort before the driver-thread fix).
+///
 /// Released before use, so another process that binds explicit ports could
 /// take it in between; the window is microseconds.
 auto free_port() -> std::uint16_t {
     static std::mutex mu;
     static std::mt19937 rng{std::random_device{}()};
+    static std::set<std::uint16_t> handed_out;
     const std::uint16_t ceiling = ephemeral_port_floor();
     const std::uint16_t floor = ceiling > 12000 ? 10000 : 1025;
     std::uniform_int_distribution<int> pick(floor, ceiling - 1);
@@ -107,6 +113,9 @@ auto free_port() -> std::uint16_t {
         {
             std::lock_guard lock(mu);
             port = static_cast<std::uint16_t>(pick(rng));
+            if (!handed_out.insert(port).second) {
+                continue;
+            }
         }
         const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         BOOST_REQUIRE(fd >= 0);
@@ -367,6 +376,27 @@ public:
                                                                << host->output());
                 std::this_thread::sleep_for(100ms);
             }
+        }
+    }
+
+    /// The host leading `group`, waiting up to @p limit for one to say so.
+    ///
+    /// A write can be acknowledged and its leader step down, or not yet
+    /// answer `/leaders`, a moment later: twice in 99 CI runs
+    /// (2026-11-06..07) `leader_of` right after an acknowledged warm-up
+    /// write found no leader, failing the case before its window opened.
+    [[nodiscard]] auto await_leader_of(std::uint64_t group,
+                                       std::chrono::milliseconds limit = 15s) const
+        -> std::optional<std::uint64_t> {
+        const auto deadline = std::chrono::steady_clock::now() + limit;
+        while (true) {
+            if (auto leader = leader_of(group)) {
+                return leader;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return std::nullopt;
+            }
+            std::this_thread::sleep_for(100ms);
         }
     }
 
@@ -730,7 +760,7 @@ auto measure_batching(const char* write_behind, const char* log) -> batching_res
     cluster.wait_ready();
     // A warm-up write, so the window starts with a settled leader.
     BOOST_REQUIRE(cluster.put("warm", "up"));
-    const auto leader = cluster.leader_of(1);
+    const auto leader = cluster.await_leader_of(1);
     BOOST_REQUIRE(leader.has_value());
     const auto prefix = log_prefix_of(*leader, 1);
 
@@ -776,7 +806,7 @@ BOOST_AUTO_TEST_CASE(acknowledged_writes_survive_a_leader_sigkill) {
     cluster.start_all();
     cluster.wait_ready();
     BOOST_REQUIRE(cluster.put("warm", "up"));
-    const auto leader = cluster.leader_of(1);
+    const auto leader = cluster.await_leader_of(1);
     BOOST_REQUIRE(leader.has_value());
 
     mock.set_put_delay(50ms);
@@ -804,7 +834,7 @@ BOOST_AUTO_TEST_CASE(a_failed_flush_never_acknowledges_a_lost_entry) {
     cluster.start_all();
     cluster.wait_ready();
     BOOST_REQUIRE(cluster.put("warm", "up"));
-    const auto leader = cluster.leader_of(1);
+    const auto leader = cluster.await_leader_of(1);
     BOOST_REQUIRE(leader.has_value());
 
     mock.set_put_delay(20ms);

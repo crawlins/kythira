@@ -1814,6 +1814,28 @@ unverified completion claim.
       httplib transport need election timeouts well above their followers'
       slowest AppendEntries. Re-survey the test about November 12; if
       clean, de-allowlist it.
+      **Re-surveyed November 9** over the 99 `ci.yml` runs since that fix
+      (#702): 4 rescues, against 22 in the 94 runs before it, and none a
+      lost key, an unanswered read, an election in the window or a bind
+      failure. Two were `leader_of` finding no leader right after an
+      acknowledged warm-up write; the cases now wait up to 15 s for one.
+      The other two were crashes, one each:
+      - the test process itself took a SIGSEGV (address 0x6400000) in the
+        SIGKILL case during the load (Full suite, stdexec, Nov 6). The
+        October 24-28 survey saw the same once. The 16 writer threads share
+        httplib clients' process and `host_process::_pid`, which the main
+        thread writes in `stop()` unsynchronised; no core, so unproven.
+      - a `multi_raft_node` host aborted with "terminate called without an
+        active exception" right after start in the duplicate-host case
+        (g++-13 arm64, Nov 6). **Explained and fixed November 9:** a data
+        or control server that fails to start throws, and the exception
+        unwound past the host's joinable driver `std::thread`, so the host
+        aborted instead of printing the error. The driver is now joined on
+        unwind. The likely failure underneath was a port collision the
+        test itself caused: since #702 `free_port()` picked ports at
+        random and could hand the same one out twice; it no longer does.
+      Still allowlisted until the segfault is understood or a week passes
+      without it. Next survey ~November 16.
     - Fixed the same day, all test-side: `kythira_future_continuation_operations_property_test`
       (11: the clock started after Folly's `delayed()` timer had already
       begun, so a loaded runner read 0 ms), `behavioral_preservation_property_test`
