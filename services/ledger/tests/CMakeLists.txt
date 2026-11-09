@@ -68,8 +68,17 @@ if(TARGET certificate_authority)
     kythira_ledger_test(ledger_http_test ledger_http_test.cpp)
     target_link_libraries(ledger_http_test PRIVATE certificate_authority OpenSSL::SSL)
     set_tests_properties(ledger_http_test PROPERTIES LABELS "unit;ledger;https" TIMEOUT 180)
+
+    # Task 10: CA-signed digests, their checks, GetDigest with a signer, and
+    # ledger_ctl's --ca.
+    kythira_ledger_test(ledger_signing_test ledger_signing_test.cpp)
+    target_link_libraries(ledger_signing_test PRIVATE certificate_authority)
+    target_compile_definitions(ledger_signing_test PRIVATE
+        KYTHIRA_LEDGER_CTL="$<TARGET_FILE:ledger_ctl>")
+    add_dependencies(ledger_signing_test ledger_ctl)
+    set_tests_properties(ledger_signing_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
 else()
-    message(STATUS "ledger_http_test: skipped (requires certificate_authority)")
+    message(STATUS "ledger_http_test, ledger_signing_test: skipped (require certificate_authority)")
 endif()
 
 # Task 1: ledger_node links and runs.

@@ -4,10 +4,13 @@
 // ledger_ctl: check a ledger journal without trusting the cluster
 // (.kiro/specs/verifiable-ledger/ task 10, Requirements 9.1-9.3).
 //
-//   ledger_ctl verify --export DIR [--digest FILE]
-//   ledger_ctl verify --segments DIR [--digest FILE]
-//   ledger_ctl prove --proof FILE --digest FILE
+//   ledger_ctl verify --export DIR [--digest FILE [--ca FILE]]
+//   ledger_ctl verify --segments DIR [--digest FILE [--ca FILE]]
+//   ledger_ctl prove --proof FILE --digest FILE [--ca FILE]
 //
+// With --ca, the digest file must be a CA-signed digest (Requirement 4.5)
+// whose signature and certificate chain check against that CA bundle;
+// that failing is a verification failure (1).
 // Exit status: 0 verified, 1 verification failed (the first bad block is
 // named), 2 usage or I/O error. Verifying through the API and from a live
 // data directory needs ledger_node (task 7); an export downloaded from
@@ -15,6 +18,7 @@
 
 #include <kythira/ledger/ion_value.hpp>
 #include <kythira/ledger/journal_segments.hpp>
+#include <kythira/ledger/journal_signing.hpp>
 #include <kythira/ledger/journal_types.hpp>
 #include <kythira/ledger/journal_verifier.hpp>
 
@@ -32,8 +36,8 @@ namespace {
 namespace ledger = kythira::ledger;
 
 constexpr std::string_view usage =
-    "usage: ledger_ctl verify (--export DIR | --segments DIR) [--digest FILE]\n"
-    "       ledger_ctl prove --proof FILE --digest FILE\n"
+    "usage: ledger_ctl verify (--export DIR | --segments DIR) [--digest FILE [--ca FILE]]\n"
+    "       ledger_ctl prove --proof FILE --digest FILE [--ca FILE]\n"
     "\n"
     "verify   re-hash every block (revisions, entriesHash, blockHash), check\n"
     "         the chain, and check the digest at a saved digest's tip.\n"
@@ -43,7 +47,10 @@ constexpr std::string_view usage =
     "prove    check a block or revision proof (as GetBlock or GetRevision\n"
     "         returns it, in Ion) against a saved digest.\n"
     "\n"
-    "A digest file is Ion: {tip: <block seq>, digest: {{<base64>}}}.\n"
+    "A digest file is Ion: {tip: <block seq>, digest: {{<base64>}}}, or a signed\n"
+    "digest as GetDigest returns it from a node with a signing key. --ca FILE\n"
+    "(a PEM CA bundle) requires the digest to be signed by a certificate from\n"
+    "that CA, and checks the signature before anything else.\n"
     "Exit status: 0 verified, 1 verification failed, 2 usage or I/O error.\n";
 
 struct usage_error : std::runtime_error {
@@ -71,6 +78,44 @@ auto read_ion_file(const std::string& path) -> ledger::ion_value {
         reinterpret_cast<const std::uint8_t*>(bytes->data()), bytes->size()));
 }
 
+struct signature_failure : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+/// Reads a digest file. With --ca the file must be a signed digest that
+/// checks against that bundle (else signature_failure); without it a
+/// signature is reported and left unchecked.
+auto load_digest(const std::map<std::string, std::string>& flags, const std::string& path)
+    -> ledger::saved_digest {
+    const auto v = read_ion_file(path);
+    const auto ca = flags.find("ca");
+    if (!ledger::signed_digest::is_signed(v)) {
+        if (ca != flags.end()) {
+            throw signature_failure("the digest is not signed, and --ca requires a signature");
+        }
+        return ledger::saved_digest::from_ion(v);
+    }
+    const auto sd = ledger::signed_digest::from_ion(v);
+    if (ca == flags.end()) {
+        std::fprintf(stderr,
+                     "ledger_ctl: note: the digest is signed; pass --ca to check the "
+                     "signature\n");
+        return sd.digest;
+    }
+    const auto bundle = ledger::read_file(ca->second);
+    if (!bundle) {
+        throw std::runtime_error("cannot read " + ca->second);
+    }
+    const auto check = ledger::check_signed_digest(sd, *bundle);
+    if (check.failure) {
+        throw signature_failure("digest signature: " + *check.failure);
+    }
+    std::printf("digest of ledger %s at block %llu signed by %s\n", sd.ledger.c_str(),
+                static_cast<unsigned long long>(sd.digest.tip),
+                check.signer.empty() ? "a certificate from the CA" : check.signer.front().c_str());
+    return sd.digest;
+}
+
 /// The blocks of an export or segment directory, and a name for it.
 auto read_blocks(const std::map<std::string, std::string>& flags,
                  std::vector<ledger::block>& blocks, std::string& source) -> void {
@@ -88,7 +133,7 @@ auto read_blocks(const std::map<std::string, std::string>& flags,
 auto verify(const std::map<std::string, std::string>& flags) -> int {
     std::optional<ledger::saved_digest> saved;
     if (const auto it = flags.find("digest"); it != flags.end()) {
-        saved = ledger::saved_digest::from_ion(read_ion_file(it->second));
+        saved = load_digest(flags, it->second);
     }
     std::vector<ledger::block> blocks;
     std::string source;
@@ -146,7 +191,7 @@ auto prove(const std::map<std::string, std::string>& flags) -> int {
         throw usage_error("prove needs --proof and --digest");
     }
     const auto proof = ledger::proof_document::from_ion(read_ion_file(proof_it->second));
-    const auto saved = ledger::saved_digest::from_ion(read_ion_file(digest_it->second));
+    const auto saved = load_digest(flags, digest_it->second);
     if (const auto why = ledger::check_proof(proof, saved)) {
         std::fprintf(stderr, "FAILED: %s\n", why->c_str());
         return 1;
@@ -181,6 +226,9 @@ auto main(int argc, char** argv) -> int {
             return prove(flags);
         }
         throw usage_error(command.empty() ? "no command" : "unknown command");
+    } catch (const signature_failure& e) {
+        std::fprintf(stderr, "FAILED: %s\n", e.what());
+        return 1;
     } catch (const usage_error& e) {
         std::fprintf(stderr, "ledger_ctl: %s\n\n%s", e.what(), usage.data());
         return 2;
