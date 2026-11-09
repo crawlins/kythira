@@ -41,10 +41,21 @@ set_tests_properties(ledger_state_machine_test PROPERTIES LABELS "unit;ledger" T
 # session expiry and leader change, and the serializability property test.
 kythira_ledger_test(ledger_transactions_test ledger_transactions_test.cpp)
 set_tests_properties(ledger_transactions_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+# Task 6: history, equality indexes and bounded scans.
 kythira_ledger_test(ledger_history_index_test ledger_history_index_test.cpp)
 set_tests_properties(ledger_history_index_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+
+# Task 8: segments, offload and ExportJournal.
 kythira_ledger_test(ledger_segments_test ledger_segments_test.cpp)
 set_tests_properties(ledger_segments_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+
+# Task 10: offline verification, the byte-by-byte tamper sweep, proofs, and
+# ledger_ctl's exit codes (the test runs the built tool).
+kythira_ledger_test(ledger_verifier_test ledger_verifier_test.cpp)
+target_compile_definitions(ledger_verifier_test PRIVATE
+    KYTHIRA_LEDGER_CTL="$<TARGET_FILE:ledger_ctl>")
+add_dependencies(ledger_verifier_test ledger_ctl)
+set_tests_properties(ledger_verifier_test PROPERTIES LABELS "unit;ledger" TIMEOUT 180)
 
 # Task 1: ledger_node links and runs.
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)

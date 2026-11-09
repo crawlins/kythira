@@ -251,6 +251,31 @@ task is one PR unless noted.
   - `verify` and `prove` (API, data directory, export); optional CA-signed
     digests; metrics and the hash-mismatch alert path; tamper tests
   - _Requirements: 4.5, 9.1-9.3, 11.1, 11.2, 12.3_
+  - Done so far (offline verification; signed digests, metrics, the
+    hash-mismatch alert and `verify` through the API or a live data
+    directory need `ledger_node`, task 7):
+    - `journal_verifier` checks blocks in order: sequence, previous hash
+      chain, timestamps never running backwards, every revision hash,
+      entriesHash, blockHash, and the digest at a saved digest's tip. It
+      keeps only the accumulator frontier (a discarding node store), so
+      memory does not grow with the journal. The first failure names the
+      block.
+    - The byte-by-byte tamper sweep over a segment file found that a
+      revision's `tableName` and `blockAddress` are outside its hash
+      (QLDB's revision hash covers data and metadata only) and so were
+      bound by nothing. `block::verify()` and the verifier now require
+      each revision to name its own block and a table and id written by
+      one of the block's statements, which the entries hash covers.
+      After that every single-byte change is caught.
+    - Sources: any state machine (`verify_state_machine`), a segment
+      directory, and an export directory (each object checked against
+      the manifest's size and SHA-256 first; JSON exports are refused
+      because they have lost the Ion types).
+    - `proof_document` is the Ion form of GetBlock / GetRevision results;
+      `check_proof` re-hashes the block or revision and folds the proof
+      to a saved digest at the same tip.
+    - `ledger_ctl verify` and `prove`; exit 0 verified, 1 failed, 2 usage
+      or I/O. `ledger_verifier_test` runs the built tool.
 
 - [ ] 11. Crash, chaos and docs
   - Failpoint kills during apply, sealing and offload; identical journals
