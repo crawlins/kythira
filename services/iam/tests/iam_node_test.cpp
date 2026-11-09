@@ -40,6 +40,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <thread>
@@ -387,8 +388,35 @@ public:
 
     void dump_logs() const {
         for (const auto& m : members) {
-            BOOST_TEST_MESSAGE("---- node " << kythira::host_node_id_text(m.id) << " log ----\n"
-                                            << slurp(m.dir / "node.log"));
+            // stderr, not BOOST_TEST_MESSAGE: the latter is dropped at the
+            // default log level, which is what ctest runs with, so a CI
+            // failure showed no node logs at all.
+            std::cerr << "---- node " << kythira::host_node_id_text(m.id) << " log ----\n"
+                      << slurp(m.dir / "node.log") << '\n';
+            // The Raft log as the store holds it, one entry per line with the
+            // command left out: a node that restarts and cannot apply has
+            // been seen to come back with an index missing, and this is what
+            // tells a lost write apart from a line the loader skipped.
+            std::cerr << "---- node " << kythira::host_node_id_text(m.id) << " raft log ----\n";
+            std::ifstream raft_log(m.dir / "log");
+            std::string line;
+            while (std::getline(raft_log, line)) {
+                boost::system::error_code ec;
+                auto v = boost::json::parse(line, ec);
+                if (ec || !v.is_object()) {
+                    std::cerr << "unparseable (" << line.size() << " bytes): " << line.substr(0, 80)
+                              << '\n';
+                    continue;
+                }
+                const auto& o = v.as_object();
+                std::cerr << "index="
+                          << boost::json::serialize(o.contains("index") ? o.at("index") : nullptr)
+                          << " term="
+                          << boost::json::serialize(o.contains("term") ? o.at("term") : nullptr)
+                          << " type="
+                          << boost::json::serialize(o.contains("type") ? o.at("type") : nullptr)
+                          << '\n';
+            }
         }
     }
 
@@ -413,33 +441,39 @@ BOOST_AUTO_TEST_CASE(cluster_lifecycle, *boost::unit_test::timeout(600)) {
         c.dump_logs();
     }
     BOOST_REQUIRE(leader != nullptr);
-    member* follower = nullptr;
-    for (auto* m : c.voters()) {
-        if (m != leader) {
-            follower = m;
-            break;
-        }
-    }
-    if (follower == nullptr) {
-        BOOST_FAIL("no follower among the voters");
-        return;
-    }
 
     // A follower redirects an admin request to the leader, once it has
-    // heard from it (503 until then).
+    // heard from it (503 until then). Leadership can move between finding
+    // the leader and asking a follower — a starved runner misses heartbeats
+    // and an election follows — so each attempt re-resolves the leader and
+    // only a 307 naming the leader of that moment counts.
+    member* follower = nullptr;
     std::optional<http_result> redirect;
-    for (int i = 0; i < 100; ++i) {
+    std::string expected_location;
+    const auto redirect_deadline = std::chrono::steady_clock::now() + 60s;
+    while (std::chrono::steady_clock::now() < redirect_deadline) {
+        leader = c.wait_leader();
+        BOOST_REQUIRE(leader != nullptr);
+        follower = nullptr;
+        for (auto* m : c.voters()) {
+            if (m != leader) {
+                follower = m;
+                break;
+            }
+        }
+        BOOST_REQUIRE(follower != nullptr);
+        expected_location =
+            "https://localhost:" + std::to_string(leader->http_port) + "/v1/admin/accounts";
         redirect = https_call(follower->http_port, c.pki, http::verb::get, "/v1/admin/accounts",
                               c.pki.admin_cert.string(), c.pki.admin_key.string());
-        if (redirect && redirect->status != 503) {
+        if (redirect && redirect->status == 307U && redirect->location == expected_location) {
             break;
         }
         std::this_thread::sleep_for(100ms);
     }
     BOOST_REQUIRE(redirect.has_value());
     BOOST_TEST(redirect->status == 307U);
-    BOOST_TEST(redirect->location ==
-               "https://localhost:" + std::to_string(leader->http_port) + "/v1/admin/accounts");
+    BOOST_TEST(redirect->location == expected_location);
 
     // create-account through the follower: the CLI follows the redirect.
     const auto key_file = c.dir() / "root-key.ini";
