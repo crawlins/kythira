@@ -5,6 +5,16 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (November 9, 2026)
 
+- **Test ports are claimed across processes, not just checked free.**
+  `tests/test_ports.hpp` checked a port free when a test binary started,
+  but the binary bound it minutes later, so another binary could pick the
+  same port in between (`proxygen_transport_test` lost two ports of one
+  block this way). Each port handed out now also takes a one-byte fcntl
+  lock at its offset in `$TMPDIR/kythira-test-ports.lock`, held until the
+  process exits, and no other test process is given a claimed port. With
+  four processes taking 15,000 ports between them, the old helper handed
+  out 3,321 ports twice and the new one none.
+
 - **A Cairn run can start the workload again after stopping it.** A
   later `workload.start` continues the run's history: chaos_workload
   takes `WORKLOAD_FIRST_PROCESS` and `WORKLOAD_TIME_OFFSET_NS`, so process
