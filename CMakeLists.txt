@@ -674,6 +674,36 @@ else()
     message(STATUS "ion-c not found — Ion RPC serializer disabled (opt-in vcpkg feature: ion).")
 endif()
 
+# persistent-state-machine spec task 5: a kv_engine on RocksDB. Opt-in like
+# Ion (vcpkg feature "rocksdb", Kconfig ENGINE_ROCKSDB default n). Only
+# src/rocksdb_kv_engine.cpp includes RocksDB headers; consumers see the pimpl
+# header and link raft_rocksdb_engine, so with the option off nothing in the
+# tree touches RocksDB (Requirement 7.3).
+kythira_kconfig_gate(ENGINE_ROCKSDB)
+if(_KYTHIRA_GATE_ENGINE_ROCKSDB)
+    find_package(RocksDB CONFIG QUIET)
+endif()
+kythira_kconfig_require(ENGINE_ROCKSDB RocksDB_FOUND "RocksDB")
+
+if(RocksDB_FOUND AND _KYTHIRA_GATE_ENGINE_ROCKSDB)
+    add_library(raft_rocksdb_engine STATIC src/rocksdb_kv_engine.cpp)
+    if(TARGET RocksDB::rocksdb)
+        target_link_libraries(raft_rocksdb_engine PRIVATE RocksDB::rocksdb)
+    else()
+        target_link_libraries(raft_rocksdb_engine PRIVATE RocksDB::rocksdb-shared)
+    endif()
+    # network_simulator (PUBLIC), as for certificate_authority: the pimpl
+    # header reaches raft/types.hpp and so the future backend, which needs
+    # the Folly/glog compile definitions and links that target carries.
+    target_link_libraries(raft_rocksdb_engine PUBLIC kythira_core_headers network_simulator
+                                                     OpenSSL::Crypto)
+    target_compile_definitions(raft_rocksdb_engine PUBLIC KYTHIRA_ENGINE_ROCKSDB_AVAILABLE)
+    target_compile_features(raft_rocksdb_engine PUBLIC cxx_std_23)
+    message(STATUS "raft_rocksdb_engine target: enabled (.kiro/specs/persistent-state-machine/)")
+else()
+    message(STATUS "RocksDB not found or disabled — rocksdb_kv_engine unavailable (opt-in vcpkg feature: rocksdb).")
+endif()
+
 # Find libldns using PkgConfig (system installation; pc file is named "ldns")
 kythira_forget_pkg_found(LIBLDNS)
 kythira_kconfig_gate(DNS_DISCOVERY)

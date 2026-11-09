@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ci_ion_defconfig — the feature set the Ion Serializer Build job resolves.
-# That job's vcpkg install is `--x-feature=edhoc --x-feature=ion`, i.e. the
-# edhoc image ci_full_defconfig models plus ion-c, so this file is
-# ci_full_defconfig with CONFIG_ION_SERIALIZER and the ion-c-only ledger
-# module turned on and nothing else changed. Written, like ci_full_defconfig, against
+# That job's vcpkg install is `--x-feature=edhoc --x-feature=ion
+# --x-feature=rocksdb`, i.e. the edhoc image ci_full_defconfig models plus
+# ion-c and RocksDB, so this file is ci_full_defconfig with
+# CONFIG_ION_SERIALIZER, the ion-c-only ledger module and CONFIG_ENGINE_ROCKSDB
+# turned on and nothing else changed. Written, like ci_full_defconfig, against
 # `-DKYTHIRA_KCONFIG_STRICT=ON` (Requirement 5.1) — see that file's header for
 # the reasoning; only the difference is annotated here.
 #
@@ -22,6 +23,13 @@
 #                             built and run here. It adds targets under
 #                             services/ledger/ only; every core target is
 #                             still the one ci_full_defconfig builds.
+#   ENGINE_ROCKSDB          — the RocksDB kv_engine
+#                             (.kiro/specs/persistent-state-machine/ task 5).
+#                             Another opt-in vcpkg feature (rocksdb) that no
+#                             other image installs, so it rides in this job's
+#                             tree rather than a job of its own. It adds
+#                             raft_rocksdb_engine and rocksdb_kv_engine_test
+#                             only.
 #
 # Everything else is verbatim from ci_full_defconfig and must stay that way —
 # the job builds the ion targets out of the same tree the main legs build, and
@@ -29,6 +37,7 @@
 # configuration nothing else uses.
 CONFIG_ION_SERIALIZER=y
 CONFIG_LEDGER=y
+CONFIG_ENGINE_ROCKSDB=y
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y

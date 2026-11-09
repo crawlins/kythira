@@ -130,6 +130,12 @@
         "ion-c"
       ]
     },
+    "rocksdb": {
+      "description": "RocksDB kv_engine for persistent state machines (rocksdb_kv_engine, include/raft/rocksdb_kv_engine.hpp). Opt-in: omitting it leaves KYTHIRA_ENGINE_ROCKSDB_AVAILABLE undefined and the raft_rocksdb_engine library unbuilt.",
+      "dependencies": [
+        "rocksdb"
+      ]
+    },
     "coap-cantcoap": {
       "description": "Alternate cantcoap-backed CoAP transport (coap_cantcoap_client/coap_cantcoap_server, include/raft/coap_transport_cantcoap_impl.hpp). cantcoap is a PDU codec only, so this backend owns the socket, reliability, block-wise and security itself, reusing kythira's existing scaffolding. Built from source via the vcpkg-overlays/cantcoap overlay port, which vendors a CMakeLists because upstream ships no build system. Opt-in and additive: omitting it leaves CANTCOAP_AVAILABLE undefined with everything else unaffected.",
       "dependencies": [

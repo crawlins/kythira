@@ -33,6 +33,8 @@
 #                             configs/ci_ion_defconfig, which is this file plus
 #                             CONFIG_ION_SERIALIZER=y. Keep the two in sync —
 #                             every other symbol below must match.
+#   ENGINE_ROCKSDB          — same shape: opt-in `rocksdb` vcpkg feature.
+#                             ci_ion_defconfig turns it on in the same job.
 #   COAP_TRANSPORT_LIBNYOCI — same shape: opt-in `coap-libnyoci` vcpkg feature,
 #   COAP_TRANSPORT_CANTCOAP   and opt-in `coap-cantcoap`, which these legs do
 #                             not install. ci.yml's alt-coap-backends job
