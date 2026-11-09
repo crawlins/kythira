@@ -5270,6 +5270,37 @@ set_tests_properties(aws_query_protocol_test PROPERTIES
     LABELS "unit;aws;iam"
 )
 
+# DynamoDB spec task 2: the AWS JSON protocol codec shared by the DynamoDB
+# and Kinesis modules (framing, the generated shape tables, AWS's two-pass
+# validation, the standard response headers, dispatch), on a fixture model.
+add_executable(aws_json_protocol_test aws_json_protocol_test.cpp)
+target_link_libraries(aws_json_protocol_test PRIVATE
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(aws_json_protocol_test PRIVATE cxx_std_23)
+add_test(NAME aws_json_protocol_test COMMAND aws_json_protocol_test)
+set_tests_properties(aws_json_protocol_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;aws;aws_json"
+)
+
+# The checked-in fixture header is what scripts/gen_aws_json_shapes.py makes
+# of the fixture model, so a generator change cannot land without its output.
+# Each module registers the same check for its own pinned models.
+if(Python3_EXECUTABLE)
+    add_test(NAME aws_json_fixture_model_fresh
+        COMMAND ${Python3_EXECUTABLE} scripts/gen_aws_json_shapes.py
+            tests/aws_json_protocol/fixture-service-2.json
+            tests/aws_json_protocol/fixture_model.hpp
+            --namespace kythira::aws_json_fixture --check
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(aws_json_fixture_model_fresh PROPERTIES
+        TIMEOUT 30
+        LABELS "unit;aws;aws_json"
+    )
+endif()
+
 # IAM spec task 7: streaming (aws-chunked) payloads and the SigV4 failure
 # limiter, against vectors a pinned botocore signed (sigv4_chunked/).
 add_executable(sigv4_chunk_decoder_test sigv4_chunk_decoder_test.cpp)

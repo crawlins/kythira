@@ -30,12 +30,23 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 1: protocol and auth
 
-- [ ] 2. AWS JSON protocol codec (core)
+- [x] 2. AWS JSON protocol codec (core)
   - `include/raft/aws_json_protocol.hpp`: JSON 1.0 and 1.1 framing,
     `X-Amz-Target` dispatch, shape (de)serialization generated from the
     pinned model, `__type` errors, `x-amz-crc32`, request ids
   - Request limits per `http-server-request-limits`
   - _Requirements: 4.1-4.3_
+  - Done: the codec, `scripts/gen_aws_json_shapes.py` (botocore model to
+    `constexpr` shape tables; a module registers its `--check` ctest so a
+    model upgrade carries its regenerated header), and
+    `tests/aws_json_protocol_test.cpp` on a fixture model. Built before
+    task 1 so Kinesis task 2 could start on it; the DynamoDB and Kinesis
+    models were generated and compiled against it locally. Validation runs
+    AWS's two passes (type faults as `SerializationException`, then every
+    constraint in one `ValidationException`). Error names, the message
+    member's spelling and the statuses for protocol-level faults are kept
+    in one `error_style` per service family so task 1's recordings and the
+    task 8 differential job can correct them in one place.
 
 - [ ] 3. Decimal and item codec
   - `dynamo_decimal` with exact arithmetic, AWS range and rounding, the
