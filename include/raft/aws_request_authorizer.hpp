@@ -76,7 +76,9 @@ struct principal_context {
     std::optional<std::chrono::system_clock::time_point> token_issue_time;
     std::optional<std::chrono::system_clock::time_point> expires;
     std::string source_identity;
-    std::vector<std::string> session_policies;  // policy JSON carried by the token
+    std::vector<std::string> session_policies;  // policy JSON, or a managed ARN
+    // Session tags (in `tags`) that pass on to a chained role session.
+    std::vector<std::string> transitive_tag_keys;
     // GetSessionToken credentials: the user (or root) above, limited to
     // AssumeRole and GetCallerIdentity (Requirement 10.10).
     bool session_token = false;

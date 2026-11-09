@@ -577,6 +577,28 @@ fails with `InvalidAuthorizationMessageException`, AWS's error.
   service `sts`; the AWS CLI scenario assumes a role and calls
   GetCallerIdentity with the session credentials.
 
+**As built (task 18).**
+- `PolicyArns` travel in the token as ARNs and are read when each
+  request is evaluated, as AWS does, so a token stays small. A session
+  policy that no longer parses or exists still counts, as one granting
+  nothing: dropping it would leave a role session with no session policy
+  and so unlimited by one.
+- Session tags are the request tags of `sts:AssumeRole`, so a trust
+  policy can condition on `aws:RequestTag/*` and `aws:TagKeys`; then
+  `sts:TagSession` is authorized with the same request. A chained call
+  carrying inherited transitive tags needs `sts:TagSession` too, as on
+  AWS. The token holds the session tags and which are transitive;
+  principal tags are merged with the role's at request time
+  (INV-STAG-5).
+- `SourceIdentity` needs `sts:SetSourceIdentity`, is kept down a chain
+  (which then also needs `sts:SetSourceIdentity`), and cannot be changed
+  there.
+- `PackedPolicySize` is the session-policy characters (white space not
+  counted) plus the ARNs, as a percentage of 2048. Tags are bounded by
+  their own count and length limits rather than the packed size.
+- Revocation is AWS's inline deny on `aws:TokenIssueTime`, which the
+  token's `iat` supplies; nothing in STS tracks sessions.
+
 ## Component 10: Web identity (Requirements 11–12)
 
 **`oidc_jwks_cache`.**

@@ -288,7 +288,7 @@ struct session {
     std::int64_t exp = 0;
     std::string access_key_id;
     std::string secret_access_key;
-    std::vector<std::string> session_policies;  // policy JSON
+    std::vector<std::string> session_policies;  // policy JSON, or a managed ARN
     std::vector<std::pair<std::string, std::string>> tags;
     std::vector<std::string> transitive_tag_keys;
     bool chained = false;
@@ -542,6 +542,7 @@ private:
     p.access_key_id = s.access_key_id;
     p.source_identity = s.source_identity;
     p.session_policies = s.session_policies;
+    p.transitive_tag_keys = s.transitive_tag_keys;
     p.tags = s.tags;
     p.token_issue_time = std::chrono::system_clock::time_point(std::chrono::seconds(s.iat));
     p.expires = std::chrono::system_clock::time_point(std::chrono::seconds(s.exp));
