@@ -116,6 +116,30 @@ auto commit_put(cluster& c, const std::string& key, outcome& out) -> void {
     BOOST_REQUIRE(out.resolved.load());
 }
 
+/**
+ * Commits a put of `key` through leader node 1 and isolates node 1 before
+ * any follower learns the new commit index.
+ *
+ * Node 1 commits as soon as the followers' acks land, but its client's
+ * future resolves only after its apply loop runs. Ticking until the client
+ * resolved, as these cases once did, let a tick in that gap send a heartbeat
+ * carrying the new commit index, and under load node 2 had learned it before
+ * the isolation (once in the 52 CI runs surveyed on 11-09, and 2 of 40
+ * local runs with the CPU saturated). So this ticks only until node 1's own
+ * commit index covers the put, isolates node 1 with no tick in between, and
+ * only then waits for the client.
+ */
+auto commit_then_cut_off_leader(cluster& c, const std::string& key, outcome& out) -> void {
+    c.submit(key, out);
+    const auto put_index = c.leader().last_log_index();
+    BOOST_REQUIRE(c.pump([&] { return commit_index(c.leader()) >= put_index; }));
+    c.isolate(1);
+    BOOST_REQUIRE(wait_until([&] { return out.done(); }));
+    BOOST_REQUIRE(out.resolved.load());
+    BOOST_REQUIRE_MESSAGE(commit_index(c.node(2)) < put_index,
+                          "node 2 learned the commit before node 1 was cut off");
+}
+
 /// The targets of the heartbeats `id` sent to confirm reads.
 auto read_heartbeat_targets(cluster& c, std::uint64_t id) -> std::vector<std::string> {
     return c.logs(id).field_values("Sending heartbeat for read verification", "target");
@@ -347,13 +371,7 @@ BOOST_AUTO_TEST_CASE(property_read_state_serves_only_committed_state_of_its_term
     read_result r;
     cluster c;
     settle(c);
-    c.submit("acknowledged-key", put);
-    BOOST_REQUIRE(c.pump([&] { return put.done(); }));
-    BOOST_REQUIRE(put.resolved.load());
-    c.isolate(1);
-    const auto put_index = c.leader().last_log_index();
-    BOOST_REQUIRE_MESSAGE(commit_index(c.node(2)) < put_index,
-                          "node 2 learned the commit before node 1 was cut off");
+    commit_then_cut_off_leader(c, "acknowledged-key", put);
 
     BOOST_REQUIRE(wait_until(
         [&] {
@@ -402,14 +420,8 @@ BOOST_AUTO_TEST_CASE(property_leader_state_machine_waits_for_its_term,
     outcome put;
     cluster c(cfg);
     settle(c);
-    c.submit("acknowledged-key", put);
-    BOOST_REQUIRE(c.pump([&] { return put.done(); }));
-    BOOST_REQUIRE(put.resolved.load());
-    c.isolate(1);
+    commit_then_cut_off_leader(c, "acknowledged-key", put);
     c.slow(3, 2, node3_reply_delay);
-    const auto put_index = c.leader().last_log_index();
-    BOOST_REQUIRE_MESSAGE(commit_index(c.node(2)) < put_index,
-                          "node 2 learned the commit before node 1 was cut off");
 
     const auto holds_put = [&] {
         return c.node(2).with_leader_state_machine(
