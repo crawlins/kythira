@@ -456,12 +456,15 @@ target_link_libraries(snapshot_stream_test PRIVATE OpenSSL::Crypto)
 # machine (tests/persistent_register_state_machine.hpp): restart at the
 # engine's applied index, metadata-only snapshots, compaction bound by the
 # durable applied index, crash and replay, reads; and file-install-snapshot
-# tasks 4-5: format-1 InstallSnapshot staged, ingested and sent.
+# tasks 4-6: format-1 InstallSnapshot staged, ingested, sent, resumed
+# and paced.
 add_raft_completion_test(persistent_node_integration_test persistent_node_integration_test.cpp)
 target_link_libraries(persistent_node_integration_test PRIVATE OpenSSL::Crypto)
 # file-install-snapshot task 5: the leader's shared, refcounted checkpoints.
 add_raft_completion_test(checkpoint_registry_test checkpoint_registry_test.cpp)
 target_link_libraries(checkpoint_registry_test PRIVATE OpenSSL::Crypto)
+# file-install-snapshot task 6: the node-wide InstallSnapshot pacer.
+add_raft_completion_test(snapshot_pacer_test snapshot_pacer_test.cpp)
 set_tests_properties(state_machine_apply_performance_property_test PROPERTIES
     # Measures real elapsed-time thresholds for state machine apply
     # throughput — CPU contention from co-scheduled tests under `ctest -j`

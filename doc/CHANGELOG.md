@@ -73,6 +73,18 @@ current list of outstanding work, see [TODO.md](TODO.md).
   what is held. Log compaction for persistent groups stays off by default
   for now.
 
+- **Persistent snapshot transfers resume and can be paced.** A leader
+  that loses a transfer partway sends the same checkpoint again, and the
+  follower answers with how much it already has, so the transfer goes on
+  from there instead of from zero. `raft_configuration::_snapshot_pacer`
+  (a shared `snapshot_pacer`, unlimited when unset) caps the snapshot
+  bytes a node sends across all its groups.
+
+- **`_install_snapshot_retry_policy` now takes effect.** The node used
+  the error handler's built-in InstallSnapshot retry policy and ignored
+  the configured one. The default is the same, so only a configuration
+  that changed it behaves differently.
+
 ### What Changed (November 5, 2026)
 
 - **Network tests pick their ports at run time.** Tests that listened on

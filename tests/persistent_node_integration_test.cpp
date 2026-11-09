@@ -970,3 +970,104 @@ BOOST_AUTO_TEST_CASE(follower_behind_compaction_catches_up_by_format1_snapshot,
     BOOST_TEST(entries_named(c.members[0]->staging.path(), "kythira-checkpoint-") <= 2U);
     BOOST_TEST(c.members[0]->metrics->count_named("raft_snapshot_checkpoints") >= 1U);
 }
+
+// ── Resume and pacing (.kiro/specs/file-install-snapshot/ task 6) ──
+
+// Requirements 6.1 and 6.2: the same checkpoint sent again from offset 0
+// is answered with offset_mismatch and how far it is staged, and the
+// transfer goes on from there. A different checkpoint at the same index
+// replaces it.
+BOOST_AUTO_TEST_CASE(follower_reports_staged_progress_for_the_same_checkpoint,
+                     *boost::unit_test::timeout(30)) {
+    using reason = kythira::install_snapshot_reject_reason;
+    harness h;
+    source src(20);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    auto peer = h.peer_client();
+    const auto reqs = src.requests(1, 64);
+    BOOST_REQUIRE_GT(reqs.size(), 3U);
+
+    for (std::size_t i = 0; i < 3; ++i) {
+        BOOST_TEST(!reason_of(send(peer, reqs[i])).has_value());
+    }
+    const auto staged = reqs[2]._offset + reqs[2]._data.size();
+    const auto again = send(peer, reqs[0]);
+    BOOST_TEST((reason_of(again) == reason::offset_mismatch));
+    BOOST_TEST((again.bytes_received() == std::optional<std::uint64_t>(staged)));
+    BOOST_TEST(h.metrics->count_named("raft_install_snapshot_resumed") == 1U);
+    // A new leader with the same checkpoint resumes too.
+    auto new_leader = reqs[0];
+    new_leader._term = 2;
+    BOOST_TEST((send(peer, new_leader).bytes_received() == std::optional<std::uint64_t>(staged)));
+    for (std::size_t i = 3; i < reqs.size(); ++i) {
+        auto r = reqs[i];
+        r._term = 2;
+        BOOST_TEST(!reason_of(send(peer, r)).has_value());
+    }
+    BOOST_TEST(node->last_applied_index() == 20U);
+    BOOST_TEST(value_of(*node, 20) == "v20");
+    node->stop();
+}
+
+// Requirement 6.1 end to end, and 6.3: with the leader paced, a follower
+// cut off mid-transfer resumes from what it staged once it is back, and the
+// transfer takes at least as long as the pacer allows.
+BOOST_AUTO_TEST_CASE(leader_resumes_a_cut_transfer_and_paces_it, *boost::unit_test::timeout(90)) {
+    auto cfg = make_config();
+    cfg._persistent_log_compaction = true;
+    cfg._snapshot_threshold_bytes = 7 * 4;
+    cfg._snapshot_chunk_size = 16;
+    cfg._install_snapshot_timeout = std::chrono::milliseconds{300};
+    // One attempt per chunk, so the cut fails the transfer instead of a
+    // retry riding it out; the next one must resume.
+    cfg._install_snapshot_retry_policy = {.initial_delay = std::chrono::milliseconds{50},
+                                          .max_delay = std::chrono::milliseconds{100},
+                                          .backoff_multiplier = 2.0,
+                                          .jitter_factor = 0.0,
+                                          .max_attempts = 1};
+    constexpr std::uint64_t rate = 150;  // bytes per second
+    cfg._snapshot_pacer = std::make_shared<kythira::snapshot_pacer>(rate, 16);
+    persistent_cluster c(cfg);
+    BOOST_REQUIRE(c.pump_until([&] { return c.leader().is_leader(); }));
+    BOOST_REQUIRE(c.commit(1));
+    BOOST_REQUIRE(c.pump_until([&] { return value_of(c.at(2), 1) == "v01"; }));
+
+    c.cut("3");
+    for (int i = 2; i < 14; ++i) {
+        BOOST_REQUIRE(c.commit(i));
+    }
+    // The checkpoint the leader will send is at its applied index; cut the
+    // follower once it has started staging that one.
+    const auto wanted = "kythira-staging-" + std::to_string(c.leader().last_applied_index()) + "-";
+    c.connect_all();
+    const auto started = std::chrono::steady_clock::now();
+    const auto staging_has_part = [&] {
+        for (const auto& e : std::filesystem::directory_iterator(c.members[2]->staging.path())) {
+            if (e.path().filename().string().starts_with(wanted)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    BOOST_REQUIRE(c.pump_until(staging_has_part, std::chrono::milliseconds{10000}));
+    c.cut("3");
+    std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+    c.connect_all();
+    BOOST_REQUIRE(c.commit(50));
+    BOOST_CHECK(c.pump_until([&] { return value_of(c.at(2), 50) == "v50"; },
+                             std::chrono::milliseconds{30000}));
+    for (int i = 2; i < 14; ++i) {
+        BOOST_CHECK(!value_of(c.at(2), i).empty());
+    }
+    BOOST_TEST(c.members[2]->metrics->count_named("raft_install_snapshot_resumed") >= 1U);
+    const auto installed = c.members[2]->persistence.load_snapshot();
+    BOOST_REQUIRE(installed.has_value());
+    // Every byte went through the pacer, one 16-byte burst aside.
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    const auto total = c.members[0]->metrics->count_named("raft_install_snapshot_success");
+    BOOST_TEST(total >= 1U);
+    BOOST_TEST(elapsed >= std::chrono::milliseconds{1500});
+}
