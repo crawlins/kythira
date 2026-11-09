@@ -616,7 +616,7 @@ jobs:
         run: docker stop localstack-s3 || true
 
       - name: Publish test results
-        uses: dorny/test-reporter@3eeb9fc888e82e8be2fb356bbeec2750231672bc # v1
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: always()
         with:
           name: Unit Tests (${{ matrix.compiler }}, ${{ matrix.arch_label }})
@@ -2761,7 +2761,7 @@ jobs:
             -- -LE '^(slow|performance|verbose|benchmark|docker)$'
 
       - name: Publish coverage test results
-        uses: dorny/test-reporter@3eeb9fc888e82e8be2fb356bbeec2750231672bc # v1
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: always()
         with:
           name: Coverage Tests
@@ -3226,7 +3226,7 @@ jobs:
             -- -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test|tcp_connection_tracker_unit_test|^tcp_rpc_unit_test$|tls_tcp_rpc_integration_test|tcp_gossip_transport_integration_test'
 
       - name: Publish ThreadSanitizer test results
-        uses: dorny/test-reporter@3eeb9fc888e82e8be2fb356bbeec2750231672bc # v1
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
         if: always()
         with:
           name: ThreadSanitizer Tests
