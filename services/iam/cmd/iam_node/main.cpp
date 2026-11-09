@@ -22,8 +22,10 @@
 // (raft/beast_https_server.hpp). It asks for, but does not require, a client
 // certificate: /v1/admin/* needs one whose URI SAN is on --admin-uri-san,
 // while SigV4 clients present none. IAM and STS requests are routed by their
-// credential scope; their handlers arrive with tasks 14 and 17, and until
-// then they are answered NotImplemented in AWS's Query error shape.
+// credential scope. IAM requests are authenticated with SigV4 and handled by
+// iam_query_api.hpp on the leader (a follower redirects); actions it does not
+// serve yet, and every STS action until task 17, answer NotImplemented in
+// AWS's Query error shape.
 //
 // Read replicas: `kythira-iam replica-add` registers a replica (a node
 // started with --replica) in the IAM state, and the leader adds it as a Raft
@@ -37,7 +39,12 @@
 #include "config.hpp"
 
 #include <kythira/iam/iam_admin.hpp>
+#include <kythira/iam/iam_authorizer.hpp>
+#include <kythira/iam/iam_query_api.hpp>
 #include <kythira/iam/iam_replica.hpp>
+#include <kythira/iam/iam_service_registry.hpp>
+#include <kythira/iam/services/iam_actions.hpp>
+#include <kythira/iam/services/sts_actions.hpp>
 #include <kythira/iam/iam_routing.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
 
@@ -198,7 +205,20 @@ public:
           _rpc_client(make_client()),
           _node(make_node()),
           _freshness([n = _node.get()] { return n->last_caught_up(); },
-                     std::chrono::duration_cast<std::chrono::milliseconds>(cfg.max_staleness)) {}
+                     std::chrono::duration_cast<std::chrono::milliseconds>(cfg.max_staleness)),
+          _registry(make_registry()),
+          _authz(
+              [n = _node.get()](const std::function<void(const iam::iam_state_machine&)>& f) {
+                  n->with_state_machine([&](iam::iam_state_machine& sm) { f(sm); });
+              },
+              [this](std::string_view salt) -> const iam::seal_key& { return _keks.get(salt); },
+              _registry),
+          _query_cluster{this},
+          _api(_query_cluster, _authz) {
+        if (_cfg.replica) {
+            _authz.set_freshness([this] { return _freshness.fresh(); });
+        }
+    }
 
     member(const member&) = delete;
     auto operator=(const member&) -> member& = delete;
@@ -295,6 +315,32 @@ public:
     }
 
 private:
+    /// The IAM Query API's view of the cluster: the leader's applied state
+    /// and its proposals. A follower redirects before it gets here.
+    struct query_cluster_adapter {
+        member* m;
+        void read(const std::function<void(const iam::iam_state_machine&)>& f) {
+            const auto done = m->_node->with_leader_state_machine([&](iam::iam_state_machine& sm) {
+                f(sm);
+                return true;
+            });
+            if (!done) {
+                throw std::runtime_error("this member is no longer the leader");
+            }
+        }
+        auto submit(const std::vector<std::byte>& cmd) -> std::vector<std::byte> {
+            return m->submit(cmd);
+        }
+        auto kek(std::string_view salt) -> const iam::seal_key& { return m->kek(salt); }
+    };
+
+    static auto make_registry() -> iam::iam_service_registry {
+        iam::iam_service_registry r;
+        r.add(iam::services::iam_actions());
+        r.add(iam::services::sts_actions());
+        return r;
+    }
+
     auto make_client() -> std::optional<typename Types::network_client_type> {
         if constexpr (k_rpc_tls) {
             return typename Types::network_client_type(_tls);
@@ -585,6 +631,51 @@ private:
         }
     }
 
+    /// The IAM Query API (Requirement 9): SigV4 authentication, then the
+    /// action, which authorizes itself. Served by the leader; a follower
+    /// redirects, as it does for admin writes.
+    auto handle_iam(const https::request& req, const https::request_context& ctx)
+        -> https::response {
+        if (!_node->is_leader()) {
+            return redirect_to_leader(req);
+        }
+        const std::string method(req.method_string());
+        const std::string target(req.target());
+        const auto q = target.find('?');
+        kythira::sigv4::request sr;
+        sr.method = method;
+        sr.raw_path = std::string_view(target).substr(0, q);
+        sr.raw_query =
+            q == std::string::npos ? std::string_view{} : std::string_view(target).substr(q + 1);
+        for (const auto& h : req) {
+            sr.headers.emplace_back(std::string(h.name_string()), std::string(h.value()));
+        }
+        sr.body = std::string_view(req.body());
+        const auto who = _authz.authenticate(sr, {.service = "iam"});
+        if (!who) {
+            const auto& e = who.error();
+            return query_error(req, false, static_cast<unsigned>(e.http_status), e.code, e.message);
+        }
+        const auto form = kythira::aws_query::form::parse(
+            req.method() == http::verb::post ? std::string_view(req.body()) : sr.raw_query);
+        if (!form) {
+            return query_error(req, false, 400, "MalformedQueryString",
+                               "The request parameters could not be decoded.");
+        }
+        iam::query::request_facts facts;
+        facts.request_id = routing::request_id();
+        facts.source_ip = ctx.peer_address;
+        facts.user_agent = std::string(req[http::field::user_agent]);
+        facts.secure_transport = ctx.tls;
+        const auto r = _api.handle(*who, *form, facts);
+        https::response res{static_cast<http::status>(r.status), req.version()};
+        res.set(http::field::content_type, "text/xml");
+        res.set("x-amzn-RequestId", facts.request_id);
+        res.body() = r.body;
+        res.keep_alive(req.keep_alive());
+        return res;
+    }
+
     auto handle(const https::request& req, const https::request_context& ctx) -> https::response {
         const auto target = std::string_view(req.target());
         const auto q = target.find('?');
@@ -613,8 +704,7 @@ private:
             case routing::route::admin:
                 return handle_admin(req, ctx);
             case routing::route::iam:
-                return query_error(req, false, 501, "NotImplemented",
-                                   "This IAM action is not available on this endpoint yet.");
+                return handle_iam(req, ctx);
             case routing::route::sts:
                 return query_error(req, true, 501, "NotImplemented",
                                    "This STS action is not available on this endpoint yet.");
@@ -645,6 +735,10 @@ private:
     std::optional<typename Types::network_server_type> _rpc_server_handle;
     std::unique_ptr<raft_node_t> _node;
     iam::replica_freshness _freshness;
+    iam::iam_service_registry _registry;
+    iam::iam_authorizer _authz;
+    query_cluster_adapter _query_cluster;
+    iam::query::iam_query_api<query_cluster_adapter> _api;
     std::unique_ptr<https::server> _server;
     std::thread _election_timer;
     std::thread _heartbeat_timer;

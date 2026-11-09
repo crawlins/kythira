@@ -42,6 +42,11 @@ set_tests_properties(iam_authorizer_test PROPERTIES LABELS "unit;iam;iam-module"
 kythira_iam_test(iam_replica_test iam_replica_test.cpp)
 set_tests_properties(iam_replica_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 120)
 
+# Task 14: the IAM Query API's user, group, access-key and account-alias
+# actions over a stand-in cluster (the AWS CLI v2 run is in docker/).
+kythira_iam_test(iam_query_api_test iam_query_api_test.cpp)
+set_tests_properties(iam_query_api_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
+
 # Task 8: the IAM state machine and its secret sealing, with property tests
 # that replicas and snapshot restores agree and no plaintext secret reaches
 # the log or a snapshot.

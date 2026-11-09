@@ -27,6 +27,8 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `tests/iam_authorizer_test.cpp` | authentication, authorization, partition, staleness and audit-line cases | 13 |
 | `include/kythira/iam/iam_replica.hpp` | `iam_replica<Types>`, a learner of the IAM group a front end embeds, and `replica_freshness` (lag, the metric, the fail-closed bound) | 13 |
 | `tests/iam_replica_test.cpp` | an embedded replica over the network simulator: 5 s propagation, failing closed when cut off | 13 |
+| `include/kythira/iam/iam_query_api.hpp` | the IAM Query API: user, group, access-key and account-alias actions, each authorized as `iam:<Action>` | 14 |
+| `tests/iam_query_api_test.cpp` | validation, authorization, error codes and pagination of those actions | 14 |
 | `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
 | `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |
 | `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |

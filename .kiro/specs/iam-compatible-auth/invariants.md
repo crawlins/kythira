@@ -23,6 +23,7 @@ Test files are under `services/iam/tests/` unless a path says otherwise:
 - `adm` is `iam_admin_test.cpp`;
 - `ev` is `iam_evaluator_test.cpp`;
 - `az` is `iam_authorizer_test.cpp`;
+- `qa` is `iam_query_api_test.cpp`, and `scn` the AWS CLI step of `docker/iam_node_scenario_test.cpp`;
 - `pol` is `iam_policy_test.cpp` with its corpus, where `corpus:<file>`
   names a file under `corpus/`;
 - `sigv4` is `tests/sigv4_verifier_test.cpp`.
@@ -57,13 +58,13 @@ Sources: [IAM quotas][quotas], [CreateUser][createuser],
 | INV-NAME-1 | User and role names are 1–64 characters | Tested: sm `entity_name_bounds_per_kind` |
 | INV-NAME-2 | Group, policy and instance-profile names are 1–128 characters | Tested: sm `entity_name_bounds_per_kind` |
 | INV-NAME-3 | Entity names use only `[A-Za-z0-9+=,.@_-]` | Tested: sm `names_paths_and_ids`, `entity_name_bounds_per_kind` |
-| INV-NAME-4 | Inline policy names are 1–128 Basic Latin characters other than `\ / * ?` and white space | Tested: val `inline_policy_names` |
+| INV-NAME-4 | Inline policy names are 1–128 Basic Latin characters other than `\ / * ?` and white space | Tested: val `inline_policy_names` (the Put*Policy actions that call it arrive with task 15) |
 | INV-NAME-5 | Names are unique case-insensitively within an account, for every entity kind | Tested: sm `users_are_case_insensitive`, `names_unique_case_insensitively_for_every_kind`, `versions` (policies) |
 | INV-NAME-6 | Inline policy names are unique per entity, and putting an existing name replaces that policy | Tested: sm `inline_size_quota_is_a_total` |
 | INV-PATH-1 | A path is `/`, or `/…/` of 3–512 printable ASCII characters | Tested: sm `names_paths_and_ids`, `path_bounds` |
 | INV-ID-1 | Unique ids are their type's prefix (AIDA, AGPA, AROA, ANPA, AIPA) and base-32 characters, 20 in all, never repeated | Tested: sm `names_paths_and_ids` |
 | INV-ACCT-1 | An account id is 12 digits | Tested: adm `create_account_validates_and_conflicts` |
-| INV-ACCT-2 | An alias is 3–63 of `[a-z0-9-]`, with no leading, trailing or doubled hyphen, and is not a 12-digit number | Tested: val `account_aliases`, adm `create_account_validates_and_conflicts` |
+| INV-ACCT-2 | An alias is 3–63 of `[a-z0-9-]`, with no leading, trailing or doubled hyphen, and is not a 12-digit number | Tested: val `account_aliases`, adm `create_account_validates_and_conflicts`, qa `inv_acct_2_aliases_are_validated_set_listed_and_deleted` |
 | INV-ACCT-3 | Aliases are unique | Tested: sm `aliases_are_unique` |
 | INV-ARN-1 | ARN parameters are 20–2048 characters | Tested: val `arn_lengths` |
 
@@ -73,12 +74,12 @@ Sources: [Tag][tag], [Tagging IAM resources][idtags], [IAM quotas][quotas].
 
 | Id | Invariant | Status |
 |---|---|---|
-| INV-TAG-1 | At most 50 tags per resource, checked on create and on tag | Tested: val `tag_lists`, sm `tags`, `tag_quota_on_every_create` |
-| INV-TAG-2 | Keys are 1–128 characters of letters, numbers, spaces and `_ . : / = + - @` | Tested: val `tag_keys_and_values` |
-| INV-TAG-3 | Values are 0–256 characters from the same set | Tested: val `tag_keys_and_values` |
-| INV-TAG-4 | Neither a key nor a value may begin with `aws:` | Tested: val `tag_keys_and_values` |
-| INV-TAG-5 | Keys are case-insensitive on users, roles and STS sessions, keeping the latest spelling, and case-sensitive on every other resource | Tested: val `tag_lists`, sm `tag_key_case_by_resource_kind` |
-| INV-TAG-6 | One invalid tag fails the whole request, and nothing is created | Tested: val `tag_lists`, sm `tag_quota_on_every_create` (the check runs before any mutation) |
+| INV-TAG-1 | At most 50 tags per resource, checked on create and on tag | Tested: val `tag_lists`, sm `tags`, `tag_quota_on_every_create`, qa `inv_tag_bad_tags_fail_the_whole_request` |
+| INV-TAG-2 | Keys are 1–128 characters of letters, numbers, spaces and `_ . : / = + - @` | Tested: val `tag_keys_and_values`, qa `inv_tag_bad_tags_fail_the_whole_request` |
+| INV-TAG-3 | Values are 0–256 characters from the same set | Tested: val `tag_keys_and_values`, qa `inv_tag_bad_tags_fail_the_whole_request` |
+| INV-TAG-4 | Neither a key nor a value may begin with `aws:` | Tested: val `tag_keys_and_values`, qa `inv_tag_bad_tags_fail_the_whole_request` |
+| INV-TAG-5 | Keys are case-insensitive on users, roles and STS sessions, keeping the latest spelling, and case-sensitive on every other resource | Tested: val `tag_lists`, sm `tag_key_case_by_resource_kind`, qa `inv_tag_bad_tags_fail_the_whole_request` |
+| INV-TAG-6 | One invalid tag fails the whole request, and nothing is created | Tested: val `tag_lists`, sm `tag_quota_on_every_create` (the check runs before any mutation), qa `inv_tag_bad_tags_fail_the_whole_request` |
 
 ## Quotas
 
@@ -139,8 +140,8 @@ Source: [CreateAccessKey][cak].
 |---|---|---|
 | INV-KEY-1 | The secret is returned once, and never stored or logged in plaintext | Tested: sm `access_keys`, `property_replicas_and_restores_agree` (no plaintext in the log or a snapshot), adm `list_accounts_carries_no_secrets` |
 | INV-KEY-2 | A new key is Active, and status is only Active or Inactive | Tested: sm `access_keys` |
-| INV-KEY-3 | With no UserName, the key belongs to the signer, who can be the root | Task 14 (sm `access_keys` covers the root's own keys) |
-| INV-KEY-4 | An inactive or deleted key cannot authenticate | Tested: az `inv_key_4_unknown_inactive_deleted_and_temporary_keys_are_invalid_tokens` (CLI test: task 14) |
+| INV-KEY-3 | With no UserName, the key belongs to the signer, who can be the root | Tested: qa `inv_key_3_without_a_user_name_the_key_is_the_signers`, sm `access_keys` |
+| INV-KEY-4 | An inactive or deleted key cannot authenticate | Tested: az `inv_key_4_unknown_inactive_deleted_and_temporary_keys_are_invalid_tokens`, scn `cluster_by_service_name` (AWS CLI v2) |
 
 ## OIDC providers
 

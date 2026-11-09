@@ -186,6 +186,24 @@ services:
       - pki:/pki:ro
       - iam-4-data:/var/lib/iam_node
 
+  # The AWS CLI v2 (task 14), run by the scenario as
+  # `compose --profile cli run --rm aws-cli ...` with the credentials and
+  # the leader's endpoint on its command line. In the `cli` profile, so
+  # `up` never starts it. It trusts the test CA from the pki volume and
+  # reaches the nodes by service name, like everything else here.
+  aws-cli:
+    image: docker.io/amazon/aws-cli:2.17.0
+    profiles: ["cli"]
+    networks:
+      - iam_net
+    environment:
+      AWS_CA_BUNDLE: /pki/ca.pem
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_PAGER: ""
+    volumes:
+      - pki:/pki:ro
+
 networks:
   iam_net:
     driver: bridge

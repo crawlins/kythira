@@ -25,6 +25,8 @@
 #include "iam_test_pki.hpp"
 #include "test_ports.hpp"
 
+#include <raft/sigv4_verifier.hpp>
+
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
@@ -139,8 +141,9 @@ struct http_result {
 /// One HTTPS request to a member, optionally with a client certificate.
 auto https_call(std::uint16_t port, const kythira::iam::testing::test_pki_paths& pki,
                 http::verb method, const std::string& target, const std::string& cert = {},
-                const std::string& key = {}, const std::string& authorization = {})
-    -> std::optional<http_result> {
+                const std::string& key = {}, const std::string& authorization = {},
+                const std::vector<std::pair<std::string, std::string>>& headers = {},
+                const std::string& body = {}) -> std::optional<http_result> {
     try {
         ssl::context ctx(ssl::context::tls_client);
         ctx.load_verify_file(pki.ca.string());
@@ -161,6 +164,10 @@ auto https_call(std::uint16_t port, const kythira::iam::testing::test_pki_paths&
         if (!authorization.empty()) {
             req.set(http::field::authorization, authorization);
         }
+        for (const auto& [name, value] : headers) {
+            req.set(name, value);
+        }
+        req.body() = body;
         req.prepare_payload();
         http::write(s, req);
         beast::flat_buffer buf;
@@ -182,6 +189,48 @@ auto json_of(const std::string& s) -> boost::json::object {
     boost::system::error_code ec;
     auto v = boost::json::parse(s, ec);
     return !ec && v.is_object() ? v.as_object() : boost::json::object{};
+}
+
+/// The value after `name = ` in an INI file's text.
+auto ini_value(const std::string& ini, const std::string& name) -> std::string {
+    const auto at = ini.find(name + " = ");
+    if (at == std::string::npos) {
+        return {};
+    }
+    const auto start = at + name.size() + 3;
+    return ini.substr(start, ini.find('\n', start) - start);
+}
+
+/// A SigV4-signed IAM Query POST of `body` to a member on `port`.
+auto signed_iam_call(std::uint16_t port, const kythira::iam::testing::test_pki_paths& pki,
+                     const std::string& key_id, const std::string& secret, const std::string& body)
+    -> std::optional<http_result> {
+    namespace sigv4 = kythira::sigv4;
+    const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    const auto amz = sigv4::detail::format_amz_date(now);
+    const std::string content_type = "application/x-www-form-urlencoded; charset=utf-8";
+    const auto auth = [&](std::string_view sig) {
+        return "AWS4-HMAC-SHA256 Credential=" + key_id + "/" + amz.substr(0, 8) +
+               "/us-east-1/iam/aws4_request, SignedHeaders=content-type;host;x-amz-date, "
+               "Signature=" +
+               std::string(sig);
+    };
+    sigv4::request r;
+    r.method = "POST";
+    r.raw_path = "/";
+    r.body = std::string_view(body);
+    r.headers = {{"Host", "localhost"},
+                 {"Content-Type", content_type},
+                 {"X-Amz-Date", amz},
+                 {"Authorization", auth(std::string(64, '0'))}};
+    const auto parsed = sigv4::parse(r, {.service = "iam"}, now);
+    if (!parsed) {
+        return std::nullopt;
+    }
+    const auto sig =
+        sigv4::compute_signature(*parsed, sigv4::derive_signing_key(secret, parsed->scope));
+    return https_call(port, pki, http::verb::post, "/", {}, {}, auth(sig),
+                      {{"Content-Type", content_type}, {"X-Amz-Date", amz}}, body);
 }
 
 struct member {
@@ -522,12 +571,37 @@ BOOST_AUTO_TEST_CASE(cluster_lifecycle, *boost::unit_test::timeout(600)) {
     const std::string iam_auth =
         "AWS4-HMAC-SHA256 Credential=AKIAEXAMPLEKEYID0000/20261106/us-east-1/iam/aws4_request, "
         "SignedHeaders=host;x-amz-date, Signature=00";
+    // IAM is served by the leader; a follower redirects.
     auto iam_call = https_call(follower->http_port, c.pki, http::verb::post, "/", {}, {}, iam_auth);
     BOOST_REQUIRE(iam_call.has_value());
-    BOOST_TEST(iam_call->status == 501U);
-    BOOST_TEST(iam_call->body.find("<Code>NotImplemented</Code>") != std::string::npos);
-    BOOST_TEST(iam_call->body.find("https://iam.amazonaws.com/doc/2010-05-08/") !=
+    BOOST_TEST(iam_call->status == 307U);
+    // A signature with no X-Amz-Date is refused in AWS's Query error shape.
+    auto bad_key = https_call(leader->http_port, c.pki, http::verb::post, "/", {}, {}, iam_auth);
+    BOOST_REQUIRE(bad_key.has_value());
+    BOOST_TEST(bad_key->status == 400U);
+    BOOST_TEST(bad_key->body.find("<Code>IncompleteSignature</Code>") != std::string::npos);
+    BOOST_TEST(bad_key->body.find("https://iam.amazonaws.com/doc/2010-05-08/") !=
                std::string::npos);
+    // Task 14: the account root's key, signed end to end, creates and lists
+    // a user.
+    const auto root_id = ini_value(ini, "aws_access_key_id");
+    const auto root_secret = ini_value(ini, "aws_secret_access_key");
+    auto created = signed_iam_call(leader->http_port, c.pki, root_id, root_secret,
+                                   "Action=CreateUser&UserName=node-test&Version=2010-05-08");
+    BOOST_REQUIRE(created.has_value());
+    BOOST_TEST_INFO("CreateUser: " << created->body);
+    BOOST_TEST(created->status == 200U);
+    BOOST_TEST(created->body.find("<UserName>node-test</UserName>") != std::string::npos);
+    auto listed_users = signed_iam_call(leader->http_port, c.pki, root_id, root_secret,
+                                        "Action=ListUsers&Version=2010-05-08");
+    BOOST_REQUIRE(listed_users.has_value());
+    BOOST_TEST(listed_users->status == 200U);
+    BOOST_TEST(listed_users->body.find("node-test") != std::string::npos);
+    auto wrong_secret = signed_iam_call(leader->http_port, c.pki, root_id, "not-the-secret",
+                                        "Action=ListUsers&Version=2010-05-08");
+    BOOST_REQUIRE(wrong_secret.has_value());
+    BOOST_TEST(wrong_secret->status == 403U);
+    BOOST_TEST(wrong_secret->body.find("SignatureDoesNotMatch") != std::string::npos);
     auto sts_call = https_call(follower->http_port, c.pki, http::verb::get,
                                "/?Action=GetCallerIdentity&X-Amz-Credential=AKIAEXAMPLEKEYID0000%"
                                "2F20261106%2Fus-east-1%2Fsts%2Faws4_request");
@@ -568,7 +642,7 @@ BOOST_AUTO_TEST_CASE(cluster_lifecycle, *boost::unit_test::timeout(600)) {
     BOOST_TEST(rep_redirect->status == 307U);
 
     // Requirement 7.4: a caught-up replica reports a small lag, exports it
-    // as a metric, and serves the signed routes.
+    // as a metric, and passes signed routes on to the leader.
     BOOST_TEST(rh->at("fresh").as_bool());
     BOOST_TEST(rh->at("lag_seconds").to_number<double>() < 3.0);
     auto metrics = https_call(replica.http_port, c.pki, http::verb::get, "/metrics");
@@ -577,7 +651,7 @@ BOOST_AUTO_TEST_CASE(cluster_lifecycle, *boost::unit_test::timeout(600)) {
     BOOST_TEST(metrics->body.find("kythira_iam_replica_lag_seconds ") != std::string::npos);
     auto fresh_call = https_call(replica.http_port, c.pki, http::verb::post, "/", {}, {}, iam_auth);
     BOOST_REQUIRE(fresh_call.has_value());
-    BOOST_TEST(fresh_call->status == 501U);
+    BOOST_TEST(fresh_call->status == 307U);  // fresh: on to the leader
 
     // With every voter frozen (a network that delivers nothing), the
     // replica fails closed once past its 3 s bound, and recovers after.

@@ -5256,6 +5256,20 @@ set_tests_properties(sigv4_verifier_test PROPERTIES
     LABELS "unit;sigv4;aws;iam"
 )
 
+# IAM spec task 14: the AWS Query protocol codec (form member lists, the XML
+# documents, sealed pagination markers).
+add_executable(aws_query_protocol_test aws_query_protocol_test.cpp)
+target_link_libraries(aws_query_protocol_test PRIVATE
+    Boost::unit_test_framework
+    OpenSSL::Crypto
+)
+target_compile_features(aws_query_protocol_test PRIVATE cxx_std_23)
+add_test(NAME aws_query_protocol_test COMMAND aws_query_protocol_test)
+set_tests_properties(aws_query_protocol_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;aws;iam"
+)
+
 # IAM spec task 7: streaming (aws-chunked) payloads and the SigV4 failure
 # limiter, against vectors a pinned botocore signed (sigv4_chunked/).
 add_executable(sigv4_chunk_decoder_test sigv4_chunk_decoder_test.cpp)
