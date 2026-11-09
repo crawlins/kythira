@@ -243,7 +243,7 @@ inline constexpr std::string_view k_csv_header =
     "merging,other,duration_ns,bytes_returned,bytes_per_operation,bytes_per_second,"
     "append_entries,append_entries_empty,entries,request_vote,install_snapshot,"
     "entries_per_append_entries,rpcs_per_committed_entry,machine_quiet_at_start,"
-    "internal_counters_visible,placement\n";
+    "internal_counters_visible,placement,state_machine,restart_ns,state_bytes\n";
 
 /// @brief Write one row's median run as a CSV line.
 inline auto write_csv_row(std::ostream& out, const report_row& row,
@@ -303,7 +303,9 @@ inline auto write_csv_row(std::ostream& out, const report_row& row,
         << ','
         << detail::csv_optional(m._internal_counters ? m.rpcs_per_committed_entry() : std::nullopt)
         << ',' << (machine._quiet_at_start ? "true" : "false") << ','
-        << (m._internal_counters ? "true" : "false") << ',' << csv_field(m._placement) << '\n';
+        << (m._internal_counters ? "true" : "false") << ',' << csv_field(m._placement) << ','
+        << csv_field(m._state_machine) << ',' << detail::csv_optional_ns(m._restart_time) << ','
+        << m._state_bytes << '\n';
 }
 
 /// @brief Write the whole set of rows as CSV.
@@ -362,6 +364,9 @@ inline auto write_json_run(std::ostream& out, const benchmark_result& m, std::st
         << indent << "  \"p50_ns\": " << m._p50.count() << ",\n"
         << indent << "  \"p95_ns\": " << m._p95.count() << ",\n"
         << indent << "  \"p99_ns\": " << detail::json_optional_ns(m._p99) << ",\n"
+        << indent << "  \"state_machine\": \"" << json_escape(m._state_machine) << "\",\n"
+        << indent << "  \"restart_ns\": " << detail::json_optional_ns(m._restart_time) << ",\n"
+        << indent << "  \"state_bytes\": " << m._state_bytes << ",\n"
         << indent << "  \"latency_samples\": " << m._tally._completed << ",\n"
         << indent << "  \"mean_schedule_lag_ns\": " << m._mean_schedule_lag.count() << ",\n"
         << indent << "  \"tally\": {\n"

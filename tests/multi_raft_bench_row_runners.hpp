@@ -123,6 +123,65 @@ auto txn_fabric(const txn_row_spec& spec, const row_observer& observer) -> repea
 /// The tier-2 rows: `snapshot` over `mvcc::on`, with an oracle group.
 auto txn_snapshot_fabric(const txn_row_spec& spec, const row_observer& observer) -> repeated_result;
 
+}  // namespace kythira::testing::rows
+
+// ── persistence (in-process fabric) ──────────────────────────────────────────
+//
+// `.kiro/specs/persistent-state-machine/` Requirements 4.4 and 9.4: the
+// in-memory state machine against the engine-backed one, in write throughput
+// and in restart time. The rows are in the Redis module (services/redis/
+// tests/multi_raft_persistence_bench_rows.hpp); the spec is here for the
+// reason `txn_row_spec` is.
+
+namespace kythira::testing {
+
+/// @brief What a persistence row measures.
+enum class persistence_row_kind : std::uint8_t {
+    /// SETs through the log, closed loop: proposals/s and latency.
+    write,
+    /// Load `_state_bytes`, then stop every host and start it again over the
+    /// same directories, once per repetition: the time until every shard has
+    /// a leader and has committed a fresh write.
+    restart,
+};
+
+/// @brief Everything that distinguishes one persistence row from another.
+struct persistence_row_spec {
+    persistence_row_kind _kind{persistence_row_kind::write};
+    std::size_t _hosts{3};
+    std::size_t _shards{2};
+    std::size_t _operations{2000};
+    std::size_t _in_flight{16};
+    std::size_t _value_bytes{128};
+    /// Restart rows: the state each host holds when it is stopped.
+    std::uint64_t _state_bytes{std::uint64_t{256} << 20U};
+    /// Where the Raft logs and databases go: a fresh directory under this one,
+    /// removed when the row finishes. Empty means the temp directory.
+    std::filesystem::path _data_dir{};
+};
+
+using persistence_runner = auto (*)(const persistence_row_spec&, const row_observer&)
+    -> repeated_result;
+
+}  // namespace kythira::testing
+
+namespace kythira::testing::rows {
+
+/// `redis_kv_state_machine`: every value in RAM, restored from a snapshot and
+/// the log's tail on restart.
+auto persistence_memory(const persistence_row_spec& spec, const row_observer& observer)
+    -> repeated_result;
+/// `persistent_kv_state_machine` over `memory_kv_engine`: the engine path
+/// without a disk under it. Write rows only (a restart would find nothing).
+auto persistence_engine_memory(const persistence_row_spec& spec, const row_observer& observer)
+    -> repeated_result;
+#if defined(KYTHIRA_BENCH_HAS_ROCKSDB)
+/// `persistent_kv_state_machine` over `rocksdb_kv_engine`: the gateway's
+/// `KYTHIRA_CACHE_PERSISTENCE=engine` node.
+auto persistence_engine_rocksdb(const persistence_row_spec& spec, const row_observer& observer)
+    -> repeated_result;
+#endif
+
 // ── cpp-httplib ──────────────────────────────────────────────────────────────
 
 auto write_httplib_json(const write_row_spec& spec, const row_observer& observer)

@@ -148,7 +148,19 @@ endif()
 target_sources(multi_raft_bench_rows PRIVATE
     bench_rows/txn_fabric.cpp
     bench_rows/txn_snapshot_fabric.cpp
+    # The persistence rows (.kiro/specs/persistent-state-machine/
+    # Requirements 4.4 and 9.4): the gateway's state machine in RAM and on
+    # an engine, over the same file log. One arm per translation unit.
+    bench_rows/persistence_memory.cpp
+    bench_rows/persistence_engine_memory.cpp
 )
+# The RocksDB arm only where the opt-in engine was built (root
+# CMakeLists.txt); the catalog drops its rows by name otherwise.
+if(TARGET raft_rocksdb_engine)
+    target_sources(multi_raft_bench_rows PRIVATE bench_rows/persistence_engine_rocksdb.cpp)
+    target_link_libraries(multi_raft_bench_rows PUBLIC raft_rocksdb_engine)
+    target_compile_definitions(multi_raft_bench_rows PUBLIC KYTHIRA_BENCH_HAS_ROCKSDB)
+endif()
 target_include_directories(multi_raft_bench_rows PRIVATE "${KYTHIRA_REDIS_INCLUDE_DIR}")
 target_compile_definitions(multi_raft_bench_rows PUBLIC KYTHIRA_BENCH_HAS_TXN)
 
@@ -161,6 +173,18 @@ add_test(NAME multi_raft_performance_report_transactions
             --out-dir "${CMAKE_BINARY_DIR}/tests/report_transactions")
 set_tests_properties(multi_raft_performance_report_transactions PROPERTIES
     LABELS "performance;benchmark;multi-raft;report;transactions"
+    TIMEOUT 900
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+# The persistence rows at a tenth of their budget (a 25.6 MiB restart): a
+# liveness check of every arm's write and restart path, labelled like the
+# transaction entry above.
+add_test(NAME multi_raft_performance_report_persistence
+    COMMAND multi_raft_performance_report --axis persistence --budget-scale 0.1
+            --out-dir "${CMAKE_BINARY_DIR}/tests/report_persistence")
+set_tests_properties(multi_raft_performance_report_persistence PROPERTIES
+    LABELS "performance;benchmark;multi-raft;report;persistence"
     TIMEOUT 900
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
 )

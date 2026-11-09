@@ -784,6 +784,18 @@ struct benchmark_result {
     /// says `"not stated"` rather than guessing when nobody supplied one.
     std::string _placement{"not stated"};
 
+    /// @brief Which state machine the groups ran, on a row that compares
+    ///        them (`.kiro/specs/persistent-state-machine/` Requirement 9.4);
+    ///        `"test-kv"` (`test_key_value_state_machine`) everywhere else.
+    std::string _state_machine{"test-kv"};
+    /// @brief A restart row's time from the first host's construction to a
+    ///        served write and read on every shard (Requirement 4.4). Empty
+    ///        on every other row.
+    std::optional<std::chrono::nanoseconds> _restart_time{};
+    /// @brief The state each host held when a restart row stopped it, in
+    ///        value bytes. Zero on every other row.
+    std::uint64_t _state_bytes{0};
+
     /// @brief One group's slice of the window (Requirement 17a.2).
     ///
     /// An aggregate hides the case the group-count axis exists to find — one

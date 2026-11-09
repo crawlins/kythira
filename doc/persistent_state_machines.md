@@ -156,6 +156,72 @@ fault points:
 | `raft/persistent/before_sync` | Fails compaction just before the node syncs the engine, leaving applied batches that a power cut loses. The log replays them on restart. |
 | `raft/persistent/before_compact` | Fails compaction after the snapshot point is saved and before the log is truncated. Entries the engine already holds do not apply again. |
 
+## Measurements
+
+The `persistence` axis of `multi_raft_performance_report` compares the Redis
+gateway's state machine in RAM (`redis_kv_state_machine`) with the engine one
+(`persistent_kv_state_machine`) over `memory_kv_engine` and over
+`rocksdb_kv_engine`. Every arm keeps its Raft logs in the fsynced
+`binary_file_persistence_engine`, so a difference between rows comes from the
+state machine. The rows are in
+`services/redis/tests/multi_raft_persistence_bench_rows.hpp`.
+
+```
+multi_raft_performance_report --axis persistence --data-dir /mnt/disk \
+    --state-bytes 10000000000
+```
+
+- **Write rows**: three hosts and two shards on the in-process fabric, with
+  closed-loop SETs, 16 in flight, of 128 B and 4 KiB values.
+- **Restart rows**: one host and two shards, loaded with 64 KiB values up to
+  `--state-bytes` (256 MiB by default), then stopped and started again over
+  the same directories five times. Each time is measured to the moment
+  every shard has a leader, has committed a new write, and returns the last
+  value loaded. The log also shows the storage part of each restart, which
+  covers building and starting the host, before the election.
+
+Measured November 9, 2026 on a 4-vCPU Xeon 2.1 GHz cloud VM with 15 GiB of
+RAM and ext4 on a virtio disk, built with g++ 13 at `-O2` (Boost futures):
+
+| State machine | State | Load | Restart (median of 5) | Storage part | First restart after the load | Peak RSS |
+|---|---|---|---|---|---|---|
+| In memory | 1 GiB | 10 s | 4.5 s | 3.9 s | 6.3 s | |
+| In memory | 2 GiB | 102 s | 8.6 s | 8.0 s | 12.0 s | 12.1 GiB |
+| In memory | 4 GiB | out of memory during the load | | | | over 15 GiB |
+| RocksDB | 1 GiB | 10 s | 0.44 s | 12 ms | 1.3 s | |
+| RocksDB | 10 GB (9.3 GiB), two runs | 109-113 s | 0.92 s, 1.02 s | 0.43 s | 1.09 s, 1.26 s | 303 MiB |
+
+- The in-memory machine's restart grows with its state, at about 4 s per
+  GiB, because it restores the whole snapshot. It also needs about six
+  times its state in RAM while it takes snapshots.
+- The RocksDB machine restarts in about a second at 10 GB, in 303 MiB of
+  RAM for the whole process. Most of
+  that second is the election timeout, 300-600 ms here. The storage part at
+  10 GB is mostly the log tail since the last compaction (about 64 MiB per
+  shard at `_snapshot_threshold_bytes`) plus opening the database's files.
+- The first restart after a write burst also replays RocksDB's WAL. The
+  engine caps the WAL at 256 MiB (`rocksdb_kv_engine_options::max_total_wal_bytes`).
+  RocksDB's default kept about 1 GiB of WAL alive behind the `meta` column
+  family's small writes, and the first restart after a 1 GiB load took 2.4 s
+  to open instead of 0.9 s.
+- Write rows with 128 B values ran at 1,900-2,050 SETs/s, with a p99 of 15-17
+  ms, on all three arms: the fsynced log sets the pace. Measured with 1,000
+  operations per window, so the spreads (6-21%) are above the report's 10%
+  stability bar.
+
+### Limits
+
+- A restarted node is ready once the election finishes and an entry of its
+  term commits. With only the election left, the election timeout is the
+  floor.
+- Restart loads the log entries kept since the last compaction, so a large
+  `_snapshot_threshold_bytes` makes restarts slower. It reads none of the
+  engine's state.
+- The engine shares one database per node. Every group's state counts
+  against one disk budget (see *Engine storage* in `doc/redis-gateway.md`).
+- `memory_kv_engine` has no restart row, because its state does not outlive
+  the process.
+
 ## Tests
 
 - `persistent_node_integration_test` runs on the memory engine.
@@ -171,3 +237,6 @@ fault points:
   load and checks the history for linearizability, and it kills a lagging
   replica in the middle of a snapshot transfer. It runs under Docker and
   rootless Podman.
+- `multi_raft_performance_report_persistence` runs the `persistence` axis at
+  a tenth of its budget, as a liveness check of each arm's write and restart
+  path.
