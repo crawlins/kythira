@@ -417,6 +417,19 @@ with HTTP statuses from AWS's error tables.
 **Pagination.** `Marker` is an opaque base64url of the last key, sealed with
 an HMAC so clients cannot forge positions. `MaxItems` defaults to 100.
 
+**As built (task 14).**
+- Handlers are `iam_query_api<C>` member functions rather than a shape
+  table; each validates its own parameters with `iam_validation.hpp` and
+  the leader-side name and path rules.
+- A marker's HMAC key is derived from the KEK, and its message names the
+  action, account and list scope, so a marker opens on any member and only
+  for the list that issued it.
+- `iam_node` serves IAM on the leader, reading its applied state;
+  a follower answers 307 like the admin routes. Proxying writes from a
+  follower is left for the front ends' shared listener.
+- A missing entity is authorized against its would-be ARN before
+  `NoSuchEntity`, so a caller without access cannot probe names.
+
 **Terraform coverage.** The provider's call list is taken from a recorded
 `terraform apply` and `destroy` against real AWS, or from the provider
 source. The instance-profile calls and anything else it needs are added in

@@ -15,6 +15,9 @@
 //     overwrite it, and the account reaches every voter;
 //   * replica-add brings iam-4 in as a learner that applies the log and
 //     never leads;
+//   * the AWS CLI v2 (task 14), signing with the account root's key,
+//     creates a user and an access key; the key authenticates, stops
+//     authenticating once deactivated, and both are deleted;
 //   * with the leader stopped the other two elect a new one and accept a
 //     write, and the stopped node catches up when it starts again.
 //
@@ -76,6 +79,49 @@ os::CmdResult iam_cli(int on, int target, std::initializer_list<std::string> arg
                             endpoint(target), "--wait-secs", std::to_string(wait_secs)});
     cmd.insert(cmd.end(), args);
     return os::real_exec(cmd);
+}
+
+/// The AWS CLI v2 (compose's `aws-cli` service) against `target`, signing
+/// with `key_id`/`secret`.
+os::CmdResult aws_cli(int target, const std::string& key_id, const std::string& secret,
+                      std::initializer_list<std::string> args) {
+    auto cmd = compose_cmd({"--profile", "cli", "run", "--rm", "-T", "-e",
+                            "AWS_ACCESS_KEY_ID=" + key_id, "-e", "AWS_SECRET_ACCESS_KEY=" + secret,
+                            "aws-cli", "--endpoint-url", endpoint(target), "--output", "json"});
+    cmd.insert(cmd.end(), args);
+    return os::real_exec(cmd);
+}
+
+/// The value after `name = ` in an INI file's text.
+std::string ini_value(const std::string& ini, const std::string& name) {
+    const auto at = ini.find(name + " = ");
+    if (at == std::string::npos) {
+        return {};
+    }
+    const auto start = at + name.size() + 3;
+    const auto end = ini.find_first_of("\r\n", start);
+    return ini.substr(start, end == std::string::npos ? std::string::npos : end - start);
+}
+
+/// The string field `key` of the first JSON object in `out`.
+std::string json_field(const std::string& out, const char* outer, const char* key) {
+    // Compose can print a pull or warning line around the CLI's JSON.
+    const auto brace = out.find('{');
+    const auto last = out.rfind('}');
+    if (brace == std::string::npos || last == std::string::npos || last < brace) {
+        return {};
+    }
+    boost::system::error_code ec;
+    auto v = boost::json::parse(out.substr(brace, last - brace + 1), ec);
+    if (ec || !v.is_object()) {
+        return {};
+    }
+    const auto* o = v.as_object().if_contains(outer);
+    if (o == nullptr || !o->is_object()) {
+        return {};
+    }
+    const auto* f = o->as_object().if_contains(key);
+    return (f != nullptr && f->is_string()) ? std::string(f->as_string()) : std::string{};
 }
 
 /// A shell command inside `on`.
@@ -258,7 +304,64 @@ BOOST_AUTO_TEST_CASE(cluster_by_service_name) {
         BOOST_TEST(int_of(*h, "replicas") == 1);
     }
 
-    // 4. Stop the leader: the other two elect a new one and take a write.
+    // 4. The AWS CLI v2 against the leader (task 14): the account root
+    // creates a user and a key for it; the key authenticates (the user has
+    // no policy yet, so the call is denied, not refused as unknown); once
+    // deactivated it no longer authenticates; then both are deleted.
+    {
+        const auto ini = in_node(follower, "cat /tmp/root-one.ini").out;
+        const auto root_id = ini_value(ini, "aws_access_key_id");
+        const auto root_secret = ini_value(ini, "aws_secret_access_key");
+        BOOST_REQUIRE_MESSAGE(!root_id.empty() && !root_secret.empty(), "no root key in the file");
+
+        auto user = aws_cli(leader, root_id, root_secret,
+                            {"iam", "create-user", "--user-name", "cli-user"});
+        BOOST_REQUIRE_MESSAGE(user.code == 0, "aws iam create-user failed:\n" << user.out);
+        BOOST_TEST(json_field(user.out, "User", "Arn") ==
+                   "arn:aws:iam::111111111111:user/cli-user");
+
+        auto key = aws_cli(leader, root_id, root_secret,
+                           {"iam", "create-access-key", "--user-name", "cli-user"});
+        BOOST_REQUIRE_MESSAGE(key.code == 0, "aws iam create-access-key failed:\n" << key.out);
+        const auto id = json_field(key.out, "AccessKey", "AccessKeyId");
+        const auto secret = json_field(key.out, "AccessKey", "SecretAccessKey");
+        BOOST_REQUIRE(id.starts_with("AKIA"));
+
+        auto listed = aws_cli(leader, root_id, root_secret,
+                              {"iam", "list-access-keys", "--user-name", "cli-user"});
+        BOOST_TEST(listed.code == 0, listed.out);
+        BOOST_TEST(listed.out.find(id) != std::string::npos);
+        BOOST_TEST(listed.out.find(secret) == std::string::npos, "list-access-keys leaks");
+
+        auto as_user = aws_cli(leader, id, secret, {"iam", "get-user"});
+        BOOST_TEST(as_user.code != 0);
+        BOOST_TEST(as_user.out.find("AccessDenied") != std::string::npos, as_user.out);
+
+        auto off = aws_cli(leader, root_id, root_secret,
+                           {"iam", "update-access-key", "--user-name", "cli-user",
+                            "--access-key-id", id, "--status", "Inactive"});
+        BOOST_TEST(off.code == 0, off.out);
+        BOOST_TEST(eventually(
+                       [&] {
+                           auto r = aws_cli(leader, id, secret, {"iam", "get-user"});
+                           return r.out.find("InvalidClientTokenId") != std::string::npos;
+                       },
+                       30s),
+                   "the deactivated key still authenticates");
+
+        BOOST_TEST(
+            aws_cli(leader, root_id, root_secret,
+                    {"iam", "delete-access-key", "--user-name", "cli-user", "--access-key-id", id})
+                .code == 0);
+        BOOST_TEST(
+            aws_cli(leader, root_id, root_secret, {"iam", "delete-user", "--user-name", "cli-user"})
+                .code == 0);
+        auto gone =
+            aws_cli(leader, root_id, root_secret, {"iam", "get-user", "--user-name", "cli-user"});
+        BOOST_TEST(gone.out.find("NoSuchEntity") != std::string::npos, gone.out);
+    }
+
+    // 5. Stop the leader: the other two elect a new one and take a write.
     os::checked_exec(os::real_exec, compose_cmd({"stop", service(leader)}));
     std::vector<int> survivors;
     for (int n : {1, 2, 3}) {
@@ -286,7 +389,7 @@ BOOST_AUTO_TEST_CASE(cluster_by_service_name) {
                    service(n) << " never applied the second account");
     }
 
-    // 5. The old leader comes back as a follower and catches up. It reports
+    // 6. The old leader comes back as a follower and catches up. It reports
     // itself unsealed once its once-a-second check has opened the sealed
     // root keys with its passphrase, which can trail the apply by a second.
     os::checked_exec(os::real_exec, compose_cmd({"start", service(leader)}));

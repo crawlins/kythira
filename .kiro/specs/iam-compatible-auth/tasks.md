@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 13/26 tasks complete
+## Status: 14/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -685,7 +685,7 @@ because each has a zero-spend fallback.
 
 ### Phase C — IAM Query API
 
-- [ ] 14. Query codec, users, groups and access keys
+- [x] 14. Query codec, users, groups and access keys
   - `include/raft/aws_query_protocol.hpp`:
     - form decoding with member lists;
     - the XML writer;
@@ -699,6 +699,18 @@ because each has a zero-spend fallback.
   - Invariants (`invariants.md`): INV-KEY-3 and INV-KEY-4, and calls the `iam_validation.hpp` checks for INV-NAME-4, INV-TAG-1..6 and INV-ACCT-2. Each one needs a named
     unit test, and the PR updates its row there.
   - _Requirements: 9.1–9.3, 9.8, 9.9_
+  - Done:
+    - core `aws_query_protocol.hpp` (`form` with member lists,
+      `xml_writer`, `response_xml`/`error_xml`, `marker_sealer`,
+      `max_items`) and `aws_query_protocol_test.cpp`;
+    - `iam_query_api.hpp`: the 21 actions of 9.2-9.3, plus
+      Create/Delete/ListAccountAliases (INV-ACCT-2), each authorized as
+      `iam:<Action>` with `iam:ResourceTag/*` and `iam:PermissionsBoundary`;
+      markers are keyed off the KEK, so any member opens them;
+    - `iam_node` serves it on the leader (a follower redirects);
+    - `iam_query_api_test.cpp`, a signed end-to-end call in
+      `iam_node_test`, and the AWS CLI v2 step in the container scenario.
+    - INV-NAME-4's caller is task 15's Put*Policy.
 
 - [ ] 15. Roles, policies, versions, attachments and boundaries
   - Record the Terraform AWS provider's IAM call list for users, groups,
