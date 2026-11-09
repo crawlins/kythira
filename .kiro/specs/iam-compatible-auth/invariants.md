@@ -35,6 +35,11 @@ Test files are under `services/iam/tests/` unless a path says otherwise:
   `services/redis/tests/docker/cache_cluster_test.cpp` (the containers);
 - `sigv4` is `tests/sigv4_verifier_test.cpp`.
 
+The conformance job (`docker/iam_conformance_test.cpp` with
+`docker/conformance/driver.py`, task 23) drives many of these rules end to
+end with boto3 and the AWS CLI v2. It is a second witness, not the named
+test for any row: every row still names a unit test.
+
 ## Gaps this review found and fixed
 
 The first pass of this catalogue found five places where the built code

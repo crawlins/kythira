@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+#
+# The conformance stack's Redis ACL (conformance.yml). Test-only.
+#
+# farm      a password user; its secret is "ci-main-secret", the record
+#           services/redis/docker/cache-cluster/acl.txt gives ci-main
+# iam-farm  IAM-only (auth=iam): it logs in with an ElastiCache IAM auth
+#           token whose signer may elasticache:Connect on
+#           arn:aws:elasticache:us-east-1:111111111111:user:iam-farm and
+#           ...:replicationgroup:kythira-cache. Its secret is `disabled`,
+#           as doc/redis-gateway.md's rolling-upgrade rule recommends.
+user farm pbkdf2-sha256$10000$pKrfevzmRlAMynH8hjauHg==$rma30dAAHtgbxOn+JtukLSV/VUkdBxufjDohSsdZrQQ= read_write conformance/
+user iam-farm disabled read_write conformance/ auth=iam

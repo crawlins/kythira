@@ -64,6 +64,7 @@ services/redis/docker/cache-cluster/dist/
 services/redis/docker/cache-cluster/dist-old/
 services/redis/docker/txn-chaos/dist/
 services/iam/docker/iam_node/dist/
+services/iam/docker/conformance/dist/
 docker/mtls_chaos/dist/
 docker/cairn/tool_server/dist/
 

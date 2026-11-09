@@ -880,7 +880,7 @@ because each has a zero-spend fallback.
 
 ### Phase F — Conformance and close-out
 
-- [ ] 23. AWS CLI, SDK and Redis conformance job
+- [x] 23. AWS CLI, SDK and Redis conformance job
   - A compose scenario: three `iam_node`s, the CA cluster, and two Redis
     gateways as replicas.
   - Drive it with the pinned AWS CLI v2 and boto3, covering everything in
@@ -893,6 +893,9 @@ because each has a zero-spend fallback.
     workflow's path filter covers `services/iam/**` and the core headers of
     Requirement 17.2.
   - _Requirements: 10.11, 15.1, 15.3, 15.4_
+  - Note: DecodeAuthorizationMessage is checked end to end on a refused
+    message and a denied caller; a message from a real denied request is
+    decoded in `iam_sts_test` until a service module asks for one.
 
 - [ ] 24. Terraform conformance and simulator comparison
   - `terraform apply` and `destroy` of a configuration covering

@@ -51,6 +51,8 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `include/kythira/iam/iam_validation.hpp` | AWS's IAM and STS request-parameter rules (names, tags, durations, session policies and tags, what each credential may call), for the Query and STS handlers | invariants |
 | `tests/iam_validation_test.cpp` | one case per invariant group in `.kiro/specs/iam-compatible-auth/invariants.md` | invariants |
 | `tests/docker/` | the compose scenario (three voters and a replica, by service name) | 9 |
+| `tests/docker/conformance.yml`, `tests/docker/conformance/`, `tests/docker/iam_conformance_test.cpp` | the conformance job: the voters, the Kythira CA and two IAM-enabled Redis gateways, driven by pinned boto3 (`driver.py`) and the AWS CLI v2 | 23 |
+| `docker/conformance/` | the conformance stack's image (`iam_node`, `kythira-iam`, `iam_test_certs`, `ca_cluster_node`, `redis_gateway_node`) | 23 |
 | `tools/` | the pinned AWS-managed policies (`aws_managed_policies.json`), the configure-time generator for `<kythira/iam/aws_managed_policies_data.hpp>`, and the script that refreshes the JSON from AWS | 8 |
 
 The authorizer (task 13) and the rest follow the plan in the spec's

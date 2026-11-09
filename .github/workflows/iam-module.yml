@@ -30,6 +30,9 @@
 # container-tests.yml because that workflow configures without
 # CONFIG_IAM, so the targets do not exist there, and because a module
 # change should get this answer on its own pull request, not a week later.
+# The same job then runs the conformance stack (task 23, Requirement 15.1):
+# boto3 and the AWS CLI v2 against IAM, STS, the Kythira CA's issuer and
+# two Redis gateways' IAM AUTH.
 
 name: IAM Module
 
@@ -50,6 +53,20 @@ on:
       # Core pieces only the module's daemon and scenario use today.
       - "include/raft/beast_https_server.hpp"
       - "tests/docker_chaos/os_faults.hpp"
+      # The core headers of Requirement 17.2, which the module builds on.
+      - "include/raft/jwt.hpp"
+      - "include/raft/sigv4_verifier.hpp"
+      - "include/raft/sigv4_failure_limiter.hpp"
+      - "include/raft/aws_query_protocol.hpp"
+      - "include/raft/cloud_credential_exchange.hpp"
+      - "include/raft/aws_web_identity_credentials.hpp"
+      - "include/raft/azure_federated_credential.hpp"
+      - "include/raft/aws_request_authorizer.hpp"
+      - "include/raft/credential_verifier.hpp"
+      # The conformance stack's other daemons (task 23).
+      - "cmd/ca_cluster_node/**"
+      - "services/redis/cmd/redis_gateway_node/**"
+      - ".github/actions/setup-container-runtime/**"
       - ".github/workflows/iam-module.yml"
   pull_request:
     branches: ['**']
@@ -68,6 +85,20 @@ on:
       # Core pieces only the module's daemon and scenario use today.
       - "include/raft/beast_https_server.hpp"
       - "tests/docker_chaos/os_faults.hpp"
+      # The core headers of Requirement 17.2, which the module builds on.
+      - "include/raft/jwt.hpp"
+      - "include/raft/sigv4_verifier.hpp"
+      - "include/raft/sigv4_failure_limiter.hpp"
+      - "include/raft/aws_query_protocol.hpp"
+      - "include/raft/cloud_credential_exchange.hpp"
+      - "include/raft/aws_web_identity_credentials.hpp"
+      - "include/raft/azure_federated_credential.hpp"
+      - "include/raft/aws_request_authorizer.hpp"
+      - "include/raft/credential_verifier.hpp"
+      # The conformance stack's other daemons (task 23).
+      - "cmd/ca_cluster_node/**"
+      - "services/redis/cmd/redis_gateway_node/**"
+      - ".github/actions/setup-container-runtime/**"
       - ".github/workflows/iam-module.yml"
   workflow_dispatch:
 
@@ -283,52 +314,12 @@ jobs:
           echo "::error::apt-get install failed after 3 attempts" >&2
           exit 1
 
-      # Rootless Podman as container-tests.yml sets it up (see the comment
-      # there): netavark and aardvark-dns so service names resolve, and
-      # `podman compose` driving the runner's docker-compose through
-      # Podman's API socket. This scenario shapes no traffic, so no kernel
-      # modules are loaded.
-      - name: Set up rootless Podman
-        if: matrix.runtime == 'podman'
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            podman netavark aardvark-dns slirp4netns uidmap
-          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
-          provider=""
-          for p in /usr/libexec/docker/cli-plugins/docker-compose \
-                   /usr/local/lib/docker/cli-plugins/docker-compose \
-                   "$(command -v docker-compose || true)"; do
-            if [ -n "$p" ] && [ -x "$p" ]; then provider="$p"; break; fi
-          done
-          test -n "$provider"
-          mkdir -p ~/.config/containers
-          cat > ~/.config/containers/containers.conf <<EOF
-          [network]
-          network_backend = "netavark"
-
-          [engine]
-          compose_providers = ["$provider"]
-          compose_warning_logs = false
-          EOF
-          if ! podman unshare true; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-            podman unshare true
-          fi
-          podman system reset --force
-          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
-          test "$(podman info --format '{{.Host.NetworkBackend}}')" = netavark
-          sock="$(podman info --format '{{.Host.RemoteSocket.Path}}')"
-          mkdir -p "$(dirname "$sock")"
-          setsid nohup podman system service --time=0 "unix://$sock" \
-            > "$RUNNER_TEMP/podman-service.log" 2>&1 < /dev/null &
-          for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
-          test -S "$sock"
-
-      - name: Verify the container runtime
-        run: |
-          ${{ matrix.runtime }} version
-          ${{ matrix.runtime }} compose version
+      # Docker as the runner ships it, or rootless Podman with netavark and
+      # aardvark-dns, set up the one way every container workflow shares.
+      - name: Set up the container runtime
+        uses: ./.github/actions/setup-container-runtime
+        with:
+          runtime: ${{ matrix.runtime }}
 
       - name: Install kconfiglib
         run: pip3 install --user -r scripts/kconfig/requirements.txt
@@ -379,6 +370,7 @@ jobs:
       # CONTAINER_RUNTIME is explicit because the runner has both binaries
       # and auto-detection prefers docker.
       - name: Configure (module on, ci_full_defconfig)
+        id: configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -394,6 +386,13 @@ jobs:
       # the image, and runs the scenario against a live stack.
       - name: docker-iam-node-tests
         run: cmake --build build --target docker-iam-node-tests -j"$(nproc)"
+
+      # Task 23 (Requirement 15.1): the conformance stack (the CA and two
+      # IAM-enabled Redis gateways besides the voters), driven by boto3 and
+      # the AWS CLI v2 at pinned versions.
+      - name: docker-iam-conformance-tests
+        if: always() && steps.configure.outcome == 'success'
+        run: cmake --build build --target docker-iam-conformance-tests -j"$(nproc)"
 
       - name: Podman service log
         if: always() && matrix.runtime == 'podman'

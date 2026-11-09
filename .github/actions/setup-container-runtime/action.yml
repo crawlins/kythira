@@ -3,9 +3,10 @@
 #
 # Sets up the container runtime a scenario job runs under: rootful Docker as
 # the runner image ships it, or rootless Podman configured the way CLAUDE.md
-# requires. Shared by container-tests.yml and redis-module.yml
-# (.kiro/specs/redis-gateway-module/ task 5), so the two workflows cannot
-# drift apart on how Podman is set up.
+# requires. Shared by container-tests.yml, redis-module.yml
+# (.kiro/specs/redis-gateway-module/ task 5) and iam-module.yml
+# (.kiro/specs/iam-compatible-auth/ task 23), so the workflows cannot drift
+# apart on how Podman is set up.
 #
 # For podman it exports XDG_RUNTIME_DIR and CONTAINER_SOCKET (the
 # Docker-compatible API socket) through GITHUB_ENV and leaves
