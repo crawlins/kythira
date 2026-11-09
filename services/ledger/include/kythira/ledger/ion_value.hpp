@@ -24,6 +24,7 @@
 #include <raft/ion_preflight.hpp>
 
 #include <ionc/ion.h>
+#include <openssl/evp.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -158,11 +159,22 @@ struct output_sink {
 /// Run `body(writer)` against a binary writer and return what it wrote.
 /// A stream writer rather than a fixed buffer: a body that copies from a
 /// reader consumes it, so it cannot be rerun into a bigger buffer.
-template<typename Body> auto write_binary(Body&& body) -> std::vector<std::uint8_t> {
+/// Ion text instead of binary when `text`; JSON (ion-c's down-conversion:
+/// no annotations, symbols and timestamps as strings, blobs as base64
+/// strings) when `json`.
+enum class output_format : std::uint8_t {
+    binary,
+    text,
+    json
+};
+
+template<typename Body>
+auto write_with(output_format format, Body&& body) -> std::vector<std::uint8_t> {
     output_sink sink;
     ION_WRITER_OPTIONS options;
     std::memset(&options, 0, sizeof(options));
-    options.output_as_binary = TRUE;
+    options.output_as_binary = format == output_format::binary ? TRUE : FALSE;
+    options.json_downconvert = format == output_format::json ? TRUE : FALSE;
     hWRITER writer = nullptr;
     check(ion_writer_open_stream(&writer, &output_sink::handler, &sink, &options),
           "opening writer");
@@ -171,6 +183,10 @@ template<typename Body> auto write_binary(Body&& body) -> std::vector<std::uint8
     guard.handle = nullptr;
     check(ion_writer_close(writer), "closing writer");
     return std::move(sink.out);
+}
+
+template<typename Body> auto write_binary(Body&& body) -> std::vector<std::uint8_t> {
+    return write_with(output_format::binary, std::forward<Body>(body));
 }
 
 /// A reader over `bytes` (text or binary) holding the buffer it reads.
@@ -682,10 +698,90 @@ public:
         return ion_value_detail::write_binary([this](hWRITER w) { write(w); });
     }
 
+    /// Ion text for this value alone.
+    [[nodiscard]] auto to_text() const -> std::string {
+        const auto bytes = ion_value_detail::write_with(ion_value_detail::output_format::text,
+                                                        [this](hWRITER w) { write(w); });
+        return {bytes.begin(), bytes.end()};
+    }
+
+    /// JSON for this value alone, for export: annotations dropped,
+    /// symbols and timestamps as strings, blobs and clobs as base64
+    /// strings, s-expressions as arrays. Scalars go through ion-c's JSON
+    /// down-conversion, except lobs, which ion-c 1.1.3 still writes as
+    /// {{...}}.
+    [[nodiscard]] auto to_json() const -> std::string {
+        std::string out;
+        append_json(out);
+        return out;
+    }
+
     /// Its SHA-256 Ion hash.
     [[nodiscard]] auto hash() const -> hash256 { return ion_hash(to_binary()); }
 
 private:
+    auto append_json(std::string& out) const -> void {
+        if (null_) {
+            out += "null";
+            return;
+        }
+        if (type_ == ion_type::structure) {
+            out += '{';
+            for (std::size_t i = 0; i < items_.size(); ++i) {
+                out += i == 0 ? "" : ",";
+                append_json_string(out, names_[i]);
+                out += ':';
+                items_[i].append_json(out);
+            }
+            out += '}';
+            return;
+        }
+        if (type_ == ion_type::list || type_ == ion_type::sexp) {
+            out += '[';
+            for (std::size_t i = 0; i < items_.size(); ++i) {
+                out += i == 0 ? "" : ",";
+                items_[i].append_json(out);
+            }
+            out += ']';
+            return;
+        }
+        if (type_ == ion_type::blob || type_ == ion_type::clob) {
+            const auto bytes = as_bytes().value_or(std::vector<std::uint8_t>{});
+            std::string b64(((bytes.size() + 2) / 3 * 4) + 1, '\0');
+            const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(b64.data()),
+                                          bytes.data(), static_cast<int>(bytes.size()));
+            b64.resize(static_cast<std::size_t>(n));
+            out += '"';
+            out += b64;
+            out += '"';
+            return;
+        }
+        ion_value bare = *this;
+        bare.annotations_.clear();
+        const auto bytes = ion_value_detail::write_with(ion_value_detail::output_format::json,
+                                                        [&bare](hWRITER w) { bare.write(w); });
+        out.append(bytes.begin(), bytes.end());
+    }
+
+    static auto append_json_string(std::string& out, std::string_view text) -> void {
+        static constexpr std::string_view hex = "0123456789abcdef";
+        out += '"';
+        for (const char c : text) {
+            const auto u = static_cast<unsigned char>(c);
+            if (c == '"' || c == '\\') {
+                out += '\\';
+                out += c;
+            } else if (u < 0x20U) {
+                out += "\\u00";
+                out += hex[u >> 4U];
+                out += hex[u & 0x0FU];
+            } else {
+                out += c;
+            }
+        }
+        out += '"';
+    }
+
     template<typename Body> static auto scalar(ion_type type, Body&& body) -> ion_value {
         ion_value out;
         out.type_ = type;

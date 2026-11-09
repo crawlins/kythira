@@ -104,7 +104,7 @@ All under the ledger group's range `l/<ledger id>/`:
 
 | Key space | Key | Value |
 |---|---|---|
-| `meta` | tables, indexes, segment list, export jobs, last block | Ion |
+| `meta` | tables, indexes, segment list (`meta/segment/`), export jobs, last block | Ion |
 | `current` | `<table>/<id>` | version, seq |
 | `rev` | `<table>/<id>/<version>` | revision Ion, revision hash, seq |
 | `idx` | `<table>/<index>/<value hash>/<id>` | empty |
@@ -112,7 +112,7 @@ All under the ledger group's range `l/<ledger id>/`:
 | `hist` | `<table>/<seq>/<id>` | version (history by time range) |
 | `journal` | `<seq>` | block Ion |
 | `merkle` | `<level>/<index>` | 32 bytes |
-| `segments` | `<first seq>` | range, file name, size, sha256, object key |
+| `meta/segment` | `<first seq>` | range, file name, size, sha256, object key |
 
 ### Placement in the tree
 

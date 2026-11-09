@@ -193,10 +193,54 @@ task is one PR unless noted.
     its metric
   - _Requirements: 2.2, 2.3, 2.4, 8.1-8.4_
 
-- [ ] 8. Segments, offload and export
+- [x] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and
     fetch with SHA-256, disk floor, `ExportJournal` jobs
   - _Requirements: 3.5, 3.6, 10.2-10.4_
+  - As built (the state machine side and the leader-side helpers;
+    proposing seals, offloads and exports on a timer is the node's job in
+    task 7):
+    - A seal entry `{type: ledger_seal, first, last}` must start at the
+      first unsealed block and end at or before the tip, else
+      `invalid_seal`. Every replica writes the blocks to
+      `seg-<first>-<last>.kyl` in `ledger_options::segment_directory`
+      ("KYLSEG01", then a 4-byte big-endian length and the block's Ion
+      binary per block), fsyncs it (temporary, fsync, rename, fsync of
+      the directory), and in one batch records `meta/segment/<first>`
+      `{first, last, file, size, sha256}` and erases the range from
+      `journal/`. A seal on a replica with no segment directory throws
+      (configuration error). `seal_candidate()` proposes the oldest
+      unsealed blocks once they reach `segment_bytes` (64 MiB).
+    - Segment records live in `meta/segment/`, not a separate key space
+      as the design table had it, so they sit with the other catalog
+      records.
+    - Reads (`get_block`, proofs, history by table) fall back from
+      `journal/` to the segment holding the block, through a two-entry
+      cache. A segment is checked against its size and SHA-256 on every
+      load: the local copy first, then the offloaded object; neither
+      good is `ledger_segment_error`. Refetching from a peer's local copy
+      is left to the node.
+    - Offload: `upload_segment` (leader) checks the bytes against the
+      recorded SHA-256 before sending them to any `key_object_store`;
+      the offload entry `{type: ledger_offload, first, objectKey}`
+      records the key, and replicas then delete their local copy (unless
+      `keep_offloaded_segments`), also on open if a crash left it behind.
+      `segment_fetcher` reads it back.
+    - Disk floor: `disk_guard` on the session manager refuses `begin`
+      and `commit` with non-retryable `insufficient_storage` below a free
+      space floor (1 GiB default). Seals, offloads and reads are not
+      affected, since they free space. The check is leader-side, never in
+      apply, because free space differs between replicas.
+    - `ExportJournal`: a start entry records the job `in_progress` with
+      the tip at that moment, so the export covers exactly the blocks up
+      to that tip in [start, end]; `export_journal()` (leader) writes
+      `<prefix><jobId>/<first>-<last>.<ion|10n|json>` objects of up to
+      1000 blocks and `manifest.json` listing each with its range, size
+      and SHA-256; a finish entry records completed or failed. A rerun
+      after a leader change rewrites the same objects. JSON is one block
+      per line, with hashes as base64 strings: ion-c 1.1.3's JSON
+      down-conversion still writes blobs as `{{...}}`, so `ion_value`
+      writes containers and lobs itself.
 
 - [ ] 9. Snapshots and catch-up
   - Checkpoint plus segment list as the snapshot, file-install-snapshot

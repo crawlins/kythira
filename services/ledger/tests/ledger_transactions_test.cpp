@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <random>
@@ -360,6 +361,36 @@ BOOST_AUTO_TEST_CASE(single_statement_writes_are_one_call_transactions) {
     BOOST_TEST(f.run({statements::replace("acct", ids[0], counter(7))}).committed);
     BOOST_TEST(f.mgr.open_sessions() == 0U);
     BOOST_CHECK_THROW((void)f.mgr.commit(f.mgr.begin(1), t0), ledger_session_error);  // empty
+}
+
+BOOST_AUTO_TEST_CASE(the_disk_floor_stops_transactions_until_space_returns) {
+    fixture f;
+    const auto ids = seed(f, 1);
+    std::uint64_t free = 10'000;
+    disk_guard guard;
+    guard.path = "/data";
+    guard.floor_bytes = 5'000;
+    guard.free_bytes = [&](const std::filesystem::path&) { return free; };
+    f.mgr.set_disk_guard(guard);
+
+    const auto tok = f.mgr.begin(1);
+    f.mgr.add(tok, statements::replace("acct", ids[0], counter(1)));
+    free = 4'999;
+    try {
+        (void)f.mgr.commit(tok, f.clock);
+        BOOST_FAIL("commit below the floor must throw");
+    } catch (const ledger_session_error& e) {
+        BOOST_TEST(e.code() == "insufficient_storage");
+        BOOST_TEST(!e.retryable());
+    }
+    BOOST_CHECK_THROW((void)f.mgr.begin(1), ledger_session_error);
+    BOOST_CHECK_THROW(f.run({statements::replace("acct", ids[0], counter(2))}),
+                      ledger_session_error);
+    // Reads of the applied state are not affected.
+    BOOST_TEST(f.sm.get_document("acct", ids[0]).has_value());
+
+    free = 5'000;
+    BOOST_TEST(f.run({statements::replace("acct", ids[0], counter(3))}).committed);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
