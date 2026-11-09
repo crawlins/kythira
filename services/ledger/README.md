@@ -29,10 +29,13 @@ builds and tests it; every other configuration leaves it off.
 | `include/kythira/ledger/journal_segments.hpp` | segment files, seal and offload entries, durable file writes, upload to and fetch from any `key_object_store` | 8 |
 | `include/kythira/ledger/journal_export.hpp` | `ExportJournal` jobs: start and finish entries and the leader's export to an object-store prefix as Ion text, Ion binary or JSON with a manifest | 8 |
 | `cmd/ledger_node/` | placeholder daemon (`--self-test`); the server is task 7 | 1 |
+| `include/kythira/ledger/journal_verifier.hpp` | offline verification: `journal_verifier` (chain, revision, entries and block hashes, revision labels, digest at a saved tip), segment and export directory readers, proof documents and `check_proof` | 10 |
+| `cmd/ledger_ctl/` | `ledger_ctl verify --export DIR \| --segments DIR [--digest FILE]` and `ledger_ctl prove --proof FILE --digest FILE`; exit 0 verified, 1 failed (first bad block named), 2 usage or I/O | 10 |
 | `tests/ion_hash_test.cpp` | the amazon-ion/ion-hash-test suite (`tests/vectors/`) and the properties the ledger relies on | 2 |
 | `tests/ledger_merkle_test.cpp` | `dot` and folding against the AWS QLDB tutorial's functions, the tree shape, every proof at every tip, reopening, tampering | 2 |
 | `tests/ledger_state_machine_test.cpp` | the state machine on `memory_kv_engine`: every statement, rejections, stale and diverging entries, replicas, restart, checkpoint, the split veto, and every block and revision proof at every tip | 3, 4 |
 | `tests/ledger_transactions_test.cpp` | snapshot reads, read-set validation, limits, sessions, and the serializability property test | 5 |
+| `tests/ledger_verifier_test.cpp` | the verifier over a state machine, segments and exports; every single-byte change to a segment file caught; each kind of tampered block named; proofs offline; `ledger_ctl` exit codes | 10 |
 | `tests/ledger_segments_test.cpp` | sealing into identical files on every replica, proofs over sealed blocks, redone and rejected seals, damaged and offloaded segments, export in every format | 8 |
 | `tests/ledger_history_index_test.cpp` | history by document and table with time bounds and pages, index creation, build steps and maintenance, snapshot lookups and their conflicts, filtered scans with a byte budget | 6 |
 | `tests/tools/qldb_dot_vectors.py` | prints the vectors `ledger_merkle_test` checks, from the tutorial's published Python | 2 |

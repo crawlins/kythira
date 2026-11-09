@@ -367,6 +367,17 @@ public:
         return out;
     }
 
+    /// Every top-level value of an Ion stream (text or binary; a binary
+    /// stream may repeat the version marker between values).
+    static auto parse_all(std::span<const std::uint8_t> ion) -> std::vector<ion_value> {
+        ion_value_detail::owned_reader reader(ion);
+        std::vector<ion_value> out;
+        while (reader.next() != tid_EOF) {
+            out.push_back(read_current(reader.get()));
+        }
+        return out;
+    }
+
     static auto parse(std::string_view text) -> ion_value {
         return parse(std::span<const std::uint8_t>(
             reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
