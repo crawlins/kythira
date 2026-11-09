@@ -31,6 +31,13 @@ add_test(NAME kinesis_operations_up_to_date
             "${_kinesis_dir}model/service-2.json"
             "${_kinesis_dir}include/kythira/kinesis/kinesis_operations.hpp" --check)
 
+# Task 1: the checked-in wire evidence (evidence/README.md) is well formed,
+# names only model operations, and shows each client's scenario finishing.
+add_test(NAME kinesis_wire_evidence
+    COMMAND "${Python3_EXECUTABLE}" "${_kinesis_dir}tests/evidence/check_evidence.py"
+            "${_kinesis_dir}model/service-2.json"
+            "${_kinesis_dir}tests/evidence/data")
+
 # Task 1: kinesis_gateway_node links and runs.
 add_test(NAME kinesis_gateway_node_self_test COMMAND kinesis_gateway_node --self-test)
 
@@ -38,6 +45,7 @@ set_tests_properties(
     kinesis_model_coverage
     kinesis_model_coverage_checker
     kinesis_operations_up_to_date
+    kinesis_wire_evidence
     kinesis_gateway_node_self_test
     PROPERTIES LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
 

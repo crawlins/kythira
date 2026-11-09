@@ -1,0 +1,481 @@
+{
+ "client": "boto3-1.43.100",
+ "requests": [
+  {
+   "operation": "CreateStream",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.CreateStream"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "43"
+    ]
+   ],
+   "body_sha256": "a5cfed0d890228db7c33467754cc2264a942f0b5cbb75833fb3f07bb5cddda57",
+   "body": {
+    "StreamName": "evidence",
+    "ShardCount": 1
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "DescribeStream",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.DescribeStream"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,B,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "26"
+    ]
+   ],
+   "body_sha256": "ee9d5e45a6a74cf71d10846d8563b637ceb7d25928c089ed1d5c0d84d1a56a21",
+   "body": {
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "ListShards",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.ListShards"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "26"
+    ]
+   ],
+   "body_sha256": "ee9d5e45a6a74cf71d10846d8563b637ceb7d25928c089ed1d5c0d84d1a56a21",
+   "body": {
+    "StreamName": "evidence"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "PutRecord",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.PutRecord"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "70"
+    ]
+   ],
+   "body_sha256": "8802edf1b6864d1195eaf71f0299c6fa7e2a21e397b7f9084be9a7746b1e7d5d",
+   "body": {
+    "StreamName": "evidence",
+    "PartitionKey": "pk-1",
+    "Data": "aGVsbG8="
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "PutRecords",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.PutRecords"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "148"
+    ]
+   ],
+   "body_sha256": "f1f60b1f6dc2b588306e3e248e2b70e35801f6332cc7bb78d90a35261b8f8ae2",
+   "body": {
+    "StreamName": "evidence",
+    "Records": [
+     {
+      "PartitionKey": "pk-2",
+      "Data": "b25l"
+     },
+     {
+      "PartitionKey": "pk-3",
+      "Data": "dHdv",
+      "ExplicitHashKey": "42"
+     }
+    ]
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "GetShardIterator",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.GetShardIterator"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "98"
+    ]
+   ],
+   "body_sha256": "09e740e205bd1641234efaa88cf6e7cb6c7264845d7d859e4a99e8cbb267bd23",
+   "body": {
+    "StreamName": "evidence",
+    "ShardId": "shardId-000000000000",
+    "ShardIteratorType": "TRIM_HORIZON"
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "GetRecords",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.GetRecords"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "86"
+    ]
+   ],
+   "body_sha256": "f1758f60b4728476c25a9b8f361ee1cfa2f773cc961e125a3bfcca10caefe446",
+   "body": {
+    "ShardIterator": "AAAAAAAAAAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "Limit": 100
+   },
+   "response_status": 200,
+   "response_type": null
+  },
+  {
+   "operation": "DeleteStream",
+   "method": "POST",
+   "path": "/",
+   "http_version": "HTTP/1.1",
+   "content_type": "application/x-amz-json-1.1",
+   "headers": [
+    [
+     "Host",
+     "127.0.0.1:<port>"
+    ],
+    [
+     "Accept-Encoding",
+     "identity"
+    ],
+    [
+     "X-Amz-Target",
+     "Kinesis_20131202.DeleteStream"
+    ],
+    [
+     "Content-Type",
+     "application/x-amz-json-1.1"
+    ],
+    [
+     "User-Agent",
+     "Boto3/1.43.100 md/Botocore#1.43.100 ua/2.1 os/linux#<kernel> md/arch#x86_64 lang/python#3.13.18 md/pyimpl#CPython m/b,D,Z,P,g,N cfg/retry-mode#legacy Botocore/1.43.100"
+    ],
+    [
+     "X-Amz-Date",
+     "<amz-date>"
+    ],
+    [
+     "Authorization",
+     "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/<yyyymmdd>/us-east-1/kinesis/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=<hex>"
+    ],
+    [
+     "amz-sdk-invocation-id",
+     "<uuid>"
+    ],
+    [
+     "amz-sdk-request",
+     "attempt=1"
+    ],
+    [
+     "Content-Length",
+     "59"
+    ]
+   ],
+   "body_sha256": "5b1de6d2008dcbeccafee9d793bf62d4097bbb4dfc698d934fa0a7a3238af5c8",
+   "body": {
+    "StreamName": "evidence",
+    "EnforceConsumerDeletion": true
+   },
+   "response_status": 200,
+   "response_type": null
+  }
+ ],
+ "summary": {
+  "operations": [
+   "CreateStream",
+   "DescribeStream",
+   "ListShards",
+   "PutRecord",
+   "PutRecords",
+   "GetShardIterator",
+   "GetRecords",
+   "DeleteStream"
+  ],
+  "content_types": [
+   "application/x-amz-json-1.1"
+  ],
+  "http_versions": [
+   "HTTP/1.1"
+  ]
+ }
+}

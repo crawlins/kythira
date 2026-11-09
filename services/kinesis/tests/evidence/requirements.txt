@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The Python side of the evidence recordings. boto3 and botocore are the
+# versions data/boto3.json was recorded with; botocore matches the model pin.
+boto3==1.43.100
+botocore==1.43.100
+cbor2==6.2.1
