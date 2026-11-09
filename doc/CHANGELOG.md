@@ -11,6 +11,13 @@ current list of outstanding work, see [TODO.md](TODO.md).
   ids are never reused and times stay in order, and the checkers still
   read one history. Before this the tool refused a second workload, and
   M3 run 1 spent 156 calls retrying it.
+- **Faults aimed at a node that is down are refused with a way out.**
+  A failpoint whose node cannot be resolved or connected to, a
+  `fault.kill` of a container that is not running, and a partition whose
+  node has no real address now fail as refusals that say "fault.restart"
+  or "is it running?", instead of raw runtime errors; a partition no
+  longer sends `iptables -s invalid IP`. M3 run 3 sent 60 kills in a row
+  to a node it had already killed.
 
 ### What Changed (November 5, 2026)
 
