@@ -729,12 +729,38 @@ compatibility").
     now passes the host tree's HEAD (marked `-dirty` for uncommitted
     changes) to `chaos_ctl init`.
 
-- [ ] **13. M2: first real hunt.** Every invariant project against current
+- [x] **13. M2: first real hunt.** Every invariant project against current
   `main` in Docker. Triage and minimize anything found. Each confirmed
   finding's draft test fails before its fix and passes after. A clean
   result is recorded with its agent-hours.
+  - Runs (2026-11-02 to 11-03, Qwen3.8-27B on a g5.xlarge, about $14 of
+    GPU time, roughly 14 host-hours): all six invariant projects.
+    - election-safety: no find; most calls were refused failpoint
+      guesses, so the refusal now lists the allowlist (PR #676).
+    - log-matching, leader-completeness, state-machine-safety,
+      linearizability: no find.
+    - liveness: one find. On a two-voter cluster, commit stayed stuck
+      for 6 s after the heal while a restarted node replayed about
+      12,800 entries.
+  - Liveness triage:
+    - On main at the time it replayed 1 of 3, with heal-to-commit at
+      7,481 ms against the 6,000 ms bound. The two misses never reached
+      the two-voter state.
+    - Likely cause: `apply_committed_entries()` slept 10 ms per entry
+      under the node lock while more than 50 entries behind (item AD,
+      fixed by PR #678).
+    - Replayed on main 57d7d767 (with #678) on 2026-11-09: 0 of 3.
+      Ten liveness checks per attempt, slowest 1,170, 2,117 and
+      1,594 ms, so at least 3.9 s of margin each. The original had
+      degraded to 4,034 ms and 3,020 ms before it failed.
+    - Consistent with #678 having fixed it, but three replays are no
+      proof, so no draft test was committed.
+  - Harness fixes made on the way: #666 (per-attempt bootstrap timer),
+    #676, and #679 (membership timeout message, idempotent failpoint
+    off).
+  - Result: clean. No confirmed finding against main.
 
-- [ ] **14. M3: flaky Real Cloud Tests scenario.** Point a project at the
+- [x] **14. M3: flaky Real Cloud Tests scenario.** Point a project at the
   failing scenario and try to make it fail on demand. M4 (EC2, Requirement
   9.5) and M5 (monthly routine) get their own follow-up spec once this is
   done.
@@ -783,5 +809,41 @@ compatibility").
         layout), with hints from the CI failure: slow PUTs then a leader
         SIGKILL, a leader change while a barrier is pending, failed
         flushes, restart and reload.
-  - [ ] 14.6 Runs: up to five 2-hour runs on the kept AMI within the
+  - [x] 14.6 Runs: up to five 2-hour runs on the kept AMI within the
         remaining budget, then triage, replay and draft tests as in M2.
+    - Campaign (2026-11-03 21:31Z, image built from main 5d3fdf93,
+      Qwen3.8-27B on a g5.xlarge): four `s3-lost-write` runs planned.
+      - Run 1: no find in 2 h (1,145 calls, 69 `fault.s3`).
+      - Run 2: a liveness flag at seq 137, about 12 minutes in.
+      - Run 3: no find in 2 h (1,396 calls).
+      - Run 4: never ran. The GPU host shut itself down from the OS side
+        at about 01:49Z, near the end of run 3, and every request to the
+        model then returned 502.
+      - About 255 GPU minutes, roughly $4.30.
+    - Run 2's flag is not a finding. When check.run measured liveness,
+      node 2 was killed, node 1 had `raft/persistence/barrier` armed
+      always, and node 3 had `raft/state_machine/apply` always plus S3
+      `fail_puts` 50; nothing had been healed. It was replayed on main
+      57d7d767 on 2026-11-09:
+      - With the faults in place: 0 of 3. The cluster recovered, but
+        only in about 5 s (a leader at about 4.8 s, a commit at about
+        5.0 s) against the 6 s bound.
+      - With `run.reset` first: 0 of 3. A leader came in about 20 ms and
+        a commit in about 130 ms.
+      `check.run` now returns `not_judged` for liveness while the
+      schedule log shows faults in place (PR #729), as Requirement 5.3
+      defines it.
+    - The target itself fell away: the "lost write" was an unanswered
+      read during about 20 s of leader flapping after the restart, not a
+      lost acknowledged write (PR #702). So M3 ends as about 6 hours of
+      S3-persistence chaos with no finding, not as a reproduction.
+    - Harness fixes from the logs:
+      - PR #703: the driver powers the model host off when a campaign
+        ends, and `fault.s3`/`fault.drop` argument errors count as
+        refused.
+      - PR #729: a later `workload.start` continues the run's history
+        (run 1 spent 156 calls on the old one-workload-per-run refusal).
+        Faults aimed at a node that is down are refused with a way out
+        (run 3 sent 60 kills in a row to a killed node). A partition no
+        longer sends `iptables -s invalid IP`. The driver ends with
+        `HOST_LOST` when the model host stops answering.
