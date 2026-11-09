@@ -252,6 +252,18 @@ public:
         return _durable_floor;
     }
 
+    /// Makes every batch applied so far durable. The node calls it before
+    /// compacting when the durable index lags by more than
+    /// `raft_configuration::_persistent_sync_lag_entries`; without it an
+    /// engine that syncs only when asked (RocksDB) never advances the
+    /// durable index, and the group's log is never compacted.
+    auto sync_durable() -> void {
+        require_open();
+        if (!_seqs.empty()) {
+            _engine->sync(_seqs.back().second);
+        }
+    }
+
     /// A checkpoint of the whole range at `applied_index()`, meta record
     /// included, for a follower (file-install-snapshot).
     auto checkpoint(const std::filesystem::path& dir) -> snapshot_manifest {

@@ -168,6 +168,10 @@ public:
         return best;
     }
 
+    /// Makes every batch applied so far durable, so the node can compact
+    /// through `applied_index()` on an engine that syncs only when asked.
+    auto sync_durable() -> void { engine().sync(engine().latest_sequence()); }
+
     auto checkpoint(const std::filesystem::path& dir) -> snapshot_manifest {
         return engine().checkpoint(engine_range(), dir);
     }
