@@ -19,6 +19,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/operations.hpp>
 
 #include <raft/aws_json_protocol.hpp>
@@ -134,4 +135,54 @@ BOOST_AUTO_TEST_CASE(the_recorded_clients_use_only_modeled_operations) {
             BOOST_TEST(ddb::dynamodbstreams_model::k_model.find_operation(r.operation) != nullptr);
         }
     }
+}
+
+namespace {
+
+// Every attribute-value map under `v`: the members whose values are items,
+// keys or placeholder values. RequestItems and TransactItems nest them.
+void collect_items(const boost::json::value& v, std::vector<const boost::json::object*>& out) {
+    static const std::set<std::string_view> k_item_members = {
+        "Item", "Key", "ExpressionAttributeValues", "ExclusiveStartKey"};
+    if (v.is_object()) {
+        for (const auto& kv : v.get_object()) {
+            if (k_item_members.contains(kv.key()) && kv.value().is_object()) {
+                out.push_back(&kv.value().get_object());
+            } else {
+                collect_items(kv.value(), out);
+            }
+        }
+    } else if (v.is_array()) {
+        for (const auto& e : v.get_array()) {
+            collect_items(e, out);
+        }
+    }
+}
+
+}  // namespace
+
+// The values the clients sent are ones the item codec accepts (task 3): the
+// numbers parse, sets are well formed, and each item survives the storage
+// form.
+BOOST_AUTO_TEST_CASE(every_recorded_item_and_key_passes_the_item_codec) {
+    std::size_t checked = 0;
+    for (const auto& r : load()) {
+        if (r.service != ddb::k_dynamodb_target_prefix) {
+            continue;
+        }
+        std::vector<const boost::json::object*> items;
+        const auto body = boost::json::parse(r.body);
+        collect_items(body, items);
+        for (const auto* o : items) {
+            const auto it = ddb::item_from_json(*o);
+            BOOST_TEST_INFO(r.client << " #" << r.seq << " " << r.operation << " "
+                                     << boost::json::serialize(*o));
+            BOOST_TEST(it.has_value(), (it ? std::string() : it.error().message.value_or("")));
+            if (it) {
+                BOOST_TEST((ddb::decode_item(ddb::encode_item(*it)) == *it));
+                ++checked;
+            }
+        }
+    }
+    BOOST_TEST(checked > 100U);
 }

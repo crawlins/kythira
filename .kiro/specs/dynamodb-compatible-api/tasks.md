@@ -61,11 +61,20 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     in one `error_style` per service family so task 1's recordings and the
     task 8 differential job can correct them in one place.
 
-- [ ] 3. Decimal and item codec
+- [x] 3. Decimal and item codec
   - `dynamo_decimal` with exact arithmetic, AWS range and rounding, the
     order-preserving key encoding; vector suite on x86-64 and arm64
   - Item codec, attribute validation, size formula
   - _Requirements: 6.1-6.4, 21.2_
+  - Done: `decimal.hpp` and `item_codec.hpp`. The mantissa is a 38-digit
+    array rather than two 64-bit words: arithmetic runs on a digit grid
+    wide enough for the whole range, so cancellation across a 39th digit
+    is exact, and nothing depends on `__int128`. Results that need a 39th
+    digit or leave the range are refused, never rounded. Numbers format in
+    plain notation. Messages are AWS's where published; task 8's
+    differential pins the rest. The size formula charges a byte per `L`/`M`
+    element, which AWS's prose omits but the service charges. The wire
+    evidence test also runs every recorded item and key through the codec.
 
 - [ ] 4. Front end, SigV4 and authorization
   - `dynamo_front_end` on the shared Beast host, forwarding to shard
