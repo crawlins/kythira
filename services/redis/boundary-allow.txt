@@ -17,3 +17,11 @@ tests/multi_raft_txn_write_skew_test.cpp     multi_raft_impl.hpp               s
 tests/redis_gateway_integration_test.cpp     multi_raft_impl.hpp               stands up in-process hosts
 tests/redis_gateway_snapshot_test.cpp        multi_raft_impl.hpp               stands up in-process hosts
 tests/redis_gateway_txn_test.cpp             multi_raft_impl.hpp               stands up in-process hosts
+
+# The composition root wiring in another module's adapter to a core concept
+# (scripts/check_module_boundaries.py, `module-adapter`), only in a
+# CONFIG_REDIS_GATEWAY_IAM build:
+# file                                       module-adapter  header                                       why
+cmd/redis_gateway_node/iam_auth.cpp          module-adapter  kythira/iam/iam_embedded_replica.hpp         the IAM replica AUTH checks against
+cmd/redis_gateway_node/iam_auth.cpp          module-adapter  kythira/iam/iam_redis_verifier.hpp           IAM's credential_verifier for AUTH
+cmd/redis_gateway_node/iam_auth.cpp          module-adapter  kythira/iam/services/elasticache_actions.hpp the elasticache:Connect action table

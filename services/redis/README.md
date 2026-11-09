@@ -110,20 +110,23 @@ credentials go to it:
 With either field empty, which is every build today, both front ends behave
 exactly as they did before the seam existed.
 
-**For IAM task 21**, which fills the seam:
+**IAM task 21** fills the seam in `redis_gateway_node` when it is built with
+`CONFIG_REDIS_GATEWAY_IAM` (depends on `REDIS_GATEWAY && IAM`):
 
-- Set the predicates from the ACL's `auth=password|iam|both` attribute, and
-  parse `auth=` like `cert=`: a reserved attribute, not a key prefix, with a
-  repeated or unknown value rejected. Today's parser reads `auth=iam` as the
-  key prefix `auth=iam` (pinned by `redis_acl_unit_test`).
-- Roll every gateway onto the new build before any ACL file uses `auth=`,
-  and say so in `doc/redis-gateway.md`. An older gateway still allows
-  password `AUTH` for an `auth=iam` user, scoped to keys starting
-  `auth=iam`. Where a deployment needs a hard guarantee, give an IAM-only
-  user the secret `disabled`, which an old binary refuses outright.
-- Add `CONFIG_REDIS_GATEWAY_IAM` (depends on `REDIS_GATEWAY && IAM`) in
-  `Kconfig`. The daemon's composition root then links IAM's adapter, which
-  needs a `module-adapter` line in `boundary-allow.txt`.
+- The ACL's `auth=password|iam|both` is a reserved attribute like `cert=`
+  (a repeated or unknown value is rejected). `redis_acl::authenticate`
+  refuses an `auth=iam` user's password, and `auth_mode_of` tells the
+  composition root which users are the verifier's: `run_host.hpp` sets
+  `_credential_verifier_users` to the `iam` and `both` users whenever a
+  verifier is configured. A `both` user the verifier refuses is checked
+  against its password in the same admission slot.
+- `cmd/redis_gateway_node/iam_auth.cpp` is the only file that includes the
+  IAM module, through three `module-adapter` lines in `boundary-allow.txt`.
+  It builds IAM's embedded replica and `iam_redis_verifier` from the
+  `KYTHIRA_IAM_*` variables; without the option neither the file nor the
+  variables exist (`redis_gateway_node_iam_switch` checks `--help`).
+- `doc/redis-gateway.md` documents `auth=`, the rolling-upgrade rule, and
+  the variables.
 
 ## What the module uses from core
 
@@ -138,6 +141,8 @@ keeps the C++ side of it honest; the CMake side is this list.
 | `kythira_core_headers` | the public headers under `include/` and the Kconfig header |
 | `kythira_test_support` | the in-process test fabric's headers, by name (tests only) |
 | `kythira_test_pch` | linked by `add_raft_completion_test` (tests only) |
+| `certificate_authority` | `KYTHIRA_HAS_OPENSSL` for the IAM replica's TLS RPC headers (`CONFIG_REDIS_GATEWAY_IAM` builds of `redis_gateway_node` only) |
+| `kythira_iam` (the IAM module) | `iam_auth.cpp`, the composition root's IAM side (`CONFIG_REDIS_GATEWAY_IAM` only) |
 | `network_simulator`, `boost_json`, `kythira_host_node_id` | the daemon's links, as before the move |
 | `multi_raft_bench_rows` | the module adds its two transaction rows to it |
 | `multi_raft_performance_report` | the command of `multi_raft_performance_report_transactions` |

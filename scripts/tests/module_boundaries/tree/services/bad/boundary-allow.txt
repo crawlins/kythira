@@ -11,3 +11,12 @@ cmd/bad_node/main.cpp  public.hpp  public needs no entry
 cmd/bad_node/main.cpp  raft/other_impl.hpp  gone
 # rule allow-entry (file does not exist)
 cmd/bad_node/missing.cpp  thing_impl.hpp  removed
+cmd/bad_node/main.cpp  module-adapter  kythira/clean/clean.hpp  wires in clean's adapter
+# rule allow-entry (module-adapter with no reason)
+cmd/bad_node/main.cpp  module-adapter  kythira/clean/clean.hpp
+# rule allow-entry (module-adapter outside the composition root)
+tests/bad_test.cpp  module-adapter  kythira/clean/clean.hpp  tests may not
+# rule allow-entry (module-adapter naming no other module's header)
+cmd/bad_node/main.cpp  module-adapter  kythira/clean/missing.hpp  gone
+# rule allow-entry (stale module-adapter: main.cpp never includes it)
+cmd/bad_node/main.cpp  module-adapter  kythira/bad/bad.hpp  own module

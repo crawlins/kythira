@@ -248,7 +248,11 @@ auto acl_text() -> std::string {
            // Task 9: client certificates map to users by subject.
            "user certfarm " + redis_acl::hash_secret("certfarm-secret", k_kdf_iters) +
            " read_write sccache/ cert=CN=farm\n" +
-           "user gone disabled read_write sccache/ cert=CN=gone\n";
+           "user gone disabled read_write sccache/ cert=CN=gone\n" +
+           // IAM task 21: an IAM-only user (no password, still enabled) and
+           // one that takes either.
+           "user iamfarm disabled read_write sccache/ auth=iam\n" + "user bothfarm " +
+           redis_acl::hash_secret("both-secret", k_kdf_iters) + " read_write sccache/ auth=both\n";
 }
 
 // ── a throwaway PKI for the TLS cases ────────────────────────────────────────
@@ -2144,6 +2148,48 @@ BOOST_AUTO_TEST_CASE(a_credential_verifier_vouches_only_for_selected_users,
         BOOST_CHECK_EQUAL(back.auth("reader", "reader-secret"), "+OK\r\n");
         std::this_thread::sleep_for(std::chrono::milliseconds{2500});
         BOOST_CHECK_EQUAL(back.call({"GET", "sccache/seam"}), bulk("v"));
+    }
+}
+
+// IAM task 21: the composition root selects the verifier's users from the
+// ACL's `auth=` attribute. An `auth=iam` user logs in only through the
+// verifier; an `auth=both` user through the verifier or, when the verifier
+// refuses, its password.
+BOOST_AUTO_TEST_CASE(auth_attribute_selects_the_verifier_and_both_falls_back_to_the_password,
+                     *boost::unit_test::timeout(120)) {
+    test_verifier verifier;
+    redis_gateway_config cfg;
+    cfg._credential_verifier = kythira::erase_credential_verifier(verifier);
+    auto modes = std::make_shared<redis_acl>();
+    modes->reload(acl_text());
+    cfg._credential_verifier_users = [modes](std::string_view user) {
+        const auto mode = modes->auth_mode_of(user);
+        return mode == kythira::redis_auth_mode::iam || mode == kythira::redis_auth_mode::both;
+    };
+    cluster c(cfg);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+    auto port = c.port(c.leader_of(k_sccache_group));
+    const std::string wrongpass =
+        "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+    {
+        resp_client iam(port);
+        BOOST_CHECK_EQUAL(iam.auth("iamfarm", "nope"), wrongpass);
+        BOOST_CHECK_EQUAL(iam.auth("iamfarm", "good"), "+OK\r\n");
+        BOOST_CHECK_EQUAL(iam.call({"SET", "sccache/iam", "v"}), "+OK\r\n");
+    }
+    {
+        resp_client both(port);
+        BOOST_CHECK_EQUAL(both.auth("bothfarm", "good"), "+OK\r\n");
+        BOOST_CHECK_EQUAL(both.auth("bothfarm", "both-secret"), "+OK\r\n");
+        BOOST_CHECK_EQUAL(both.call({"GET", "sccache/iam"}), bulk("v"));
+        BOOST_CHECK_EQUAL(both.auth("bothfarm", "wrong"), wrongpass);
+    }
+    // A password user is not the verifier's.
+    {
+        resp_client farm(port);
+        const auto asked_before = verifier.users_asked().size();
+        BOOST_CHECK_EQUAL(farm.auth("farm", "farm-secret"), "+OK\r\n");
+        BOOST_CHECK_EQUAL(verifier.users_asked().size(), asked_before);
     }
 }
 

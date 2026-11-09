@@ -56,6 +56,12 @@ set_tests_properties(iam_query_api_test PROPERTIES LABELS "unit;iam;iam-module" 
 kythira_iam_test(iam_sts_test iam_sts_test.cpp)
 set_tests_properties(iam_sts_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
 
+# Task 21: the Redis gateway's AUTH with ElastiCache IAM auth tokens, against
+# a token botocore made (tools/gen_redis_iam_token.py) and tokens presigned
+# in the test.
+kythira_iam_test(iam_redis_verifier_test iam_redis_verifier_test.cpp)
+set_tests_properties(iam_redis_verifier_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
+
 # Task 8: the IAM state machine and its secret sealing, with property tests
 # that replicas and snapshot restores agree and no plaintext secret reaches
 # the log or a snapshot.
@@ -99,6 +105,23 @@ if(TARGET iam_node AND TARGET kythira-iam AND TARGET certificate_authority)
         LABELS "integration;iam;iam-module" TIMEOUT 600)
 else()
     message(STATUS "iam_node_test: skipped (needs iam_node, kythira-iam and certificate_authority)")
+endif()
+
+# Task 21: the replica a front end embeds (iam_embedded_replica.hpp), in
+# this process, beside three iam_node processes, checking Redis IAM auth
+# tokens as policies change.
+if(TARGET iam_node AND TARGET kythira-iam AND TARGET certificate_authority)
+    kythira_iam_test(iam_embedded_replica_test iam_embedded_replica_test.cpp)
+    target_link_libraries(iam_embedded_replica_test PRIVATE
+        kythira_test_support certificate_authority kythira_host_node_id)
+    target_compile_definitions(iam_embedded_replica_test PRIVATE
+        IAM_NODE_PATH="$<TARGET_FILE:iam_node>"
+        KYTHIRA_IAM_PATH="$<TARGET_FILE:kythira-iam>")
+    add_dependencies(iam_embedded_replica_test iam_node kythira-iam)
+    set_tests_properties(iam_embedded_replica_test PROPERTIES
+        LABELS "integration;iam;iam-module" TIMEOUT 420)
+else()
+    message(STATUS "iam_embedded_replica_test: skipped (needs iam_node, kythira-iam and certificate_authority)")
 endif()
 
 # Task 20: the Kythira CA as the identity provider, end to end. A

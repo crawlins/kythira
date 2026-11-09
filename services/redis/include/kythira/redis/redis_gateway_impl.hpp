@@ -1829,6 +1829,25 @@ auto redis_gateway<Host, Logger, Metrics>::auth_with_verifier(session& s, const 
         throw;
     }
     if (const auto* denied = std::get_if<credential_denied>(&result)) {
+        // An `auth=both` user may still be sending its password: try it in
+        // the same admission slot, after the cheap verifier said no.
+        if (_acl.auth_mode_of(user) == redis_auth_mode::both) {
+            std::optional<redis_identity> by_password;
+            try {
+                by_password = _acl.authenticate(user, credential);
+            } catch (...) {
+                _auth_limiter.finish(s._rate_key, false);
+                throw;
+            }
+            if (by_password) {
+                _auth_limiter.finish(s._rate_key, true);
+                s._identity = std::move(by_password);
+                s._internal = false;
+                s._expires.reset();
+                audit(s, "AUTH", "accepted by password");
+                return s._writer.simple_string("OK");
+            }
+        }
         _auth_limiter.finish(s._rate_key, false);
         return wrongpass(denied->reason);
     }

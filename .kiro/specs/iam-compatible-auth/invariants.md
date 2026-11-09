@@ -28,6 +28,10 @@ Test files are under `services/iam/tests/` unless a path says otherwise:
   names a file under `corpus/`;
 - `sts` is `iam_sts_test.cpp`, and `kie` is `iam_kythira_issuer_test.cpp`
   (the CA cluster and `iam_node` as processes);
+- `rv` is `iam_redis_verifier_test.cpp`, `er` is
+  `iam_embedded_replica_test.cpp`, `acl` is
+  `services/redis/tests/redis_acl_unit_test.cpp` and `gw` is
+  `services/redis/tests/redis_gateway_integration_test.cpp`;
 - `sigv4` is `tests/sigv4_verifier_test.cpp`.
 
 ## Gaps this review found and fixed
@@ -277,6 +281,23 @@ them from its handler, and its handler test shows one refusal per rule.
 | INV-STS-K3 | Kythira rule (Requirement 12.3): `POST /v1/iam/credentials` answers only when `--iam-credentials-exchange` is on (404 otherwise), only over TLS with a verified client certificate (403), only when the role's account registers the Kythira issuer, and only when the trust policy allows `sts:AssumeRoleWithWebIdentity` with the certificate's `kythira:cert/san-uri`, `san-dns` and `serial` keys; each of the last three refusals is AccessDenied | Tested: sts `a_verified_certificate_is_exchanged_for_role_credentials`; kie as above, with another workload's certificate and no certificate (task 20) |
 | INV-STS-Q1 | STS requests are limited to 600 per second per account | Not adopted: this is AWS's service quota, not a correctness rule. Kythira's request limits are its front end's. |
 
+## Redis AUTH with IAM (task 21)
+
+Source: [ElastiCache IAM authentication][eciam]. Rows marked Kythira rule
+are this design's, not AWS's.
+
+| Id | Invariant | Status |
+|---|---|---|
+| INV-REDIS-1 | An ElastiCache IAM auth token as the AWS SDKs make it (a SigV4 presigned `GET http://<cache>/?Action=connect&User=<user>`, service `elasticache`, scheme removed) is accepted, and opens a connection for 12 hours | Tested: rv `inv_redis_1_a_botocore_token_is_accepted` (a botocore 1.35.0 token, `tests/tools/gen_redis_iam_token.py`); er `an_embedded_replica_checks_redis_tokens_locally` |
+| INV-REDIS-2 | The token's `User` is the AUTH user, its host is the configured cache name, it is presigned for at most 15 minutes, and it is refused after its expiry | Tested: rv `inv_redis_2_a_token_is_bound_to_its_user_cache_and_lifetime` |
+| INV-REDIS-3 | An unknown access key and a bad signature are refused | Tested: rv `inv_redis_3_an_unknown_key_or_bad_signature_is_refused` |
+| INV-REDIS-4 | `elasticache:Connect` must be allowed on both the user ARN and the replication group ARN; an explicit deny on either refuses | Tested: rv `inv_redis_4_connect_is_authorized_on_both_arns`; er, after DeleteUserPolicy |
+| INV-REDIS-5 | A replica past its staleness bound refuses (Requirement 7.4) | Tested: rv `inv_redis_5_a_stale_replica_refuses`; er with the voters stopped |
+| INV-REDIS-6 | Temporary credentials hold a connection until the earlier of 12 hours and the session's expiry, and need their session token | Tested: rv `inv_redis_6_a_session_bounds_the_connection` |
+| INV-REDIS-7 | Kythira rule (Requirement 13.1): `auth=` is a reserved ACL attribute (`password` by default, `iam`, `both`), never a key prefix; a repeated or unknown value is rejected; an `auth=iam` user's password is never accepted; for `iam` and `both`, `nopass` needs no `cert=` and `disabled` means no password | Tested: acl `auth_attribute_is_reserved_not_a_key_prefix`, `auth_attribute_rejects_repeated_and_unknown_values`, `an_iam_user_needs_no_password_and_disabled_keeps_it_iam_only` |
+| INV-REDIS-8 | Kythira rule (Requirements 13.4, 13.7): the verifier handles exactly the `iam` and `both` users; a `both` user it refuses may use its password; the ACL user's role and prefixes apply; the internal user is never vouched for | Tested: gw `auth_attribute_selects_the_verifier_and_both_falls_back_to_the_password`, `a_credential_verifier_vouches_only_for_selected_users` |
+| INV-REDIS-9 | Kythira rule (Requirement 13.6): a build without `CONFIG_REDIS_GATEWAY_IAM` has no IAM variables and no IAM code | Tested: CTest `redis_gateway_node_iam_switch` (`--help`); `iam_auth.cpp` is compiled only with the option |
+
 ## SigV4
 
 Source: [Signature Version 4][sigv4]. The verifier predates this catalogue,
@@ -303,6 +324,7 @@ and all of these rows are tested by sigv4.
 [cak]: https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateAccessKey.html
 [oidc]: https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateOpenIDConnectProvider.html
 [grammar]: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_grammar.html
+[eciam]: https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/auth-iam.html
 [condops]: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html
 [vars]: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_variables.html
 [multi]: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html

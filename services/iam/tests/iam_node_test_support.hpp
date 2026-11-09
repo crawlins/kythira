@@ -246,7 +246,10 @@ struct member {
 
 class cluster {
 public:
-    explicit cluster(std::string ca_common_name = "Kythira Test Root CA") {
+    /// `extra_pki_nodes`: more node ids to give certificates to, for a
+    /// replica the test runs in process.
+    explicit cluster(std::string ca_common_name = "Kythira Test Root CA",
+                     const std::vector<int>& extra_pki_nodes = {}) {
         _dir = raft::make_private_temp_directory(fs::temp_directory_path(), "iam-node-test-");
         const auto base = kythira::testing::free_port_block(8);
         for (int i = 0; i < 4; ++i) {
@@ -264,6 +267,9 @@ public:
         o.ca_common_name = std::move(ca_common_name);
         for (const auto& m : members) {
             o.nodes.push_back(m.id);
+        }
+        for (const int n : extra_pki_nodes) {
+            o.nodes.push_back(make_id(n));
         }
         pki = kythira::iam::testing::write_test_pki(o);
         raft::write_private_file(_dir / "wrong-unseal.txt", "not-the-passphrase\n");
