@@ -109,3 +109,8 @@ CONFIG_IAM=y
 # coverage and clang-tidy cover it. Needs only OpenSSL and Boost, which every
 # leg has. configs/ci_no_kinesis_defconfig is this file without it.
 CONFIG_KINESIS=y
+# The DynamoDB module (services/dynamodb/, .kiro/specs/dynamodb-compatible-api/).
+# Off by default like every new module; on here so the build-and-test legs,
+# coverage and clang-tidy cover it. Needs only OpenSSL and Boost, which every
+# leg has. configs/ci_no_dynamodb_defconfig is this file without it.
+CONFIG_DYNAMODB=y

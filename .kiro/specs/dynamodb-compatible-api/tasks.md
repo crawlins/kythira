@@ -18,7 +18,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 0: evidence
 
-- [ ] 1. Module skeleton and evidence tables
+- [x] 1. Module skeleton and evidence tables
   - `DYNAMODB` Kconfig option (default off), `services/dynamodb/` CMake
     targets, boundary allow list, path-filtered `dynamodb-module.yml`
   - Pinned botocore `dynamodb` and `dynamodbstreams` models; generated
@@ -27,6 +27,19 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     aws-sdk-java-v2, KCL 2.x and 3.x, the lock client and the Streams adapter
   - Off-by-default build proved unchanged
   - _Requirements: 1.1-1.5, 2.1, 2.2, 2.4_
+  - Done: botocore 1.43.126 models (62 DynamoDB and 4 Streams operations)
+    with checked-in shape tables and `--check` ctests; `doc/unsupported.md`
+    lists every operation not built yet with its task, and the coverage
+    test holds the implemented and unsupported lists to the model. No
+    boundary allow-list entries were needed. Evidence: all seven clients
+    recorded against `tools/evidence/recording_stub.py`, and
+    `dynamodb_wire_evidence_test` validates every DynamoDB and Streams
+    request against the strict codec. `dynamodb-module.yml` re-records under
+    Docker and rootless Podman and runs the test on the fresh recording; the
+    module-off build is checked as `iam-module.yml` checks its module. Five
+    operations added to the model after the spec was written (the bulk-put
+    family and `SearchVectors`) are listed as unsupported pending a scope
+    decision.
 
 ### Phase 1: protocol and auth
 

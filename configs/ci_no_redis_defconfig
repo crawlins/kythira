@@ -31,3 +31,4 @@ CONFIG_IAM=y
 # coverage and clang-tidy cover it. Needs only OpenSSL and Boost, which every
 # leg has. configs/ci_no_kinesis_defconfig is this file without it.
 CONFIG_KINESIS=y
+CONFIG_DYNAMODB=y

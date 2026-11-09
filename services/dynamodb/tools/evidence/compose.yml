@@ -1,0 +1,60 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Wire-evidence recording in containers (.kiro/specs/dynamodb-compatible-api/
+# task 1): the recording stub and one service per client, wired by service
+# name (no static addresses, no host networking), so it runs the same under
+# rootful Docker and rootless Podman (CLAUDE.md). record.sh drives it:
+# `up -d stub`, waits until the stub answers (no healthcheck: rootless
+# Podman needs systemd to run one), then `run --rm <client>` for each
+# client in turn.
+#
+# EVIDENCE_OUT is the host directory the stub writes <client>.jsonl into.
+
+name: kythira-dynamodb-evidence
+
+services:
+  stub:
+    image: docker.io/library/python:3.13.9-slim
+    command: ["python3", "/tools/recording_stub.py", "--port", "8000", "--out", "/out"]
+    volumes:
+      - ./:/tools:ro
+      - ${EVIDENCE_OUT:?set EVIDENCE_OUT}:/out
+
+  aws-cli:
+    image: docker.io/amazon/aws-cli:2.31.30
+    entrypoint: ["sh", "/tools/clients/aws_cli.sh"]
+    environment:
+      ENDPOINT: http://stub:8000
+    volumes:
+      - ./:/tools:ro
+    depends_on:
+      - stub
+
+  boto3:
+    image: docker.io/library/python:3.13.9-slim
+    entrypoint: ["sh", "-c", "pip install -q --root-user-action=ignore -r /tools/clients/requirements.txt && python3 /tools/clients/boto3_client.py"]
+    environment:
+      ENDPOINT: http://stub:8000
+    volumes:
+      - ./:/tools:ro
+    depends_on:
+      - stub
+
+  # The Java clients share one image and a Maven repository volume; the
+  # client name is the run argument (java-sdk, lock-client, kcl2, kcl3,
+  # streams-adapter). Sources are copied out of the read-only mount so
+  # Maven can write target/.
+  java:
+    image: docker.io/library/maven:3.9.11-eclipse-temurin-21
+    entrypoint: ["sh", "-c", "rm -rf /work && cp -r /tools/clients /work && exec sh /work/run_java.sh \"$$0\""]
+    environment:
+      ENDPOINT: http://stub:8000
+    volumes:
+      - ./:/tools:ro
+      - m2:/root/.m2
+    depends_on:
+      - stub
+
+volumes:
+  m2:

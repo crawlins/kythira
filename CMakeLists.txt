@@ -842,6 +842,25 @@ else()
 endif()
 kythira_kconfig_require(KINESIS KYTHIRA_BUILD_KINESIS "OpenSSL and Boost")
 
+# dynamodb-compatible-api spec: the services/dynamodb/ module (a
+# DynamoDB-compatible service). Off unless CONFIG_DYNAMODB=y, like every new
+# module; needs OpenSSL (SigV4) and Boost.JSON (the core AWS JSON codec).
+# Entered with add_subdirectory(services/dynamodb) below, after tests/.
+kythira_kconfig_gate(DYNAMODB)
+set(KYTHIRA_BUILD_DYNAMODB FALSE)
+if(_KYTHIRA_GATE_DYNAMODB AND DEFINED KCONFIG_DYNAMODB AND OpenSSL_FOUND AND Boost_FOUND)
+    set(KYTHIRA_BUILD_DYNAMODB TRUE)
+    message(STATUS "DynamoDB module enabled (services/dynamodb/, .kiro/specs/dynamodb-compatible-api/)")
+else()
+    message(STATUS "DynamoDB module disabled (CONFIG_DYNAMODB=n, or OpenSSL/Boost not found)")
+endif()
+kythira_kconfig_require(DYNAMODB KYTHIRA_BUILD_DYNAMODB "OpenSSL")
+
+# Core's generator of AWS JSON service models (include/raft/aws_json_protocol.hpp),
+# exported for the modules that pin a botocore model (DynamoDB, Kinesis), so
+# they reach it by variable rather than by core's source path.
+set(KYTHIRA_AWS_JSON_SHAPES_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/gen_aws_json_shapes.py")
+
 if(NOT stdexec_FOUND)
     message(WARNING "stdexec not found. The stdexec-backed Future/Promise implementation will not be available.")
 endif()
@@ -2199,6 +2218,12 @@ endif()
 # .kiro/specs/kinesis-compatible-streams/), entered likewise.
 if(KYTHIRA_BUILD_KINESIS)
     add_subdirectory(services/kinesis)
+endif()
+
+# The DynamoDB-compatible service module (services/README.md,
+# .kiro/specs/dynamodb-compatible-api/), entered likewise.
+if(KYTHIRA_BUILD_DYNAMODB)
+    add_subdirectory(services/dynamodb)
 endif()
 
 # Installation rules

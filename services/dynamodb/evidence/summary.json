@@ -1,0 +1,948 @@
+{
+ "aws-cli": {
+  "operations": {
+   "DynamoDB_20120810.BatchWriteItem": [
+    "RequestItems",
+    "RequestItems.{}",
+    "RequestItems.{}[]",
+    "RequestItems.{}[].PutRequest",
+    "RequestItems.{}[].PutRequest.Item",
+    "RequestItems.{}[].PutRequest.Item.{}",
+    "RequestItems.{}[].PutRequest.Item.{}.S"
+   ],
+   "DynamoDB_20120810.CreateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "KeySchema",
+    "KeySchema[]",
+    "KeySchema[].AttributeName",
+    "KeySchema[].KeyType",
+    "ProvisionedThroughput",
+    "ProvisionedThroughput.ReadCapacityUnits",
+    "ProvisionedThroughput.WriteCapacityUnits",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteItem": [
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeLimits": [],
+   "DynamoDB_20120810.DescribeTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTimeToLive": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.GetItem": [
+    "ConsistentRead",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.ListTables": [],
+   "DynamoDB_20120810.PutItem": [
+    "ConditionExpression",
+    "Item",
+    "Item.{}",
+    "Item.{}.L",
+    "Item.{}.L[]",
+    "Item.{}.L[].S",
+    "Item.{}.N",
+    "Item.{}.S",
+    "ReturnConsumedCapacity",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Query": [
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "KeyConditionExpression",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Scan": [
+    "Limit",
+    "Select",
+    "TableName"
+   ],
+   "DynamoDB_20120810.UpdateItem": [
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.N",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "ReturnValues",
+    "TableName",
+    "UpdateExpression"
+   ],
+   "DynamoDB_20120810.UpdateTimeToLive": [
+    "TableName",
+    "TimeToLiveSpecification",
+    "TimeToLiveSpecification.AttributeName",
+    "TimeToLiveSpecification.Enabled"
+   ]
+  },
+  "headers": [
+   "accept-encoding",
+   "authorization",
+   "content-length",
+   "content-type",
+   "host",
+   "user-agent",
+   "x-amz-date",
+   "x-amz-target"
+  ],
+  "signed_headers": [
+   "content-type;host;x-amz-date;x-amz-target"
+  ],
+  "user_agents": [
+   "aws-cli/2.31.30"
+  ]
+ },
+ "boto3": {
+  "operations": {
+   "DynamoDB_20120810.BatchGetItem": [
+    "RequestItems",
+    "RequestItems.{}",
+    "RequestItems.{}.ConsistentRead",
+    "RequestItems.{}.Keys",
+    "RequestItems.{}.Keys[]",
+    "RequestItems.{}.Keys[].pk",
+    "RequestItems.{}.Keys[].pk.S",
+    "RequestItems.{}.Keys[].sk",
+    "RequestItems.{}.Keys[].sk.N"
+   ],
+   "DynamoDB_20120810.BatchWriteItem": [
+    "RequestItems",
+    "RequestItems.{}",
+    "RequestItems.{}[]",
+    "RequestItems.{}[].DeleteRequest",
+    "RequestItems.{}[].DeleteRequest.Key",
+    "RequestItems.{}[].DeleteRequest.Key.{}",
+    "RequestItems.{}[].DeleteRequest.Key.{}.N",
+    "RequestItems.{}[].DeleteRequest.Key.{}.S",
+    "RequestItems.{}[].PutRequest",
+    "RequestItems.{}[].PutRequest.Item",
+    "RequestItems.{}[].PutRequest.Item.{}",
+    "RequestItems.{}[].PutRequest.Item.{}.N",
+    "RequestItems.{}[].PutRequest.Item.{}.S"
+   ],
+   "DynamoDB_20120810.CreateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "BillingMode",
+    "KeySchema",
+    "KeySchema[]",
+    "KeySchema[].AttributeName",
+    "KeySchema[].KeyType",
+    "TableName",
+    "Tags",
+    "Tags[]",
+    "Tags[].Key",
+    "Tags[].Value"
+   ],
+   "DynamoDB_20120810.DeleteItem": [
+    "Key",
+    "Key.{}",
+    "Key.{}.N",
+    "Key.{}.S",
+    "ReturnValues",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTimeToLive": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.GetItem": [
+    "ConsistentRead",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "Key",
+    "Key.{}",
+    "Key.{}.N",
+    "Key.{}.S",
+    "ProjectionExpression",
+    "TableName"
+   ],
+   "DynamoDB_20120810.ListTables": [
+    "Limit"
+   ],
+   "DynamoDB_20120810.ListTagsOfResource": [
+    "ResourceArn"
+   ],
+   "DynamoDB_20120810.PutItem": [
+    "ConditionExpression",
+    "Item",
+    "Item.{}",
+    "Item.{}.B",
+    "Item.{}.M",
+    "Item.{}.M.{}",
+    "Item.{}.M.{}.L",
+    "Item.{}.M.{}.L[]",
+    "Item.{}.M.{}.L[].BOOL",
+    "Item.{}.M.{}.L[].N",
+    "Item.{}.M.{}.L[].NULL",
+    "Item.{}.N",
+    "Item.{}.S",
+    "Item.{}.SS",
+    "Item.{}.SS[]",
+    "ReturnConsumedCapacity",
+    "ReturnValuesOnConditionCheckFailure",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Query": [
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.N",
+    "ExpressionAttributeValues.{}.S",
+    "FilterExpression",
+    "KeyConditionExpression",
+    "Limit",
+    "ScanIndexForward",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Scan": [
+    "ExclusiveStartKey",
+    "ExclusiveStartKey.{}",
+    "ExclusiveStartKey.{}.N",
+    "ExclusiveStartKey.{}.S",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.N",
+    "FilterExpression",
+    "Limit",
+    "Select",
+    "TableName"
+   ],
+   "DynamoDB_20120810.TagResource": [
+    "ResourceArn",
+    "Tags",
+    "Tags[]",
+    "Tags[].Key",
+    "Tags[].Value"
+   ],
+   "DynamoDB_20120810.TransactGetItems": [
+    "TransactItems",
+    "TransactItems[]",
+    "TransactItems[].Get",
+    "TransactItems[].Get.Key",
+    "TransactItems[].Get.Key.{}",
+    "TransactItems[].Get.Key.{}.N",
+    "TransactItems[].Get.Key.{}.S",
+    "TransactItems[].Get.TableName"
+   ],
+   "DynamoDB_20120810.TransactWriteItems": [
+    "ClientRequestToken",
+    "TransactItems",
+    "TransactItems[]",
+    "TransactItems[].ConditionCheck",
+    "TransactItems[].ConditionCheck.ConditionExpression",
+    "TransactItems[].ConditionCheck.Key",
+    "TransactItems[].ConditionCheck.Key.{}",
+    "TransactItems[].ConditionCheck.Key.{}.N",
+    "TransactItems[].ConditionCheck.Key.{}.S",
+    "TransactItems[].ConditionCheck.TableName",
+    "TransactItems[].Put",
+    "TransactItems[].Put.ConditionExpression",
+    "TransactItems[].Put.Item",
+    "TransactItems[].Put.Item.{}",
+    "TransactItems[].Put.Item.{}.N",
+    "TransactItems[].Put.Item.{}.S",
+    "TransactItems[].Put.TableName",
+    "TransactItems[].Update",
+    "TransactItems[].Update.ExpressionAttributeValues",
+    "TransactItems[].Update.ExpressionAttributeValues.{}",
+    "TransactItems[].Update.ExpressionAttributeValues.{}.N",
+    "TransactItems[].Update.Key",
+    "TransactItems[].Update.Key.{}",
+    "TransactItems[].Update.Key.{}.N",
+    "TransactItems[].Update.Key.{}.S",
+    "TransactItems[].Update.TableName",
+    "TransactItems[].Update.UpdateExpression"
+   ],
+   "DynamoDB_20120810.UntagResource": [
+    "ResourceArn",
+    "TagKeys",
+    "TagKeys[]"
+   ],
+   "DynamoDB_20120810.UpdateItem": [
+    "ConditionExpression",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.N",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.N",
+    "Key.{}.S",
+    "ReturnValues",
+    "TableName",
+    "UpdateExpression"
+   ],
+   "DynamoDB_20120810.UpdateTimeToLive": [
+    "TableName",
+    "TimeToLiveSpecification",
+    "TimeToLiveSpecification.AttributeName",
+    "TimeToLiveSpecification.Enabled"
+   ]
+  },
+  "headers": [
+   "accept-encoding",
+   "amz-sdk-invocation-id",
+   "amz-sdk-request",
+   "authorization",
+   "content-length",
+   "content-type",
+   "host",
+   "user-agent",
+   "x-amz-date",
+   "x-amz-target"
+  ],
+  "signed_headers": [
+   "content-type;host;x-amz-date;x-amz-target"
+  ],
+  "user_agents": [
+   "Boto3/1.43.126"
+  ]
+ },
+ "java-sdk": {
+  "operations": {
+   "DynamoDB_20120810.BatchWriteItem": [
+    "RequestItems",
+    "RequestItems.{}",
+    "RequestItems.{}[]",
+    "RequestItems.{}[].DeleteRequest",
+    "RequestItems.{}[].DeleteRequest.Key",
+    "RequestItems.{}[].DeleteRequest.Key.{}",
+    "RequestItems.{}[].DeleteRequest.Key.{}.N",
+    "RequestItems.{}[].DeleteRequest.Key.{}.S",
+    "RequestItems.{}[].PutRequest",
+    "RequestItems.{}[].PutRequest.Item",
+    "RequestItems.{}[].PutRequest.Item.{}",
+    "RequestItems.{}[].PutRequest.Item.{}.N",
+    "RequestItems.{}[].PutRequest.Item.{}.S"
+   ],
+   "DynamoDB_20120810.CreateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "BillingMode",
+    "DeletionProtectionEnabled",
+    "GlobalSecondaryIndexes",
+    "GlobalSecondaryIndexes[]",
+    "GlobalSecondaryIndexes[].IndexName",
+    "GlobalSecondaryIndexes[].KeySchema",
+    "GlobalSecondaryIndexes[].KeySchema[]",
+    "GlobalSecondaryIndexes[].KeySchema[].AttributeName",
+    "GlobalSecondaryIndexes[].KeySchema[].KeyType",
+    "GlobalSecondaryIndexes[].Projection",
+    "GlobalSecondaryIndexes[].Projection.ProjectionType",
+    "KeySchema",
+    "KeySchema[]",
+    "KeySchema[].AttributeName",
+    "KeySchema[].KeyType",
+    "StreamSpecification",
+    "StreamSpecification.StreamEnabled",
+    "StreamSpecification.StreamViewType",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteItem": [
+    "Key",
+    "Key.{}",
+    "Key.{}.N",
+    "Key.{}.S",
+    "ReturnValues",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.GetItem": [
+    "ConsistentRead",
+    "Key",
+    "Key.{}",
+    "Key.{}.N",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.PutItem": [
+    "ConditionExpression",
+    "Item",
+    "Item.{}",
+    "Item.{}.B",
+    "Item.{}.N",
+    "Item.{}.NS",
+    "Item.{}.NS[]",
+    "Item.{}.S",
+    "ReturnConsumedCapacity",
+    "ReturnItemCollectionMetrics",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Query": [
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "IndexName",
+    "KeyConditionExpression",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Scan": [
+    "Limit",
+    "TableName"
+   ],
+   "DynamoDB_20120810.TransactWriteItems": [
+    "ClientRequestToken",
+    "TransactItems",
+    "TransactItems[]",
+    "TransactItems[].ConditionCheck",
+    "TransactItems[].ConditionCheck.ConditionExpression",
+    "TransactItems[].ConditionCheck.Key",
+    "TransactItems[].ConditionCheck.Key.{}",
+    "TransactItems[].ConditionCheck.Key.{}.N",
+    "TransactItems[].ConditionCheck.Key.{}.S",
+    "TransactItems[].ConditionCheck.TableName",
+    "TransactItems[].Put",
+    "TransactItems[].Put.ConditionExpression",
+    "TransactItems[].Put.Item",
+    "TransactItems[].Put.Item.{}",
+    "TransactItems[].Put.Item.{}.N",
+    "TransactItems[].Put.Item.{}.S",
+    "TransactItems[].Put.TableName"
+   ],
+   "DynamoDB_20120810.UpdateItem": [
+    "ConditionExpression",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.N",
+    "ExpressionAttributeValues.{}.NS",
+    "ExpressionAttributeValues.{}.NS[]",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.N",
+    "Key.{}.S",
+    "ReturnValues",
+    "TableName",
+    "UpdateExpression"
+   ]
+  },
+  "headers": [
+   "accept",
+   "amz-sdk-invocation-id",
+   "amz-sdk-request",
+   "authorization",
+   "connection",
+   "content-length",
+   "content-type",
+   "host",
+   "user-agent",
+   "x-amz-content-sha256",
+   "x-amz-date",
+   "x-amz-target"
+  ],
+  "signed_headers": [
+   "amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target"
+  ],
+  "user_agents": [
+   "aws-sdk-java/2.57.11"
+  ]
+ },
+ "kcl2": {
+  "operations": {
+   "DynamoDB_20120810.CreateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "BillingMode",
+    "DeletionProtectionEnabled",
+    "KeySchema",
+    "KeySchema[]",
+    "KeySchema[].AttributeName",
+    "KeySchema[].KeyType",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.GetItem": [
+    "ConsistentRead",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.PutItem": [
+    "Expected",
+    "Expected.{}",
+    "Expected.{}.Exists",
+    "Item",
+    "Item.{}",
+    "Item.{}.N",
+    "Item.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Scan": [
+    "Limit",
+    "TableName"
+   ],
+   "DynamoDB_20120810.UpdateItem": [
+    "AttributeUpdates",
+    "AttributeUpdates.{}",
+    "AttributeUpdates.{}.Action",
+    "AttributeUpdates.{}.Value",
+    "AttributeUpdates.{}.Value.N",
+    "AttributeUpdates.{}.Value.S",
+    "Expected",
+    "Expected.{}",
+    "Expected.{}.Value",
+    "Expected.{}.Value.N",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "Kinesis_20131202.GetRecords": [
+    "Limit",
+    "ShardIterator"
+   ],
+   "Kinesis_20131202.GetShardIterator": [
+    "ShardId",
+    "ShardIteratorType",
+    "StreamName"
+   ],
+   "Kinesis_20131202.ListShards": [
+    "ShardFilter",
+    "ShardFilter.Type",
+    "StreamName"
+   ]
+  },
+  "headers": [
+   "amz-sdk-invocation-id",
+   "amz-sdk-request",
+   "authorization",
+   "content-length",
+   "content-type",
+   "host",
+   "user-agent",
+   "x-amz-content-sha256",
+   "x-amz-date",
+   "x-amz-target"
+  ],
+  "signed_headers": [
+   "amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target"
+  ],
+  "user_agents": [
+   "aws-sdk-java/2.33.0"
+  ]
+ },
+ "kcl3": {
+  "operations": {
+   "DynamoDB_20120810.CreateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "BillingMode",
+    "DeletionProtectionEnabled",
+    "KeySchema",
+    "KeySchema[]",
+    "KeySchema[].AttributeName",
+    "KeySchema[].KeyType",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteItem": [
+    "ConditionExpression",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.GetItem": [
+    "ConsistentRead",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.PutItem": [
+    "ConditionExpression",
+    "Expected",
+    "Expected.{}",
+    "Expected.{}.Exists",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "Item",
+    "Item.{}",
+    "Item.{}.L",
+    "Item.{}.L[]",
+    "Item.{}.L[].M",
+    "Item.{}.L[].M.{}",
+    "Item.{}.L[].M.{}.N",
+    "Item.{}.L[].M.{}.S",
+    "Item.{}.N",
+    "Item.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Query": [
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "IndexName",
+    "KeyConditionExpression",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Scan": [
+    "Segment",
+    "TableName",
+    "TotalSegments"
+   ],
+   "DynamoDB_20120810.UpdateItem": [
+    "AttributeUpdates",
+    "AttributeUpdates.{}",
+    "AttributeUpdates.{}.Action",
+    "AttributeUpdates.{}.Value",
+    "AttributeUpdates.{}.Value.N",
+    "AttributeUpdates.{}.Value.S",
+    "ConditionExpression",
+    "Expected",
+    "Expected.{}",
+    "Expected.{}.Exists",
+    "Expected.{}.Value",
+    "Expected.{}.Value.N",
+    "Expected.{}.Value.S",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.M",
+    "ExpressionAttributeValues.{}.N",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "ReturnValues",
+    "ReturnValuesOnConditionCheckFailure",
+    "TableName",
+    "UpdateExpression"
+   ],
+   "DynamoDB_20120810.UpdateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "GlobalSecondaryIndexUpdates",
+    "GlobalSecondaryIndexUpdates[]",
+    "GlobalSecondaryIndexUpdates[].Create",
+    "GlobalSecondaryIndexUpdates[].Create.IndexName",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema[]",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema[].AttributeName",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema[].KeyType",
+    "GlobalSecondaryIndexUpdates[].Create.Projection",
+    "GlobalSecondaryIndexUpdates[].Create.Projection.ProjectionType",
+    "TableName"
+   ],
+   "Kinesis_20131202.GetRecords": [
+    "Limit",
+    "ShardIterator"
+   ],
+   "Kinesis_20131202.GetShardIterator": [
+    "ShardId",
+    "ShardIteratorType",
+    "StreamName"
+   ],
+   "Kinesis_20131202.ListShards": [
+    "ShardFilter",
+    "ShardFilter.Type",
+    "StreamName"
+   ]
+  },
+  "headers": [
+   "amz-sdk-invocation-id",
+   "amz-sdk-request",
+   "authorization",
+   "content-length",
+   "content-type",
+   "host",
+   "user-agent",
+   "x-amz-content-sha256",
+   "x-amz-date",
+   "x-amz-target"
+  ],
+  "signed_headers": [
+   "amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target"
+  ],
+  "user_agents": [
+   "aws-sdk-java/2.41.21"
+  ]
+ },
+ "lock-client": {
+  "operations": {
+   "DynamoDB_20120810.CreateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "KeySchema",
+    "KeySchema[]",
+    "KeySchema[].AttributeName",
+    "KeySchema[].KeyType",
+    "ProvisionedThroughput",
+    "ProvisionedThroughput.ReadCapacityUnits",
+    "ProvisionedThroughput.WriteCapacityUnits",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteItem": [
+    "ConditionExpression",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.GetItem": [
+    "ConsistentRead",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.PutItem": [
+    "ConditionExpression",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "Item",
+    "Item.{}",
+    "Item.{}.B",
+    "Item.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.UpdateItem": [
+    "ConditionExpression",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName",
+    "UpdateExpression"
+   ]
+  },
+  "headers": [
+   "accept",
+   "amz-sdk-invocation-id",
+   "amz-sdk-request",
+   "authorization",
+   "connection",
+   "content-length",
+   "content-type",
+   "host",
+   "user-agent",
+   "x-amz-content-sha256",
+   "x-amz-date",
+   "x-amz-target"
+  ],
+  "signed_headers": [
+   "amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target"
+  ],
+  "user_agents": [
+   "aws-sdk-java/2.57.11"
+  ]
+ },
+ "streams-adapter": {
+  "operations": {
+   "DynamoDBStreams_20120810.DescribeStream": [
+    "StreamArn"
+   ],
+   "DynamoDBStreams_20120810.GetRecords": [
+    "Limit",
+    "ShardIterator"
+   ],
+   "DynamoDBStreams_20120810.GetShardIterator": [
+    "ShardId",
+    "ShardIteratorType",
+    "StreamArn"
+   ],
+   "DynamoDB_20120810.CreateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "BillingMode",
+    "DeletionProtectionEnabled",
+    "KeySchema",
+    "KeySchema[]",
+    "KeySchema[].AttributeName",
+    "KeySchema[].KeyType",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DeleteItem": [
+    "ConditionExpression",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.DescribeTable": [
+    "TableName"
+   ],
+   "DynamoDB_20120810.GetItem": [
+    "ConsistentRead",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.PutItem": [
+    "ConditionExpression",
+    "Expected",
+    "Expected.{}",
+    "Expected.{}.Exists",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "Item",
+    "Item.{}",
+    "Item.{}.L",
+    "Item.{}.L[]",
+    "Item.{}.L[].M",
+    "Item.{}.L[].M.{}",
+    "Item.{}.L[].M.{}.N",
+    "Item.{}.L[].M.{}.S",
+    "Item.{}.N",
+    "Item.{}.S",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Query": [
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.S",
+    "IndexName",
+    "KeyConditionExpression",
+    "TableName"
+   ],
+   "DynamoDB_20120810.Scan": [
+    "Segment",
+    "TableName",
+    "TotalSegments"
+   ],
+   "DynamoDB_20120810.UpdateItem": [
+    "AttributeUpdates",
+    "AttributeUpdates.{}",
+    "AttributeUpdates.{}.Action",
+    "AttributeUpdates.{}.Value",
+    "AttributeUpdates.{}.Value.N",
+    "AttributeUpdates.{}.Value.S",
+    "ConditionExpression",
+    "Expected",
+    "Expected.{}",
+    "Expected.{}.Exists",
+    "Expected.{}.Value",
+    "Expected.{}.Value.N",
+    "Expected.{}.Value.S",
+    "ExpressionAttributeNames",
+    "ExpressionAttributeNames.{}",
+    "ExpressionAttributeValues",
+    "ExpressionAttributeValues.{}",
+    "ExpressionAttributeValues.{}.M",
+    "ExpressionAttributeValues.{}.N",
+    "ExpressionAttributeValues.{}.S",
+    "Key",
+    "Key.{}",
+    "Key.{}.S",
+    "ReturnValues",
+    "ReturnValuesOnConditionCheckFailure",
+    "TableName",
+    "UpdateExpression"
+   ],
+   "DynamoDB_20120810.UpdateTable": [
+    "AttributeDefinitions",
+    "AttributeDefinitions[]",
+    "AttributeDefinitions[].AttributeName",
+    "AttributeDefinitions[].AttributeType",
+    "GlobalSecondaryIndexUpdates",
+    "GlobalSecondaryIndexUpdates[]",
+    "GlobalSecondaryIndexUpdates[].Create",
+    "GlobalSecondaryIndexUpdates[].Create.IndexName",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema[]",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema[].AttributeName",
+    "GlobalSecondaryIndexUpdates[].Create.KeySchema[].KeyType",
+    "GlobalSecondaryIndexUpdates[].Create.Projection",
+    "GlobalSecondaryIndexUpdates[].Create.Projection.ProjectionType",
+    "TableName"
+   ]
+  },
+  "headers": [
+   "amz-sdk-invocation-id",
+   "amz-sdk-request",
+   "authorization",
+   "connection",
+   "content-length",
+   "content-type",
+   "host",
+   "user-agent",
+   "x-amz-content-sha256",
+   "x-amz-date",
+   "x-amz-target"
+  ],
+  "signed_headers": [
+   "amz-sdk-invocation-id;amz-sdk-request;content-length;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target"
+  ],
+  "user_agents": [
+   "aws-sdk-java/2.56.0"
+  ]
+ }
+}
