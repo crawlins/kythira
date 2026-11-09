@@ -383,6 +383,26 @@ private:
                 {"UntagInstanceProfile", [](call& c) { return c.untag("instance-profile"); }},
                 {"ListInstanceProfileTags",
                  [](call& c) { return c.list_tags("instance-profile"); }},
+                // OIDC providers, simulation and account calls (Requirement 9.6)
+                {"CreateOpenIDConnectProvider", &call::create_oidc_provider},
+                {"GetOpenIDConnectProvider", &call::get_oidc_provider},
+                {"ListOpenIDConnectProviders", &call::list_oidc_providers},
+                {"DeleteOpenIDConnectProvider", &call::delete_oidc_provider},
+                {"UpdateOpenIDConnectProviderThumbprint", &call::update_oidc_thumbprints},
+                {"AddClientIDToOpenIDConnectProvider",
+                 [](call& c) { return c.oidc_client_id(true); }},
+                {"RemoveClientIDFromOpenIDConnectProvider",
+                 [](call& c) { return c.oidc_client_id(false); }},
+                {"TagOpenIDConnectProvider", [](call& c) { return c.tag("oidc-provider"); }},
+                {"UntagOpenIDConnectProvider", [](call& c) { return c.untag("oidc-provider"); }},
+                {"ListOpenIDConnectProviderTags",
+                 [](call& c) { return c.list_tags("oidc-provider"); }},
+                {"SimulatePrincipalPolicy", &call::simulate_principal_policy},
+                {"SimulateCustomPolicy", &call::simulate_custom_policy},
+                {"GetContextKeysForPrincipalPolicy", &call::get_context_keys_for_principal_policy},
+                {"GetContextKeysForCustomPolicy", &call::get_context_keys_for_custom_policy},
+                {"GetAccountAuthorizationDetails", &call::get_account_authorization_details},
+                {"GetAccountSummary", &call::get_account_summary},
             };
             const auto it = table.find(action);
             if (it == table.end()) {
@@ -1965,6 +1985,10 @@ private:
                 }
                 return {v.name, v.arn, v.tags};
             }
+            if (kind == "oidc-provider") {
+                const auto v = load_oidc();
+                return {v.p.url, v.arn, v.p.tags};
+            }
             const auto v =
                 load_instance_profile(entity_name("InstanceProfileName", "instance-profile"));
             return {v.p.name, v.arn, v.p.tags};
@@ -2171,6 +2195,731 @@ private:
                              : iam_command::remove_role_from_instance_profile,
                          {{"instance_profile", p.p.name}, {"role", r.r.name}});
             return {};
+        }
+
+        // ── OIDC providers (Requirement 9.6) ──
+
+        /// INV-OIDC-1: the URL as given; stored and named without the scheme.
+        [[nodiscard]] auto oidc_url_param() const -> std::string {
+            auto url = required("Url");
+            if (!validate::oidc_url(url)) {
+                detail::fail("ValidationError",
+                             "The specified value for url is invalid. It must be 1-255 "
+                             "characters, begin with https://, and have no query, fragment, "
+                             "port or user information.");
+            }
+            return url.substr(std::string_view("https://").size());
+        }
+
+        /// INV-OIDC-2: each client id is 1-255 characters, at most 100.
+        [[nodiscard]] static auto checked_client_id(const std::string& id) -> std::string {
+            if (!validate::oidc_client_id(id)) {
+                detail::fail("ValidationError",
+                             "The specified value for clientID is invalid. It must be 1-255 "
+                             "characters.");
+            }
+            return id;
+        }
+
+        /// INV-OIDC-3: each thumbprint is 40 hex digits.
+        [[nodiscard]] auto thumbprints_param() const -> boost::json::array {
+            const auto list = f.members("ThumbprintList");
+            if (!list) {
+                detail::fail("ValidationError", "The ThumbprintList parameter is malformed.");
+            }
+            boost::json::array out;
+            for (const auto& t : *list) {
+                if (!validate::oidc_thumbprint(t)) {
+                    detail::fail("ValidationError",
+                                 "The specified value for thumbprint is invalid. It must be the "
+                                 "40 hexadecimal digits of a SHA-1 hash.");
+                }
+                out.emplace_back(t);
+            }
+            return out;
+        }
+
+        struct oidc_view {
+            iam_oidc_provider p;
+            std::string arn;
+        };
+
+        /// The provider an `OpenIDConnectProviderArn` names in this account.
+        auto load_oidc() -> oidc_view {
+            const auto parn = arn_param("OpenIDConnectProviderArn");
+            std::optional<oidc_view> out;
+            read([&](const iam_state_machine& sm) {
+                const auto head =
+                    "arn:" + sm.config().partition + ":iam::" + account() + ":oidc-provider/";
+                if (!parn.starts_with(head)) {
+                    return;
+                }
+                if (const auto* a = sm.account(account())) {
+                    const auto it = a->oidc_providers.find(parn.substr(head.size()));
+                    if (it != a->oidc_providers.end()) {
+                        out = oidc_view{it->second, parn};
+                    }
+                }
+            });
+            if (!out) {
+                authorize(parn);
+                detail::fail("NoSuchEntity", "OpenIDConnect Provider not found for arn " + parn);
+            }
+            return std::move(*out);
+        }
+
+        auto create_oidc_provider() -> std::string {
+            const auto url = oidc_url_param();
+            const auto ids = f.members("ClientIDList");
+            if (!ids) {
+                detail::fail("ValidationError", "The ClientIDList parameter is malformed.");
+            }
+            boost::json::array client_ids;
+            for (const auto& id : *ids) {
+                client_ids.emplace_back(checked_client_id(id));
+            }
+            const auto thumbprints = thumbprints_param();
+            const auto t = tags(validate::tag_keys::case_sensitive);
+            const auto parn = arn("oidc-provider/", "", url);
+            authorize(parn, nullptr, t);
+            (void)submit(iam_command::create_oidc_provider, {{"url", url},
+                                                             {"client_ids", std::move(client_ids)},
+                                                             {"thumbprints", thumbprints},
+                                                             {"tags", tags_json(t)}});
+            aws_query::xml_writer w;
+            w.element("OpenIDConnectProviderArn", parn);
+            if (!t.empty()) {
+                tag_map m(t.begin(), t.end());
+                detail::write_tags(w, m);
+            }
+            return w.str();
+        }
+
+        auto get_oidc_provider() -> std::string {
+            const auto v = load_oidc();
+            authorize(v.arn, &v.p.tags);
+            aws_query::xml_writer w;
+            w.element("Url", v.p.url);
+            w.open("ClientIDList");
+            for (const auto& id : v.p.client_ids) {
+                w.element("member", id);
+            }
+            w.close().open("ThumbprintList");
+            for (const auto& t : v.p.thumbprints) {
+                w.element("member", t);
+            }
+            w.close().element("CreateDate", iso8601(v.p.create_date));
+            if (!v.p.tags.empty()) {
+                detail::write_tags(w, v.p.tags);
+            }
+            return w.str();
+        }
+
+        auto list_oidc_providers() -> std::string {
+            authorize("*");
+            aws_query::xml_writer w;
+            w.open("OpenIDConnectProviderList");
+            read([&](const iam_state_machine& sm) {
+                if (const auto* a = sm.account(account())) {
+                    for (const auto& [url, _] : a->oidc_providers) {
+                        w.open("member")
+                            .element("Arn", sm.arn(account(), "oidc-provider/", "", url))
+                            .close();
+                    }
+                }
+            });
+            w.close();
+            return w.str();
+        }
+
+        auto delete_oidc_provider() -> std::string {
+            const auto v = load_oidc();
+            authorize(v.arn, &v.p.tags);
+            (void)submit(iam_command::delete_oidc_provider, {{"url", v.p.url}});
+            return {};
+        }
+
+        auto update_oidc_thumbprints() -> std::string {
+            if (!f.contains("ThumbprintList.member.1")) {
+                (void)required("ThumbprintList");
+            }
+            const auto thumbprints = thumbprints_param();
+            const auto v = load_oidc();
+            authorize(v.arn, &v.p.tags);
+            (void)submit(iam_command::update_oidc_provider,
+                         {{"url", v.p.url}, {"thumbprints", thumbprints}});
+            return {};
+        }
+
+        auto oidc_client_id(bool add) -> std::string {
+            const auto id = checked_client_id(required("ClientID"));
+            const auto v = load_oidc();
+            authorize(v.arn, &v.p.tags);
+            (void)submit(iam_command::update_oidc_provider,
+                         {{"url", v.p.url}, {add ? "add_client_id" : "remove_client_id", id}});
+            return {};
+        }
+
+        // ── simulation (Requirements 6.7, 9.6) ──
+
+        /// The policies a simulation evaluates, with their documents kept
+        /// alive.
+        struct sim_policies {
+            iam::detail::gathered g;
+            principal who;
+            std::optional<iam_role> role;  // a role source, for its tags
+        };
+
+        /// `<name>.member.N` documents, each checked as `type` would be on
+        /// a write (INV-POL-1 and the parser).
+        auto input_documents(sim_policies& s, std::string_view name, policy_type type,
+                             std::vector<named_policy>& into) -> std::size_t {
+            const auto docs = f.members(name);
+            if (!docs) {
+                detail::fail("ValidationError",
+                             "The " + std::string(name) + " parameter is malformed.");
+            }
+            for (std::size_t i = 0; i < docs->size(); ++i) {
+                const auto& d = (*docs)[i];
+                if (!validate::policy_document_text(d)) {
+                    detail::fail("ValidationError",
+                                 "The specified value for " + std::string(name) + " is invalid.");
+                }
+                try {
+                    auto doc = std::make_shared<const policy_document>(
+                        parse_policy(d, type, parse_options{.max_size = 131072}));
+                    into.push_back({std::string(name) + "." + std::to_string(i + 1), doc.get()});
+                    s.g.keep.push_back(std::move(doc));
+                } catch (const policy_error& e) {
+                    detail::fail(std::string(e.code()), e.what());
+                }
+            }
+            return docs->size();
+        }
+
+        /// `PolicySourceArn`: a user (with its groups and boundary), a group
+        /// or a role in this account. Authorizes the action on it.
+        auto source_policies() -> sim_policies {
+            const auto source = arn_param("PolicySourceArn");
+            sim_policies s;
+            std::string kind;
+            std::string name;
+            std::string partition;
+            read([&](const iam_state_machine& sm) { partition = sm.config().partition; });
+            const auto head = "arn:" + partition + ":iam::" + account() + ":";
+            if (source.starts_with(head)) {
+                const auto rest = source.substr(head.size());
+                const auto slash = rest.find('/');
+                kind = rest.substr(0, slash);
+                name = slash == std::string::npos ? "" : rest.substr(rest.rfind('/') + 1);
+            }
+            bool found = false;
+            read([&](const iam_state_machine& sm) {
+                if (kind == "user") {
+                    if (const auto* u = sm.user(account(), name)) {
+                        found = sm.arn(account(), "user", u->path, u->name) == source;
+                        aws_auth::principal_context pc;
+                        pc.type = aws_auth::principal_type::user;
+                        pc.account = account();
+                        pc.username = u->name;
+                        s.g = iam::detail::gather(sm, pc);
+                        s.who.kind = principal_kind::user;
+                    }
+                } else if (kind == "group") {
+                    if (const auto* g = sm.group(account(), name)) {
+                        found = sm.arn(account(), "group", g->path, g->name) == source;
+                        iam::detail::add_entity_policies(s.g, sm, *g, "group/" + g->name);
+                        s.who.kind = principal_kind::user;
+                    }
+                } else if (kind == "role") {
+                    if (const auto* r = sm.role(account(), name)) {
+                        found = sm.arn(account(), "role", r->path, r->name) == source;
+                        aws_auth::principal_context pc;
+                        pc.type = aws_auth::principal_type::assumed_role;
+                        pc.account = account();
+                        pc.role_name = r->name;
+                        s.g = iam::detail::gather(sm, pc);
+                        s.who.kind = principal_kind::role_session;
+                        s.who.role_arn = source;
+                    }
+                }
+            });
+            authorize(source);
+            if (!found) {
+                detail::fail("NoSuchEntity", "The entity " + source + " cannot be found.");
+            }
+            s.who.account = account();
+            s.who.arn = source;
+            return s;
+        }
+
+        /// `ContextEntries.member.N.{ContextKeyName, ContextKeyValues.member.M,
+        /// ContextKeyType}`.
+        [[nodiscard]] auto context_entries() const -> context_keys {
+            context_keys ctx;
+            for (std::size_t i = 1;; ++i) {
+                const auto base = "ContextEntries.member." + std::to_string(i) + ".";
+                const auto name = f.get(base + "ContextKeyName");
+                if (!name) {
+                    break;
+                }
+                if (name->empty() || name->size() > 256) {
+                    detail::fail("ValidationError", "Invalid ContextKeyName.");
+                }
+                (void)choice(
+                    base + "ContextKeyType",
+                    {"string", "stringList", "numeric", "numericList", "boolean", "booleanList",
+                     "ip", "ipList", "binary", "binaryList", "date", "dateList"},
+                    "string");
+                const auto values = f.members(base + "ContextKeyValues");
+                if (!values) {
+                    detail::fail("ValidationError", "Invalid ContextKeyValues.");
+                }
+                if (values->size() == 1) {
+                    ctx.set(*name, values->front());
+                } else {
+                    ctx.set_multi(*name, {values->begin(), values->end()});
+                }
+            }
+            return ctx;
+        }
+
+        /// The condition keys of the statements in `ps` that cover `act`
+        /// (all of them when `act` is empty), first spelling kept.
+        [[nodiscard]] static auto condition_keys(const std::vector<const policy_document*>& docs,
+                                                 std::string_view act) -> std::vector<std::string> {
+            std::vector<std::string> out;
+            std::set<std::string> seen;
+            for (const auto* d : docs) {
+                for (const auto& st : d->statements) {
+                    if (!act.empty() && st.action.matches(act) == st.not_action) {
+                        continue;
+                    }
+                    for (const auto& c : st.conditions) {
+                        if (seen.insert(context_keys::normalize(c.key)).second) {
+                            out.push_back(c.key);
+                        }
+                    }
+                }
+            }
+            return out;
+        }
+
+        auto simulate(sim_policies s) -> std::string {
+            const auto actions = f.members("ActionNames");
+            if (!actions || actions->empty()) {
+                detail::fail("ValidationError", "The ActionNames parameter must not be empty.");
+            }
+            auto resources = f.members("ResourceArns");
+            if (!resources) {
+                detail::fail("ValidationError", "The ResourceArns parameter is malformed.");
+            }
+            if (resources->empty()) {
+                resources->push_back("*");
+            }
+            if (f.contains("PermissionsBoundaryPolicyInputList.member.1")) {
+                std::vector<named_policy> b;
+                (void)input_documents(s, "PermissionsBoundaryPolicyInputList",
+                                      policy_type::boundary, b);
+                s.g.boundary = b.front();
+            }
+            std::optional<named_policy> resource_policy;
+            std::shared_ptr<const policy_document> resource_doc;
+            if (const auto rp = f.get("ResourcePolicy")) {
+                try {
+                    resource_doc = std::make_shared<const policy_document>(parse_policy(
+                        *rp, policy_type::resource, parse_options{.max_size = 131072}));
+                    resource_policy = named_policy{"ResourcePolicy", resource_doc.get()};
+                } catch (const policy_error& e) {
+                    detail::fail(std::string(e.code()), e.what());
+                }
+            }
+            if (const auto caller = f.get("CallerArn")) {
+                s.who.arn = std::string(*caller);
+            }
+            const auto owner = f.get("ResourceOwner");
+            const auto ctx = context_entries();
+            std::vector<const policy_document*> docs;
+            for (const auto& p : s.g.identity) {
+                docs.push_back(p.doc);
+            }
+            if (s.g.boundary) {
+                docs.push_back(s.g.boundary->doc);
+            }
+            if (resource_policy) {
+                docs.push_back(resource_policy->doc);
+            }
+
+            struct result {
+                std::string action;
+                std::string resource;
+                decision d;
+                std::vector<std::string> missing;
+            };
+            std::vector<result> results;
+            for (const auto& a : *actions) {
+                for (const auto& r : *resources) {
+                    evaluation_request req;
+                    req.who = s.who;
+                    req.action = a;
+                    req.resource = r;
+                    req.resource_account = owner ? std::string(*owner) : std::string{};
+                    req.context = ctx;
+                    req.identity = s.g.identity;
+                    req.boundary = s.g.boundary;
+                    req.resource_policy = resource_policy;
+                    result out{a, r, evaluate(req), {}};
+                    for (const auto& k : condition_keys(docs, a)) {
+                        if (ctx.find(k) == nullptr) {
+                            out.missing.push_back(k);
+                        }
+                    }
+                    results.push_back(std::move(out));
+                }
+            }
+            std::vector<std::string> keys;
+            for (std::size_t i = 0; i < results.size(); ++i) {
+                auto k = std::to_string(i);
+                keys.push_back(std::string(8 - k.size(), '0') + k);
+            }
+            std::string tail;
+            const auto selected = page(keys, s.who.arn, tail);
+            aws_query::xml_writer w;
+            w.open("EvaluationResults");
+            for (const auto& k : selected) {
+                const auto& r = results.at(std::stoul(k));
+                w.open("member")
+                    .element("EvalActionName", r.action)
+                    .element("EvalResourceName", r.resource)
+                    .element("EvalDecision",
+                             std::string_view(r.d.result == decision::outcome::allow ? "allowed"
+                                              : r.d.result == decision::outcome::explicit_deny
+                                                  ? "explicitDeny"
+                                                  : "implicitDeny"));
+                w.open("MatchedStatements");
+                if (r.d.deciding) {
+                    w.open("member")
+                        .element("SourcePolicyId", r.d.deciding->policy)
+                        .element("SourcePolicyType",
+                                 std::string_view(r.d.deciding->policy == "ResourcePolicy"
+                                                      ? "resource"
+                                                      : "IAM Policy"))
+                        .close();
+                }
+                w.close().open("MissingContextValues");
+                for (const auto& m : r.missing) {
+                    w.element("member", m);
+                }
+                w.close().close();
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        auto simulate_principal_policy() -> std::string {
+            auto s = source_policies();
+            if (f.contains("PolicyInputList.member.1")) {
+                (void)input_documents(s, "PolicyInputList", policy_type::identity, s.g.identity);
+            }
+            return simulate(std::move(s));
+        }
+
+        auto simulate_custom_policy() -> std::string {
+            authorize("*");
+            sim_policies s;
+            if (input_documents(s, "PolicyInputList", policy_type::identity, s.g.identity) == 0) {
+                detail::fail("ValidationError", "The PolicyInputList parameter must not be empty.");
+            }
+            s.who.kind = principal_kind::user;
+            s.who.account = account();
+            return simulate(std::move(s));
+        }
+
+        auto context_keys_result(sim_policies& s) -> std::string {
+            std::vector<const policy_document*> docs;
+            for (const auto& p : s.g.identity) {
+                docs.push_back(p.doc);
+            }
+            aws_query::xml_writer w;
+            w.open("ContextKeyNames");
+            for (const auto& k : condition_keys(docs, {})) {
+                w.element("member", k);
+            }
+            w.close();
+            return w.str();
+        }
+
+        auto get_context_keys_for_principal_policy() -> std::string {
+            auto s = source_policies();
+            if (f.contains("PolicyInputList.member.1")) {
+                (void)input_documents(s, "PolicyInputList", policy_type::identity, s.g.identity);
+            }
+            return context_keys_result(s);
+        }
+
+        auto get_context_keys_for_custom_policy() -> std::string {
+            authorize("*");
+            sim_policies s;
+            if (input_documents(s, "PolicyInputList", policy_type::identity, s.g.identity) == 0) {
+                detail::fail("ValidationError", "The PolicyInputList parameter must not be empty.");
+            }
+            return context_keys_result(s);
+        }
+
+        // ── account calls ──
+
+        static void write_inline_list(aws_query::xml_writer& w, std::string_view tag,
+                                      const std::map<std::string, inline_policy>& ps) {
+            w.open(tag);
+            for (const auto& [_, p] : ps) {
+                w.open("member")
+                    .element("PolicyName", p.name)
+                    .element("PolicyDocument", aws_query::url_encode(p.document))
+                    .close();
+            }
+            w.close();
+        }
+
+        static void write_attached_list(aws_query::xml_writer& w, const std::set<std::string>& ps) {
+            w.open("AttachedManagedPolicies");
+            for (const auto& parn : ps) {
+                const auto s = detail::split_policy_arn_any(parn);
+                w.open("member")
+                    .element("PolicyName", s ? s->name : parn)
+                    .element("PolicyArn", parn)
+                    .close();
+            }
+            w.close();
+        }
+
+        /// One document of every entity the `Filter` selects. Keys order
+        /// users, groups, roles, then policies, so one marker walks them all.
+        auto get_account_authorization_details() -> std::string {
+            const auto filters = f.members("Filter");
+            if (!filters) {
+                detail::fail("ValidationError", "The Filter parameter is malformed.");
+            }
+            const auto wants = [&](std::string_view what) {
+                return filters->empty() || std::ranges::find(*filters, what) != filters->end();
+            };
+            for (const auto& x : *filters) {
+                if (x != "User" && x != "Role" && x != "Group" && x != "LocalManagedPolicy" &&
+                    x != "AWSManagedPolicy") {
+                    detail::fail("ValidationError", "Invalid Filter value " + x + ".");
+                }
+            }
+            authorize("*");
+            std::map<std::string, std::string> docs;  // key -> one member's XML
+            read([&](const iam_state_machine& sm) {
+                const auto* a = sm.account(account());
+                if (a == nullptr) {
+                    return;
+                }
+                if (wants("User")) {
+                    for (const auto& [k, u] : a->users) {
+                        aws_query::xml_writer w;
+                        w.element("Path", u.path)
+                            .element("UserName", u.name)
+                            .element("UserId", u.id)
+                            .element("Arn", sm.arn(account(), "user", u.path, u.name))
+                            .element("CreateDate", iso8601(u.create_date));
+                        write_inline_list(w, "UserPolicyList", u.inline_policies);
+                        w.open("GroupList");
+                        for (const auto& g : u.groups) {
+                            const auto* gr = sm.group(account(), g);
+                            w.element("member", gr != nullptr ? gr->name : g);
+                        }
+                        w.close();
+                        write_attached_list(w, u.attached);
+                        detail::write_boundary(w, u.boundary);
+                        detail::write_tags(w, u.tags);
+                        docs["1" + k] = w.str();
+                    }
+                }
+                if (wants("Group")) {
+                    for (const auto& [k, g] : a->groups) {
+                        aws_query::xml_writer w;
+                        w.element("Path", g.path)
+                            .element("GroupName", g.name)
+                            .element("GroupId", g.id)
+                            .element("Arn", sm.arn(account(), "group", g.path, g.name))
+                            .element("CreateDate", iso8601(g.create_date));
+                        write_inline_list(w, "GroupPolicyList", g.inline_policies);
+                        write_attached_list(w, g.attached);
+                        docs["2" + k] = w.str();
+                    }
+                }
+                if (wants("Role")) {
+                    for (const auto& [k, r] : a->roles) {
+                        aws_query::xml_writer w;
+                        const role_view rv{r, sm.arn(account(), "role", r.path, r.name)};
+                        w.element("Path", r.path)
+                            .element("RoleName", r.name)
+                            .element("RoleId", r.id)
+                            .element("Arn", rv.arn)
+                            .element("CreateDate", iso8601(r.create_date))
+                            .element("AssumeRolePolicyDocument",
+                                     aws_query::url_encode(r.trust_policy));
+                        w.open("InstanceProfileList");
+                        for (const auto& pk : r.instance_profiles) {
+                            if (const auto* p = sm.instance_profile(account(), pk)) {
+                                w.open("member");
+                                write_profile(w, view_of(sm, *p), false);
+                                w.close();
+                            }
+                        }
+                        w.close();
+                        write_inline_list(w, "RolePolicyList", r.inline_policies);
+                        write_attached_list(w, r.attached);
+                        detail::write_boundary(w, r.boundary);
+                        detail::write_tags(w, r.tags);
+                        w.open("RoleLastUsed").close();
+                        docs["3" + k] = w.str();
+                    }
+                }
+                const auto add_policy = [&](const std::string& parn) {
+                    const auto v = find_policy(sm, parn);
+                    if (!v) {
+                        return;
+                    }
+                    aws_query::xml_writer w;
+                    w.element("PolicyName", v->name)
+                        .element("PolicyId", v->id)
+                        .element("Arn", v->arn)
+                        .element("Path", v->path)
+                        .element("DefaultVersionId", iam_detail::version_id(v->default_version))
+                        .element("AttachmentCount", std::to_string(v->attachments))
+                        .element("PermissionsBoundaryUsageCount", std::to_string(v->boundary_uses))
+                        .boolean("IsAttachable", true);
+                    if (!v->description.empty()) {
+                        w.element("Description", v->description);
+                    }
+                    w.element("CreateDate", iso8601(v->create_date))
+                        .element("UpdateDate", iso8601(v->update_date));
+                    w.open("PolicyVersionList");
+                    for (const auto& [n, pv] : v->versions) {
+                        w.open("member")
+                            .element("Document", aws_query::url_encode(pv.document))
+                            .element("VersionId", iam_detail::version_id(n))
+                            .boolean("IsDefaultVersion", n == v->default_version)
+                            .element("CreateDate", iso8601(pv.create_date))
+                            .close();
+                    }
+                    w.close();
+                    docs["4" + parn] = w.str();
+                };
+                if (wants("LocalManagedPolicy")) {
+                    for (const auto& [_, mp] : a->policies) {
+                        add_policy(sm.arn(account(), "policy", mp.path, mp.name));
+                    }
+                }
+                if (wants("AWSManagedPolicy")) {
+                    // Only those this account uses, as AWS does.
+                    std::set<std::string> used;
+                    const auto note = [&](const std::set<std::string>& attached,
+                                          const std::optional<std::string>& b) {
+                        for (const auto& parn : attached) {
+                            used.insert(parn);
+                        }
+                        if (b) {
+                            used.insert(*b);
+                        }
+                    };
+                    for (const auto& [_, u] : a->users) {
+                        note(u.attached, u.boundary);
+                    }
+                    for (const auto& [_, g] : a->groups) {
+                        note(g.attached, std::nullopt);
+                    }
+                    for (const auto& [_, r] : a->roles) {
+                        note(r.attached, r.boundary);
+                    }
+                    for (const auto& parn : used) {
+                        const auto s = detail::split_policy_arn_any(parn);
+                        if (s && s->account == "aws") {
+                            add_policy(parn);
+                        }
+                    }
+                }
+            });
+            std::vector<std::string> keys;
+            for (const auto& [k, _] : docs) {
+                keys.push_back(k);
+            }
+            std::string tail;
+            std::string scope;
+            for (const auto& x : *filters) {
+                scope += x + ",";
+            }
+            const auto selected = page(keys, scope, tail);
+            aws_query::xml_writer w;
+            for (const auto& [prefix, list] :
+                 {std::pair{'1', "UserDetailList"}, std::pair{'2', "GroupDetailList"},
+                  std::pair{'3', "RoleDetailList"}, std::pair{'4', "Policies"}}) {
+                w.open(list);
+                for (const auto& k : selected) {
+                    if (k[0] == prefix) {
+                        w.open("member").raw(docs.at(k)).close();
+                    }
+                }
+                w.close();
+            }
+            w.raw(tail);
+            return w.str();
+        }
+
+        auto get_account_summary() -> std::string {
+            authorize("*");
+            std::map<std::string, std::size_t> m;
+            const auto l = limits();
+            read([&](const iam_state_machine& sm) {
+                const auto* a = sm.account(account());
+                if (a == nullptr) {
+                    return;
+                }
+                m["Users"] = a->users.size();
+                m["Groups"] = a->groups.size();
+                m["Roles"] = a->roles.size();
+                m["Policies"] = a->policies.size();
+                m["InstanceProfiles"] = a->instance_profiles.size();
+                m["Providers"] = a->oidc_providers.size();
+                std::size_t versions = 0;
+                for (const auto& [_, p] : a->policies) {
+                    versions += p.versions.size();
+                }
+                m["PolicyVersionsInUse"] = versions;
+                m["AccountAccessKeysPresent"] = std::ranges::any_of(
+                    a->access_keys, [](const auto& kv) { return kv.second.owner.empty(); });
+            });
+            // AWS's default account quotas, which Kythira does not enforce.
+            m["UsersQuota"] = 5000;
+            m["GroupsQuota"] = 300;
+            m["RolesQuota"] = 1000;
+            m["PoliciesQuota"] = 1500;
+            m["InstanceProfilesQuota"] = 1000;
+            m["PolicyVersionsInUseQuota"] = 10000;
+            m["AccountMFAEnabled"] = 0;
+            m["MFADevices"] = 0;
+            m["MFADevicesInUse"] = 0;
+            // The quotas this cluster enforces.
+            m["GroupsPerUserQuota"] = l.groups_per_user;
+            m["AttachedPoliciesPerUserQuota"] = l.attached_per_entity;
+            m["AttachedPoliciesPerGroupQuota"] = l.attached_per_entity;
+            m["AttachedPoliciesPerRoleQuota"] = l.attached_per_role;
+            m["PolicySizeQuota"] = l.managed_policy_size;
+            m["VersionsPerPolicyQuota"] = l.policy_versions;
+            m["AccessKeysPerUserQuota"] = l.access_keys_per_user;
+            m["UserPolicySizeQuota"] = l.user_inline_total;
+            m["GroupPolicySizeQuota"] = l.group_inline_total;
+            m["RolePolicySizeQuota"] = l.role_inline_total;
+            m["AssumeRolePolicySizeQuota"] = l.trust_policy_size;
+            aws_query::xml_writer w;
+            w.open("SummaryMap");
+            for (const auto& [k, v] : m) {
+                w.open("entry").element("key", k).element("value", std::to_string(v)).close();
+            }
+            w.close();
+            return w.str();
         }
 
         // ── account alias (INV-ACCT-2) ──

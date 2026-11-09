@@ -149,11 +149,11 @@ Source: [CreateOpenIDConnectProvider][oidc].
 
 | Id | Invariant | Status |
 |---|---|---|
-| INV-OIDC-1 | The URL is 1–255 characters, starts `https://`, and has no query, fragment, port or user info | Tested: val `provider_urls` |
-| INV-OIDC-2 | At most 100 client ids, each 1–255 characters | Tested: val `client_ids_and_thumbprints`, sm `oidc_providers` |
-| INV-OIDC-3 | Thumbprints are 40 hex digits | Tested: val `client_ids_and_thumbprints` |
+| INV-OIDC-1 | The URL is 1–255 characters, starts `https://`, and has no query, fragment, port or user info | Tested: val `provider_urls`; CreateOpenIDConnectProvider calls it: qa `inv_oidc_1_provider_urls_are_checked` |
+| INV-OIDC-2 | At most 100 client ids, each 1–255 characters | Tested: val `client_ids_and_thumbprints`, sm `oidc_providers`; CreateOpenIDConnectProvider and AddClientIDToOpenIDConnectProvider call it: qa `inv_oidc_2_client_ids_are_checked` |
+| INV-OIDC-3 | Thumbprints are 40 hex digits | Tested: val `client_ids_and_thumbprints`; CreateOpenIDConnectProvider and UpdateOpenIDConnectProviderThumbprint call it: qa `inv_oidc_3_thumbprints_are_checked` |
 | INV-OIDC-4 | At most 5 thumbprints | Tested: sm `oidc_thumbprint_quota` |
-| INV-OIDC-5 | One provider per URL per account | Tested: sm `oidc_providers` |
+| INV-OIDC-5 | One provider per URL per account | Tested: sm `oidc_providers`, qa `an_oidc_provider_is_created_read_updated_and_deleted` |
 
 ## Policy grammar
 
