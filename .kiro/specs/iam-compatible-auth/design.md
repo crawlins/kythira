@@ -633,6 +633,35 @@ HTTPS (`--kythira-issuer-local`).
 The principal is `arn:<p>:iam::<acct>:oidc-provider/<issuer>` so trust
 policies stay in one style.
 
+**As built (task 19, `iam_oidc_jwks.hpp`).**
+- `jwks_cache` takes a `fetcher`, so the cache, its one-hour age, the
+  single refetch on an unknown `kid` (no more often than every 30 s per
+  issuer, so made-up `kid`s cannot make this endpoint hammer an issuer)
+  and its caps (256 issuers, 64 keys each) are tested without a network.
+  The discovery document must name the issuer it was fetched for, and
+  only keys with `use` absent or `sig` are kept.
+- `https_fetcher` checks the URL (https only; the allowlist when set),
+  resolves the name itself, refuses it if any address is not public
+  (private, loopback, link-local and metadata, CGNAT, multicast, ULA,
+  and IPv4-mapped forms of those), and pins cpp-httplib to the address it
+  checked with `set_hostname_addr_map`, so SNI and the certificate check
+  still use the name but a second DNS answer cannot rebind it. Redirects
+  are not followed. `--oidc-proxy` sends fetches through a proxy, which
+  then resolves for itself; the allowlist check still runs first.
+  `--oidc-ca-file` replaces the system trust store for a test issuer.
+- With no `--oidc-allowed-hosts` any host is fetched and private
+  addresses are allowed, which a compose network's issuer needs; a
+  deployment that serves untrusted callers sets the allowlist.
+- AssumeRoleWithWebIdentity is answered unsigned (`iam_node` routes an
+  unauthenticated request whose `Action` is that one to STS). The trust
+  policy is evaluated by `iam_authorizer::authorize_web_identity` with the
+  provider as a `web_identity` principal and no identity policies, with
+  `<host/path>:sub`, `:aud` (the `azp` when present), `:oaud` and `:amr`.
+  A missing role is AccessDenied only after the token has verified, so
+  role names cannot be probed with junk tokens. Session policies are
+  accepted; session tags and source identity from token claims are not
+  read yet.
+
 ## Component 11: Redis (Requirement 13)
 
 The Redis module never includes IAM. The two meet only in

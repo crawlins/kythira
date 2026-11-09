@@ -797,7 +797,7 @@ because each has a zero-spend fallback.
     unit test, and the PR updates its row there.
   - _Requirements: 10.1, 10.8–10.10_
 
-- [ ] 19. AssumeRoleWithWebIdentity (external OIDC)
+- [x] 19. AssumeRoleWithWebIdentity (external OIDC)
   - `oidc_jwks_cache` with timeouts, a size cap, the host allowlist, private
     address refusal and DNS-rebinding-safe connects.
   - JWT validation and the federated principal with its `:sub`, `:aud` and

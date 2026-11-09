@@ -32,6 +32,8 @@
 
 #include <boost/json.hpp>
 
+#include <raft/jwt.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -101,6 +103,42 @@ os::CmdResult aws_cli_session(int target, const std::string& key_id, const std::
                      "aws-cli", "--endpoint-url", endpoint(target), "--output", "json"});
     cmd.insert(cmd.end(), args.begin(), args.end());
     return os::real_exec(cmd);
+}
+
+/// Writes `content` to `path` in the test OIDC issuer's container.
+os::CmdResult issuer_write(const std::string& path, const std::string& content) {
+    const auto b64 = [&] {
+        static constexpr std::string_view k =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string out;
+        std::size_t i = 0;
+        for (; i + 2 < content.size(); i += 3) {
+            const auto n = (static_cast<unsigned char>(content[i]) << 16) |
+                           (static_cast<unsigned char>(content[i + 1]) << 8) |
+                           static_cast<unsigned char>(content[i + 2]);
+            out += k[(n >> 18) & 63];
+            out += k[(n >> 12) & 63];
+            out += k[(n >> 6) & 63];
+            out += k[n & 63];
+        }
+        if (i + 1 == content.size()) {
+            const auto n = static_cast<unsigned char>(content[i]) << 16;
+            out += k[(n >> 18) & 63];
+            out += k[(n >> 12) & 63];
+            out += "==";
+        } else if (i + 2 == content.size()) {
+            const auto n = (static_cast<unsigned char>(content[i]) << 16) |
+                           (static_cast<unsigned char>(content[i + 1]) << 8);
+            out += k[(n >> 18) & 63];
+            out += k[(n >> 12) & 63];
+            out += k[(n >> 6) & 63];
+            out += '=';
+        }
+        return out;
+    }();
+    return os::real_exec(compose_cmd(
+        {"exec", "-T", "oidc-issuer", "sh", "-c",
+         "mkdir -p \"$(dirname " + path + ")\" && echo " + b64 + " | base64 -d > " + path}));
 }
 
 /// The value after `name = ` in an INI file's text.
@@ -489,6 +527,84 @@ BOOST_AUTO_TEST_CASE(cluster_by_service_name) {
             BOOST_TEST(aws_cli(leader, root_id, root_secret,
                                {"iam", "delete-role", "--role-name", "cli-session"})
                            .code == 0);
+        }
+
+        // Task 19: AssumeRoleWithWebIdentity against the test issuer. The
+        // scenario is the identity provider: it publishes a JWKS through
+        // the issuer container and signs the token; iam_node fetches the
+        // JWKS over HTTPS and checks the token and the trust policy.
+        {
+            const auto key = kythira::jose::generate_signing_key(kythira::jose::jws_alg::es256);
+            auto jwk = kythira::jose::public_jwk(key.get());
+            jwk["kid"] = "scenario-1";
+            jwk["use"] = "sig";
+            BOOST_REQUIRE(issuer_write("/srv/www/.well-known/openid-configuration",
+                                       R"({"issuer":"https://oidc-issuer",)"
+                                       R"("jwks_uri":"https://oidc-issuer/jwks"})")
+                              .code == 0);
+            BOOST_REQUIRE(issuer_write("/srv/www/jwks", boost::json::serialize(boost::json::object{
+                                                            {"keys", boost::json::array{jwk}}}))
+                              .code == 0);
+            BOOST_REQUIRE(aws_cli(leader, root_id, root_secret,
+                                  {"iam", "create-open-id-connect-provider", "--url",
+                                   "https://oidc-issuer", "--client-id-list", "sts.amazonaws.com",
+                                   "--thumbprint-list", std::string(40, 'a')})
+                              .code == 0);
+            const std::string web_trust =
+                R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::111111111111:oidc-provider/oidc-issuer"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"oidc-issuer:sub":"workload:scenario"}}}]})";
+            BOOST_REQUIRE(aws_cli(leader, root_id, root_secret,
+                                  {"iam", "create-role", "--role-name", "cli-web",
+                                   "--assume-role-policy-document", web_trust})
+                              .code == 0);
+            const auto token_for = [&](const std::string& sub) {
+                const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+                return kythira::jose::sign_compact(
+                    boost::json::object{{"kid", "scenario-1"}, {"typ", "JWT"}},
+                    boost::json::serialize(boost::json::object{{"iss", "https://oidc-issuer"},
+                                                               {"aud", "sts.amazonaws.com"},
+                                                               {"sub", sub},
+                                                               {"iat", now},
+                                                               {"exp", now + 600}}),
+                    key.get(), kythira::jose::jws_alg::es256);
+            };
+            const auto web_assume = [&](const std::string& sub) {
+                return aws_cli(leader, root_id, root_secret,
+                               {"sts", "assume-role-with-web-identity", "--role-arn",
+                                "arn:aws:iam::111111111111:role/cli-web", "--role-session-name",
+                                "web", "--web-identity-token", token_for(sub)});
+            };
+            os::CmdResult web{};
+            BOOST_TEST(eventually(
+                           [&] {
+                               web = web_assume("workload:scenario");
+                               return web.code == 0;
+                           },
+                           30s),
+                       "aws sts assume-role-with-web-identity failed:\n"
+                           << web.out);
+            BOOST_TEST(web.out.find("arn:aws:sts::111111111111:assumed-role/cli-web/web") !=
+                           std::string::npos,
+                       web.out);
+            const auto web_id = json_field(web.out, "Credentials", "AccessKeyId");
+            const auto web_secret = json_field(web.out, "Credentials", "SecretAccessKey");
+            const auto web_token = json_field(web.out, "Credentials", "SessionToken");
+            auto web_me = aws_cli_session(leader, web_id, web_secret, web_token,
+                                          {"sts", "get-caller-identity"});
+            BOOST_TEST(web_me.out.find("assumed-role/cli-web/web") != std::string::npos,
+                       web_me.out);
+            auto other = web_assume("workload:intruder");
+            BOOST_TEST(other.code != 0);
+            BOOST_TEST(other.out.find("AccessDenied") != std::string::npos, other.out);
+            BOOST_TEST(aws_cli(leader, root_id, root_secret,
+                               {"iam", "delete-role", "--role-name", "cli-web"})
+                           .code == 0);
+            BOOST_TEST(
+                aws_cli(leader, root_id, root_secret,
+                        {"iam", "delete-open-id-connect-provider", "--open-id-connect-provider-arn",
+                         "arn:aws:iam::111111111111:oidc-provider/oidc-issuer"})
+                    .code == 0);
         }
 
         auto off = aws_cli(leader, root_id, root_secret,

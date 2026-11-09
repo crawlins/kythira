@@ -457,6 +457,77 @@ public:
         return out;
     }
 
+    /// AssumeRoleWithWebIdentity's check (task 19): the request is unsigned,
+    /// so the caller is an identity provider's user, `provider_arn`
+    /// (`arn:aws:iam::<acct>:oidc-provider/<host/path>`), with no identity
+    /// policies. Only a trust policy naming that provider as `Federated`
+    /// can allow it (INV-STS-B7). `r.keys` carries the provider's claim
+    /// keys (`<host/path>:sub` and so on).
+    [[nodiscard]] auto authorize_web_identity(const std::string& provider_arn,
+                                              const aws_auth::authz_request& r)
+        -> aws_auth::authz_decision {
+        aws_auth::principal_context audit_who;
+        audit_who.arn = provider_arn;
+        aws_auth::authz_decision out;
+        if (stale()) {
+            out.reason = "the IAM replica is stale";
+            record(audit_who, r, out);
+            return out;
+        }
+        if (_registry->find(r.action) == nullptr) {
+            out.reason = "the action is not registered by any service";
+            record(audit_who, r, out);
+            return out;
+        }
+        evaluation_request req;
+        req.who.kind = principal_kind::web_identity;
+        req.who.name = provider_arn;
+        req.action = r.action;
+        req.resource = r.resource;
+        req.resource_account = r.resource_account;
+        req.resource_kind = resource_policy_kind::trust;
+        std::shared_ptr<const policy_document> trust;
+        if (r.resource_policy) {
+            try {
+                trust = std::make_shared<const policy_document>(parse_policy(
+                    *r.resource_policy, policy_type::trust,
+                    {.max_size = std::max<std::size_t>(r.resource_policy->size(), 1)}));
+                req.resource_policy = named_policy{"resource", trust.get()};
+            } catch (const policy_error&) {
+                // An unreadable trust policy grants nothing.
+            }
+        }
+        request_facts f;
+        f.now = _clock();
+        f.secure_transport = r.secure_transport;
+        f.source_ip = r.source_ip;
+        f.user_agent = r.user_agent;
+        f.requested_region = r.region;
+        f.principal_type = "WebIdentityUser";
+        f.request_tags = r.request_tags;
+        f.resource_tags = r.resource_tags;
+        f.resource_account = r.resource_account;
+        auto ctx = global_condition_keys(f);
+        for (const auto& [key, values] : r.keys) {
+            if (values.size() == 1) {
+                ctx.set(key, values.front());
+            } else {
+                ctx.set_multi(key, values);
+            }
+        }
+        req.context = std::move(ctx);
+        const auto d = evaluate(req);
+        out.allowed = d.allowed();
+        out.explicit_deny = d.result == decision::outcome::explicit_deny;
+        if (d.deciding) {
+            out.policy = d.deciding->policy;
+            out.sid = d.deciding->sid;
+        }
+        out.reason = d.reason;
+        record(audit_who, r, out);
+        return out;
+    }
+
     /// Drop the signing keys derived for a key whose secret or status
     /// changed (the replica's apply loop calls this).
     void forget_key(std::string_view access_key_id) { _keys.invalidate(access_key_id); }
