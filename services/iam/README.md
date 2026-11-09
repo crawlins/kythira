@@ -22,9 +22,11 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `include/kythira/iam/iam_evaluator.hpp` | `evaluate()`, the one place an allow or deny is decided | 12 |
 | `tests/iam_evaluator_test.cpp` | one case per evaluation invariant (the corpus holds the rest) | 12 |
 | `include/kythira/iam/iam_service_registry.hpp` | the actions each served AWS API declares; an action no table names is denied | 13 |
-| `include/kythira/iam/services/iam_actions.hpp`, `sts_actions.hpp` | the `iam` and `sts` action tables, from the Service Authorization Reference | 13 |
+| `include/kythira/iam/services/iam_actions.hpp`, `sts_actions.hpp`, `elasticache_actions.hpp` | the `iam`, `sts` and `elasticache` action tables, from the Service Authorization Reference | 13 |
 | `include/kythira/iam/iam_authorizer.hpp` | `iam_authorizer` (SigV4 authentication, policy gathering, `authorize`) and the asynchronous `audit_log` | 13 |
-| `tests/iam_authorizer_test.cpp` | authentication, authorization and audit-line cases | 13 |
+| `tests/iam_authorizer_test.cpp` | authentication, authorization, partition, staleness and audit-line cases | 13 |
+| `include/kythira/iam/iam_replica.hpp` | `iam_replica<Types>`, a learner of the IAM group a front end embeds, and `replica_freshness` (lag, the metric, the fail-closed bound) | 13 |
+| `tests/iam_replica_test.cpp` | an embedded replica over the network simulator: 5 s propagation, failing closed when cut off | 13 |
 | `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
 | `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |
 | `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |

@@ -11,8 +11,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <kythira/iam/iam_authorizer.hpp>
+#include <kythira/iam/iam_replica.hpp>
 #include <kythira/iam/iam_service_registry.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
+#include <kythira/iam/services/elasticache_actions.hpp>
 #include <kythira/iam/services/iam_actions.hpp>
 #include <kythira/iam/services/sts_actions.hpp>
 
@@ -82,7 +84,8 @@ struct fixture {
         [this](std::string_view) -> const iam::seal_key& { return kek; }, registry, &audit,
         [this] { return clock; }};
 
-    fixture() {
+    explicit fixture(std::string partition = "aws")
+        : sm(iam::iam_config{.partition = std::move(partition)}) {
         registry.add(iam::services::iam_actions());
         registry.add(iam::services::sts_actions());
         registry.add({.service_prefix = "s3", .actions = {{"GetObject", {"*"}, {}}}});
@@ -170,6 +173,18 @@ BOOST_AUTO_TEST_CASE(finds_registered_actions_in_any_case) {
     BOOST_TEST(pass->condition_keys.size() == 2U);
 }
 
+BOOST_AUTO_TEST_CASE(the_shipped_tables_register_together) {
+    iam::iam_service_registry reg;
+    reg.add(iam::services::iam_actions());
+    reg.add(iam::services::sts_actions());
+    reg.add(iam::services::elasticache_actions());
+    const auto* connect = reg.find("elasticache:Connect");
+    BOOST_REQUIRE(connect != nullptr);
+    BOOST_TEST(connect->resource_templates.size() == 2U);
+    BOOST_TEST(reg.find("sts:AssumeRole") != nullptr);
+    BOOST_TEST(reg.find("elasticache:CreateReplicationGroup") == nullptr);
+}
+
 BOOST_AUTO_TEST_CASE(refuses_a_prefix_twice_and_duplicate_actions) {
     iam::iam_service_registry reg;
     reg.add(iam::services::sts_actions());
@@ -209,6 +224,33 @@ BOOST_AUTO_TEST_CASE(a_root_key_authenticates_as_the_account) {
     BOOST_TEST_REQUIRE(who.has_value(), who.error().message);
     BOOST_TEST((who->type == aws_auth::principal_type::root));
     BOOST_TEST(who->arn == "arn:aws:iam::111122223333:root");
+}
+
+// Requirement 7.5: the configured partition is in every ARN produced,
+// and an ARN in another partition matches nothing.
+BOOST_AUTO_TEST_CASE(the_configured_partition_is_in_every_arn) {
+    fixture f("aws-cn");
+    f.run(iam_command::create_user, {{"name", "alice"}, {"id", "AIDAALICE00000000001"}});
+    f.run(iam_command::put_inline_policy,
+          {{"kind", "user"},
+           {"name", "alice"},
+           {"policy_name", "own"},
+           {"document",
+            R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject",)"
+            R"("Resource":"*","Condition":{"StringEquals":{"aws:PrincipalArn":)"
+            R"("arn:aws-cn:iam::111122223333:user/alice"}}}]})"}});
+    const auto root = f.key_for("");
+    const auto rreq = signed_request(root.key_id, root.secret, k_list_users, f.clock);
+    const auto r = f.authz.authenticate(rreq, k_iam_rules);
+    BOOST_TEST_REQUIRE(r.has_value(), r.error().message);
+    BOOST_TEST(r->arn == "arn:aws-cn:iam::111122223333:root");
+
+    const auto k = f.key_for("alice");
+    const auto req = signed_request(k.key_id, k.secret, k_list_users, f.clock);
+    const auto who = f.authz.authenticate(req, k_iam_rules);
+    BOOST_TEST_REQUIRE(who.has_value(), who.error().message);
+    BOOST_TEST(who->arn == "arn:aws-cn:iam::111122223333:user/alice");
+    BOOST_TEST(f.authz.authorize(*who, {.action = "s3:GetObject"}).allowed);
 }
 
 BOOST_AUTO_TEST_CASE(a_wrong_secret_is_a_signature_mismatch) {
@@ -413,6 +455,73 @@ BOOST_AUTO_TEST_CASE(a_full_queue_counts_drops_instead_of_blocking) {
         log.flush();
     }
     BOOST_TEST(out.back().find(R"("audit":"dropped")") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// Requirement 7.4: a replica's staleness, its metric, and failing closed.
+BOOST_AUTO_TEST_SUITE(replica_staleness)
+
+using steady = std::chrono::steady_clock;
+
+BOOST_AUTO_TEST_CASE(lag_is_the_time_since_last_caught_up) {
+    std::optional<steady::time_point> caught_up;
+    steady::time_point now{std::chrono::seconds{1000}};
+    const iam::replica_freshness fr([&] { return caught_up; }, std::chrono::seconds{60},
+                                    [&] { return now; });
+    // Never caught up: infinitely stale.
+    BOOST_TEST(!fr.lag().has_value());
+    BOOST_TEST(!fr.fresh());
+    BOOST_TEST(fr.metrics_text().find("kythira_iam_replica_lag_seconds +Inf\n") !=
+               std::string::npos);
+    BOOST_TEST(fr.metrics_text().find("# TYPE kythira_iam_replica_lag_seconds gauge") !=
+               std::string::npos);
+
+    caught_up = now - std::chrono::milliseconds{1500};
+    BOOST_REQUIRE(fr.lag().has_value());
+    BOOST_TEST(fr.lag()->count() == 1.5);
+    BOOST_TEST(fr.fresh());
+    BOOST_TEST(fr.metrics_text().find("kythira_iam_replica_lag_seconds 1.500\n") !=
+               std::string::npos);
+
+    // At the bound still fresh; past it, stale.
+    now = *caught_up + std::chrono::seconds{60};
+    BOOST_TEST(fr.fresh());
+    now += std::chrono::milliseconds{1};
+    BOOST_TEST(!fr.fresh());
+}
+
+BOOST_AUTO_TEST_CASE(a_stale_replica_fails_closed) {
+    fixture f;
+    f.run(iam_command::create_user, {{"name", "alice"}, {"id", "AIDAALICE00000000001"}});
+    f.run(
+        iam_command::put_inline_policy,
+        {{"kind", "user"},
+         {"name", "alice"},
+         {"policy_name", "all"},
+         {"document",
+          R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]})"}});
+    const auto k = f.key_for("alice");
+    const auto req = signed_request(k.key_id, k.secret, k_list_users, f.clock);
+    bool fresh = true;
+    f.authz.set_freshness([&] { return fresh; });
+    const auto who = f.authz.authenticate(req, k_iam_rules);
+    BOOST_TEST_REQUIRE(who.has_value(), who.error().message);
+    BOOST_TEST(f.authz.authorize(*who, {.action = "s3:GetObject"}).allowed);
+
+    fresh = false;
+    const auto stale = f.authz.authenticate(req, k_iam_rules);
+    BOOST_TEST_REQUIRE(!stale.has_value());
+    BOOST_TEST(stale.error().code == "ServiceUnavailable");
+    BOOST_TEST(stale.error().http_status == 503);
+    // A principal authenticated before the replica went stale is denied
+    // too, and the audit line says why.
+    const auto d = f.authz.authorize(*who, {.action = "s3:GetObject"});
+    BOOST_TEST(!d.allowed);
+    BOOST_TEST(f.audit_text().find("the IAM replica is stale") != std::string::npos);
+
+    fresh = true;
+    BOOST_TEST(f.authz.authenticate(req, k_iam_rules).has_value());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

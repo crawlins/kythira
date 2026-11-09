@@ -291,6 +291,64 @@ BOOST_AUTO_TEST_CASE(learner_never_starts_election, *boost::unit_test::timeout(3
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// ── last_caught_up(): a read replica's staleness clock ──────────────────────
+
+BOOST_AUTO_TEST_SUITE(learner_staleness_clock)
+
+// .kiro/specs/iam-compatible-auth/ Requirement 7.4: a learner's
+// last_caught_up() moves with each heartbeat while it holds everything
+// committed, and stops once its leader goes quiet. A leader never sets it.
+BOOST_AUTO_TEST_CASE(last_caught_up_advances_with_heartbeats_and_stops_without_them,
+                     *boost::unit_test::timeout(30)) {
+    sim_t sim;
+    sim.start();
+    auto net1 = sim.create_node("1");
+    auto net2 = sim.create_node("2");
+    connect_all(sim, {"1", "2"});
+
+    auto cfg = make_fast_config();
+    test_node node1{make_node_config(1, net1, cfg)};
+    test_node node2{make_node_config(2, net2, cfg)};
+    node1.set_cluster_configuration({1});
+    node2.set_cluster_configuration({1}, {2});
+    node1.start();
+    node2.start();
+    BOOST_CHECK(!node2.last_caught_up().has_value());
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+    node1.check_election_timeout();
+    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+
+    auto add_fut = node1.add_learner(2);
+    bool add_done = false;
+    std::move(add_fut)
+        .thenValue([&](std::vector<std::byte>) { add_done = true; })
+        .thenError([&](const std::exception_ptr&) { add_done = true; })
+        .detach();
+    BOOST_REQUIRE(wait_until([&] {
+        node1.check_heartbeat_timeout();
+        return add_done && node2.last_caught_up().has_value();
+    }));
+    BOOST_CHECK(!node1.last_caught_up().has_value());
+
+    // Each heartbeat that finds node2 caught up moves the clock on.
+    const auto first = *node2.last_caught_up();
+    BOOST_REQUIRE(wait_until([&] {
+        node1.check_heartbeat_timeout();
+        return *node2.last_caught_up() > first;
+    }));
+
+    // With the leader gone, nothing moves it.
+    node1.stop();
+    const auto frozen = *node2.last_caught_up();
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    BOOST_CHECK(*node2.last_caught_up() == frozen);
+
+    node2.stop();
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 // ── add_learner() / remove_learner() ────────────────────────────────────────
 
 BOOST_AUTO_TEST_SUITE(learner_admission_and_removal)

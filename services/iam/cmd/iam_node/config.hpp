@@ -67,6 +67,9 @@ struct config {
     // registers it with the voters, which --peers lists.
     bool replica{false};
     std::size_t max_replicas{64};
+    // A replica that has not held every committed change for this long
+    // answers IAM and STS requests ServiceUnavailable (Requirement 7.4).
+    std::chrono::seconds max_staleness{60};
 
     std::string arn_partition{"aws"};
     std::vector<std::string> sts_regions{"us-east-1"};
@@ -179,7 +182,7 @@ inline constexpr const char* k_usage =
     "                [--client-ca <path>] [--admin-uri-san <uri>]...\n"
     "                --rpc-tls-cert <path> --rpc-tls-key <path> --rpc-tls-ca <path>\n"
     "                  | --allow-plaintext-rpc\n"
-    "                [--replica] [--max-replicas <n>]\n"
+    "                [--replica] [--max-replicas <n>] [--iam-max-staleness-secs <n>]\n"
     "                [--arn-partition <aws|aws-cn|aws-us-gov|...>]\n"
     "                [--sts-regions <region>[,...]]\n"
     "                [--election-timeout-min-ms <n>] [--election-timeout-max-ms <n>]\n"
@@ -261,6 +264,8 @@ inline constexpr const char* k_usage =
             cfg.replica = true;
         } else if (arg == "--max-replicas") {
             cfg.max_replicas = static_cast<std::size_t>(number(0, 100000));
+        } else if (arg == "--iam-max-staleness-secs") {
+            cfg.max_staleness = std::chrono::seconds(number(1, 86400));
         } else if (arg == "--arn-partition") {
             cfg.arn_partition = next();
             if (cfg.arn_partition.empty() ||

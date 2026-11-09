@@ -37,6 +37,10 @@ set_tests_properties(iam_evaluator_test PROPERTIES LABELS "unit;iam;iam-module" 
 # evaluate(), the audit trail) and the service registry.
 kythira_iam_test(iam_authorizer_test iam_authorizer_test.cpp)
 set_tests_properties(iam_authorizer_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
+# An embedded read replica over the network simulator: a policy change
+# reaches it within 5 s, and cut off past its bound it fails closed.
+kythira_iam_test(iam_replica_test iam_replica_test.cpp)
+set_tests_properties(iam_replica_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 120)
 
 # Task 8: the IAM state machine and its secret sealing, with property tests
 # that replicas and snapshot restores agree and no plaintext secret reaches
