@@ -76,13 +76,25 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     element, which AWS's prose omits but the service charges. The wire
     evidence test also runs every recorded item and key through the codec.
 
-- [ ] 4. Front end, SigV4 and authorization
+- [x] 4. Front end, SigV4 and authorization
   - `dynamo_front_end` on the shared Beast host, forwarding to shard
     leaders, `DescribeEndpoints`
   - SigV4 through the core verifier; `dynamodb` action table with condition
     keys; IAM authorizer path and the static-key fallback
   - Compatibility profile resolution (cluster config plus table tags)
   - _Requirements: 3.1-3.4, 4.4, 5.1-5.4_
+  - Done: `front_end.hpp` (transport-free; SigV4 before the body,
+    unsupported operations before validation, the same-named action on the
+    resource the input names, `call_context::authorize` for transactions,
+    PartiQL and item-level keys), `DescribeEndpoints`, the `dynamodb` action
+    table generated from AWS's machine-readable Service Authorization
+    Reference (`tools/gen_dynamodb_actions.py`, `--check` ctest), and
+    `compat_profile.hpp`. The front end takes any `aws_request_authorizer`:
+    IAM's, or core's new `static_key_authorizer` (shared with Kinesis, roles
+    derived from the reference's annotations). Mounting it on the shared
+    Beast host is the gateway binary's job, which arrives with task 7 when
+    there are tables to serve; forwarding to shard leaders is the item
+    handlers' (task 7).
 
 ### Phase 2: tables and items (KCL 2.x leases work after task 7)
 

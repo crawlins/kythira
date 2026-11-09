@@ -19,7 +19,6 @@ test reads the table rows: keep one operation per row, in the
 
 | Service | Operation | Why |
 |---|---|---|
-| DynamoDB | `DescribeEndpoints` | planned, task 4 |
 | DynamoDB | `CreateTable` | planned, task 7 |
 | DynamoDB | `DescribeTable` | planned, task 7 |
 | DynamoDB | `ListTables` | planned, task 7 |
