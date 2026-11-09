@@ -5,8 +5,9 @@
 // (.kiro/specs/persistent-state-machine/ task 3): restart without reloading
 // state (Requirement 4), metadata-only snapshots and compaction bound by the
 // durable applied index (3), reads that serialize nothing (5), crash and
-// replay with a held-back durable sequence (2.2, 2.4), and InstallSnapshot
-// refused (10.2).
+// replay with a held-back durable sequence (2.2, 2.4), and format-1
+// InstallSnapshot received, staged and ingested
+// (.kiro/specs/file-install-snapshot/ task 4).
 
 #define BOOST_TEST_MODULE persistent_node_integration_test
 #include <boost/test/unit_test.hpp>
@@ -14,6 +15,7 @@
 
 #include <raft/raft.hpp>
 
+#include "format1_snapshot_transfer.hpp"
 #include "persistent_register_state_machine.hpp"
 #include "recording_metrics.hpp"
 
@@ -23,6 +25,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -159,7 +164,20 @@ struct harness {
     std::shared_ptr<kythira::testing::metric_recorder> metrics =
         std::make_shared<kythira::testing::metric_recorder>();
 
+    kythira::test::format1::temp_dir staging;
+
     harness() { sim.start(); }
+
+    // A client on simulator node "9", standing in for another replica's
+    // leader.
+    auto peer_client() -> persistent_raft_types::network_client_type {
+        auto peer = sim.create_node("9");
+        const network_simulator::NetworkEdge edge{std::chrono::milliseconds{0}, 1.0};
+        sim.add_edge("9", "1", edge);
+        sim.add_edge("1", "9", edge);
+        return persistent_raft_types::network_client_type{peer,
+                                                          persistent_raft_types::serializer_type{}};
+    }
 
     auto make_node(const kythira::raft_configuration& cfg) -> std::unique_ptr<node_type> {
         auto net = sim.create_node(std::to_string(node_id));
@@ -212,6 +230,76 @@ auto applies(node_type& node) -> std::size_t {
 
 auto marker() -> std::vector<std::byte> {
     return bytes("kythira-persistent-snapshot/1");
+}
+
+// A leader-side checkpoint: registers k01..kNN applied at indices 1..N on
+// another engine, checkpointed at index N, as format-1 requests.
+class source {
+public:
+    explicit source(int n) {
+        _sm.open(_engine, group_range);
+        for (int i = 1; i <= n; ++i) {
+            const auto v = std::string("v") + (i < 10 ? "0" : "") + std::to_string(i);
+            (void)_sm.apply(bytes(key(i) + "=" + v), static_cast<std::uint64_t>(i));
+        }
+        _index = static_cast<std::uint64_t>(n);
+        _manifest = _sm.checkpoint(dir());
+    }
+
+    [[nodiscard]] auto dir() const -> std::filesystem::path { return _root.path() / "cp"; }
+    [[nodiscard]] auto manifest() const -> const kythira::snapshot_manifest& { return _manifest; }
+    [[nodiscard]] auto total_bytes() const -> std::uint64_t { return _manifest.total_bytes(); }
+
+    [[nodiscard]] auto requests(std::uint64_t leader_term, std::size_t chunk) const
+        -> std::vector<kythira::install_snapshot_request<>> {
+        const kythira::snapshot_stream_reader reader(dir(), _manifest);
+        const auto encoded = _manifest.encode();
+        std::vector<kythira::install_snapshot_request<>> out;
+        std::uint64_t offset = 0;
+        do {
+            kythira::install_snapshot_request<> req;
+            req._term = leader_term;
+            req._leader_id = 9;
+            req._last_included_index = _index;
+            req._last_included_term = 1;
+            req._offset = static_cast<std::size_t>(offset);
+            req._data = reader.read(offset, chunk);
+            req._format = kythira::install_snapshot_format::file_set;
+            if (offset == 0) {
+                req._manifest = bytes(encoded);
+            }
+            offset += req._data.size();
+            req._done = offset == reader.total_bytes();
+            out.push_back(std::move(req));
+        } while (offset < reader.total_bytes());
+        return out;
+    }
+
+private:
+    kythira::test::format1::temp_dir _root;
+    kythira::memory_kv_engine _engine;
+    register_sm _sm;
+    std::uint64_t _index{0};
+    kythira::snapshot_manifest _manifest;
+};
+
+auto send(persistent_raft_types::network_client_type& client,
+          const kythira::install_snapshot_request<>& req)
+    -> kythira::install_snapshot_response<std::uint64_t> {
+    return client.send_install_snapshot(1, req, std::chrono::milliseconds{2000}).get();
+}
+
+auto reason_of(const kythira::install_snapshot_response<std::uint64_t>& resp)
+    -> std::optional<kythira::install_snapshot_reject_reason> {
+    return resp.reject_reason();
+}
+
+auto staging_entries(const harness& h) -> std::size_t {
+    std::size_t n = 0;
+    for (const auto& e : std::filesystem::directory_iterator(h.staging.path())) {
+        n += e.path().filename().string().starts_with("kythira-staging-") ? 1 : 0;
+    }
+    return n;
 }
 
 }  // namespace
@@ -469,9 +557,9 @@ BOOST_AUTO_TEST_CASE(restart_refuses_byte_buffer_snapshot, *boost::unit_test::ti
     BOOST_CHECK_THROW(node->start(), std::runtime_error);
 }
 
-// Requirement 10.2: InstallSnapshot is refused with format_mismatch and the
-// state is left as it was.
-BOOST_AUTO_TEST_CASE(install_snapshot_is_refused, *boost::unit_test::timeout(30)) {
+// file-install-snapshot Requirement 4.3: a format-0 InstallSnapshot is
+// refused with format_mismatch and the state is left as it was.
+BOOST_AUTO_TEST_CASE(format0_install_snapshot_is_refused, *boost::unit_test::timeout(30)) {
     harness h;
     const auto cfg = make_config();
     auto node = h.make_node(cfg);
@@ -481,13 +569,7 @@ BOOST_AUTO_TEST_CASE(install_snapshot_is_refused, *boost::unit_test::timeout(30)
     put(*node, 1);
     const auto applied = node->last_applied_index();
 
-    auto peer = h.sim.create_node("9");
-    const network_simulator::NetworkEdge edge{std::chrono::milliseconds{0}, 1.0};
-    h.sim.add_edge("9", "1", edge);
-    h.sim.add_edge("1", "9", edge);
-    persistent_raft_types::network_client_type client{peer,
-                                                      persistent_raft_types::serializer_type{}};
-
+    auto peer = h.peer_client();
     kythira::install_snapshot_request<> req;
     req._term = node->get_current_term() + 1;
     req._leader_id = 9;
@@ -496,10 +578,222 @@ BOOST_AUTO_TEST_CASE(install_snapshot_is_refused, *boost::unit_test::timeout(30)
     req._offset = 0;
     req._data = bytes("anything");
     req._done = true;
-    const auto resp = client.send_install_snapshot(1, req, std::chrono::milliseconds{2000}).get();
+    const auto resp = send(peer, req);
     BOOST_REQUIRE(resp.reject_reason().has_value());
     BOOST_TEST((*resp.reject_reason() == kythira::install_snapshot_reject_reason::format_mismatch));
     BOOST_TEST(node->last_applied_index() == applied);
     BOOST_TEST(value_of(*node, 1) == "v01");
+    node->stop();
+}
+
+// ── Format-1 receive and install (.kiro/specs/file-install-snapshot/ task 4) ──
+
+// Requirements 3.2, 3.3 and 4.1: a multi-chunk format-1 transfer is staged,
+// verified and ingested; the node saves a metadata-only snapshot, deletes
+// the staging directory, and a restart starts from the ingested state.
+BOOST_AUTO_TEST_CASE(format1_snapshot_installs_and_survives_restart,
+                     *boost::unit_test::timeout(30)) {
+    harness h;
+    source src(20);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    auto peer = h.peer_client();
+
+    const auto reqs = src.requests(/*leader_term=*/1, /*chunk=*/64);
+    BOOST_REQUIRE_GT(reqs.size(), 3U);
+    for (std::size_t i = 0; i + 1 < reqs.size(); ++i) {
+        const auto resp = send(peer, reqs[i]);
+        BOOST_TEST(!resp.reject_reason().has_value());
+        BOOST_REQUIRE(resp.bytes_received().has_value());
+        BOOST_TEST(*resp.bytes_received() == reqs[i]._offset + reqs[i]._data.size());
+        BOOST_TEST(staging_entries(h) == 1U);
+    }
+    const auto last = send(peer, reqs.back());
+    BOOST_TEST(!last.reject_reason().has_value());
+    BOOST_TEST((last.bytes_received() == std::optional<std::uint64_t>(src.total_bytes())));
+
+    BOOST_TEST(node->last_applied_index() == 20U);
+    BOOST_TEST(value_of(*node, 7) == "v07");
+    BOOST_TEST(value_of(*node, 20) == "v20");
+    BOOST_TEST(staging_entries(h) == 0U);
+    const auto saved = h.persistence.load_snapshot();
+    BOOST_REQUIRE(saved.has_value());
+    BOOST_TEST(saved->last_included_index() == 20U);
+    BOOST_TEST((saved->state_machine_state() == marker()));
+    node->stop();
+    node.reset();
+
+    auto restarted = h.make_node(cfg);
+    restarted->start();
+    BOOST_TEST(restarted->last_applied_index() == 20U);
+    BOOST_TEST(value_of(*restarted, 13) == "v13");
+    restarted->stop();
+}
+
+// Requirement 3.1 and the reject reasons that become response codes: every
+// refusal says why, and a poisoned staging directory is deleted.
+BOOST_AUTO_TEST_CASE(format1_rejections_carry_reason_codes, *boost::unit_test::timeout(30)) {
+    using reason = kythira::install_snapshot_reject_reason;
+    harness h;
+    source src(20);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    auto peer = h.peer_client();
+    const auto reqs = src.requests(1, 64);
+    BOOST_REQUIRE_GT(reqs.size(), 3U);
+
+    // A later chunk with no transfer staged.
+    BOOST_TEST((reason_of(send(peer, reqs[1])) == reason::missing_first_chunk));
+
+    // A manifest that does not decode.
+    auto bad = reqs[0];
+    bad._manifest = bytes("not a manifest");
+    BOOST_TEST((reason_of(send(peer, bad)) == reason::manifest_invalid));
+    BOOST_TEST(staging_entries(h) == 0U);
+
+    // A gap in the stream keeps the transfer and reports how far it got.
+    BOOST_TEST(!reason_of(send(peer, reqs[0])).has_value());
+    const auto gap = send(peer, reqs[2]);
+    BOOST_TEST((reason_of(gap) == reason::offset_mismatch));
+    BOOST_TEST((gap.bytes_received() == std::optional<std::uint64_t>(reqs[0]._data.size())));
+    BOOST_TEST(staging_entries(h) == 1U);
+
+    // Corrupt bytes fail the file's SHA-256 when it completes; the staged
+    // files are deleted.
+    for (std::size_t i = 1; i + 1 < reqs.size(); ++i) {
+        BOOST_TEST(!reason_of(send(peer, reqs[i])).has_value());
+    }
+    auto corrupt = reqs.back();
+    corrupt._data.back() ^= std::byte{0x01};
+    BOOST_TEST((reason_of(send(peer, corrupt)) == reason::checksum));
+    BOOST_TEST(staging_entries(h) == 0U);
+    BOOST_TEST(node->last_applied_index() == 0U);
+
+    // A format-0 request (Requirement 4.3).
+    auto format0 = reqs[0];
+    format0._format = kythira::install_snapshot_format::byte_buffer;
+    format0._manifest.clear();
+    BOOST_TEST((reason_of(send(peer, format0)) == reason::format_mismatch));
+
+    // A complete transfer installs; the same snapshot again is stale
+    // (Requirement 3.6), refused before anything is staged.
+    for (const auto& r : reqs) {
+        BOOST_TEST(!reason_of(send(peer, r)).has_value());
+    }
+    BOOST_TEST(node->last_applied_index() == 20U);
+    BOOST_TEST((reason_of(send(peer, reqs[0])) == reason::stale_snapshot));
+    BOOST_TEST(staging_entries(h) == 0U);
+
+    // An older leader term.
+    auto old_term = src.requests(1, 64);
+    for (auto& r : old_term) {
+        r._term = 0;
+    }
+    BOOST_TEST((reason_of(send(peer, old_term[0])) == reason::stale_term));
+    node->stop();
+}
+
+// Requirement 3.1: no staging directory configured, or not enough disk.
+BOOST_AUTO_TEST_CASE(format1_needs_a_staging_directory_and_disk_space,
+                     *boost::unit_test::timeout(30)) {
+    using reason = kythira::install_snapshot_reject_reason;
+    source src(5);
+    {
+        harness h;
+        auto node = h.make_node(make_config());
+        node->start();
+        auto peer = h.peer_client();
+        BOOST_TEST((reason_of(send(peer, src.requests(1, 64)[0])) == reason::io_error));
+        node->stop();
+    }
+    {
+        harness h;
+        auto cfg = make_config();
+        cfg._snapshot_staging_directory = h.staging.path();
+        cfg._snapshot_disk_margin_bytes = std::numeric_limits<std::uint64_t>::max() / 2;
+        auto node = h.make_node(cfg);
+        node->start();
+        auto peer = h.peer_client();
+        BOOST_TEST((reason_of(send(peer, src.requests(1, 64)[0])) == reason::disk_space));
+        BOOST_TEST(staging_entries(h) == 0U);
+        node->stop();
+    }
+}
+
+// Requirement 3.4: a newer transfer (a later snapshot, or a new leader)
+// replaces the staged one, whose chunks are then refused.
+BOOST_AUTO_TEST_CASE(newer_transfer_abandons_the_staged_one, *boost::unit_test::timeout(30)) {
+    using reason = kythira::install_snapshot_reject_reason;
+    harness h;
+    source older(10);
+    source newer(30);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    auto peer = h.peer_client();
+
+    const auto a = older.requests(1, 64);
+    const auto b = newer.requests(1, 64);
+    BOOST_TEST(!reason_of(send(peer, a[0])).has_value());
+    BOOST_TEST(!reason_of(send(peer, b[0])).has_value());
+    BOOST_TEST(staging_entries(h) == 1U);
+    // The older transfer's chunks, first or later, are stale now.
+    BOOST_TEST((reason_of(send(peer, a[1])) == reason::stale_snapshot));
+    BOOST_TEST((reason_of(send(peer, a[0])) == reason::stale_snapshot));
+
+    // A new leader's transfer replaces it even at a lower index.
+    const auto c = older.requests(2, 64);
+    BOOST_TEST(!reason_of(send(peer, c[0])).has_value());
+    BOOST_TEST(staging_entries(h) == 1U);
+    BOOST_TEST((reason_of(send(peer, b[1])) == reason::stale_term));
+    for (std::size_t i = 1; i < c.size(); ++i) {
+        BOOST_TEST(!reason_of(send(peer, c[i])).has_value());
+    }
+    BOOST_TEST(node->last_applied_index() == 10U);
+    BOOST_TEST(value_of(*node, 10) == "v10");
+    BOOST_TEST(value_of(*node, 11).empty());
+    node->stop();
+}
+
+// Requirement 3.5: staging directories a crash left are deleted at start;
+// anything else in the directory is not the node's and stays.
+BOOST_AUTO_TEST_CASE(stale_staging_directories_are_deleted_at_start,
+                     *boost::unit_test::timeout(30)) {
+    harness h;
+    std::filesystem::create_directories(h.staging.path() / "kythira-staging-20-1-0011223344556677");
+    std::ofstream(h.staging.path() / "kythira-staging-20-1-0011223344556677" / "part") << "x";
+    std::filesystem::create_directories(h.staging.path() / "someone-else");
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    BOOST_TEST(staging_entries(h) == 0U);
+    BOOST_TEST(std::filesystem::exists(h.staging.path() / "someone-else"));
+    node->stop();
+}
+
+// Requirement 4.2: a crash after ingest and before the metadata save
+// leaves the engine at the snapshot's index and the store at the old
+// snapshot. Restart takes the engine's applied index.
+BOOST_AUTO_TEST_CASE(crash_between_ingest_and_metadata_save_recovers,
+                     *boost::unit_test::timeout(30)) {
+    harness h;
+    source src(12);
+    {
+        // What the follower's ingest wrote before the crash.
+        register_sm sm;
+        sm.open(*h.engine, group_range);
+        sm.ingest(src.dir(), src.manifest(), 12);
+    }
+    auto node = h.make_node(make_config());
+    node->start();
+    BOOST_TEST(node->last_applied_index() == 12U);
+    BOOST_TEST(value_of(*node, 12) == "v12");
+    BOOST_TEST(!h.persistence.load_snapshot().has_value());
     node->stop();
 }

@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace kythira::test::membership;
@@ -100,7 +101,7 @@ class election_cluster {
 public:
     explicit election_cluster(std::initializer_list<std::uint64_t> ids,
                               kythira::raft_configuration cfg = make_fast_config())
-        : _cfg(cfg), _ids(ids) {
+        : _cfg(std::move(cfg)), _ids(ids) {
         _sim.start();
         for (auto id : _ids) {
             create(id);
