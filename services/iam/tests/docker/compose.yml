@@ -70,6 +70,9 @@ services:
       - "3=iam-3"
       - --node
       - "4=iam-4"
+      # Not an IAM node: the test OIDC issuer's server certificate.
+      - --node
+      - "5=oidc-issuer"
     volumes:
       - pki:/pki
     networks:
@@ -94,6 +97,10 @@ services:
       - /pki/ca.pem
       - --admin-uri-san
       - spiffe://kythira.test/iam-admin
+      # AssumeRoleWithWebIdentity (task 19) trusts the test issuer's CA.
+      # No --oidc-allowed-hosts: the issuer's address is private.
+      - --oidc-ca-file
+      - /pki/ca.pem
       - --election-timeout-min-ms
       - "1000"
       - --election-timeout-max-ms
@@ -121,6 +128,10 @@ services:
       - /pki/ca.pem
       - --admin-uri-san
       - spiffe://kythira.test/iam-admin
+      # AssumeRoleWithWebIdentity (task 19) trusts the test issuer's CA.
+      # No --oidc-allowed-hosts: the issuer's address is private.
+      - --oidc-ca-file
+      - /pki/ca.pem
       - --election-timeout-min-ms
       - "1000"
       - --election-timeout-max-ms
@@ -148,6 +159,10 @@ services:
       - /pki/ca.pem
       - --admin-uri-san
       - spiffe://kythira.test/iam-admin
+      # AssumeRoleWithWebIdentity (task 19) trusts the test issuer's CA.
+      # No --oidc-allowed-hosts: the issuer's address is private.
+      - --oidc-ca-file
+      - /pki/ca.pem
       - --election-timeout-min-ms
       - "1000"
       - --election-timeout-max-ms
@@ -178,6 +193,10 @@ services:
       - /pki/ca.pem
       - --admin-uri-san
       - spiffe://kythira.test/iam-admin
+      # AssumeRoleWithWebIdentity (task 19) trusts the test issuer's CA.
+      # No --oidc-allowed-hosts: the issuer's address is private.
+      - --oidc-ca-file
+      - /pki/ca.pem
       - --election-timeout-min-ms
       - "1000"
       - --election-timeout-max-ms
@@ -185,6 +204,33 @@ services:
     volumes:
       - pki:/pki:ro
       - iam-4-data:/var/lib/iam_node
+
+  # A test OIDC identity provider (task 19): Python's standard library
+  # serving /srv/www over HTTPS as https://oidc-issuer. The scenario
+  # writes the discovery document and the JWKS into it with `compose
+  # exec`, signs tokens itself, and exchanges them at iam_node with
+  # AssumeRoleWithWebIdentity.
+  oidc-issuer:
+    image: docker.io/library/python:3.12-alpine
+    networks:
+      - iam_net
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    command:
+      - python3
+      - -c
+      - |
+        import functools, http.server, os, ssl
+        os.makedirs("/srv/www/.well-known", exist_ok=True)
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="/srv/www")
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", 443), handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain("/pki/node-5.pem", "/pki/node-5.key")
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        server.serve_forever()
+    volumes:
+      - pki:/pki:ro
 
   # The AWS CLI v2 (task 14), run by the scenario as
   # `compose --profile cli run --rm aws-cli ...` with the credentials and

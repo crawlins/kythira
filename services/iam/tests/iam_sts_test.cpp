@@ -12,6 +12,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <kythira/iam/iam_authorizer.hpp>
+#include <kythira/iam/iam_oidc_jwks.hpp>
 #include <kythira/iam/iam_service_registry.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
 #include <kythira/iam/iam_sts_api.hpp>
@@ -19,11 +20,13 @@
 #include <kythira/iam/services/iam_actions.hpp>
 #include <kythira/iam/services/sts_actions.hpp>
 
+#include <raft/jwt.hpp>
 #include <raft/sigv4_verifier.hpp>
 
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <shared_mutex>
@@ -37,6 +40,7 @@ namespace aws_auth = kythira::aws_auth;
 namespace sigv4 = kythira::sigv4;
 namespace q = kythira::aws_query;
 namespace leader = kythira::iam::iam_leader;
+namespace jose = kythira::jose;
 using iam::iam_command;
 
 namespace {
@@ -114,7 +118,19 @@ struct fixture {
         }
         auto kek(std::string_view) -> const iam::seal_key& { return f->kek; }
     } c{this};
-    sts::sts_query_api<cluster> api{c, authz};
+    // The identity providers' documents, by URL, that the JWKS cache sees.
+    std::map<std::string, std::string> web;
+    std::vector<std::string> fetched;
+    iam::oidc::jwks_cache jwks{[this](const std::string& url) -> iam::oidc::fetch_result {
+                                   fetched.push_back(url);
+                                   const auto it = web.find(url);
+                                   if (it == web.end()) {
+                                       return {404, {}, {}};
+                                   }
+                                   return {200, it->second, {}};
+                               },
+                               [this] { return clock; }};
+    sts::sts_query_api<cluster> api{c, authz, &jwks};
 
     fixture() {
         registry.add(iam::services::iam_actions());
@@ -506,8 +522,8 @@ BOOST_FIXTURE_TEST_CASE(inv_dur_3_role_chaining_is_capped_at_an_hour, fixture) {
 
 BOOST_FIXTURE_TEST_CASE(actions_of_later_tasks_are_not_implemented, fixture) {
     user("alice");
-    for (const auto* action : {"AssumeRoleWithSAML", "AssumeRoot", "AssumeRoleWithWebIdentity",
-                               "GetFederationToken", "DecodeAuthorizationMessage"}) {
+    for (const auto* action :
+         {"AssumeRoleWithSAML", "AssumeRoot", "GetFederationToken", "DecodeAuthorizationMessage"}) {
         const auto r = call(principal("alice"), std::string("Action=") + action);
         BOOST_TEST(r.status == 501U, action);
     }
@@ -965,6 +981,268 @@ BOOST_FIXTURE_TEST_CASE(get_access_key_info_names_the_keys_account, fixture) {
     user("eve");
     BOOST_TEST(code_of(call(principal("eve"), "Action=GetAccessKeyInfo&AccessKeyId=" + k.key_id)) ==
                "AccessDenied");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── AssumeRoleWithWebIdentity (task 19) ─────────────────────────────────────
+
+namespace {
+
+const std::string k_issuer = "issuer.example.com/tenant";
+const std::string k_provider_arn = "arn:aws:iam::111122223333:oidc-provider/" + k_issuer;
+
+/// An identity provider: a signing key served as a JWKS, and tokens.
+struct web_fixture : fixture {
+    jose::evp_pkey_ptr key = jose::generate_signing_key(jose::jws_alg::es256);
+    std::string kid = "k1";
+
+    web_fixture() {
+        publish();
+        run(iam_command::create_oidc_provider,
+            {{"url", k_issuer},
+             {"client_ids", boost::json::array{"sts.amazonaws.com", "app-client"}},
+             {"thumbprints", boost::json::array{std::string(40, 'a')}}});
+    }
+
+    void publish() {
+        web["https://" + k_issuer + "/.well-known/openid-configuration"] = boost::json::serialize(
+            boost::json::object{{"issuer", "https://" + k_issuer},
+                                {"jwks_uri", "https://keys.example.com/tenant/jwks"}});
+        auto jwk = jose::public_jwk(key.get());
+        jwk["kid"] = kid;
+        jwk["use"] = "sig";
+        web["https://keys.example.com/tenant/jwks"] =
+            boost::json::serialize(boost::json::object{{"keys", boost::json::array{jwk}}});
+    }
+
+    /// A token with `claims` over the defaults (iss, aud, sub, iat, exp).
+    [[nodiscard]] auto token(const boost::json::object& claims = {},
+                             jose::jws_alg alg = jose::jws_alg::es256,
+                             EVP_PKEY* signer = nullptr) const -> std::string {
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        boost::json::object c{{"iss", "https://" + k_issuer},
+                              {"aud", "sts.amazonaws.com"},
+                              {"sub", "repo:kythira:ref:main"},
+                              {"iat", now},
+                              {"exp", now + 600}};
+        for (const auto& [k, v] : claims) {
+            c[k] = v;
+        }
+        return jose::sign_compact(boost::json::object{{"kid", kid}, {"typ", "JWT"}},
+                                  boost::json::serialize(c), signer != nullptr ? signer : key.get(),
+                                  alg);
+    }
+
+    auto web_assume(const std::string& role_name, const std::string& jwt,
+                    const std::string& extra = "") -> iam::query::reply {
+        const auto body = "Action=AssumeRoleWithWebIdentity&RoleSessionName=w1&RoleArn=" +
+                          enc("arn:aws:iam::111122223333:role/" + role_name) +
+                          "&WebIdentityToken=" + enc(jwt) + extra;
+        const auto f = q::form::parse(body);
+        BOOST_TEST_REQUIRE(f.has_value(), body);
+        return api.handle_unsigned(*f, {.request_id = "req-1"});
+    }
+};
+
+auto web_trust(const std::string& condition = "") -> std::string {
+    return R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":")" +
+           k_provider_arn + R"("},"Action":"sts:AssumeRoleWithWebIdentity")" +
+           (condition.empty() ? "" : R"(,"Condition":)" + condition) + "}]}";
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(web_identity)
+
+BOOST_FIXTURE_TEST_CASE(inv_sts_b7_an_unsigned_call_needs_the_provider_in_the_trust_policy,
+                        web_fixture) {
+    role("ci", web_trust(), 3600, k_get_object);
+    const auto r = web_assume("ci", token());
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "Arn") == "arn:aws:sts::111122223333:assumed-role/ci/w1");
+    BOOST_TEST(element(r.body, "SubjectFromWebIdentityToken") == "repo:kythira:ref:main");
+    BOOST_TEST(element(r.body, "Provider") == k_issuer);
+    BOOST_TEST(element(r.body, "Audience") == "sts.amazonaws.com");
+    const auto who = authenticate(creds_of(r));
+    BOOST_TEST_REQUIRE(who.has_value());
+    BOOST_TEST(
+        authz.authorize(*who, {.action = "s3:GetObject", .resource = "arn:aws:s3:::b/k"}).allowed);
+    // A trust policy naming an IAM user, not the provider, does not allow it.
+    role("users-only", trust_for(k_alice));
+    BOOST_TEST(code_of(web_assume("users-only", token())) == "AccessDenied");
+    // The claims are condition keys: :sub, and :aud.
+    role("main-only",
+         web_trust(R"({"StringEquals":{")" + k_issuer + R"(:sub":"repo:kythira:ref:main",")" +
+                   k_issuer + R"(:aud":"sts.amazonaws.com"}})"));
+    BOOST_TEST(web_assume("main-only", token()).status == 200U);
+    BOOST_TEST(code_of(web_assume("main-only", token({{"sub", "repo:kythira:ref:fork"}}))) ==
+               "AccessDenied");
+    // Other actions may not arrive unsigned.
+    const auto f = q::form::parse("Action=GetCallerIdentity");
+    BOOST_TEST(
+        api.handle_unsigned(*f, {.request_id = "req-1"}).body.find("MissingAuthenticationToken") !=
+        std::string::npos);
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_sts_b6_tokens_are_checked_before_the_trust_policy, web_fixture) {
+    role("ci", web_trust());
+    // Wrong audience.
+    BOOST_TEST(code_of(web_assume("ci", token({{"aud", "someone-else"}}))) ==
+               "InvalidIdentityToken");
+    // One of several audiences is enough; with azp, :aud is the azp.
+    role("azp", web_trust(R"({"StringEquals":{")" + k_issuer + R"(:aud":"app-client"}})"));
+    BOOST_TEST(web_assume("azp", token({{"aud", boost::json::array{"x", "sts.amazonaws.com"}},
+                                        {"azp", "app-client"}}))
+                   .status == 200U);
+    // An issuer with no provider in the role's account.
+    BOOST_TEST(code_of(web_assume("ci", token({{"iss", "https://other.example.com"}}))) ==
+               "InvalidIdentityToken");
+    // Expired, past the five minutes of skew; inside it, accepted.
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    BOOST_TEST(code_of(web_assume("ci", token({{"exp", now - 301}}))) == "ExpiredTokenException");
+    BOOST_TEST(web_assume("ci", token({{"exp", now - 200}})).status == 200U);
+    BOOST_TEST(code_of(web_assume("ci", token({{"nbf", now + 600}}))) == "InvalidIdentityToken");
+    // Signed by another key under the same kid.
+    const auto other = jose::generate_signing_key(jose::jws_alg::es256);
+    BOOST_TEST(code_of(web_assume("ci", token({}, jose::jws_alg::es256, other.get()))) ==
+               "InvalidIdentityToken");
+    // Not an RS or ES algorithm: alg none, or HS256.
+    const auto good = token();
+    const auto dot = good.find('.');
+    for (const auto* header : {R"({"alg":"none","kid":"k1"})", R"({"alg":"HS256","kid":"k1"})"}) {
+        const auto forged = jose::base64url_encode(std::string_view(header)) + good.substr(dot);
+        BOOST_TEST(code_of(web_assume("ci", forged)) == "InvalidIdentityToken", header);
+    }
+    // Not a JWT at all.
+    BOOST_TEST(code_of(web_assume("ci", "not.a-jwt")) == "InvalidIdentityToken");
+}
+
+BOOST_FIXTURE_TEST_CASE(an_unknown_kid_refetches_the_jwks_once, web_fixture) {
+    role("ci", web_trust());
+    BOOST_TEST_REQUIRE(web_assume("ci", token()).status == 200U);
+    BOOST_TEST(fetched.size() == 2U);  // discovery and JWKS
+    // Cached: no fetch.
+    BOOST_TEST_REQUIRE(web_assume("ci", token()).status == 200U);
+    BOOST_TEST(fetched.size() == 2U);
+    // The issuer rotates: a token under the new kid refetches once.
+    key = jose::generate_signing_key(jose::jws_alg::rs256);
+    kid = "k2";
+    publish();
+    const auto r = web_assume("ci", token({}, jose::jws_alg::rs256));
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(fetched.size() == 4U);
+    // A made-up kid right after does not refetch again (the floor).
+    kid = "made-up";
+    BOOST_TEST(code_of(web_assume("ci", token({}, jose::jws_alg::rs256))) ==
+               "InvalidIdentityToken");
+    BOOST_TEST(fetched.size() == 4U);
+    // After an hour the cache is stale and is fetched again.
+    kid = "k2";
+    clock += std::chrono::hours(1);
+    BOOST_TEST(web_assume("ci", token({}, jose::jws_alg::rs256)).status == 200U);
+    BOOST_TEST(fetched.size() == 6U);
+    // An issuer that cannot be reached is IDPCommunicationError.
+    web.clear();
+    clock += std::chrono::hours(1);
+    BOOST_TEST(code_of(web_assume("ci", token({}, jose::jws_alg::rs256))) ==
+               "IDPCommunicationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(a_discovery_document_must_name_its_issuer_and_an_https_jwks, web_fixture) {
+    role("ci", web_trust());
+    web["https://" + k_issuer + "/.well-known/openid-configuration"] = boost::json::serialize(
+        boost::json::object{{"issuer", "https://elsewhere.example.com"},
+                            {"jwks_uri", "https://keys.example.com/tenant/jwks"}});
+    BOOST_TEST(code_of(web_assume("ci", token())) == "IDPCommunicationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_sts_1_inv_web_1_and_inv_dur_4_parameters_are_checked, web_fixture) {
+    role("ci", web_trust(), 7200);
+    // INV-STS-1.
+    const auto body = [&](const std::string& session, const std::string& jwt,
+                          const std::string& extra) {
+        const auto f =
+            q::form::parse("Action=AssumeRoleWithWebIdentity&RoleSessionName=" + enc(session) +
+                           "&RoleArn=" + enc("arn:aws:iam::111122223333:role/ci") +
+                           "&WebIdentityToken=" + enc(jwt) + extra);
+        return api.handle_unsigned(*f, {.request_id = "req-1"});
+    };
+    BOOST_TEST(code_of(body("x", token(), "")) == "ValidationError");
+    BOOST_TEST(code_of(body("has space", token(), "")) == "ValidationError");
+    // INV-WEB-1: 4-20000 characters.
+    BOOST_TEST(code_of(body("w1", "abc", "")) == "ValidationError");
+    BOOST_TEST(code_of(body("w1", std::string(20001, 'a'), "")) == "ValidationError");
+    // INV-DUR-4: as AssumeRole, within the role's maximum.
+    BOOST_TEST(code_of(web_assume("ci", token(), "&DurationSeconds=899")) == "ValidationError");
+    BOOST_TEST(code_of(web_assume("ci", token(), "&DurationSeconds=7201")) == "ValidationError");
+    BOOST_TEST(web_assume("ci", token(), "&DurationSeconds=7200").status == 200U);
+    // A session policy narrows the session.
+    role("wide", web_trust(), 3600, k_get_object);
+    const auto r = web_assume(
+        "wide", token(),
+        "&Policy=" +
+            enc(R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"iam:ListRoles","Resource":"*"}]})"));
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    const auto who = authenticate(creds_of(r));
+    BOOST_TEST_REQUIRE(who.has_value());
+    BOOST_TEST(
+        !authz.authorize(*who, {.action = "s3:GetObject", .resource = "arn:aws:s3:::b/k"}).allowed);
+    // A missing role is AccessDenied, not a probe.
+    BOOST_TEST(code_of(web_assume("nobody", token())) == "AccessDenied");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── The JWKS fetch rules (server-side request forgery) ──────────────────────
+
+BOOST_AUTO_TEST_SUITE(jwks_fetch_rules)
+
+BOOST_AUTO_TEST_CASE(metadata_private_and_loopback_addresses_are_forbidden) {
+    for (const auto* ip : {"169.254.169.254", "10.0.0.1", "172.16.5.4", "192.168.1.1", "127.0.0.1",
+                           "0.0.0.0", "100.64.0.1", "224.0.0.1", "::1", "::", "fe80::1", "fd00::1",
+                           "::ffff:169.254.169.254", "::ffff:10.1.2.3", "not-an-ip"}) {
+        BOOST_TEST(iam::oidc::address_forbidden(ip), ip);
+    }
+    for (const auto* ip : {"8.8.8.8", "140.82.112.3", "2606:4700::1111", "::ffff:1.1.1.1"}) {
+        BOOST_TEST(!iam::oidc::address_forbidden(ip), ip);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(only_https_urls_to_allowed_hosts_are_fetched) {
+    iam::oidc::fetch_rules open;
+    BOOST_TEST(!iam::oidc::check_url("http://issuer.example.com/x", open).first);
+    BOOST_TEST(!iam::oidc::check_url("https://user@issuer.example.com/x", open).first);
+    const auto ok = iam::oidc::check_url("https://Issuer.Example.com:8443/a/b?q", open).first;
+    BOOST_TEST_REQUIRE(ok.has_value());
+    BOOST_TEST(ok->host == "issuer.example.com");
+    BOOST_TEST(ok->port == 8443);
+    BOOST_TEST(ok->path == "/a/b");
+    iam::oidc::fetch_rules listed;
+    listed.allowed_hosts = {"token.actions.githubusercontent.com"};
+    BOOST_TEST(
+        iam::oidc::check_url("https://token.actions.githubusercontent.com/.well-known/x", listed)
+            .first.has_value());
+    BOOST_TEST(!iam::oidc::check_url("https://169.254.169.254/latest/meta-data", listed).first);
+}
+
+BOOST_AUTO_TEST_CASE(an_allowed_host_that_resolves_to_the_metadata_service_is_refused) {
+    // Even on the allowlist, a name whose address is not public is refused
+    // (a literal resolves to itself, so no DNS is needed here).
+    iam::oidc::fetch_rules listed;
+    listed.allowed_hosts = {"169.254.169.254", "127.0.0.1"};
+    for (const auto* host : {"169.254.169.254", "127.0.0.1"}) {
+        const auto [addr, why] = iam::oidc::resolve_checked(host, listed);
+        BOOST_TEST(!addr.has_value(), host);
+        BOOST_TEST(why.find("not a public address") != std::string::npos, why);
+    }
+    // With no allowlist (a compose test network) private addresses pass.
+    const auto [addr, why] = iam::oidc::resolve_checked("127.0.0.1", {});
+    BOOST_TEST(addr.has_value(), why);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

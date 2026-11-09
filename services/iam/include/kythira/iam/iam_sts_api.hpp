@@ -22,6 +22,7 @@
 /// out-of-scope AssumeRoleWithSAML and AssumeRoot.
 
 #include <kythira/iam/iam_authorizer.hpp>
+#include <kythira/iam/iam_oidc_jwks.hpp>
 #include <kythira/iam/iam_query_api.hpp>
 #include <kythira/iam/iam_seal.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
@@ -125,10 +126,33 @@ inline constexpr std::string_view k_b32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 template<sts_cluster C> class sts_query_api {
 public:
-    sts_query_api(C& cluster, iam_authorizer& authz) : _c(&cluster), _authz(&authz) {}
+    /// `jwks` verifies AssumeRoleWithWebIdentity tokens; without one that
+    /// action answers IDPCommunicationError.
+    sts_query_api(C& cluster, iam_authorizer& authz, oidc::jwks_cache* jwks = nullptr)
+        : _c(&cluster), _authz(&authz), _jwks(jwks) {}
 
     /// Answers one authenticated request.
     [[nodiscard]] auto handle(const aws_auth::principal_context& who, const aws_query::form& f,
+                              const query::request_facts& facts) -> query::reply {
+        return answer(&who, f, facts);
+    }
+
+    /// Answers one unsigned request. Only AssumeRoleWithWebIdentity may be
+    /// unsigned (the token is the credential); anything else is refused
+    /// as AWS refuses it.
+    [[nodiscard]] auto handle_unsigned(const aws_query::form& f, const query::request_facts& facts)
+        -> query::reply {
+        return answer(nullptr, f, facts);
+    }
+
+    /// Whether `f` is a request that may arrive unsigned.
+    [[nodiscard]] static auto unsigned_allowed(const aws_query::form& f) -> bool {
+        const auto a = f.get("Action");
+        return a && *a == "AssumeRoleWithWebIdentity";
+    }
+
+private:
+    [[nodiscard]] auto answer(const aws_auth::principal_context* who, const aws_query::form& f,
                               const query::request_facts& facts) -> query::reply {
         const auto action = f.get("Action");
         if (!action || action->empty()) {
@@ -139,8 +163,14 @@ public:
                          "Could not find operation " + std::string(*action) + " for version " +
                              std::string(*v));
         }
+        if (who == nullptr && !unsigned_allowed(f)) {
+            return error(facts, "MissingAuthenticationToken",
+                         "Request is missing Authentication Token");
+        }
+        static const aws_auth::principal_context anonymous{};
         try {
-            call x{*this, who, f, facts, std::string(*action)};
+            call x{*this,         who != nullptr ? *who : anonymous, f, facts, std::string(*action),
+                   who == nullptr};
             auto result = x.dispatch();
             return {200,
                     aws_query::response_xml(*action, k_sts_namespace, result, facts.request_id)};
@@ -153,7 +183,6 @@ public:
         }
     }
 
-private:
     [[nodiscard]] static auto error(const query::request_facts& facts, std::string_view code,
                                     std::string_view message) -> query::reply {
         const auto status = query::status_of(code);
@@ -167,6 +196,7 @@ private:
         const aws_query::form& f;
         const query::request_facts& facts;
         std::string action;
+        bool anonymous = false;  // unsigned: AssumeRoleWithWebIdentity only
 
         auto dispatch() -> std::string {
             using handler = std::string (call::*)();
@@ -175,13 +205,16 @@ private:
                 {"GetSessionToken", &call::get_session_token},
                 {"GetCallerIdentity", &call::get_caller_identity},
                 {"GetAccessKeyInfo", &call::get_access_key_info},
+                {"AssumeRoleWithWebIdentity", &call::assume_role_with_web_identity},
             };
             const auto it = table.find(action);
             if (it == table.end()) {
                 query::detail::fail("NotImplemented", "The action " + action +
                                                           " is not implemented by this endpoint.");
             }
-            limit_credentials();
+            if (action != "AssumeRoleWithWebIdentity") {
+                limit_credentials();
+            }
             return (this->*(it->second))();
         }
 
@@ -273,7 +306,9 @@ private:
 
         /// INV-SPOL-1..4, INV-STAG-1..3 and INV-STS-6, checked before any
         /// authorization; `account` is the account the session will be in.
-        [[nodiscard]] auto session_parameters(const std::string& account) const -> session_request {
+        [[nodiscard]] auto session_parameters(const std::string& account,
+                                              bool tags_and_identity = true) const
+            -> session_request {
             session_request out;
             if (const auto p = f.get("Policy")) {
                 out.policy = std::string(*p);
@@ -306,6 +341,9 @@ private:
             }
             for (const auto& a : out.policy_arns) {
                 out.packed += a.size();
+            }
+            if (!tags_and_identity) {
+                return out;  // AssumeRoleWithWebIdentity takes neither
             }
 
             static constexpr std::array<std::string_view, 2> tag_fields{"Key", "Value"};
@@ -402,15 +440,50 @@ private:
             OPENSSL_cleanse(s.secret_access_key.data(), s.secret_access_key.size());
         }
 
-        // ── AssumeRole (Requirement 10.2) ──
+        struct found_role {
+            std::optional<iam_role> role;
+            std::string partition;
+            std::string account;
+        };
 
-        auto assume_role() -> std::string {
+        /// The role `role_arn` names, in whichever account that is. A
+        /// missing role is AccessDenied to the caller, as on AWS, so roles
+        /// cannot be probed.
+        auto find_role(const std::string& role_arn) -> found_role {
+            found_role out;
+            read([&](const iam_state_machine& sm) {
+                out.partition = sm.config().partition;
+                const auto head = "arn:" + out.partition + ":iam::";
+                if (!role_arn.starts_with(head)) {
+                    return;
+                }
+                const auto rest = std::string_view(role_arn).substr(head.size());
+                const auto colon = rest.find(':');
+                if (colon == std::string_view::npos ||
+                    !rest.substr(colon + 1).starts_with("role/")) {
+                    return;
+                }
+                out.account = std::string(rest.substr(0, colon));
+                const auto name = role_arn.substr(role_arn.rfind('/') + 1);
+                if (const auto* r = sm.role(out.account, name);
+                    r != nullptr && sm.arn(out.account, "role", r->path, r->name) == role_arn) {
+                    out.role = *r;
+                }
+            });
+            return out;
+        }
+
+        [[nodiscard]] auto checked_role_arn() const -> std::string {
             const auto role_arn = required("RoleArn");
             if (!validate::arn_length(role_arn)) {
                 query::detail::fail("ValidationError",
                                     "The specified value for roleArn is invalid. It must be "
                                     "20-2048 characters.");
             }
+            return role_arn;
+        }
+
+        [[nodiscard]] auto checked_session_name() const -> std::string {
             const auto session_name = required("RoleSessionName");
             if (!validate::role_session_name(session_name)) {  // INV-STS-1
                 query::detail::fail("ValidationError",
@@ -419,6 +492,14 @@ private:
                                         "Member must satisfy regular expression pattern: "
                                         "[\\w+=,.@-]* and have length between 2 and 64");
             }
+            return session_name;
+        }
+
+        // ── AssumeRole (Requirement 10.2) ──
+
+        auto assume_role() -> std::string {
+            const auto role_arn = checked_role_arn();
+            const auto session_name = checked_session_name();
             const auto external_id = f.get("ExternalId");
             if (external_id && !validate::external_id(*external_id)) {  // INV-STS-3
                 query::detail::fail("ValidationError",
@@ -430,30 +511,7 @@ private:
             const auto requested = optional_int("DurationSeconds");
             check_token_size();
 
-            // The role, in whichever account its ARN names. A missing role
-            // is AccessDenied, as on AWS, so roles cannot be probed.
-            std::optional<iam_role> role;
-            std::string partition;
-            std::string role_account;
-            read([&](const iam_state_machine& sm) {
-                partition = sm.config().partition;
-                const auto head = "arn:" + partition + ":iam::";
-                if (!role_arn.starts_with(head)) {
-                    return;
-                }
-                const auto rest = std::string_view(role_arn).substr(head.size());
-                const auto colon = rest.find(':');
-                if (colon == std::string_view::npos ||
-                    !rest.substr(colon + 1).starts_with("role/")) {
-                    return;
-                }
-                role_account = std::string(rest.substr(0, colon));
-                const auto name = role_arn.substr(role_arn.rfind('/') + 1);
-                if (const auto* r = sm.role(role_account, name);
-                    r != nullptr && sm.arn(role_account, "role", r->path, r->name) == role_arn) {
-                    role = *r;
-                }
-            });
+            const auto [role, partition, role_account] = find_role(role_arn);
             const auto denied = [&] {
                 query::detail::fail("AccessDenied", "User: " + who.arn +
                                                         " is not authorized to perform: "
@@ -565,6 +623,250 @@ private:
             return w.str();
         }
 
+        // ── AssumeRoleWithWebIdentity (Requirement 11) ──
+
+        /// A claim as a list of strings: a string is a list of one, and
+        /// anything else is empty.
+        [[nodiscard]] static auto strings(const boost::json::object& claims, std::string_view name)
+            -> std::vector<std::string> {
+            std::vector<std::string> out;
+            const auto* v = claims.if_contains(name);
+            if (v == nullptr) {
+                return out;
+            }
+            if (v->is_string()) {
+                out.emplace_back(v->as_string());
+            } else if (v->is_array()) {
+                for (const auto& e : v->as_array()) {
+                    if (e.is_string()) {
+                        out.emplace_back(e.as_string());
+                    }
+                }
+            }
+            return out;
+        }
+
+        [[nodiscard]] static auto number(const boost::json::object& claims, std::string_view name)
+            -> std::optional<std::int64_t> {
+            const auto* v = claims.if_contains(name);
+            if (v == nullptr) {
+                return std::nullopt;
+            }
+            if (v->is_int64()) {
+                return v->as_int64();
+            }
+            if (v->is_uint64()) {
+                return static_cast<std::int64_t>(v->as_uint64());
+            }
+            if (v->is_double()) {
+                return static_cast<std::int64_t>(v->as_double());
+            }
+            return std::nullopt;
+        }
+
+        /// INV-STS-B6, B7. The token is the credential: the request is
+        /// unsigned, the provider is found by `iss` in the role's account,
+        /// `aud` must be one of its client ids, the signature must verify
+        /// under the issuer's JWKS with an RS or ES algorithm, the times
+        /// must hold (5 minutes of skew), and the role's trust policy must
+        /// allow the provider as `Federated`.
+        auto assume_role_with_web_identity() -> std::string {
+            const auto role_arn = checked_role_arn();
+            const auto session_name = checked_session_name();
+            const auto token = required("WebIdentityToken");
+            if (!validate::web_identity_token_length(token)) {  // INV-WEB-1
+                query::detail::fail("ValidationError",
+                                    "1 validation error detected: Value at 'webIdentityToken' "
+                                    "failed to satisfy constraint: Member must have length "
+                                    "between 4 and 20000");
+            }
+            if (f.contains("ProviderId")) {
+                query::detail::fail("InvalidParameterValue",
+                                    "ProviderId is for OAuth 2.0 access tokens, which this "
+                                    "endpoint does not accept.");
+            }
+            const auto requested = optional_int("DurationSeconds");
+            const auto [role, partition, role_account] = find_role(role_arn);
+            const auto extra = session_parameters(role_account, false);
+            const auto invalid = [](const std::string& why) {
+                query::detail::fail("InvalidIdentityToken", why);
+            };
+
+            // 1. Decode, without trusting anything yet.
+            const auto parts = jose::parse_compact(token);
+            if (!parts) {
+                invalid("The web identity token is not a well-formed JWT.");
+            }
+            const auto* alg_v = parts->header.if_contains("alg");
+            const auto alg = alg_v != nullptr && alg_v->is_string()
+                                 ? jose::parse_alg(std::string_view(alg_v->as_string()))
+                                 : std::nullopt;
+            if (!alg) {
+                invalid(
+                    "The web identity token must be signed with RS256, RS384, RS512, "
+                    "ES256, ES384 or ES512.");
+            }
+            const auto* kid_v = parts->header.if_contains("kid");
+            if (kid_v == nullptr || !kid_v->is_string()) {
+                invalid("The web identity token has no kid.");
+            }
+            boost::system::error_code ec;
+            auto claims_v = boost::json::parse(parts->payload, ec);
+            if (ec || !claims_v.is_object()) {
+                invalid("The web identity token's claims are not a JSON object.");
+            }
+            const auto& claims = claims_v.as_object();
+            const auto iss_list = strings(claims, "iss");
+            if (iss_list.size() != 1 || !iss_list.front().starts_with("https://")) {
+                invalid("The web identity token's iss is not an https URL.");
+            }
+            auto issuer = iss_list.front().substr(std::string_view("https://").size());
+            while (issuer.ends_with('/')) {
+                issuer.pop_back();
+            }
+
+            // 2. The provider, in the role's account.
+            std::optional<iam_oidc_provider> provider;
+            read([&](const iam_state_machine& sm) {
+                if (const auto* a = sm.account(role_account)) {
+                    if (const auto it = a->oidc_providers.find(issuer);
+                        it != a->oidc_providers.end()) {
+                        provider = it->second;
+                    }
+                }
+            });
+            if (!provider) {
+                invalid("No OpenIDConnect provider found in your account for " + iss_list.front());
+            }
+
+            // 3. The audience. With `azp`, AWS's `:aud` key is the
+            // authorized party and `:oaud` the audience.
+            const auto aud = strings(claims, "aud");
+            const auto azp = strings(claims, "azp");
+            const auto client = [&](const std::string& id) {
+                return std::ranges::find(provider->client_ids, id) != provider->client_ids.end();
+            };
+            if (std::ranges::none_of(aud, client)) {
+                invalid("Incorrect token audience");
+            }
+
+            // 4. The signature, under the issuer's key for this kid.
+            if (api._jwks == nullptr) {
+                query::detail::fail("IDPCommunicationError",
+                                    "This endpoint cannot reach identity providers.");
+            }
+            const auto [jwk, why] = api._jwks->key(issuer, std::string(kid_v->as_string()));
+            if (!jwk) {
+                if (why == oidc::key_error::unavailable) {
+                    query::detail::fail("IDPCommunicationError",
+                                        "Couldn't retrieve verification key from your identity "
+                                        "provider.");
+                }
+                invalid("The web identity token's kid is not in the issuer's JWKS.");
+            }
+            jose::evp_pkey_ptr key;
+            try {
+                key = jose::public_key_from_jwk(*jwk);
+            } catch (const std::exception&) {
+                invalid("The issuer's key for this kid cannot be read.");
+            }
+            if (!key || !jose::verify_compact(token, key.get(), *alg)) {
+                invalid("The web identity token's signature does not verify.");
+            }
+
+            // 5. The times, with 5 minutes of skew.
+            constexpr std::int64_t skew = 300;
+            const auto now = iam_leader::now_seconds();
+            const auto exp = number(claims, "exp");
+            if (!exp) {
+                invalid("The web identity token has no exp.");
+            }
+            if (*exp + skew <= now) {
+                query::detail::fail("ExpiredTokenException", "Token expired: current date/time " +
+                                                                 query::iso8601(now) +
+                                                                 " must be before the expiration "
+                                                                 "date/time " +
+                                                                 query::iso8601(*exp));
+            }
+            if (const auto nbf = number(claims, "nbf"); nbf && *nbf > now + skew) {
+                invalid("The web identity token is not yet valid (nbf).");
+            }
+            if (const auto iat = number(claims, "iat"); iat && *iat > now + skew) {
+                invalid("The web identity token was issued in the future (iat).");
+            }
+
+            if (!role) {
+                query::detail::fail("AccessDenied",
+                                    "Not authorized to perform sts:AssumeRoleWithWebIdentity");
+            }
+            const auto duration =
+                validate::web_identity_duration(requested, role->max_session_duration);
+            if (!duration.has_value()) {  // INV-DUR-4
+                query::detail::fail("ValidationError", duration.error());
+            }
+
+            // 6. The trust policy, with the provider as the principal.
+            const auto provider_arn =
+                "arn:" + partition + ":iam::" + role_account + ":oidc-provider/" + issuer;
+            const auto sub = strings(claims, "sub");
+            aws_auth::authz_request r;
+            r.action = "sts:AssumeRoleWithWebIdentity";
+            r.resource = role_arn;
+            r.resource_account = role_account;
+            r.resource_policy = role->trust_policy;
+            r.resource_kind = aws_auth::resource_policy_kind::trust;
+            r.resource_tags.assign(role->tags.begin(), role->tags.end());
+            r.keys.push_back({"sts:RoleSessionName", {session_name}});
+            if (!sub.empty()) {
+                r.keys.push_back({issuer + ":sub", {sub.front()}});
+            }
+            if (!azp.empty()) {
+                r.keys.push_back({issuer + ":aud", {azp.front()}});
+                r.keys.push_back({issuer + ":oaud", aud});
+            } else {
+                r.keys.push_back({issuer + ":aud", aud});
+            }
+            if (const auto amr = strings(claims, "amr"); !amr.empty()) {
+                r.keys.push_back({issuer + ":amr", amr});
+            }
+            r.source_ip = facts.source_ip;
+            r.user_agent = facts.user_agent;
+            r.region = facts.region;
+            r.secure_transport = facts.secure_transport;
+            if (!api._authz->authorize_web_identity(provider_arn, r).allowed) {
+                query::detail::fail("AccessDenied",
+                                    "Not authorized to perform sts:AssumeRoleWithWebIdentity");
+            }
+
+            session s;
+            s.account = role_account;
+            s.issuer_kind = std::string(k_issuer_role);
+            s.role_arn = role_arn;
+            s.role_name = role->name;
+            s.session_name = session_name;
+            s.principal_arn = "arn:" + partition + ":sts::" + role_account + ":assumed-role/" +
+                              role->name + "/" + session_name;
+            s.userid = role->id + ":" + session_name;
+            if (extra.policy) {
+                s.session_policies.push_back(*extra.policy);
+            }
+            s.session_policies.insert(s.session_policies.end(), extra.policy_arns.begin(),
+                                      extra.policy_arns.end());
+            aws_query::xml_writer w;
+            mint(s, duration.value(), w);
+            w.element("SubjectFromWebIdentityToken", sub.empty() ? std::string{} : sub.front())
+                .open("AssumedRoleUser")
+                .element("AssumedRoleId", s.userid)
+                .element("Arn", s.principal_arn)
+                .close()
+                .element("Provider", issuer)
+                .element("Audience", azp.empty() ? aud.front() : azp.front());
+            if (extra.policy || !extra.policy_arns.empty()) {
+                w.element("PackedPolicySize", std::to_string(extra.packed * 100 / 2048));
+            }
+            return w.str();
+        }
+
         // ── GetSessionToken ──
 
         /// No permission is needed, as on AWS; only long-term keys may call
@@ -632,6 +934,7 @@ private:
 
     C* _c;
     iam_authorizer* _authz;
+    oidc::jwks_cache* _jwks;
 };
 
 }  // namespace kythira::iam::sts

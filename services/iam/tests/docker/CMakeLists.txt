@@ -21,6 +21,8 @@ add_docker_chaos_scenario_test(iam_node_scenario_test
     "${CMAKE_CURRENT_SOURCE_DIR}/iam_node_scenario_test.cpp")
 set_target_properties(iam_node_scenario_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/docker_chaos")
+# Task 19: the scenario signs web identity tokens with raft/jwt.hpp.
+target_link_libraries(iam_node_scenario_test PRIVATE kythira_core_headers OpenSSL::Crypto)
 
 set(_IAM_DOCKER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../docker")
 set(_IAM_NODE_DOCKERFILE "${_IAM_DOCKER_DIR}/iam_node/Dockerfile")

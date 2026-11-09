@@ -74,6 +74,14 @@ struct config {
     std::string arn_partition{"aws"};
     std::vector<std::string> sts_regions{"us-east-1"};
 
+    // AssumeRoleWithWebIdentity's JWKS fetches (Requirement 11.4): hosts
+    // that may be fetched (empty: any, and private addresses allowed), an
+    // HTTPS proxy, and a CA bundle to trust instead of the system store
+    // (for a test issuer).
+    std::vector<std::string> oidc_allowed_hosts;
+    std::string oidc_proxy;
+    std::string oidc_ca_file;
+
     std::chrono::milliseconds election_timeout_min{500};
     std::chrono::milliseconds election_timeout_max{1000};
     std::chrono::milliseconds heartbeat_interval{100};
@@ -185,6 +193,8 @@ inline constexpr const char* k_usage =
     "                [--replica] [--max-replicas <n>] [--iam-max-staleness-secs <n>]\n"
     "                [--arn-partition <aws|aws-cn|aws-us-gov|...>]\n"
     "                [--sts-regions <region>[,...]]\n"
+    "                [--oidc-allowed-hosts <host>[,...]] [--oidc-proxy <host:port>]\n"
+    "                [--oidc-ca-file <path>]\n"
     "                [--election-timeout-min-ms <n>] [--election-timeout-max-ms <n>]\n"
     "                [--heartbeat-interval-ms <n>] [--rpc-timeout-ms <n>]\n"
     "\n"
@@ -280,6 +290,12 @@ inline constexpr const char* k_usage =
             if (cfg.sts_regions.empty()) {
                 throw std::invalid_argument("--sts-regions needs at least one region");
             }
+        } else if (arg == "--oidc-allowed-hosts") {
+            cfg.oidc_allowed_hosts = detail::split_list(next());
+        } else if (arg == "--oidc-proxy") {
+            cfg.oidc_proxy = next();
+        } else if (arg == "--oidc-ca-file") {
+            cfg.oidc_ca_file = next();
         } else if (arg == "--election-timeout-min-ms") {
             cfg.election_timeout_min = std::chrono::milliseconds(number(10, 600000));
         } else if (arg == "--election-timeout-max-ms") {

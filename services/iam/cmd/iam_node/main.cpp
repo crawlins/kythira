@@ -43,6 +43,7 @@
 #include <kythira/iam/iam_query_api.hpp>
 #include <kythira/iam/iam_replica.hpp>
 #include <kythira/iam/iam_service_registry.hpp>
+#include <kythira/iam/iam_oidc_jwks.hpp>
 #include <kythira/iam/iam_sts_api.hpp>
 #include <kythira/iam/services/iam_actions.hpp>
 #include <kythira/iam/services/sts_actions.hpp>
@@ -216,7 +217,8 @@ public:
               _registry),
           _query_cluster{this},
           _api(_query_cluster, _authz),
-          _sts_api(_query_cluster, _authz) {
+          _jwks(make_fetcher(cfg)),
+          _sts_api(_query_cluster, _authz, &_jwks) {
         if (_cfg.replica) {
             _authz.set_freshness([this] { return _freshness.fresh(); });
         }
@@ -335,6 +337,24 @@ private:
         }
         auto kek(std::string_view salt) -> const iam::seal_key& { return m->kek(salt); }
     };
+
+    /// AssumeRoleWithWebIdentity's JWKS fetcher (task 19). Without
+    /// cpp-httplib's TLS client every fetch fails, which the action
+    /// reports as IDPCommunicationError.
+    static auto make_fetcher(const iam_node::config& cfg) -> iam::oidc::fetcher {
+#ifdef KYTHIRA_IAM_HAS_HTTPS_FETCHER
+        iam::oidc::fetch_rules rules;
+        rules.allowed_hosts = cfg.oidc_allowed_hosts;
+        rules.proxy = cfg.oidc_proxy;
+        rules.ca_file = cfg.oidc_ca_file;
+        return iam::oidc::https_fetcher(std::move(rules));
+#else
+        (void)cfg;
+        return [](const std::string&) {
+            return iam::oidc::fetch_result{0, {}, "built without an HTTPS client"};
+        };
+#endif
+    }
 
     static auto make_registry() -> iam::iam_service_registry {
         iam::iam_service_registry r;
@@ -649,6 +669,41 @@ private:
         return handle_query(req, ctx, true);
     }
 
+    /// The form of an unsigned request that STS answers unsigned, if `req`
+    /// is one.
+    static auto unsigned_sts_form(const https::request& req)
+        -> std::optional<kythira::aws_query::form> {
+        const auto target = std::string_view(req.target());
+        const auto q = target.find('?');
+        auto form = kythira::aws_query::form::parse(
+            req.method() == http::verb::post
+                ? std::string_view(req.body())
+                : (q == std::string_view::npos ? std::string_view{} : target.substr(q + 1)));
+        if (!form || !iam::sts::sts_query_api<query_cluster_adapter>::unsigned_allowed(*form)) {
+            return std::nullopt;
+        }
+        return form;
+    }
+
+    auto handle_unsigned_sts(const https::request& req, const https::request_context& ctx,
+                             const kythira::aws_query::form& form) -> https::response {
+        if (!_node->is_leader()) {
+            return redirect_to_leader(req);
+        }
+        iam::query::request_facts facts;
+        facts.request_id = routing::request_id();
+        facts.source_ip = ctx.peer_address;
+        facts.user_agent = std::string(req[http::field::user_agent]);
+        facts.secure_transport = ctx.tls;
+        const auto r = _sts_api.handle_unsigned(form, facts);
+        https::response res{static_cast<http::status>(r.status), req.version()};
+        res.set(http::field::content_type, "text/xml");
+        res.set("x-amzn-RequestId", facts.request_id);
+        res.body() = r.body;
+        res.keep_alive(req.keep_alive());
+        return res;
+    }
+
     /// One SigV4-signed Query API request, for IAM or STS: their signing
     /// service names, error XML namespaces and handlers differ.
     auto handle_query(const https::request& req, const https::request_context& ctx, bool sts)
@@ -728,6 +783,11 @@ private:
                 return query_error(req, false, 400, "InvalidAction",
                                    "This endpoint serves the IAM and STS APIs only.");
             case routing::route::unauthenticated:
+                // AssumeRoleWithWebIdentity is unsigned: the token is the
+                // credential (INV-STS-B7).
+                if (auto form = unsigned_sts_form(req)) {
+                    return handle_unsigned_sts(req, ctx, *form);
+                }
                 break;
         }
         return query_error(req, false, 403, "MissingAuthenticationToken",
@@ -755,6 +815,7 @@ private:
     iam::iam_authorizer _authz;
     query_cluster_adapter _query_cluster;
     iam::query::iam_query_api<query_cluster_adapter> _api;
+    iam::oidc::jwks_cache _jwks;
     iam::sts::sts_query_api<query_cluster_adapter> _sts_api;
     std::unique_ptr<https::server> _server;
     std::thread _election_timer;
