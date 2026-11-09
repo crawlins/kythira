@@ -236,3 +236,27 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
   - docker-chaos scenario under Docker and rootless Podman
   - `doc/` update
   - _Requirements: 8.1-8.3_
+  - Progress (November 9, 2026), left open for the chaos scenario:
+    - 8.1: fault points `raft/snapshot/corrupt_chunk` (follower flips a
+      byte of an incoming chunk), `raft/snapshot/fsync_file` (a staged
+      file's fsync fails, in `snapshot_stream_writer`) and
+      `raft/snapshot/crash_after_ingest` (throws between ingest and the
+      metadata save). `persistent_node_fault_test` (the node suite with
+      FIU_ENABLE, registered where libfiu is found) asserts `checksum`,
+      `io_error` and engine-based recovery, and that a clean resend
+      installs after each refusal.
+    - 8.2: `follower_restarted_mid_transfer_starts_again_from_zero` (a
+      restarted follower drops its staging and takes the transfer from 0)
+      and `leader_change_mid_transfer_still_catches_the_follower_up` (the
+      old leader is cut off mid-transfer; the new one, which compacted
+      itself, finishes). Resume with the same leader was task 6's test.
+      Departure from 8.2 as written: a new leader whose checkpoint has the
+      same (index, term, digest) also resumes, because resume is keyed on
+      the checkpoint, not on who sends it.
+    - `doc/persistent_state_machines.md`: kinds, engines, what the node
+      does differently, catch-up, configuration, refusals, metrics, fault
+      points.
+    - Open, 8.3: the docker-chaos scenario needs a container binary that
+      hosts a persistent group. None exists until persistent-state-machine
+      task 7 (the gateway on `persistent_kv_state_machine` and RocksDB), so
+      the scenario is written with or after that task.

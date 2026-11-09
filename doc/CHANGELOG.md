@@ -97,6 +97,14 @@ current list of outstanding work, see [TODO.md](TODO.md).
   and a build without them never sees a RocksDB header. A 1 GB group
   catches up a lagging follower with less than 64 MB of memory growth.
 
+- **Snapshot transfers are tested under faults.** Fault points corrupt a
+  chunk, fail a file fsync, and crash a follower between ingest and the
+  metadata save; each is refused or recovered, and the new
+  `persistent_node_fault_test` checks all three. A follower restarted mid-
+  transfer starts again from zero, and a leader change mid-transfer still
+  catches the follower up. `doc/persistent_state_machines.md` describes
+  persistent groups for operators.
+
 - **Node metrics are safe to emit from any thread.** `node<Types>` built
   metrics from several threads at once, some without its mutex, which
   could mix dimensions between metrics or crash a back-end. It now holds

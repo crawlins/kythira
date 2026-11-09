@@ -460,6 +460,15 @@ target_link_libraries(snapshot_stream_test PRIVATE OpenSSL::Crypto)
 # and paced.
 add_raft_completion_test(persistent_node_integration_test persistent_node_integration_test.cpp)
 target_link_libraries(persistent_node_integration_test PRIVATE OpenSSL::Crypto)
+# file-install-snapshot task 8: the same suite with FIU_ENABLE, adding the
+# failpoint cases (corrupt chunk, failed fsync, crash after ingest). Needs
+# libfiu's control API, so only where FIU was found.
+if(FIU_FOUND)
+    add_raft_completion_test(persistent_node_fault_test persistent_node_integration_test.cpp)
+    target_compile_definitions(persistent_node_fault_test PRIVATE FIU_ENABLE)
+    target_link_libraries(persistent_node_fault_test PRIVATE OpenSSL::Crypto ${FIU_LDFLAGS})
+    target_include_directories(persistent_node_fault_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
 # persistent-state-machine task 5: rocksdb_kv_engine, through the same
 # conformance suite as memory_kv_engine plus reopen and ingest cases. Only
 # built when the opt-in RocksDB feature was found (raft_rocksdb_engine in the

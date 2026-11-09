@@ -25,6 +25,9 @@
 #include "persistent_register_state_machine.hpp"
 #include "recording_metrics.hpp"
 
+#if defined(FIU_ENABLE)
+#include <fiu-control.h>
+#endif
 #if defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)
 #include <raft/rocksdb_kv_engine.hpp>
 
@@ -1123,6 +1126,233 @@ BOOST_AUTO_TEST_CASE(leader_resumes_a_cut_transfer_and_paces_it, *boost::unit_te
     BOOST_TEST(total >= 1U);
     BOOST_TEST(elapsed >= std::chrono::milliseconds{1500});
 }
+
+// ── Faults (.kiro/specs/file-install-snapshot/ task 8) ──
+
+// Requirement 8.2: a follower restarted mid-transfer deletes what it staged
+// and takes the transfer again from offset 0, then installs it.
+BOOST_AUTO_TEST_CASE(follower_restarted_mid_transfer_starts_again_from_zero,
+                     *boost::unit_test::timeout(30)) {
+    harness h;
+    source src(20);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    auto peer = h.peer_client();
+    const auto reqs = src.requests(1, 64);
+    BOOST_REQUIRE_GT(reqs.size(), 3U);
+    for (std::size_t i = 0; i < 3; ++i) {
+        BOOST_TEST(!reason_of(send(peer, reqs[i])).has_value());
+    }
+    BOOST_TEST(staging_entries(h) == 1U);
+    node->stop();
+    node.reset();
+
+    auto restarted = h.make_node(cfg);
+    restarted->start();
+    BOOST_TEST(staging_entries(h) == 0U);
+    // Going on from where the old process was is refused: nothing is staged.
+    BOOST_TEST(reason_of(send(peer, reqs[3])).has_value());
+    for (const auto& r : reqs) {
+        BOOST_TEST(!reason_of(send(peer, r)).has_value());
+    }
+    BOOST_TEST(h.metrics->count_named("raft_install_snapshot_resumed") == 0U);
+    BOOST_TEST(restarted->last_applied_index() == 20U);
+    BOOST_TEST(value_of(*restarted, 20) == "v20");
+    restarted->stop();
+}
+
+// Requirement 8.2: the leader changes while a follower is catching up by
+// snapshot. The new leader, which compacted on its own, finishes the job.
+BOOST_AUTO_TEST_CASE(leader_change_mid_transfer_still_catches_the_follower_up,
+                     *boost::unit_test::timeout(90)) {
+    auto cfg = make_config();
+    cfg._persistent_log_compaction = true;
+    cfg._snapshot_threshold_bytes = 7 * 13;  // one compaction, at the last write
+    cfg._snapshot_chunk_size = 16;
+    cfg._install_snapshot_timeout = std::chrono::milliseconds{300};
+    cfg._snapshot_pacer = std::make_shared<kythira::snapshot_pacer>(150, 16);
+    persistent_cluster c(cfg);
+    BOOST_REQUIRE(c.pump_until([&] { return c.leader().is_leader(); }));
+    BOOST_REQUIRE(c.commit(1));
+    BOOST_REQUIRE(c.pump_until([&] { return value_of(c.at(1), 1) == "v01"; }));
+    c.cut("3");
+    for (int i = 2; i < 14; ++i) {
+        BOOST_REQUIRE(c.commit(i));
+    }
+    BOOST_REQUIRE(c.pump_until([&] { return value_of(c.at(1), 13) == "v13"; }));
+    c.connect_all();
+    const auto staging_has_part = [&] {
+        for (const auto& e : std::filesystem::directory_iterator(c.members[2]->staging.path())) {
+            if (e.path().filename().string().starts_with("kythira-staging-")) {
+                return true;
+            }
+        }
+        return false;
+    };
+    BOOST_REQUIRE(c.pump_until(staging_has_part, std::chrono::milliseconds{10000}));
+
+    // Depose node 1: cut it off and let node 2 win an election.
+    c.cut("1");
+    auto& next = c.at(1);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds{10000};
+    while (!next.is_leader() && std::chrono::steady_clock::now() < end) {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
+        next.check_election_timeout();
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+    BOOST_REQUIRE(next.is_leader());
+    const auto caught_up = [&] { return value_of(c.at(2), 13) == "v13"; };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{60000};
+    while (!caught_up() && std::chrono::steady_clock::now() < deadline) {
+        next.check_heartbeat_timeout();
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    BOOST_REQUIRE(caught_up());
+    for (int i = 2; i < 14; ++i) {
+        BOOST_CHECK(!value_of(c.at(2), i).empty());
+    }
+    BOOST_TEST(c.members[2]->persistence.load_snapshot().has_value());
+    c.connect_all();
+}
+
+#if defined(FIU_ENABLE)
+// Requirement 8.1's failpoints. This build (persistent_node_fault_test) has
+// FIU_ENABLE and links libfiu.
+
+namespace {
+
+struct fiu_fixture {
+    fiu_fixture() { fiu_init(0); }
+};
+
+class armed_fault {
+public:
+    explicit armed_fault(const char* name) : _name(name) { fiu_enable(_name, 1, nullptr, 0); }
+    ~armed_fault() { disarm(); }
+    armed_fault(const armed_fault&) = delete;
+    auto operator=(const armed_fault&) -> armed_fault& = delete;
+    armed_fault(armed_fault&&) = delete;
+    auto operator=(armed_fault&&) -> armed_fault& = delete;
+    auto disarm() -> void {
+        if (_armed) {
+            fiu_disable(_name);
+            _armed = false;
+        }
+    }
+
+private:
+    const char* _name;
+    bool _armed{true};
+};
+
+}  // namespace
+
+BOOST_GLOBAL_FIXTURE(fiu_fixture);
+
+// A chunk damaged in transit: the file it completes fails its SHA-256, the
+// transfer is refused with `checksum` and dropped, and a clean resend
+// installs.
+BOOST_AUTO_TEST_CASE(a_corrupt_chunk_is_refused_and_a_clean_resend_installs,
+                     *boost::unit_test::timeout(30)) {
+    using reason = kythira::install_snapshot_reject_reason;
+    harness h;
+    source src(20);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    auto peer = h.peer_client();
+    const auto reqs = src.requests(1, 64);
+    std::optional<reason> refused;
+    {
+        armed_fault fault("raft/snapshot/corrupt_chunk");
+        for (const auto& r : reqs) {
+            refused = reason_of(send(peer, r));
+            if (refused.has_value()) {
+                break;
+            }
+        }
+    }
+    BOOST_TEST((refused == reason::checksum));
+    BOOST_TEST(node->last_applied_index() == 0U);
+    BOOST_TEST(staging_entries(h) == 0U);
+    for (const auto& r : reqs) {
+        BOOST_TEST(!reason_of(send(peer, r)).has_value());
+    }
+    BOOST_TEST(node->last_applied_index() == 20U);
+    BOOST_TEST(value_of(*node, 20) == "v20");
+    node->stop();
+}
+
+// A failed file fsync: refused with `io_error`, nothing installed, and a
+// resend once the disk recovers installs.
+BOOST_AUTO_TEST_CASE(a_failed_fsync_is_refused_and_a_resend_installs,
+                     *boost::unit_test::timeout(30)) {
+    using reason = kythira::install_snapshot_reject_reason;
+    harness h;
+    source src(20);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    auto node = h.make_node(cfg);
+    node->start();
+    auto peer = h.peer_client();
+    const auto reqs = src.requests(1, 64);
+    std::optional<reason> refused;
+    {
+        armed_fault fault("raft/snapshot/fsync_file");
+        for (const auto& r : reqs) {
+            refused = reason_of(send(peer, r));
+            if (refused.has_value()) {
+                break;
+            }
+        }
+    }
+    BOOST_TEST((refused == reason::io_error));
+    BOOST_TEST(node->last_applied_index() == 0U);
+    BOOST_TEST(!h.persistence.load_snapshot().has_value());
+    for (const auto& r : reqs) {
+        BOOST_TEST(!reason_of(send(peer, r)).has_value());
+    }
+    BOOST_TEST(node->last_applied_index() == 20U);
+    node->stop();
+}
+
+// The follower dies after ingest and before the metadata save: the engine
+// has the snapshot, the log store does not. Restart takes the engine's
+// applied index and serves the state (Requirement 4.2).
+BOOST_AUTO_TEST_CASE(a_crash_after_ingest_recovers_from_the_engine,
+                     *boost::unit_test::timeout(30)) {
+    harness h;
+    source src(20);
+    auto cfg = make_config();
+    cfg._snapshot_staging_directory = h.staging.path();
+    {
+        auto node = h.make_node(cfg);
+        node->start();
+        auto peer = h.peer_client();
+        const auto reqs = src.requests(1, 64);
+        armed_fault fault("raft/snapshot/crash_after_ingest");
+        for (const auto& r : reqs) {
+            try {
+                (void)send(peer, r);
+            } catch (const std::exception&) {
+                // The last chunk's handler "died"; the RPC fails.
+            }
+        }
+        fault.disarm();
+        node->stop();
+    }
+    BOOST_TEST(!h.persistence.load_snapshot().has_value());
+    auto restarted = h.make_node(cfg);
+    restarted->start();
+    BOOST_TEST(restarted->last_applied_index() == 20U);
+    BOOST_TEST(value_of(*restarted, 20) == "v20");
+    BOOST_TEST(staging_entries(h) == 0U);
+    restarted->stop();
+}
+#endif
 
 #if defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)
 // ── Compaction on, at scale (.kiro/specs/file-install-snapshot/ task 7) ──
