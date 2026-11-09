@@ -102,14 +102,18 @@ private:
     auto test_collect_all_success() -> bool {
         std::cout << "Test 1: FutureCollector collectAll (all success)\n";
         try {
-            // Create multiple futures with different delays
+            // The clock starts before the futures are made: each delay starts
+            // running on the executor as soon as its future is created, so a
+            // clock started afterwards could read less than long_delay even
+            // though collectAll waited for the last one (10 CI retries,
+            // 2026-11-06..07).
+            auto start_time = std::chrono::steady_clock::now();
             std::vector<kythira::Future<int>> futures;
             futures.push_back(create_delayed_future(1, short_delay));
             futures.push_back(create_delayed_future(2, medium_delay));
             futures.push_back(create_delayed_future(3, long_delay));
 
             // Collect all futures
-            auto start_time = std::chrono::steady_clock::now();
             auto results = kythira::FutureCollector::collectAll(std::move(futures)).get();
             auto elapsed = std::chrono::steady_clock::now() - start_time;
 
@@ -199,6 +203,8 @@ private:
     auto test_collect_any_without_exception() -> bool {
         std::cout << "Test 3: FutureCollector collectAnyWithoutException\n";
         try {
+            // Clock first, for the reason given in test 1.
+            auto start_time = std::chrono::steady_clock::now();
             // Create futures: first fails, second succeeds
             std::vector<kythira::Future<int>> futures;
             futures.push_back(create_exceptional_future(short_delay));   // This fails first
@@ -206,7 +212,6 @@ private:
             futures.push_back(create_delayed_future(99, long_delay));
 
             // Collect any successful future
-            auto start_time = std::chrono::steady_clock::now();
             auto result =
                 kythira::FutureCollector::collectAnyWithoutException(std::move(futures)).get();
             auto elapsed = std::chrono::steady_clock::now() - start_time;
@@ -241,7 +246,8 @@ private:
     auto test_collect_n_futures() -> bool {
         std::cout << "Test 4: FutureCollector collectN\n";
         try {
-            // Create multiple futures with different delays
+            // Clock first, for the reason given in test 1.
+            auto start_time = std::chrono::steady_clock::now();
             std::vector<kythira::Future<int>> futures;
             for (std::size_t i = 0; i < test_future_count; ++i) {
                 auto delay = short_delay + std::chrono::milliseconds(i * 25);
@@ -249,7 +255,6 @@ private:
             }
 
             // Collect first N futures
-            auto start_time = std::chrono::steady_clock::now();
             auto results =
                 kythira::FutureCollector::collectN(std::move(futures), test_collect_n).get();
             auto elapsed = std::chrono::steady_clock::now() - start_time;
