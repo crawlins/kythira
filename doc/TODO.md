@@ -2015,13 +2015,13 @@ unverified completion claim.
         and required a value; a re-election in between failed them. They
         now wait for a leader.
       Off the allowlist.
-  - **Disk mode applies under the node mutex. OPEN** (found November 9,
-    2026). `cache_kv_state_machine` fsyncs a chunk, its pack record and
-    the directory inside `apply()`, and `apply_committed_entries()` runs
-    under the Raft node's `_mutex`, which `tick()` needs to send
-    heartbeats. A slow fsync therefore silences the whole node: under
-    `ctest -j` beside the 1 GiB PUT, one apply stalled a leader for
-    ~850 ms and its followers elected a new one. That was the retry
+  - **Disk mode applies under the node mutex. DONE** (found November 9,
+    2026; fixed November 13). `cache_kv_state_machine` fsynced a chunk,
+    its pack record and the directory inside `apply()`, and
+    `apply_committed_entries()` runs under the Raft node's `_mutex`, which
+    `tick()` needs to send heartbeats. A slow fsync therefore silenced the
+    whole node: under `ctest -j` beside the 1 GiB PUT, one apply stalled a
+    leader for ~850 ms and its followers elected a new one. That was the retry
     rescue in the three Redis module tests above, which now keep their
     in-process chunk stores on tmpfs (`services/redis/tests/scratch_dir.hpp`)
     and use 500-1000 ms election timeouts. A production node runs
@@ -2031,7 +2031,28 @@ unverified completion claim.
     committed entries outside `_mutex` in core (the bigger change, and it
     helps every slow state machine), or have the cache machine hand chunk
     writes to a writer thread and acknowledge them before the next
-    snapshot or commit point that needs them durable.
+    snapshot or commit point that needs them durable. **Fixed** the second
+    way, inside `cache_chunk_store`, because lane 2's persistent-state-
+    machine work (PR #735) is rewriting the same apply loop in core:
+    every `chunk_refcounts` write (apply's `put_chunk` and `set`, the
+    fetcher's stores, and the dead-record appends a delete makes) is now
+    `chunk_durability::deferred`. It writes to the page cache and returns;
+    the store's syncer thread fsyncs, and a large chunk stays at its
+    temporary name, readable, until it has been fsynced and linked, so a
+    crash still never leaves a final name with partial bytes. This is
+    safe because the chunk bytes are also in the Raft log, which is
+    durable before the entry commits; the state machine calls
+    `wait_durable()` before every snapshot and split, after which the log
+    may be compacted. An fsync failure is sticky and stops the next
+    apply. `cache_fsync_stall_test` reproduces the stall: three hosts at
+    150-300 ms election timeouts take six writes while every fsync takes
+    800 ms. Before the fix the term went from 1 to 7 and five writes were
+    refused; after it the writes take ~30 ms and no election starts.
+    Left open: a snapshot or split that lands while an fsync is stalled
+    still waits for it under the node mutex (once per 256 MiB of applied
+    log by default), and `compact()` still copies and fsyncs a pack under
+    the store mutex, which a deferred put then waits on. Neither has been
+    seen to cost a leader; both would need the core change above.
   - **Assert each job's configuration actually took effect. DONE** (October
     7, 2026). Every `ci.yml` leg that configures a build now runs
     `scripts/check-build-config.py` right after configure: `KYTHIRA_KCONFIG`

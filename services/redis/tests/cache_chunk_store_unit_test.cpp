@@ -17,6 +17,7 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -781,4 +782,179 @@ BOOST_AUTO_TEST_CASE(orphan_collection_keeps_only_referenced_chunks,
     BOOST_CHECK(!store.contains(sha256_of(orphan_loose)));
     BOOST_CHECK(!store.contains(sha256_of(orphan_packed)));
     BOOST_CHECK_EQUAL(refs.collect_orphans(), 0U);
+}
+
+// ---- deferred durability (doc/TODO.md, "Disk mode applies under the node
+// mutex") -------------------------------------------------------------------
+
+namespace {
+
+/// Counts the fsyncs a store issues, and on which thread; can stall or fail
+/// them.
+struct fsync_probe {
+    std::atomic<int> _calls{0};
+    std::atomic<int> _on_caller{0};
+    std::atomic<int> _stall_ms{0};
+    std::atomic<bool> _fail{false};
+    std::thread::id _caller = std::this_thread::get_id();
+
+    auto hook() {
+        return [this](const fs::path&) {
+            ++_calls;
+            if (std::this_thread::get_id() == _caller) {
+                ++_on_caller;
+            }
+            if (const int ms = _stall_ms.load(); ms > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{ms});
+            }
+            if (_fail.load()) {
+                throw cache_chunk_store_error("cache_chunk_store: injected fsync failure");
+            }
+        };
+    }
+};
+
+auto tmp_entries(const fs::path& dir) -> std::size_t {
+    std::size_t n = 0;
+    for ([[maybe_unused]] const auto& e : fs::directory_iterator(dir / "chunks" / "tmp")) {
+        ++n;
+    }
+    return n;
+}
+
+}  // namespace
+
+// A deferred put returns without an fsync on the caller's thread, however
+// long the disk takes, and the chunk is readable straight away. Only
+// wait_durable() waits for the fsyncs; a large chunk reaches its final name
+// only once it has been fsynced.
+BOOST_AUTO_TEST_CASE(deferred_puts_leave_the_fsync_to_the_syncer, *boost::unit_test::timeout(60)) {
+    temp_dir dir;
+    fsync_probe probe;
+    auto opts = options_for(dir._path);
+    opts._before_fsync = probe.hook();
+    cache_chunk_store store(opts);
+    probe._stall_ms = 500;
+
+    const auto loose = make_bytes(200 * 1024, 80);
+    const auto packed = make_bytes(500, 81);
+    const auto started = std::chrono::steady_clock::now();
+    BOOST_CHECK(store.put(sha256_of(loose), loose, chunk_durability::deferred));
+    BOOST_CHECK(store.put(sha256_of(packed), packed, chunk_durability::deferred));
+    const auto took = std::chrono::steady_clock::now() - started;
+    BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(took).count(), 250);
+    BOOST_CHECK_EQUAL(probe._on_caller.load(), 0);
+
+    BOOST_CHECK(store.contains(sha256_of(loose)));
+    BOOST_CHECK(store.read(sha256_of(loose)) == loose);
+    BOOST_CHECK(store.verify(sha256_of(loose)));
+    BOOST_CHECK(store.chunk_size(sha256_of(loose)) == loose.size());
+    BOOST_CHECK(store.read(sha256_of(packed)) == packed);
+    // Stored once: a second put of either is a no-op.
+    BOOST_CHECK(!store.put(sha256_of(loose), loose, chunk_durability::deferred));
+    BOOST_CHECK(!store.put(sha256_of(loose), loose));
+    BOOST_CHECK(!store.put(sha256_of(packed), packed, chunk_durability::deferred));
+    BOOST_CHECK_EQUAL(store.stats()._loose_files, 1U);
+
+    probe._stall_ms = 0;
+    store.wait_durable();
+    BOOST_CHECK(fs::exists(store.loose_path(sha256_of(loose))));
+    BOOST_CHECK_EQUAL(tmp_entries(dir._path), 0U);
+    BOOST_CHECK(store.read(sha256_of(loose)) == loose);
+    BOOST_CHECK_EQUAL(store.stats()._loose_files, 1U);
+    BOOST_CHECK_EQUAL(probe._on_caller.load(), 0);
+}
+
+// A crash before the syncer has run leaves a large chunk only at a temporary
+// name, which the next open wipes; never a final name with partial bytes.
+// An fsync failure is sticky: wait_durable() and every later put throw it,
+// which is what stops apply() (Requirement 2.4).
+BOOST_AUTO_TEST_CASE(a_failed_deferred_fsync_is_sticky_and_links_nothing,
+                     *boost::unit_test::timeout(60)) {
+    temp_dir dir;
+    fsync_probe probe;
+    const auto loose = make_bytes(200 * 1024, 82);
+    {
+        auto opts = options_for(dir._path);
+        opts._before_fsync = probe.hook();
+        cache_chunk_store store(opts);
+        probe._fail = true;
+        BOOST_CHECK(store.put(sha256_of(loose), loose, chunk_durability::deferred));
+        // Still served from its temporary file.
+        BOOST_CHECK(store.read(sha256_of(loose)) == loose);
+        BOOST_CHECK_THROW(store.wait_durable(), cache_chunk_store_error);
+        BOOST_CHECK(!fs::exists(store.loose_path(sha256_of(loose))));
+        const auto other = make_bytes(500, 83);
+        BOOST_CHECK_THROW(store.put(sha256_of(other), other, chunk_durability::deferred),
+                          cache_chunk_store_error);
+        BOOST_CHECK_THROW(store.put(sha256_of(other), other), cache_chunk_store_error);
+    }
+    probe._fail = false;
+    cache_chunk_store reopened(options_for(dir._path));
+    BOOST_CHECK(!reopened.contains(sha256_of(loose)));
+    BOOST_CHECK_EQUAL(tmp_entries(dir._path), 0U);
+}
+
+// Removing a chunk the syncer has not linked yet drops its temporary file,
+// and the syncer then links nothing for it.
+BOOST_AUTO_TEST_CASE(removing_a_staged_chunk_unstages_it, *boost::unit_test::timeout(60)) {
+    temp_dir dir;
+    fsync_probe probe;
+    auto opts = options_for(dir._path);
+    opts._before_fsync = probe.hook();
+    cache_chunk_store store(opts);
+    probe._stall_ms = 300;
+    const auto loose = make_bytes(200 * 1024, 84);
+    const auto packed = make_bytes(500, 85);
+    BOOST_CHECK(store.put(sha256_of(loose), loose, chunk_durability::deferred));
+    BOOST_CHECK(store.put(sha256_of(packed), packed, chunk_durability::deferred));
+    BOOST_CHECK(store.remove(sha256_of(loose)));
+    BOOST_CHECK(store.remove(sha256_of(packed)));
+    BOOST_CHECK(!store.contains(sha256_of(loose)));
+    BOOST_CHECK(!store.contains(sha256_of(packed)));
+    BOOST_CHECK(!store.remove(sha256_of(loose)));
+    BOOST_CHECK_EQUAL(store.stats()._loose_files, 0U);
+    probe._stall_ms = 0;
+    store.wait_durable();
+    BOOST_CHECK(!fs::exists(store.loose_path(sha256_of(loose))));
+    BOOST_CHECK_EQUAL(tmp_entries(dir._path), 0U);
+    BOOST_CHECK_EQUAL(store.stats()._loose_files, 0U);
+    BOOST_CHECK_EQUAL(store.stats()._packed_chunks, 0U);
+    // And it can be stored again.
+    BOOST_CHECK(store.put(sha256_of(loose), loose, chunk_durability::deferred));
+    store.wait_durable();
+    BOOST_CHECK(store.read(sha256_of(loose)) == loose);
+}
+
+// Everything chunk_refcounts writes is deferred, so none of it fsyncs on the
+// caller (the state machine's apply(), under the Raft node mutex), and the
+// destructor finishes the deferred work: a reopened store has every chunk,
+// loose and packed, removals included.
+BOOST_AUTO_TEST_CASE(refcount_writes_are_deferred_and_survive_a_clean_close,
+                     *boost::unit_test::timeout(60)) {
+    temp_dir dir;
+    fsync_probe probe;
+    std::vector<std::vector<std::byte>> values;
+    {
+        auto opts = options_for(dir._path);
+        opts._before_fsync = probe.hook();
+        cache_chunk_store store(opts);
+        chunk_refcounts refs(store);
+        for (std::uint32_t i = 0; i < 40; ++i) {
+            values.push_back(make_bytes(i % 2 == 0 ? 3000 : 400, 90 + i));
+            BOOST_CHECK(refs.put_and_acquire(sha256_of(values.back()), values.back()));
+        }
+        // Drop one of each kind.
+        BOOST_CHECK(refs.release(sha256_of(values[0])));
+        BOOST_CHECK(refs.release(sha256_of(values[1])));
+        BOOST_CHECK(refs.put_if_referenced(sha256_of(values[2]), values[2]));
+        BOOST_CHECK_EQUAL(probe._on_caller.load(), 0);
+    }
+    cache_chunk_store reopened(options_for(dir._path));
+    BOOST_CHECK(!reopened.contains(sha256_of(values[0])));
+    BOOST_CHECK(!reopened.contains(sha256_of(values[1])));
+    for (std::size_t i = 2; i < values.size(); ++i) {
+        BOOST_CHECK(reopened.read(sha256_of(values[i])) == values[i]);
+    }
+    BOOST_CHECK_EQUAL(tmp_entries(dir._path), 0U);
 }

@@ -10,6 +10,7 @@
 cmd/redis_gateway_node/run_host.hpp          multi_raft_impl.hpp               instantiates the multi-raft host
 cmd/redis_gateway_node/run_host.hpp          beast_http_transport_impl.hpp     instantiates the Beast transport
 tests/cache_http_front_end_test.cpp          multi_raft_impl.hpp               stands up in-process hosts
+tests/cache_fsync_stall_test.cpp             multi_raft_impl.hpp               stands up in-process hosts
 tests/multi_raft_persistence_bench_rows.hpp  multi_raft_impl.hpp               instantiates the bench's persistence clusters
 tests/multi_raft_txn_bench_rows.hpp          multi_raft_impl.hpp               instantiates the bench's transaction clusters
 tests/multi_raft_txn_snapshot_bank_test.cpp  multi_raft_impl.hpp               stands up in-process hosts

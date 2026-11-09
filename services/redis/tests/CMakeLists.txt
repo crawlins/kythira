@@ -88,6 +88,13 @@ kythira_redis_test(cache_chunk_fetcher_unit_test cache_chunk_fetcher_unit_test.c
 target_link_libraries(cache_chunk_fetcher_unit_test PRIVATE OpenSSL::Crypto)
 set_tests_properties(cache_chunk_fetcher_unit_test PROPERTIES
     LABELS "unit;redis;cache" TIMEOUT 300)
+# doc/TODO.md "Disk mode applies under the node mutex": three hosts at the
+# production election timeouts keep their leader while every chunk-store
+# fsync stalls for 800 ms. In-process fabric, no sockets.
+kythira_redis_test(cache_fsync_stall_test cache_fsync_stall_test.cpp)
+target_link_libraries(cache_fsync_stall_test PRIVATE OpenSSL::Crypto)
+set_tests_properties(cache_fsync_stall_test PROPERTIES
+    LABELS "multi-raft;redis;cache" TIMEOUT 300)
 # Task 7: the disk budget and the voters' free-space floors.
 kythira_redis_test(cache_disk_guard_unit_test cache_disk_guard_unit_test.cpp)
 set_tests_properties(cache_disk_guard_unit_test PROPERTIES

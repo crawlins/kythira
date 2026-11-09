@@ -5,7 +5,7 @@
 
 // Where the in-process cluster tests put their chunk stores.
 //
-// The disk-backed state machine fsyncs a chunk, its pack record and the
+// The disk-backed state machine fsynced a chunk, its pack record and the
 // directory on every apply, and apply runs under the Raft node's mutex, the
 // same one tick() needs to send heartbeats. On a CI runner the other tests
 // running beside these under `ctest -j` fsync too, among them the 1 GiB PUT
@@ -18,8 +18,9 @@
 // These tests check what the cache stores and replies, not fsync latency, so
 // their stores go on tmpfs when the machine has one. cache_chunk_store's own
 // unit tests, and the 1 GiB PUT, keep using the real temp directory. The
-// heartbeat stall itself is a property of the disk mode, recorded in
-// doc/TODO.md.
+// heartbeat stall itself is fixed: the store now leaves fsyncs to a syncer
+// thread (doc/TODO.md, "Disk mode applies under the node mutex"), and
+// cache_fsync_stall_test checks that a stalled fsync keeps the leader.
 
 #include <unistd.h>
 

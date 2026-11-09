@@ -3,6 +3,20 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (November 12, 2026)
+
+- **A stalled disk no longer costs a disk-mode shard its leader.** The
+  build cache's chunk store fsynced inside `apply()`, under the Raft node
+  mutex that heartbeats need, so one slow fsync (~850 ms was measured)
+  let the followers elect a new leader at production timeouts
+  (150-300 ms). Chunk writes from the state machine and the fetcher now
+  return once the bytes are written; a syncer thread fsyncs them, and a
+  large chunk is linked into place only after its fsync. The Raft log,
+  which holds the same bytes, covers a crash before then, and snapshots
+  and splits wait for the syncer first. `cache_fsync_stall_test` makes
+  every fsync take 800 ms: the term used to move from 1 to 7, and now it
+  holds.
+
 ### What Changed (November 10, 2026)
 
 - **Kythira speaks AWS IAM and STS.** The `iam-compatible-auth` spec is
