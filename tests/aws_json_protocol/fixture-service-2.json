@@ -1,0 +1,99 @@
+{
+  "version": "2.0",
+  "metadata": {
+    "apiVersion": "2026-11-09",
+    "endpointPrefix": "fixture",
+    "jsonVersion": "1.0",
+    "protocol": "json",
+    "protocols": ["json"],
+    "serviceId": "Fixture",
+    "signatureVersion": "v4",
+    "targetPrefix": "Fixture_20261109",
+    "uid": "fixture-2026-11-09"
+  },
+  "operations": {
+    "PutThing": {
+      "name": "PutThing",
+      "http": {"method": "POST", "requestUri": "/"},
+      "input": {"shape": "PutThingInput"},
+      "output": {"shape": "PutThingOutput"},
+      "errors": [{"shape": "ThingNotFoundException"}, {"shape": "InternalServerError"}]
+    },
+    "Ping": {
+      "name": "Ping",
+      "http": {"method": "POST", "requestUri": "/"}
+    },
+    "ListThings": {
+      "name": "ListThings",
+      "http": {"method": "POST", "requestUri": "/"},
+      "input": {"shape": "ListThingsInput"},
+      "output": {"shape": "ListThingsOutput"}
+    }
+  },
+  "shapes": {
+    "PutThingInput": {
+      "type": "structure",
+      "required": ["ThingName", "Kind"],
+      "members": {
+        "ThingName": {"shape": "ThingName"},
+        "Kind": {"shape": "ThingKind"},
+        "Count": {"shape": "SmallCount"},
+        "Size": {"shape": "Size"},
+        "Ratio": {"shape": "Ratio"},
+        "Enabled": {"shape": "Flag"},
+        "Payload": {"shape": "Payload"},
+        "CreatedAt": {"shape": "Stamp"},
+        "Tags": {"shape": "TagList"},
+        "Attributes": {"shape": "AttributeMap"},
+        "Secret": {"shape": "SecretString"},
+        "Label": {"shape": "Label"},
+        "Note": {"shape": "Note"}
+      }
+    },
+    "PutThingOutput": {
+      "type": "structure",
+      "members": {"ThingName": {"shape": "ThingName"}}
+    },
+    "ListThingsInput": {
+      "type": "structure",
+      "members": {"Limit": {"shape": "SmallCount"}}
+    },
+    "ListThingsOutput": {
+      "type": "structure",
+      "members": {"Names": {"shape": "NameList"}}
+    },
+    "ThingName": {"type": "string", "min": 3, "max": 8, "pattern": "[a-zA-Z0-9\\_.-]+"},
+    "ThingKind": {"type": "string", "enum": ["SMALL", "LARGE"]},
+    "SmallCount": {"type": "integer", "min": 1, "max": 100},
+    "Size": {"type": "long"},
+    "Ratio": {"type": "double"},
+    "Flag": {"type": "boolean"},
+    "Payload": {"type": "blob", "max": 4},
+    "Stamp": {"type": "timestamp"},
+    "SecretString": {"type": "string", "min": 2, "sensitive": true},
+    "Label": {"type": "string", "pattern": "\\p{Print}+"},
+    "Note": {"type": "string", "max": 2},
+    "Tag": {
+      "type": "structure",
+      "required": ["Key"],
+      "members": {"Key": {"shape": "TagKey"}, "Value": {"shape": "TagValue"}}
+    },
+    "TagKey": {"type": "string", "min": 1, "max": 4},
+    "TagValue": {"type": "string"},
+    "TagList": {"type": "list", "member": {"shape": "Tag"}, "max": 2},
+    "AttributeMap": {"type": "map", "key": {"shape": "TagKey"}, "value": {"shape": "TagValue"}, "max": 2},
+    "NameList": {"type": "list", "member": {"shape": "ThingName"}},
+    "ErrorMessage": {"type": "string"},
+    "ThingNotFoundException": {
+      "type": "structure",
+      "members": {"message": {"shape": "ErrorMessage"}},
+      "exception": true
+    },
+    "InternalServerError": {
+      "type": "structure",
+      "members": {"message": {"shape": "ErrorMessage"}},
+      "exception": true,
+      "fault": true
+    }
+  }
+}
