@@ -14,6 +14,16 @@
 
 #include <ionc/ion.h>
 
+// ion-c's ion_debug.h defines BREAK as an object-like macro for its own
+// FAILWITH. It then rewrites folly's `enum class LoopControl { BREAK,
+// CONTINUE }` (folly/container/Foreach.h) in any translation unit that
+// includes ion-c before folly, which the ledger's headers do when a test
+// includes them ahead of raft/types.hpp. Nothing outside ion-c's own .c
+// files uses BREAK or FAILWITH, so drop it here.
+#ifdef BREAK
+#undef BREAK
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <limits>
