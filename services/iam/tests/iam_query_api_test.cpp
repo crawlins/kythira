@@ -17,7 +17,10 @@
 #include <kythira/iam/services/iam_actions.hpp>
 
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <optional>
 #include <regex>
 #include <shared_mutex>
@@ -937,6 +940,346 @@ BOOST_FIXTURE_TEST_CASE(policy_versions_page_in_version_order, fixture) {
     }
     BOOST_TEST(seen == (std::vector<std::string>{"v1", "v2", "v3", "v4", "v5"}),
                boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Task 16: OIDC providers, simulation and account calls (Requirements
+// 9.6, 9.7, 6.7) ──
+
+namespace {
+
+constexpr std::string_view k_oidc_arn =
+    "arn:aws:iam::111122223333:oidc-provider/token.example.com/ci";
+const std::string k_thumb(40, 'a');
+
+/// `<name>.member.N=<value>` for each value.
+auto members(const std::string& name, const std::vector<std::string>& values) -> std::string {
+    std::string out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        out += "&" + name + ".member." + std::to_string(i + 1) + "=" + enc(values[i]);
+    }
+    return out;
+}
+
+auto decision_of(const std::string& xml) -> std::string {
+    return element(xml, "EvalDecision");
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(oidc_simulation_and_account)
+
+BOOST_FIXTURE_TEST_CASE(an_oidc_provider_is_created_read_updated_and_deleted, fixture) {
+    auto r =
+        as_root("Action=CreateOpenIDConnectProvider&Url=" + enc("https://token.example.com/ci") +
+                members("ClientIDList", {"sts"}) + members("ThumbprintList", {k_thumb}) +
+                "&Tags.member.1.Key=a&Tags.member.1.Value=b");
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "OpenIDConnectProviderArn") == k_oidc_arn);
+    BOOST_TEST(code_of(as_root("Action=CreateOpenIDConnectProvider&Url=" +
+                               enc("https://token.example.com/ci"))) == "EntityAlreadyExists");
+
+    const auto parn = "&OpenIDConnectProviderArn=" + enc(k_oidc_arn);
+    r = as_root("Action=GetOpenIDConnectProvider" + parn);
+    BOOST_TEST(element(r.body, "Url") == "token.example.com/ci");
+    BOOST_TEST(element(r.body, "member") == "sts");
+    BOOST_TEST(count(r.body, k_thumb) == 1U);
+
+    BOOST_TEST(
+        as_root("Action=AddClientIDToOpenIDConnectProvider" + parn + "&ClientID=app").status ==
+        200U);
+    BOOST_TEST(count(as_root("Action=GetOpenIDConnectProvider" + parn).body, "<member>app") == 1U);
+    BOOST_TEST(
+        as_root("Action=RemoveClientIDFromOpenIDConnectProvider" + parn + "&ClientID=sts").status ==
+        200U);
+    const std::string other(40, 'b');
+    BOOST_TEST(as_root("Action=UpdateOpenIDConnectProviderThumbprint" + parn +
+                       members("ThumbprintList", {other}))
+                   .status == 200U);
+    r = as_root("Action=GetOpenIDConnectProvider" + parn);
+    BOOST_TEST(count(r.body, other) == 1U);
+    BOOST_TEST(count(r.body, "<member>sts") == 0U);
+    BOOST_TEST(count(as_root("Action=ListOpenIDConnectProviders").body, "<Arn>") == 1U);
+    BOOST_TEST(count(as_root("Action=ListOpenIDConnectProviderTags" + parn).body, "<Key>") == 1U);
+    BOOST_TEST(as_root("Action=UntagOpenIDConnectProvider" + parn + "&TagKeys.member.1=a").status ==
+               200U);
+
+    BOOST_TEST(as_root("Action=DeleteOpenIDConnectProvider" + parn).status == 200U);
+    BOOST_TEST(code_of(as_root("Action=GetOpenIDConnectProvider" + parn)) == "NoSuchEntity");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_oidc_1_provider_urls_are_checked, fixture) {
+    for (const auto* bad : {"http://token.example.com", "https://", "https://h:8443/x",
+                            "https://u@h/x", "https://h/x?y=1", "https://h/x#f"}) {
+        BOOST_TEST(code_of(as_root("Action=CreateOpenIDConnectProvider&Url=" + enc(bad))) ==
+                       "ValidationError",
+                   bad);
+    }
+    BOOST_TEST(code_of(as_root("Action=CreateOpenIDConnectProvider&Url=" +
+                               enc("https://" + std::string(250, 'h')))) == "ValidationError");
+    BOOST_TEST(code_of(as_root("Action=CreateOpenIDConnectProvider")) == "ValidationError");
+    BOOST_TEST(
+        as_root("Action=CreateOpenIDConnectProvider&Url=" + enc("https://h.example/p")).status ==
+        200U);
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_oidc_2_client_ids_are_checked, fixture) {
+    const auto url = "Action=CreateOpenIDConnectProvider&Url=" + enc("https://h.example");
+    BOOST_TEST(code_of(as_root(url + "&ClientIDList.member.1=")) == "ValidationError");
+    BOOST_TEST(code_of(as_root(url + members("ClientIDList", {std::string(256, 'c')}))) ==
+               "ValidationError");
+    std::vector<std::string> many;
+    for (int i = 0; i < 101; ++i) {
+        many.push_back("c" + std::to_string(i));
+    }
+    BOOST_TEST(code_of(as_root(url + members("ClientIDList", many))) == "LimitExceeded");
+    many.pop_back();
+    BOOST_TEST(as_root(url + members("ClientIDList", many)).status == 200U);
+    BOOST_TEST(code_of(as_root("Action=AddClientIDToOpenIDConnectProvider&"
+                               "OpenIDConnectProviderArn=" +
+                               enc("arn:aws:iam::111122223333:oidc-provider/h.example") +
+                               "&ClientID=one-too-many")) == "LimitExceeded");
+}
+
+BOOST_FIXTURE_TEST_CASE(inv_oidc_3_thumbprints_are_checked, fixture) {
+    const auto url = "Action=CreateOpenIDConnectProvider&Url=" + enc("https://h.example");
+    BOOST_TEST(code_of(as_root(url + members("ThumbprintList", {std::string(39, 'a')}))) ==
+               "ValidationError");
+    BOOST_TEST(code_of(as_root(url + members("ThumbprintList", {std::string(40, 'g')}))) ==
+               "ValidationError");
+    BOOST_TEST(as_root(url + members("ThumbprintList", {std::string(40, 'F')})).status == 200U);
+    BOOST_TEST(code_of(as_root("Action=UpdateOpenIDConnectProviderThumbprint&"
+                               "OpenIDConnectProviderArn=" +
+                               enc("arn:aws:iam::111122223333:oidc-provider/h.example") +
+                               members("ThumbprintList", {"xyz"}))) == "ValidationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(simulate_principal_policy_uses_the_entitys_stored_policies, fixture) {
+    allow(
+        "alice",
+        R"({"Effect":"Allow","Action":"s3:GetObject","Resource":"*"},)"
+        R"({"Effect":"Deny","Action":"s3:DeleteObject","Resource":"*"},)"
+        R"({"Effect":"Allow","Action":"s3:PutObject","Resource":"*","Condition":{"StringEquals":{"aws:RequestedRegion":"eu-west-1"}}})");
+    const auto base = "Action=SimulatePrincipalPolicy&PolicySourceArn=" +
+                      enc("arn:aws:iam::111122223333:user/alice");
+    auto r = as_root(base +
+                     members("ActionNames", {"s3:GetObject", "s3:DeleteObject", "s3:ListBucket"}) +
+                     members("ResourceArns", {"arn:aws:s3:::b/k"}));
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(count(r.body, "<EvalDecision>allowed</EvalDecision>") == 1U);
+    BOOST_TEST(count(r.body, "<EvalDecision>explicitDeny</EvalDecision>") == 1U);
+    BOOST_TEST(count(r.body, "<EvalDecision>implicitDeny</EvalDecision>") == 1U);
+    BOOST_TEST(count(r.body, "<SourcePolicyId>user/alice:p</SourcePolicyId>") == 2U);
+
+    // A condition key the caller did not supply is reported missing; given
+    // as a context entry it decides.
+    r = as_root(base + members("ActionNames", {"s3:PutObject"}));
+    BOOST_TEST(decision_of(r.body) == "implicitDeny");
+    BOOST_TEST(element(r.body, "member") == "aws:RequestedRegion");
+    r = as_root(base + members("ActionNames", {"s3:PutObject"}) +
+                "&ContextEntries.member.1.ContextKeyName=aws:RequestedRegion"
+                "&ContextEntries.member.1.ContextKeyType=string"
+                "&ContextEntries.member.1.ContextKeyValues.member.1=eu-west-1");
+    BOOST_TEST(decision_of(r.body) == "allowed");
+    BOOST_TEST(count(r.body, "<MissingContextValues></MissingContextValues>") == 1U);
+
+    // Group policies reach the user; a boundary input caps them.
+    BOOST_TEST(as_root("Action=CreateGroup&GroupName=g").status == 200U);
+    BOOST_TEST(as_root("Action=AddUserToGroup&GroupName=g&UserName=alice").status == 200U);
+    BOOST_TEST(as_root("Action=AttachGroupPolicy&GroupName=g&PolicyArn=" + std::string(k_readonly))
+                   .status == 200U);
+    r = as_root(base + members("ActionNames", {"ec2:DescribeInstances"}));
+    BOOST_TEST(decision_of(r.body) == "allowed");
+    r = as_root(base + members("ActionNames", {"ec2:DescribeInstances"}) +
+                members("PermissionsBoundaryPolicyInputList", {std::string(k_doc)}));
+    BOOST_TEST(decision_of(r.body) == "implicitDeny");
+    // An extra identity policy input adds to the stored ones.
+    r = as_root(base + members("ActionNames", {"s3:PutObject"}) +
+                members("PolicyInputList", {std::string(k_doc2)}));
+    BOOST_TEST(decision_of(r.body) == "allowed");
+
+    BOOST_TEST(code_of(as_root("Action=SimulatePrincipalPolicy&PolicySourceArn=" +
+                               enc("arn:aws:iam::111122223333:user/nobody") +
+                               members("ActionNames", {"s3:GetObject"}))) == "NoSuchEntity");
+    BOOST_TEST(code_of(as_root(base)) == "ValidationError");
+}
+
+BOOST_FIXTURE_TEST_CASE(simulation_is_authorized_on_the_source_entity, fixture) {
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    allow(
+        "auditor",
+        R"({"Effect":"Allow","Action":"iam:SimulatePrincipalPolicy","Resource":"arn:aws:iam::111122223333:user/*"})");
+    const auto auditor = user("auditor");
+    const auto sim = [&](const std::string& source) {
+        return call(auditor, "Action=SimulatePrincipalPolicy&PolicySourceArn=" + enc(source) +
+                                 members("ActionNames", {"s3:GetObject"}));
+    };
+    BOOST_TEST(sim("arn:aws:iam::111122223333:user/auditor").status == 200U);
+    BOOST_TEST(code_of(sim("arn:aws:iam::111122223333:role/r")) == "AccessDenied");
+    BOOST_TEST(code_of(call(auditor, "Action=SimulateCustomPolicy" +
+                                         members("ActionNames", {"s3:GetObject"}) +
+                                         members("PolicyInputList", {std::string(k_doc)}))) ==
+               "AccessDenied");
+}
+
+BOOST_FIXTURE_TEST_CASE(context_keys_are_listed_once_in_first_spelling, fixture) {
+    allow(
+        "bob",
+        R"({"Effect":"Allow","Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:RequestedRegion":"x","s3:prefix":"y"}}},)"
+        R"({"Effect":"Deny","Action":"ec2:*","Resource":"*","Condition":{"Bool":{"AWS:requestedregion":"x"}}})");
+    auto r = as_root("Action=GetContextKeysForPrincipalPolicy&PolicySourceArn=" +
+                     enc("arn:aws:iam::111122223333:user/bob"));
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(count(r.body, "<member>") == 2U);
+    BOOST_TEST(count(r.body, "<member>aws:RequestedRegion</member>") == 1U);
+    r = as_root(
+        "Action=GetContextKeysForCustomPolicy" +
+        members(
+            "PolicyInputList",
+            {R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*","Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"}}}]})"}));
+    BOOST_TEST(element(r.body, "member") == "aws:SourceIp");
+    BOOST_TEST(code_of(as_root("Action=GetContextKeysForCustomPolicy")) == "ValidationError");
+}
+
+/// Every corpus `evaluate` case SimulateCustomPolicy can express (an IAM
+/// user in its own account, identity policies, an optional boundary and
+/// resource policy, no session) gives the corpus's decision.
+BOOST_FIXTURE_TEST_CASE(simulate_custom_policy_matches_the_corpus_decisions, fixture) {
+    std::size_t compared = 0;
+    for (const auto& file :
+         std::filesystem::directory_iterator(std::string(KYTHIRA_IAM_CORPUS_DIR) + "/evaluate")) {
+        std::ifstream in(file.path());
+        std::stringstream text;
+        text << in.rdbuf();
+        const auto doc = boost::json::parse(text.str()).as_object();
+        for (const auto& cv : doc.at("cases").as_array()) {
+            const auto& c = cv.as_object();
+            const std::string who(c.at("principal").as_string());
+            const auto* identity = c.if_contains("identity");
+            if (!who.starts_with("user/") || identity == nullptr || identity->as_array().empty() ||
+                c.contains("session") || c.contains("principal_account") ||
+                c.contains("resource_account") ||
+                (c.contains("resource_kind") && c.at("resource_kind").as_string() != "ordinary")) {
+                continue;
+            }
+            const auto serial = [](const boost::json::value& v) {
+                return v.is_string() ? std::string(v.as_string()) : boost::json::serialize(v);
+            };
+            std::vector<std::string> ids;
+            for (const auto& d : identity->as_array()) {
+                ids.push_back(serial(d));
+            }
+            std::string body = "Action=SimulateCustomPolicy" +
+                               members("ActionNames", {std::string(c.at("action").as_string())}) +
+                               members("PolicyInputList", ids) +
+                               "&CallerArn=" + enc("arn:aws:iam::111122223333:" + who);
+            if (const auto* res = c.if_contains("resource")) {
+                body += members("ResourceArns", {std::string(res->as_string())});
+            }
+            if (const auto* b = c.if_contains("boundary")) {
+                body += members("PermissionsBoundaryPolicyInputList", {serial(*b)});
+            }
+            if (const auto* rp = c.if_contains("resource_policy")) {
+                body += "&ResourcePolicy=" + enc(serial(*rp));
+            }
+            if (const auto* ctx = c.if_contains("context")) {
+                std::size_t i = 0;
+                for (const auto& [k, v] : ctx->as_object()) {
+                    const auto base = "&ContextEntries.member." + std::to_string(++i) + ".";
+                    body += base + "ContextKeyName=" + enc(std::string(k));
+                    std::vector<std::string> values;
+                    if (v.is_array()) {
+                        for (const auto& x : v.as_array()) {
+                            values.push_back(std::string(x.as_string()));
+                        }
+                        body += base + "ContextKeyType=stringList";
+                    } else {
+                        values.push_back(std::string(v.as_string()));
+                    }
+                    for (std::size_t j = 0; j < values.size(); ++j) {
+                        body += base + "ContextKeyValues.member." + std::to_string(j + 1) + "=" +
+                                enc(values[j]);
+                    }
+                }
+            }
+            const auto r = as_root(body);
+            const std::string expect(c.at("expect").as_string());
+            const std::string want = expect == "allow"           ? "allowed"
+                                     : expect == "explicit_deny" ? "explicitDeny"
+                                                                 : "implicitDeny";
+            BOOST_TEST(decision_of(r.body) == want, file.path().filename().string()
+                                                        << ": " << c.at("name").as_string() << "\n"
+                                                        << r.body);
+            ++compared;
+        }
+    }
+    BOOST_TEST_MESSAGE("compared " << compared << " corpus cases");
+    BOOST_TEST(compared >= 40U);
+}
+
+BOOST_FIXTURE_TEST_CASE(account_authorization_details_and_summary, fixture) {
+    BOOST_TEST(as_root("Action=CreateUser&UserName=u").status == 200U);
+    BOOST_TEST(as_root("Action=CreateGroup&GroupName=g").status == 200U);
+    BOOST_TEST(as_root("Action=AddUserToGroup&GroupName=g&UserName=u").status == 200U);
+    BOOST_TEST(as_root("Action=PutUserPolicy&UserName=u&PolicyName=i&PolicyDocument=" + enc(k_doc))
+                   .status == 200U);
+    BOOST_TEST(
+        as_root("Action=CreateRole&RoleName=r&AssumeRolePolicyDocument=" + enc(k_trust)).status ==
+        200U);
+    BOOST_TEST(
+        as_root("Action=AttachRolePolicy&RoleName=r&PolicyArn=" + std::string(k_readonly)).status ==
+        200U);
+    BOOST_TEST(as_root("Action=CreatePolicy&PolicyName=p1&PolicyDocument=" + enc(k_doc)).status ==
+               200U);
+
+    auto r = as_root("Action=GetAccountAuthorizationDetails");
+    BOOST_TEST(r.status == 200U, r.body);
+    BOOST_TEST(count(r.body, "<UserName>u</UserName>") == 1U);
+    BOOST_TEST(count(r.body, "<GroupList><member>g</member></GroupList>") == 1U);
+    BOOST_TEST(count(r.body, "<PolicyDocument>" + enc(k_doc) + "</PolicyDocument>") == 1U);
+    BOOST_TEST(count(r.body, "<RoleName>r</RoleName>") == 1U);
+    // Local policies, and only the AWS-managed ones this account uses.
+    BOOST_TEST(count(r.body, "<PolicyName>p1</PolicyName>") == 1U);
+    BOOST_TEST(count(r.body, "<PolicyName>ReadOnlyAccess</PolicyName>") ==
+               2U);  // attached + listed
+    BOOST_TEST(count(r.body, "<PolicyName>AdministratorAccess</PolicyName>") == 0U);
+
+    r = as_root("Action=GetAccountAuthorizationDetails&Filter.member.1=Role");
+    BOOST_TEST(count(r.body, "<UserName>") == 0U);
+    BOOST_TEST(count(r.body, "<RoleName>r</RoleName>") == 1U);
+    BOOST_TEST(code_of(as_root("Action=GetAccountAuthorizationDetails&Filter.member.1=Bucket")) ==
+               "ValidationError");
+    // It pages like any list.
+    r = as_root("Action=GetAccountAuthorizationDetails&MaxItems=2");
+    BOOST_TEST(element(r.body, "IsTruncated") == "true");
+    BOOST_TEST(as_root("Action=GetAccountAuthorizationDetails&MaxItems=2&Marker=" +
+                       element(r.body, "Marker"))
+                   .status == 200U);
+
+    r = as_root("Action=GetAccountSummary");
+    const auto value = [&](const std::string& key) {
+        std::smatch m;
+        const std::regex re("<key>" + key + "</key><value>([0-9]+)</value>");
+        return std::regex_search(r.body, m, re) ? m[1].str() : std::string{};
+    };
+    BOOST_TEST(value("Users") == "1");
+    BOOST_TEST(value("Groups") == "1");
+    BOOST_TEST(value("Roles") == "1");
+    BOOST_TEST(value("Policies") == "1");
+    BOOST_TEST(value("VersionsPerPolicyQuota") == "5");
+    BOOST_TEST(value("AccessKeysPerUserQuota") == "2");
+}
+
+BOOST_FIXTURE_TEST_CASE(unlisted_actions_are_not_implemented, fixture) {
+    for (const auto* a : {"CreateLoginProfile", "CreateSAMLProvider", "UploadServerCertificate",
+                          "CreateVirtualMFADevice", "CreateServiceLinkedRole"}) {
+        const auto r = as_root(std::string("Action=") + a);
+        BOOST_TEST(r.status == 501U, a);
+        BOOST_TEST(code_of(r) == "NotImplemented");
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

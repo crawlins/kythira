@@ -403,9 +403,32 @@ BOOST_AUTO_TEST_CASE(cluster_by_service_name) {
             eventually([&] { return aws_cli(leader, id, secret, {"iam", "get-user"}).code == 0; },
                        30s),
             "IAMReadOnlyAccess did not let cli-user read itself");
+        // Task 16: the simulator agrees with what the key just did.
+        auto sim = aws_cli(leader, root_id, root_secret,
+                           {"iam", "simulate-principal-policy", "--policy-source-arn",
+                            "arn:aws:iam::111111111111:user/cli-user", "--action-names",
+                            "iam:GetUser", "iam:CreateUser"});
+        BOOST_TEST(sim.code == 0, sim.out);
+        BOOST_TEST(sim.out.find(R"("EvalDecision": "allowed")") != std::string::npos, sim.out);
+        BOOST_TEST(sim.out.find(R"("EvalDecision": "implicitDeny")") != std::string::npos, sim.out);
         BOOST_TEST(aws_cli(leader, root_id, root_secret,
                            {"iam", "detach-user-policy", "--user-name", "cli-user", "--policy-arn",
                             "arn:aws:iam::aws:policy/IAMReadOnlyAccess"})
+                       .code == 0);
+
+        // Task 16: an OIDC provider, and the account summary counts it.
+        auto oidc = aws_cli(
+            leader, root_id, root_secret,
+            {"iam", "create-open-id-connect-provider", "--url", "https://token.example.com",
+             "--client-id-list", "sts.amazonaws.com", "--thumbprint-list", std::string(40, 'a')});
+        BOOST_TEST(oidc.code == 0, oidc.out);
+        const std::string oidc_arn = "arn:aws:iam::111111111111:oidc-provider/token.example.com";
+        BOOST_TEST(oidc.out.find(oidc_arn) != std::string::npos, oidc.out);
+        auto summary = aws_cli(leader, root_id, root_secret, {"iam", "get-account-summary"});
+        BOOST_TEST(summary.out.find(R"("Providers": 1)") != std::string::npos, summary.out);
+        BOOST_TEST(aws_cli(leader, root_id, root_secret,
+                           {"iam", "delete-open-id-connect-provider",
+                            "--open-id-connect-provider-arn", oidc_arn})
                        .code == 0);
 
         auto off = aws_cli(leader, root_id, root_secret,

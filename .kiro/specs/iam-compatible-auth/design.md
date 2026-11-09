@@ -451,6 +451,26 @@ an HMAC so clients cannot forge positions. `MaxItems` defaults to 100.
   `iam:PermissionsBoundary`. A delete is keyed on the boundary being
   removed.
 
+**As built (task 16).**
+- OIDC provider URLs are stored and named without `https://`, as AWS
+  names them in ARNs and returns them from GetOpenIDConnectProvider.
+  Tags on providers use the same generic tag handlers as task 15.
+- SimulatePrincipalPolicy gathers the source entity's stored policies
+  the way the authorizer does (a user with its groups and boundary, a
+  group alone, or a role), adds `PolicyInputList`, replaces the boundary
+  with `PermissionsBoundaryPolicyInputList` when given, and calls
+  `evaluate()` for each action and resource. Its context is only the
+  `ContextEntries`, as on AWS. `MissingContextValues` lists the
+  condition keys of the statements covering the action that the context
+  lacks. SimulateCustomPolicy evaluates its inputs alone, as `CallerArn`
+  or an unnamed user. Both are checked against every corpus `evaluate`
+  case they can express.
+- GetAccountAuthorizationDetails lists only the AWS-managed policies the
+  account uses, as AWS does, and pages users, groups, roles and policies
+  with one marker. GetAccountSummary reports this cluster's enforced
+  quotas, and AWS's defaults for the account-wide counts it does not
+  enforce.
+
 **Terraform coverage.** The provider's call list is taken from a recorded
 `terraform apply` and `destroy` against real AWS, or from the provider
 source. The instance-profile calls and anything else it needs are added in

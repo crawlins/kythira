@@ -45,6 +45,9 @@ set_tests_properties(iam_replica_test PROPERTIES LABELS "unit;iam;iam-module" TI
 # Task 14: the IAM Query API's user, group, access-key and account-alias
 # actions over a stand-in cluster (the AWS CLI v2 run is in docker/).
 kythira_iam_test(iam_query_api_test iam_query_api_test.cpp)
+# Task 16: the simulation calls are checked against corpus/evaluate/.
+target_compile_definitions(iam_query_api_test PRIVATE
+    KYTHIRA_IAM_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus")
 set_tests_properties(iam_query_api_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
 
 # Task 8: the IAM state machine and its secret sealing, with property tests
