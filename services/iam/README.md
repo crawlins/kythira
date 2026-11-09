@@ -28,7 +28,10 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `include/kythira/iam/iam_replica.hpp` | `iam_replica<Types>`, a learner of the IAM group a front end embeds, and `replica_freshness` (lag, the metric, the fail-closed bound) | 13 |
 | `tests/iam_replica_test.cpp` | an embedded replica over the network simulator: 5 s propagation, failing closed when cut off | 13 |
 | `include/kythira/iam/iam_query_api.hpp` | the IAM Query API: user, group, access-key, account-alias, role, managed-policy, attachment, inline-policy, boundary and instance-profile actions, OIDC providers, policy simulation and the account calls, each authorized as `iam:<Action>` | 14-16 |
-| `tests/iam_query_api_test.cpp` | validation, authorization, error codes and pagination of those actions | 14 |
+| `tests/iam_query_api_test.cpp` | validation, authorization, error codes and pagination of those actions | 14-16 |
+| `include/kythira/iam/iam_sts_token.hpp` | the sealed STS session token (CBOR payload, AES-256-GCM, `kid`) and the STS key ring | 17 |
+| `include/kythira/iam/iam_sts_api.hpp` | the STS Query API: AssumeRole, GetSessionToken, GetCallerIdentity and GetAccessKeyInfo | 17 |
+| `tests/iam_sts_test.cpp` | those actions, cross-account trust, `ExternalId`, key rotation, expiry and forged tokens | 17 |
 | `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
 | `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |
 | `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |

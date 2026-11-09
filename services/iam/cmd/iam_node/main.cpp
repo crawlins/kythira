@@ -43,6 +43,7 @@
 #include <kythira/iam/iam_query_api.hpp>
 #include <kythira/iam/iam_replica.hpp>
 #include <kythira/iam/iam_service_registry.hpp>
+#include <kythira/iam/iam_sts_api.hpp>
 #include <kythira/iam/services/iam_actions.hpp>
 #include <kythira/iam/services/sts_actions.hpp>
 #include <kythira/iam/iam_routing.hpp>
@@ -214,7 +215,8 @@ public:
               [this](std::string_view salt) -> const iam::seal_key& { return _keks.get(salt); },
               _registry),
           _query_cluster{this},
-          _api(_query_cluster, _authz) {
+          _api(_query_cluster, _authz),
+          _sts_api(_query_cluster, _authz) {
         if (_cfg.replica) {
             _authz.set_freshness([this] { return _freshness.fresh(); });
         }
@@ -636,6 +638,21 @@ private:
     /// redirects, as it does for admin writes.
     auto handle_iam(const https::request& req, const https::request_context& ctx)
         -> https::response {
+        return handle_query(req, ctx, false);
+    }
+
+    /// STS (task 17): its calls only read state and mint sealed tokens, but
+    /// they are served by the leader like IAM so a just-written role or
+    /// trust policy is always seen.
+    auto handle_sts(const https::request& req, const https::request_context& ctx)
+        -> https::response {
+        return handle_query(req, ctx, true);
+    }
+
+    /// One SigV4-signed Query API request, for IAM or STS: their signing
+    /// service names, error XML namespaces and handlers differ.
+    auto handle_query(const https::request& req, const https::request_context& ctx, bool sts)
+        -> https::response {
         if (!_node->is_leader()) {
             return redirect_to_leader(req);
         }
@@ -651,15 +668,15 @@ private:
             sr.headers.emplace_back(std::string(h.name_string()), std::string(h.value()));
         }
         sr.body = std::string_view(req.body());
-        const auto who = _authz.authenticate(sr, {.service = "iam"});
+        const auto who = _authz.authenticate(sr, {.service = sts ? "sts" : "iam"});
         if (!who) {
             const auto& e = who.error();
-            return query_error(req, false, static_cast<unsigned>(e.http_status), e.code, e.message);
+            return query_error(req, sts, static_cast<unsigned>(e.http_status), e.code, e.message);
         }
         const auto form = kythira::aws_query::form::parse(
             req.method() == http::verb::post ? std::string_view(req.body()) : sr.raw_query);
         if (!form) {
-            return query_error(req, false, 400, "MalformedQueryString",
+            return query_error(req, sts, 400, "MalformedQueryString",
                                "The request parameters could not be decoded.");
         }
         iam::query::request_facts facts;
@@ -667,7 +684,7 @@ private:
         facts.source_ip = ctx.peer_address;
         facts.user_agent = std::string(req[http::field::user_agent]);
         facts.secure_transport = ctx.tls;
-        const auto r = _api.handle(*who, *form, facts);
+        const auto r = sts ? _sts_api.handle(*who, *form, facts) : _api.handle(*who, *form, facts);
         https::response res{static_cast<http::status>(r.status), req.version()};
         res.set(http::field::content_type, "text/xml");
         res.set("x-amzn-RequestId", facts.request_id);
@@ -706,8 +723,7 @@ private:
             case routing::route::iam:
                 return handle_iam(req, ctx);
             case routing::route::sts:
-                return query_error(req, true, 501, "NotImplemented",
-                                   "This STS action is not available on this endpoint yet.");
+                return handle_sts(req, ctx);
             case routing::route::unknown_service:
                 return query_error(req, false, 400, "InvalidAction",
                                    "This endpoint serves the IAM and STS APIs only.");
@@ -739,6 +755,7 @@ private:
     iam::iam_authorizer _authz;
     query_cluster_adapter _query_cluster;
     iam::query::iam_query_api<query_cluster_adapter> _api;
+    iam::sts::sts_query_api<query_cluster_adapter> _sts_api;
     std::unique_ptr<https::server> _server;
     std::thread _election_timer;
     std::thread _heartbeat_timer;

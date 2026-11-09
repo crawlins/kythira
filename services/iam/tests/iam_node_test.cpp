@@ -8,8 +8,8 @@
 //  - create-account through a follower (the 307 to the leader is followed),
 //    the root key file at mode 0600, list-accounts from another member;
 //  - the admin routes refuse no certificate and a non-admin one;
-//  - IAM and STS requests route by credential scope (NotImplemented until
-//    tasks 14 and 17), unsigned ones are refused;
+//  - IAM and STS requests route by credential scope to the leader,
+//    unsigned ones are refused;
 //  - rotate-sts-key retires the previous key;
 //  - a read replica joins as a learner and applies the log, reports its
 //    lag in /healthz and /metrics, and with every voter frozen answers the
@@ -605,9 +605,18 @@ BOOST_AUTO_TEST_CASE(cluster_lifecycle, *boost::unit_test::timeout(600)) {
     auto sts_call = https_call(follower->http_port, c.pki, http::verb::get,
                                "/?Action=GetCallerIdentity&X-Amz-Credential=AKIAEXAMPLEKEYID0000%"
                                "2F20261106%2Fus-east-1%2Fsts%2Faws4_request");
+    // STS, served since task 17, goes to the leader like IAM; there an
+    // unverifiable signature is refused in STS's own Query namespace.
     BOOST_REQUIRE(sts_call.has_value());
-    BOOST_TEST(sts_call->status == 501U);
-    BOOST_TEST(sts_call->body.find("https://sts.amazonaws.com/doc/2011-06-15/") !=
+    BOOST_TEST(sts_call->status == 307U);
+    auto sts_on_leader =
+        https_call(leader->http_port, c.pki, http::verb::get,
+                   "/?Action=GetCallerIdentity&X-Amz-Credential=AKIAEXAMPLEKEYID0000%"
+                   "2F20261106%2Fus-east-1%2Fsts%2Faws4_request");
+    BOOST_REQUIRE(sts_on_leader.has_value());
+    BOOST_TEST_INFO("STS on the leader: " << sts_on_leader->body);
+    BOOST_TEST(sts_on_leader->status >= 400U);
+    BOOST_TEST(sts_on_leader->body.find("https://sts.amazonaws.com/doc/2011-06-15/") !=
                std::string::npos);
     auto unsigned_call =
         https_call(follower->http_port, c.pki, http::verb::get, "/?Action=ListUsers");

@@ -92,6 +92,17 @@ os::CmdResult aws_cli(int target, const std::string& key_id, const std::string& 
     return os::real_exec(cmd);
 }
 
+/// As aws_cli, with temporary credentials from STS.
+os::CmdResult aws_cli_session(int target, const std::string& key_id, const std::string& secret,
+                              const std::string& token, const std::vector<std::string>& args) {
+    auto cmd =
+        compose_cmd({"--profile", "cli", "run", "--rm", "-T", "-e", "AWS_ACCESS_KEY_ID=" + key_id,
+                     "-e", "AWS_SECRET_ACCESS_KEY=" + secret, "-e", "AWS_SESSION_TOKEN=" + token,
+                     "aws-cli", "--endpoint-url", endpoint(target), "--output", "json"});
+    cmd.insert(cmd.end(), args.begin(), args.end());
+    return os::real_exec(cmd);
+}
+
 /// The value after `name = ` in an INI file's text.
 std::string ini_value(const std::string& ini, const std::string& name) {
     const auto at = ini.find(name + " = ");
@@ -430,6 +441,55 @@ BOOST_AUTO_TEST_CASE(cluster_by_service_name) {
                            {"iam", "delete-open-id-connect-provider",
                             "--open-id-connect-provider-arn", oidc_arn})
                        .code == 0);
+
+        // Task 17: STS. GetCallerIdentity needs no permission; a role
+        // whose trust policy names cli-user is assumed with no identity
+        // policy (same account), and its session credentials authenticate
+        // as the assumed role.
+        {
+            auto rot = iam_cli(leader, leader, {"rotate-sts-key"});
+            BOOST_REQUIRE_MESSAGE(rot.code == 0, "rotate-sts-key failed:\n" << rot.out);
+            auto me = aws_cli(leader, id, secret, {"sts", "get-caller-identity"});
+            BOOST_TEST(me.code == 0, me.out);
+            BOOST_TEST(me.out.find("arn:aws:iam::111111111111:user/cli-user") != std::string::npos,
+                       me.out);
+            const std::string user_trust =
+                R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::111111111111:user/cli-user"},"Action":"sts:AssumeRole"}]})";
+            BOOST_REQUIRE(aws_cli(leader, root_id, root_secret,
+                                  {"iam", "create-role", "--role-name", "cli-session",
+                                   "--assume-role-policy-document", user_trust})
+                              .code == 0);
+            os::CmdResult assumed{};
+            BOOST_TEST(eventually(
+                           [&] {
+                               assumed = aws_cli(leader, id, secret,
+                                                 {"sts", "assume-role", "--role-arn",
+                                                  "arn:aws:iam::111111111111:role/cli-session",
+                                                  "--role-session-name", "scenario",
+                                                  "--duration-seconds", "900"});
+                               return assumed.code == 0;
+                           },
+                           30s),
+                       "aws sts assume-role failed:\n"
+                           << assumed.out);
+            const auto tmp_id = json_field(assumed.out, "Credentials", "AccessKeyId");
+            const auto tmp_secret = json_field(assumed.out, "Credentials", "SecretAccessKey");
+            const auto tmp_token = json_field(assumed.out, "Credentials", "SessionToken");
+            BOOST_TEST(tmp_id.starts_with("ASIA"), assumed.out);
+            auto as_role = aws_cli_session(leader, tmp_id, tmp_secret, tmp_token,
+                                           {"sts", "get-caller-identity"});
+            BOOST_TEST(as_role.code == 0, as_role.out);
+            BOOST_TEST(
+                as_role.out.find("arn:aws:sts::111111111111:assumed-role/cli-session/scenario") !=
+                    std::string::npos,
+                as_role.out);
+            auto bad = aws_cli_session(leader, tmp_id, tmp_secret, tmp_token + "x",
+                                       {"sts", "get-caller-identity"});
+            BOOST_TEST(bad.code != 0, bad.out);
+            BOOST_TEST(aws_cli(leader, root_id, root_secret,
+                               {"iam", "delete-role", "--role-name", "cli-session"})
+                           .code == 0);
+        }
 
         auto off = aws_cli(leader, root_id, root_secret,
                            {"iam", "update-access-key", "--user-name", "cli-user",

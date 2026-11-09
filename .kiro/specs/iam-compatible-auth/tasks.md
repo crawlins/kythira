@@ -729,7 +729,7 @@ because each has a zero-spend fallback.
     unit test, and the PR updates its row there.
   - _Requirements: 9.4, 9.5, 9.7, 9.8_
 
-- [ ] 16. OIDC providers, simulation and account calls
+- [x] 16. OIDC providers, simulation and account calls
   - The OIDC provider actions, SimulatePrincipalPolicy, SimulateCustomPolicy,
     GetContextKeysForPrincipalPolicy, GetAccountAuthorizationDetails and
     GetAccountSummary.
@@ -742,7 +742,7 @@ because each has a zero-spend fallback.
 
 ### Phase D — STS and federation
 
-- [ ] 17. STS core and session tokens
+- [x] 17. STS core and session tokens
   - The STS Query handlers: AssumeRole (including cross-account and
     `ExternalId`), GetSessionToken, GetCallerIdentity and GetAccessKeyInfo.
   - The session-token format of design Component 9: CBOR payload,

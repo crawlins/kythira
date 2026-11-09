@@ -77,6 +77,9 @@ struct principal_context {
     std::optional<std::chrono::system_clock::time_point> expires;
     std::string source_identity;
     std::vector<std::string> session_policies;  // policy JSON carried by the token
+    // GetSessionToken credentials: the user (or root) above, limited to
+    // AssumeRole and GetCallerIdentity (Requirement 10.10).
+    bool session_token = false;
 };
 
 /// One action a service serves: its name without the prefix

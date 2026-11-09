@@ -50,6 +50,12 @@ target_compile_definitions(iam_query_api_test PRIVATE
     KYTHIRA_IAM_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus")
 set_tests_properties(iam_query_api_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
 
+# Task 17: STS AssumeRole, GetSessionToken, GetCallerIdentity and
+# GetAccessKeyInfo, and the sealed session tokens they mint, over a
+# stand-in cluster with a real clock.
+kythira_iam_test(iam_sts_test iam_sts_test.cpp)
+set_tests_properties(iam_sts_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
+
 # Task 8: the IAM state machine and its secret sealing, with property tests
 # that replicas and snapshot restores agree and no plaintext secret reaches
 # the log or a snapshot.

@@ -35,6 +35,7 @@
 #include <kythira/iam/iam_seal.hpp>
 #include <kythira/iam/iam_service_registry.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
+#include <kythira/iam/iam_sts_token.hpp>
 
 #include <boost/json.hpp>
 
@@ -305,8 +306,7 @@ public:
         }
         const auto& c = *parsed;
         if (c.security_token.has_value() || c.access_key_id.starts_with("ASIA")) {
-            // Temporary credentials: task 17's session-token decoder.
-            return sigv4::invalid_client_token_id(rules.protocol);
+            return authenticate_session(c, rules, now);
         }
         std::optional<aws_auth::principal_context> who;
         std::optional<std::string> secret;
@@ -345,6 +345,34 @@ public:
             return sigv4::signature_mismatch(rules.protocol);
         }
         return std::move(*who);
+    }
+
+    /// Temporary credentials (design Component 9): the session travels in
+    /// the token, sealed under an STS key, so no state but the keys is read.
+    [[nodiscard]] auto authenticate_session(const sigv4::claim& c,
+                                            const sigv4::service_rules& rules,
+                                            std::chrono::sys_seconds now)
+        -> aws_auth::authn_result {
+        if (!c.security_token || !c.access_key_id.starts_with("ASIA")) {
+            return sigv4::invalid_client_token_id(rules.protocol);
+        }
+        std::vector<sts::sts_key> keys;
+        _state([&](const iam_state_machine& sm) { keys = sts::keys_of(sm, _kek(sm.kek_salt())); });
+        const auto opened = sts::open(*c.security_token, keys, now.time_since_epoch().count());
+        if (!opened.has_value()) {
+            return opened.error() == sts::token_error::expired
+                       ? sigv4::expired_token(rules.protocol)
+                       : sigv4::invalid_client_token_id(rules.protocol);
+        }
+        const auto& s = opened.value();
+        if (s.access_key_id != c.access_key_id) {
+            return sigv4::invalid_client_token_id(rules.protocol);
+        }
+        const auto key = _keys.get(c.access_key_id, s.secret_access_key, c.scope);
+        if (!sigv4::verify(c, key)) {
+            return sigv4::signature_mismatch(rules.protocol);
+        }
+        return sts::principal_of(s);
     }
 
     /// Requirement 7.1-7.2: whether `who` may do `r`.

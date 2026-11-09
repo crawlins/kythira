@@ -546,6 +546,37 @@ message or the reverse). DecodeAuthorizationMessage checks
 renders AWS's JSON. A message older than the STS key retention window
 fails with `InvalidAuthorizationMessageException`, AWS's error.
 
+**As built (task 17, `iam_sts_token.hpp`, `iam_sts_api.hpp`).**
+- The token is `base64url(0x01 | kid8 | sealed)`, where `kid8` is the
+  first 8 bytes of SHA-256 of the STS key's id and `sealed` is
+  `seal_secret`'s nonce, tag and ciphertext (the same AES-256-GCM helper
+  that seals access-key secrets), with associated data
+  `"kythira-sts-session-v1" | kid8`. The CBOR payload is written by a
+  small codec in `iam_sts_token.hpp` rather than the Raft serializer, so
+  the token format does not move with the log format.
+- A token whose `kid8` matches no held key reads as `ExpiredToken`: a
+  dropped key is the only way an honest token loses its key. A token
+  that fails to open under a held key is `InvalidClientTokenId`, as is
+  one presented with an access key id other than the one sealed in it.
+- AssumeRole authorizes `sts:AssumeRole` once, through the authorizer,
+  with the trust policy as the resource policy and the role's account as
+  the resource account, so same-account trust alone allows and
+  cross-account needs both sides (INV-STS-B1). A missing role is
+  `AccessDenied`, as on AWS, so role names cannot be probed. Role
+  chaining is capped at one hour here already (task 18 adds the rest of
+  its rules).
+- Parameters of later tasks (`Policy`, `PolicyArns`, `Tags`,
+  `TransitiveTagKeys`, `SourceIdentity`) and MFA (`SerialNumber`,
+  `TokenCode`) are validated where the rule is task 17's, then refused,
+  never ignored: a session that silently dropped a session policy would
+  be broader than asked.
+- `ASIA` key ids are `ASIA` + 8 base32 characters of the account + 8
+  random ones, so GetAccessKeyInfo answers for a temporary key without
+  opening its token.
+- `iam_node` serves STS on the leader, as it does IAM, signed for
+  service `sts`; the AWS CLI scenario assumes a role and calls
+  GetCallerIdentity with the session credentials.
+
 ## Component 10: Web identity (Requirements 11–12)
 
 **`oidc_jwks_cache`.**
