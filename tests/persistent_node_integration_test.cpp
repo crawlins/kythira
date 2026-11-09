@@ -8,6 +8,12 @@
 // replay with a held-back durable sequence (2.2, 2.4), and format-1
 // InstallSnapshot received, staged and ingested
 // (.kiro/specs/file-install-snapshot/ task 4).
+//
+// Built twice: on `memory_kv_engine`, and with
+// KYTHIRA_PERSISTENT_TEST_ROCKSDB as persistent_node_rocksdb_test on
+// `rocksdb_kv_engine` (file-install-snapshot task 7). The RocksDB build
+// leaves out the cases that hold durability back or simulate a crash,
+// which only the memory engine can do, and adds the 1 GB catch-up case.
 
 #define BOOST_TEST_MODULE persistent_node_integration_test
 #include <boost/test/unit_test.hpp>
@@ -19,18 +25,28 @@
 #include "persistent_register_state_machine.hpp"
 #include "recording_metrics.hpp"
 
+#if defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)
+#include <raft/rocksdb_kv_engine.hpp>
+
+#include <malloc.h>
+#endif
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <ranges>
 #include <string>
 #include <thread>
@@ -52,7 +68,27 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 namespace {
 
 using engine_type = kythira::memory_persistence_engine<>;
-using register_sm = kythira::testing::persistent_register_state_machine;
+#if defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)
+using kv_engine_t = kythira::rocksdb_kv_engine;
+#else
+using kv_engine_t = kythira::memory_kv_engine;
+#endif
+using register_sm = kythira::testing::basic_persistent_register_state_machine<kv_engine_t>;
+
+// A fresh, empty engine. A RocksDB one lives in its own temp directory,
+// removed after the engine closes.
+auto make_kv_engine() -> std::shared_ptr<kv_engine_t> {
+#if defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)
+    struct holder {
+        kythira::test::format1::temp_dir dir;
+        kv_engine_t engine{dir.path() / "db"};
+    };
+    auto h = std::make_shared<holder>();
+    return {h, &h->engine};
+#else
+    return std::make_shared<kv_engine_t>();
+#endif
+}
 
 // Every copy shares one engine, so a restarted node sees the same store and
 // the test can inspect it.
@@ -161,8 +197,7 @@ auto make_compacting_config() -> kythira::raft_configuration {
 struct harness {
     simulator_type sim;
     shared_persistence persistence;
-    std::shared_ptr<kythira::memory_kv_engine> engine =
-        std::make_shared<kythira::memory_kv_engine>();
+    std::shared_ptr<kv_engine_t> engine = make_kv_engine();
     std::shared_ptr<kythira::testing::metric_recorder> metrics =
         std::make_shared<kythira::testing::metric_recorder>();
 
@@ -239,7 +274,7 @@ auto marker() -> std::vector<std::byte> {
 class source {
 public:
     explicit source(int n) {
-        _sm.open(_engine, group_range);
+        _sm.open(*_engine, group_range);
         for (int i = 1; i <= n; ++i) {
             const auto v = std::string("v") + (i < 10 ? "0" : "") + std::to_string(i);
             (void)_sm.apply(bytes(key(i) + "=" + v), static_cast<std::uint64_t>(i));
@@ -279,7 +314,7 @@ public:
 
 private:
     kythira::test::format1::temp_dir _root;
-    kythira::memory_kv_engine _engine;
+    std::shared_ptr<kv_engine_t> _engine = make_kv_engine();
     register_sm _sm;
     std::uint64_t _index{0};
     kythira::snapshot_manifest _manifest;
@@ -310,8 +345,7 @@ auto staging_entries(const harness& h) -> std::size_t {
 struct persistent_cluster {
     struct member {
         shared_persistence persistence;
-        std::shared_ptr<kythira::memory_kv_engine> engine =
-            std::make_shared<kythira::memory_kv_engine>();
+        std::shared_ptr<kv_engine_t> engine = make_kv_engine();
         std::shared_ptr<kythira::testing::metric_recorder> metrics =
             std::make_shared<kythira::testing::metric_recorder>();
         kythira::test::format1::temp_dir staging;
@@ -409,13 +443,20 @@ struct persistent_cluster {
     // Submits register i and reports whether it committed.
     auto commit(int i) -> bool {
         const auto v = std::string("v") + (i < 10 ? "0" : "") + std::to_string(i);
+        return submit(key(i) + "=" + v);
+    }
+
+    // Submits one `key=value` command and reports whether it committed
+    // within `timeout`.
+    auto submit(const std::string& command,
+                std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) -> bool {
         auto done = std::make_shared<std::atomic<int>>(0);
         leader()
-            .submit_command(bytes(key(i) + "=" + v), std::chrono::milliseconds{3000})
+            .submit_command(bytes(command), timeout)
             .thenValue([done](std::vector<std::byte>) { *done = 1; })
             .thenError([done](const std::exception_ptr&) { *done = 2; })
             .detach();
-        pump_until([&] { return done->load() != 0; });
+        pump_until([&] { return done->load() != 0; }, timeout + std::chrono::milliseconds{2000});
         return done->load() == 1;
     }
 };
@@ -477,6 +518,7 @@ BOOST_AUTO_TEST_CASE(restart_resumes_at_applied_index_without_replay,
     node->stop();
 }
 
+#if !defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)  // memory engine: held-back durability
 // Requirements 2.2 and 2.4: applies lost in a power cut come back from the
 // log. The engine holds durability after entry 4, so 5-8 are lost; the
 // restarted node starts at the recovered applied index and replays them.
@@ -524,9 +566,13 @@ BOOST_AUTO_TEST_CASE(crash_with_held_back_durability_replays_from_log,
     node->stop();
 }
 
-// Requirement 10.2: compaction is off by default, so the log is kept however
-// much is applied.
-BOOST_AUTO_TEST_CASE(compaction_is_off_by_default, *boost::unit_test::timeout(30)) {
+#endif
+
+// file-install-snapshot Requirement 7.1: compaction is on by default. Turned
+// off, the log is kept however much is applied.
+BOOST_AUTO_TEST_CASE(compaction_is_on_by_default_and_can_be_turned_off,
+                     *boost::unit_test::timeout(30)) {
+    BOOST_TEST(kythira::raft_configuration{}.persistent_log_compaction());
     harness h;
     auto cfg = make_compacting_config();
     cfg._persistent_log_compaction = false;
@@ -545,11 +591,13 @@ BOOST_AUTO_TEST_CASE(compaction_is_off_by_default, *boost::unit_test::timeout(30
     node->stop();
 }
 
+#if !defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)  // memory engine: held-back durability
 // Requirements 3.1 and 3.2: with compaction on, the snapshot is metadata at
 // the durable applied index, never past it, and the log above it survives.
 BOOST_AUTO_TEST_CASE(compaction_stops_at_durable_applied_index, *boost::unit_test::timeout(30)) {
     harness h;
-    const auto cfg = make_compacting_config();
+    auto cfg = make_compacting_config();
+    cfg._persistent_sync_lag_entries = 0;  // never sync: the test holds durability
     auto node = h.make_node(cfg);
     node->start();
     elect(*node, cfg);
@@ -611,6 +659,7 @@ BOOST_AUTO_TEST_CASE(compaction_syncs_past_lag_bound, *boost::unit_test::timeout
     BOOST_TEST(snap->last_included_index() > 2U);
     node->stop();
 }
+#endif
 
 // Requirement 4.1 after compaction: a restart uses the saved metadata for
 // the snapshot index and term and the engine for the applied index.
@@ -1018,7 +1067,10 @@ BOOST_AUTO_TEST_CASE(follower_reports_staged_progress_for_the_same_checkpoint,
 BOOST_AUTO_TEST_CASE(leader_resumes_a_cut_transfer_and_paces_it, *boost::unit_test::timeout(90)) {
     auto cfg = make_config();
     cfg._persistent_log_compaction = true;
-    cfg._snapshot_threshold_bytes = 7 * 4;
+    // Thirteen 7-byte puts: the log compacts once, at the last write, so the
+    // leader never takes an earlier checkpoint that a slow, paced send would
+    // still be busy with when the test cuts the follower.
+    cfg._snapshot_threshold_bytes = 7 * 13;
     cfg._snapshot_chunk_size = 16;
     cfg._install_snapshot_timeout = std::chrono::milliseconds{300};
     // One attempt per chunk, so the cut fails the transfer instead of a
@@ -1039,8 +1091,8 @@ BOOST_AUTO_TEST_CASE(leader_resumes_a_cut_transfer_and_paces_it, *boost::unit_te
     for (int i = 2; i < 14; ++i) {
         BOOST_REQUIRE(c.commit(i));
     }
-    // The checkpoint the leader will send is at its applied index; cut the
-    // follower once it has started staging that one.
+    // The only checkpoint is at the leader's applied index (see the
+    // threshold above); cut the follower once it has started staging it.
     const auto wanted = "kythira-staging-" + std::to_string(c.leader().last_applied_index()) + "-";
     c.connect_all();
     const auto started = std::chrono::steady_clock::now();
@@ -1071,3 +1123,162 @@ BOOST_AUTO_TEST_CASE(leader_resumes_a_cut_transfer_and_paces_it, *boost::unit_te
     BOOST_TEST(total >= 1U);
     BOOST_TEST(elapsed >= std::chrono::milliseconds{1500});
 }
+
+#if defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)
+// ── Compaction on, at scale (.kiro/specs/file-install-snapshot/ task 7) ──
+
+namespace {
+
+// This process's resident set, from /proc/self/status, in bytes, after
+// handing malloc's free pages back to the system. Without the trim, RSS
+// counts memory glibc keeps cached in its per-thread arenas after a free:
+// with the futures backend's many threads that varied from 4 MB to 70 MB
+// between identical runs, swamping the transfer's own use. Trimmed, it is
+// the memory the process actually holds, which is what Requirement 7.2
+// bounds.
+auto resident_bytes() -> std::uint64_t {
+    ::malloc_trim(0);
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.starts_with("VmRSS:")) {
+            return std::stoull(line.substr(6)) * 1024;
+        }
+    }
+    return 0;
+}
+
+// Samples resident_bytes() every 20 ms on its own thread and
+// keeps the peak, until stopped.
+class rss_sampler {
+public:
+    rss_sampler() : _thread([this] { run(); }) {}
+    ~rss_sampler() { stop(); }
+    rss_sampler(const rss_sampler&) = delete;
+    auto operator=(const rss_sampler&) -> rss_sampler& = delete;
+    rss_sampler(rss_sampler&&) = delete;
+    auto operator=(rss_sampler&&) -> rss_sampler& = delete;
+
+    auto stop() -> std::uint64_t {
+        _stop = true;
+        if (_thread.joinable()) {
+            _thread.join();
+        }
+        return _peak;
+    }
+
+private:
+    auto run() -> void {
+        while (!_stop) {
+            _peak = std::max(_peak.load(), resident_bytes());
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+    }
+
+    std::atomic<bool> _stop{false};
+    std::atomic<std::uint64_t> _peak{0};
+    std::thread _thread;
+};
+
+// A size from the environment, or `fallback`.
+auto env_bytes(const char* name, std::uint64_t fallback) -> std::uint64_t {
+    if (const char* v = std::getenv(name); v != nullptr && *v != '\0') {
+        return std::stoull(v);
+    }
+    return fallback;
+}
+
+}  // namespace
+
+// Requirement 7.2: a follower partitioned while a group of at least 1 GB is
+// written past compaction catches up through a format-1 snapshot, and the
+// process's resident set grows by less than the bound (64 MB) while it does.
+// All three replicas share this process, so the bound covers the leader and
+// the follower together, which is stricter than one bound each.
+//
+// KYTHIRA_CATCHUP_TEST_BYTES and KYTHIRA_CATCHUP_TEST_RSS_BOUND override the
+// group size and the bound, for a quick local run.
+BOOST_AUTO_TEST_CASE(follower_catches_up_a_1gb_group_with_bounded_rss,
+                     *boost::unit_test::timeout(3600)) {
+    constexpr std::size_t value_bytes = std::size_t{1} << 20;
+    const auto group_bytes = env_bytes("KYTHIRA_CATCHUP_TEST_BYTES", std::uint64_t{1} << 30);
+    const auto rss_bound = env_bytes("KYTHIRA_CATCHUP_TEST_RSS_BOUND", std::uint64_t{64} << 20);
+    const auto values = static_cast<int>((group_bytes + value_bytes - 1) / value_bytes);
+
+    auto cfg = make_config();
+    // Deadlines sized for megabyte entries under sanitizers and on a loaded
+    // CI runner: a batch is JSON-encoded, base64 included, on every hop.
+    cfg._election_timeout_min = std::chrono::milliseconds{2000};
+    cfg._election_timeout_max = std::chrono::milliseconds{4000};
+    cfg._heartbeat_interval = std::chrono::milliseconds{100};
+    cfg._rpc_timeout = std::chrono::milliseconds{10000};
+    cfg._append_entries_timeout = std::chrono::milliseconds{30000};
+    cfg._max_append_bytes = std::size_t{2} << 20;
+    cfg._persistent_log_compaction = true;  // the default, stated
+    // Compact every 8 MB. After the snapshot, the follower takes the log
+    // tail by AppendEntries into this harness's in-memory log store, so the
+    // tail (at most one threshold of entries) is resident; it is bounded by
+    // the threshold, not the group, and kept well under the RSS bound.
+    cfg._snapshot_threshold_bytes = std::size_t{8} << 20;
+    cfg._snapshot_chunk_size = std::size_t{1} << 20;
+    cfg._install_snapshot_timeout = std::chrono::milliseconds{5000};
+    persistent_cluster c(cfg);
+    BOOST_REQUIRE(c.pump_until([&] { return c.leader().is_leader(); }));
+    BOOST_REQUIRE(c.commit(1));
+    BOOST_REQUIRE(c.pump_until([&] { return value_of(c.at(2), 1) == "v01"; }));
+    const auto follower_last = c.at(2).last_applied_index();
+
+    // Incompressible values, so the checkpoint really is the group's size.
+    c.cut("3");
+    std::mt19937_64 rng(7);
+    std::string value(value_bytes, '\0');
+    const auto big_key = [](int i) { return "big" + std::to_string(i); };
+    for (int i = 0; i < values; ++i) {
+        for (std::size_t off = 0; off + 8 <= value.size(); off += 8) {
+            const auto r = rng();
+            std::memcpy(value.data() + off, &r, 8);
+        }
+        // A generous deadline: a 1 MiB entry is slow under sanitizers and on
+        // a loaded CI runner.
+        BOOST_REQUIRE_MESSAGE(c.submit(big_key(i) + "=" + value, std::chrono::milliseconds{30000}),
+                              "write " << i);
+    }
+    const auto leader_last = c.leader().last_applied_index();
+    // The leader's log no longer reaches back to what the follower has: the
+    // follower can only catch up by snapshot.
+    const auto leader_snapshot = c.members[0]->persistence.load_snapshot();
+    BOOST_REQUIRE(leader_snapshot.has_value());
+    BOOST_REQUIRE_GT(leader_snapshot->last_included_index(), follower_last + 1);
+    BOOST_REQUIRE_LE(leader_snapshot->last_included_index(), leader_last);
+    const auto last_value = value;
+
+    const auto baseline = resident_bytes();
+    rss_sampler sampler;
+    c.connect_all();
+    BOOST_REQUIRE(c.commit(50));
+    const bool caught_up = c.pump_until([&] { return value_of(c.at(2), 50) == "v50"; },
+                                        std::chrono::milliseconds{900'000});
+    const auto peak = sampler.stop();
+    BOOST_REQUIRE(caught_up);
+
+    const auto growth = peak > baseline ? peak - baseline : 0;
+    BOOST_TEST_MESSAGE("catch-up of " << values << " MiB: RSS " << (baseline >> 20)
+                                      << " MiB -> peak " << (peak >> 20) << " MiB, growth "
+                                      << (growth >> 20) << " MiB (bound " << (rss_bound >> 20)
+                                      << " MiB)");
+    BOOST_TEST(growth < rss_bound);
+
+    const auto installed = c.members[2]->persistence.load_snapshot();
+    BOOST_REQUIRE(installed.has_value());
+    BOOST_TEST(installed->last_included_index() > follower_last);
+    BOOST_TEST(c.members[0]->metrics->count_named("raft_install_snapshot_success") >= 1U);
+    const auto big_of = [&](std::size_t member, int i) {
+        return c.at(member).with_state_machine(
+            [&](const register_sm& sm) { return sm.value_of(big_key(i)).value_or(""); });
+    };
+    BOOST_TEST(big_of(2, 0).size() == value_bytes);
+    BOOST_TEST(big_of(2, 0) == big_of(0, 0));
+    BOOST_TEST(big_of(2, values / 2) == big_of(0, values / 2));
+    BOOST_TEST((big_of(2, values - 1) == last_value));
+}
+#endif

@@ -1003,7 +1003,8 @@ private:
 
     // State machine for executing committed log entries
     state_machine_type _state_machine;
-    // A persistent group logs once that its log is kept (Requirement 10.2).
+    // A persistent group with compaction turned off logs once that its log
+    // is kept.
     bool _persistent_compaction_off_logged{false};
 
     // ========================================================================
@@ -1674,7 +1675,8 @@ private:
     // snapshot_staging_directory (file-install-snapshot Requirement 3.5).
     static constexpr std::string_view k_snapshot_staging_prefix = "kythira-staging-";
     // Whether this group compacts its log (the config's
-    // persistent_log_compaction, Requirement 10.2).
+    // persistent_log_compaction, on by default since file-install-snapshot
+    // Requirement 7.1).
     [[nodiscard]] auto persistent_compaction_enabled() const -> bool;
     // The configuration in force at `index`: the last configuration entry at
     // or below it in the log, or the one the log started from.
@@ -5742,8 +5744,8 @@ auto node<Types>::initialize_from_storage() -> void {
         if (!persistent_compaction_enabled() && !_persistent_compaction_off_logged) {
             _persistent_compaction_off_logged = true;
             _logger.info(
-                "Persistent state machine: log compaction is off until the leader can send "
-                "format-1 snapshots (file-install-snapshot task 5)",
+                "Persistent state machine: log compaction is off "
+                "(persistent_log_compaction), so the whole log is kept",
                 {{"node_id", node_id_to_string(_node_id)}});
         }
     }
@@ -10555,7 +10557,7 @@ template<raft_types Types> auto node<Types>::persistent_compaction_enabled() con
     if constexpr (requires { _config.persistent_log_compaction(); }) {
         return _config.persistent_log_compaction();
     } else {
-        return false;
+        return true;
     }
 }
 

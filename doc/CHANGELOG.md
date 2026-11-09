@@ -42,7 +42,7 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 - **Raft groups can keep their state in a key-value engine.** A state
   machine satisfying `persistent_state_machine` keeps its state in the
-  node's `kv_engine` (`memory_kv_engine` for now; RocksDB is next), and
+  node's `kv_engine` (`memory_kv_engine`, or `rocksdb_kv_engine` below), and
   `node<Types>` takes a separate path for it. A restart starts at the
   engine's applied index without reloading anything, snapshots are
   metadata only, and reads return no bytes. Log compaction is off by
@@ -84,6 +84,24 @@ current list of outstanding work, see [TODO.md](TODO.md).
   the error handler's built-in InstallSnapshot retry policy and ignored
   the configured one. The default is the same, so only a configuration
   that changed it behaves differently.
+
+- **Persistent groups compact their logs by default.** A follower that
+  falls behind now catches up through a file snapshot, so
+  `_persistent_log_compaction` defaults to on. `_persistent_sync_lag_entries`
+  now defaults to 1: with the old 0 an engine that syncs only when asked,
+  like RocksDB, never let the log compact.
+
+- **RocksDB engine.** `rocksdb_kv_engine` keeps persistent groups' state
+  in one RocksDB database per node. It is opt-in: Kconfig
+  `ENGINE_ROCKSDB` and the vcpkg feature `rocksdb`, both off by default,
+  and a build without them never sees a RocksDB header. A 1 GB group
+  catches up a lagging follower with less than 64 MB of memory growth.
+
+- **Node metrics are safe to emit from any thread.** `node<Types>` built
+  metrics from several threads at once, some without its mutex, which
+  could mix dimensions between metrics or crash a back-end. It now holds
+  its metrics through `serialized_metrics`, which gives each thread its
+  own pending metric; `noop_metrics` is unchanged.
 
 ### What Changed (November 5, 2026)
 
