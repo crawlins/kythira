@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The Kinesis Data Streams-compatible service (services/kinesis/,
+# .kiro/specs/kinesis-compatible-streams/). Sourced from the top-level
+# Kconfig's "Service Modules" menu.
+
+config KINESIS
+	bool "Kinesis Data Streams-compatible streaming service"
+	default n
+	depends on OPENSSL
+	help
+	  Builds the services/kinesis/ module: a Kinesis Data Streams-
+	  compatible service that unmodified AWS SDKs, the AWS CLI, KPL and
+	  KCL can point at, with streams of shards stored as routing keys in
+	  Kythira's Raft groups and record bytes in the core record segment
+	  store. So far the module holds the pinned botocore model, the
+	  generated operation table, the coverage check and the
+	  kinesis_gateway_node placeholder (task 1); the front end, stream
+	  state machine and data plane follow. It needs IAM's core SigV4 and
+	  authorizer headers, not the IAM module. OpenSSL is needed for
+	  SigV4, segment digests and iterator tokens. Off by default like
+	  every new module (services/README.md). See
+	  .kiro/specs/kinesis-compatible-streams/.

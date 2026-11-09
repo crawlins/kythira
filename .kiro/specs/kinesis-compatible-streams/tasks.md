@@ -29,6 +29,17 @@ asked.
     aws-sdk-java-v2, aws-sdk-cpp, KPL, KCL 2.x and 3.x, the Flink connector
   - Off-by-default build proved unchanged
   - _Requirements: 1.1-1.5, 2.1, 2.2, 2.4_
+  - Part done (November 9, 2026): the module skeleton (`KINESIS`, CMake,
+    empty boundary allow list, `kinesis_gateway_node` placeholder),
+    `configs/ci_no_kinesis_defconfig` and `kinesis-module.yml` (boundary,
+    module-on tests, module-off assertion), the pinned model (botocore
+    1.43.100), the generated operation table with its `--check` test, and
+    the coverage test with every one of the 44 operations listed in
+    `services/kinesis/doc/unsupported.md`. Still open: the recording stub
+    and wire evidence, and the workflow's container job, which joins with
+    task 7 when there is a daemon to run. The model's five Channel
+    operations (delivery to S3 and S3 Tables) are not in the spec and are
+    listed as unplanned pending the owner's call.
 
 ### Phase 1: core pieces
 
