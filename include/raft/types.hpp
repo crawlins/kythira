@@ -8,12 +8,14 @@
 
 #include <concepts/future.hpp>
 #include <raft/composite_node_id.hpp>
+#include <raft/snapshot_pacer.hpp>
 #include <raft/metrics.hpp>
 #include <raft/peer_discovery.hpp>
 #include <raft/peer2peer_replication.hpp>
 #include <concepts>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -918,6 +920,11 @@ struct raft_configuration {
     /// (file-install-snapshot Requirement 5.3). A newer checkpoint replaces
     /// an unused older one at once.
     std::chrono::milliseconds _snapshot_checkpoint_max_unused_age{std::chrono::minutes{10}};
+    /// Paces InstallSnapshot bytes a leader sends (format 1), shared by every
+    /// group that holds the same pointer; `multi_raft` copies one
+    /// configuration into every group, so one pacer is node-wide
+    /// (file-install-snapshot Requirement 6.3). Null is unlimited.
+    std::shared_ptr<kythira::snapshot_pacer> _snapshot_pacer{};
 
     // ── Retry policies ────────────────────────────────────────────────────────
     retry_policy_config _heartbeat_retry_policy{.initial_delay = std::chrono::milliseconds{50},
@@ -1062,6 +1069,10 @@ struct raft_configuration {
     }
     [[nodiscard]] auto snapshot_checkpoint_max_unused_age() const -> std::chrono::milliseconds {
         return _snapshot_checkpoint_max_unused_age;
+    }
+    [[nodiscard]] auto install_snapshot_pacer() const
+        -> const std::shared_ptr<kythira::snapshot_pacer>& {
+        return _snapshot_pacer;
     }
     [[nodiscard]] auto heartbeat_retry_policy() const -> const retry_policy_config& {
         return _heartbeat_retry_policy;

@@ -149,10 +149,42 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
       follower cut off while the leader compacts catches up through a
       format-1 snapshot and then AppendEntries.
 
-- [ ] 6. Resume and pacing
+- [x] 6. Resume and pacing
   - `bytes_received` resume for a matching transfer; node-wide
     `snapshot_pacer`
   - _Requirements: 6.1-6.3_
+  - As built (November 9, 2026):
+    - Follower (6.2): a first chunk for the staged (index, term, manifest
+      digest) no longer starts over. If anything is staged, the follower
+      answers `offset_mismatch` with `bytes_received` and writes nothing
+      (metric `raft_install_snapshot_resumed`); the leader's term may be
+      newer. A different digest at the same index is a different
+      checkpoint and replaces the staged one.
+    - Leader (6.1): each follower's latest transfer is kept after a failed
+      chunk, with its checkpoint lease, and the next attempt sends the same
+      checkpoint from offset 0 while the leader's term is unchanged and the
+      log still continues from it (`index >= _snapshot_index`). An
+      `offset_mismatch` reply with `bytes_received` makes it go on from
+      there, so a resume costs one extra round trip and no new protocol
+      field. Three replies in a row that move it nowhere end the transfer.
+      The entry goes when the transfer completes or is refused, and on
+      stepping down.
+    - Pacing (6.3): `include/raft/snapshot_pacer.hpp`, a token bucket that
+      runs into debt and returns how long to wait.
+      `raft_configuration::_snapshot_pacer` holds it by `shared_ptr` (null,
+      the default, is unlimited); `multi_raft` copies one configuration
+      into every group, so one pacer is node-wide. The leader waits with a
+      future delay before each attempt; no thread sleeps.
+    - Found on the way: `raft_configuration::_install_snapshot_retry_policy`
+      was never applied; the node used the error handler's built-in
+      policy. `start()` now applies it. Its default equals the built-in
+      one, so a default configuration is unchanged. The other three retry
+      policies in the configuration have the same gap and are left as
+      they are.
+    - Tests: `tests/snapshot_pacer_test.cpp`; in
+      `persistent_node_integration_test`, a follower reporting staged
+      progress (same leader and a new one), and a paced three-node
+      transfer whose follower is cut off mid-transfer and resumes.
 
 - [ ] 7. Turn on compaction for persistent groups
   - Lift persistent-state-machine Requirement 10.2; the RSS-bounded catch-up

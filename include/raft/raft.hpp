@@ -995,6 +995,15 @@ private:
     std::vector<std::byte> _snapshot_buffer;
     bool _snapshot_buffer_open{false};
 
+    // Format 1 (file-install-snapshot Requirement 5): one transfer's
+    // checkpoint lease, reader and encoded manifest, shared by its chunks.
+    struct format1_send {
+        checkpoint_registry::lease lease;
+        snapshot_stream_reader reader;
+        std::vector<std::byte> manifest;
+        term_id_type leader_term{};
+    };
+
     // The format-1 transfer a persistent follower is staging, guarded by
     // `_mutex` (file-install-snapshot Requirement 3). `leader_term` is the
     // term of the leader sending it, so a new leader's transfer replaces it
@@ -1011,6 +1020,14 @@ private:
     // The leader's checkpoints for format-1 transfers (Requirement 5),
     // guarded by `_mutex`. Set up at start from the configuration.
     std::conditional_t<k_persistent_state, checkpoint_registry, std::monostate> _checkpoints{};
+    // Each follower's latest format-1 transfer, kept after a failed chunk so
+    // the next attempt sends the same checkpoint and the follower can resume
+    // it (Requirement 6.1). Dropped when the transfer completes or is
+    // refused, and on stepping down. Guarded by `_mutex`.
+    std::conditional_t<k_persistent_state,
+                       std::unordered_map<node_id_type, std::shared_ptr<const format1_send>>,
+                       std::monostate>
+        _format1_sends{};
 
     // Configuration synchronizer for safe configuration changes. Its internal
     // "did this phase commit" signal is bool-valued, distinct from
@@ -1577,17 +1594,11 @@ private:
     auto send_install_snapshot_to(node_id_type target) -> void;
     auto send_install_snapshot_chunk(node_id_type target, std::shared_ptr<const snapshot_type> snap,
                                      std::size_t offset, std::size_t chunk_num) -> void;
-    // Format 1 (file-install-snapshot Requirement 5): one transfer's
-    // checkpoint lease, reader and encoded manifest, shared by its chunks.
-    struct format1_send {
-        checkpoint_registry::lease lease;
-        snapshot_stream_reader reader;
-        std::vector<std::byte> manifest;
-        term_id_type leader_term{};
-    };
     auto send_format1_snapshot_to(node_id_type target) -> void;
+    // `stalls` counts consecutive offset_mismatch replies that moved the
+    // transfer nowhere, so a confused follower cannot loop it forever.
     auto send_format1_chunk(node_id_type target, std::shared_ptr<const format1_send> transfer,
-                            std::uint64_t offset) -> void;
+                            std::uint64_t offset, int stalls) -> void;
     auto emit_checkpoint_metrics() -> void;
     auto advance_commit_index() -> void;
     auto apply_committed_entries() -> void;
@@ -4312,6 +4323,23 @@ auto node<Types>::start() -> void {
     _request_pre_vote_error_handler.set_async_scope(_async_scope);
     _install_snapshot_error_handler.set_async_scope(_async_scope);
 
+    // InstallSnapshot retries follow the configuration. Nothing applied
+    // raft_configuration::_install_snapshot_retry_policy before; its default
+    // is the handler's built-in policy, so a default configuration behaves
+    // as it did.
+    {
+        const auto& p = _config.install_snapshot_retry_policy();
+        if (p.is_valid()) {
+            _install_snapshot_error_handler.set_retry_policy(
+                "install_snapshot", typename install_snapshot_error_handler_t::retry_policy{
+                                        .initial_delay = p.initial_delay,
+                                        .max_delay = p.max_delay,
+                                        .backoff_multiplier = p.backoff_multiplier,
+                                        .jitter_factor = p.jitter_factor,
+                                        .max_attempts = p.max_attempts});
+        }
+    }
+
     _logger.info("Starting Raft node", {{"node_id", node_id_to_string(_node_id)}});
 
     // Initialize from persistent storage (recover state after crash)
@@ -6869,6 +6897,7 @@ auto node<Types>::handle_format1_install_snapshot_locked(
             return false;
         };
 
+        std::optional<snapshot_manifest> manifest;
         if (request.offset() == 0) {
             // A first chunk starts a transfer. A stale one is refused before
             // anything is written (the same rule format 0 applies on `done`).
@@ -6876,29 +6905,52 @@ auto node<Types>::handle_format1_install_snapshot_locked(
                 return reject(install_snapshot_reject_reason::stale_snapshot,
                               "at or below commit index " + std::to_string(_commit_index));
             }
-            if (_format1_transfer.has_value()) {
-                if (!same_as_staged() && !newer_than_staged()) {
-                    // A delayed first chunk of an older transfer.
-                    return reject(install_snapshot_reject_reason::stale_snapshot,
-                                  "older than the transfer being staged");
-                }
-                // Requirement 3.4 for a newer transfer; for the same one, the
-                // leader started over, so the staged prefix goes too.
-                abandon_format1_transfer_locked(same_as_staged() ? "the leader restarted it"
-                                                                 : "a newer transfer started");
-            }
             const auto& encoded = request.manifest();
             if (encoded.empty()) {
                 return reject(install_snapshot_reject_reason::manifest_invalid,
                               "the first chunk carries no manifest");
             }
-            std::optional<snapshot_manifest> manifest;
             if (!guarded([&] {
                     manifest = snapshot_manifest::decode(std::string_view(
                         reinterpret_cast<const char*>(encoded.data()), encoded.size()));
                 })) {
                 return *failure;
             }
+            if (_format1_transfer.has_value()) {
+                auto& staged = *_format1_transfer;
+                const bool same_checkpoint =
+                    index == staged.index && term == staged.term &&
+                    manifest->digest() == staged.writer->manifest().digest();
+                if (same_checkpoint) {
+                    // Requirements 6.1 and 6.2: the leader started this
+                    // checkpoint over (a chunk failed or timed out, or it is
+                    // a new leader with the same files). Keep what is staged
+                    // and say how far it got; the leader goes on from there.
+                    staged.leader_term = std::max(staged.leader_term, request.term());
+                    const auto have = staged.writer->bytes_received();
+                    if (have > 0) {
+                        _logger.info("Resuming a staged format-1 snapshot",
+                                     {{"node_id", node_id_to_string(_node_id)},
+                                      {"last_included_index", std::to_string(index)},
+                                      {"bytes_received", std::to_string(have)}});
+                        _metrics.set_metric_name("raft_install_snapshot_resumed");
+                        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                        _metrics.add_one();
+                        _metrics.emit();
+                        return install_snapshot_response_locked(
+                            install_snapshot_reject_reason::offset_mismatch, have);
+                    }
+                } else if (!same_as_staged() && !newer_than_staged()) {
+                    // A delayed first chunk of an older transfer.
+                    return reject(install_snapshot_reject_reason::stale_snapshot,
+                                  "older than the transfer being staged");
+                } else {
+                    // Requirement 3.4.
+                    abandon_format1_transfer_locked("a newer transfer started");
+                }
+            }
+        }
+        if (request.offset() == 0 && !_format1_transfer.has_value()) {
             const auto digest = manifest->digest();
             std::string tag;
             for (std::size_t i = 0; i < 8; ++i) {
@@ -7216,6 +7268,7 @@ auto node<Types>::become_follower(term_id_type new_term, step_down_write write) 
         // file-install-snapshot Requirement 5.4: the transfers end on their
         // next reply; checkpoints nobody is reading go now.
         if constexpr (k_persistent_state) {
+            _format1_sends.clear();
             _checkpoints.release_unused();
             emit_checkpoint_metrics();
         }
@@ -8982,6 +9035,43 @@ template<raft_types Types> auto node<Types>::send_format1_snapshot_to(node_id_ty
                 give_up("no snapshot_staging_directory is configured");
                 return;
             }
+            // Requirement 6.1: after a failed chunk, send the same
+            // checkpoint again so the follower can resume it, as long as the
+            // log still continues from it.
+            if (const auto it = _format1_sends.find(target); it != _format1_sends.end()) {
+                if (it->second->leader_term == _current_term &&
+                    it->second->lease.index() >= _snapshot_index) {
+                    transfer = it->second;
+                } else {
+                    _format1_sends.erase(it);
+                }
+            }
+        }
+        if (transfer) {
+            _logger.info("Sending a format-1 snapshot again",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"target", node_id_to_string(target)},
+                          {"last_included_index", std::to_string(transfer->lease.index())}});
+            send_format1_chunk(target, std::move(transfer), 0, 0);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            const auto give_up = [&](const std::string& why) {
+                _logger.warning("Cannot send a format-1 snapshot",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"target", node_id_to_string(target)},
+                                 {"why", why}});
+                _metrics.set_metric_name("raft_install_snapshot_unsupported");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_one();
+                _metrics.emit();
+                _snapshot_transfers_in_flight.erase(target);
+            };
+            if (_state != kythira::server_state::leader) {
+                _snapshot_transfers_in_flight.erase(target);
+                return;
+            }
             // Requirement 5.1: the checkpoint is of what the state machine
             // has applied, taken under the node mutex so no apply runs
             // during it.
@@ -9014,6 +9104,7 @@ template<raft_types Types> auto node<Types>::send_format1_snapshot_to(node_id_ty
                     reinterpret_cast<const std::byte*>(encoded.data() + encoded.size())),
                 .leader_term = _current_term,
             });
+            _format1_sends[target] = transfer;
             _logger.info("Sending format-1 snapshot",
                          {{"node_id", node_id_to_string(_node_id)},
                           {"target", node_id_to_string(target)},
@@ -9022,18 +9113,19 @@ template<raft_types Types> auto node<Types>::send_format1_snapshot_to(node_id_ty
                           {"total_bytes", std::to_string(transfer->reader.total_bytes())},
                           {"files", std::to_string(lease.manifest().files.size())}});
         }
-        send_format1_chunk(target, std::move(transfer), 0);
+        send_format1_chunk(target, std::move(transfer), 0, 0);
     }
 }
 
 template<raft_types Types>
 auto node<Types>::send_format1_chunk(node_id_type target,
                                      std::shared_ptr<const format1_send> transfer,
-                                     std::uint64_t offset) -> void {
+                                     std::uint64_t offset, int stalls) -> void {
     if constexpr (!k_persistent_state) {
         (void)target;
         (void)transfer;
         (void)offset;
+        (void)stalls;
         throw std::logic_error("format-1 InstallSnapshot from a byte-buffer group");
     } else {
         // As send_install_snapshot_chunk: each chunk is sent from the
@@ -9070,7 +9162,7 @@ auto node<Types>::send_format1_chunk(node_id_type target,
         const bool is_last = request._done;
         const auto timeout = _config.install_snapshot_timeout();
 
-        auto rpc_operation =
+        const auto send =
             [this, target, request, timeout, stop_flag = _stop_flag,
              scope = _async_scope]() -> kythira::future_default<install_snapshot_response_type> {
             const auto drain_ticket = scope->enter();
@@ -9081,10 +9173,24 @@ auto node<Types>::send_format1_chunk(node_id_type target,
             }
             return _network_client.send_install_snapshot(target, request, timeout);
         };
+        // Requirement 6.3: the node-wide pacer, if any, decides when the
+        // chunk may go. The wait is a future delay; no thread sleeps.
+        auto rpc_operation = [send, pacer = _config.install_snapshot_pacer(),
+                              bytes = request._data.size()]()
+            -> kythira::future_default<install_snapshot_response_type> {
+            const auto wait = pacer ? pacer->reserve(bytes) : std::chrono::nanoseconds{0};
+            if (wait <= std::chrono::nanoseconds{0}) {
+                return send();
+            }
+            return kythira::future_factory_default::makeFuture()
+                .delay(std::chrono::duration_cast<std::chrono::milliseconds>(wait) +
+                       std::chrono::milliseconds{1})
+                .thenTry([send](const kythira::try_default<void>&) { return send(); });
+        };
         try {
             _install_snapshot_error_handler.execute_with_retry("install_snapshot", rpc_operation)
                 .thenTry([this, target, transfer, offset, next_offset, is_last, total, finish,
-                          stop_flag = _stop_flag, scope = _async_scope](auto try_response) {
+                          stalls, stop_flag = _stop_flag, scope = _async_scope](auto try_response) {
                     const auto drain_ticket = scope->enter();
                     if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                         return;
@@ -9111,6 +9217,7 @@ auto node<Types>::send_format1_chunk(node_id_type target,
                         return;
                     }
                     const auto response = try_response.value();
+                    std::optional<std::uint64_t> resume_from;
                     {
                         std::lock_guard<std::mutex> lock(_mutex);
                         if (response.term() > _current_term) {
@@ -9125,7 +9232,16 @@ auto node<Types>::send_format1_chunk(node_id_type target,
                             _snapshot_transfers_in_flight.erase(target);
                             return;
                         }
-                        if (const auto reason = response.reject_reason(); reason.has_value()) {
+                        const auto reason = response.reject_reason();
+                        // Requirement 6.1: offset_mismatch with bytes_received
+                        // means "go on from here": the follower has that much
+                        // of this checkpoint staged.
+                        const auto have = response.bytes_received();
+                        if (reason == install_snapshot_reject_reason::offset_mismatch &&
+                            have.has_value() && *have <= total && (*have != offset || stalls < 3)) {
+                            resume_from = have;
+                        } else if (reason.has_value()) {
+                            _format1_sends.erase(target);
                             _logger.warning(
                                 "Follower refused a format-1 snapshot chunk",
                                 {{"node_id", node_id_to_string(_node_id)},
@@ -9143,7 +9259,8 @@ auto node<Types>::send_format1_chunk(node_id_type target,
                             _snapshot_transfers_in_flight.erase(target);
                             return;
                         }
-                        if (is_last) {
+                        if (!resume_from.has_value() && is_last) {
+                            _format1_sends.erase(target);
                             const auto index = transfer->lease.index();
                             if (_next_index.contains(target)) {
                                 if (_match_index[target] < index) {
@@ -9156,8 +9273,17 @@ auto node<Types>::send_format1_chunk(node_id_type target,
                             _snapshot_transfers_in_flight.erase(target);
                         }
                     }
+                    if (resume_from.has_value()) {
+                        _logger.info("Follower has part of this snapshot; going on from there",
+                                     {{"node_id", node_id_to_string(_node_id)},
+                                      {"target", node_id_to_string(target)},
+                                      {"bytes_received", std::to_string(*resume_from)}});
+                        send_format1_chunk(target, transfer, *resume_from,
+                                           *resume_from == offset ? stalls + 1 : 0);
+                        return;
+                    }
                     if (!is_last) {
-                        send_format1_chunk(target, transfer, next_offset);
+                        send_format1_chunk(target, transfer, next_offset, 0);
                         return;
                     }
                     _logger.info("Format-1 InstallSnapshot completed",
