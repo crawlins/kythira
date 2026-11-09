@@ -81,6 +81,16 @@ else()
     message(STATUS "ledger_http_test, ledger_signing_test: skipped (require certificate_authority)")
 endif()
 
+# Task 7c: the ledger node's group state machine (catalog or ledger by
+# range, the split/merge veto), and the ledger host over multi_raft on the
+# in-process message fabric (placement, routing, background index builds and
+# seals, leader change).
+kythira_ledger_test(ledger_group_state_machine_test ledger_group_state_machine_test.cpp)
+set_tests_properties(ledger_group_state_machine_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+kythira_ledger_test(ledger_host_test ledger_host_test.cpp)
+target_link_libraries(ledger_host_test PRIVATE kythira_test_support OpenSSL::Crypto)
+set_tests_properties(ledger_host_test PROPERTIES LABELS "integration;ledger" TIMEOUT 300)
+
 # Task 1: ledger_node links and runs.
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)
 set_tests_properties(ledger_node_self_test PROPERTIES LABELS "unit;ledger" TIMEOUT 60)

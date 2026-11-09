@@ -218,9 +218,32 @@ task is one PR unless noted.
     - `ledger_client.hpp`: Ion bodies, an mTLS Beast transport with host
       name checks, leader redirects and failover for requests not yet
       sent, and `transact()` with OCC retry and jittered backoff.
-  - Still owed: `ledger_node` over multi_raft with the split/merge veto
-    and its metric (7c), which needs the persistent-state-machine node
-    (lane 2's #735).
+  - Done so far (7c, the node's core over multi_raft):
+    - `ledger_group_state_machine.hpp`: multi_raft builds every group's
+      state machine from one type, so the group state machine opens as
+      the catalog (`c/catalog/`) or as a ledger (`l/<id>/`) by range and
+      records what it opened in a shared context, where the node finds it
+      without the Raft node's lock. Split policy hooks report no size and
+      veto every key; a split or merge that reaches apply throws. Both are
+      counted for the metric.
+    - The catalog places ledgers: a create entry may carry the voters the
+      leader chose, and apply assigns the group id from a counter in the
+      catalog (catalog group 1, ledgers from 2), so ids are unique with no
+      allocator and every replica reads the same placement.
+    - `ledger_host.hpp` is ledger_api's Backend over multi_raft: catalog
+      reads from the local replica (only the catalog leader answers
+      ledger_not_found, since a follower may lag a create), writes and
+      ledger routes on the group leader, not_leader with the leader's URL
+      otherwise. Each node creates the groups it votes in from its catalog
+      replica and destroys purged ones. A new leader passes a read-index
+      barrier once per term before preparing, so prepare sees every
+      committed entry. A commit timeout or lost leadership answers 503
+      `commit_unconfirmed`, not retryable, since the entry may still
+      commit. A maintenance thread proposes index build steps, seals and
+      export finishes on the ledgers the node leads.
+  - Still owed: the `ledger_node` daemon (network transport, config, data
+    directory, metrics export, signer config), which waits on the
+    rocksdb_kv_engine PR (lane 2's #746).
 
 - [x] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and
