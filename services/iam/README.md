@@ -31,8 +31,9 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `tests/iam_query_api_test.cpp` | validation, authorization, error codes and pagination of those actions | 14-16 |
 | `include/kythira/iam/iam_sts_token.hpp` | the sealed STS session token (CBOR payload, AES-256-GCM, `kid`) and the STS key ring | 17 |
 | `include/kythira/iam/iam_sts_api.hpp` | the STS Query API: AssumeRole (with session policies, session tags and source identity), AssumeRoleWithWebIdentity, GetSessionToken, GetCallerIdentity and GetAccessKeyInfo | 17-19 |
-| `include/kythira/iam/iam_oidc_jwks.hpp` | the JWKS cache for web identity tokens, and its HTTPS fetcher with the allowlist and private-address refusal | 19 |
-| `tests/iam_sts_test.cpp` | those actions, cross-account trust, `ExternalId`, key rotation, expiry, forged tokens, session policies and tags, session revocation, web identity tokens and the JWKS fetch rules | 17-19 |
+| `include/kythira/iam/iam_oidc_jwks.hpp` | the JWKS cache for web identity tokens, its HTTPS fetcher with the allowlist and private-address refusal, and the direct JWKS URL for a local Kythira issuer | 19-20 |
+| `tests/iam_sts_test.cpp` | those actions, cross-account trust, `ExternalId`, key rotation, expiry, forged tokens, session policies and tags, session revocation, web identity tokens, the JWKS fetch rules, the `kythira:*` claim keys and the certificate exchange | 17-20 |
+| `tests/iam_kythira_issuer_test.cpp` | a ca_cluster_node and `iam_node` as processes: a Kythira workload token and certificate exchanged for role credentials (`--kythira-issuer`, `--kythira-issuer-local`, `POST /v1/iam/credentials`) | 20 |
 | `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
 | `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |
 | `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |
@@ -41,7 +42,7 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `cmd/iam_node/` | the daemon: the IAM Raft group over mutual-TLS RPC and the HTTPS listener | 9 |
 | `cmd/kythira-iam/` | the admin CLI | 9 |
 | `docker/iam_node/` | the image the compose scenario runs | 9 |
-| `tests/iam_admin_test.cpp`, `tests/iam_node_test.cpp` | the admin operations, and the binaries as a three-node cluster with a replica | 9 |
+| `tests/iam_admin_test.cpp`, `tests/iam_node_test.cpp`, `tests/iam_node_test_support.hpp` | the admin operations, and the binaries as a three-node cluster with a replica (the helpers are shared with `iam_kythira_issuer_test`) | 9 |
 | `tests/iam_test_pki.hpp`, `tests/iam_test_certs.cpp` | the throwaway test PKI, in process and as a tool | 9 |
 | `include/kythira/iam/iam_validation.hpp` | AWS's IAM and STS request-parameter rules (names, tags, durations, session policies and tags, what each credential may call), for the Query and STS handlers | invariants |
 | `tests/iam_validation_test.cpp` | one case per invariant group in `.kiro/specs/iam-compatible-auth/invariants.md` | invariants |
@@ -71,7 +72,8 @@ package to export.
 | `kythira_host_node_id` | `KYTHIRA_NODE_ID_KIND` for `iam_node`, `iam_test_certs` and the tests |
 | `boost_json`, `OpenSSL::SSL`, `Threads::Threads` | `iam_node` and `kythira-iam` |
 | `certificate_authority` (tests) | the test PKI (`iam_test_certs`, `iam_node_test`) |
-| `kythira_test_support` | `test_ports.hpp` for `iam_node_test` |
+| `kythira_test_support` | `test_ports.hpp` for `iam_node_test`, and `ca_cluster_node_harness.hpp` for `iam_kythira_issuer_test` |
+| `ca_cluster_node`, `httplib::httplib` (tests) | `iam_kythira_issuer_test` runs the CA cluster binary and talks to it |
 | `add_docker_chaos_scenario_test`, `kythira_detect_container_runtime`, `KYTHIRA_IMAGE_CONTEXT` | the compose scenario and its image (`cmake/kythira_test_helpers.cmake`) |
 | `KYTHIRA_BUILD_IAM` | set by the top level from `CONFIG_IAM`, OpenSSL and Boost |
 

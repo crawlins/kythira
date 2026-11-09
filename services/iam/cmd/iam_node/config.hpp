@@ -82,6 +82,15 @@ struct config {
     std::string oidc_proxy;
     std::string oidc_ca_file;
 
+    // The Kythira CA's OIDC issuer (task 20, Requirement 12): its URL
+    // (`https://host/path`), a CA member's JWKS URL to read its keys from
+    // directly over the cluster's TLS (--kythira-issuer-local), and
+    // whether `POST /v1/iam/credentials` exchanges a client certificate
+    // for role credentials.
+    std::string kythira_issuer;
+    std::string kythira_issuer_local;
+    bool credentials_exchange{false};
+
     std::chrono::milliseconds election_timeout_min{500};
     std::chrono::milliseconds election_timeout_max{1000};
     std::chrono::milliseconds heartbeat_interval{100};
@@ -195,6 +204,8 @@ inline constexpr const char* k_usage =
     "                [--sts-regions <region>[,...]]\n"
     "                [--oidc-allowed-hosts <host>[,...]] [--oidc-proxy <host:port>]\n"
     "                [--oidc-ca-file <path>]\n"
+    "                [--kythira-issuer <https-url>] [--kythira-issuer-local <jwks-url>]\n"
+    "                [--iam-credentials-exchange]\n"
     "                [--election-timeout-min-ms <n>] [--election-timeout-max-ms <n>]\n"
     "                [--heartbeat-interval-ms <n>] [--rpc-timeout-ms <n>]\n"
     "\n"
@@ -296,6 +307,21 @@ inline constexpr const char* k_usage =
             cfg.oidc_proxy = next();
         } else if (arg == "--oidc-ca-file") {
             cfg.oidc_ca_file = next();
+        } else if (arg == "--kythira-issuer") {
+            cfg.kythira_issuer = next();
+            if (!cfg.kythira_issuer.starts_with("https://")) {
+                throw std::invalid_argument("--kythira-issuer must be an https URL");
+            }
+            while (cfg.kythira_issuer.ends_with('/')) {
+                cfg.kythira_issuer.pop_back();
+            }
+        } else if (arg == "--kythira-issuer-local") {
+            cfg.kythira_issuer_local = next();
+            if (!cfg.kythira_issuer_local.starts_with("https://")) {
+                throw std::invalid_argument("--kythira-issuer-local must be an https URL");
+            }
+        } else if (arg == "--iam-credentials-exchange") {
+            cfg.credentials_exchange = true;
         } else if (arg == "--election-timeout-min-ms") {
             cfg.election_timeout_min = std::chrono::milliseconds(number(10, 600000));
         } else if (arg == "--election-timeout-max-ms") {
@@ -375,6 +401,16 @@ inline constexpr const char* k_usage =
                                         " is http://; peers serve https:// unless every node runs "
                                         "--insecure-plaintext");
         }
+    }
+
+    if ((!cfg.kythira_issuer_local.empty() || cfg.credentials_exchange) &&
+        cfg.kythira_issuer.empty()) {
+        throw std::invalid_argument(
+            "--kythira-issuer-local and --iam-credentials-exchange need --kythira-issuer");
+    }
+    if (cfg.credentials_exchange && cfg.insecure_plaintext) {
+        throw std::invalid_argument(
+            "--iam-credentials-exchange needs TLS: the client certificate is the credential");
     }
 
     auto id = kythira::parse_host_node_id(node_id_text);

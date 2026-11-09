@@ -662,6 +662,43 @@ policies stay in one style.
   accepted; session tags and source identity from token claims are not
   read yet.
 
+**As built (task 20).**
+- `--kythira-issuer <https-url>` names the CA cluster's
+  `--oidc-issuer-url`; IAM knows it as an ordinary OIDC provider
+  `<host/path>`, which an account still has to create before any role can
+  trust it. `--kythira-issuer-local <jwks-url>` points `jwks_cache` straight
+  at a CA member's `/.well-known/jwks.json` (`set_direct`), skipping the
+  discovery document. That fetch has no host allowlist, since the member
+  is usually on a private address, and trusts `--oidc-ca-file` when set,
+  else the cluster's own CA file, never the system store.
+- Every string claim under `kythira:` becomes `<host/path>:kythira:<name>`.
+  A composite `kythira:node_id` (`provider:scope:native`) is also split
+  into `:kythira:node_provider`, `:node_scope` and `:node_native_id`, so a
+  trust policy can say "any EC2 node in us-east-1" with `StringEquals` and
+  `StringLike`. A numeric id has no parts and none are invented.
+- The direct exchange takes the STS parameter names (`RoleArn`,
+  `RoleSessionName`, `DurationSeconds`) in a form body rather than the
+  camel-case names above, so the same validators and errors apply. It
+  answers JSON, `{"credentials":{accessKeyId, secretAccessKey,
+  sessionToken, expiration}, "assumedRoleUser":{arn, assumedRoleId}}`, or
+  `{"code","message"}`. It is off unless `--iam-credentials-exchange` is
+  given, needs `--kythira-issuer`, and is refused with
+  `--insecure-plaintext`. The HTTPS server now passes the verified client
+  certificate's DNS SANs and lower-case hex serial to handlers beside its
+  URI SANs.
+- The exchange still needs the account to have registered the Kythira
+  issuer as a provider: the certificate is trusted because the account
+  chose to trust that issuer, not because `iam_node` trusts the CA for
+  TLS.
+- `iam_kythira_issuer_test` runs a ca_cluster_node and three `iam_node`
+  members as processes. A workload certificate and its token are
+  exchanged both ways and the sessions sign IAM and STS calls. The test
+  uses a workload, not a node certificate: a node certificate needs the
+  CA's peer-enrollment MAC, and the node claims are covered by
+  `iam_sts_test`. Its test PKI root has its own common name, because two
+  roots with one subject and no key identifiers in one trust file are
+  told apart by trying the first.
+
 ## Component 11: Redis (Requirement 13)
 
 The Redis module never includes IAM. The two meet only in

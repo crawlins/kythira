@@ -133,6 +133,7 @@ http_transport_comparison_benchmark_test examples/ is added only when folly_FOUN
 http_transport_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly
 http_transport_reload_property_test uses Folly directly (`folly::CPUThreadPoolExecutor`)
 http_transport_return_types_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
+iam_kythira_issuer_test runs ca_cluster_node as the Kythira issuer, and cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
 kythira_executor_concept_compliance_property_test uses Folly directly (`folly::CPUThreadPoolExecutor`, `folly::InlineExecutor`, `folly::ManualExecutor`)
 kythira_executor_work_submission_property_test uses Folly directly (`folly::CPUThreadPoolExecutor`, `folly::InlineExecutor`, `folly::ManualExecutor`)
 kythira_future_collector_collection_operations_property_test uses Folly directly (`folly::init`)
@@ -170,8 +171,8 @@ proxygen_transport_test the proxygen transport depends on Folly (Kconfig: PROXYG
 raft_submit_command_timeout_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 redis_gateway_disk_store_integration_test the disk-store twin of `redis_gateway_integration_test`: gated on folly_FOUND in tests/CMakeLists.txt
 redis_gateway_integration_test gated on folly_FOUND in services/redis/tests/CMakeLists.txt, like the redis_gateway_node daemon
-redis_gateway_txn_test gated on folly_FOUND in tests/CMakeLists.txt, with redis_gateway_integration_test
 redis_gateway_snapshot_test the snapshot-isolation twin of `redis_gateway_txn_test`: gated on folly_FOUND in tests/CMakeLists.txt, with redis_gateway_integration_test
+redis_gateway_txn_test gated on folly_FOUND in tests/CMakeLists.txt, with redis_gateway_integration_test
 semi_promise_concept_requirements_property_test uses Folly directly (`folly::Unit`, `folly::exception_wrapper`)
 single_serializer_regression_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 snapshot_example_test examples/ is added only when folly_FOUND (root CMakeLists.txt): the examples' main() functions initialize Folly

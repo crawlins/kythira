@@ -812,7 +812,7 @@ because each has a zero-spend fallback.
     unit test, and the PR updates its row there.
   - _Requirements: 11.1–11.4_
 
-- [ ] 20. Kythira-CA web identity
+- [x] 20. Kythira-CA web identity
   - Register the Kythira issuer as a provider (`--kythira-issuer-local`
     shortcut), and expose the `kythira:*` claims as condition keys.
   - The optional direct exchange `POST /v1/iam/credentials` with
@@ -820,6 +820,8 @@ because each has a zero-spend fallback.
   - An end-to-end test: a node certificate gets a JWT from the CA cluster,
     exchanges it at `iam_node`, and calls IAM with the session.
   - _Requirements: 12.1–12.3_
+  - Done: `iam_kythira_issuer_test` (a workload certificate; node claims in
+    `iam_sts_test`), INV-STS-K1 to K3; see design "As built (task 20)".
 
 ### Phase E — Redis
 

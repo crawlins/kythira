@@ -372,6 +372,17 @@ public:
         return {std::nullopt, key_error::unknown_kid};
     }
 
+    /// Reads `issuer`'s keys straight from `jwks_url` with `fetch`, with no
+    /// discovery step: `iam_node --kythira-issuer-local`, where the Kythira
+    /// issuer's JWKS is read from a CA member over the cluster's own mutual
+    /// TLS rather than from the public bucket the discovery document
+    /// names. Operator configuration, so the allowlist does not apply.
+    void set_direct(const std::string& issuer, std::string jwks_url, fetcher fetch) {
+        const std::lock_guard lock(_mu);
+        _direct[issuer] = {std::move(jwks_url), std::move(fetch)};
+        _by_issuer.erase(issuer);
+    }
+
     /// How many documents have been fetched (tests).
     [[nodiscard]] auto fetches() const -> std::size_t {
         const std::lock_guard lock(_mu);
@@ -394,9 +405,10 @@ private:
         return k->second;
     }
 
-    [[nodiscard]] auto get_json(const std::string& url) -> std::optional<boost::json::object> {
+    [[nodiscard]] auto get_json(const std::string& url, const fetcher& fetch)
+        -> std::optional<boost::json::object> {
         ++_fetches;
-        const auto r = _fetch(url);
+        const auto r = fetch(url);
         if (!r.error.empty() || r.status != 200) {
             return std::nullopt;
         }
@@ -408,28 +420,38 @@ private:
         return std::move(v.as_object());
     }
 
-    /// Discovery, then the JWKS. The discovery document must name this
-    /// issuer (OpenID Connect Discovery 1.0 section 4.3) and an https
-    /// `jwks_uri`.
-    auto refresh(const std::string& issuer, std::chrono::system_clock::time_point now) -> bool {
+    /// The JWKS through discovery: the document must name this issuer
+    /// (OpenID Connect Discovery 1.0 section 4.3) and an https `jwks_uri`.
+    [[nodiscard]] auto discover(const std::string& issuer) -> std::optional<boost::json::object> {
         const auto iss = "https://" + issuer;
-        auto discovery = get_json(iss + "/.well-known/openid-configuration");
+        auto discovery = get_json(iss + "/.well-known/openid-configuration", _fetch);
         if (!discovery) {
-            return false;
+            return std::nullopt;
         }
         const auto* named = discovery->if_contains("issuer");
         const auto* uri = discovery->if_contains("jwks_uri");
         if (named == nullptr || !named->is_string() || uri == nullptr || !uri->is_string()) {
-            return false;
+            return std::nullopt;
         }
         auto named_text = std::string(named->as_string());
         while (named_text.ends_with('/')) {
             named_text.pop_back();
         }
         if (named_text != iss) {
-            return false;
+            return std::nullopt;
         }
-        const auto jwks = get_json(std::string(uri->as_string()));
+        return get_json(std::string(uri->as_string()), _fetch);
+    }
+
+    /// Discovery, then the JWKS, or the JWKS directly for a `set_direct`
+    /// issuer.
+    auto refresh(const std::string& issuer, std::chrono::system_clock::time_point now) -> bool {
+        std::optional<boost::json::object> jwks;
+        if (const auto d = _direct.find(issuer); d != _direct.end()) {
+            jwks = get_json(d->second.first, d->second.second);
+        } else {
+            jwks = discover(issuer);
+        }
         if (!jwks) {
             return false;
         }
@@ -468,6 +490,7 @@ private:
     clock_fn _clock;
     mutable std::mutex _mu;
     std::map<std::string, entry> _by_issuer;
+    std::map<std::string, std::pair<std::string, fetcher>> _direct;
     std::size_t _fetches = 0;
 };
 

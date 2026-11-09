@@ -1246,3 +1246,96 @@ BOOST_AUTO_TEST_CASE(an_allowed_host_that_resolves_to_the_metadata_service_is_re
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ── Kythira-CA web identity (task 20) ───────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(kythira_web_identity)
+
+BOOST_FIXTURE_TEST_CASE(kythira_claims_and_composite_node_id_parts_are_condition_keys,
+                        web_fixture) {
+    role("aws-nodes", web_trust(R"({"StringEquals":{")" + k_issuer +
+                                R"(:sub":"node:aws-ec2:us-east-1:i-0abc",")" + k_issuer +
+                                R"(:kythira:node_provider":"aws-ec2",")" + k_issuer +
+                                R"(:kythira:node_scope":"us-east-1"},"StringLike":{")" + k_issuer +
+                                R"(:kythira:node_native_id":"i-*"}})"));
+    const boost::json::object node{{"sub", "node:aws-ec2:us-east-1:i-0abc"},
+                                   {"kythira:node_id", "aws-ec2:us-east-1:i-0abc"},
+                                   {"kythira:cert_serial", "1f"}};
+    BOOST_TEST(web_assume("aws-nodes", token(node)).status == 200U);
+    auto elsewhere = node;
+    elsewhere["kythira:node_id"] = "aws-ec2:eu-west-1:i-0abc";
+    BOOST_TEST(code_of(web_assume("aws-nodes", token(elsewhere))) == "AccessDenied");
+    // A workload and its URI.
+    role("workloads", web_trust(R"({"StringLike":{")" + k_issuer +
+                                R"(:kythira:workload":"spiffe://kythira.test/ci/*"}})"));
+    BOOST_TEST(
+        web_assume("workloads", token({{"sub", "workload:spiffe://kythira.test/ci/build"},
+                                       {"kythira:workload", "spiffe://kythira.test/ci/build"}}))
+            .status == 200U);
+    BOOST_TEST(code_of(web_assume(
+                   "workloads", token({{"kythira:workload", "spiffe://kythira.test/prod/db"}}))) ==
+               "AccessDenied");
+    // A numeric id has no parts, and no part keys are invented.
+    auto numeric = node;
+    numeric["kythira:node_id"] = "7";
+    BOOST_TEST(code_of(web_assume("aws-nodes", token(numeric))) == "AccessDenied");
+}
+
+BOOST_FIXTURE_TEST_CASE(a_local_kythira_issuer_is_read_without_discovery, web_fixture) {
+    role("ci", web_trust());
+    std::vector<std::string> local_fetches;
+    auto jwk = jose::public_jwk(key.get());
+    jwk["kid"] = kid;
+    const auto jwks_text =
+        boost::json::serialize(boost::json::object{{"keys", boost::json::array{jwk}}});
+    jwks.set_direct(k_issuer, "https://ca-1:8443/.well-known/jwks.json",
+                    [&](const std::string& url) -> iam::oidc::fetch_result {
+                        local_fetches.push_back(url);
+                        return {200, jwks_text, {}};
+                    });
+    web.clear();  // the public discovery path is not reachable
+    BOOST_TEST(web_assume("ci", token()).status == 200U);
+    BOOST_TEST(local_fetches.size() == 1U);
+    BOOST_TEST(fetched.empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(a_verified_certificate_is_exchanged_for_role_credentials, web_fixture) {
+    role(
+        "node-role",
+        web_trust(
+            R"({"StringEquals":{"kythira:cert/san-uri":"urn:kythira:node:aws-ec2:us-east-1:i-0abc"}})"),
+        3600, k_get_object);
+    const sts::sts_query_api<cluster>::certificate_identity cert{
+        {"urn:kythira:node:aws-ec2:us-east-1:i-0abc"}, {"ca-cluster-node-1"}, "1f"};
+    const auto exchange = [&](const std::string& role_name, const decltype(cert)& c,
+                              const std::string& issuer = k_issuer) {
+        const auto f = q::form::parse("RoleSessionName=node&RoleArn=" +
+                                      enc("arn:aws:iam::111122223333:role/" + role_name));
+        return api.exchange_certificate(c, issuer, *f, {.request_id = "req-1"});
+    };
+    const auto r = exchange("node-role", cert);
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    const auto doc = boost::json::parse(r.body).as_object();
+    const auto& c = doc.at("credentials").as_object();
+    BOOST_TEST(doc.at("assumedRoleUser").at("arn").as_string() ==
+               "arn:aws:sts::111122223333:assumed-role/node-role/node");
+    const creds k{std::string(c.at("accessKeyId").as_string()),
+                  std::string(c.at("secretAccessKey").as_string()),
+                  std::string(c.at("sessionToken").as_string()),
+                  std::string(c.at("expiration").as_string())};
+    const auto who = authenticate(k);
+    BOOST_TEST_REQUIRE(who.has_value());
+    BOOST_TEST(
+        authz.authorize(*who, {.action = "s3:GetObject", .resource = "arn:aws:s3:::b/k"}).allowed);
+    // Another certificate, an unregistered issuer and a missing role are
+    // all AccessDenied, as JSON.
+    const sts::sts_query_api<cluster>::certificate_identity other{
+        {"urn:kythira:node:aws-ec2:us-east-1:i-0def"}, {}, "20"};
+    const auto refused = exchange("node-role", other);
+    BOOST_TEST(refused.status == 403U);
+    BOOST_TEST(boost::json::parse(refused.body).at("code").as_string() == "AccessDenied");
+    BOOST_TEST(exchange("node-role", cert, "unregistered.example.com").status == 403U);
+    BOOST_TEST(exchange("nobody", cert).status == 403U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()

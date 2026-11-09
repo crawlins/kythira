@@ -101,6 +101,26 @@ else()
     message(STATUS "iam_node_test: skipped (needs iam_node, kythira-iam and certificate_authority)")
 endif()
 
+# Task 20: the Kythira CA as the identity provider, end to end. A
+# ca_cluster_node issues a workload certificate and an OIDC token; iam_node
+# reads the issuer's keys from that member directly and exchanges both the
+# token and the certificate itself for role credentials.
+if(TARGET iam_node AND TARGET kythira-iam AND TARGET certificate_authority
+   AND TARGET ca_cluster_node)
+    kythira_iam_test(iam_kythira_issuer_test iam_kythira_issuer_test.cpp)
+    target_link_libraries(iam_kythira_issuer_test PRIVATE
+        kythira_test_support certificate_authority kythira_host_node_id httplib::httplib)
+    target_compile_definitions(iam_kythira_issuer_test PRIVATE
+        IAM_NODE_PATH="$<TARGET_FILE:iam_node>"
+        KYTHIRA_IAM_PATH="$<TARGET_FILE:kythira-iam>"
+        CA_CLUSTER_NODE_PATH="$<TARGET_FILE:ca_cluster_node>")
+    add_dependencies(iam_kythira_issuer_test iam_node kythira-iam ca_cluster_node)
+    set_tests_properties(iam_kythira_issuer_test PROPERTIES
+        LABELS "integration;iam;iam-module" TIMEOUT 420)
+else()
+    message(STATUS "iam_kythira_issuer_test: skipped (needs iam_node, kythira-iam, certificate_authority and ca_cluster_node)")
+endif()
+
 # Task 9: the same cluster in containers (docker/), by service name only,
 # under Docker or rootless Podman. Custom targets, not CTest entries.
 add_subdirectory(docker)
