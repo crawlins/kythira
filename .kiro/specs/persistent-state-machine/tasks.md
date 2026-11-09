@@ -70,7 +70,7 @@ RocksDB is linked. Each task is one PR unless noted.
     apply, crash with held-back durability and replay, checkpoint/ingest
     between engines next to another group, split/adopt, namespaces.
 
-- [ ] 3. Node integration: restart, compaction, reads
+- [x] 3. Node integration: restart, compaction, reads
   - `if constexpr` branches in `initialize_from_storage`,
     `create_snapshot_locked`, `compact_log`, `serve_read_after_apply`
   - Metadata-only snapshots (`external_state`); compaction bound by the
@@ -80,6 +80,51 @@ RocksDB is linked. Each task is one PR unless noted.
   - Config validation for the object-store engines (Requirement 10.1)
   - Crash tests with the held-back durable sequence
   - _Requirements: 3.1-3.4, 4.1-4.3, 5.1-5.3, 10.1, 10.2_
+  - As built (November 9, 2026), in `include/raft/raft.hpp`: `node<Types>`
+    picks the path with `k_persistent_state` (`storage_kind_of`).
+    `raft_types` accepts either kind; it checks only the persistent
+    *shape* (`persistent_state_machine_shape` in `types.hpp`, because
+    `types.hpp` cannot include the full concept), and the node
+    `static_assert`s the full one.
+    - Restart (4.1-4.3): `initialize_from_storage` takes the snapshot index
+      and term from the saved metadata and `_last_applied` from
+      `applied_index()`. It refuses to start when the applied index is below
+      the snapshot index, or when the saved snapshot holds byte-buffer state.
+      When the applied index is above the log, it warns and starts with the
+      commit index at the applied index.
+    - Snapshots (3.1-3.3): `create_snapshot_locked` saves metadata at
+      `min(durable_applied_index(), last_applied)`, with the configuration in
+      force at that index, then compacts through it. The `external_state`
+      flag is a fixed marker, `kythira-persistent-snapshot/1`, carried in
+      `state_machine_state`. That avoids changing every persistence engine's
+      snapshot encoding, and restart checks for it.
+      `raft_configuration::_persistent_sync_lag_entries` calls the state
+      machine's optional `sync_durable()` first when the durable index lags
+      by more than that many entries.
+    - Lag metric (3.4): `raft_persistent_apply_lag` is emitted after every
+      apply batch.
+    - Reads (5.1-5.2): `serve_read_after_apply` returns an empty buffer.
+      `read_state` documents this as a read-index barrier. The one in-tree
+      caller that forwards the bytes is `multi_raft::read_state`
+      (`multi_raft_impl.hpp`); it passes the empty buffer through. 5.3 (scan
+      bounds) is the engine's `scan_visitor`, which already stops when the
+      caller returns false.
+    - 10.2: `raft_configuration::_persistent_log_compaction` defaults to
+      off. With it off, the group never snapshots and logs that once at
+      start. A persistent follower refuses InstallSnapshot with
+      `format_mismatch`, and a persistent leader sends none. Flip the
+      default when file-install-snapshot's leader side lands.
+    - 10.1: `object_store_persistence_engine` (and Alibaba's, which derives
+      from it) declares `restores_state_from_snapshot_store`. `node<Types>`
+      `static_assert`s against pairing it with a persistent state machine.
+    - Tests: `tests/persistent_node_integration_test.cpp`, 10 cases over
+      `tests/persistent_register_state_machine.hpp` (a minimal register
+      machine on `memory_kv_engine`). They cover the read barrier, restart
+      without replay, a crash with durability held back and then replay,
+      compaction off by default, compaction stopping at the durable index
+      and following it once released, the lag-bound sync, restart after
+      compaction, both refusals at restart, and the InstallSnapshot refusal
+      over the simulator.
 
 - [ ] 4. Split and merge without copies
   - `split_at` / `adopt` in the reference state machine

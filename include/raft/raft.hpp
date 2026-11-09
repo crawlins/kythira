@@ -18,6 +18,7 @@
 #include <concepts/future.hpp>
 
 #include <raft/future_default.hpp>
+#include <raft/persistent_state_machine.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/configuration_synchronizer.hpp>
@@ -191,6 +192,26 @@ public:
                   "Types::network_client_type must satisfy "
                   "kythira::network_client<C, node_id_type>");
 
+    // persistent-state-machine Requirement 1.4: the node takes the persistent
+    // path for a state machine whose state lives in a kv_engine, and today's
+    // byte-buffer path otherwise. raft_types only checks the persistent
+    // shape (types.hpp cannot see the full concept), so check it here.
+    static constexpr bool k_persistent_state =
+        kythira::storage_kind_of<state_machine_type, log_index_type> ==
+        kythira::state_machine_storage::persistent;
+    static_assert(kythira::state_machine<state_machine_type, log_index_type> || k_persistent_state,
+                  "Types::state_machine_type must satisfy kythira::state_machine or "
+                  "kythira::persistent_state_machine");
+    // Requirement 10.1: a fresh node restored from an object-store engine's
+    // objects gets its state from the saved snapshot, and a persistent group's
+    // snapshot is metadata only. Refused until checkpoints can be exported.
+    static_assert(
+        !k_persistent_state ||
+            !requires { persistence_engine_type::restores_state_from_snapshot_store; },
+        "a persistent state machine cannot run on a persistence engine that restores "
+        "state from its snapshot store (object-store engines); see "
+        ".kiro/specs/persistent-state-machine/ Requirement 10.1");
+
     // Bootstrap type aliases (with fallbacks for Types that predate them)
     using _bth = kythira::_bootstrap_type_traits<Types, node_id_type>;
     using address_type = typename _bth::address_type;
@@ -272,6 +293,9 @@ public:
     ///
     /// @param timeout Maximum time to wait for the read to complete.
     /// @return Future that resolves with the current state-machine state bytes.
+    ///         For a persistent state machine it resolves with an empty buffer
+    ///         once the read index is applied: a read-index barrier, after
+    ///         which the caller reads through `with_state_machine`.
     auto read_state(std::chrono::milliseconds timeout) -> future_type;
     /// @}
 
@@ -942,6 +966,8 @@ private:
 
     // State machine for executing committed log entries
     state_machine_type _state_machine;
+    // A persistent group logs once that its log is kept (Requirement 10.2).
+    bool _persistent_compaction_off_logged{false};
 
     // ========================================================================
     // Future collection components using unified types
@@ -1549,6 +1575,25 @@ private:
     auto maybe_create_snapshot_automatically() -> void;
     auto compact_log() -> void;
     auto install_snapshot(const snapshot_type& snap) -> void;
+
+    // ── Persistent state machines (.kiro/specs/persistent-state-machine/) ──
+    //
+    // The bytes a persistent group saves as its snapshot's state: a marker,
+    // not the state, which stays in the engine (Requirement 3.2). Restart
+    // checks for it so a byte-buffer snapshot is never taken for metadata.
+    static auto persistent_snapshot_marker() -> const std::vector<std::byte>&;
+    // Whether this group compacts its log (the config's
+    // persistent_log_compaction, Requirement 10.2).
+    [[nodiscard]] auto persistent_compaction_enabled() const -> bool;
+    // The configuration in force at `index`: the last configuration entry at
+    // or below it in the log, or the one the log started from.
+    [[nodiscard]] auto configuration_at(log_index_type index) const -> cluster_configuration_type;
+    // create_snapshot_locked() for a persistent group: metadata at the
+    // durable applied index, then compaction through it (Requirement 3).
+    auto create_persistent_snapshot_locked() -> void;
+    // raft_persistent_apply_lag: last_applied minus the durable applied index
+    // (Requirement 3.4).
+    auto emit_persistent_apply_lag() -> void;
 
     // ── Peer-to-peer catch-up helpers (.kiro/specs/peer2peer-log-replication/) ──
 
@@ -3756,7 +3801,14 @@ auto node<Types>::serve_read_after_apply(node_id_type node_id,
     auto serve = [this, node_id, start_time, heartbeat_responses,
                   cluster_type]() -> std::vector<std::byte> {
         try {
-            auto state = _state_machine.get_state();
+            // A persistent group's read confirms the read index and returns
+            // nothing: its state can be far larger than memory, and callers
+            // read through with_state_machine (persistent-state-machine
+            // Requirement 5.1).
+            std::vector<std::byte> state;
+            if constexpr (!k_persistent_state) {
+                state = _state_machine.get_state();
+            }
 
             // Nanoseconds, kept at full resolution for the metric. The
             // millisecond cast is for the human-readable log line only:
@@ -5432,12 +5484,35 @@ auto node<Types>::initialize_from_storage() -> void {
     auto snap_opt = _persistence.load_snapshot();
     if (snap_opt.has_value()) {
         const auto& snap = *snap_opt;
-        try {
-            _state_machine.restore_from_snapshot(snap.state_machine_state(),
-                                                 snap.last_included_index());
-        } catch (...) {
-            _logger.warning("Failed to restore state machine from snapshot during init",
-                            {{"node_id", node_id_to_string(_node_id)}});
+        if constexpr (k_persistent_state) {
+            // The state is already in the engine; the snapshot is metadata
+            // (persistent-state-machine Requirement 4.1). Entries up to the
+            // snapshot index are gone from the log, so state older than it
+            // cannot be brought forward (4.2).
+            if (snap.state_machine_state() != persistent_snapshot_marker()) {
+                throw std::runtime_error(
+                    "persistent state machine: the saved snapshot holds byte-buffer state, not "
+                    "persistent metadata; this store belongs to a different kind of group");
+            }
+            if (_state_machine.applied_index() < snap.last_included_index()) {
+                _logger.error("Persistent state is older than the snapshot; refusing to start",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"applied_index", std::to_string(_state_machine.applied_index())},
+                               {"snapshot_index", std::to_string(snap.last_included_index())}});
+                throw std::runtime_error("persistent state machine: applied index " +
+                                         std::to_string(_state_machine.applied_index()) +
+                                         " is below the snapshot index " +
+                                         std::to_string(snap.last_included_index()) +
+                                         "; the entries between were compacted away");
+            }
+        } else {
+            try {
+                _state_machine.restore_from_snapshot(snap.state_machine_state(),
+                                                     snap.last_included_index());
+            } catch (...) {
+                _logger.warning("Failed to restore state machine from snapshot during init",
+                                {{"node_id", node_id_to_string(_node_id)}});
+            }
         }
         _last_applied = snap.last_included_index();
         _commit_index = snap.last_included_index();
@@ -5488,6 +5563,35 @@ auto node<Types>::initialize_from_storage() -> void {
                          {{"node_id", node_id_to_string(_node_id)},
                           {"log_index", std::to_string(it->index())}});
             break;
+        }
+    }
+
+    if constexpr (k_persistent_state) {
+        // Requirement 4.1: replay starts after what the engine already holds,
+        // which may be past the snapshot. An applied entry was committed, so
+        // the commit index moves up with it.
+        const auto applied = _state_machine.applied_index();
+        if (applied > _last_applied) {
+            _last_applied = applied;
+        }
+        if (_last_applied > _commit_index) {
+            _commit_index = _last_applied;
+        }
+        // Requirement 4.3: state ahead of the log means the log lost a tail
+        // the state machine had applied. Raft guarantees an applied entry was
+        // committed, so start anyway and say so.
+        if (applied > get_last_log_index()) {
+            _logger.warning("Persistent state is ahead of the log; treating it as committed",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"applied_index", std::to_string(applied)},
+                             {"last_log_index", std::to_string(get_last_log_index())}});
+        }
+        if (!persistent_compaction_enabled() && !_persistent_compaction_off_logged) {
+            _persistent_compaction_off_logged = true;
+            _logger.info(
+                "Persistent state machine: log compaction is off and InstallSnapshot is "
+                "refused until file-install-snapshot sending lands",
+                {{"node_id", node_id_to_string(_node_id)}});
         }
     }
 
@@ -6324,6 +6428,27 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
 
     // Reset election timer on valid InstallSnapshot
     reset_election_timer();
+
+    // persistent-state-machine Requirement 10.2: a persistent group cannot
+    // install a snapshot until format-1 transfers land
+    // (.kiro/specs/file-install-snapshot/). Refusing keeps its state intact;
+    // its leader keeps the log, so AppendEntries can still catch it up.
+    if constexpr (k_persistent_state) {
+        _logger.warning("Refusing InstallSnapshot: persistent group",
+                        {{"node_id", node_id_to_string(_node_id)},
+                         {"from_leader", node_id_to_string(request.leader_id())},
+                         {"last_included_index", std::to_string(request.last_included_index())}});
+        _metrics.set_metric_name("raft_install_snapshot_rejected");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("reason", "persistent_group");
+        _metrics.add_one();
+        _metrics.emit();
+        install_snapshot_response_type response{_current_term};
+        if constexpr (requires { response._reject_reason; }) {
+            response._reject_reason = install_snapshot_reject_reason::format_mismatch;
+        }
+        return response;
+    }
 
     // Rule 3: Create new snapshot file if first chunk (offset is 0)
     // For simplicity, we'll accumulate chunks in memory and install when done
@@ -8235,6 +8360,22 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
                                                          {"target", node_id_to_string(target)},
                                                          {"term", std::to_string(_current_term)}});
 
+    if constexpr (k_persistent_state) {
+        // Requirement 10.2: nothing to send until format-1 transfers land.
+        // Only reachable with persistent_log_compaction on.
+        _logger.warning(
+            "Follower is behind the compacted log of a persistent group and cannot "
+            "be sent a snapshot yet",
+            {{"node_id", node_id_to_string(_node_id)}, {"target", node_id_to_string(target)}});
+        _metrics.set_metric_name("raft_install_snapshot_unsupported");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_one();
+        _metrics.emit();
+        std::lock_guard<std::mutex> lock(_mutex);
+        _snapshot_transfers_in_flight.erase(target);
+        return;
+    }
+
     // Load snapshot from persistence
     auto snapshot_opt = _persistence.load_snapshot();
     if (!snapshot_opt.has_value()) {
@@ -9339,6 +9480,12 @@ auto node<Types>::create_snapshot() -> void {
 template<raft_types Types>
 
 auto node<Types>::maybe_create_snapshot_automatically() -> void {
+    if constexpr (k_persistent_state) {
+        emit_persistent_apply_lag();
+        if (!persistent_compaction_enabled()) {
+            return;
+        }
+    }
     const auto threshold = _config.snapshot_threshold_bytes();
     if (_bytes_applied_since_snapshot < threshold || _last_applied <= _snapshot_index) {
         return;
@@ -9370,6 +9517,10 @@ auto node<Types>::maybe_create_snapshot_automatically() -> void {
 template<raft_types Types>
 
 auto node<Types>::create_snapshot_locked() -> void {
+    if constexpr (k_persistent_state) {
+        create_persistent_snapshot_locked();
+        return;
+    }
     _logger.info("Creating snapshot from current state machine state",
                  {{"node_id", node_id_to_string(_node_id)},
                   {"last_applied", std::to_string(_last_applied)}});
@@ -9377,7 +9528,10 @@ auto node<Types>::create_snapshot_locked() -> void {
     auto start_time = std::chrono::steady_clock::now();
 
     // Capture current state from state machine
-    auto state = _state_machine.get_state();
+    std::vector<std::byte> state;
+    if constexpr (!k_persistent_state) {
+        state = _state_machine.get_state();
+    }
 
     _logger.debug("State machine state captured", {{"node_id", node_id_to_string(_node_id)},
                                                    {"state_size", std::to_string(state.size())}});
@@ -9426,6 +9580,13 @@ template<raft_types Types>
 
 auto node<Types>::create_snapshot(const std::vector<std::byte>& state_machine_state) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
+    if constexpr (k_persistent_state) {
+        // A persistent group's state never moves as bytes; saving some would
+        // make the next restart refuse the store.
+        throw std::logic_error(
+            "create_snapshot(state): not available for a persistent state "
+            "machine; use create_snapshot()");
+    }
 
     _logger.info("Creating snapshot with provided state",
                  {{"node_id", node_id_to_string(_node_id)},
@@ -9563,6 +9724,124 @@ auto node<Types>::compact_log() -> void {
 }
 
 template<raft_types Types>
+auto node<Types>::persistent_snapshot_marker() -> const std::vector<std::byte>& {
+    static const std::vector<std::byte> marker = [] {
+        constexpr std::string_view text = "kythira-persistent-snapshot/1";
+        std::vector<std::byte> out;
+        out.reserve(text.size());
+        for (const char c : text) {
+            out.push_back(static_cast<std::byte>(c));
+        }
+        return out;
+    }();
+    return marker;
+}
+
+template<raft_types Types> auto node<Types>::persistent_compaction_enabled() const -> bool {
+    if constexpr (requires { _config.persistent_log_compaction(); }) {
+        return _config.persistent_log_compaction();
+    } else {
+        return false;
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::configuration_at(log_index_type index) const -> cluster_configuration_type {
+    bool later_change = false;
+    for (auto it = _log.rbegin(); it != _log.rend(); ++it) {
+        if (it->type() != entry_type::configuration) {
+            continue;
+        }
+        if (it->index() <= index) {
+            return deserialize_configuration<node_id_type>(it->command());
+        }
+        later_change = true;
+    }
+    // No change at or below `index` in the log. With none above it either,
+    // the configuration in force now was in force then. Otherwise it is the
+    // one the log started from, when the node knows it.
+    if (!later_change || _boot_configuration.nodes().empty()) {
+        return _configuration;
+    }
+    return _boot_configuration;
+}
+
+template<raft_types Types> auto node<Types>::emit_persistent_apply_lag() -> void {
+    if constexpr (k_persistent_state) {
+        const auto durable = _state_machine.durable_applied_index();
+        const auto lag = _last_applied > durable ? _last_applied - durable : log_index_type{0};
+        _metrics.set_metric_name("raft_persistent_apply_lag");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_value(static_cast<double>(lag));
+        _metrics.emit();
+    }
+}
+
+template<raft_types Types> auto node<Types>::create_persistent_snapshot_locked() -> void {
+    if constexpr (k_persistent_state) {
+        if (!persistent_compaction_enabled()) {
+            _logger.debug("Persistent group keeps its log; snapshot skipped",
+                          {{"node_id", node_id_to_string(_node_id)}});
+            return;
+        }
+
+        // Requirement 3.3: an engine far behind on durability can be asked
+        // to catch up first, so compaction is not held back indefinitely.
+        if constexpr (requires { _state_machine.sync_durable(); }) {
+            std::size_t bound = 0;
+            if constexpr (requires { _config.persistent_sync_lag_entries(); }) {
+                bound = _config.persistent_sync_lag_entries();
+            }
+            const auto durable = _state_machine.durable_applied_index();
+            if (bound != 0 && _last_applied > durable &&
+                static_cast<std::size_t>(_last_applied - durable) > bound) {
+                _state_machine.sync_durable();
+            }
+        }
+
+        // Requirement 3.1: never past what the engine could still lose. A
+        // power cut loses applied batches above the durable index, and the
+        // node replays them from the log, so the log must still hold them.
+        const auto durable = std::min(_state_machine.durable_applied_index(), _last_applied);
+        if (durable <= _snapshot_index) {
+            _logger.debug("Durable applied index has not passed the snapshot; nothing to compact",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"durable_applied_index", std::to_string(durable)},
+                           {"snapshot_index", std::to_string(_snapshot_index)}});
+            return;
+        }
+        const auto term = term_at(durable);
+        if (!term.has_value()) {
+            // Only reachable if the log no longer holds the entry, which
+            // compaction itself never allows; leave the log as it is.
+            _logger.warning("No term for the durable applied index; compaction skipped",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"durable_applied_index", std::to_string(durable)}});
+            return;
+        }
+
+        // Requirement 3.2: metadata only. The configuration is the one in
+        // force at the snapshot point; later configuration entries stay in
+        // the log.
+        snapshot_type snap{durable, *term, configuration_at(durable), persistent_snapshot_marker()};
+        _persistence.save_snapshot(snap);
+        _bytes_applied_since_snapshot = 0;
+
+        _logger.info("Persistent snapshot metadata saved",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"last_included_index", std::to_string(durable)},
+                      {"last_applied", std::to_string(_last_applied)}});
+        _metrics.set_metric_name("raft_snapshot_created");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("kind", "persistent");
+        _metrics.add_value(0.0);
+        _metrics.emit();
+
+        compact_log();
+    }
+}
+
+template<raft_types Types>
 
 auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
     auto start_time = std::chrono::steady_clock::now();
@@ -9574,9 +9853,16 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
                   {"snapshot_size", std::to_string(snap.state_machine_state().size())}});
 
     try {
-        // Restore state machine from snapshot
-        _state_machine.restore_from_snapshot(snap.state_machine_state(),
-                                             snap.last_included_index());
+        // Restore state machine from snapshot. handle_install_snapshot refuses
+        // every chunk for a persistent group, so it never gets here.
+        if constexpr (k_persistent_state) {
+            throw std::logic_error(
+                "install_snapshot: a persistent group cannot install a "
+                "byte-buffer snapshot");
+        } else {
+            _state_machine.restore_from_snapshot(snap.state_machine_state(),
+                                                 snap.last_included_index());
+        }
 
         // Restore cluster configuration from the snapshot
         _configuration = snap.configuration();
