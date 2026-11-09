@@ -206,8 +206,21 @@ task is one PR unless noted.
     - `ledger_sessions.hpp`: `pending_transaction`, `finish` and
       `execute_pending` split prepare from apply so a node can propose
       between them.
-  - Still owed: the HTTPS server and C++ client (7b) and `ledger_node`
-    over multi_raft with the split/merge veto (7c).
+  - Done so far (7b, HTTPS and client):
+    - `ledger_http.hpp` serves the API on `raft/beast_https_server.hpp`
+      (whose connection gate, size limits and timeouts are the
+      `http-server-request-limits` ones). The principal is the verified
+      client certificate's first URI SAN; no certificate is a 401.
+    - ion-c keeps a system symbol table per thread and never frees it
+      when the thread exits (about 128 KiB). The server is one thread per
+      connection, so the handler runs API work on `ion_worker_pool`, a
+      fixed set of long-lived threads, and does no Ion work itself.
+    - `ledger_client.hpp`: Ion bodies, an mTLS Beast transport with host
+      name checks, leader redirects and failover for requests not yet
+      sent, and `transact()` with OCC retry and jittered backoff.
+  - Still owed: `ledger_node` over multi_raft with the split/merge veto
+    and its metric (7c), which needs the persistent-state-machine node
+    (lane 2's #735).
 
 - [x] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and
