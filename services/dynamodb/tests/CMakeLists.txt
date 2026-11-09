@@ -37,6 +37,15 @@ kythira_dynamodb_test(dynamodb_wire_evidence_test dynamodb_wire_evidence_test.cp
 set_tests_properties(dynamodb_wire_evidence_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 
+# Task 3: the exact decimal (vector suite, Requirement 21.2; CI runs it on
+# x86-64 and arm64) and the item codec (Requirement 6).
+kythira_dynamodb_test(dynamodb_decimal_test dynamodb_decimal_test.cpp)
+set_tests_properties(dynamodb_decimal_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
+kythira_dynamodb_test(dynamodb_item_codec_test dynamodb_item_codec_test.cpp)
+set_tests_properties(dynamodb_item_codec_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
+
 # The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
 # (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned models, so a model
 # upgrade carries its regenerated tables and their diff (Requirement 2.4).

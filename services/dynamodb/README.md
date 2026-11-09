@@ -24,6 +24,10 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tools/fetch_models.sh`, `tools/regen_models.sh` | fetch a botocore tag's models; regenerate the shape tables | 1 |
 | `tests/dynamodb_model_coverage_test.cpp` | every modeled operation is implemented or listed as unsupported, and the shape tables load | 1 |
 | `tests/dynamodb_wire_evidence_test.cpp` | every recorded request frames and validates against the pinned model, unknown members refused | 1 |
+| `include/kythira/dynamodb/decimal.hpp` | `dynamo_decimal`: the exact 38-digit `N` type, AWS's range, plain formatting, and the order-preserving key encoding | 3 |
+| `include/kythira/dynamodb/item_codec.hpp` | attribute values and items: wire JSON, AWS's validation rules, the size formula, key checks and key encoding, the binary storage form | 3 |
+| `include/kythira/dynamodb/errors.hpp` | DynamoDB's error style and the `ValidationException` constructor every module error goes through | 3 |
+| `tests/dynamodb_decimal_test.cpp`, `tests/dynamodb_item_codec_test.cpp` | the decimal vector suite and the item codec's tests | 3 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
