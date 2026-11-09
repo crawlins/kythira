@@ -3,18 +3,24 @@
 
 #pragma once
 
-// The ledger's state machine (.kiro/specs/verifiable-ledger/ task 3,
-// Requirements 2.1, 2.2, 3.1-3.4, 5.1-5.5): tables, documents and the
-// journal, on the persistent state machine contract
+// The ledger's state machine (.kiro/specs/verifiable-ledger/ tasks 3-4,
+// Requirements 2.1, 2.2, 3.1-3.4, 4.1-4.4, 5.1-5.5): tables, documents, the
+// journal, and digests and proofs over it, on the persistent state machine contract
 // (include/raft/persistent_state_machine.hpp), so the state lives in the
 // engine and a snapshot is an engine checkpoint of the ledger's range.
 //
 // One ledger is one Raft group over the range `l/<ledger id>/`. Each Raft
 // entry is one transaction (journal_types.hpp). apply() checks it against
 // the current state, builds the block and writes revisions, current
-// pointers, table records, change markers, the block and the applied index
-// in one engine batch, so a crash can never separate a block from its
-// revisions (Requirement 3.5).
+// pointers, table records, change markers, the block, the block hash's new
+// Merkle nodes and the applied index in one engine batch, so a crash can
+// never separate a block from its revisions or its proof (Requirement 3.5).
+//
+// The Merkle accumulator (merkle.hpp) has block hashes as leaves, leaf i
+// being block i. Its frontier is rebuilt on open from one stored node per
+// set bit of the block count; the digest of the whole journal comes from
+// the frontier, a digest at an older tip and every proof read O(log n)
+// stored nodes (Requirement 4.4).
 //
 // Outcomes of apply, all deterministic on every replica:
 //
@@ -50,13 +56,16 @@
 //   data  P rev/<table>/<id>/<v>    revision (committed view), v zero-padded
 //   data  P journal/<seq>           block, seq zero-padded
 //   data  P tchg/<table>            seq of the last block that changed the table
+//   data  P merkle/<level>/<index>  Merkle node, 32 bytes (engine_merkle_store.hpp)
 //
 // Everything is inside the range, so checkpoint, ingest and drop move the
 // whole ledger.
 
+#include <kythira/ledger/engine_merkle_store.hpp>
 #include <kythira/ledger/ion_value.hpp>
 #include <kythira/ledger/journal_types.hpp>
 #include <kythira/ledger/ledger_hash.hpp>
+#include <kythira/ledger/merkle.hpp>
 
 #include <raft/persistent_state_machine.hpp>
 
@@ -69,6 +78,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -207,6 +217,32 @@ struct prepared_transaction {
     apply_result rejection;
 };
 
+/// A query outside the journal, e.g. a tip beyond the last block.
+class ledger_query_error : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
+/// The digest of the journal through block `tip`.
+struct ledger_digest {
+    std::uint64_t tip = 0;
+    hash256 digest{};
+};
+
+/// A block, the proof that its hash is under `digest`, and that digest.
+struct proven_block {
+    block blk;
+    std::vector<hash256> proof;
+    hash256 digest{};
+};
+
+/// A revision, the proof that its hash is under `digest`, and that digest.
+struct proven_revision {
+    revision rev;
+    std::vector<hash256> proof;
+    hash256 digest{};
+};
+
 struct ledger_options {
     std::size_t max_document_bytes = default_max_document_bytes;
 };
@@ -249,6 +285,13 @@ public:
                 batch = std::move(b->batch);
                 result = std::move(b->result);
                 new_tip = block_tip{b->blk.seq, b->blk.block_hash, b->blk.timestamp};
+                if (accumulator_->size() != b->blk.seq) {
+                    throw kythira::persistent_storage_error(
+                        "ledger Merkle accumulator holds " + std::to_string(accumulator_->size()) +
+                        " leaves before block " + std::to_string(b->blk.seq));
+                }
+                accumulator_->append(b->blk.block_hash);
+                merkle_store_->take_pending(batch);
             } else {
                 result = std::move(std::get<apply_result>(outcome));
             }
@@ -258,7 +301,13 @@ public:
             result = apply_result::rejected("invalid_entry", e.what());
         }
         batch.put(kythira::column_family::meta, key_applied(), std::to_string(index));
-        const auto seq = engine_->write(batch);
+        kythira::engine_sequence seq{};
+        try {
+            seq = engine_->write(batch);
+        } catch (...) {
+            load_locked();  // the accumulator's frontier moved; the engine did not
+            throw;
+        }
         applied_ = index;
         if (new_tip) {
             tip_ = new_tip;
@@ -303,10 +352,7 @@ public:
     auto drop() -> void {
         const std::lock_guard lock(mutex_);
         engine_->drop(range_);
-        applied_ = 0;
-        durable_floor_ = 0;
-        seqs_.clear();
-        tip_.reset();
+        load_locked();  // an empty range: no applied index, no tip, no leaves
     }
 
     // ── persistent_splittable_state_machine: always vetoed ──────────────────
@@ -410,11 +456,74 @@ public:
 
     [[nodiscard]] auto get_block(std::uint64_t seq) const -> std::optional<block> {
         const std::lock_guard lock(mutex_);
-        const auto v = engine_->get(kythira::column_family::data, key_journal(seq));
-        if (!v) {
+        return stored_block(seq);
+    }
+
+    // ── Digests and proofs (Requirements 4.1-4.4) ───────────────────────────
+
+    /// The digest of the whole journal and its tip; nullopt while empty.
+    /// From the in-memory frontier, so no engine read.
+    [[nodiscard]] auto get_digest() const -> std::optional<ledger_digest> {
+        const std::lock_guard lock(mutex_);
+        if (!tip_) {
             return std::nullopt;
         }
-        return block::from_ion(parse_stored(*v));
+        return ledger_digest{tip_->seq, *accumulator_->digest()};
+    }
+
+    /// The digest as of block `tip` (one stored node per set bit of
+    /// tip + 1). Throws ledger_query_error beyond the last block.
+    [[nodiscard]] auto digest_at(std::uint64_t tip) const -> hash256 {
+        const std::lock_guard lock(mutex_);
+        check_tip(0, tip);
+        return accumulator_->digest_at(tip + 1);
+    }
+
+    /// Block `seq` with the proof that its hash folds with `dot` to the
+    /// digest at `tip`. Throws ledger_query_error when tip < seq or tip is
+    /// beyond the last block.
+    [[nodiscard]] auto get_block_proof(std::uint64_t seq, std::uint64_t tip) const -> proven_block {
+        const std::lock_guard lock(mutex_);
+        check_tip(seq, tip);
+        auto blk = stored_block(seq);
+        if (!blk) {
+            throw kythira::persistent_storage_error("ledger block " + std::to_string(seq) +
+                                                    " is missing");
+        }
+        proven_block out{std::move(*blk), accumulator_->proof(seq, tip + 1),
+                         accumulator_->digest_at(tip + 1)};
+        return out;
+    }
+
+    /// A revision with the proof that its hash folds with `dot` to the
+    /// digest at `tip`: its path in its block's entries tree, the block's
+    /// header hash and previous hash, then the block's accumulator path.
+    /// nullopt for a revision that does not exist.
+    [[nodiscard]] auto get_revision_proof(std::string_view table_name, std::string_view id,
+                                          std::int64_t version, std::uint64_t tip) const
+        -> std::optional<proven_revision> {
+        const std::lock_guard lock(mutex_);
+        auto rev = stored_revision(table_name, id, version);
+        if (!rev) {
+            return std::nullopt;
+        }
+        check_tip(rev->seq, tip);
+        const auto blk = stored_block(rev->seq);
+        if (!blk) {
+            throw kythira::persistent_storage_error("ledger block " + std::to_string(rev->seq) +
+                                                    " is missing");
+        }
+        const auto it = std::ranges::find_if(blk->revisions, [&](const revision& r) {
+            return r.table == table_name && r.id == id && r.version == version;
+        });
+        if (it == blk->revisions.end()) {
+            throw kythira::persistent_storage_error("ledger block " + std::to_string(rev->seq) +
+                                                    " does not hold the revision");
+        }
+        auto proof = blk->revision_proof(static_cast<std::size_t>(it - blk->revisions.begin()));
+        const auto path = accumulator_->proof(rev->seq, tip + 1);
+        proof.insert(proof.end(), path.begin(), path.end());
+        return proven_revision{std::move(*rev), std::move(proof), accumulator_->digest_at(tip + 1)};
     }
 
     [[nodiscard]] auto range() const -> kythira::key_range {
@@ -558,6 +667,11 @@ private:
                              journal_detail::hash_field(v, "hash"),
                              journal_detail::time_field(v, "timestamp")};
         }
+        // The frontier, from one stored node per set bit of the leaf count.
+        accumulator_.reset();
+        merkle_store_ =
+            std::make_unique<engine_merkle_store<Engine>>(*engine_, prefix_ + "merkle/");
+        accumulator_.emplace(*merkle_store_, tip_ ? tip_->seq + 1 : 0);
     }
 
     /// Forget sequence pairs the engine has made durable.
@@ -774,6 +888,24 @@ private:
         return out;
     }
 
+    auto check_tip(std::uint64_t seq, std::uint64_t tip) const -> void {
+        if (!tip_ || tip > tip_->seq) {
+            throw ledger_query_error("tip " + std::to_string(tip) + " is beyond the last block");
+        }
+        if (tip < seq) {
+            throw ledger_query_error("tip " + std::to_string(tip) + " is below block " +
+                                     std::to_string(seq));
+        }
+    }
+
+    [[nodiscard]] auto stored_block(std::uint64_t seq) const -> std::optional<block> {
+        const auto v = engine_->get(kythira::column_family::data, key_journal(seq));
+        if (!v) {
+            return std::nullopt;
+        }
+        return block::from_ion(parse_stored(*v));
+    }
+
     ledger_options options_;
     mutable std::mutex mutex_;
     engine_type* engine_ = nullptr;
@@ -783,6 +915,8 @@ private:
     std::uint64_t durable_floor_ = 0;
     std::vector<std::pair<std::uint64_t, kythira::engine_sequence>> seqs_;
     std::optional<block_tip> tip_;
+    std::unique_ptr<engine_merkle_store<Engine>> merkle_store_;
+    std::optional<merkle_accumulator<engine_merkle_store<Engine>>> accumulator_;
 };
 
 }  // namespace kythira::ledger

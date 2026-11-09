@@ -94,10 +94,29 @@ task is one PR unless noted.
       `split_at` and `adopt` throw `ledger_split_vetoed` as the backstop),
       and the ledger-catalog group (Requirement 2.3-2.4, task 7).
 
-- [ ] 4. Digests and proofs
+- [x] 4. Digests and proofs
   - Engine-backed Merkle store, frontier rebuild on open, `GetDigest`,
     `GetBlock`, `GetRevision` with proofs at any tip
   - _Requirements: 4.1-4.4_
+  - Done 2026-11-09. As built:
+    - The block hash changed to `dot(dot(entriesHash,
+      ionhash({hashVersion, seq, txId, blockTimestamp})), previousBlockHash)`
+      (design "Hashing"). With the first formula, an Ion hash over a header
+      holding entriesHash, a revision proof could not fold through its
+      block, so `GetRevision` could not meet Requirements 4.3 and 4.6. No
+      ledger existed yet, so `hashVersion` stays 1.
+    - `engine_merkle_store` keeps nodes at `merkle/<level>/<index>` in the
+      data column family and buffers writes; apply appends the block hash
+      to the accumulator and moves the new nodes into the block's batch. If
+      the engine write fails, the state machine reloads (frontier
+      included) before rethrowing.
+    - `get_digest()` reads only the in-memory frontier; `digest_at`,
+      `get_block_proof` and `get_revision_proof` read O(log n) stored nodes
+      plus, for a revision, its one block. A tip below the block or beyond
+      the last block throws `ledger_query_error`; a missing node throws
+      `merkle_store_error` rather than returning a short proof.
+    - The linearizable read path for `GetDigest` (Requirement 4.2) is the
+      node's, in task 7.
 
 - [ ] 5. Transactions and OCC
   - Leader session manager, reads at S, read sets, change markers,
