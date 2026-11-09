@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The DynamoDB-compatible service module (services/dynamodb/,
+# .kiro/specs/dynamodb-compatible-api/). Sourced from the top-level
+# Kconfig's "Service Modules" menu.
+
+config DYNAMODB
+	bool "DynamoDB-compatible API (tables, items, indexes, streams)"
+	default n
+	depends on OPENSSL
+	help
+	  Builds the services/dynamodb/ module: a DynamoDB-compatible service
+	  that unmodified AWS SDKs, the AWS CLI, KCL, the DynamoDB lock client
+	  and the Streams Kinesis Adapter can point --endpoint-url at. Items
+	  live in the persistent-state-machine kv_engine: the in-memory engine
+	  is always built, and RocksDB is used where that spec's engine is on.
+
+	  So far the module holds the pinned botocore models of DynamoDB and
+	  DynamoDB Streams, their generated shape tables for the core AWS JSON
+	  codec (include/raft/aws_json_protocol.hpp), the operation coverage
+	  test and the recorded client wire evidence (task 1). The codecs,
+	  state machines, front end and dynamodb_gateway_node follow.
+
+	  OpenSSL is needed for SigV4 (the core sigv4_verifier). It uses
+	  IAM's core headers but not the IAM module. Off by default like every
+	  new module (services/README.md). See
+	  .kiro/specs/dynamodb-compatible-api/.

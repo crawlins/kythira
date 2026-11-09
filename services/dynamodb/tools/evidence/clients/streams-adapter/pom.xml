@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright (c) 2026 Clark Rawlins
+  SPDX-License-Identifier: Apache-2.0
+
+  The DynamoDB Streams Kinesis Adapter evidence client
+  (.kiro/specs/dynamodb-compatible-api/ task 1): KCL 3.x consuming a
+  DynamoDB stream through the adapter, with leases in DynamoDB, all pointed
+  at the recording stub. Run by ../run_java.sh.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.kythira.evidence</groupId>
+  <artifactId>streams-adapter</artifactId>
+  <version>1</version>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>dynamodb-streams-kinesis-adapter</artifactId>
+      <version>2.5.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>2.0.17</version>
+    </dependency>
+  </dependencies>
+</project>

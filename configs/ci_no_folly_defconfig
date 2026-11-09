@@ -48,3 +48,6 @@ CONFIG_IAM=y
 # The Kinesis module, as in ci_full_defconfig: its tests use no Folly, so
 # the no-Folly leg builds and runs them like the reference build does.
 CONFIG_KINESIS=y
+# The DynamoDB module, as in ci_full_defconfig: header-only and Folly-free,
+# so the no-Folly leg builds and runs its tests like the reference build.
+CONFIG_DYNAMODB=y

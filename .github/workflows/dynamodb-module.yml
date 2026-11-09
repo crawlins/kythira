@@ -1,0 +1,371 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The DynamoDB module's own workflow (services/dynamodb/, services/README.md
+# "CI", .kiro/specs/dynamodb-compatible-api/). ci.yml is the gate: it builds
+# the module and runs its tests on every pull request, because
+# ci_full_defconfig sets CONFIG_DYNAMODB=y. This workflow adds, for changes
+# to the module or what it builds on:
+#
+#   - the boundary check (also in ci.yml's kconfig-check job);
+#   - a module-on build of just the module's targets, with its tests, and a
+#     module-off configure (configs/ci_no_dynamodb_defconfig) that asserts
+#     no DynamoDB target or test exists with the switch off (as
+#     iam-module.yml does, for the same reasons);
+#   - the evidence job (task 1, Requirement 4.1): re-record what every named
+#     client sends, under rootful Docker and rootless Podman, run the
+#     wire-evidence test on the fresh recording, and report how it differs
+#     from the checked-in one. A client upgrade that starts sending a
+#     member the pinned model lacks fails here.
+#
+# The evidence job compiles the one test by hand against the distribution's
+# Boost instead of configuring the whole tree: the test needs only the
+# codec header, Boost.JSON and Boost.Test, and the build job already covers
+# the CMake target. It pulls container images, PyPI and Maven Central, so
+# it can flake on the network; it answers no AWS endpoint (the clients talk
+# to the recording stub).
+#
+# NOT a required check: GitHub reports nothing for a workflow its paths
+# filter skips, so a required check from it would hang every unrelated pull
+# request. Whoever merges a pull request that touches the module waits for
+# this workflow too (services/README.md).
+
+name: DynamoDB Module
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/dynamodb/**"
+      - "services/README.md"
+      - "include/raft/aws_json_protocol.hpp"
+      - "include/raft/crc32.hpp"
+      - "scripts/gen_aws_json_shapes.py"
+      - "cmake/kythira_test_helpers.cmake"
+      - "cmake/Kconfig.cmake"
+      - "scripts/check_module_boundaries.py"
+      - "scripts/tests/test_check_module_boundaries.py"
+      - "configs/ci_full_defconfig"
+      - "configs/ci_no_dynamodb_defconfig"
+      - "Kconfig"
+      - "CMakeLists.txt"
+      - ".github/workflows/dynamodb-module.yml"
+  pull_request:
+    branches: ['**']
+    # Keep in step with the push list above.
+    paths:
+      - "services/dynamodb/**"
+      - "services/README.md"
+      - "include/raft/aws_json_protocol.hpp"
+      - "include/raft/crc32.hpp"
+      - "scripts/gen_aws_json_shapes.py"
+      - "cmake/kythira_test_helpers.cmake"
+      - "cmake/Kconfig.cmake"
+      - "scripts/check_module_boundaries.py"
+      - "scripts/tests/test_check_module_boundaries.py"
+      - "configs/ci_full_defconfig"
+      - "configs/ci_no_dynamodb_defconfig"
+      - "Kconfig"
+      - "CMakeLists.txt"
+      - ".github/workflows/dynamodb-module.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dynamodb-module-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  boundary:
+    name: DynamoDB module boundary check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The fixture tests first, so a broken checker cannot pass the tree by
+      # reporting nothing (same order as ci.yml's kconfig-check).
+      - name: Module boundary checker passes its fixture tests
+        run: python3 scripts/tests/test_check_module_boundaries.py -v
+      - name: services/dynamodb uses only Kythira's public surface
+        run: python3 scripts/check_module_boundaries.py
+
+  build:
+    name: DynamoDB module on and off (clang++-18, x64)
+    runs-on: ubuntu-24.04
+    # A warm vcpkg tree and sccache make this minutes. A cold vcpkg tree is
+    # config-variants' 78-minute install, which this job shares by key.
+    timeout-minutes: 180
+    # The read-write build-cache key is an environment secret of
+    # build-cache-write (main only); same-repository pull requests write
+    # with the create-only pr key, and everything else reads only. See
+    # doc/ci_build_cache.md.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          # autoconf & co. are for vcpkg's gperf port, needed only on a cold
+          # vcpkg cache; see ci.yml's build-and-test job.
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool mold; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # Only reached on a cold vcpkg cache: the edhoc feature builds the
+      # lakers overlay port from Rust source.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ steps.triplet.outputs.value }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # Byte-identical to ci.yml's x64 clang++-18 key (config-variants and
+      # the clang build-and-test leg), so this job reuses their tree.
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # clang-built ports, for mold: see ci.yml's build-and-test vcpkg step.
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      - name: Configure (module on, ci_full_defconfig, strict)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      # Every test labelled dynamodb, built by name: the module's tests and
+      # core's AWS JSON codec test (labelled aws_json, not dynamodb, so it
+      # runs in ci.yml's legs). The list comes from ctest, so a new test joins
+      # without an edit here.
+      - name: Build the module's tests
+        run: |
+          mapfile -t tests < <(ctest --test-dir build -N -L '^dynamodb$' \
+            | sed -n 's/^ *Test *#[0-9]*: \(.*\)$/\1/p')
+          if (( ${#tests[@]} == 0 )); then
+            echo "::error::no test carries the dynamodb label in the module-on build"
+            exit 1
+          fi
+          echo "DynamoDB tests: ${tests[*]}"
+          # Script-only tests (the *_fresh generator checks) have no build
+          # target of their own; build the tests that do.
+          mapfile -t targets < <(ninja -C build -t targets all | sed 's/:.*//' | sort -u)
+          mapfile -t binaries < <(comm -12 <(printf '%s\n' "${tests[@]}" | sort -u) \
+            <(printf '%s\n' "${targets[@]}"))
+          echo "Building: ${binaries[*]}"
+          cmake --build build -j"$(nproc)" --target "${binaries[@]}"
+
+      - name: Run the module's tests
+        run: ctest --test-dir build -L '^dynamodb$' --output-on-failure --no-tests=error
+
+      - name: Configure (module off, ci_no_dynamodb_defconfig, strict)
+        run: |
+          cmake -B build-off -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_no_dynamodb_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_LINKER=mold \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      - name: Assert nothing of the module is configured with it off
+        run: |
+          rc=0
+          if ctest --test-dir build -N -L '^dynamodb-module$' | grep -q '^ *Test *#'; then :; else
+            echo "::error::no dynamodb-module test in the module-on build, so the check below proves nothing"
+            rc=1
+          fi
+          if ctest --test-dir build-off -N -L '^dynamodb-module$' | grep -q '^ *Test *#'; then
+            echo "::error::an dynamodb-module test exists with CONFIG_DYNAMODB off"
+            rc=1
+          fi
+          # Every output Ninja knows; a module target or object would sit
+          # under build-off/services/dynamodb/ or be named after the module.
+          if ninja -C build-off -t targets all \
+               | grep -E '(^|/)services/dynamodb/|kythira_dynamodb|dynamodb_model_coverage_test'; then
+            echo "::error::a services/dynamodb target exists with CONFIG_DYNAMODB off"
+            rc=1
+          fi
+          exit $rc
+
+  evidence:
+    name: DynamoDB wire evidence (${{ matrix.runtime }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 libboost-test-dev libboost-json-dev; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      # Rootless Podman as iam-module.yml's container job sets it up.
+      - name: Set up rootless Podman
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            podman netavark aardvark-dns slirp4netns uidmap
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          provider=""
+          for p in /usr/libexec/docker/cli-plugins/docker-compose \
+                   /usr/local/lib/docker/cli-plugins/docker-compose \
+                   "$(command -v docker-compose || true)"; do
+            if [ -n "$p" ] && [ -x "$p" ]; then provider="$p"; break; fi
+          done
+          test -n "$provider"
+          mkdir -p ~/.config/containers
+          cat > ~/.config/containers/containers.conf <<EOF
+          [network]
+          network_backend = "netavark"
+
+          [engine]
+          compose_providers = ["$provider"]
+          compose_warning_logs = false
+          EOF
+          if ! podman unshare true; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            podman unshare true
+          fi
+          podman system reset --force
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+          test "$(podman info --format '{{.Host.NetworkBackend}}')" = netavark
+          sock="$(podman info --format '{{.Host.RemoteSocket.Path}}')"
+          mkdir -p "$(dirname "$sock")"
+          setsid nohup podman system service --time=0 "unix://$sock" \
+            > "$RUNNER_TEMP/podman-service.log" 2>&1 < /dev/null &
+          for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+          test -S "$sock"
+
+      - name: Verify the container runtime
+        run: |
+          ${{ matrix.runtime }} version
+          ${{ matrix.runtime }} compose version
+
+      - name: Record every client against the stub
+        env:
+          KYTHIRA_CONTAINER_RUNTIME: ${{ matrix.runtime }}
+        run: services/dynamodb/tools/evidence/record.sh compose "$RUNNER_TEMP/evidence"
+
+      - name: Build the wire-evidence test
+        run: |
+          clang++-18 -std=c++23 -O1 -Iinclude -Iservices/dynamodb/include \
+            -DKYTHIRA_DYNAMODB_SOURCE_DIR="\"$PWD/services/dynamodb\"" \
+            -DBOOST_TEST_DYN_LINK \
+            services/dynamodb/tests/dynamodb_wire_evidence_test.cpp \
+            -o "$RUNNER_TEMP/dynamodb_wire_evidence_test" \
+            -lboost_unit_test_framework -lboost_json
+
+      - name: The checked-in recording validates
+        run: '"$RUNNER_TEMP/dynamodb_wire_evidence_test"'
+
+      - name: The fresh recording validates
+        env:
+          KYTHIRA_DYNAMODB_EVIDENCE_DIR: ${{ runner.temp }}/evidence
+        run: '"$RUNNER_TEMP/dynamodb_wire_evidence_test"'
+
+      # Informational: a difference is not a failure (timing-free sets, so
+      # it is usually empty), but a reviewer of a client or model upgrade
+      # wants to see it.
+      - name: How the fresh recording differs from the checked-in one
+        if: always()
+        run: |
+          {
+            echo "### Wire evidence diff (${{ matrix.runtime }})"
+            echo '```'
+            python3 services/dynamodb/tools/evidence/summarize.py \
+              services/dynamodb/evidence --diff "$RUNNER_TEMP/evidence" || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the fresh recording
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dynamodb-evidence-${{ matrix.runtime }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Podman service log
+        if: always() && matrix.runtime == 'podman'
+        run: tail -n 200 "$RUNNER_TEMP/podman-service.log" || true
