@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -246,6 +247,26 @@ public:
 private:
     std::map<std::string, std::string, std::less<>> _params;
 };
+
+/// RFC 3986 percent-encoding: everything but the unreserved characters
+/// (A-Z a-z 0-9 - . _ ~) becomes %XX. IAM returns policy documents this way
+/// inside its XML (`AssumeRolePolicyDocument`, `PolicyDocument`, `Document`).
+[[nodiscard]] inline auto url_encode(std::string_view s) -> std::string {
+    static constexpr std::string_view hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size());
+    for (const char ch : s) {
+        const auto c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c) != 0 || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += ch;
+        } else {
+            out += '%';
+            out += hex[c >> 4U];
+            out += hex[c & 0x0FU];
+        }
+    }
+    return out;
+}
 
 /// Text for XML character data or an attribute value. Characters XML 1.0
 /// cannot carry at all (C0 controls other than tab, newline and carriage

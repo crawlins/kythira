@@ -430,6 +430,27 @@ an HMAC so clients cannot forge positions. `MaxItems` defaults to 100.
 - A missing entity is authorized against its would-be ARN before
   `NoSuchEntity`, so a caller without access cannot probe names.
 
+**As built (task 15).**
+- The role, managed-policy, version, attachment, inline-policy,
+  boundary and instance-profile actions share small loaders (one per
+  entity kind) and generic attach, inline, boundary and tag handlers
+  keyed by `user`, `group`, `role`, `policy` or `instance-profile`.
+- Policy documents are checked in two steps: INV-POL-1's character and
+  length rule (`ValidationError`), then the parser for the document's type
+  within the configured quota, whose own code (`MalformedPolicyDocument`
+  or `LimitExceeded`) is returned. Documents come back URL-encoded, as
+  AWS returns them.
+- Bundled AWS-managed policies are readable and listable (`Scope=AWS`)
+  with this account's attachment counts. Their `PolicyId` is derived from
+  the name's SHA-256, so every member gives the same one. They cannot be
+  tagged, versioned or deleted (`InvalidInput`).
+- `AddRoleToInstanceProfile` also authorizes `iam:PassRole` on the role,
+  with `iam:PassedToService` `ec2.amazonaws.com` and the profile as
+  `iam:AssociatedResourceArn`, as AWS does. Attach and detach carry
+  `iam:PolicyARN`. Boundary actions and `CreateRole`/`CreateUser` carry
+  `iam:PermissionsBoundary`. A delete is keyed on the boundary being
+  removed.
+
 **Terraform coverage.** The provider's call list is taken from a recorded
 `terraform apply` and `destroy` against real AWS, or from the provider
 source. The instance-profile calls and anything else it needs are added in

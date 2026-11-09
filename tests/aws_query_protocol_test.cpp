@@ -79,6 +79,15 @@ BOOST_AUTO_TEST_CASE(escapes_and_drops_unencodable_characters) {
     BOOST_TEST(q::xml_escape(std::string("x\x01y\tz", 5)) == "xy\tz");
 }
 
+BOOST_AUTO_TEST_CASE(url_encodes_policy_documents_as_iam_returns_them) {
+    BOOST_TEST(q::url_encode(R"({"Effect":"Allow"} a~b-c_d.e/f+)") ==
+               "%7B%22Effect%22%3A%22Allow%22%7D%20a~b-c_d.e%2Ff%2B");
+    BOOST_TEST(q::url_encode(std::string("\xC3\xA9", 2)) == "%C3%A9");
+    // What the form decoder reads back is the original text.
+    const auto doc = std::string(R"({"Version":"2012-10-17","Statement":[]})");
+    BOOST_TEST(*q::form::parse("D=" + q::url_encode(doc))->get("D") == doc);
+}
+
 BOOST_AUTO_TEST_CASE(writes_nested_elements) {
     q::xml_writer w;
     w.open("User").element("UserName", "a<b").boolean("Enabled", true).close();

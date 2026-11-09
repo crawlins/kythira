@@ -22,6 +22,7 @@
 /// their tasks (15, 16) arrive.
 
 #include <kythira/iam/iam_authorizer.hpp>
+#include <kythira/iam/iam_policy.hpp>
 #include <kythira/iam/iam_seal.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
 #include <kythira/iam/iam_validation.hpp>
@@ -36,17 +37,22 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -158,6 +164,77 @@ inline void write_boundary(aws_query::xml_writer& w, const std::optional<std::st
     }
 }
 
+/// The parts of a managed-policy ARN, `arn:<partition>:iam::<account>:policy<path><name>`.
+struct policy_arn_parts {
+    std::string partition;
+    std::string account;  // "aws" for an AWS-managed policy
+    std::string path;
+    std::string name;
+};
+
+[[nodiscard]] inline auto split_policy_arn_any(std::string_view parn)
+    -> std::optional<policy_arn_parts> {
+    if (!parn.starts_with("arn:")) {
+        return std::nullopt;
+    }
+    auto rest = parn.substr(4);
+    const auto c1 = rest.find(':');
+    if (c1 == std::string_view::npos) {
+        return std::nullopt;
+    }
+    policy_arn_parts out;
+    out.partition = std::string(rest.substr(0, c1));
+    rest = rest.substr(c1 + 1);
+    if (!rest.starts_with("iam::")) {
+        return std::nullopt;
+    }
+    rest = rest.substr(5);
+    const auto c2 = rest.find(':');
+    if (c2 == std::string_view::npos) {
+        return std::nullopt;
+    }
+    out.account = std::string(rest.substr(0, c2));
+    rest = rest.substr(c2 + 1);
+    if (!rest.starts_with("policy/")) {
+        return std::nullopt;
+    }
+    rest = rest.substr(6);  // keep the leading '/'
+    const auto slash = rest.rfind('/');
+    out.path = std::string(rest.substr(0, slash + 1));
+    out.name = std::string(rest.substr(slash + 1));
+    if (out.name.empty()) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+/// The same, only in `partition`.
+[[nodiscard]] inline auto split_policy_arn(std::string_view partition, std::string_view parn)
+    -> std::optional<policy_arn_parts> {
+    auto p = split_policy_arn_any(parn);
+    if (!p || p->partition != partition) {
+        return std::nullopt;
+    }
+    return p;
+}
+
+/// A stable PolicyId for a bundled AWS-managed policy, which carries none:
+/// "ANPA" and 16 base32 characters of its name's SHA-256, the same on
+/// every member.
+[[nodiscard]] inline auto aws_policy_id(std::string_view name) -> std::string {
+    std::array<unsigned char, EVP_MAX_MD_SIZE> md{};
+    unsigned int len = 0;
+    if (EVP_Digest(name.data(), name.size(), md.data(), &len, EVP_sha256(), nullptr) != 1) {
+        throw std::runtime_error("iam: SHA-256 failed");
+    }
+    static constexpr std::string_view b32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    std::string out = "ANPA";
+    for (std::size_t i = 0; i < 16; ++i) {
+        out += b32[md[i] & 0x1FU];
+    }
+    return out;
+}
+
 }  // namespace detail
 
 template<query_cluster C> class iam_query_api {
@@ -210,16 +287,16 @@ private:
         // ── plumbing ──
 
         auto dispatch() -> std::string {
-            using handler = std::string (call::*)();
+            using handler = std::function<std::string(call&)>;
             static const std::map<std::string_view, handler, std::less<>> table{
                 {"CreateUser", &call::create_user},
                 {"GetUser", &call::get_user},
                 {"ListUsers", &call::list_users},
                 {"UpdateUser", &call::update_user},
                 {"DeleteUser", &call::delete_user},
-                {"TagUser", &call::tag_user},
-                {"UntagUser", &call::untag_user},
-                {"ListUserTags", &call::list_user_tags},
+                {"TagUser", [](call& c) { return c.tag("user"); }},
+                {"UntagUser", [](call& c) { return c.untag("user"); }},
+                {"ListUserTags", [](call& c) { return c.list_tags("user"); }},
                 {"CreateAccessKey", &call::create_access_key},
                 {"ListAccessKeys", &call::list_access_keys},
                 {"UpdateAccessKey", &call::update_access_key},
@@ -236,13 +313,83 @@ private:
                 {"CreateAccountAlias", &call::create_account_alias},
                 {"DeleteAccountAlias", &call::delete_account_alias},
                 {"ListAccountAliases", &call::list_account_aliases},
+                // Roles (Requirement 9.4)
+                {"CreateRole", &call::create_role},
+                {"GetRole", &call::get_role},
+                {"ListRoles", &call::list_roles},
+                {"UpdateRole", &call::update_role},
+                {"UpdateRoleDescription", &call::update_role_description},
+                {"UpdateAssumeRolePolicy", &call::update_assume_role_policy},
+                {"DeleteRole", &call::delete_role},
+                {"TagRole", [](call& c) { return c.tag("role"); }},
+                {"UntagRole", [](call& c) { return c.untag("role"); }},
+                {"ListRoleTags", [](call& c) { return c.list_tags("role"); }},
+                // Managed policies and versions (Requirement 9.5)
+                {"CreatePolicy", &call::create_policy},
+                {"GetPolicy", &call::get_policy},
+                {"ListPolicies", &call::list_policies},
+                {"DeletePolicy", &call::delete_policy},
+                {"CreatePolicyVersion", &call::create_policy_version},
+                {"GetPolicyVersion", &call::get_policy_version},
+                {"ListPolicyVersions", &call::list_policy_versions},
+                {"DeletePolicyVersion",
+                 [](call& c) {
+                     return c.policy_version_change(iam_command::delete_policy_version);
+                 }},
+                {"SetDefaultPolicyVersion",
+                 [](call& c) { return c.policy_version_change(iam_command::set_default_version); }},
+                {"TagPolicy", [](call& c) { return c.tag("policy"); }},
+                {"UntagPolicy", [](call& c) { return c.untag("policy"); }},
+                {"ListPolicyTags", [](call& c) { return c.list_tags("policy"); }},
+                {"ListEntitiesForPolicy", &call::list_entities_for_policy},
+                // Attachments, inline policies and boundaries
+                {"AttachUserPolicy", [](call& c) { return c.attach("user", true); }},
+                {"AttachGroupPolicy", [](call& c) { return c.attach("group", true); }},
+                {"AttachRolePolicy", [](call& c) { return c.attach("role", true); }},
+                {"DetachUserPolicy", [](call& c) { return c.attach("user", false); }},
+                {"DetachGroupPolicy", [](call& c) { return c.attach("group", false); }},
+                {"DetachRolePolicy", [](call& c) { return c.attach("role", false); }},
+                {"ListAttachedUserPolicies", [](call& c) { return c.list_attached("user"); }},
+                {"ListAttachedGroupPolicies", [](call& c) { return c.list_attached("group"); }},
+                {"ListAttachedRolePolicies", [](call& c) { return c.list_attached("role"); }},
+                {"PutUserPolicy", [](call& c) { return c.put_inline("user"); }},
+                {"PutGroupPolicy", [](call& c) { return c.put_inline("group"); }},
+                {"PutRolePolicy", [](call& c) { return c.put_inline("role"); }},
+                {"GetUserPolicy", [](call& c) { return c.get_inline("user"); }},
+                {"GetGroupPolicy", [](call& c) { return c.get_inline("group"); }},
+                {"GetRolePolicy", [](call& c) { return c.get_inline("role"); }},
+                {"DeleteUserPolicy", [](call& c) { return c.delete_inline("user"); }},
+                {"DeleteGroupPolicy", [](call& c) { return c.delete_inline("group"); }},
+                {"DeleteRolePolicy", [](call& c) { return c.delete_inline("role"); }},
+                {"ListUserPolicies", [](call& c) { return c.list_inline("user"); }},
+                {"ListGroupPolicies", [](call& c) { return c.list_inline("group"); }},
+                {"ListRolePolicies", [](call& c) { return c.list_inline("role"); }},
+                {"PutUserPermissionsBoundary", [](call& c) { return c.boundary("user", true); }},
+                {"PutRolePermissionsBoundary", [](call& c) { return c.boundary("role", true); }},
+                {"DeleteUserPermissionsBoundary",
+                 [](call& c) { return c.boundary("user", false); }},
+                {"DeleteRolePermissionsBoundary",
+                 [](call& c) { return c.boundary("role", false); }},
+                // Instance profiles (Requirement 9.7)
+                {"CreateInstanceProfile", &call::create_instance_profile},
+                {"GetInstanceProfile", &call::get_instance_profile},
+                {"ListInstanceProfiles", &call::list_instance_profiles},
+                {"ListInstanceProfilesForRole", &call::list_instance_profiles_for_role},
+                {"DeleteInstanceProfile", &call::delete_instance_profile},
+                {"AddRoleToInstanceProfile", [](call& c) { return c.instance_profile_role(true); }},
+                {"RemoveRoleFromInstanceProfile",
+                 [](call& c) { return c.instance_profile_role(false); }},
+                {"TagInstanceProfile", [](call& c) { return c.tag("instance-profile"); }},
+                {"UntagInstanceProfile", [](call& c) { return c.untag("instance-profile"); }},
+                {"ListInstanceProfileTags",
+                 [](call& c) { return c.list_tags("instance-profile"); }},
             };
             const auto it = table.find(action);
             if (it == table.end()) {
                 detail::fail("NotImplemented",
                              "The action " + action + " is not implemented by this endpoint.");
             }
-            return (this->*(it->second))();
+            return it->second(*this);
         }
 
         [[nodiscard]] auto account() const -> const std::string& { return who.account; }
@@ -263,11 +410,22 @@ private:
             return std::move(o);
         }
 
+        using key_list = std::vector<std::pair<std::string, std::vector<std::string>>>;
+
         void authorize(const std::string& resource, const tag_map* resource_tags = nullptr,
                        std::optional<validate::tag_list> request_tags = std::nullopt,
-                       std::vector<std::pair<std::string, std::vector<std::string>>> keys = {}) {
+                       key_list keys = {}) {
+            authorize_as(action, resource, resource_tags, std::move(request_tags), std::move(keys));
+        }
+
+        /// Authorizes `iam:<as>` rather than the request's own action: the
+        /// iam:PassRole an AddRoleToInstanceProfile also needs.
+        void authorize_as(std::string_view as, const std::string& resource,
+                          const tag_map* resource_tags = nullptr,
+                          std::optional<validate::tag_list> request_tags = std::nullopt,
+                          key_list keys = {}) {
             aws_auth::authz_request r;
-            r.action = "iam:" + action;
+            r.action = "iam:" + std::string(as);
             r.resource = resource;
             r.keys = std::move(keys);
             if (resource_tags != nullptr) {
@@ -577,61 +735,6 @@ private:
             authorize(v.arn, &v.u.tags);
             (void)submit(iam_command::delete_user, {{"name", name}});
             return {};
-        }
-
-        auto tag_user() -> std::string {
-            const auto name = entity_name("UserName", "user");
-            const auto t = tags(validate::tag_keys::case_insensitive);
-            if (t.empty()) {
-                detail::fail("ValidationError", "The Tags parameter must not be empty.");
-            }
-            const auto v = load_user(name);
-            authorize(v.arn, &v.u.tags, t);
-            (void)submit(iam_command::tag_entity,
-                         {{"kind", "user"}, {"name", name}, {"tags", tags_json(t)}});
-            return {};
-        }
-
-        auto untag_user() -> std::string {
-            const auto name = entity_name("UserName", "user");
-            const auto keys = f.members("TagKeys");
-            if (!keys || keys->empty()) {
-                detail::fail("ValidationError", "The TagKeys parameter must not be empty.");
-            }
-            for (const auto& k : *keys) {
-                if (!validate::tag_key(k)) {
-                    detail::fail("ValidationError", "Invalid tag key: " + k);
-                }
-            }
-            const auto v = load_user(name);
-            authorize(v.arn, &v.u.tags, std::nullopt,
-                      {{"aws:TagKeys", std::vector<std::string>(keys->begin(), keys->end())}});
-            boost::json::array ka;
-            for (const auto& k : *keys) {
-                ka.emplace_back(k);
-            }
-            (void)submit(iam_command::untag_entity,
-                         {{"kind", "user"}, {"name", name}, {"keys", std::move(ka)}});
-            return {};
-        }
-
-        auto list_user_tags() -> std::string {
-            const auto name = entity_name("UserName", "user");
-            const auto v = load_user(name);
-            authorize(v.arn, &v.u.tags);
-            std::vector<std::string> keys;
-            for (const auto& [k, _] : v.u.tags) {
-                keys.push_back(k);
-            }
-            std::string tail;
-            const auto selected = page(keys, name, tail);
-            aws_query::xml_writer w;
-            w.open("Tags");
-            for (const auto& k : selected) {
-                w.open("member").element("Key", k).element("Value", v.u.tags.at(k)).close();
-            }
-            w.close().raw(tail);
-            return w.str();
         }
 
         // ── access keys ──
@@ -981,6 +1084,1093 @@ private:
             }
             w.close().raw(tail);
             return w.str();
+        }
+
+        // ── parameters shared by task 15's actions ──
+
+        [[nodiscard]] auto limits() -> iam_limits {
+            iam_limits out;
+            read([&](const iam_state_machine& sm) { out = sm.config().limits; });
+            return out;
+        }
+
+        [[nodiscard]] auto optional_int(std::string_view param) const
+            -> std::optional<std::int64_t> {
+            const auto v = f.get(param);
+            if (!v) {
+                return std::nullopt;
+            }
+            std::int64_t n = 0;
+            const auto* end = v->data() + v->size();
+            const auto [p, ec] = std::from_chars(v->data(), end, n);
+            if (ec != std::errc{} || p != end || v->empty()) {
+                detail::fail("ValidationError", "The specified value for " + std::string(param) +
+                                                    " is not a valid integer.");
+            }
+            return n;
+        }
+
+        [[nodiscard]] auto optional_bool(std::string_view param) const -> std::optional<bool> {
+            const auto v = f.get(param);
+            if (!v) {
+                return std::nullopt;
+            }
+            const auto l = iam_detail::lower(*v);
+            if (l != "true" && l != "false") {
+                detail::fail("ValidationError", "The specified value for " + std::string(param) +
+                                                    " must be true or false.");
+            }
+            return l == "true";
+        }
+
+        /// One of `allowed`, or `fallback` when the parameter is absent.
+        [[nodiscard]] auto choice(std::string_view param,
+                                  std::initializer_list<std::string_view> allowed,
+                                  std::string_view fallback) const -> std::string {
+            const auto v = f.get(param);
+            if (!v) {
+                return std::string(fallback);
+            }
+            if (std::ranges::find(allowed, *v) == allowed.end()) {
+                std::string set;
+                for (const auto a : allowed) {
+                    set += (set.empty() ? "" : ", ") + std::string(a);
+                }
+                detail::fail("ValidationError", "1 validation error detected: Value '" +
+                                                    std::string(*v) + "' at '" +
+                                                    std::string(param) +
+                                                    "' failed to satisfy constraint: Member must "
+                                                    "satisfy enum value set: [" +
+                                                    set + "]");
+            }
+            return std::string(*v);
+        }
+
+        /// INV-ROLE-2 (and the same rule for policy descriptions).
+        [[nodiscard]] auto optional_description(std::string_view param) const
+            -> std::optional<std::string> {
+            const auto v = f.get(param);
+            if (!v) {
+                return std::nullopt;
+            }
+            if (!validate::role_description(*v)) {
+                detail::fail("ValidationError",
+                             "The specified value for " + std::string(param) +
+                                 " is invalid. It must be at most 1000 characters of tab, "
+                                 "line feed, carriage return and printable characters.");
+            }
+            return std::string(*v);
+        }
+
+        /// INV-ROLE-1: MaxSessionDuration is 3600-43200 seconds.
+        [[nodiscard]] auto optional_max_session() const -> std::optional<std::int64_t> {
+            const auto v = optional_int("MaxSessionDuration");
+            if (v && !validate::max_session_duration(*v)) {
+                detail::fail("ValidationError",
+                             "The requested DurationSeconds exceeds the MaxSessionDuration set "
+                             "for this role. 1 validation error detected: Value '" +
+                                 std::to_string(*v) +
+                                 "' at 'maxSessionDuration' failed to satisfy constraint: Member "
+                                 "must have value between 3600 and 43200");
+            }
+            return v;
+        }
+
+        /// An ARN parameter (INV-ARN-1).
+        [[nodiscard]] auto arn_param(std::string_view param) const -> std::string {
+            auto v = required(param);
+            if (!validate::arn_length(v)) {
+                detail::fail("ValidationError", "The specified value for " + std::string(param) +
+                                                    " is invalid. It must be 20-2048 characters.");
+            }
+            return v;
+        }
+
+        /// A policy document parameter: INV-POL-1's character and length
+        /// rule, then the grammar of `type` within `max` bytes. The parser's
+        /// own code (MalformedPolicyDocument or LimitExceeded) is AWS's.
+        [[nodiscard]] auto document(std::string_view param, policy_type type, std::size_t max) const
+            -> std::string {
+            auto doc = required(param);
+            if (!validate::policy_document_text(doc)) {
+                detail::fail("ValidationError",
+                             "The specified value for " + std::string(param) +
+                                 " is invalid. It must contain only printable ASCII "
+                                 "characters, tab, line feed, carriage return and U+00A0-U+00FF, "
+                                 "and be 1-131072 characters long.");
+            }
+            try {
+                (void)parse_policy(doc, type, parse_options{.max_size = max});
+            } catch (const policy_error& e) {
+                detail::fail(std::string(e.code()), e.what());
+            }
+            return doc;
+        }
+
+        /// `TagKeys.member.N`, at least one, each a valid key.
+        [[nodiscard]] auto tag_keys_param() const -> std::vector<std::string> {
+            const auto keys = f.members("TagKeys");
+            if (!keys || keys->empty()) {
+                detail::fail("ValidationError", "The TagKeys parameter must not be empty.");
+            }
+            for (const auto& k : *keys) {
+                if (!validate::tag_key(k)) {
+                    detail::fail("ValidationError", "Invalid tag key: " + k);
+                }
+            }
+            return {keys->begin(), keys->end()};
+        }
+
+        [[nodiscard]] static auto boundary_keys(const std::optional<std::string>& b) -> key_list {
+            if (!b) {
+                return {};
+            }
+            return {{"iam:PermissionsBoundary", {*b}}};
+        }
+
+        // ── roles (Requirement 9.4) ──
+
+        struct role_view {
+            iam_role r;
+            std::string arn;
+        };
+
+        auto load_role(const std::string& name) -> role_view {
+            std::optional<role_view> out;
+            read([&](const iam_state_machine& sm) {
+                if (const auto* r = sm.role(account(), name)) {
+                    out = role_view{*r, sm.arn(account(), "role", r->path, r->name)};
+                }
+            });
+            if (!out) {
+                authorize(arn("role", "/", name));
+                detail::fail("NoSuchEntity", "The role with name " + name + " cannot be found.");
+            }
+            return std::move(*out);
+        }
+
+        /// GetRole's full form (`full`) adds the boundary, tags and
+        /// RoleLastUsed, which ListRoles leaves out, as AWS does.
+        static void write_role(aws_query::xml_writer& w, const role_view& v, bool full) {
+            w.element("Path", v.r.path)
+                .element("RoleName", v.r.name)
+                .element("RoleId", v.r.id)
+                .element("Arn", v.arn)
+                .element("CreateDate", iso8601(v.r.create_date))
+                .element("AssumeRolePolicyDocument", aws_query::url_encode(v.r.trust_policy));
+            if (!v.r.description.empty()) {
+                w.element("Description", v.r.description);
+            }
+            w.element("MaxSessionDuration", std::to_string(v.r.max_session_duration));
+            if (full) {
+                detail::write_boundary(w, v.r.boundary);
+                if (!v.r.tags.empty()) {
+                    detail::write_tags(w, v.r.tags);
+                }
+                w.open("RoleLastUsed").close();
+            }
+        }
+
+        auto role_result(const std::string& name) -> std::string {
+            aws_query::xml_writer w;
+            w.open("Role");
+            write_role(w, load_role(name), true);
+            w.close();
+            return w.str();
+        }
+
+        auto create_role() -> std::string {
+            const auto name = entity_name("RoleName", "role");
+            const auto path = optional_path("Path").value_or("/");
+            const auto trust = document("AssumeRolePolicyDocument", policy_type::trust,
+                                        limits().trust_policy_size);
+            const auto description = optional_description("Description");
+            const auto max_session = optional_max_session();
+            const auto t = tags(validate::tag_keys::case_insensitive);
+            std::optional<std::string> boundary;
+            if (f.contains("PermissionsBoundary")) {
+                boundary = arn_param("PermissionsBoundary");
+            }
+            authorize(arn("role", path, name), nullptr, t, boundary_keys(boundary));
+            boost::json::object cmd{{"name", name},
+                                    {"path", path},
+                                    {"id", iam_leader::generate_unique_id("AROA")},
+                                    {"trust_policy", trust},
+                                    {"tags", tags_json(t)}};
+            if (description) {
+                cmd["description"] = *description;
+            }
+            if (max_session) {
+                cmd["max_session_duration"] = *max_session;
+            }
+            if (boundary) {
+                cmd["boundary"] = *boundary;
+            }
+            (void)submit(iam_command::create_role, std::move(cmd));
+            return role_result(name);
+        }
+
+        auto get_role() -> std::string {
+            const auto name = entity_name("RoleName", "role");
+            const auto v = load_role(name);
+            authorize(v.arn, &v.r.tags);
+            aws_query::xml_writer w;
+            w.open("Role");
+            write_role(w, v, true);
+            w.close();
+            return w.str();
+        }
+
+        auto list_roles() -> std::string {
+            const auto prefix = optional_path("PathPrefix").value_or("/");
+            authorize("*");
+            std::vector<std::string> keys;
+            std::map<std::string, role_view> all;
+            read([&](const iam_state_machine& sm) {
+                if (const auto* a = sm.account(account())) {
+                    for (const auto& [k, r] : a->roles) {
+                        if (r.path.starts_with(prefix)) {
+                            keys.push_back(k);
+                            all.emplace(k, role_view{r, sm.arn(account(), "role", r.path, r.name)});
+                        }
+                    }
+                }
+            });
+            std::string tail;
+            const auto selected = page(keys, prefix, tail);
+            aws_query::xml_writer w;
+            w.open("Roles");
+            for (const auto& k : selected) {
+                w.open("member");
+                write_role(w, all.at(k), false);
+                w.close();
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        /// UpdateRole and UpdateRoleDescription: INV-ROLE-1 and INV-ROLE-2
+        /// are checked here, before anything is proposed.
+        auto change_role(bool description_only) -> role_view {
+            const auto name = entity_name("RoleName", "role");
+            const auto description = optional_description("Description");
+            if (description_only && !description) {
+                (void)required("Description");
+            }
+            const auto max_session = description_only ? std::nullopt : optional_max_session();
+            const auto v = load_role(name);
+            authorize(v.arn, &v.r.tags);
+            boost::json::object cmd{{"name", name}};
+            if (description) {
+                cmd["description"] = *description;
+            }
+            if (max_session) {
+                cmd["max_session_duration"] = *max_session;
+            }
+            (void)submit(iam_command::update_role, std::move(cmd));
+            return v;
+        }
+
+        auto update_role() -> std::string {
+            (void)change_role(false);
+            return {};
+        }
+
+        auto update_role_description() -> std::string {
+            return role_result(change_role(true).r.name);
+        }
+
+        auto update_assume_role_policy() -> std::string {
+            const auto name = entity_name("RoleName", "role");
+            const auto trust =
+                document("PolicyDocument", policy_type::trust, limits().trust_policy_size);
+            const auto v = load_role(name);
+            authorize(v.arn, &v.r.tags);
+            (void)submit(iam_command::update_trust_policy,
+                         {{"name", name}, {"trust_policy", trust}});
+            return {};
+        }
+
+        auto delete_role() -> std::string {
+            const auto name = entity_name("RoleName", "role");
+            const auto v = load_role(name);
+            authorize(v.arn, &v.r.tags);
+            (void)submit(iam_command::delete_role, {{"name", name}});
+            return {};
+        }
+
+        // ── managed policies (Requirement 9.5) ──
+
+        struct policy_view {
+            std::string name;
+            std::string path;
+            std::string id;
+            std::string arn;
+            std::string description;
+            int default_version = 1;
+            std::int64_t create_date = 0;
+            std::int64_t update_date = 0;
+            std::size_t attachments = 0;
+            std::size_t boundary_uses = 0;
+            tag_map tags;
+            bool aws_managed = false;
+            std::map<int, policy_version> versions;
+        };
+
+        /// Attachments and boundary uses of `parn` in this account: AWS
+        /// counts them per account for its own managed policies too.
+        [[nodiscard]] auto usage(const iam_state_machine& sm, const std::string& parn) const
+            -> std::pair<std::size_t, std::size_t> {
+            std::size_t attached = 0;
+            std::size_t bounded = 0;
+            if (const auto* a = sm.account(account())) {
+                for (const auto& [_, u] : a->users) {
+                    attached += u.attached.count(parn);
+                    bounded += (u.boundary == parn) ? 1 : 0;
+                }
+                for (const auto& [_, g] : a->groups) {
+                    attached += g.attached.count(parn);
+                }
+                for (const auto& [_, r] : a->roles) {
+                    attached += r.attached.count(parn);
+                    bounded += (r.boundary == parn) ? 1 : 0;
+                }
+            }
+            return {attached, bounded};
+        }
+
+        [[nodiscard]] auto find_policy(const iam_state_machine& sm, const std::string& parn) const
+            -> std::optional<policy_view> {
+            const auto p = detail::split_policy_arn(sm.config().partition, parn);
+            if (!p) {
+                return std::nullopt;
+            }
+            policy_view v;
+            v.arn = parn;
+            if (p->account == "aws") {
+                const auto m = find_aws_managed_policy(p->name);
+                if (!m || m->path != p->path) {
+                    return std::nullopt;
+                }
+                v.name = std::string(m->name);
+                v.path = std::string(m->path);
+                v.id = detail::aws_policy_id(m->name);
+                v.aws_managed = true;
+                v.default_version = iam_detail::parse_version_id(m->version_id).value_or(1);
+                v.versions.emplace(v.default_version, policy_version{std::string(m->document), 0});
+                std::tie(v.attachments, v.boundary_uses) = usage(sm, parn);
+                return v;
+            }
+            if (p->account != account()) {
+                return std::nullopt;
+            }
+            const auto* mp = sm.managed_policy(account(), p->name);
+            if (mp == nullptr || mp->path != p->path) {
+                return std::nullopt;
+            }
+            v.name = mp->name;
+            v.path = mp->path;
+            v.id = mp->id;
+            v.description = mp->description;
+            v.default_version = mp->default_version;
+            v.create_date = mp->create_date;
+            v.update_date = mp->update_date;
+            v.attachments = mp->attachment_count;
+            v.boundary_uses = mp->boundary_usage_count;
+            v.tags = mp->tags;
+            v.versions = mp->versions;
+            return v;
+        }
+
+        auto load_policy(const std::string& parn) -> policy_view {
+            std::optional<policy_view> out;
+            read([&](const iam_state_machine& sm) { out = find_policy(sm, parn); });
+            if (!out) {
+                authorize(parn);
+                detail::fail("NoSuchEntity", "Policy " + parn + " was not found.");
+            }
+            return std::move(*out);
+        }
+
+        static void write_policy(aws_query::xml_writer& w, const policy_view& v, bool full) {
+            w.element("PolicyName", v.name)
+                .element("PolicyId", v.id)
+                .element("Arn", v.arn)
+                .element("Path", v.path)
+                .element("DefaultVersionId", iam_detail::version_id(v.default_version))
+                .element("AttachmentCount", std::to_string(v.attachments))
+                .element("PermissionsBoundaryUsageCount", std::to_string(v.boundary_uses))
+                .boolean("IsAttachable", true);
+            if (full && !v.description.empty()) {
+                w.element("Description", v.description);
+            }
+            w.element("CreateDate", iso8601(v.create_date))
+                .element("UpdateDate", iso8601(v.update_date));
+            if (full && !v.tags.empty()) {
+                detail::write_tags(w, v.tags);
+            }
+        }
+
+        auto policy_result(const std::string& parn) -> std::string {
+            aws_query::xml_writer w;
+            w.open("Policy");
+            write_policy(w, load_policy(parn), true);
+            w.close();
+            return w.str();
+        }
+
+        auto create_policy() -> std::string {
+            const auto name = entity_name("PolicyName", "policy");
+            const auto path = optional_path("Path").value_or("/");
+            const auto doc =
+                document("PolicyDocument", policy_type::identity, limits().managed_policy_size);
+            const auto description = optional_description("Description");
+            const auto t = tags(validate::tag_keys::case_sensitive);
+            const auto parn = arn("policy", path, name);
+            authorize(parn, nullptr, t);
+            boost::json::object cmd{{"name", name},
+                                    {"path", path},
+                                    {"id", iam_leader::generate_unique_id("ANPA")},
+                                    {"document", doc},
+                                    {"tags", tags_json(t)}};
+            if (description) {
+                cmd["description"] = *description;
+            }
+            (void)submit(iam_command::create_policy, std::move(cmd));
+            return policy_result(parn);
+        }
+
+        auto get_policy() -> std::string {
+            const auto v = load_policy(arn_param("PolicyArn"));
+            authorize(v.arn, &v.tags);
+            aws_query::xml_writer w;
+            w.open("Policy");
+            write_policy(w, v, true);
+            w.close();
+            return w.str();
+        }
+
+        auto list_policies() -> std::string {
+            const auto scope = choice("Scope", {"All", "AWS", "Local"}, "All");
+            const bool only_attached = optional_bool("OnlyAttached").value_or(false);
+            const auto prefix = optional_path("PathPrefix").value_or("/");
+            const auto filter =
+                choice("PolicyUsageFilter", {"PermissionsPolicy", "PermissionsBoundary"}, "");
+            authorize("*");
+            std::vector<std::string> keys;
+            std::map<std::string, policy_view> all;
+            const auto keep = [&](const policy_view& v) {
+                if (!v.path.starts_with(prefix)) {
+                    return false;
+                }
+                if (filter == "PermissionsPolicy" && only_attached) {
+                    return v.attachments > 0;
+                }
+                if (filter == "PermissionsBoundary" && only_attached) {
+                    return v.boundary_uses > 0;
+                }
+                return !only_attached || v.attachments + v.boundary_uses > 0;
+            };
+            read([&](const iam_state_machine& sm) {
+                const auto& partition = sm.config().partition;
+                if (scope != "Local") {
+                    for (const auto& e : aws_managed_policy_data) {
+                        const auto parn = "arn:" + partition + ":iam::aws:policy" +
+                                          std::string(e.path) + std::string(e.name);
+                        if (auto v = find_policy(sm, parn); v && keep(*v)) {
+                            keys.push_back(parn);
+                            all.emplace(parn, std::move(*v));
+                        }
+                    }
+                }
+                if (scope != "AWS") {
+                    if (const auto* a = sm.account(account())) {
+                        for (const auto& [_, mp] : a->policies) {
+                            const auto parn = sm.arn(account(), "policy", mp.path, mp.name);
+                            if (auto v = find_policy(sm, parn); v && keep(*v)) {
+                                keys.push_back(parn);
+                                all.emplace(parn, std::move(*v));
+                            }
+                        }
+                    }
+                }
+            });
+            std::ranges::sort(keys);
+            std::string tail;
+            const auto selected =
+                page(keys, scope + ":" + prefix + ":" + (only_attached ? "1" : "0") + filter, tail);
+            aws_query::xml_writer w;
+            w.open("Policies");
+            for (const auto& k : selected) {
+                w.open("member");
+                write_policy(w, all.at(k), false);
+                w.close();
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        auto delete_policy() -> std::string {
+            const auto v = load_policy(arn_param("PolicyArn"));
+            authorize(v.arn, &v.tags);
+            (void)submit(iam_command::delete_policy, {{"arn", v.arn}});
+            return {};
+        }
+
+        /// INV-POL-6: a VersionId parameter's form; its existence is the
+        /// state's to say.
+        [[nodiscard]] auto version_param() const -> std::string {
+            auto v = required("VersionId");
+            if (!validate::policy_version_id(v)) {
+                detail::fail(
+                    "ValidationError",
+                    "1 validation error detected: Value '" + v +
+                        "' at 'versionId' failed to satisfy constraint: Member must "
+                        "satisfy regular expression pattern: v[1-9][0-9]*(\\.[A-Za-z0-9-]*)?");
+            }
+            return v;
+        }
+
+        auto create_policy_version() -> std::string {
+            const auto parn = arn_param("PolicyArn");
+            const auto doc =
+                document("PolicyDocument", policy_type::identity, limits().managed_policy_size);
+            const bool set_default = optional_bool("SetAsDefault").value_or(false);
+            const auto v = load_policy(parn);
+            authorize(v.arn, &v.tags);
+            const auto r =
+                submit(iam_command::create_policy_version,
+                       {{"arn", v.arn}, {"document", doc}, {"set_as_default", set_default}});
+            aws_query::xml_writer w;
+            w.open("PolicyVersion")
+                .element("VersionId", std::string(r.at("version_id").as_string()))
+                .boolean("IsDefaultVersion", r.at("is_default").as_bool())
+                .element("CreateDate", iso8601(r.at("create_date").as_int64()))
+                .close();
+            return w.str();
+        }
+
+        auto get_policy_version() -> std::string {
+            const auto parn = arn_param("PolicyArn");
+            const auto vid = version_param();
+            const auto v = load_policy(parn);
+            authorize(v.arn, &v.tags);
+            const auto n = iam_detail::parse_version_id(vid);
+            const auto it = n ? v.versions.find(*n) : v.versions.end();
+            if (it == v.versions.end()) {
+                detail::fail("NoSuchEntity", "Policy " + parn + " version " + vid +
+                                                 " does not exist or is not "
+                                                 "attachable.");
+            }
+            aws_query::xml_writer w;
+            w.open("PolicyVersion")
+                .element("Document", aws_query::url_encode(it->second.document))
+                .element("VersionId", iam_detail::version_id(it->first))
+                .boolean("IsDefaultVersion", it->first == v.default_version)
+                .element("CreateDate", iso8601(it->second.create_date))
+                .close();
+            return w.str();
+        }
+
+        auto list_policy_versions() -> std::string {
+            const auto v = load_policy(arn_param("PolicyArn"));
+            authorize(v.arn, &v.tags);
+            // Zero-padded, so the page's string order is version order.
+            std::vector<std::string> keys;
+            for (const auto& [n, _] : v.versions) {
+                auto k = std::to_string(n);
+                keys.push_back(std::string(10 - std::min<std::size_t>(10, k.size()), '0') + k);
+            }
+            std::string tail;
+            const auto selected = page(keys, v.arn, tail);
+            aws_query::xml_writer w;
+            w.open("Versions");
+            for (const auto& k : selected) {
+                const int n = std::stoi(k);
+                const auto& pv = v.versions.at(n);
+                w.open("member")
+                    .element("VersionId", iam_detail::version_id(n))
+                    .boolean("IsDefaultVersion", n == v.default_version)
+                    .element("CreateDate", iso8601(pv.create_date))
+                    .close();
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        auto policy_version_change(iam_command type) -> std::string {
+            const auto parn = arn_param("PolicyArn");
+            const auto vid = version_param();
+            const auto v = load_policy(parn);
+            authorize(v.arn, &v.tags);
+            (void)submit(type, {{"arn", v.arn}, {"version_id", vid}});
+            return {};
+        }
+
+        auto list_entities_for_policy() -> std::string {
+            const auto v = load_policy(arn_param("PolicyArn"));
+            const auto filter =
+                choice("EntityFilter",
+                       {"User", "Role", "Group", "LocalManagedPolicy", "AWSManagedPolicy"}, "");
+            const auto prefix = optional_path("PathPrefix").value_or("/");
+            const auto usage_filter =
+                choice("PolicyUsageFilter", {"PermissionsPolicy", "PermissionsBoundary"}, "");
+            authorize(v.arn, &v.tags);
+            const bool as_policy = usage_filter != "PermissionsBoundary";
+            const bool as_boundary = usage_filter != "PermissionsPolicy";
+            const auto uses = [&](const std::set<std::string>& attached,
+                                  const std::optional<std::string>& boundary) {
+                return (as_policy && attached.contains(v.arn)) ||
+                       (as_boundary && boundary == v.arn);
+            };
+            // Keys "g:", "r:", "u:" plus the entity's key, so one marker
+            // walks the three lists in turn.
+            std::vector<std::string> keys;
+            std::map<std::string, std::pair<std::string, std::string>> names;  // name, id
+            read([&](const iam_state_machine& sm) {
+                const auto* a = sm.account(account());
+                if (a == nullptr) {
+                    return;
+                }
+                if (filter.empty() || filter == "Group") {
+                    for (const auto& [k, g] : a->groups) {
+                        if (g.path.starts_with(prefix) && uses(g.attached, std::nullopt)) {
+                            keys.push_back("g:" + k);
+                            names["g:" + k] = {g.name, g.id};
+                        }
+                    }
+                }
+                if (filter.empty() || filter == "Role") {
+                    for (const auto& [k, r] : a->roles) {
+                        if (r.path.starts_with(prefix) && uses(r.attached, r.boundary)) {
+                            keys.push_back("r:" + k);
+                            names["r:" + k] = {r.name, r.id};
+                        }
+                    }
+                }
+                if (filter.empty() || filter == "User") {
+                    for (const auto& [k, u] : a->users) {
+                        if (u.path.starts_with(prefix) && uses(u.attached, u.boundary)) {
+                            keys.push_back("u:" + k);
+                            names["u:" + k] = {u.name, u.id};
+                        }
+                    }
+                }
+            });
+            std::string tail;
+            const auto selected =
+                page(keys, v.arn + ":" + filter + ":" + prefix + ":" + usage_filter, tail);
+            aws_query::xml_writer w;
+            for (const auto& [tag, kind, name_el, id_el] :
+                 {std::tuple{"PolicyGroups", 'g', "GroupName", "GroupId"},
+                  std::tuple{"PolicyUsers", 'u', "UserName", "UserId"},
+                  std::tuple{"PolicyRoles", 'r', "RoleName", "RoleId"}}) {
+                w.open(tag);
+                for (const auto& k : selected) {
+                    if (k[0] == kind) {
+                        const auto& [n, id] = names.at(k);
+                        w.open("member").element(name_el, n).element(id_el, id).close();
+                    }
+                }
+                w.close();
+            }
+            w.raw(tail);
+            return w.str();
+        }
+
+        // ── attachments, inline policies and boundaries ──
+
+        /// A user, group or role named by its `UserName`, `GroupName` or
+        /// `RoleName` parameter.
+        struct principal_view {
+            std::string kind;
+            std::string name;
+            std::string arn;
+            tag_map tags;
+            std::set<std::string> attached;
+            std::map<std::string, inline_policy> inline_policies;
+            std::optional<std::string> boundary;
+        };
+
+        [[nodiscard]] static auto name_param(std::string_view kind) -> std::string_view {
+            return kind == "user" ? "UserName" : kind == "group" ? "GroupName" : "RoleName";
+        }
+
+        auto load_principal(std::string_view kind) -> principal_view {
+            const auto name = entity_name(name_param(kind), kind);
+            if (kind == "user") {
+                auto v = load_user(name);
+                return {"user",      v.u.name, v.arn, v.u.tags, v.u.attached, v.u.inline_policies,
+                        v.u.boundary};
+            }
+            if (kind == "group") {
+                auto v = load_group(name);
+                return {"group",     v.g.name, v.arn, {}, v.g.attached, v.g.inline_policies,
+                        std::nullopt};
+            }
+            auto v = load_role(name);
+            return {"role",      v.r.name, v.arn, v.r.tags, v.r.attached, v.r.inline_policies,
+                    v.r.boundary};
+        }
+
+        [[nodiscard]] static auto tags_of(const principal_view& p) -> const tag_map* {
+            return p.kind == "group" ? nullptr : &p.tags;
+        }
+
+        auto attach(std::string_view kind, bool on) -> std::string {
+            const auto p = load_principal(kind);
+            const auto parn = arn_param("PolicyArn");
+            authorize(p.arn, tags_of(p), std::nullopt, {{"iam:PolicyARN", {parn}}});
+            (void)submit(on ? iam_command::attach_policy : iam_command::detach_policy,
+                         {{"kind", p.kind}, {"name", p.name}, {"arn", parn}});
+            return {};
+        }
+
+        auto list_attached(std::string_view kind) -> std::string {
+            const auto prefix = optional_path("PathPrefix").value_or("/");
+            const auto p = load_principal(kind);
+            authorize(p.arn, tags_of(p));
+            std::vector<std::string> keys;
+            for (const auto& parn : p.attached) {
+                const auto s = detail::split_policy_arn_any(parn);
+                if (s && s->path.starts_with(prefix)) {
+                    keys.push_back(parn);
+                }
+            }
+            std::string tail;
+            const auto selected = page(keys, p.kind + ":" + p.name + ":" + prefix, tail);
+            aws_query::xml_writer w;
+            w.open("AttachedPolicies");
+            for (const auto& parn : selected) {
+                w.open("member")
+                    .element("PolicyName", detail::split_policy_arn_any(parn)->name)
+                    .element("PolicyArn", parn)
+                    .close();
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        [[nodiscard]] auto inline_name() const -> std::string {
+            auto n = required("PolicyName");
+            if (!validate::inline_policy_name(n)) {
+                detail::fail("ValidationError",
+                             "The specified value for policyName is invalid. It must contain "
+                             "only alphanumeric characters and/or the following: +=,.@_-");
+            }
+            return n;
+        }
+
+        auto put_inline(std::string_view kind) -> std::string {
+            const auto pname = inline_name();
+            const auto l = limits();
+            const auto max = kind == "user"    ? l.user_inline_total
+                             : kind == "group" ? l.group_inline_total
+                                               : l.role_inline_total;
+            const auto doc = document("PolicyDocument", policy_type::identity, max);
+            const auto p = load_principal(kind);
+            authorize(p.arn, tags_of(p));
+            (void)submit(
+                iam_command::put_inline_policy,
+                {{"kind", p.kind}, {"name", p.name}, {"policy_name", pname}, {"document", doc}});
+            return {};
+        }
+
+        auto get_inline(std::string_view kind) -> std::string {
+            const auto pname = inline_name();
+            const auto p = load_principal(kind);
+            authorize(p.arn, tags_of(p));
+            const auto it = p.inline_policies.find(iam_detail::lower(pname));
+            if (it == p.inline_policies.end()) {
+                detail::fail("NoSuchEntity",
+                             "The " + p.kind + " policy with name " + pname + " cannot be found.");
+            }
+            aws_query::xml_writer w;
+            w.element(name_param(kind), p.name)
+                .element("PolicyName", it->second.name)
+                .element("PolicyDocument", aws_query::url_encode(it->second.document));
+            return w.str();
+        }
+
+        auto delete_inline(std::string_view kind) -> std::string {
+            const auto pname = inline_name();
+            const auto p = load_principal(kind);
+            authorize(p.arn, tags_of(p));
+            (void)submit(iam_command::delete_inline_policy,
+                         {{"kind", p.kind}, {"name", p.name}, {"policy_name", pname}});
+            return {};
+        }
+
+        auto list_inline(std::string_view kind) -> std::string {
+            const auto p = load_principal(kind);
+            authorize(p.arn, tags_of(p));
+            std::vector<std::string> keys;
+            for (const auto& [k, _] : p.inline_policies) {
+                keys.push_back(k);
+            }
+            std::string tail;
+            const auto selected = page(keys, p.kind + ":" + p.name, tail);
+            aws_query::xml_writer w;
+            w.open("PolicyNames");
+            for (const auto& k : selected) {
+                w.element("member", p.inline_policies.at(k).name);
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        /// Put/Delete{User,Role}PermissionsBoundary: iam:PermissionsBoundary
+        /// is the boundary being set, or the one being removed.
+        auto boundary(std::string_view kind, bool put) -> std::string {
+            const auto p = load_principal(kind);
+            std::optional<std::string> b;
+            if (put) {
+                b = arn_param("PermissionsBoundary");
+            } else {
+                b = p.boundary;
+            }
+            authorize(p.arn, tags_of(p), std::nullopt, boundary_keys(b));
+            boost::json::object cmd{{"kind", p.kind}, {"name", p.name}};
+            if (put) {
+                cmd["arn"] = *b;
+            }
+            (void)submit(put ? iam_command::put_boundary : iam_command::delete_boundary,
+                         std::move(cmd));
+            return {};
+        }
+
+        // ── tags on users, roles, policies and instance profiles ──
+
+        struct taggable {
+            std::string name;  // what the tag commands name the entity by
+            std::string arn;
+            tag_map tags;
+        };
+
+        [[nodiscard]] static auto tag_rule(std::string_view kind) -> validate::tag_keys {
+            return kind == "user" || kind == "role" ? validate::tag_keys::case_insensitive
+                                                    : validate::tag_keys::case_sensitive;
+        }
+
+        auto load_taggable(std::string_view kind) -> taggable {
+            if (kind == "user" || kind == "role") {
+                const auto p = load_principal(kind);
+                return {p.name, p.arn, p.tags};
+            }
+            if (kind == "policy") {
+                const auto v = load_policy(arn_param("PolicyArn"));
+                if (v.aws_managed && action != "ListPolicyTags") {
+                    authorize(v.arn);
+                    detail::fail("InvalidInput", "AWS-managed policies are read-only.");
+                }
+                return {v.name, v.arn, v.tags};
+            }
+            const auto v =
+                load_instance_profile(entity_name("InstanceProfileName", "instance-profile"));
+            return {v.p.name, v.arn, v.p.tags};
+        }
+
+        auto tag(std::string_view kind) -> std::string {
+            const auto t = tags(tag_rule(kind));
+            if (t.empty()) {
+                detail::fail("ValidationError", "The Tags parameter must not be empty.");
+            }
+            const auto e = load_taggable(kind);
+            authorize(e.arn, &e.tags, t);
+            (void)submit(iam_command::tag_entity,
+                         {{"kind", kind}, {"name", e.name}, {"tags", tags_json(t)}});
+            return {};
+        }
+
+        auto untag(std::string_view kind) -> std::string {
+            const auto keys = tag_keys_param();
+            const auto e = load_taggable(kind);
+            authorize(e.arn, &e.tags, std::nullopt, {{"aws:TagKeys", keys}});
+            boost::json::array ka;
+            for (const auto& k : keys) {
+                ka.emplace_back(k);
+            }
+            (void)submit(iam_command::untag_entity,
+                         {{"kind", kind}, {"name", e.name}, {"keys", std::move(ka)}});
+            return {};
+        }
+
+        auto list_tags(std::string_view kind) -> std::string {
+            const auto e = load_taggable(kind);
+            authorize(e.arn, &e.tags);
+            std::vector<std::string> keys;
+            for (const auto& [k, _] : e.tags) {
+                keys.push_back(k);
+            }
+            std::string tail;
+            const auto selected = page(keys, std::string(kind) + ":" + e.name, tail);
+            aws_query::xml_writer w;
+            w.open("Tags");
+            for (const auto& k : selected) {
+                w.open("member").element("Key", k).element("Value", e.tags.at(k)).close();
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        // ── instance profiles (Requirement 9.7) ──
+
+        struct profile_view {
+            iam_instance_profile p;
+            std::string arn;
+            std::vector<role_view> roles;
+        };
+
+        [[nodiscard]] auto view_of(const iam_state_machine& sm, const iam_instance_profile& p) const
+            -> profile_view {
+            profile_view v{p, sm.arn(account(), "instance-profile", p.path, p.name), {}};
+            for (const auto& k : p.roles) {
+                if (const auto* r = sm.role(account(), k)) {
+                    v.roles.push_back(role_view{*r, sm.arn(account(), "role", r->path, r->name)});
+                }
+            }
+            return v;
+        }
+
+        auto load_instance_profile(const std::string& name) -> profile_view {
+            std::optional<profile_view> out;
+            read([&](const iam_state_machine& sm) {
+                if (const auto* p = sm.instance_profile(account(), name)) {
+                    out = view_of(sm, *p);
+                }
+            });
+            if (!out) {
+                authorize(arn("instance-profile", "/", name));
+                detail::fail("NoSuchEntity", "Instance Profile " + name + " cannot be found.");
+            }
+            return std::move(*out);
+        }
+
+        static void write_profile(aws_query::xml_writer& w, const profile_view& v, bool full) {
+            w.element("Path", v.p.path)
+                .element("InstanceProfileName", v.p.name)
+                .element("InstanceProfileId", v.p.id)
+                .element("Arn", v.arn)
+                .element("CreateDate", iso8601(v.p.create_date));
+            w.open("Roles");
+            for (const auto& r : v.roles) {
+                w.open("member");
+                write_role(w, r, false);
+                w.close();
+            }
+            w.close();
+            if (full && !v.p.tags.empty()) {
+                detail::write_tags(w, v.p.tags);
+            }
+        }
+
+        auto profile_result(const std::string& name) -> std::string {
+            aws_query::xml_writer w;
+            w.open("InstanceProfile");
+            write_profile(w, load_instance_profile(name), true);
+            w.close();
+            return w.str();
+        }
+
+        auto create_instance_profile() -> std::string {
+            const auto name = entity_name("InstanceProfileName", "instance-profile");
+            const auto path = optional_path("Path").value_or("/");
+            const auto t = tags(validate::tag_keys::case_sensitive);
+            authorize(arn("instance-profile", path, name), nullptr, t);
+            (void)submit(iam_command::create_instance_profile,
+                         {{"name", name},
+                          {"path", path},
+                          {"id", iam_leader::generate_unique_id("AIPA")},
+                          {"tags", tags_json(t)}});
+            return profile_result(name);
+        }
+
+        auto get_instance_profile() -> std::string {
+            const auto v =
+                load_instance_profile(entity_name("InstanceProfileName", "instance-profile"));
+            authorize(v.arn, &v.p.tags);
+            aws_query::xml_writer w;
+            w.open("InstanceProfile");
+            write_profile(w, v, true);
+            w.close();
+            return w.str();
+        }
+
+        auto write_profiles(std::map<std::string, profile_view>& all, std::string_view scope)
+            -> std::string {
+            std::vector<std::string> keys;
+            for (const auto& [k, _] : all) {
+                keys.push_back(k);
+            }
+            std::string tail;
+            const auto selected = page(keys, scope, tail);
+            aws_query::xml_writer w;
+            w.open("InstanceProfiles");
+            for (const auto& k : selected) {
+                w.open("member");
+                write_profile(w, all.at(k), false);
+                w.close();
+            }
+            w.close().raw(tail);
+            return w.str();
+        }
+
+        auto list_instance_profiles() -> std::string {
+            const auto prefix = optional_path("PathPrefix").value_or("/");
+            authorize("*");
+            std::map<std::string, profile_view> all;
+            read([&](const iam_state_machine& sm) {
+                if (const auto* a = sm.account(account())) {
+                    for (const auto& [k, p] : a->instance_profiles) {
+                        if (p.path.starts_with(prefix)) {
+                            all.emplace(k, view_of(sm, p));
+                        }
+                    }
+                }
+            });
+            return write_profiles(all, prefix);
+        }
+
+        auto list_instance_profiles_for_role() -> std::string {
+            const auto v = load_role(entity_name("RoleName", "role"));
+            authorize(v.arn, &v.r.tags);
+            std::map<std::string, profile_view> all;
+            read([&](const iam_state_machine& sm) {
+                for (const auto& k : v.r.instance_profiles) {
+                    if (const auto* p = sm.instance_profile(account(), k)) {
+                        all.emplace(k, view_of(sm, *p));
+                    }
+                }
+            });
+            return write_profiles(all, v.r.name);
+        }
+
+        auto delete_instance_profile() -> std::string {
+            const auto v =
+                load_instance_profile(entity_name("InstanceProfileName", "instance-profile"));
+            authorize(v.arn, &v.p.tags);
+            (void)submit(iam_command::delete_instance_profile, {{"name", v.p.name}});
+            return {};
+        }
+
+        /// Adding a role also needs iam:PassRole on it, with
+        /// iam:PassedToService ec2.amazonaws.com and the profile as
+        /// iam:AssociatedResourceArn, as AWS requires.
+        auto instance_profile_role(bool add) -> std::string {
+            const auto pname = entity_name("InstanceProfileName", "instance-profile");
+            const auto rname = entity_name("RoleName", "role");
+            const auto p = load_instance_profile(pname);
+            const auto r = load_role(rname);
+            authorize(p.arn, &p.p.tags);
+            if (add) {
+                authorize_as("PassRole", r.arn, &r.r.tags, std::nullopt,
+                             {{"iam:PassedToService", {"ec2.amazonaws.com"}},
+                              {"iam:AssociatedResourceArn", {p.arn}}});
+            }
+            (void)submit(add ? iam_command::add_role_to_instance_profile
+                             : iam_command::remove_role_from_instance_profile,
+                         {{"instance_profile", p.p.name}, {"role", r.r.name}});
+            return {};
         }
 
         // ── account alias (INV-ACCT-2) ──
