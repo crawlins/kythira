@@ -33,7 +33,8 @@
 //   GET    /v1/ledgers/{L}/tables/{t}/documents/{id}      read
 //   GET    /v1/ledgers/{L}/tables/{t}/documents?after=&limit=   read (a scan)
 //   GET    /v1/ledgers/{L}/history/{t}[/{id}]?start=&end=&after=&limit=  read
-//   GET    /v1/ledgers/{L}/digest                         read
+//   GET    /v1/ledgers/{L}/digest                         read (signed, when a
+//                                                          signing key is set)
 //   GET    /v1/ledgers/{L}/blocks/{seq}?tip=              read (with proof)
 //   GET    /v1/ledgers/{L}/revisions/{t}/{id}/{version}?tip=   read (with proof)
 //   POST   /v1/ledgers/{L}/exports   {start, end, format, bucket, prefix}  admin
@@ -52,6 +53,7 @@
 
 #include <kythira/ledger/ion_value.hpp>
 #include <kythira/ledger/journal_export.hpp>
+#include <kythira/ledger/journal_signing.hpp>
 #include <kythira/ledger/journal_types.hpp>
 #include <kythira/ledger/journal_verifier.hpp>
 #include <kythira/ledger/ledger_catalog.hpp>
@@ -65,6 +67,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -276,6 +279,12 @@ template<typename Backend, typename StateMachine> class ledger_api {
 public:
     ledger_api(Backend& backend, ledger_roles roles)
         : backend_(&backend), roles_(std::move(roles)) {}
+
+    /// Sign every digest GetDigest returns (Requirement 4.5). Off (null)
+    /// unless the node is configured with a CA-issued signing key.
+    auto set_digest_signer(std::shared_ptr<const digest_signer> signer) -> void {
+        signer_ = std::move(signer);
+    }
 
     auto handle(const api_request& req) -> api_response {
         try {
@@ -706,7 +715,11 @@ private:
         if (!d) {
             throw api_error(404, "not_found", "the ledger has no blocks yet");
         }
-        return ok(saved_digest{d->tip, d->digest}.to_ion(), req);
+        const saved_digest saved{d->tip, d->digest};
+        if (signer_) {
+            return ok(signer_->sign(name, saved, backend_->now_ms()).to_ion(), req);
+        }
+        return ok(saved.to_ion(), req);
     }
 
     auto block_proof(const api_request& req, const std::string& name, const std::string& seq)
@@ -953,6 +966,7 @@ private:
 
     Backend* backend_;
     ledger_roles roles_;
+    std::shared_ptr<const digest_signer> signer_;
 };
 
 }  // namespace kythira::ledger

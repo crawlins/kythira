@@ -280,7 +280,7 @@ task is one PR unless noted.
   - `verify` and `prove` (API, data directory, export); optional CA-signed
     digests; metrics and the hash-mismatch alert path; tamper tests
   - _Requirements: 4.5, 9.1-9.3, 11.1, 11.2, 12.3_
-  - Done so far (offline verification; signed digests, metrics, the
+  - Done so far (offline verification and digest signing; metrics, the
     hash-mismatch alert and `verify` through the API or a live data
     directory need `ledger_node`, task 7):
     - `journal_verifier` checks blocks in order: sequence, previous hash
@@ -305,6 +305,16 @@ task is one PR unless noted.
       to a saved digest at the same tip.
     - `ledger_ctl verify` and `prove`; exit 0 verified, 1 failed, 2 usage
       or I/O. `ledger_verifier_test` runs the built tool.
+    - Signed digests (4.5, `journal_signing.hpp`): `digest_signer` signs
+      the Ion hash of {ledger, tip, digest, signedAt} with a CA-issued
+      key (ECDSA or RSA over SHA-256, Ed25519 directly) and attaches the
+      certificate chain; the result still reads as a saved digest.
+      `check_signed_digest` verifies the chain against a CA bundle at
+      signedAt, then the signature, and returns the signer's URI SANs.
+      `ledger_api::set_digest_signer` makes GetDigest return signed
+      digests (off by default, which answers design open question 2 for
+      now: the node signs when it is given a key). `ledger_ctl --ca`
+      requires and checks the signature.
 
 - [ ] 11. Crash, chaos and docs
   - Failpoint kills during apply, sealing and offload; identical journals

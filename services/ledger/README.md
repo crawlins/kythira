@@ -30,6 +30,7 @@ builds and tests it; every other configuration leaves it off.
 | `include/kythira/ledger/journal_export.hpp` | `ExportJournal` jobs: start and finish entries and the leader's export to an object-store prefix as Ion text, Ion binary or JSON with a manifest | 8 |
 | `cmd/ledger_node/` | placeholder daemon (`--self-test`); the server is task 7 | 1 |
 | `include/kythira/ledger/journal_verifier.hpp` | offline verification: `journal_verifier` (chain, revision, entries and block hashes, revision labels, digest at a saved tip), segment and export directory readers, proof documents and `check_proof` | 10 |
+| `include/kythira/ledger/journal_signing.hpp` | CA-signed digests: `digest_signer`, `signed_digest` (Ion form), `check_signed_digest` against a CA bundle at signing time | 10 |
 | `include/kythira/ledger/ledger_catalog.hpp` | the ledger catalog group: ledger records, create/update/delete/purge, deletion protection; refuses split and merge | 7 |
 | `include/kythira/ledger/ledger_http.hpp` | the API over `raft/beast_https_server.hpp`: principal from the client certificate's URI SAN, 401 without one, percent-decoding, the ledger's server limits | 7 |
 | `include/kythira/ledger/ledger_client.hpp` | the C++ client: Ion bodies, mTLS `https_transport`, leader redirects and endpoint failover, `transact()` with OCC retry and backoff | 7 |
@@ -42,6 +43,7 @@ builds and tests it; every other configuration leaves it off.
 | `tests/ledger_verifier_test.cpp` | the verifier over a state machine, segments and exports; every single-byte change to a segment file caught; each kind of tampered block named; proofs offline; `ledger_ctl` exit codes | 10 |
 | `tests/ledger_api_test.cpp` | the API over a local backend: catalog, roles, documents, sessions with OCC conflicts, history, digests and proofs, exports, error codes | 7 |
 | `tests/ledger_http_test.cpp` | the API over HTTPS with test-CA certificates: identity and roles from the certificate, Ion round trips, proofs, OCC retry, redirects, failover, encoded targets and body limits | 7 |
+| `tests/ledger_signing_test.cpp` | signed digests with each key type, every signed field bound, another CA or key refused, validity at signing time, Ion form, GetDigest with a signer, `ledger_ctl --ca` | 10 |
 | `tests/ledger_segments_test.cpp` | sealing into identical files on every replica, proofs over sealed blocks, redone and rejected seals, damaged and offloaded segments, export in every format | 8 |
 | `tests/ledger_history_index_test.cpp` | history by document and table with time bounds and pages, index creation, build steps and maintenance, snapshot lookups and their conflicts, filtered scans with a byte budget | 6 |
 | `tests/tools/qldb_dot_vectors.py` | prints the vectors `ledger_merkle_test` checks, from the tutorial's published Python | 2 |
@@ -66,7 +68,7 @@ package to export.
 | `raft_ion_serializer` | ion-c's link and its `DECNUMDIGITS` definition, through `kythira_ledger` |
 | `OpenSSL::Crypto` | SHA-256, through `kythira_ledger` |
 | `raft/beast_https_server.hpp` | the HTTPS server the API runs on (Boost.Beast, connection gate, request limits) |
-| `certificate_authority`, `OpenSSL::SSL` | test certificates and TLS for `ledger_http_test` |
+| `certificate_authority`, `OpenSSL::SSL` | test certificates for `ledger_http_test` and `ledger_signing_test`, and TLS |
 | `kythira_test_pch` | the test precompiled header and its links (Boost.Test), through `add_raft_completion_test` |
 | `cmake/kythira_test_helpers.cmake` | `add_raft_completion_test`, `kythira_scale_test_timeouts()` |
 | `KYTHIRA_BUILD_LEDGER` | set by the top level from `CONFIG_LEDGER`, ion-c and OpenSSL |
