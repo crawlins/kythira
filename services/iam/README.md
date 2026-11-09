@@ -18,6 +18,7 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `include/kythira/iam/iam_policy.hpp` | the policy parser, per-type validation, size quotas, and the action and ARN matchers | 10 |
 | `tests/iam_policy_test.cpp` | its unit tests and the corpus runner | 10 |
 | `tests/corpus/` | the policy corpus (format in its README) | 10 onward |
+| `include/kythira/iam/iam_conditions.hpp` | condition operators, policy variables, the request context and the global condition keys | 11 |
 | `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
 | `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |
 | `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |

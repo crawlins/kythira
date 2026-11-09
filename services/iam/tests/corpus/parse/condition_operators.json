@@ -1,0 +1,254 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html",
+  "description": "Condition operator names: the documented set, the IfExists suffix and set prefixes (never on Null), refused otherwise.",
+  "cases": [
+    {
+      "name": "unknown operator",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "StringEqualz": {
+              "aws:username": "a"
+            }
+          }
+        }
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid Condition type"
+      }
+    },
+    {
+      "name": "Null has no IfExists form",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "NullIfExists": {
+              "aws:username": "true"
+            }
+          }
+        }
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid Condition type"
+      }
+    },
+    {
+      "name": "Null takes no set prefix",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "ForAnyValue:Null": {
+              "aws:username": "true"
+            }
+          }
+        }
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid Condition type"
+      }
+    },
+    {
+      "name": "an unknown set prefix",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "ForSomeValues:StringEquals": {
+              "aws:username": "a"
+            }
+          }
+        }
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid Condition type"
+      }
+    },
+    {
+      "name": "IfExists alone is not an operator",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "IfExists": {
+              "aws:username": "a"
+            }
+          }
+        }
+      },
+      "expect": {
+        "code": "MalformedPolicyDocument",
+        "message": "Invalid Condition type"
+      }
+    },
+    {
+      "name": "every operator family with IfExists parses",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "StringEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "StringNotEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "StringEqualsIgnoreCaseIfExists": {
+              "aws:username": "1"
+            },
+            "StringNotEqualsIgnoreCaseIfExists": {
+              "aws:username": "1"
+            },
+            "StringLikeIfExists": {
+              "aws:username": "1"
+            },
+            "StringNotLikeIfExists": {
+              "aws:username": "1"
+            },
+            "NumericEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "NumericNotEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "NumericLessThanIfExists": {
+              "aws:username": "1"
+            },
+            "NumericLessThanEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "NumericGreaterThanIfExists": {
+              "aws:username": "1"
+            },
+            "NumericGreaterThanEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "DateEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "DateNotEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "DateLessThanIfExists": {
+              "aws:username": "1"
+            },
+            "DateLessThanEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "DateGreaterThanIfExists": {
+              "aws:username": "1"
+            },
+            "DateGreaterThanEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "BoolIfExists": {
+              "aws:username": "1"
+            },
+            "BinaryEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "IpAddressIfExists": {
+              "aws:username": "1"
+            },
+            "NotIpAddressIfExists": {
+              "aws:username": "1"
+            },
+            "ArnEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "ArnLikeIfExists": {
+              "aws:username": "1"
+            },
+            "ArnNotEqualsIfExists": {
+              "aws:username": "1"
+            },
+            "ArnNotLikeIfExists": {
+              "aws:username": "1"
+            }
+          }
+        }
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "set prefixes parse",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "ForAllValues:StringLike": {
+              "aws:TagKeys": "a*"
+            },
+            "ForAnyValue:ArnEqualsIfExists": {
+              "aws:CalledVia": "arn:aws:s3:::x"
+            }
+          }
+        }
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "operator names are case-insensitive",
+      "kind": "parse",
+      "policy_type": "identity",
+      "policy": {
+        "Version": "2012-10-17",
+        "Statement": {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "*",
+          "Condition": {
+            "stringequals": {
+              "aws:username": "a"
+            },
+            "forallvalues:stringlike": {
+              "aws:TagKeys": "a"
+            }
+          }
+        }
+      },
+      "expect": "valid"
+    }
+  ]
+}

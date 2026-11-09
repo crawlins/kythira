@@ -25,15 +25,18 @@
 //
 // What lives where:
 //   - parsing, the AST, per-type validation and size limits: here (task 10);
-//   - the condition operator table, policy variables and the request
-//     context: task 11. Until then condition entries are kept as parsed
-//     (operator, key, values as strings), with only their shape checked;
+//   - condition operator names (`parse_condition_operator`): here, so an
+//     unknown operator is refused at parse time;
+//   - evaluating conditions, policy variables and the request context:
+//     `iam_conditions.hpp` (task 11);
 //   - `evaluate()`: task 12.
 //
 // Matching follows AWS:
 //   - `*` matches any run of characters (including none) and `?` exactly one
 //     character, both counted in UTF-8 code points. Nothing else is special:
-//     no regex, no character classes, no escapes.
+//     no regex, no character classes. Policy text has no escapes; a pattern
+//     built by variable substitution marks a literal `*`, `?` or marker with
+//     `pattern_escape` (a control character policy text cannot contain).
 //   - Actions match case-insensitively (`s3:getobject` == `S3:GetObject`).
 //     Patterns are lower-cased once at parse time.
 //   - Resources match case-sensitively. A pattern with the ARN shape
@@ -47,9 +50,10 @@
 //     contain colons and slashes. Any other pattern (`*`, `arn:aws:s3:*`)
 //     matches the whole string.
 //
-// Policy variables (`${aws:username}`) are left in the stored pattern for
-// task 11 to substitute at evaluation time; a resource pattern that holds
-// one reports `has_variables()` and is not precompiled.
+// Policy variables (`${aws:username}`) are left in the stored pattern and
+// substituted at evaluation time (`iam_conditions.hpp`); a resource pattern
+// that holds one reports `has_variables()`, and `matches()` without a
+// request context never matches it.
 
 #include <boost/json.hpp>
 #include <boost/json/basic_parser_impl.hpp>  // basic_parser's template bodies
@@ -179,6 +183,11 @@ namespace detail {
 
 }  // namespace detail
 
+// Marks the next character of a substituted pattern as literal. U+001F
+// cannot appear in policy text (AWS allows only tab, LF, CR and U+0020 up),
+// so it never collides with what an administrator wrote.
+inline constexpr char pattern_escape = '\x1F';
+
 // A compiled `*`/`?` pattern. The program is a list of steps: a literal run,
 // "one code point", or "any run". Consecutive stars collapse into one.
 // Matching walks the steps once, backtracking only to the most recent star,
@@ -189,8 +198,9 @@ public:
     glob() = default;
 
     // `fold_case` lower-cases the pattern now and each input at match time
-    // (ASCII only: IAM action names are ASCII).
-    explicit glob(std::string_view pattern, bool fold_case = false)
+    // (ASCII only: IAM action names are ASCII). With `escapes`, a
+    // `pattern_escape` makes the character after it literal.
+    explicit glob(std::string_view pattern, bool fold_case = false, bool escapes = false)
         : _source(pattern), _fold(fold_case) {
         std::string lit;
         auto flush = [&] {
@@ -199,8 +209,12 @@ public:
                 lit.clear();
             }
         };
-        for (char c : pattern) {
-            if (c == '*') {
+        for (std::size_t i = 0; i < pattern.size(); ++i) {
+            const char c = pattern[i];
+            if (escapes && c == pattern_escape && i + 1 < pattern.size()) {
+                ++i;
+                lit.push_back(fold_case ? detail::ascii_lower(pattern[i]) : pattern[i]);
+            } else if (c == '*') {
                 flush();
                 if (_steps.empty() || _steps.back().kind != step_kind::star) {
                     _steps.push_back({step_kind::star, {}});
@@ -323,16 +337,19 @@ using arn_fields = std::array<std::string_view, 6>;
 }
 
 // One resource pattern (an element of `Resource`/`NotResource`, or the value
-// of an `Arn*` condition in task 11), compiled for matching.
+// of an `Arn*` condition), compiled for matching.
 class arn_pattern {
 public:
     arn_pattern() = default;
 
-    explicit arn_pattern(std::string_view pattern)
-        : _source(pattern), _has_variables(pattern.find("${") != std::string_view::npos) {
-        if (_has_variables) {
-            return;  // task 11 substitutes, then compiles
-        }
+    // `escapes`: `pattern` came from variable substitution and marks its
+    // literal characters with `pattern_escape`; it holds no variables.
+    explicit arn_pattern(std::string_view pattern, bool escapes = false)
+        : _source(pattern),
+          _has_variables(!escapes && pattern.find("${") != std::string_view::npos),
+          _escapes(escapes) {
+        // Compiled even with variables: under Version 2008-10-17 `${...}` is
+        // literal text, and `matches_literally` uses this program.
         compile(pattern);
     }
 
@@ -342,6 +359,12 @@ public:
         if (_has_variables) {
             return false;
         }
+        return matches_literally(arn);
+    }
+
+    // The pattern as written, any `${...}` taken as plain text (how a policy
+    // without Version 2012-10-17 reads it).
+    [[nodiscard]] auto matches_literally(std::string_view arn) const -> bool {
         if (_segments.empty()) {
             return _whole.matches(arn);
         }
@@ -376,27 +399,43 @@ private:
         std::optional<glob> tail;  // set when it ends in `*` (not the last segment)
     };
 
+    // Whether `field` ends in a wildcard `*`, not an escaped literal one.
+    [[nodiscard]] auto ends_in_star(std::string_view field) const -> bool {
+        if (!field.ends_with('*')) {
+            return false;
+        }
+        if (!_escapes) {
+            return true;
+        }
+        std::size_t marks = 0;
+        for (auto i = field.size() - 1; i > 0 && field[i - 1] == pattern_escape; --i) {
+            ++marks;
+        }
+        return marks % 2 == 0;
+    }
+
     void compile(std::string_view pattern) {
         const auto f = split_arn(pattern);
         if (!f) {
-            _whole = glob(pattern);
+            _whole = glob(pattern, false, _escapes);
             return;
         }
         // The "arn" segment is literal by construction; compile the rest.
         _segments.resize(5);
         for (std::size_t i = 1; i < 6; ++i) {
             auto& seg = _segments[i - 1];
-            seg.field = glob((*f)[i]);
-            if (i < 5 && (*f)[i].ends_with('*')) {
+            seg.field = glob((*f)[i], false, _escapes);
+            if (i < 5 && ends_in_star((*f)[i])) {
                 const auto rest = std::string_view(
                     (*f)[i].data(), pattern.data() + pattern.size() - (*f)[i].data());
-                seg.tail = glob(rest);
+                seg.tail = glob(rest, false, _escapes);
             }
         }
     }
 
     std::string _source;
     bool _has_variables = false;
+    bool _escapes = false;
     std::vector<segment> _segments;  // partition .. resource, when ARN-shaped
     glob _whole;
 };
@@ -472,12 +511,127 @@ struct principal_set {
     }
 };
 
+// A condition operator name, resolved: its family, whether it is negated,
+// its comparison, the `IfExists` suffix and the set prefix. Built by
+// `parse_condition_operator`.
+struct condition_operator {
+    enum class family : std::uint8_t {
+        string,              // StringEquals, StringNotEquals
+        string_ignore_case,  // StringEqualsIgnoreCase, StringNotEqualsIgnoreCase
+        string_like,         // StringLike, StringNotLike
+        numeric,
+        date,
+        boolean,  // Bool
+        binary,   // BinaryEquals
+        ip,       // IpAddress, NotIpAddress
+        arn,      // ArnEquals, ArnLike, ArnNotEquals, ArnNotLike (all alike)
+        null      // Null
+    };
+    enum class comparison : std::uint8_t {
+        eq,
+        lt,
+        le,
+        gt,
+        ge
+    };
+    enum class set_prefix : std::uint8_t {
+        none,
+        for_all_values,
+        for_any_value
+    };
+
+    family fam = family::string;
+    comparison cmp = comparison::eq;
+    bool negated = false;
+    bool if_exists = false;
+    set_prefix set = set_prefix::none;
+
+    // Policy variables are substituted only in string, Bool and ARN values
+    // (IAM User Guide, "Condition operators").
+    [[nodiscard]] auto takes_variables() const noexcept -> bool {
+        return fam == family::string || fam == family::string_ignore_case ||
+               fam == family::string_like || fam == family::boolean || fam == family::arn;
+    }
+};
+
+// Resolves an operator name, or nothing if AWS has no such operator. Names
+// match case-insensitively. `IfExists` may suffix every operator but
+// `Null`, and `ForAllValues:` / `ForAnyValue:` may prefix every operator
+// but `Null`.
+[[nodiscard]] inline auto parse_condition_operator(std::string_view name)
+    -> std::optional<condition_operator> {
+    using fam = condition_operator::family;
+    using cmp = condition_operator::comparison;
+    condition_operator op;
+    auto lower = detail::ascii_lower(name);
+    std::string_view rest = lower;
+    if (rest.starts_with("forallvalues:")) {
+        op.set = condition_operator::set_prefix::for_all_values;
+        rest.remove_prefix(13);
+    } else if (rest.starts_with("foranyvalue:")) {
+        op.set = condition_operator::set_prefix::for_any_value;
+        rest.remove_prefix(12);
+    }
+    if (rest.ends_with("ifexists")) {
+        op.if_exists = true;
+        rest.remove_suffix(8);
+    }
+    struct entry {
+        std::string_view name;
+        fam f;
+        cmp c;
+        bool negated;
+    };
+    static constexpr std::array<entry, 27> table{{
+        {"stringequals", fam::string, cmp::eq, false},
+        {"stringnotequals", fam::string, cmp::eq, true},
+        {"stringequalsignorecase", fam::string_ignore_case, cmp::eq, false},
+        {"stringnotequalsignorecase", fam::string_ignore_case, cmp::eq, true},
+        {"stringlike", fam::string_like, cmp::eq, false},
+        {"stringnotlike", fam::string_like, cmp::eq, true},
+        {"numericequals", fam::numeric, cmp::eq, false},
+        {"numericnotequals", fam::numeric, cmp::eq, true},
+        {"numericlessthan", fam::numeric, cmp::lt, false},
+        {"numericlessthanequals", fam::numeric, cmp::le, false},
+        {"numericgreaterthan", fam::numeric, cmp::gt, false},
+        {"numericgreaterthanequals", fam::numeric, cmp::ge, false},
+        {"dateequals", fam::date, cmp::eq, false},
+        {"datenotequals", fam::date, cmp::eq, true},
+        {"datelessthan", fam::date, cmp::lt, false},
+        {"datelessthanequals", fam::date, cmp::le, false},
+        {"dategreaterthan", fam::date, cmp::gt, false},
+        {"dategreaterthanequals", fam::date, cmp::ge, false},
+        {"bool", fam::boolean, cmp::eq, false},
+        {"binaryequals", fam::binary, cmp::eq, false},
+        {"ipaddress", fam::ip, cmp::eq, false},
+        {"notipaddress", fam::ip, cmp::eq, true},
+        {"arnequals", fam::arn, cmp::eq, false},
+        {"arnlike", fam::arn, cmp::eq, false},
+        {"arnnotequals", fam::arn, cmp::eq, true},
+        {"arnnotlike", fam::arn, cmp::eq, true},
+        {"null", fam::null, cmp::eq, false},
+    }};
+    for (const auto& e : table) {
+        if (e.name == rest) {
+            if (e.f == fam::null &&
+                (op.if_exists || op.set != condition_operator::set_prefix::none)) {
+                return std::nullopt;
+            }
+            op.fam = e.f;
+            op.cmp = e.c;
+            op.negated = e.negated;
+            return op;
+        }
+    }
+    return std::nullopt;
+}
+
 // One key of one operator block: `"StringEquals": {"aws:username": ["a", "b"]}`
 // gives one entry with two values. Booleans and numbers are kept as their
-// JSON text (`true`, `42`), the way AWS compares them. Task 11 resolves the
-// operator name against its table.
+// JSON text (`true`, `42`), the way AWS compares them.
 struct condition_entry {
-    std::string op;
+    std::string op;           // as written
+    condition_operator oper;  // resolved
     std::string key;
     std::vector<std::string> values;
 };
@@ -495,7 +649,7 @@ struct statement {
     std::optional<resource_matcher> resource;  // absent only in trust policies
     bool not_resource = false;
 
-    // Keys are ANDed, values of one key ORed (task 11).
+    // Keys are ANDed, values of one key ORed (`iam_conditions.hpp`).
     std::vector<condition_entry> conditions;
 };
 
@@ -755,13 +909,17 @@ inline auto parse_conditions(const boost::json::value& v) -> std::vector<conditi
         if (op.empty()) {
             malformed("Syntax errors in policy: empty condition operator.");
         }
+        const auto oper = parse_condition_operator(op);
+        if (!oper) {
+            malformed("Invalid Condition type : " + op);
+        }
         const auto* keys = block.if_object();
         if (keys == nullptr) {
             malformed("Syntax errors in policy: condition operator " + op +
                       " must map to an object of condition keys.");
         }
         for (const auto& [key_name, values] : *keys) {
-            condition_entry e{.op = op, .key = std::string(key_name), .values = {}};
+            condition_entry e{.op = op, .oper = *oper, .key = std::string(key_name), .values = {}};
             if (e.key.find(':') == std::string::npos) {
                 malformed(
                     "Actions/Conditions must be prefaced by a vendor, e.g., iam, sdb, ec2, etc.");

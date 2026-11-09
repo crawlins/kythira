@@ -1,0 +1,294 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html",
+  "description": "The String operator family: exact, case-insensitive and wildcard matching, negation as NOR over several values.",
+  "cases": [
+    {
+      "name": "StringEquals alice vs alice",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "alice"
+      },
+      "match": true
+    },
+    {
+      "name": "StringEquals alice vs Alice",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "Alice"
+      },
+      "match": false
+    },
+    {
+      "name": "StringEquals alice vs bob",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": false
+    },
+    {
+      "name": "StringNotEquals alice vs bob",
+      "kind": "condition",
+      "condition": {
+        "StringNotEquals": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": true
+    },
+    {
+      "name": "StringNotEquals alice vs alice",
+      "kind": "condition",
+      "condition": {
+        "StringNotEquals": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "alice"
+      },
+      "match": false
+    },
+    {
+      "name": "StringEqualsIgnoreCase alice vs ALICE",
+      "kind": "condition",
+      "condition": {
+        "StringEqualsIgnoreCase": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "ALICE"
+      },
+      "match": true
+    },
+    {
+      "name": "StringEqualsIgnoreCase alice vs bob",
+      "kind": "condition",
+      "condition": {
+        "StringEqualsIgnoreCase": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": false
+    },
+    {
+      "name": "StringNotEqualsIgnoreCase alice vs ALICE",
+      "kind": "condition",
+      "condition": {
+        "StringNotEqualsIgnoreCase": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "ALICE"
+      },
+      "match": false
+    },
+    {
+      "name": "StringNotEqualsIgnoreCase alice vs bob",
+      "kind": "condition",
+      "condition": {
+        "StringNotEqualsIgnoreCase": {
+          "aws:username": "alice"
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": true
+    },
+    {
+      "name": "StringLike alice-* vs alice-dev",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "aws:username": "alice-*"
+        }
+      },
+      "context": {
+        "aws:username": "alice-dev"
+      },
+      "match": true
+    },
+    {
+      "name": "StringLike alice-* vs bob-dev",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "aws:username": "alice-*"
+        }
+      },
+      "context": {
+        "aws:username": "bob-dev"
+      },
+      "match": false
+    },
+    {
+      "name": "StringLike a? vs ab",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "aws:username": "a?"
+        }
+      },
+      "context": {
+        "aws:username": "ab"
+      },
+      "match": true
+    },
+    {
+      "name": "StringLike a? vs abc",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "aws:username": "a?"
+        }
+      },
+      "context": {
+        "aws:username": "abc"
+      },
+      "match": false
+    },
+    {
+      "name": "StringLike alice-* vs Alice-dev",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "aws:username": "alice-*"
+        }
+      },
+      "context": {
+        "aws:username": "Alice-dev"
+      },
+      "match": false
+    },
+    {
+      "name": "StringNotLike alice-* vs bob-dev",
+      "kind": "condition",
+      "condition": {
+        "StringNotLike": {
+          "aws:username": "alice-*"
+        }
+      },
+      "context": {
+        "aws:username": "bob-dev"
+      },
+      "match": true
+    },
+    {
+      "name": "StringNotLike alice-* vs alice-dev",
+      "kind": "condition",
+      "condition": {
+        "StringNotLike": {
+          "aws:username": "alice-*"
+        }
+      },
+      "context": {
+        "aws:username": "alice-dev"
+      },
+      "match": false
+    },
+    {
+      "name": "StringEquals ORs its values",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "aws:username": [
+            "alice",
+            "bob"
+          ]
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": true
+    },
+    {
+      "name": "StringNotEquals with several values is NOR: matching one fails",
+      "kind": "condition",
+      "condition": {
+        "StringNotEquals": {
+          "aws:username": [
+            "alice",
+            "bob"
+          ]
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html"
+    },
+    {
+      "name": "StringNotEquals with several values is NOR: matching none holds",
+      "kind": "condition",
+      "condition": {
+        "StringNotEquals": {
+          "aws:username": [
+            "alice",
+            "bob"
+          ]
+        }
+      },
+      "context": {
+        "aws:username": "carol"
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html"
+    },
+    {
+      "name": "StringNotLike with several values is NOR",
+      "kind": "condition",
+      "condition": {
+        "StringNotLike": {
+          "aws:username": [
+            "a*",
+            "b*"
+          ]
+        }
+      },
+      "context": {
+        "aws:username": "bob"
+      },
+      "match": false,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-logic-multiple-context-keys-or-values.html"
+    },
+    {
+      "name": "StringEquals compares a number value as its text",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "s3:max-keys": 10
+        }
+      },
+      "context": {
+        "s3:max-keys": "10"
+      },
+      "match": true
+    }
+  ]
+}

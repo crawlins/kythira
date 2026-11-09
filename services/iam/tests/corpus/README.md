@@ -41,5 +41,22 @@ variables, and task 12 grows it past 300 cases with `evaluate` cases.
 **`arn_match`**: `pattern` against `value` as a resource ARN
 (case-sensitive, segment by segment), expecting the boolean `match`.
 
+**`condition`** (task 11): `condition` (a policy `Condition` value) is put
+in a one-statement identity policy, parsed, and evaluated against
+`context`, expecting the boolean `match`. `version` defaults to
+`2012-10-17`.
+
+**`variable`** (task 11): `text` with its policy variables substituted
+from `context`, expecting the string `expect`, or `null` when a variable
+has no value.
+
+**`resource_match`** (task 11): `pattern` against `value` as a Resource
+element, substituting variables from `context` unless `version` is
+`2008-10-17`, expecting the boolean `match`.
+
+For the last three, `context` maps each condition key to a string
+(single-valued) or an array (multivalued, possibly empty); a key not
+listed is absent from the request.
+
 Error messages follow AWS's wording where AWS has a message for the
 problem, so `message` is usually a phrase from the AWS error.

@@ -11,11 +11,13 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <kythira/iam/iam_conditions.hpp>
 #include <kythira/iam/iam_policy.hpp>
 
 #include <boost/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -52,6 +54,26 @@ auto corpus_files() -> std::vector<std::filesystem::path> {
     }
     std::ranges::sort(out);
     return out;
+}
+
+// A case's `context`: each key maps to a string (single-valued) or an
+// array (multivalued, possibly empty).
+auto context_of(const boost::json::object& c) -> iam::context_keys {
+    iam::context_keys ctx;
+    if (const auto* o = c.if_contains("context")) {
+        for (const auto& [k, v] : o->as_object()) {
+            if (const auto* a = v.if_array()) {
+                std::vector<std::string> values;
+                for (const auto& x : *a) {
+                    values.emplace_back(x.as_string());
+                }
+                ctx.set_multi(std::string_view(k.data(), k.size()), std::move(values));
+            } else {
+                ctx.set(std::string_view(k.data(), k.size()), std::string(v.as_string()));
+            }
+        }
+    }
+    return ctx;
 }
 
 // Runs one corpus case. A case the runner does not understand (an unknown
@@ -111,6 +133,48 @@ void run_case(const boost::json::object& c, const std::string& file_source) {
         BOOST_TEST(got == want, pattern << " vs " << value);
         return;
     }
+    if (kind == "condition") {
+        // A one-statement identity policy holding `condition`, so the
+        // operator goes through the parser exactly as in a real document.
+        boost::json::object policy{
+            {"Statement", boost::json::object{{"Effect", "Allow"},
+                                              {"Action", "s3:GetObject"},
+                                              {"Resource", "*"},
+                                              {"Condition", c.at("condition")}}}};
+        if (const auto* version = c.if_contains("version")) {
+            policy["Version"] = *version;
+        } else {
+            policy["Version"] = "2012-10-17";
+        }
+        const auto doc =
+            iam::parse_policy(boost::json::serialize(policy), iam::policy_type::identity);
+        const auto ctx = context_of(c);
+        const bool got = iam::conditions_match(doc.statements.at(0), ctx, doc.supports_variables());
+        BOOST_TEST(got == c.at("match").as_bool());
+        return;
+    }
+    if (kind == "variable") {
+        const auto ctx = context_of(c);
+        const auto got =
+            iam::substitute(std::string(c.at("text").as_string()), ctx, iam::substitution::plain);
+        const auto& want = c.at("expect");
+        if (want.is_null()) {
+            BOOST_TEST(!got.has_value(), "expected no value, got " << got.value_or(""));
+        } else {
+            BOOST_TEST(got.value_or("<none>") == std::string(want.as_string()));
+        }
+        return;
+    }
+    if (kind == "resource_match") {
+        const std::string pattern(c.at("pattern").as_string());
+        const auto* version = c.if_contains("version");
+        const bool vars = version == nullptr || version->as_string() == "2012-10-17";
+        const iam::resource_matcher m(std::vector<std::string>{pattern});
+        const bool got =
+            iam::resource_matches(m, std::string(c.at("value").as_string()), context_of(c), vars);
+        BOOST_TEST(got == c.at("match").as_bool(), pattern << " vs " << c.at("value"));
+        return;
+    }
     BOOST_ERROR("unknown corpus case kind " << kind);
 }
 
@@ -156,7 +220,7 @@ BOOST_AUTO_TEST_CASE(every_corpus_case_holds) {
         }
     }
     BOOST_TEST_MESSAGE("ran " << cases << " corpus cases from " << files.size() << " files");
-    BOOST_TEST(cases >= 60u);
+    BOOST_TEST(cases >= 300u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -214,7 +278,7 @@ BOOST_AUTO_TEST_CASE(statement_shape) {
     BOOST_REQUIRE(b.resource.has_value());
     BOOST_REQUIRE_EQUAL(b.resource->patterns().size(), 1u);
     BOOST_TEST(b.resource->patterns()[0].has_variables());
-    // Unresolved until task 11 substitutes from the request context.
+    // Without a request context a variable never resolves (see resource_matches).
     BOOST_TEST(!b.resource->matches("arn:aws:iam::123456789012:user/${aws:username}"));
 }
 
@@ -355,6 +419,77 @@ BOOST_AUTO_TEST_CASE(arn_split) {
     BOOST_TEST(!iam::split_arn("urn:aws:s3:::x").has_value());
     BOOST_TEST(iam::arn_pattern("arn:aws:s3:::*").is_arn_shaped());
     BOOST_TEST(!iam::arn_pattern("arn:aws:s3:*").is_arn_shaped());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Task 11: what a corpus file cannot express well ────────────────────────
+
+BOOST_AUTO_TEST_SUITE(iam_conditions)
+
+BOOST_AUTO_TEST_CASE(global_condition_keys_present_only_when_known) {
+    iam::request_facts f;
+    f.now = std::chrono::sys_days{std::chrono::year{2026} / 11 / 9} + std::chrono::hours(12) +
+            std::chrono::minutes(3) + std::chrono::seconds(4);
+    f.secure_transport = true;
+    f.source_ip = "203.0.113.7";
+    f.principal_arn = "arn:aws:iam::111122223333:user/alice";
+    f.principal_account = "111122223333";
+    f.principal_type = "User";
+    f.username = "alice";
+    f.principal_tags = {{"Team", "blue"}};
+    f.request_tags = std::vector<std::pair<std::string, std::string>>{{"env", "prod"}};
+    f.called_via = {"cloudformation.amazonaws.com", "s3.amazonaws.com"};
+    const auto k = iam::global_condition_keys(f);
+    BOOST_TEST(k.single("aws:CurrentTime").value_or("") == "2026-11-09T12:03:04Z");
+    BOOST_TEST(k.single("aws:EpochTime").value_or("") == "1794225784");
+    BOOST_TEST(k.single("aws:SecureTransport").value_or("") == "true");
+    BOOST_TEST(k.single("aws:MultiFactorAuthPresent").value_or("") == "false");
+    BOOST_TEST(k.single("aws:username").value_or("") == "alice");
+    BOOST_TEST(k.single("aws:PrincipalTag/team").value_or("") == "blue");
+    BOOST_TEST(k.single("aws:RequestTag/env").value_or("") == "prod");
+    BOOST_TEST((*k.find("aws:TagKeys") == std::vector<std::string>{"env"}));
+    BOOST_TEST(!k.single("aws:TagKeys").has_value());  // multivalued
+    BOOST_TEST(k.single("aws:CalledViaFirst").value_or("") == "cloudformation.amazonaws.com");
+    BOOST_TEST(k.single("aws:CalledViaLast").value_or("") == "s3.amazonaws.com");
+    // Never invented: absent facts leave their keys absent.
+    for (const char* absent : {"aws:TokenIssueTime", "aws:SourceIdentity", "aws:userid",
+                               "aws:UserAgent", "aws:ResourceAccount", "aws:SourceVpc"}) {
+        BOOST_TEST(k.find(absent) == nullptr, absent);
+    }
+    // A request with no tags has no aws:TagKeys at all.
+    f.request_tags.reset();
+    BOOST_TEST(iam::global_condition_keys(f).find("aws:TagKeys") == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(pattern_substitution_escapes_literals) {
+    iam::context_keys ctx;
+    ctx.set("aws:PrincipalTag/p", "a*b?");
+    const auto s = iam::substitute("x/${aws:PrincipalTag/p}/*", ctx, iam::substitution::pattern);
+    BOOST_REQUIRE(s.has_value());
+    const iam::glob g(*s, false, true);
+    BOOST_TEST(g.matches("x/a*b?/anything"));
+    BOOST_TEST(!g.matches("x/aZZbQ/anything"));
+    BOOST_TEST(iam::substitute("${aws:PrincipalTag/p}", ctx, iam::substitution::plain).value() ==
+               "a*b?");
+    // An escaped trailing star in an ARN segment is not a segment wildcard.
+    const auto arn = iam::substitute("arn:aws:s3:::b${*}", ctx, iam::substitution::pattern);
+    BOOST_TEST(iam::arn_pattern(*arn, true).matches("arn:aws:s3:::b*"));
+    BOOST_TEST(!iam::arn_pattern(*arn, true).matches("arn:aws:s3:::bx"));
+}
+
+BOOST_AUTO_TEST_CASE(operator_table_resolves_every_name) {
+    const auto op = iam::parse_condition_operator("ForAnyValue:NumericLessThanEqualsIfExists");
+    BOOST_REQUIRE(op.has_value());
+    BOOST_TEST((op->fam == iam::condition_operator::family::numeric));
+    BOOST_TEST((op->cmp == iam::condition_operator::comparison::le));
+    BOOST_TEST(op->if_exists);
+    BOOST_TEST((op->set == iam::condition_operator::set_prefix::for_any_value));
+    BOOST_TEST(!op->takes_variables());
+    BOOST_TEST(iam::parse_condition_operator("ArnNotLike")->negated);
+    BOOST_TEST(!iam::parse_condition_operator("Null").value().negated);
+    BOOST_TEST(!iam::parse_condition_operator("NullIfExists").has_value());
+    BOOST_TEST(!iam::parse_condition_operator("StringEqualsIfExistsIfExists").has_value());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

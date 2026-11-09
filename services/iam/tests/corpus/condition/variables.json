@@ -1,0 +1,411 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_variables.html",
+  "description": "Policy variables: each global key of Requirement 5.5, defaults, the ${*} ${?} ${$} escapes, missing values, and where substitution happens.",
+  "cases": [
+    {
+      "name": "aws:username",
+      "kind": "variable",
+      "text": "home/${aws:username}/",
+      "context": {
+        "aws:username": "alice"
+      },
+      "expect": "home/alice/"
+    },
+    {
+      "name": "aws:userid",
+      "kind": "variable",
+      "text": "${aws:userid}",
+      "context": {
+        "aws:userid": "AIDAEXAMPLEFIXTURE01"
+      },
+      "expect": "AIDAEXAMPLEFIXTURE01"
+    },
+    {
+      "name": "aws:PrincipalTag",
+      "kind": "variable",
+      "text": "team-${aws:PrincipalTag/team}",
+      "context": {
+        "aws:PrincipalTag/team": "blue"
+      },
+      "expect": "team-blue"
+    },
+    {
+      "name": "aws:PrincipalAccount",
+      "kind": "variable",
+      "text": "${aws:PrincipalAccount}",
+      "context": {
+        "aws:PrincipalAccount": "111122223333"
+      },
+      "expect": "111122223333"
+    },
+    {
+      "name": "aws:SourceIp",
+      "kind": "variable",
+      "text": "${aws:SourceIp}",
+      "context": {
+        "aws:SourceIp": "203.0.113.7"
+      },
+      "expect": "203.0.113.7"
+    },
+    {
+      "name": "aws:CurrentTime",
+      "kind": "variable",
+      "text": "${aws:CurrentTime}",
+      "context": {
+        "aws:CurrentTime": "2026-11-09T12:00:00Z"
+      },
+      "expect": "2026-11-09T12:00:00Z"
+    },
+    {
+      "name": "aws:TokenIssueTime",
+      "kind": "variable",
+      "text": "${aws:TokenIssueTime}",
+      "context": {
+        "aws:TokenIssueTime": "2026-11-09T11:00:00Z"
+      },
+      "expect": "2026-11-09T11:00:00Z"
+    },
+    {
+      "name": "aws:EpochTime",
+      "kind": "variable",
+      "text": "${aws:EpochTime}",
+      "context": {
+        "aws:EpochTime": "1794225600"
+      },
+      "expect": "1794225600"
+    },
+    {
+      "name": "aws:SecureTransport",
+      "kind": "variable",
+      "text": "${aws:SecureTransport}",
+      "context": {
+        "aws:SecureTransport": "true"
+      },
+      "expect": "true"
+    },
+    {
+      "name": "variable names are case-insensitive",
+      "kind": "variable",
+      "text": "${AWS:UserName}",
+      "context": {
+        "aws:username": "alice"
+      },
+      "expect": "alice"
+    },
+    {
+      "name": "escape ${*}",
+      "kind": "variable",
+      "text": "a${*}b",
+      "context": {},
+      "expect": "a*b"
+    },
+    {
+      "name": "escape ${?}",
+      "kind": "variable",
+      "text": "a${?}b",
+      "context": {},
+      "expect": "a?b"
+    },
+    {
+      "name": "escape ${$}",
+      "kind": "variable",
+      "text": "${$}{aws:username}",
+      "context": {
+        "aws:username": "alice"
+      },
+      "expect": "${aws:username}"
+    },
+    {
+      "name": "a missing variable has no value",
+      "kind": "variable",
+      "text": "${aws:PrincipalTag/team}",
+      "context": {},
+      "expect": null
+    },
+    {
+      "name": "a default supplies a missing value",
+      "kind": "variable",
+      "text": "bucket-${aws:PrincipalTag/team, 'company-wide'}",
+      "context": {},
+      "expect": "bucket-company-wide"
+    },
+    {
+      "name": "a default is ignored when the key is present",
+      "kind": "variable",
+      "text": "bucket-${aws:PrincipalTag/team, 'company-wide'}",
+      "context": {
+        "aws:PrincipalTag/team": "yellow"
+      },
+      "expect": "bucket-yellow"
+    },
+    {
+      "name": "a multivalued key cannot be a variable",
+      "kind": "variable",
+      "text": "${aws:TagKeys}",
+      "context": {
+        "aws:TagKeys": [
+          "a"
+        ]
+      },
+      "expect": null
+    },
+    {
+      "name": "an unclosed ${ is literal",
+      "kind": "variable",
+      "text": "a${aws:username",
+      "context": {
+        "aws:username": "alice"
+      },
+      "expect": "a${aws:username"
+    },
+    {
+      "name": "several variables",
+      "kind": "variable",
+      "text": "${aws:username}@${aws:PrincipalAccount}",
+      "context": {
+        "aws:username": "alice",
+        "aws:PrincipalAccount": "111122223333"
+      },
+      "expect": "alice@111122223333"
+    },
+    {
+      "name": "a variable in StringEquals",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "s3:prefix": "home/${aws:username}/"
+        }
+      },
+      "context": {
+        "s3:prefix": "home/alice/",
+        "aws:username": "alice"
+      },
+      "match": true
+    },
+    {
+      "name": "a variable in StringLike",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "s3:prefix": "home/${aws:username}/*"
+        }
+      },
+      "context": {
+        "s3:prefix": "home/alice/docs",
+        "aws:username": "alice"
+      },
+      "match": true
+    },
+    {
+      "name": "a substituted value is literal in StringLike",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "s3:prefix": "${aws:PrincipalTag/p}"
+        }
+      },
+      "context": {
+        "s3:prefix": "anything",
+        "aws:PrincipalTag/p": "*"
+      },
+      "match": false
+    },
+    {
+      "name": "${*} is a literal star in StringLike: no wildcard",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "s3:prefix": "a${*}"
+        }
+      },
+      "context": {
+        "s3:prefix": "abc"
+      },
+      "match": false
+    },
+    {
+      "name": "${*} is a literal star in StringLike: exact",
+      "kind": "condition",
+      "condition": {
+        "StringLike": {
+          "s3:prefix": "a${*}"
+        }
+      },
+      "context": {
+        "s3:prefix": "a*"
+      },
+      "match": true
+    },
+    {
+      "name": "a missing variable makes a positive operator false",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "s3:ExistingObjectTag/Team": "${aws:PrincipalTag/Team}"
+        }
+      },
+      "context": {
+        "s3:ExistingObjectTag/Team": "blue"
+      },
+      "match": false
+    },
+    {
+      "name": "a missing variable makes a negated operator true",
+      "kind": "condition",
+      "condition": {
+        "StringNotEquals": {
+          "s3:ExistingObjectTag/Team": "${aws:PrincipalTag/Team}"
+        }
+      },
+      "context": {
+        "s3:ExistingObjectTag/Team": "blue"
+      },
+      "match": true
+    },
+    {
+      "name": "a variable in ArnLike",
+      "kind": "condition",
+      "condition": {
+        "ArnLike": {
+          "aws:SourceArn": "arn:aws:sns:*:${aws:PrincipalAccount}:*"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:t",
+        "aws:PrincipalAccount": "111122223333"
+      },
+      "match": true
+    },
+    {
+      "name": "a variable in Bool",
+      "kind": "condition",
+      "condition": {
+        "Bool": {
+          "ex:flag": "${aws:SecureTransport}"
+        }
+      },
+      "context": {
+        "ex:flag": "true",
+        "aws:SecureTransport": "true"
+      },
+      "match": true
+    },
+    {
+      "name": "no variables in Numeric: the text is literal",
+      "kind": "condition",
+      "condition": {
+        "NumericEquals": {
+          "s3:max-keys": "${ex:n}"
+        }
+      },
+      "context": {
+        "s3:max-keys": "10",
+        "ex:n": "10"
+      },
+      "match": false
+    },
+    {
+      "name": "Version 2008-10-17 takes ${...} literally",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "s3:prefix": "${aws:username}"
+        }
+      },
+      "context": {
+        "s3:prefix": "${aws:username}",
+        "aws:username": "alice"
+      },
+      "match": true,
+      "version": "2008-10-17"
+    },
+    {
+      "name": "Version 2008-10-17 does not substitute",
+      "kind": "condition",
+      "condition": {
+        "StringEquals": {
+          "s3:prefix": "${aws:username}"
+        }
+      },
+      "context": {
+        "s3:prefix": "alice",
+        "aws:username": "alice"
+      },
+      "match": false,
+      "version": "2008-10-17"
+    },
+    {
+      "name": "a variable in Resource",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket/home/${aws:username}/*",
+      "value": "arn:aws:s3:::bucket/home/alice/f",
+      "context": {
+        "aws:username": "alice"
+      },
+      "match": true
+    },
+    {
+      "name": "a variable in Resource for someone else",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket/home/${aws:username}/*",
+      "value": "arn:aws:s3:::bucket/home/bob/f",
+      "context": {
+        "aws:username": "alice"
+      },
+      "match": false
+    },
+    {
+      "name": "a missing variable in Resource matches no resource",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket/${aws:PrincipalTag/team}/*",
+      "value": "arn:aws:s3:::bucket/x/f",
+      "context": {},
+      "match": false
+    },
+    {
+      "name": "a default in Resource",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket-${aws:PrincipalTag/team, 'company-wide'}",
+      "value": "arn:aws:s3:::bucket-company-wide",
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "a substituted star in Resource is literal",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket/${aws:PrincipalTag/p}",
+      "value": "arn:aws:s3:::bucket/anything",
+      "context": {
+        "aws:PrincipalTag/p": "*"
+      },
+      "match": false
+    },
+    {
+      "name": "${*} in Resource names a literal star",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket/${*}",
+      "value": "arn:aws:s3:::bucket/*",
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "${*} in Resource is not a wildcard",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket/${*}",
+      "value": "arn:aws:s3:::bucket/x",
+      "context": {},
+      "match": false
+    },
+    {
+      "name": "Version 2008-10-17 Resource is literal",
+      "kind": "resource_match",
+      "pattern": "arn:aws:s3:::bucket/${aws:username}",
+      "value": "arn:aws:s3:::bucket/${aws:username}",
+      "context": {
+        "aws:username": "alice"
+      },
+      "match": true,
+      "version": "2008-10-17"
+    }
+  ]
+}

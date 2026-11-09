@@ -1,0 +1,433 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_condition_operators.html",
+  "description": "Bool, BinaryEquals, IpAddress/NotIpAddress (IPv4 and IPv6 CIDR), the Arn family (segment by segment, case-sensitive) and Null.",
+  "cases": [
+    {
+      "name": "Bool true vs true",
+      "kind": "condition",
+      "condition": {
+        "Bool": {
+          "aws:SecureTransport": "true"
+        }
+      },
+      "context": {
+        "aws:SecureTransport": "true"
+      },
+      "match": true
+    },
+    {
+      "name": "Bool false vs true",
+      "kind": "condition",
+      "condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      },
+      "context": {
+        "aws:SecureTransport": "true"
+      },
+      "match": false
+    },
+    {
+      "name": "Bool is case-insensitive",
+      "kind": "condition",
+      "condition": {
+        "Bool": {
+          "aws:SecureTransport": "TRUE"
+        }
+      },
+      "context": {
+        "aws:SecureTransport": "true"
+      },
+      "match": true
+    },
+    {
+      "name": "Bool takes a JSON boolean",
+      "kind": "condition",
+      "condition": {
+        "Bool": {
+          "aws:SecureTransport": false
+        }
+      },
+      "context": {
+        "aws:SecureTransport": "false"
+      },
+      "match": true
+    },
+    {
+      "name": "Bool missing key is false",
+      "kind": "condition",
+      "condition": {
+        "Bool": {
+          "aws:SecureTransport": "true"
+        }
+      },
+      "context": {},
+      "match": false
+    },
+    {
+      "name": "BinaryEquals compares decoded base64 bytes",
+      "kind": "condition",
+      "condition": {
+        "BinaryEquals": {
+          "ex:blob": "QmluYXJ5VmFsdWVJbkJhc2U2NA=="
+        }
+      },
+      "context": {
+        "ex:blob": "BinaryValueInBase64"
+      },
+      "match": true
+    },
+    {
+      "name": "BinaryEquals different bytes",
+      "kind": "condition",
+      "condition": {
+        "BinaryEquals": {
+          "ex:blob": "QmluYXJ5VmFsdWVJbkJhc2U2NA=="
+        }
+      },
+      "context": {
+        "ex:blob": "Other"
+      },
+      "match": false
+    },
+    {
+      "name": "BinaryEquals with invalid base64 matches nothing",
+      "kind": "condition",
+      "condition": {
+        "BinaryEquals": {
+          "ex:blob": "not base64"
+        }
+      },
+      "context": {
+        "ex:blob": "x"
+      },
+      "match": false
+    },
+    {
+      "name": "IpAddress 203.0.113.0/24 vs 203.0.113.7",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "203.0.113.0/24"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.7"
+      },
+      "match": true
+    },
+    {
+      "name": "IpAddress 203.0.113.0/24 vs 203.0.114.7",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "203.0.113.0/24"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.114.7"
+      },
+      "match": false
+    },
+    {
+      "name": "IpAddress 203.0.113.7 vs 203.0.113.7",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "203.0.113.7"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.7"
+      },
+      "match": true
+    },
+    {
+      "name": "IpAddress 203.0.113.7 vs 203.0.113.8",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "203.0.113.7"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.8"
+      },
+      "match": false
+    },
+    {
+      "name": "IpAddress 2001:DB8:1234:5678::/64 vs 2001:db8:1234:5678::1",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "2001:DB8:1234:5678::/64"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "2001:db8:1234:5678::1"
+      },
+      "match": true
+    },
+    {
+      "name": "IpAddress 2001:DB8:1234:5678::/64 vs 2001:db8:1234:5679::1",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "2001:DB8:1234:5678::/64"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "2001:db8:1234:5679::1"
+      },
+      "match": false
+    },
+    {
+      "name": "IpAddress ::/0 vs 203.0.113.7",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "::/0"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.7"
+      },
+      "match": false
+    },
+    {
+      "name": "IpAddress 0.0.0.0/0 vs 203.0.113.7",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "0.0.0.0/0"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.7"
+      },
+      "match": true
+    },
+    {
+      "name": "IpAddress 203.0.113.0/33 vs 203.0.113.7",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": "203.0.113.0/33"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.7"
+      },
+      "match": false
+    },
+    {
+      "name": "NotIpAddress 203.0.113.0/24 vs 198.51.100.1",
+      "kind": "condition",
+      "condition": {
+        "NotIpAddress": {
+          "aws:SourceIp": "203.0.113.0/24"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "198.51.100.1"
+      },
+      "match": true
+    },
+    {
+      "name": "NotIpAddress 203.0.113.0/24 vs 203.0.113.7",
+      "kind": "condition",
+      "condition": {
+        "NotIpAddress": {
+          "aws:SourceIp": "203.0.113.0/24"
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.7"
+      },
+      "match": false
+    },
+    {
+      "name": "IpAddress mixes IPv4 and IPv6 ranges in one array",
+      "kind": "condition",
+      "condition": {
+        "IpAddress": {
+          "aws:SourceIp": [
+            "2001:db8::/32",
+            "203.0.113.0/24"
+          ]
+        }
+      },
+      "context": {
+        "aws:SourceIp": "203.0.113.9"
+      },
+      "match": true
+    },
+    {
+      "name": "ArnEquals arn:aws:sns:us-east-1:111122223333:topic vs arn:aws:sns:us-east-1:111122223333:topic",
+      "kind": "condition",
+      "condition": {
+        "ArnEquals": {
+          "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:topic"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:topic"
+      },
+      "match": true
+    },
+    {
+      "name": "ArnLike arn:aws:sns:*:111122223333:* vs arn:aws:sns:us-east-1:111122223333:topic",
+      "kind": "condition",
+      "condition": {
+        "ArnLike": {
+          "aws:SourceArn": "arn:aws:sns:*:111122223333:*"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:topic"
+      },
+      "match": true
+    },
+    {
+      "name": "ArnLike arn:aws:sns:*:111122223333:* vs arn:aws:sns:us-east-1:444455556666:topic",
+      "kind": "condition",
+      "condition": {
+        "ArnLike": {
+          "aws:SourceArn": "arn:aws:sns:*:111122223333:*"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:444455556666:topic"
+      },
+      "match": false
+    },
+    {
+      "name": "ArnEquals arn:aws:sns:*:111122223333:to?ic vs arn:aws:sns:us-east-1:111122223333:topic",
+      "kind": "condition",
+      "condition": {
+        "ArnEquals": {
+          "aws:SourceArn": "arn:aws:sns:*:111122223333:to?ic"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:topic"
+      },
+      "match": true
+    },
+    {
+      "name": "ArnLike arn:aws:sns:us-east-1:111122223333:topic vs arn:aws:sns:us-east-1:111122223333:Topic",
+      "kind": "condition",
+      "condition": {
+        "ArnLike": {
+          "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:topic"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:Topic"
+      },
+      "match": false
+    },
+    {
+      "name": "ArnLike * vs not-an-arn",
+      "kind": "condition",
+      "condition": {
+        "ArnLike": {
+          "aws:SourceArn": "*"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "not-an-arn"
+      },
+      "match": false
+    },
+    {
+      "name": "ArnNotEquals arn:aws:sns:*:111122223333:* vs arn:aws:sns:us-east-1:444455556666:t",
+      "kind": "condition",
+      "condition": {
+        "ArnNotEquals": {
+          "aws:SourceArn": "arn:aws:sns:*:111122223333:*"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:444455556666:t"
+      },
+      "match": true
+    },
+    {
+      "name": "ArnNotLike arn:aws:sns:*:111122223333:* vs arn:aws:sns:us-east-1:111122223333:t",
+      "kind": "condition",
+      "condition": {
+        "ArnNotLike": {
+          "aws:SourceArn": "arn:aws:sns:*:111122223333:*"
+        }
+      },
+      "context": {
+        "aws:SourceArn": "arn:aws:sns:us-east-1:111122223333:t"
+      },
+      "match": false
+    },
+    {
+      "name": "Null true holds when the key is absent",
+      "kind": "condition",
+      "condition": {
+        "Null": {
+          "aws:TokenIssueTime": "true"
+        }
+      },
+      "context": {},
+      "match": true
+    },
+    {
+      "name": "Null true fails when the key is present",
+      "kind": "condition",
+      "condition": {
+        "Null": {
+          "aws:TokenIssueTime": "true"
+        }
+      },
+      "context": {
+        "aws:TokenIssueTime": "2020-01-01T00:00:00Z"
+      },
+      "match": false
+    },
+    {
+      "name": "Null false holds when the key is present",
+      "kind": "condition",
+      "condition": {
+        "Null": {
+          "aws:TokenIssueTime": "false"
+        }
+      },
+      "context": {
+        "aws:TokenIssueTime": "2020-01-01T00:00:00Z"
+      },
+      "match": true
+    },
+    {
+      "name": "Null false fails when the key is absent",
+      "kind": "condition",
+      "condition": {
+        "Null": {
+          "aws:TokenIssueTime": "false"
+        }
+      },
+      "context": {},
+      "match": false
+    },
+    {
+      "name": "Null false holds for a multivalued key present with no values",
+      "kind": "condition",
+      "condition": {
+        "Null": {
+          "aws:TagKeys": "false"
+        }
+      },
+      "context": {
+        "aws:TagKeys": []
+      },
+      "match": true,
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-single-vs-multi-valued-context-keys.html"
+    }
+  ]
+}
