@@ -248,11 +248,17 @@ Question 1 (gateway default) must be answered before task 9, and question 3
         `multi_raft_split_integration_test/a_write_racing_a_split_is_never_lost`
         lost 1-3 of about 250 acknowledged plain writes on every run
         before the fix, and none after.
-      - **Residual:** a leader elected while an uncommitted split entry
-        is in its log has not admitted the split itself, so it still
-        accepts writes until that entry applies. Closing that needs an
-        apply-time range check, which `node` does not offer for normal
-        entries.
+      - **Residual (fixed November 9, 2026):** a leader elected while an
+        uncommitted split entry is in its log has not admitted the split
+        itself, so it accepted writes until that entry applied, and they
+        applied to the narrowed parent. A write now also backs off while
+        its leader holds an unapplied admin entry from an earlier term
+        (`node::has_inherited_admin_entry_pending()`), and a node with an
+        admin-entry handler refuses such a submission itself. No
+        apply-time range check was needed: the condition clears once the
+        new leader's election no-op commits. Regression test:
+        `multi_raft_split_integration_test/a_new_leader_holding_an_unapplied_split_never_loses_a_write`
+        (the acknowledged write was missing on every run before the fix).
 
 - [x] 9. Redis gateway: tier-1 surface
   - `--transactions`, `--txn-isolation`, `KYTHIRA.ISOLATION`; `MSET`,

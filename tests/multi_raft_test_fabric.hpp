@@ -151,6 +151,7 @@ public:
         _cut.clear();
         _dead.clear();
         _not_implemented.clear();
+        _blocked.clear();
     }
 
     /// @brief Make `node` answer `rpc` the way a peer on an older build does:
@@ -159,6 +160,18 @@ public:
     auto set_not_implemented(std::uint64_t node, std::string rpc) -> void {
         std::lock_guard lock(_mutex);
         _not_implemented.insert({node, std::move(rpc)});
+    }
+
+    /// @brief Drop every `rpc` addressed to `node`, from any sender, until
+    /// `unblock_rpc`. Other RPCs still flow, which is what lets a test let a
+    /// candidate collect votes while no AppendEntries it sends can land.
+    auto block_rpc(std::uint64_t node, std::string rpc) -> void {
+        std::lock_guard lock(_mutex);
+        _blocked.insert({node, std::move(rpc)});
+    }
+    auto unblock_rpc(std::uint64_t node, const std::string& rpc) -> void {
+        std::lock_guard lock(_mutex);
+        _blocked.erase({node, rpc});
     }
 
     [[nodiscard]] auto delivered() const -> std::uint64_t {
@@ -185,7 +198,8 @@ public:
 
         {
             std::lock_guard lock(_mutex);
-            if (_stopping.load() || _dead.contains(to) || _cut.contains({from, to})) {
+            if (_stopping.load() || _dead.contains(to) || _cut.contains({from, to}) ||
+                _blocked.contains({to, rpc})) {
                 _dropped.fetch_add(1, std::memory_order_relaxed);
                 promise->setException(std::make_exception_ptr(
                     kythira::network_exception("fabric: unreachable node")));
@@ -248,6 +262,7 @@ private:
     std::set<std::uint64_t> _dead;
     std::set<std::pair<std::uint64_t, std::uint64_t>> _cut;
     std::set<std::pair<std::uint64_t, std::string>> _not_implemented;
+    std::set<std::pair<std::uint64_t, std::string>> _blocked;
     std::vector<std::thread> _workers;
     std::atomic<bool> _stopping{false};
     std::atomic<std::uint64_t> _delivered{0};

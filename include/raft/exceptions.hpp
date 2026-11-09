@@ -117,4 +117,20 @@ public:
         : leader_transfer_exception(message) {}
 };
 
+// A leader refused a client command because its log still holds an
+// administration entry (a split or merge step) from an earlier term that it
+// has not applied yet.
+//
+// Such an entry changes which keys the group owns, and a command appended
+// after it applies after that change, so accepting one now could
+// acknowledge a write into a range the group is about to give away. The
+// condition clears as soon as the leader's first entry of its own term
+// commits and the inherited entries apply, usually within one round trip,
+// so the remedy is to retry.
+class inherited_admin_entry_pending_exception : public raft_exception {
+public:
+    explicit inherited_admin_entry_pending_exception(const std::string& message)
+        : raft_exception(message) {}
+};
+
 }  // namespace kythira

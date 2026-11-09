@@ -184,7 +184,7 @@ public:
             _hosts.push_back(std::make_unique<host_type>(make_config(id)));
         }
         for (node_id_t id = 1; id <= _node_count; ++id) {
-            _hosts[id - 1]->create_group(root_descriptor());
+            _hosts[id - 1]->create_group(root_descriptor(_node_count));
         }
         for (auto& h : _hosts) {
             h->start();
@@ -214,11 +214,17 @@ public:
     split_cluster(const split_cluster&) = delete;
     auto operator=(const split_cluster&) -> split_cluster& = delete;
 
-    [[nodiscard]] static auto root_descriptor() -> descriptor_type {
+    /// One group over every host: voters 1..node_count.
+    [[nodiscard]] static auto root_descriptor(std::size_t node_count = k_node_count)
+        -> descriptor_type {
+        std::vector<node_id_t> voters;
+        for (node_id_t id = 1; id <= node_count; ++id) {
+            voters.push_back(id);
+        }
         return descriptor_type{._group_id = 1,
                                ._range = kythira::unbounded_shard_range<key_type>(),
                                ._epoch = shard_epoch{},
-                               ._voters = {1, 2, 3},
+                               ._voters = std::move(voters),
                                ._learners = {},
                                ._leader_hint = std::nullopt};
     }
@@ -513,6 +519,151 @@ BOOST_AUTO_TEST_CASE(a_write_racing_a_split_is_never_lost, *boost::unit_test::ti
         });
     BOOST_TEST(missing == 0U, missing << " of " << acked.size()
                                       << " acknowledged writes are missing from their shard");
+}
+
+BOOST_AUTO_TEST_CASE(a_new_leader_holding_an_unapplied_split_never_loses_a_write,
+                     *boost::unit_test::timeout(180)) {
+    // The split freeze above is local to the leader that ADMITTED the split.
+    // A leader elected with someone else's split entry in its log, not yet
+    // applied, finds its own shard `stable` and the epoch unchanged, so the
+    // freeze alone lets a write through. The write is appended after the
+    // inherited split entry, applies after the cut, lands in the narrowed
+    // parent for a key a child now owns, and is acknowledged: lost.
+    //
+    // Five voters so the split entry can reach exactly one follower without
+    // committing (two of five), and so that follower can then be the only
+    // node able to win the next election.
+    split_cluster c(5);
+    auto& fabric = c.fabric();
+    BOOST_REQUIRE(c.await_leader(1, std::chrono::seconds{20}));
+    for (const auto& k : workload_keys()) {
+        BOOST_REQUIRE(c.put(k, "v"));
+    }
+
+    auto* old_leader = c.leader_of(1);
+    BOOST_REQUIRE(old_leader != nullptr);
+    const node_id_t a = old_leader->node_id();
+    // Every replica holds every write before the topology changes, so the
+    // only entry the split's heir has that the rest lack is the split.
+    BOOST_REQUIRE(c.await(
+        [&] {
+            const auto applied = old_leader->group_node(1)->last_applied_index();
+            for (node_id_t id = 1; id <= c.node_count(); ++id) {
+                if (c.host(id).group_node(1)->last_applied_index() < applied) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        std::chrono::seconds{10}));
+
+    std::vector<node_id_t> others;
+    for (node_id_t id = 1; id <= c.node_count(); ++id) {
+        if (id != a) {
+            others.push_back(id);
+        }
+    }
+    const node_id_t b = others[0];
+    const std::vector<node_id_t> rest(others.begin() + 1, others.end());
+
+    // The old leader reaches only `b`, and the other three cannot reach one
+    // another. Nobody but `b` can then assemble a majority: the other three
+    // are refused by `a` and `b`, whose logs will be longer, and cannot
+    // gather each other's votes.
+    for (auto r : rest) {
+        fabric.partition(a, r);
+        for (auto s : rest) {
+            if (r != s) {
+                fabric.partition(r, s);
+            }
+        }
+    }
+
+    // The split reaches `b` and nobody else, so it cannot commit.
+    auto split = old_leader->split_shard(1, {"echo"}, std::chrono::milliseconds{3000});
+    const auto has_split = [](host_type& h) {
+        // The split is at most a few entries past what every replica applied
+        // before the topology changed; `log_entries_between` reserves the
+        // whole span, so keep it small.
+        auto* n = h.group_node(1);
+        const auto from = n->last_applied_index() + 1;
+        for (const auto& e : n->log_entries_between(from, from + 64)) {
+            if (e.type() == kythira::entry_type::split) {
+                return true;
+            }
+        }
+        return false;
+    };
+    BOOST_REQUIRE(c.await([&] { return has_split(c.host(b)); }, std::chrono::seconds{5}));
+    for (auto r : rest) {
+        BOOST_REQUIRE(!has_split(c.host(r)));
+    }
+
+    // Cut the old leader off entirely, and let `b`'s votes through while no
+    // AppendEntries it sends can land: its election no-op, and with it the
+    // inherited split, stays uncommitted for as long as the test likes.
+    fabric.kill(a);
+    fabric.partition(a, b);
+    for (auto r : rest) {
+        fabric.block_rpc(r, "append_entries");
+    }
+    BOOST_REQUIRE(
+        c.await([&] { return c.host(b).group_node(1)->is_leader(); }, std::chrono::seconds{20}));
+    BOOST_REQUIRE(has_split(c.host(b)));
+
+    // "x..." sorts after "echo": the split's right child will own it.
+    const key_type key = "x-after-inherited-split";
+    auto write =
+        c.host(b).submit_command(key, host_types::state_machine_type::make_put_command(key, "v"),
+                                 std::chrono::milliseconds{8000});
+
+    // The node refuses on its own as well, for a caller that goes around the
+    // routing layer (or a leader that lost and regained leadership between
+    // the routing check and the append).
+    BOOST_TEST(c.host(b).group_node(1)->has_inherited_admin_entry_pending());
+    BOOST_TEST(is_a<kythira::inherited_admin_entry_pending_exception>(
+        settle(c.host(b).group_node(1)->submit_command(
+                   host_types::state_machine_type::make_put_command(key, "direct"),
+                   std::chrono::milliseconds{2000}),
+               std::chrono::milliseconds{3000})));
+
+    // Let `b` commit: the split, its no-op and anything after them.
+    for (auto r : rest) {
+        fabric.unblock_rpc(r, "append_entries");
+    }
+    const auto outcome = settle(std::move(write), std::chrono::milliseconds{10000});
+    BOOST_REQUIRE(c.await(
+        [&] {
+            const auto d = c.host(b).resolve(key);
+            return d.has_value() && d->_group_id != 1;
+        },
+        std::chrono::seconds{10}));
+    const auto owner = *c.host(b).resolve(key);
+    BOOST_REQUIRE(c.await_leader(owner._group_id, std::chrono::seconds{10}));
+
+    if (outcome == nullptr) {
+        // Acknowledged, so it must be where its key now lives.
+        auto* owner_leader = c.leader_of(owner._group_id);
+        BOOST_REQUIRE(owner_leader != nullptr);
+        const bool present = owner_leader->group_node(owner._group_id)
+                                 ->with_state_machine([&](host_types::state_machine_type& sm) {
+                                     return sm.contains(key);
+                                 });
+        BOOST_TEST(present, "an acknowledged write is missing from the shard owning its key");
+    } else {
+        // Refused, not lost: a refusal the client is told to retry.
+        BOOST_TEST_MESSAGE("write behind the inherited split was refused");
+        BOOST_TEST(is_a<shard_busy_exception<group_id_type>>(outcome));
+    }
+
+    // Either way the shard keeps working, and a retry lands in the child.
+    BOOST_REQUIRE(c.put(key, "v2"));
+    auto* owner_leader = c.leader_of(owner._group_id);
+    BOOST_REQUIRE(owner_leader != nullptr);
+    BOOST_TEST(owner_leader->group_node(owner._group_id)
+                   ->with_state_machine(
+                       [&](host_types::state_machine_type& sm) { return sm.contains(key); }));
+    BOOST_TEST(!c.tiling_problem().has_value());
 }
 
 BOOST_AUTO_TEST_CASE(a_vetoed_key_falls_back_to_the_state_machines_suggestion,
