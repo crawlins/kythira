@@ -950,7 +950,35 @@ struct block {
     [[nodiscard]] auto verify() const -> bool {
         return std::ranges::all_of(revisions,
                                    [](const revision& r) { return r.compute_hash() == r.hash; }) &&
-               compute_entries_hash() == entries_hash && compute_block_hash() == block_hash;
+               !label_problem() && compute_entries_hash() == entries_hash &&
+               compute_block_hash() == block_hash;
+    }
+
+    /// A revision's tableName and blockAddress are outside its hash (the
+    /// hash is QLDB's: data and metadata only), so they are bound here
+    /// instead: each revision must name this block, and its table and id
+    /// must be those of a document statement in this block, which the
+    /// entries hash covers. Returns what is wrong, or nullopt.
+    [[nodiscard]] auto label_problem() const -> std::optional<std::string> {
+        std::vector<std::pair<std::string, std::string>> touched;
+        for (const auto& s : statements) {
+            const ion_value* table = s.find("table");
+            const ion_value* id = s.find("id");
+            if (table != nullptr && id != nullptr) {
+                touched.emplace_back(table->as_text().value_or(""), id->as_text().value_or(""));
+            }
+        }
+        for (const auto& r : revisions) {
+            if (r.seq != seq) {
+                return "revision " + r.table + "/" + r.id + " names block " +
+                       std::to_string(r.seq) + ", not block " + std::to_string(seq);
+            }
+            if (std::ranges::find(touched, std::make_pair(r.table, r.id)) == touched.end()) {
+                return "revision " + r.table + "/" + r.id +
+                       " matches no document statement in its block";
+            }
+        }
+        return std::nullopt;
     }
 
     /// The header plus entriesHash, previousBlockHash, blockHash,
