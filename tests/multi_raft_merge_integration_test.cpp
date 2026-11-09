@@ -29,6 +29,15 @@
 #include <raft/multi_raft_impl.hpp>
 #include <raft/persistence.hpp>
 #include <raft/test_state_machine.hpp>
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+// persistent-state-machine task 4: the same suite over a persistent state
+// machine, which splits by range and merges by adopting a range.
+#include <raft/persistent_test_state_machine.hpp>
+#define KYTHIRA_TEST_STATE_ENGINE(cfg) \
+    (cfg).state_engine = std::make_shared<kythira::memory_kv_engine>()
+#else
+#define KYTHIRA_TEST_STATE_ENGINE(cfg) static_cast<void>(cfg)
+#endif
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
@@ -152,7 +161,11 @@ struct host_types {
     using logger_type = kythira::console_logger;
     using metrics_type = concurrent_recording_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+    using state_machine_type = kythira::persistent_test_kv_state_machine<log_index_type>;
+#else
     using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+#endif
 
     using configuration_type = kythira::raft_configuration;
 
@@ -376,6 +389,7 @@ private:
         cfg.config._election_timeout_max = std::chrono::milliseconds{260};
         cfg.config._heartbeat_interval = std::chrono::milliseconds{25};
         cfg.hibernation = hibernation_mode::off;
+        KYTHIRA_TEST_STATE_ENGINE(cfg);
         cfg.executor_stripes = 2;
         cfg.route_retry_backoff = std::chrono::milliseconds{2};
         if (_tweak) {
@@ -428,6 +442,7 @@ public:
         cfg.config._election_timeout_max = std::chrono::milliseconds{80};
         cfg.config._heartbeat_interval = std::chrono::milliseconds{10};
         cfg.hibernation = hibernation_mode::off;
+        KYTHIRA_TEST_STATE_ENGINE(cfg);
         cfg.executor_stripes = 2;
         cfg.route_retry_backoff = std::chrono::milliseconds{1};
         cfg.metrics = concurrent_recording_metrics{_recorder};

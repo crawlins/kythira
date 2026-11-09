@@ -126,12 +126,48 @@ RocksDB is linked. Each task is one PR unless noted.
       compaction, both refusals at restart, and the InstallSnapshot refusal
       over the simulator.
 
-- [ ] 4. Split and merge without copies
+- [x] 4. Split and merge without copies
   - `split_at` / `adopt` in the reference state machine
   - `multi_raft_impl.hpp` split and colocated-merge branches; failpoint
     equivalents
   - Existing split/merge integration tests parameterised over both kinds
   - _Requirements: 6.1-6.5_
+  - As built (November 9, 2026):
+    - Engine: `multi_raft_config::state_engine` is a `shared_ptr` to the
+      node's engine (`persistent_engine_of_t<SM>`). `create_group_impl`
+      opens each group's state machine on its shard range of that engine
+      and throws when the field is unset. Shard keys must be
+      `std::string`.
+    - Split (6.1): `apply_split` calls `split_at`, which narrows the parent
+      and writes every child's metadata in one batch. Children are seeded
+      with a metadata-only snapshot (the task 3 marker) at the parent's
+      applied index, so `open` and the snapshot agree (4.2). No
+      `split_state`, `restore_from_snapshot` or key copy. A replay after a
+      crash finds the parent already cut to the derived child's range and
+      skips the cut. `persistent_splittable_state_machine` gained `range()`
+      for that check. `right_derive` is refused: `split_at` keeps the
+      lowest part on the parent.
+    - Merge (6.2, 6.3): the colocated target calls `adopt(source range)`
+      instead of `get_state` and `absorb`. `adopt` takes a neighbour on
+      either side, in both reference machines. The non-colocated refusal
+      path is unchanged.
+    - Teardown: `destroy_group` drops a persistent group's range, except a
+      merged-away source, whose keys are the survivor's. A replica created
+      again later would otherwise open a stale applied index.
+    - 6.4: admin entries, idempotence and failpoints are unchanged; the
+      crash-consistency suite runs over both kinds.
+    - 6.5: the split policy hooks moved to their own concept,
+      `split_policy_state_machine` (`splittable_state_machine.hpp`), which
+      a persistent machine can satisfy without `split_state`/`absorb`.
+      Every policy site in `multi_raft_impl.hpp` uses it.
+    - Tests: `include/raft/persistent_test_state_machine.hpp`
+      (`persistent_test_kv_state_machine`, the persistent twin of
+      `test_key_value_state_machine`, same commands). The split, merge
+      and crash-consistency suites build a second binary with
+      `KYTHIRA_PERSISTENT_STATE_MACHINE` (`*_persistent_test`). One split
+      case is excluded there: a lost child replica rebuilt from an inbound
+      message needs snapshot transfer (Requirement 10.2), which
+      file-install-snapshot brings.
 
 - [ ] 5. RocksDB engine
   - vcpkg feature and `KYTHIRA_ENGINE_ROCKSDB` Kconfig option (default off),

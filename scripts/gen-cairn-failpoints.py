@@ -64,6 +64,9 @@ NOT_REACHED = {
     "include/raft/binary_file_persistence.hpp":
         "the binary segmented engine the disk-backed build cache runs on; chaos_node "
         "uses file persistence",
+    "include/raft/persistent_test_state_machine.hpp":
+        "the persistent (kv_engine) test state machine; chaos_node runs the "
+        "byte-buffer test_state_machine",
 }
 
 # Names in a reached header that the allowlisted modes cannot drive.

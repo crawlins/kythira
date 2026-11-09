@@ -23,6 +23,30 @@
 
 namespace kythira {
 
+namespace detail {
+
+// persistent-state-machine Requirement 6: the host's view of a group state
+// machine whose state lives in the node's kv_engine.
+template<typename Types>
+inline constexpr bool persistent_group_state_machine =
+    storage_kind_of<typename Types::state_machine_type, typename Types::log_index_type> ==
+    state_machine_storage::persistent;
+
+template<typename Types, typename Key>
+inline constexpr bool persistent_split_state_machine =
+    persistent_group_state_machine<Types> && std::same_as<Key, std::string> &&
+    persistent_splittable_state_machine<typename Types::state_machine_type,
+                                        typename Types::log_index_type>;
+
+// A shard range as the engine range its state machine opens on.
+template<typename Key> auto engine_range_of(const shard_range<Key>& r) -> key_range {
+    static_assert(std::same_as<Key, std::string>,
+                  "a persistent state machine needs std::string shard keys");
+    return key_range{.start = r._start.value_or(std::string{}), .end = r._end};
+}
+
+}  // namespace detail
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction and lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,6 +244,15 @@ auto multi_raft<Types, Key, GroupId>::create_group_impl(
     if (_cfg.state_machine_factory) {
         node_cfg.state_machine = _cfg.state_machine_factory(group);
     }
+    if constexpr (detail::persistent_group_state_machine<Types>) {
+        // The state is already in the engine, under this group's range; the
+        // node finds its applied index there when it starts (Requirement 4.1).
+        if (!_cfg.state_engine) {
+            throw std::invalid_argument(
+                "multi_raft: a persistent state machine needs multi_raft_config::state_engine");
+        }
+        node_cfg.state_machine.open(*_cfg.state_engine, detail::engine_range_of(descriptor._range));
+    }
     node_cfg.config = _cfg.config;
     // A group never provisions (`group_scoped_types` shadows its manager with
     // `no_op_quorum_manager`), but `add_learner` and `promote_to_voter` consult
@@ -325,6 +358,18 @@ auto multi_raft<Types, Key, GroupId>::destroy_group(const GroupId& group, tombst
     // The node is freed with the last reference, which the transport also
     // holds for the length of any dispatch already inside it.
     state->_node->stop();
+
+    // A persistent group's keys live in the shared engine, not in its store,
+    // so they outlive the node unless dropped. They must be: a replica
+    // created again later would open the range, find a stale applied index,
+    // and skip entries it never applied. A merged-away source never comes
+    // through here; its keys are the survivor's now.
+    if constexpr (detail::persistent_group_state_machine<Types>) {
+        if (reason != tombstone_reason::merged_away) {
+            state->_node->with_state_machine(
+                [](typename Types::state_machine_type& sm) { sm.drop(); });
+        }
+    }
 
     {
         std::unique_lock lock(_map_mutex);
@@ -1354,7 +1399,7 @@ auto multi_raft<Types, Key, GroupId>::capacity_gate_refuses(group_state& g) -> b
     // estimate of what the split is about to write. Only a state machine with
     // sizing hooks can say; without them the floor check above is all there is.
     std::uint64_t projected = 0;
-    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+    if constexpr (split_policy_state_machine<typename Types::state_machine_type, Key>) {
         if (g._node) {
             g._node->with_state_machine([&](typename Types::state_machine_type& sm) {
                 projected = static_cast<std::uint64_t>(sm.approximate_size_bytes());
@@ -1503,7 +1548,7 @@ auto multi_raft<Types, Key, GroupId>::stats_for(const GroupId& group) const
     // stays false without it. That flag is deliberate: a silent no-op is the
     // worst failure mode a policy layer can have, so the absence is a fact the
     // policy can see rather than a zero it would misread as "small".
-    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+    if constexpr (split_policy_state_machine<typename Types::state_machine_type, Key>) {
         g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
             stats._approximate_size_bytes = sm.approximate_size_bytes();
             stats._approximate_key_count = sm.approximate_key_count();
@@ -1798,7 +1843,7 @@ auto multi_raft<Types, Key, GroupId>::pre_split(const GroupId& group, std::vecto
     // it on a populated shard would make it a second, weaker `split_shard` that
     // skips the state machine's veto entirely.
     bool empty = true;
-    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+    if constexpr (split_policy_state_machine<typename Types::state_machine_type, Key>) {
         g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
             empty = sm.approximate_key_count() == 0;
         });
@@ -1884,7 +1929,7 @@ auto multi_raft<Types, Key, GroupId>::split_shard(const GroupId& group, std::vec
     }
 
     std::vector<Key> chosen;
-    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+    if constexpr (split_policy_state_machine<typename Types::state_machine_type, Key>) {
         const auto limit = _cfg.batch_split_limit;
         const auto& range = parent._range;
         const bool allow_fallback = options._allow_state_machine_veto || at_keys.empty();
@@ -2167,18 +2212,46 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
     //
     // Deterministic across replicas by contract (the round-trip law); every
     // replica therefore produces byte-identical children.
+    //
+    // A persistent state machine cuts by range instead (persistent-state-
+    // machine Requirement 6.1): `split_at` narrows the parent to the part
+    // below the first key and writes each child's metadata in one engine
+    // batch. No key moves and nothing is copied. Its children open on their
+    // ranges of the same engine when they are created below.
     std::vector<std::vector<std::byte>> blobs;
-    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+    std::size_t parts = 0;
+    log_index_type child_applied{0};
+    if constexpr (detail::persistent_split_state_machine<Types, Key>) {
+        if (_cfg.right_derive) {
+            parent._operation.store(shard_operation_state::stable);
+            throw shard_exception(
+                "split apply: a persistent state machine keeps the lowest part on the parent, "
+                "so right_derive is not supported");
+        }
+        // split_at narrows the parent and writes every child's metadata in
+        // one batch, so a replay after a crash anywhere below finds the parent
+        // already cut to the derived child's range. Cutting again would see
+        // every key outside the narrowed range and produce nothing; the
+        // children's metadata is already in the engine, so skip it.
+        const auto derived_range = detail::engine_range_of(cmd._children[derived_index]._range);
+        if (parent_sm.range() == derived_range) {
+            parts = cmd._children.size();
+        } else {
+            // The parent's own part plus one per cut.
+            parts = parent_sm.split_at(cmd._at_keys).size() + 1;
+        }
+        child_applied = parent_sm.applied_index();
+    } else if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
         blobs = parent_sm.split_state(cmd._at_keys);
+        parts = blobs.size();
     }
-    if (blobs.size() != cmd._children.size()) {
+    if (parts != cmd._children.size()) {
         // A state machine that cannot cut cannot be split. Failing loudly beats
         // creating children with no state, which would silently lose every key
         // in their ranges.
         parent._operation.store(shard_operation_state::stable);
-        throw shard_exception("split apply: state machine produced " +
-                              std::to_string(blobs.size()) + " parts for " +
-                              std::to_string(cmd._children.size()) + " children");
+        throw shard_exception("split apply: state machine produced " + std::to_string(parts) +
+                              " parts for " + std::to_string(cmd._children.size()) + " children");
     }
 
     // ── E: durable state ─────────────────────────────────────────────────────
@@ -2210,7 +2283,19 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
         fiu_do_on("raft/multiraft/split/before_children",
                   throw shard_exception("chaos: split/before_children"););
 
-        const auto blob = blobs[i];
+        std::vector<std::byte> blob;
+        auto snapshot_index = at_index;
+        if constexpr (detail::persistent_split_state_machine<Types, Key>) {
+            // Metadata only: the child's state is its range of the engine,
+            // and its applied index is the parent's, which split_at wrote
+            // into the child's metadata. The snapshot must not claim more
+            // than that, or the child's start would refuse it
+            // (Requirement 4.2).
+            blob = persistent_snapshot_marker();
+            snapshot_index = child_applied;
+        } else {
+            blob = blobs[i];
+        }
         const auto members = child._voters;
         const auto learners = child._learners;
         // Created WITHOUT publishing: the routing rows for every child go in
@@ -2222,7 +2307,7 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
             child,
             [&](typename Types::persistence_engine_type& store) {
                 snapshot_type snap{};
-                snap._last_included_index = at_index;
+                snap._last_included_index = snapshot_index;
                 snap._last_included_term = at_term;
                 snap._configuration = typename Types::cluster_configuration_type{
                     members, false, std::nullopt, learners};
@@ -2241,7 +2326,9 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
 
     // The derived child keeps the parent's group id, log and term; only its
     // range narrows and its state machine is reduced to its own share.
-    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+    if constexpr (detail::persistent_split_state_machine<Types, Key>) {
+        // split_at already narrowed it.
+    } else if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
         parent_sm.restore_from_snapshot(blobs[derived_index], at_index);
     }
     parent._descriptor = cmd._children[derived_index];
@@ -2924,12 +3011,21 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
         }
         fiu_do_on("raft/multiraft/merge/mid_commit_catchup",
                   throw shard_exception("chaos: merge/mid_commit_catchup"););
-        source_state_bytes = source_sm.get_state();
+        if constexpr (!detail::persistent_group_state_machine<Types>) {
+            source_state_bytes = source_sm.get_state();
+        }
     });
 
     // (b) Absorb. Deterministic by contract, and the exact inverse of
     //     `split_state` — the round-trip law is what makes this safe.
-    if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+    //
+    //     A persistent target adopts the source's range of the same engine
+    //     instead: the source's keys are already there, so nothing is read or
+    //     copied (persistent-state-machine Requirement 6.2). The source's
+    //     teardown below leaves those keys alone.
+    if constexpr (detail::persistent_split_state_machine<Types, Key>) {
+        target_sm.adopt(detail::engine_range_of(cmd._source._range));
+    } else if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
         target_sm.absorb(source_state_bytes, cmd._source._range);
     } else {
         throw shard_exception(
@@ -4290,7 +4386,7 @@ auto multi_raft<Types, Key, GroupId>::build_shard_reports() const
         r._capacity_refusals =
             static_cast<std::size_t>(g->_capacity_refusals.exchange(0, std::memory_order_relaxed));
 
-        if constexpr (splittable_state_machine<typename Types::state_machine_type, Key>) {
+        if constexpr (split_policy_state_machine<typename Types::state_machine_type, Key>) {
             g->_node->with_state_machine([&](typename Types::state_machine_type& sm) {
                 r._approximate_size_bytes = sm.approximate_size_bytes();
                 r._approximate_key_count = sm.approximate_key_count();

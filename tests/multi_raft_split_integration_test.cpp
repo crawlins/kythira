@@ -32,6 +32,15 @@
 #include <raft/multi_raft_impl.hpp>
 #include <raft/persistence.hpp>
 #include <raft/test_state_machine.hpp>
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+// persistent-state-machine task 4: the same suite over a persistent state
+// machine, which splits by range and merges by adopting a range.
+#include <raft/persistent_test_state_machine.hpp>
+#define KYTHIRA_TEST_STATE_ENGINE(cfg) \
+    (cfg).state_engine = std::make_shared<kythira::memory_kv_engine>()
+#else
+#define KYTHIRA_TEST_STATE_ENGINE(cfg) static_cast<void>(cfg)
+#endif
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
@@ -107,7 +116,11 @@ struct host_types {
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+    using state_machine_type = kythira::persistent_test_kv_state_machine<log_index_type>;
+#else
     using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+#endif
 
     using configuration_type = kythira::raft_configuration;
 
@@ -353,6 +366,7 @@ private:
         cfg.config._election_timeout_max = std::chrono::milliseconds{260};
         cfg.config._heartbeat_interval = std::chrono::milliseconds{25};
         cfg.hibernation = hibernation_mode::off;
+        KYTHIRA_TEST_STATE_ENGINE(cfg);
         cfg.executor_stripes = 2;
         cfg.allocate_group_ids = [this](std::size_t n) { return _ids.allocate(n); };
         // No cooldown here. The arbiter's one-hour default is right for a real
@@ -901,6 +915,13 @@ BOOST_AUTO_TEST_CASE(a_node_offline_through_a_split_learns_it_from_the_entry_its
                 std::chrono::seconds{20}));
 }
 
+// Not in the persistent variant: the re-created replica starts empty, and a
+// persistent child's log begins at its split snapshot, so only a snapshot
+// transfer could fill it. Persistent groups refuse InstallSnapshot until
+// file-install-snapshot's transfer lands (persistent-state-machine
+// Requirement 10.2); that spec's follower and leader tasks bring this case
+// back for both kinds.
+#ifndef KYTHIRA_PERSISTENT_STATE_MACHINE
 BOOST_AUTO_TEST_CASE(a_node_that_lost_a_child_replica_reacquires_it_from_an_inbound_message,
                      *boost::unit_test::timeout(180)) {
     // Requirement 12.1: a node with no replica of a group it is a member of
@@ -959,6 +980,7 @@ BOOST_AUTO_TEST_CASE(a_node_that_lost_a_child_replica_reacquires_it_from_an_inbo
         },
         std::chrono::seconds{25}));
 }
+#endif  // KYTHIRA_PERSISTENT_STATE_MACHINE
 
 BOOST_AUTO_TEST_CASE(a_message_naming_a_non_member_never_creates_a_replica,
                      *boost::unit_test::timeout(180)) {
@@ -1042,6 +1064,7 @@ BOOST_AUTO_TEST_CASE(the_external_lookup_is_rate_limited, *boost::unit_test::tim
         .store_factory = [](const group_id_type&) { return host_types::persistence_engine_type{}; },
     };
     cfg.hibernation = hibernation_mode::off;
+    KYTHIRA_TEST_STATE_ENGINE(cfg);
     cfg.executor_stripes = 1;
     cfg.unknown_group_lookup_interval = std::chrono::seconds{30};
     cfg.lookup_descriptor = [&lookups](const group_id_type&) -> std::optional<descriptor_type> {
@@ -1072,6 +1095,7 @@ BOOST_AUTO_TEST_CASE(lazy_creation_can_be_turned_off_entirely, *boost::unit_test
         .store_factory = [](const group_id_type&) { return host_types::persistence_engine_type{}; },
     };
     cfg.hibernation = hibernation_mode::off;
+    KYTHIRA_TEST_STATE_ENGINE(cfg);
     cfg.executor_stripes = 1;
     cfg.lazy_replica_creation = false;
     cfg.lookup_descriptor = [](const group_id_type&) -> std::optional<descriptor_type> {

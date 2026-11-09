@@ -85,6 +85,12 @@ buffer and is documented as a read-index barrier.
 The applied index of a split child starts at the split entry's index, as the
 derived child's does today.
 
+As built (task 4): the source's metadata is folded into the target's by
+`adopt` itself, in its one batch, so there is no separate `drop_meta`. A
+split child's applied index is the parent's at the split entry, which
+`split_at` writes into the child's metadata, and its seed snapshot is the
+metadata-only marker at that index. `adopt` takes a neighbour on either side.
+
 ### Transaction state
 
 The wrapper's three maps become key spaces in the `txn` column family:
