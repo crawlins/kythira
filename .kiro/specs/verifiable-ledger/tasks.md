@@ -333,3 +333,8 @@ task is one PR unless noted.
     verified after
   - `doc/` page: model, API, limits, verification procedure
   - _Requirements: 12.4, 12.5_
+  - Done so far: `doc/verifiable_ledger.md` (model, API, limits,
+    verification procedure, operations). It says what waits on
+    `ledger_node` and needs a pass once the daemon and its config land.
+    The crash and chaos tests wait on `ledger_node` and
+    `rocksdb_kv_engine`.
