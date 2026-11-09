@@ -883,11 +883,18 @@ BOOST_AUTO_TEST_CASE(a_node_offline_through_a_split_learns_it_from_the_entry_its
     c.fabric().revive(absent);
     c.resume();
 
-    BOOST_REQUIRE(c.await([&] { return c.host(absent).group_node(child_id) != nullptr; },
-                          std::chrono::seconds{20}));
+    // Wait for the split to finish applying, not just for the child to exist.
+    // apply_split creates the child (step E) before it narrows the parent,
+    // publishes the map and bumps applied_split_count (steps F-H), so checking
+    // the count the moment the child appeared failed about one CI run in 26.
+    BOOST_REQUIRE(c.await(
+        [&] {
+            return c.host(absent).group_node(child_id) != nullptr &&
+                   c.host(absent).applied_split_count() >= 1u;
+        },
+        std::chrono::seconds{20}));
     // It came from the split entry, not from the lazy path.
     BOOST_CHECK_EQUAL(c.host(absent).lazily_created_replica_count(), 0u);
-    BOOST_CHECK_GE(c.host(absent).applied_split_count(), 1u);
 
     BOOST_REQUIRE(
         c.await([&] { return c.state_of(absent, child_id) == c.state_of(leader_id, child_id); },
