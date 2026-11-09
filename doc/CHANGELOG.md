@@ -23,6 +23,12 @@ current list of outstanding work, see [TODO.md](TODO.md).
   ends with `HOST_LOST` instead of retrying against a dead upstream. M3's
   GPU host powered itself off near the end of run 3, and run 4 spent
   three bootstrap attempts on 502s that read as parse failures.
+- **Cairn's liveness check waits for the heal.** `check.run` with
+  `liveness` now returns `not_judged`, names the faults the schedule log
+  says may still be in place, and records no violation until `run.reset`
+  has healed them, as Requirement 5.3 and the liveness project's goal
+  define it. M3 run 2's liveness flag replayed 0/3 under its faults
+  (recovery about 5 s against a 6 s bound) and 0/3 healed (0.1 s).
 
 ### What Changed (November 5, 2026)
 
