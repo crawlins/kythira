@@ -913,6 +913,11 @@ struct raft_configuration {
     /// Free space a follower requires beyond a snapshot's size before it
     /// stages one (Requirement 3.1).
     std::uint64_t _snapshot_disk_margin_bytes{64ULL * 1024 * 1024};
+    /// How long a leader keeps a format-1 checkpoint that no transfer is
+    /// reading, so a failed transfer can start again from the same files
+    /// (file-install-snapshot Requirement 5.3). A newer checkpoint replaces
+    /// an unused older one at once.
+    std::chrono::milliseconds _snapshot_checkpoint_max_unused_age{std::chrono::minutes{10}};
 
     // ── Retry policies ────────────────────────────────────────────────────────
     retry_policy_config _heartbeat_retry_policy{.initial_delay = std::chrono::milliseconds{50},
@@ -1054,6 +1059,9 @@ struct raft_configuration {
     }
     [[nodiscard]] auto snapshot_disk_margin_bytes() const -> std::uint64_t {
         return _snapshot_disk_margin_bytes;
+    }
+    [[nodiscard]] auto snapshot_checkpoint_max_unused_age() const -> std::chrono::milliseconds {
+        return _snapshot_checkpoint_max_unused_age;
     }
     [[nodiscard]] auto heartbeat_retry_policy() const -> const retry_policy_config& {
         return _heartbeat_retry_policy;

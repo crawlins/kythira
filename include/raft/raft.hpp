@@ -20,6 +20,7 @@
 #include <raft/future_default.hpp>
 #include <raft/persistent_state_machine.hpp>
 #include <raft/snapshot_stream.hpp>
+#include <raft/checkpoint_registry.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/configuration_synchronizer.hpp>
@@ -1007,6 +1008,9 @@ private:
     };
     std::conditional_t<k_persistent_state, std::optional<format1_transfer>, std::monostate>
         _format1_transfer{};
+    // The leader's checkpoints for format-1 transfers (Requirement 5),
+    // guarded by `_mutex`. Set up at start from the configuration.
+    std::conditional_t<k_persistent_state, checkpoint_registry, std::monostate> _checkpoints{};
 
     // Configuration synchronizer for safe configuration changes. Its internal
     // "did this phase commit" signal is bool-valued, distinct from
@@ -1573,6 +1577,18 @@ private:
     auto send_install_snapshot_to(node_id_type target) -> void;
     auto send_install_snapshot_chunk(node_id_type target, std::shared_ptr<const snapshot_type> snap,
                                      std::size_t offset, std::size_t chunk_num) -> void;
+    // Format 1 (file-install-snapshot Requirement 5): one transfer's
+    // checkpoint lease, reader and encoded manifest, shared by its chunks.
+    struct format1_send {
+        checkpoint_registry::lease lease;
+        snapshot_stream_reader reader;
+        std::vector<std::byte> manifest;
+        term_id_type leader_term{};
+    };
+    auto send_format1_snapshot_to(node_id_type target) -> void;
+    auto send_format1_chunk(node_id_type target, std::shared_ptr<const format1_send> transfer,
+                            std::uint64_t offset) -> void;
+    auto emit_checkpoint_metrics() -> void;
     auto advance_commit_index() -> void;
     auto apply_committed_entries() -> void;
     // read_state()'s last step, called under _mutex once leadership is
@@ -5630,8 +5646,11 @@ auto node<Types>::initialize_from_storage() -> void {
                              {"applied_index", std::to_string(applied)},
                              {"last_log_index", std::to_string(get_last_log_index())}});
         }
-        // file-install-snapshot Requirement 3.5.
+        // file-install-snapshot Requirement 3.5, and the leader's
+        // checkpoints, which no transfer can use after a restart.
         remove_stale_staging_directories();
+        _checkpoints = checkpoint_registry(_config.snapshot_staging_directory(),
+                                           _config.snapshot_checkpoint_max_unused_age());
         if (!persistent_compaction_enabled() && !_persistent_compaction_off_logged) {
             _persistent_compaction_off_logged = true;
             _logger.info(
@@ -6745,7 +6764,9 @@ template<raft_types Types> auto node<Types>::remove_stale_staging_directories() 
     }
     std::size_t removed = 0;
     for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
-        if (entry.path().filename().string().starts_with(k_snapshot_staging_prefix)) {
+        const auto name = entry.path().filename().string();
+        if (name.starts_with(k_snapshot_staging_prefix) ||
+            name.starts_with(checkpoint_registry::k_prefix)) {
             std::error_code rm;
             std::filesystem::remove_all(entry.path(), rm);
             if (rm) {
@@ -7191,6 +7212,13 @@ auto node<Types>::become_follower(term_id_type new_term, step_down_write write) 
 
         // Cancel all pending operations with leadership lost exception
         _commit_waiter.cancel_all_operations_leadership_lost(old_term, new_term);
+
+        // file-install-snapshot Requirement 5.4: the transfers end on their
+        // next reply; checkpoints nobody is reading go now.
+        if constexpr (k_persistent_state) {
+            _checkpoints.release_unused();
+            emit_checkpoint_metrics();
+        }
 
         // Emit leadership lost metric
         _metrics.set_metric_name("leadership_lost");
@@ -8681,18 +8709,9 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
                                                          {"term", std::to_string(_current_term)}});
 
     if constexpr (k_persistent_state) {
-        // Requirement 10.2: nothing to send until format-1 transfers land.
-        // Only reachable with persistent_log_compaction on.
-        _logger.warning(
-            "Follower is behind the compacted log of a persistent group and cannot "
-            "be sent a snapshot yet",
-            {{"node_id", node_id_to_string(_node_id)}, {"target", node_id_to_string(target)}});
-        _metrics.set_metric_name("raft_install_snapshot_unsupported");
-        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_one();
-        _metrics.emit();
-        std::lock_guard<std::mutex> lock(_mutex);
-        _snapshot_transfers_in_flight.erase(target);
+        // A persistent group sends a checkpoint of its engine as files
+        // (file-install-snapshot Requirement 5).
+        send_format1_snapshot_to(target);
         return;
     }
 
@@ -8919,6 +8938,248 @@ auto node<Types>::send_install_snapshot_chunk(node_id_type target,
         _metrics.add_one();
         _metrics.emit();
         finish();
+    }
+}
+
+template<raft_types Types> auto node<Types>::emit_checkpoint_metrics() -> void {
+    if constexpr (k_persistent_state) {
+        _metrics.set_metric_name("raft_snapshot_checkpoints");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_value(static_cast<double>(_checkpoints.count()));
+        _metrics.emit();
+        _metrics.set_metric_name("raft_snapshot_checkpoint_bytes");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_value(static_cast<double>(_checkpoints.bytes()));
+        _metrics.emit();
+    }
+}
+
+template<raft_types Types> auto node<Types>::send_format1_snapshot_to(node_id_type target) -> void {
+    if constexpr (!k_persistent_state) {
+        (void)target;
+        throw std::logic_error("format-1 InstallSnapshot from a byte-buffer group");
+    } else {
+        // Called with `target` already in _snapshot_transfers_in_flight.
+        std::shared_ptr<const format1_send> transfer;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            const auto give_up = [&](const std::string& why) {
+                _logger.warning("Cannot send a format-1 snapshot",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"target", node_id_to_string(target)},
+                                 {"why", why}});
+                _metrics.set_metric_name("raft_install_snapshot_unsupported");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_one();
+                _metrics.emit();
+                _snapshot_transfers_in_flight.erase(target);
+            };
+            if (_state != kythira::server_state::leader) {
+                _snapshot_transfers_in_flight.erase(target);
+                return;
+            }
+            if (_config.snapshot_staging_directory().empty()) {
+                give_up("no snapshot_staging_directory is configured");
+                return;
+            }
+            // Requirement 5.1: the checkpoint is of what the state machine
+            // has applied, taken under the node mutex so no apply runs
+            // during it.
+            const auto index = _state_machine.applied_index();
+            term_id_type term{};
+            if (index == _snapshot_index) {
+                term = _snapshot_term;
+            } else if (const auto entry = get_log_entry(index); entry.has_value()) {
+                term = entry->term();
+            } else {
+                give_up("no term for applied index " + std::to_string(index));
+                return;
+            }
+            checkpoint_registry::lease lease;
+            try {
+                lease = _checkpoints.acquire(index, term, [this](const std::filesystem::path& dir) {
+                    return _state_machine.checkpoint(dir);
+                });
+            } catch (const std::exception& e) {
+                give_up(std::string("checkpoint failed: ") + e.what());
+                return;
+            }
+            emit_checkpoint_metrics();
+            const auto encoded = lease.manifest().encode();
+            transfer = std::make_shared<const format1_send>(format1_send{
+                .lease = lease,
+                .reader = snapshot_stream_reader(lease.directory(), lease.manifest()),
+                .manifest = std::vector<std::byte>(
+                    reinterpret_cast<const std::byte*>(encoded.data()),
+                    reinterpret_cast<const std::byte*>(encoded.data() + encoded.size())),
+                .leader_term = _current_term,
+            });
+            _logger.info("Sending format-1 snapshot",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"target", node_id_to_string(target)},
+                          {"last_included_index", std::to_string(index)},
+                          {"last_included_term", std::to_string(term)},
+                          {"total_bytes", std::to_string(transfer->reader.total_bytes())},
+                          {"files", std::to_string(lease.manifest().files.size())}});
+        }
+        send_format1_chunk(target, std::move(transfer), 0);
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::send_format1_chunk(node_id_type target,
+                                     std::shared_ptr<const format1_send> transfer,
+                                     std::uint64_t offset) -> void {
+    if constexpr (!k_persistent_state) {
+        (void)target;
+        (void)transfer;
+        (void)offset;
+        throw std::logic_error("format-1 InstallSnapshot from a byte-buffer group");
+    } else {
+        // As send_install_snapshot_chunk: each chunk is sent from the
+        // previous chunk's reply. Requirement 5.1: one chunk in memory, read
+        // from the checkpoint's files with positioned reads.
+        const auto finish = [this, target] {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _snapshot_transfers_in_flight.erase(target);
+        };
+        const auto total = transfer->reader.total_bytes();
+        install_snapshot_request_type request{};
+        try {
+            request._term = transfer->leader_term;
+            request._leader_id = _node_id;
+            request._last_included_index = transfer->lease.index();
+            request._last_included_term = transfer->lease.term();
+            request._offset = static_cast<std::size_t>(offset);
+            request._data = transfer->reader.read(offset, _config.snapshot_chunk_size());
+            request._done = offset + request._data.size() >= total;
+            request._format = install_snapshot_format::file_set;
+            if (offset == 0) {
+                request._manifest = transfer->manifest;
+            }
+        } catch (const std::exception& e) {
+            _logger.error("Cannot read a snapshot chunk from the checkpoint",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"target", node_id_to_string(target)},
+                           {"offset", std::to_string(offset)},
+                           {"error", e.what()}});
+            finish();
+            return;
+        }
+        const auto next_offset = offset + request._data.size();
+        const bool is_last = request._done;
+        const auto timeout = _config.install_snapshot_timeout();
+
+        auto rpc_operation =
+            [this, target, request, timeout, stop_flag = _stop_flag,
+             scope = _async_scope]() -> kythira::future_default<install_snapshot_response_type> {
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    install_snapshot_response_type>(
+                    std::make_exception_ptr(std::runtime_error("node stopped")));
+            }
+            return _network_client.send_install_snapshot(target, request, timeout);
+        };
+        try {
+            _install_snapshot_error_handler.execute_with_retry("install_snapshot", rpc_operation)
+                .thenTry([this, target, transfer, offset, next_offset, is_last, total, finish,
+                          stop_flag = _stop_flag, scope = _async_scope](auto try_response) {
+                    const auto drain_ticket = scope->enter();
+                    if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
+                        return;
+                    }
+                    if (try_response.hasException()) {
+                        std::string what = "unknown error";
+                        try {
+                            std::rethrow_exception(try_response.exception());
+                        } catch (const std::exception& e) {
+                            what = e.what();
+                        } catch (...) {  // NOLINT(bugprone-empty-catch)
+                        }
+                        _logger.error("Format-1 InstallSnapshot chunk failed after retries",
+                                      {{"node_id", node_id_to_string(_node_id)},
+                                       {"target", node_id_to_string(target)},
+                                       {"offset", std::to_string(offset)},
+                                       {"error", what}});
+                        _metrics.set_metric_name("raft_install_snapshot_failed");
+                        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                        _metrics.add_dimension("target", node_id_to_string(target));
+                        _metrics.add_one();
+                        _metrics.emit();
+                        finish();
+                        return;
+                    }
+                    const auto response = try_response.value();
+                    {
+                        std::lock_guard<std::mutex> lock(_mutex);
+                        if (response.term() > _current_term) {
+                            _snapshot_transfers_in_flight.erase(target);
+                            become_follower(response.term());
+                            return;
+                        }
+                        // Requirement 5.4: a transfer ends with the leadership
+                        // it was started under.
+                        if (_state != kythira::server_state::leader ||
+                            _current_term != transfer->leader_term) {
+                            _snapshot_transfers_in_flight.erase(target);
+                            return;
+                        }
+                        if (const auto reason = response.reject_reason(); reason.has_value()) {
+                            _logger.warning(
+                                "Follower refused a format-1 snapshot chunk",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"target", node_id_to_string(target)},
+                                 {"reason", std::string(to_string(*reason))},
+                                 {"offset", std::to_string(offset)},
+                                 {"last_included_index", std::to_string(transfer->lease.index())}});
+                            _metrics.set_metric_name("raft_install_snapshot_refused");
+                            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                            _metrics.add_dimension("reason", std::string(to_string(*reason)));
+                            _metrics.add_one();
+                            _metrics.emit();
+                            // The next heartbeat that finds the follower behind
+                            // starts again.
+                            _snapshot_transfers_in_flight.erase(target);
+                            return;
+                        }
+                        if (is_last) {
+                            const auto index = transfer->lease.index();
+                            if (_next_index.contains(target)) {
+                                if (_match_index[target] < index) {
+                                    _match_index[target] = index;
+                                }
+                                if (_next_index[target] < index + 1) {
+                                    _next_index[target] = index + 1;
+                                }
+                            }
+                            _snapshot_transfers_in_flight.erase(target);
+                        }
+                    }
+                    if (!is_last) {
+                        send_format1_chunk(target, transfer, next_offset);
+                        return;
+                    }
+                    _logger.info("Format-1 InstallSnapshot completed",
+                                 {{"node_id", node_id_to_string(_node_id)},
+                                  {"target", node_id_to_string(target)},
+                                  {"last_included_index", std::to_string(transfer->lease.index())},
+                                  {"total_bytes", std::to_string(total)}});
+                    _metrics.set_metric_name("raft_install_snapshot_success");
+                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                    _metrics.add_dimension("target", node_id_to_string(target));
+                    _metrics.add_value(static_cast<double>(total));
+                    _metrics.emit();
+                })
+                .detach();
+        } catch (const std::exception& e) {
+            _logger.error("Exception sending a format-1 snapshot chunk",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"target", node_id_to_string(target)},
+                           {"offset", std::to_string(offset)},
+                           {"error", e.what()}});
+            finish();
+        }
     }
 }
 
