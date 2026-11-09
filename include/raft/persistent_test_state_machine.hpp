@@ -77,31 +77,43 @@ public:
         if (index <= _applied) {
             return {};
         }
+        write_batch batch;
+        auto result = stage(command, batch);
+        commit_staged(batch, index);
+        return result;
+    }
+
+    // -- persistent_staged_state_machine -----------------------------------
+
+    /// Adds `command`'s effects to `batch`. Reads see what earlier `stage`
+    /// calls of the same entry wrote.
+    auto stage(const std::vector<std::byte>& command, write_batch& batch)
+        -> std::vector<std::byte> {
         if (command.empty()) {
             throw std::invalid_argument("Empty command");
         }
         const auto c = decode(command);
         std::vector<std::byte> result;
-        write_batch batch;
         switch (c.type) {
             case command_type::put:
-                batch.put(column_family::data, _ns + c.key, c.value);
+                put_staged(batch, c.key, c.value);
                 break;
             case command_type::get:
-                if (const auto v = engine().get(column_family::data, _ns + c.key)) {
+                if (const auto v = read_staged(c.key)) {
                     result = to_bytes(*v);
                 }
                 break;
             case command_type::del:
                 batch.erase(column_family::data, _ns + c.key);
+                _staged[_ns + c.key] = std::nullopt;
                 break;
             case command_type::cas: {
-                const auto current = engine().get(column_family::data, _ns + c.key);
+                const auto current = read_staged(c.key);
                 const bool matches = c.expected.has_value()
                                          ? (current.has_value() && *current == *c.expected)
                                          : !current.has_value();
                 if (matches) {
-                    batch.put(column_family::data, _ns + c.key, c.value);
+                    put_staged(batch, c.key, c.value);
                 }
                 result = {matches ? std::byte{1} : std::byte{0}};
                 break;
@@ -109,12 +121,37 @@ public:
             default:
                 throw std::invalid_argument("Unknown command type");
         }
+        return result;
+    }
+
+    /// Writes `batch` with `index` as the applied index, in one write.
+    auto commit_staged(write_batch& batch, LogIndex index) -> void {
+        _staged.clear();
         batch.put(column_family::meta, meta_key(), std::to_string(index));
         const auto seq = engine().write(batch);
         _applied = index;
         _ring.emplace_back(index, seq);
         trim_ring();
-        return result;
+    }
+
+    auto discard_staged() -> void { _staged.clear(); }
+
+    [[nodiscard]] auto key_prefix() const -> const std::string& { return _ns; }
+
+    /// `key`'s value as the entry being staged sees it: what an earlier
+    /// `stage` of this entry wrote, else the engine's.
+    [[nodiscard]] auto read_staged(const std::string& key) const -> std::optional<std::string> {
+        if (const auto it = _staged.find(_ns + key); it != _staged.end()) {
+            return it->second;
+        }
+        return engine().get(column_family::data, _ns + key);
+    }
+
+    /// Stages a put of `key`, for a wrapper's own commands (the bank test's
+    /// `add`).
+    auto put_staged(write_batch& batch, const std::string& key, const std::string& value) -> void {
+        batch.put(column_family::data, _ns + key, value);
+        _staged[_ns + key] = value;
     }
 
     [[nodiscard]] auto applied_index() const -> LogIndex { return _applied; }
@@ -385,10 +422,12 @@ private:
     LogIndex _applied{0};
     LogIndex _durable_floor{0};
     std::deque<std::pair<LogIndex, engine_sequence>> _ring;
+    std::map<std::string, std::optional<std::string>, std::less<>> _staged;
     std::function<bool(const std::string&)> _split_veto;
 };
 
 static_assert(persistent_splittable_state_machine<persistent_test_kv_state_machine<>>);
+static_assert(persistent_staged_state_machine<persistent_test_kv_state_machine<>>);
 static_assert(!state_machine<persistent_test_kv_state_machine<>, std::uint64_t>);
 
 }  // namespace kythira

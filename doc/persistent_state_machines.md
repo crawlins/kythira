@@ -36,6 +36,21 @@ database. Writes go to the WAL without fsync, and `sync` makes them durable.
 - **Restrictions:** object-store persistence engines are refused at compile
   time, because a node restored from objects would have metadata but no state.
 
+## Transactions
+
+`transactional_state_machine` can wrap a persistent state machine that also
+satisfies `persistent_staged_state_machine`. Both state machines that ship
+with the engine satisfy it. The wrapper keeps its locks, transaction records
+and settled entries in the engine's `txn` column family, one value per key.
+Each log entry's writes and its transaction state are committed in one
+batch, so a crash cannot keep a commit and lose its lock release. Splits and
+merges move transaction state with the key range.
+
+The wrapper also keeps that state in memory, and reads it back from the
+engine on restart. Memory therefore grows with the number of open
+transactions and with records not yet cleaned up, not with the data.
+Versioned (`mvcc::on`) hosts are not supported on the persistent path yet.
+
 ## Catching up a follower
 
 If a follower falls behind the leader's compacted log, the leader sends a
@@ -131,3 +146,6 @@ fault points:
   catch-up whose memory growth must stay under 64 MB.
 - `persistent_node_fault_test` adds the fault point cases.
 - `rocksdb_kv_engine_test` runs the engine conformance suite.
+- `txn_state_machine_persistent_test` holds the persistent transaction
+  wrapper to the in-memory one, and `multi_raft_txn_bank_persistent_test`
+  runs the bank workload on a persistent host.

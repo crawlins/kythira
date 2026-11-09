@@ -97,6 +97,13 @@ current list of outstanding work, see [TODO.md](TODO.md).
   and a build without them never sees a RocksDB header. A 1 GB group
   catches up a lagging follower with less than 64 MB of memory growth.
 
+- **Transactions run on persistent hosts.** `transactional_state_machine`
+  now wraps a persistent state machine, and keeps its locks, records and
+  settled entries in the engine's `txn` column family. Each entry's inner
+  writes and transaction state go into one batch, so a crash cannot keep
+  a commit and lose its lock release. A split or merge moves transaction
+  state with the range. The bank workload passes on a persistent host.
+
 - **Snapshot transfers are tested under faults.** Fault points corrupt a
   chunk, fail a file fsync, and crash a follower between ingest and the
   metadata save; each is refused or recovered, and the new

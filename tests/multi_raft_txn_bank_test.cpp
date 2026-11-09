@@ -38,6 +38,12 @@
 #include <raft/multi_raft_impl.hpp>
 #include <raft/multi_raft_txn_client.hpp>
 #include <raft/persistence.hpp>
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+// persistent-state-machine task 6 (Requirement 8.4): the same workload on a
+// persistent host, whose transaction state lives in each node's engine.
+#include <raft/memory_kv_engine.hpp>
+#include <raft/persistent_test_state_machine.hpp>
+#endif
 #include <raft/test_state_machine.hpp>
 #include <raft/txn_coordinator.hpp>
 #include <raft/txn_state_machine.hpp>
@@ -51,6 +57,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -100,6 +107,110 @@ using group_id_type = std::uint64_t;
 using node_id_t = std::uint64_t;
 using kv_sm = kythira::test_key_value_state_machine<std::uint64_t>;
 
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+/// The persistent key/value test machine plus the same `add`. The wrapper
+/// stages every write of an entry into one batch, so `add` reads the value
+/// through what earlier writes of the entry staged.
+class bank_sm {
+public:
+    using engine_type = kythira::memory_kv_engine;
+    static constexpr std::uint8_t k_add = 0x40;
+
+    static auto make_add(const std::string& key, std::int64_t delta) -> std::vector<std::byte> {
+        auto cmd = encode_kv_command(1, key, std::to_string(delta));
+        cmd[0] = static_cast<std::byte>(k_add);
+        return cmd;
+    }
+
+    auto apply(const std::vector<std::byte>& command, std::uint64_t index)
+        -> std::vector<std::byte> {
+        if (index <= _kv.applied_index()) {
+            return {};
+        }
+        kythira::write_batch batch;
+        auto out = stage(command, batch);
+        _kv.commit_staged(batch, index);
+        return out;
+    }
+
+    auto stage(const std::vector<std::byte>& command, kythira::write_batch& batch)
+        -> std::vector<std::byte> {
+        if (command.empty() || static_cast<std::uint8_t>(command[0]) != k_add) {
+            return _kv.stage(command, batch);
+        }
+        std::size_t at = 1;
+        const auto key = read_str(command, at);
+        const auto delta = std::stoll(read_str(command, at));
+        const auto now = _kv.read_staged(key);
+        const std::int64_t current = now.has_value() ? std::stoll(*now) : 0;
+        _kv.put_staged(batch, key, std::to_string(current + delta));
+        return {};
+    }
+    auto commit_staged(kythira::write_batch& batch, std::uint64_t index) -> void {
+        _kv.commit_staged(batch, index);
+    }
+    auto discard_staged() -> void { _kv.discard_staged(); }
+    [[nodiscard]] auto key_prefix() const -> const std::string& { return _kv.key_prefix(); }
+
+    auto open(engine_type& engine, const kythira::key_range& range) -> void {
+        _kv.open(engine, range);
+    }
+    [[nodiscard]] auto applied_index() const -> std::uint64_t { return _kv.applied_index(); }
+    [[nodiscard]] auto durable_applied_index() const -> std::uint64_t {
+        return _kv.durable_applied_index();
+    }
+    auto checkpoint(const std::filesystem::path& dir) -> kythira::snapshot_manifest {
+        return _kv.checkpoint(dir);
+    }
+    auto ingest(const std::filesystem::path& dir, const kythira::snapshot_manifest& manifest,
+                std::uint64_t index) -> void {
+        _kv.ingest(dir, manifest, index);
+    }
+    auto drop() -> void { _kv.drop(); }
+    auto split_at(const std::vector<std::string>& keys) -> std::vector<kythira::key_range> {
+        return _kv.split_at(keys);
+    }
+    auto adopt(const kythira::key_range& range) -> void { _kv.adopt(range); }
+    [[nodiscard]] auto range() const -> const kythira::key_range& { return _kv.range(); }
+
+    [[nodiscard]] auto approximate_size_bytes() const -> std::size_t {
+        return _kv.approximate_size_bytes();
+    }
+    [[nodiscard]] auto approximate_key_count() const -> std::size_t {
+        return _kv.approximate_key_count();
+    }
+    [[nodiscard]] auto suggest_split_keys(std::size_t max) -> std::vector<std::string> {
+        return _kv.suggest_split_keys(max);
+    }
+    [[nodiscard]] auto can_split_at(const std::string& key) const -> bool {
+        return _kv.can_split_at(key);
+    }
+
+    [[nodiscard]] auto get_value(const std::string& key) const -> std::optional<std::string> {
+        return _kv.get_value(key);
+    }
+
+private:
+    static auto read_str(const std::vector<std::byte>& c, std::size_t& at) -> std::string {
+        std::uint32_t n{};
+        if (at + sizeof(n) > c.size()) {
+            throw std::invalid_argument("bank_sm: truncated add");
+        }
+        std::memcpy(&n, c.data() + at, sizeof(n));
+        at += sizeof(n);
+        if (at + n > c.size()) {
+            throw std::invalid_argument("bank_sm: truncated add");
+        }
+        std::string s(reinterpret_cast<const char*>(c.data() + at), n);  // NOLINT
+        at += n;
+        return s;
+    }
+
+    kythira::persistent_test_kv_state_machine<std::uint64_t> _kv;
+};
+
+static_assert(kythira::persistent_staged_state_machine<bank_sm>);
+#else
 /// The key/value test machine plus one command: `add`, which adds a signed
 /// decimal delta to a key's decimal value (absent counts as zero). Same
 /// layout as a put, so `kv_partitioner` finds its key; only the type byte
@@ -178,8 +289,12 @@ private:
 };
 
 static_assert(kythira::splittable_state_machine<bank_sm, std::string>);
+#endif
 
 using txn_sm = kythira::transactional_state_machine<bank_sm, key_type, kv_partitioner>;
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+static_assert(txn_sm::k_persistent);
+#endif
 
 struct host_types {
     using future_type = kythira::future_default<std::vector<std::byte>>;
@@ -438,6 +553,10 @@ private:
         cfg.automatic_split_merge_enabled = false;
         cfg.split_merge_interval = std::chrono::milliseconds{0};
         cfg.resolver_interval = std::chrono::milliseconds{200};
+#ifdef KYTHIRA_PERSISTENT_STATE_MACHINE
+        // One engine per node, shared by every group on it.
+        cfg.state_engine = std::make_shared<kythira::memory_kv_engine>();
+#endif
         return cfg;
     }
 

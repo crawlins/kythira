@@ -548,6 +548,34 @@ concept persistent_splittable_state_machine =
         { std::as_const(sm).range() } -> std::convertible_to<const key_range&>;
     };
 
+/// Several commands of one log entry in one batch (Requirement 8.1).
+///
+/// A wrapper that turns one entry into several inner commands (a
+/// transaction's commit applies every write it locked) cannot call
+/// `apply(command, index)` once per command: the second call has the same
+/// index and is taken for a replay. Instead it stages each command into a
+/// batch it owns, adds its own writes to that batch, and commits it once:
+///
+/// - `stage(command, batch)` adds the command's effects to `batch` and
+///   returns the reply `apply` would. A later `stage` in the same entry sees
+///   the effects of the earlier ones.
+/// - `commit_staged(batch, index)` adds the applied index and writes the
+///   batch to the engine as one atomic write.
+/// - `discard_staged()` forgets what was staged, after a failure.
+///
+/// `key_prefix()` is the namespace every engine key of the group starts with,
+/// so a wrapper can lay its own keys out under the same range.
+template<typename SM, typename LogIndex = std::uint64_t>
+concept persistent_staged_state_machine =
+    persistent_splittable_state_machine<SM, LogIndex> &&
+    requires(SM& sm, const SM& csm, const std::vector<std::byte>& command, write_batch& batch,
+             LogIndex index) {
+        { sm.stage(command, batch) } -> std::same_as<std::vector<std::byte>>;
+        { sm.commit_staged(batch, index) } -> std::same_as<void>;
+        { sm.discard_staged() } -> std::same_as<void>;
+        { csm.key_prefix() } -> std::convertible_to<const std::string&>;
+    };
+
 /// What a persistent group saves as its snapshot's state: a marker, not the
 /// state, which stays in the engine (Requirement 3.2). `node<Types>` checks
 /// for it at restart, so byte-buffer state is never taken for metadata.
