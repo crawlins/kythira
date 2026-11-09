@@ -25,9 +25,8 @@
 #               cap); a run is not started with less than --hours left
 #   --keep-host leave the model host running when the campaign ends. By
 #               default the driver powers it off over CAIRN_LLM_SSH as
-#               soon as the last run is saved: M3 ended at 02:04Z, but the
-#               host billed on until its MAX_MINUTES cap at 06:01Z, about
-#               four idle hours.
+#               soon as the last run is saved, rather than leaving it
+#               to bill until llm-gpu-setup.sh's MAX_MINUTES cap.
 #
 # Per run:
 #   1. Bootstrap. start-run.sh starts the project; it counts as bootstrapped
@@ -36,6 +35,8 @@
 #      minutes pass on that attempt, the stack is killed and the project
 #      started again, up to three attempts. A run that never bootstraps ends the campaign
 #      (the model is not usable as served, so further runs only bill).
+#      The model host is checked over SSH before each run and while
+#      bootstrapping; if it is gone the campaign ends with HOST_LOST.
 #   2. Explore, polling every 30 s, until the schedule log holds a
 #      matching violation, the project completes, or --hours pass.
 #   3. Save the schedule log, the timeline export, the dispatcher log and
@@ -140,6 +141,16 @@ model_tokens() {
         2>/dev/null || echo ""
 }
 
+# Succeeds if the model host answers over SSH, or if there is no remote
+# host to ask. M3's host powered itself off near the end of run 3 and
+# run 4 spent three bootstrap attempts (about 20 minutes) against a dead
+# upstream, which the dispatcher reported only as a parse failure.
+model_host_alive() {
+    [ -n "${CAIRN_LLM_SSH:-}" ] || return 0
+    ssh ${CAIRN_LLM_SSH_KEY:+-i "$CAIRN_LLM_SSH_KEY"} -o ConnectTimeout=15 \
+        -o StrictHostKeyChecking=accept-new "$CAIRN_LLM_SSH" true >/dev/null 2>&1
+}
+
 # Powers the model host off so it stops billing. The host is stopped,
 # never terminated (shutdown -h on EC2 stops an EBS-backed instance), and
 # a failure is only logged: llm-gpu-setup.sh's MAX_MINUTES cap still
@@ -175,11 +186,16 @@ for i in $(seq 1 "${#plan[@]}"); do
         log "BUDGET: less than ${hours}h to the deadline; not starting run $i"
         break
     fi
+    if ! model_host_alive; then
+        log "MODEL HOST LOST: $CAIRN_LLM_SSH does not answer; not starting run $i"
+        echo "$i,$proj,0,NA,0,0,0,NA,HOST_LOST," >> "$out/SUMMARY.csv"
+        break
+    fi
     rd="$out/run-$i"
     mkdir -p "$rd"
     run0=$(date +%s)
     tok0=$(model_tokens)
-    boot_ok=0 restarts=0 p=""
+    boot_ok=0 restarts=0 p="" host_lost=0
     for attempt in 1 2 3; do
         scripts/cairn/start-run.sh "$proj" --hours "$hours" --seed "$i" \
             > "$rd/start-$attempt.out" 2>&1
@@ -198,9 +214,19 @@ for i in $(seq 1 "${#plan[@]}"); do
                 log "RUN $i attempt $attempt: bootstrap parse failed x3; restarting"
                 break
             fi
+            if ! model_host_alive; then
+                host_lost=1
+                break
+            fi
             sleep 20
         done
         [ "$boot_ok" = 1 ] && break
+        if [ "$host_lost" = 1 ]; then
+            log "RUN $i attempt $attempt: MODEL HOST LOST ($CAIRN_LLM_SSH does not answer)"
+            save_logs "$rd"
+            stop_stack
+            break
+        fi
         save_logs "$rd"
         mv "$rd/dispatcher.log" "$rd/dispatcher-attempt-$attempt.log" 2>/dev/null
         mv "$rd/llm-tunnel.log" "$rd/llm-tunnel-attempt-$attempt.log" 2>/dev/null
@@ -208,6 +234,10 @@ for i in $(seq 1 "${#plan[@]}"); do
         restarts=$((restarts + 1))
         sleep 3
     done
+    if [ "$host_lost" = 1 ]; then
+        echo "$i,$proj,0,NA,0,$restarts,$((($(date +%s) - run0) / 60)),NA,HOST_LOST," >> "$out/SUMMARY.csv"
+        break
+    fi
     if [ "$boot_ok" != 1 ]; then
         log "RUN $i: could not bootstrap after three attempts; ending the campaign"
         tok1=$(model_tokens)
