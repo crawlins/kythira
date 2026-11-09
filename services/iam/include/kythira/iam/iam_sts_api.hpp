@@ -8,7 +8,8 @@
 ///        Requirements 10.1-10.4, 10.7, 10.10; design Component 9; task 17).
 ///
 /// AssumeRole (same account and cross-account, with `ExternalId`),
-/// GetSessionToken, GetCallerIdentity and GetAccessKeyInfo. Issuing
+/// GetSessionToken, GetFederationToken, GetCallerIdentity,
+/// GetAccessKeyInfo and DecodeAuthorizationMessage. Issuing
 /// credentials reads the state and writes nothing: the session travels in
 /// its token (`iam_sts_token.hpp`), so any member with current state can
 /// answer. The cluster it runs against is anything with
@@ -16,10 +17,10 @@
 ///   - `read(f)`: run `f` on this member's IAM state;
 ///   - `kek(salt)`: the cluster's KEK.
 ///
-/// Session policies, session tags and source identity (task 18), web
-/// identity (task 19), GetFederationToken and DecodeAuthorizationMessage
-/// (task 26) answer `NotImplemented` until their tasks arrive, as do the
-/// out-of-scope AssumeRoleWithSAML and AssumeRoot.
+/// Session policies, session tags and source identity are task 18's, web
+/// identity task 19's, and GetFederationToken, DecodeAuthorizationMessage
+/// and the credential limits task 26's. The out-of-scope
+/// AssumeRoleWithSAML and AssumeRoot answer `NotImplemented`.
 
 #include <kythira/iam/iam_authorizer.hpp>
 #include <kythira/iam/iam_oidc_jwks.hpp>
@@ -51,6 +52,10 @@
 namespace kythira::iam::sts {
 
 inline constexpr std::string_view k_sts_namespace = "https://sts.amazonaws.com/doc/2011-06-15/";
+
+/// How long an encoded authorization message decodes: the STS keys'
+/// retention window (Requirement 10.4), past which its key may be gone.
+inline constexpr std::int64_t k_message_max_age = std::int64_t{36} * 3600;
 
 /// What the STS API needs from the cluster.
 template<typename C>
@@ -103,24 +108,7 @@ inline constexpr std::string_view k_b32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     return std::string(12 - s.size(), '0') + s;
 }
 
-/// The kind of credential `who` signed with (Requirement 10.10).
-[[nodiscard]] inline auto credential_of(const aws_auth::principal_context& who)
-    -> validate::credential_kind {
-    if (who.session_token) {
-        return validate::credential_kind::session_token;
-    }
-    switch (who.type) {
-        case aws_auth::principal_type::root:
-            return validate::credential_kind::root;
-        case aws_auth::principal_type::user:
-            return validate::credential_kind::user;
-        case aws_auth::principal_type::assumed_role:
-            return validate::credential_kind::assumed_role;
-        case aws_auth::principal_type::federated_user:
-            return validate::credential_kind::federated_user;
-    }
-    return validate::credential_kind::user;
-}
+using query::detail::credential_of;
 
 }  // namespace detail
 
@@ -240,6 +228,8 @@ private:
                 {"GetCallerIdentity", &call::get_caller_identity},
                 {"GetAccessKeyInfo", &call::get_access_key_info},
                 {"AssumeRoleWithWebIdentity", &call::assume_role_with_web_identity},
+                {"GetFederationToken", &call::get_federation_token},
+                {"DecodeAuthorizationMessage", &call::decode_authorization_message},
             };
             const auto it = table.find(action);
             if (it == table.end()) {
@@ -1051,6 +1041,126 @@ private:
             s.user_name = root ? std::string{} : who.username;
             aws_query::xml_writer w;
             mint(s, duration.value(), w);
+            return w.str();
+        }
+
+        // ── GetFederationToken (Requirement 10.8) ──
+
+        /// A federated-user session for an IAM user (or the root): its
+        /// permissions are the user's current identity policies intersected
+        /// with the session policies, so none at all without one
+        /// (INV-STS-B5). Only long-term keys may call it
+        /// (`limit_credentials`).
+        auto get_federation_token() -> std::string {
+            const auto name = required("Name");
+            if (!validate::federated_user_name(name)) {  // INV-STS-2
+                query::detail::fail("ValidationError",
+                                    "1 validation error detected: Value '" + name +
+                                        "' at 'name' failed to satisfy constraint: Member must "
+                                        "satisfy regular expression pattern: [\\w+=,.@-]+ and "
+                                        "have length between 2 and 32");
+            }
+            const bool root = who.type == aws_auth::principal_type::root;
+            const auto duration =
+                validate::long_term_duration(optional_int("DurationSeconds"), root);
+            if (!duration.has_value()) {  // INV-DUR-5, INV-DUR-6
+                query::detail::fail("ValidationError", duration.error());
+            }
+            const auto extra = session_parameters(who.account);
+            if (!extra.transitive.empty() || extra.source_identity) {
+                query::detail::fail("ValidationError",
+                                    "GetFederationToken takes no TransitiveTagKeys or "
+                                    "SourceIdentity.");
+            }
+            std::string partition;
+            read([&](const iam_state_machine& sm) { partition = sm.config().partition; });
+            const auto arn =
+                "arn:" + partition + ":sts::" + who.account + ":federated-user/" + name;
+
+            aws_auth::authz_request r;
+            r.action = "sts:GetFederationToken";
+            r.resource = arn;
+            if (!extra.tags.empty()) {
+                r.request_tags = extra.tags;
+            }
+            r.source_ip = facts.source_ip;
+            r.user_agent = facts.user_agent;
+            r.region = facts.region;
+            r.secure_transport = facts.secure_transport;
+            if (!api._authz->authorize(who, r).allowed) {
+                query::detail::fail("AccessDenied",
+                                    "User: " + who.arn +
+                                        " is not authorized to perform: sts:GetFederationToken "
+                                        "on resource: " +
+                                        arn);
+            }
+
+            session s;
+            s.account = who.account;
+            s.issuer_kind = std::string(k_issuer_federated);
+            s.principal_arn = arn;
+            s.userid = who.account + ":" + name;
+            s.session_name = name;
+            s.user_arn = root ? std::string{} : who.arn;
+            s.user_name = root ? std::string{} : who.username;
+            if (extra.policy) {
+                s.session_policies.push_back(*extra.policy);
+            }
+            s.session_policies.insert(s.session_policies.end(), extra.policy_arns.begin(),
+                                      extra.policy_arns.end());
+            s.tags = extra.tags;
+            aws_query::xml_writer w;
+            mint(s, duration.value(), w);
+            w.open("FederatedUser")
+                .element("FederatedUserId", s.userid)
+                .element("Arn", s.principal_arn)
+                .close();
+            w.element("PackedPolicySize", std::to_string(extra.packed * 100 / 2048));
+            return w.str();
+        }
+
+        // ── DecodeAuthorizationMessage (Requirement 10.9) ──
+
+        /// Opens a message the authorizer sealed with a denial, in the
+        /// caller's account only, and renders AWS's JSON.
+        auto decode_authorization_message() -> std::string {
+            const auto encoded = required("EncodedMessage");
+            if (encoded.empty() || encoded.size() > 10240) {
+                query::detail::fail("ValidationError",
+                                    "The specified value for encodedMessage is invalid. It must "
+                                    "be 1-10240 characters.");
+            }
+            aws_auth::authz_request r;
+            r.action = "sts:DecodeAuthorizationMessage";
+            r.resource = "*";
+            r.source_ip = facts.source_ip;
+            r.user_agent = facts.user_agent;
+            r.region = facts.region;
+            r.secure_transport = facts.secure_transport;
+            if (!api._authz->authorize(who, r).allowed) {
+                query::detail::fail("AccessDenied", "User: " + who.arn +
+                                                        " is not authorized to perform: "
+                                                        "sts:DecodeAuthorizationMessage");
+            }
+            std::vector<sts_key> keys;
+            read([&](const iam_state_machine& sm) {
+                if (!sm.kek_salt().empty()) {
+                    keys = keys_of(sm, api._c->kek(sm.kek_salt()));
+                }
+            });
+            const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                                 api._authz->now().time_since_epoch())
+                                 .count();
+            auto opened = open_message(encoded, keys, who.account, now, k_message_max_age);
+            if (!opened.message) {
+                query::detail::fail("InvalidAuthorizationMessageException",
+                                    opened.error == token_error::expired
+                                        ? "The encoded authorization message has expired."
+                                        : "The encoded authorization message is invalid.");
+            }
+            opened.message->erase("iat");
+            aws_query::xml_writer w;
+            w.element("DecodedMessage", boost::json::serialize(*opened.message));
             return w.str();
         }
 

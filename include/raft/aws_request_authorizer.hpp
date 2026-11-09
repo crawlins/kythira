@@ -123,6 +123,11 @@ struct authz_request {
     std::string user_agent;
     std::string region;
     bool secure_transport = true;
+    /// Ask for an encoded authorization message with a denial, for a
+    /// service that puts one in its error as some AWS services do
+    /// (decoded by STS DecodeAuthorizationMessage). Off by default; the
+    /// IAM and STS APIs never set it, matching AWS IAM.
+    bool want_encoded_message = false;
 };
 
 /// The answer. `policy`, `sid` and `reason` are for the audit log only and
@@ -133,6 +138,10 @@ struct authz_decision {
     std::string policy;
     std::string sid;
     std::string reason;
+    /// With a denial, when the request asked for it and the authorizer can
+    /// seal one: an opaque message only DecodeAuthorizationMessage in the
+    /// caller's account opens. Safe to send to the client.
+    std::optional<std::string> encoded_message;
 };
 
 /// authenticate()'s result: who the caller is, or the AWS error to answer

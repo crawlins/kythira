@@ -599,6 +599,36 @@ fails with `InvalidAuthorizationMessageException`, AWS's error.
 - Revocation is AWS's inline deny on `aws:TokenIssueTime`, which the
   token's `iat` supplies; nothing in STS tracks sessions.
 
+**As built (task 26).**
+- GetFederationToken mints an `issuer_kind=federated` token holding the
+  federated-user ARN, `aws:userid` `<account>:<Name>`, the calling
+  user's ARN (empty for the root) and the session policies and tags. It
+  takes `Tags` (as the request tags of `sts:GetFederationToken`) but
+  refuses `TransitiveTagKeys` and `SourceIdentity`, which AWS does not
+  accept on it. `PackedPolicySize` is always reported.
+- The root's federated session has no user to gather policies from. The
+  authorizer gives it an allow-everything identity policy, so the
+  session policies alone decide, which is what the root's unlimited
+  identity side means once intersected.
+- The temporary-credential limits were already in STS's dispatcher
+  (task 17's `limit_credentials`); the IAM Query router now refuses
+  GetSessionToken and GetFederationToken credentials before any handler
+  runs, with `AccessDenied` ("Cannot call <action> with session
+  credentials"). `credential_of` moved to the Query API's `detail` so
+  both routers share it.
+- `aws_auth::authz_request` gained `want_encoded_message` and
+  `authz_decision` gained `encoded_message` (core, so any service module
+  can ask). The message is sealed with `sts::seal_message`: version byte
+  `0x02`, associated data `"kythira-authz-message-v1|" | account | "|" |
+  kid8`. It carries its `iat`; DecodeAuthorizationMessage refuses one
+  older than 36 hours (the key retention window) or whose key is gone.
+  The rendering follows AWS's shape; a matched statement carries its
+  `statementId` and effect but not the policy's name, which stays in
+  the audit log (Requirement 6.5). Condition keys are listed under their
+  normalized (lower-cased) names.
+- `iam_authorizer::now()` exposes its clock so DecodeAuthorizationMessage
+  dates messages as the authorizer that sealed them does.
+
 ## Component 10: Web identity (Requirements 11–12)
 
 **`oidc_jwks_cache`.**

@@ -117,6 +117,10 @@ struct fixture {
             body(f->sm);
         }
         auto kek(std::string_view) -> const iam::seal_key& { return f->kek; }
+        auto submit(const std::vector<std::byte>& cmd) -> std::vector<std::byte> {
+            const std::unique_lock lock(f->mu);
+            return f->sm.apply(cmd, ++f->index);
+        }
     } c{this};
     // The identity providers' documents, by URL, that the JWKS cache sees.
     std::map<std::string, std::string> web;
@@ -131,11 +135,14 @@ struct fixture {
                                },
                                [this] { return clock; }};
     sts::sts_query_api<cluster> api{c, authz, &jwks};
+    // The IAM API, for the credential limits (INV-CRED-5, INV-CRED-6).
+    iam::query::iam_query_api<cluster> iam_api{c, authz};
 
     fixture() {
         registry.add(iam::services::iam_actions());
         registry.add(iam::services::sts_actions());
-        registry.add({.service_prefix = "s3", .actions = {{"GetObject", {"*"}, {}}}});
+        registry.add({.service_prefix = "s3",
+                      .actions = {{"GetObject", {"*"}, {}}, {"PutObject", {"*"}, {}}}});
         run(iam_command::create_account,
             {{"account", k_a}, {"kek_salt", "c2FsdHNhbHRzYWx0c2FsdA"}});
         run(iam_command::create_account, {{"account", k_b}});
@@ -520,10 +527,9 @@ BOOST_FIXTURE_TEST_CASE(inv_dur_3_role_chaining_is_capped_at_an_hour, fixture) {
     BOOST_TEST(chained->arn == "arn:aws:sts::111122223333:assumed-role/second/s1");
 }
 
-BOOST_FIXTURE_TEST_CASE(actions_of_later_tasks_are_not_implemented, fixture) {
+BOOST_FIXTURE_TEST_CASE(out_of_scope_actions_are_not_implemented, fixture) {
     user("alice");
-    for (const auto* action :
-         {"AssumeRoleWithSAML", "AssumeRoot", "GetFederationToken", "DecodeAuthorizationMessage"}) {
+    for (const auto* action : {"AssumeRoleWithSAML", "AssumeRoot", "GetDelegatedAccessToken"}) {
         const auto r = call(principal("alice"), std::string("Action=") + action);
         BOOST_TEST(r.status == 501U, action);
     }
@@ -1336,6 +1342,342 @@ BOOST_FIXTURE_TEST_CASE(a_verified_certificate_is_exchanged_for_role_credentials
     BOOST_TEST(boost::json::parse(refused.body).at("code").as_string() == "AccessDenied");
     BOOST_TEST(exchange("node-role", cert, "unregistered.example.com").status == 403U);
     BOOST_TEST(exchange("nobody", cert).status == 403U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Task 26: GetFederationToken, DecodeAuthorizationMessage, credential limits
+
+namespace {
+
+const std::string k_bob = "arn:aws:iam::111122223333:user/bob";
+const std::string k_put_object = R"({"Effect":"Allow","Action":"s3:PutObject","Resource":"*"})";
+const std::string k_get_policy =
+    R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]})";
+
+auto unescape(std::string s) -> std::string {
+    for (const auto& [from, to] : std::vector<std::pair<std::string, std::string>>{
+             {"&quot;", "\""}, {"&apos;", "'"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&amp;", "&"}}) {
+        for (auto at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size())) {
+            s.replace(at, from.size(), to);
+        }
+    }
+    return s;
+}
+
+auto seconds_until(const std::string& iso, std::int64_t now) -> std::int64_t {
+    std::tm tm{};
+    strptime(iso.c_str(), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return static_cast<std::int64_t>(timegm(&tm)) - now;
+}
+
+struct federation_fixture : fixture {
+    auto federate(const aws_auth::principal_context& who, const std::string& extra = "",
+                  const std::string& name = "fed-bob") -> iam::query::reply {
+        return call(who, "Action=GetFederationToken&Name=" + name + extra);
+    }
+
+    auto federated(const aws_auth::principal_context& who, const std::string& extra = "")
+        -> aws_auth::principal_context {
+        const auto r = federate(who, extra);
+        BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+        const auto p = authenticate(creds_of(r));
+        BOOST_TEST_REQUIRE(p.has_value(), p.error().message);
+        return *p;
+    }
+
+    auto may(const aws_auth::principal_context& who, const std::string& action,
+             const std::string& resource = "arn:aws:s3:::b/k",
+             const std::optional<std::string>& resource_policy = std::nullopt) -> bool {
+        aws_auth::authz_request r;
+        r.action = action;
+        r.resource = resource;
+        r.resource_policy = resource_policy;
+        return authz.authorize(who, r).allowed;
+    }
+
+    auto iam_call(const aws_auth::principal_context& who, const std::string& body)
+        -> iam::query::reply {
+        const auto f = q::form::parse(body);
+        BOOST_TEST_REQUIRE(f.has_value(), body);
+        return iam_api.handle(who, *f, {.request_id = "req-1"});
+    }
+
+    /// A denial with its encoded message, as a service that asks for one.
+    auto denied_message(const aws_auth::principal_context& who, const std::string& action)
+        -> std::string {
+        aws_auth::authz_request r;
+        r.action = action;
+        r.resource = "arn:aws:s3:::b/k";
+        r.want_encoded_message = true;
+        const auto d = authz.authorize(who, r);
+        BOOST_TEST_REQUIRE(!d.allowed);
+        BOOST_TEST_REQUIRE(d.encoded_message.has_value());
+        return *d.encoded_message;
+    }
+
+    auto decode(const aws_auth::principal_context& who, const std::string& message)
+        -> iam::query::reply {
+        return call(who, "Action=DecodeAuthorizationMessage&EncodedMessage=" + enc(message));
+    }
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(federation)
+
+// INV-STS-B5 and Requirement 10.8: the session is a federated user, and its
+// permissions are the user's policies intersected with the session policy:
+// nothing at all without one.
+BOOST_FIXTURE_TEST_CASE(inv_sts_b5_a_federated_session_is_the_intersection, federation_fixture) {
+    user("bob", k_a,
+         k_get_object + "," + k_put_object +
+             R"(,{"Effect":"Allow","Action":"sts:GetFederationToken","Resource":"*"})");
+    const auto r = federate(principal("bob"));
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    BOOST_TEST(element(r.body, "Arn") == "arn:aws:sts::111122223333:federated-user/fed-bob");
+    BOOST_TEST(element(r.body, "FederatedUserId") == "111122223333:fed-bob");
+    BOOST_TEST(creds_of(r).id.starts_with("ASIA"));
+
+    const auto bare = federated(principal("bob"));
+    BOOST_TEST((bare.type == aws_auth::principal_type::federated_user));
+    BOOST_TEST(bare.arn == "arn:aws:sts::111122223333:federated-user/fed-bob");
+    BOOST_TEST(bare.userid == "111122223333:fed-bob");
+    BOOST_TEST(bare.user_arn == k_bob);
+    BOOST_TEST(!may(bare, "s3:GetObject"));
+    BOOST_TEST(!may(bare, "s3:PutObject"));
+
+    const auto scoped = federated(principal("bob"), "&Policy=" + enc(k_get_policy));
+    BOOST_TEST(may(scoped, "s3:GetObject"));
+    BOOST_TEST(!may(scoped, "s3:PutObject"));  // the user may; the session policy does not
+
+    // The session policy grants nothing the user lacks.
+    user("carol", k_a, R"({"Effect":"Allow","Action":"sts:GetFederationToken","Resource":"*"})");
+    const auto wide =
+        federated(principal("carol"), "&Policy=" + enc(R"({"Version":"2012-10-17","Statement":[)"
+                                                       R"({"Effect":"Allow","Action":"s3:*",)"
+                                                       R"("Resource":"*"}]})"));
+    BOOST_TEST(!may(wide, "s3:GetObject"));
+}
+
+// Requirement 10.8: the call needs sts:GetFederationToken on the
+// federated-user ARN.
+BOOST_FIXTURE_TEST_CASE(get_federation_token_needs_its_permission, federation_fixture) {
+    user("bob", k_a, k_get_object);
+    const auto r = federate(principal("bob"));
+    BOOST_TEST(code_of(r) == "AccessDenied");
+    BOOST_TEST(r.body.find("federated-user/fed-bob") != std::string::npos);
+    user("dave", k_a,
+         R"({"Effect":"Allow","Action":"sts:GetFederationToken",)"
+         R"("Resource":"arn:aws:sts::111122223333:federated-user/dave-*"})");
+    BOOST_TEST(federate(principal("dave"), "", "dave-1").status == 200U);
+    BOOST_TEST(code_of(federate(principal("dave"), "", "other")) == "AccessDenied");
+}
+
+// INV-EVAL-7, the STS side: a resource policy naming the federated-user ARN
+// grants to the session directly; one naming the calling user's ARN is
+// limited by the session policy.
+BOOST_FIXTURE_TEST_CASE(inv_eval_7_resource_policies_and_federated_sessions, federation_fixture) {
+    user("bob", k_a, R"({"Effect":"Allow","Action":"sts:GetFederationToken","Resource":"*"})");
+    const auto grant = [](const std::string& who) {
+        return R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":")" +
+               who + R"("},"Action":"s3:GetObject","Resource":"*"}]})";
+    };
+    const auto bare = federated(principal("bob"));
+    BOOST_TEST(may(bare, "s3:GetObject", "arn:aws:s3:::b/k",
+                   grant("arn:aws:sts::111122223333:federated-user/fed-bob")));
+    BOOST_TEST(!may(bare, "s3:GetObject", "arn:aws:s3:::b/k", grant(k_bob)));
+    const auto put_only = federated(
+        principal("bob"),
+        "&Policy=" + enc(R"({"Version":"2012-10-17","Statement":[)" + k_put_object + "]}"));
+    BOOST_TEST(!may(put_only, "s3:GetObject", "arn:aws:s3:::b/k", grant(k_bob)));
+    const auto get = federated(principal("bob"), "&Policy=" + enc(k_get_policy));
+    BOOST_TEST(may(get, "s3:GetObject", "arn:aws:s3:::b/k", grant(k_bob)));
+}
+
+// Design Component 9: the user's current policies apply to a live session.
+BOOST_FIXTURE_TEST_CASE(a_user_policy_change_reaches_a_live_federated_session, federation_fixture) {
+    user("bob", k_a,
+         k_get_object + R"(,{"Effect":"Allow","Action":"sts:GetFederationToken","Resource":"*"})");
+    const auto session = federated(principal("bob"), "&Policy=" + enc(k_get_policy));
+    BOOST_TEST(may(session, "s3:GetObject"));
+    run(iam_command::put_inline_policy,
+        {{"kind", "user"},
+         {"name", "bob"},
+         {"policy_name", "deny"},
+         {"document",
+          R"({"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"s3:GetObject","Resource":"*"}]})"}});
+    BOOST_TEST(!may(session, "s3:GetObject"));
+}
+
+// INV-DUR-5, INV-DUR-6 for GetFederationToken: 900-129600 seconds, default
+// 43200; the root defaults to and is capped at 3600, and its session is
+// limited by the session policy alone.
+BOOST_FIXTURE_TEST_CASE(inv_dur_5_and_6_federation_token_durations, federation_fixture) {
+    user("bob", k_a, R"({"Effect":"Allow","Action":"sts:GetFederationToken","Resource":"*"})");
+    auto r = federate(principal("bob"));
+    BOOST_TEST(std::abs(seconds_until(element(r.body, "Expiration"), now_s()) - 43200) <= 5);
+    r = federate(principal("bob"), "&DurationSeconds=129600");
+    BOOST_TEST(std::abs(seconds_until(element(r.body, "Expiration"), now_s()) - 129600) <= 5);
+    BOOST_TEST(code_of(federate(principal("bob"), "&DurationSeconds=899")) == "ValidationError");
+    BOOST_TEST(code_of(federate(principal("bob"), "&DurationSeconds=129601")) == "ValidationError");
+    r = federate(root(), "&DurationSeconds=7200&Policy=" + enc(k_get_policy));
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    BOOST_TEST(std::abs(seconds_until(element(r.body, "Expiration"), now_s()) - 3600) <= 5);
+    const auto rooted = authenticate(creds_of(r));
+    BOOST_REQUIRE(rooted.has_value());
+    BOOST_TEST(rooted->user_arn.empty());
+    BOOST_TEST(may(*rooted, "s3:GetObject"));
+    BOOST_TEST(!may(*rooted, "s3:PutObject"));
+    BOOST_TEST(!may(federated(root()), "s3:GetObject"));
+}
+
+// INV-STS-2: Name is 2-32 characters of [\w+=,.@-].
+BOOST_FIXTURE_TEST_CASE(inv_sts_2_federated_user_names_are_checked, federation_fixture) {
+    user("bob", k_a, R"({"Effect":"Allow","Action":"sts:GetFederationToken","Resource":"*"})");
+    BOOST_TEST(code_of(federate(principal("bob"), "", "a")) == "ValidationError");
+    BOOST_TEST(code_of(federate(principal("bob"), "", std::string(33, 'a'))) == "ValidationError");
+    BOOST_TEST(code_of(federate(principal("bob"), "", enc("a b"))) == "ValidationError");
+    BOOST_TEST(code_of(call(principal("bob"), "Action=GetFederationToken")) == "ValidationError");
+    BOOST_TEST(federate(principal("bob"), "", std::string(32, 'a')).status == 200U);
+    BOOST_TEST(federate(principal("bob"), "", enc("a+=,.@-_1")).status == 200U);
+    BOOST_TEST(code_of(federate(principal("bob"), "&SourceIdentity=me")) == "ValidationError");
+}
+
+// INV-CRED-1..6 (Requirement 10.10), wired: what each temporary credential
+// may call, whatever its policies say.
+BOOST_FIXTURE_TEST_CASE(inv_cred_1_to_6_temporary_credentials_are_limited, federation_fixture) {
+    const std::string everything = R"({"Effect":"Allow","Action":"*","Resource":"*"})";
+    const std::string everything_policy =
+        R"({"Version":"2012-10-17","Statement":[)" + everything + "]}";
+    user("bob", k_a, everything);
+    role("app", trust_for(k_bob));
+    const auto fed = federated(principal("bob"), "&Policy=" + enc(everything_policy));
+    const auto st = authenticate(creds_of(call(principal("bob"), "Action=GetSessionToken")));
+    BOOST_REQUIRE(st.has_value());
+    const auto rs = authenticate(creds_of(assume(principal("bob"), "app")));
+    BOOST_REQUIRE(rs.has_value());
+
+    // INV-CRED-2: federated credentials, GetCallerIdentity only.
+    BOOST_TEST(call(fed, "Action=GetCallerIdentity").status == 200U);
+    for (const auto* body : {"Action=AssumeRole&RoleSessionName=s&RoleArn=arn%3Aaws%3Aiam%3A%"
+                             "3A111122223333%3Arole%2Fapp",
+                             "Action=GetSessionToken", "Action=GetFederationToken&Name=again",
+                             "Action=DecodeAuthorizationMessage&EncodedMessage=x",
+                             "Action=GetAccessKeyInfo"
+                             "&AccessKeyId=AKIAEXAMPLE"}) {
+        BOOST_TEST(code_of(call(fed, body)) == "AccessDenied", body);
+    }
+    // INV-CRED-1: session-token credentials, AssumeRole and
+    // GetCallerIdentity only.
+    BOOST_TEST(assume(*st, "app").status == 200U);
+    BOOST_TEST(code_of(call(*st, "Action=GetFederationToken&Name=again")) == "AccessDenied");
+    BOOST_TEST(code_of(call(*st, "Action=GetAccessKeyInfo&AccessKeyId=AKIAEXAMPLE")) ==
+               "AccessDenied");
+    // INV-CRED-3: role credentials, neither token call.
+    BOOST_TEST(code_of(call(*rs, "Action=GetFederationToken&Name=again")) == "AccessDenied");
+    BOOST_TEST(code_of(call(*rs, "Action=GetSessionToken")) == "AccessDenied");
+    // INV-CRED-4: long-term keys may make both.
+    BOOST_TEST(call(principal("bob"), "Action=GetSessionToken").status == 200U);
+    BOOST_TEST(federate(principal("bob")).status == 200U);
+
+    // INV-CRED-5, INV-CRED-6: neither token's credentials call IAM; role
+    // credentials and long-term keys do.
+    const auto listed = iam_call(fed, "Action=ListUsers");
+    BOOST_TEST(code_of(listed) == "AccessDenied");
+    BOOST_TEST(listed.body.find("session credentials") != std::string::npos);
+    BOOST_TEST(code_of(iam_call(*st, "Action=ListUsers")) == "AccessDenied");
+    BOOST_TEST(iam_call(principal("bob"), "Action=ListUsers").status == 200U);
+    role("admin", trust_for(k_bob), 3600, everything);
+    const auto admin = authenticate(creds_of(assume(principal("bob"), "admin")));
+    BOOST_REQUIRE(admin.has_value());
+    BOOST_TEST(iam_call(*admin, "Action=ListUsers").status == 200U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(authorization_messages)
+
+// Requirement 10.9: a denial's encoded message decodes, in its account, to
+// AWS's JSON: the decision, the matched statements and the context.
+BOOST_FIXTURE_TEST_CASE(an_encoded_message_round_trips, federation_fixture) {
+    user("bob", k_a,
+         R"({"Effect":"Allow","Action":"sts:DecodeAuthorizationMessage","Resource":"*"},)"
+         R"({"Sid":"NoPuts","Effect":"Deny","Action":"s3:PutObject","Resource":"*"})");
+    const auto implicit = denied_message(principal("bob"), "s3:GetObject");
+    auto r = decode(principal("bob"), implicit);
+    BOOST_TEST_REQUIRE(r.status == 200U, r.body);
+    auto msg = boost::json::parse(unescape(element(r.body, "DecodedMessage"))).as_object();
+    BOOST_TEST(!msg.at("allowed").as_bool());
+    BOOST_TEST(!msg.at("explicitDeny").as_bool());
+    BOOST_TEST(msg.at("matchedStatements").at("items").as_array().empty());
+    BOOST_TEST(!msg.contains("iat"));
+    const auto& ctx = msg.at("context").as_object();
+    BOOST_TEST(ctx.at("action").as_string() == "s3:GetObject");
+    BOOST_TEST(ctx.at("resource").as_string() == "arn:aws:s3:::b/k");
+    BOOST_TEST(ctx.at("principal").at("arn").as_string() == k_bob);
+    BOOST_TEST(ctx.at("principal").at("name").as_string() == "bob");
+    bool has_principal_arn = false;
+    for (const auto& c : ctx.at("conditions").at("items").as_array()) {
+        if (c.at("key").as_string() == "aws:principalarn") {
+            has_principal_arn =
+                c.at("values").at("items").as_array().front().at("value").as_string() == k_bob;
+        }
+    }
+    BOOST_TEST(has_principal_arn);
+
+    r = decode(principal("bob"), denied_message(principal("bob"), "s3:PutObject"));
+    msg = boost::json::parse(unescape(element(r.body, "DecodedMessage"))).as_object();
+    BOOST_TEST(msg.at("explicitDeny").as_bool());
+    const auto& matched = msg.at("matchedStatements").at("items").as_array();
+    BOOST_TEST_REQUIRE(matched.size() == 1U);
+    BOOST_TEST(matched.front().at("statementId").as_string() == "NoPuts");
+    BOOST_TEST(matched.front().at("effect").as_string() == "DENY");
+
+    // Only on request, and never with an allow.
+    BOOST_TEST(
+        !authz.authorize(principal("bob"), {.action = "s3:GetObject"}).encoded_message.has_value());
+    BOOST_TEST(!authz
+                    .authorize(principal("bob"), {.action = "sts:DecodeAuthorizationMessage",
+                                                  .want_encoded_message = true})
+                    .encoded_message.has_value());
+}
+
+// Requirement 10.9: the caller needs sts:DecodeAuthorizationMessage, the
+// message opens only in its own account, a session token is not a message,
+// and a message past the STS key retention window has expired.
+BOOST_FIXTURE_TEST_CASE(a_message_decodes_only_where_and_while_it_may, federation_fixture) {
+    const std::string decode_ok =
+        R"({"Effect":"Allow","Action":"sts:DecodeAuthorizationMessage","Resource":"*"})";
+    user("bob", k_a, decode_ok);
+    user("eve", k_a);
+    user("olga", k_b, decode_ok);
+    role("app", trust_for(k_bob));
+    const auto message = denied_message(principal("bob"), "s3:GetObject");
+
+    const auto eve = decode(principal("eve"), message);
+    BOOST_TEST(code_of(eve) == "AccessDenied");
+    BOOST_TEST(eve.body.find("sts:DecodeAuthorizationMessage") != std::string::npos);
+
+    BOOST_TEST(code_of(decode(principal("olga", k_b), message)) ==
+               "InvalidAuthorizationMessageException");
+
+    const auto token = creds_of(assume(principal("bob"), "app")).token;
+    BOOST_TEST_REQUIRE(!token.empty());
+    BOOST_TEST(code_of(decode(principal("bob"), token)) == "InvalidAuthorizationMessageException");
+    BOOST_TEST(code_of(decode(principal("bob"), "not-a-message")) ==
+               "InvalidAuthorizationMessageException");
+    BOOST_TEST(code_of(call(principal("bob"), "Action=DecodeAuthorizationMessage")) ==
+               "ValidationError");
+    // Nor does a message open as a session token.
+    BOOST_TEST(!authenticate({creds_of(assume(principal("bob"), "app")).id, "x", message, ""})
+                    .has_value());
+
+    BOOST_TEST(decode(principal("bob"), message).status == 200U);
+    clock += std::chrono::hours{36} + std::chrono::seconds{1};
+    const auto late = decode(principal("bob"), message);
+    BOOST_TEST(code_of(late) == "InvalidAuthorizationMessageException");
+    BOOST_TEST(late.body.find("expired") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

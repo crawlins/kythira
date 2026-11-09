@@ -769,7 +769,7 @@ because each has a zero-spend fallback.
     unit test, and the PR updates its row there.
   - _Requirements: 10.2, 10.5, 10.6_
 
-- [ ] 26. GetFederationToken, DecodeAuthorizationMessage and credential limits
+- [x] 26. GetFederationToken, DecodeAuthorizationMessage and credential limits
   - Numbered 26 because it was added on November 6, 2026, at Clark's
     request ("Add STS support to the IAM spec"); it follows task 18.
   - GetFederationToken (design Component 9): the `federated` token, the

@@ -482,6 +482,84 @@ private:
     return std::move(*s);
 }
 
+// ── Authorization messages ─────────────────────────────────────────────────
+
+/// An encoded authorization message (DecodeAuthorizationMessage, design
+/// Component 9) is sealed like a session token under an STS key, with its
+/// own version byte and associated data naming the account it was made
+/// in, so a token never opens as a message or the reverse, and a message
+/// opens only in its own account:
+///
+///   message = base64url( 0x02 | kid8 | nonce (12) | tag (16) | ciphertext )
+///   associated data = "kythira-authz-message-v1|" | account | "|" | kid8
+inline constexpr std::uint8_t k_message_version = 0x02;
+
+[[nodiscard]] inline auto message_associated_data(const kid8& kid, std::string_view account)
+    -> std::string {
+    std::string ad = "kythira-authz-message-v1|";
+    ad.append(account);
+    ad.push_back('|');
+    ad.append(reinterpret_cast<const char*>(kid.data()), kid.size());  // NOLINT
+    return ad;
+}
+
+/// Seals `message` (which carries its own `iat`) for `account`.
+[[nodiscard]] inline auto seal_message(const sts_key& key, std::string_view account,
+                                       const boost::json::object& message) -> std::string {
+    const auto kid = kid_digest(key.kid);
+    const auto payload = cbor::encode(message);
+    const auto sealed = seal_secret(key.key, payload, message_associated_data(kid, account));
+    const auto blob = jose::base64url_decode(sealed);
+    if (!blob) {
+        throw std::logic_error("sts: seal_secret wrote invalid base64url");
+    }
+    std::vector<unsigned char> out;
+    out.reserve(1 + k_kid_len + blob->size());
+    out.push_back(k_message_version);
+    out.insert(out.end(), kid.begin(), kid.end());
+    out.insert(out.end(), blob->begin(), blob->end());
+    return jose::base64url_encode(out);
+}
+
+/// A message, or why it does not open: `invalid` (not a message, damaged,
+/// or from another account) or `expired` (its key is gone, or it is older
+/// than `max_age`).
+struct opened_message {
+    std::optional<boost::json::object> message;
+    token_error error = token_error::invalid;
+};
+
+[[nodiscard]] inline auto open_message(std::string_view encoded, const std::vector<sts_key>& keys,
+                                       std::string_view account, std::int64_t now,
+                                       std::int64_t max_age) -> opened_message {
+    const auto raw = jose::base64url_decode(encoded);
+    if (!raw || raw->size() < 1 + k_kid_len || (*raw)[0] != k_message_version) {
+        return {};
+    }
+    kid8 kid{};
+    std::copy_n(raw->begin() + 1, k_kid_len, kid.begin());
+    const auto key =
+        std::ranges::find_if(keys, [&](const sts_key& k) { return kid_digest(k.kid) == kid; });
+    if (key == keys.end()) {
+        return {std::nullopt, token_error::expired};
+    }
+    const std::vector<unsigned char> blob(raw->begin() + 1 + k_kid_len, raw->end());
+    const auto payload =
+        open_secret(key->key, jose::base64url_encode(blob), message_associated_data(kid, account));
+    if (!payload) {
+        return {};
+    }
+    auto v = cbor::decode(*payload);
+    if (!v || !v->is_object()) {
+        return {};
+    }
+    const auto* iat = v->as_object().if_contains("iat");
+    if (iat == nullptr || !iat->is_int64() || now - iat->as_int64() > max_age) {
+        return {std::nullopt, token_error::expired};
+    }
+    return {std::move(v->as_object()), token_error::invalid};
+}
+
 // ── Keys and principals from the state ───────────────────────────────────────
 
 /// The STS keys in `sm`, opened under the KEK, newest first. A key that does
