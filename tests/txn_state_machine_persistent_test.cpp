@@ -249,6 +249,29 @@ BOOST_AUTO_TEST_CASE(a_power_cut_loses_the_writes_and_the_lock_release_together)
     BOOST_TEST(after.open_transactions().empty());
 }
 
+// The wrapper forwards sync_durable(), so the node can compact a
+// transactional persistent group on an engine that syncs only when asked;
+// syncing the inner machine covers the transaction state, which rides in
+// the same batches.
+BOOST_AUTO_TEST_CASE(sync_durable_covers_the_transaction_state) {
+    static_assert(requires(disk_txn& s) { s.sync_durable(); });
+    kythira::memory_kv_engine engine;
+    auto sm = open_disk(engine);
+    engine.hold_durability();
+    const txn_id t{0, 1};
+    std::ignore = sm.apply(encode(kythira::txn_prepare<std::string>{
+                               t, "a", {txn_write{"a", put("a", "1")}}, {}, 0, 100, true}),
+                           1);
+    BOOST_TEST(sm.durable_applied_index() == 0U);
+    sm.sync_durable();
+    BOOST_TEST(sm.durable_applied_index() == 1U);
+
+    engine.simulate_crash();
+    auto after = open_disk(engine);
+    BOOST_TEST(after.applied_index() == 1U);
+    BOOST_TEST(after.intent_on("a").has_value());
+}
+
 BOOST_AUTO_TEST_CASE(a_command_that_throws_leaves_nothing_behind) {
     kythira::memory_kv_engine engine;
     auto sm = open_disk(engine);

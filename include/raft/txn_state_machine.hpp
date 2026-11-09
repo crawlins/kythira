@@ -405,6 +405,15 @@ public:
         return _inner.durable_applied_index();
     }
 
+    /// The inner machine's sync, when it has one: every batch this wrapper
+    /// commits is the inner machine's batch, so syncing it covers the
+    /// transaction state too.
+    auto sync_durable() -> void
+    requires k_persistent && requires(SM& i) { i.sync_durable(); }
+    {
+        _inner.sync_durable();
+    }
+
     auto checkpoint(const std::filesystem::path& dir) -> snapshot_manifest
     requires k_persistent
     {

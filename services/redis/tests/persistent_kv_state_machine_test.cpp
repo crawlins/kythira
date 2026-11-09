@@ -315,6 +315,30 @@ BOOST_AUTO_TEST_CASE(crash_loses_only_undurable_batches_and_replay_restores_them
     check_same(recovered, o, keys, 1050);
 }
 
+// The node asks for this before compacting when the durable index lags
+// (raft_configuration::_persistent_sync_lag_entries). Without it, on an
+// engine that syncs only when asked (RocksDB), the durable index never
+// moved and a gateway on engine storage never compacted its log: the
+// engine chaos scenario's bulk load found it.
+BOOST_AUTO_TEST_CASE(sync_durable_makes_every_applied_batch_durable) {
+    memory_kv_engine engine;
+    psm p;
+    p.open(engine, k_everything);
+    p.sync_durable();  // nothing applied yet: a no-op
+    engine.hold_durability();
+    for (std::uint64_t i = 1; i <= 12; ++i) {
+        p.apply(set("k" + std::to_string(i), "v"), i);
+    }
+    BOOST_TEST(p.durable_applied_index() == 0U);
+    p.sync_durable();
+    BOOST_TEST(p.durable_applied_index() == 12U);
+
+    engine.simulate_crash();
+    psm recovered;
+    recovered.open(engine, k_everything);
+    BOOST_TEST(recovered.applied_index() == 12U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(ranges_and_movement)
