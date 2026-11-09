@@ -45,6 +45,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 
+#include <openssl/bn.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -52,6 +53,7 @@
 
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -102,6 +104,10 @@ struct request_context {
     bool client_verified{false};
     /// The verified certificate's URI SANs; empty when none was presented.
     std::vector<std::string> client_uri_sans;
+    /// The verified certificate's DNS SANs, and its serial number as
+    /// lower-case hex without leading zeros; empty when none was presented.
+    std::vector<std::string> client_dns_sans;
+    std::string client_serial_hex;
 };
 
 using request = boost::beast::http::request<boost::beast::http::string_body>;
@@ -148,8 +154,8 @@ template<typename Stream> auto lowest(Stream& s) -> beast::tcp_stream& {
     }
 }
 
-/// The URI SANs of `cert`.
-inline auto uri_sans(X509* cert) -> std::vector<std::string> {
+/// The SANs of `cert` of one general-name type (GEN_URI or GEN_DNS).
+inline auto ia5_sans(X509* cert, int type) -> std::vector<std::string> {
     std::vector<std::string> out;
     if (cert == nullptr) {
         return out;
@@ -161,14 +167,38 @@ inline auto uri_sans(X509* cert) -> std::vector<std::string> {
     }
     for (int i = 0; i < sk_GENERAL_NAME_num(names); ++i) {
         const GENERAL_NAME* gn = sk_GENERAL_NAME_value(names, i);
-        if (gn->type != GEN_URI) {
+        if (gn->type != type) {
             continue;
         }
-        const ASN1_STRING* s = gn->d.uniformResourceIdentifier;
+        const ASN1_STRING* s = gn->d.ia5;
         out.emplace_back(reinterpret_cast<const char*>(ASN1_STRING_get0_data(s)),
                          static_cast<std::size_t>(ASN1_STRING_length(s)));
     }
     GENERAL_NAMES_free(names);
+    return out;
+}
+
+/// The URI SANs of `cert`.
+inline auto uri_sans(X509* cert) -> std::vector<std::string> {
+    return ia5_sans(cert, GEN_URI);
+}
+
+/// The serial number of `cert` as lower-case hex, no leading zeros.
+inline auto serial_hex(X509* cert) -> std::string {
+    if (cert == nullptr) {
+        return {};
+    }
+    BIGNUM* bn = ASN1_INTEGER_to_BN(X509_get0_serialNumber(cert), nullptr);
+    if (bn == nullptr) {
+        return {};
+    }
+    char* hex = BN_bn2hex(bn);
+    std::string out = hex != nullptr ? hex : "";
+    OPENSSL_free(hex);
+    BN_free(bn);
+    for (auto& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
     return out;
 }
 
@@ -437,6 +467,8 @@ private:
                 ctx.client_verified = SSL_get_verify_result(ssl) == X509_V_OK;
                 if (ctx.client_verified) {
                     ctx.client_uri_sans = detail::uri_sans(peer);
+                    ctx.client_dns_sans = detail::ia5_sans(peer, GEN_DNS);
+                    ctx.client_serial_hex = detail::serial_hex(peer);
                 }
                 X509_free(peer);
             }

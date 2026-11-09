@@ -30,6 +30,11 @@ struct test_pki_options {
     /// Extra DNS names per node, by node id text (compose service names).
     std::map<std::string, std::vector<std::string>> host_names;
     std::string unseal_passphrase = "kythira-test-unseal-passphrase";
+    /// The root's common name. A test that also trusts another CA built
+    /// from certificate_authority's defaults gives this one its own name:
+    /// two roots with one subject and no key identifiers are told apart by
+    /// trying the first, so a chain to the second fails its signature.
+    std::string ca_common_name = "Kythira Test Root CA";
 };
 
 struct test_pki_paths {
@@ -50,7 +55,9 @@ struct test_pki_paths {
 
 /// Writes the PKI into `o.dir`, which must exist. Keys are 0600.
 inline auto write_test_pki(const test_pki_options& o) -> test_pki_paths {
-    raft::testing::certificate_authority ca;
+    raft::testing::ca_options ca_opts;
+    ca_opts.subject.common_name = o.ca_common_name;
+    raft::testing::certificate_authority ca(ca_opts);
     test_pki_paths p;
     p.ca = o.dir / "ca.pem";
     raft::write_file_atomically(p.ca, ca.root_certificate_pem(), raft::file_visibility::standard);

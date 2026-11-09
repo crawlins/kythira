@@ -145,6 +145,40 @@ public:
         return answer(nullptr, f, facts);
     }
 
+    /// The identity a verified Kythira-CA client certificate carries, for
+    /// the direct exchange (Requirement 12.3).
+    struct certificate_identity {
+        std::vector<std::string> uri_sans;
+        std::vector<std::string> dns_sans;
+        std::string serial_hex;
+    };
+
+    /// The direct certificate exchange (`POST /v1/iam/credentials`,
+    /// modelled on IAM Roles Anywhere's CreateSession): role credentials
+    /// for a client certificate the listener has already verified against
+    /// the Kythira CA, with no JWT step. The caller is the OIDC provider
+    /// `issuer` (the Kythira issuer, registered in the role's account), so
+    /// trust policies keep one style; the certificate's SANs and serial
+    /// are the condition keys `kythira:cert/san-uri`, `kythira:cert/san-dns`
+    /// and `kythira:cert/serial`. `f` holds RoleArn, RoleSessionName and
+    /// DurationSeconds. Answers JSON:
+    /// `{"credentials":{...},"assumedRoleUser":{...}}` or
+    /// `{"code":...,"message":...}`.
+    [[nodiscard]] auto exchange_certificate(const certificate_identity& cert,
+                                            const std::string& issuer, const aws_query::form& f,
+                                            const query::request_facts& facts) -> query::reply {
+        static const aws_auth::principal_context anonymous{};
+        try {
+            call x{*this, anonymous, f, facts, "ExchangeCertificate", true};
+            return {200, x.exchange_certificate(cert, issuer)};
+        } catch (const query::api_error& e) {
+            return {query::status_of(e.code()), boost::json::serialize(boost::json::object{
+                                                    {"code", e.code()}, {"message", e.what()}})};
+        } catch (const std::exception&) {
+            return {500, R"({"code":"ServiceFailure","message":"Request processing failed."})"};
+        }
+    }
+
     /// Whether `f` is a request that may arrive unsigned.
     [[nodiscard]] static auto unsigned_allowed(const aws_query::form& f) -> bool {
         const auto a = f.get("Action");
@@ -413,8 +447,32 @@ private:
             }
         }
 
+        struct minted {
+            std::string access_key_id;
+            std::string secret_access_key;
+            std::string token;
+            std::int64_t exp = 0;
+            minted() = default;
+            minted(const minted&) = delete;
+            auto operator=(const minted&) -> minted& = delete;
+            minted(minted&&) = default;
+            auto operator=(minted&&) -> minted& = default;
+            ~minted() { OPENSSL_cleanse(secret_access_key.data(), secret_access_key.size()); }
+        };
+
         /// Seals `s` with fresh `ASIA` credentials and writes `Credentials`.
         auto mint(session s, std::int64_t duration, aws_query::xml_writer& w) -> void {
+            const auto m = mint_raw(std::move(s), duration);
+            w.open("Credentials")
+                .element("AccessKeyId", m.access_key_id)
+                .element("SecretAccessKey", m.secret_access_key)
+                .element("SessionToken", m.token)
+                .element("Expiration", query::iso8601(m.exp))
+                .close();
+        }
+
+        /// Seals `s` with fresh `ASIA` credentials.
+        auto mint_raw(session s, std::int64_t duration) -> minted {
             std::optional<sts_key> key;
             read([&](const iam_state_machine& sm) {
                 if (!sm.kek_salt().empty()) {
@@ -430,14 +488,13 @@ private:
             s.exp = now + duration;
             s.access_key_id = detail::temporary_key_id(s.account);
             s.secret_access_key = iam_leader::generate_secret_access_key();
-            const auto token = seal(*key, s);
-            w.open("Credentials")
-                .element("AccessKeyId", s.access_key_id)
-                .element("SecretAccessKey", s.secret_access_key)
-                .element("SessionToken", token)
-                .element("Expiration", query::iso8601(s.exp))
-                .close();
+            minted out;
+            out.token = seal(*key, s);
+            out.access_key_id = s.access_key_id;
+            out.secret_access_key = s.secret_access_key;
+            out.exp = s.exp;
             OPENSSL_cleanse(s.secret_access_key.data(), s.secret_access_key.size());
+            return out;
         }
 
         struct found_role {
@@ -829,6 +886,7 @@ private:
             if (const auto amr = strings(claims, "amr"); !amr.empty()) {
                 r.keys.push_back({issuer + ":amr", amr});
             }
+            add_kythira_claims(claims, issuer, r);
             r.source_ip = facts.source_ip;
             r.user_agent = facts.user_agent;
             r.region = facts.region;
@@ -865,6 +923,112 @@ private:
                 w.element("PackedPolicySize", std::to_string(extra.packed * 100 / 2048));
             }
             return w.str();
+        }
+
+        /// Requirement 12.2: a token's `kythira:*` claims (the Kythira
+        /// issuer's node id, workload URI and certificate serial) become
+        /// `<issuer>:kythira:*` keys, and a composite node id
+        /// `<provider>:<scope>:<native id>` also gives
+        /// `<issuer>:kythira:node_provider`, `:kythira:node_scope` and
+        /// `:kythira:node_native_id`. Prefixed by the issuer like every
+        /// claim key, so no other issuer's claims can match them.
+        static void add_kythira_claims(const boost::json::object& claims, const std::string& issuer,
+                                       aws_auth::authz_request& r) {
+            for (const auto& [k, v] : claims) {
+                if (!k.starts_with("kythira:") || !v.is_string()) {
+                    continue;
+                }
+                r.keys.push_back({issuer + ":" + std::string(k), {std::string(v.as_string())}});
+            }
+            const auto* node = claims.if_contains("kythira:node_id");
+            if (node == nullptr || !node->is_string()) {
+                return;
+            }
+            const std::string id(node->as_string());
+            const auto c1 = id.find(':');
+            const auto c2 = c1 == std::string::npos ? c1 : id.find(':', c1 + 1);
+            if (c2 == std::string::npos || c1 == 0 || c2 == c1 + 1 || c2 + 1 == id.size()) {
+                return;  // a numeric or otherwise non-composite id
+            }
+            r.keys.push_back({issuer + ":kythira:node_provider", {id.substr(0, c1)}});
+            r.keys.push_back({issuer + ":kythira:node_scope", {id.substr(c1 + 1, c2 - c1 - 1)}});
+            r.keys.push_back({issuer + ":kythira:node_native_id", {id.substr(c2 + 1)}});
+        }
+
+        // ── The direct certificate exchange (Requirement 12.3) ──
+
+        auto exchange_certificate(const certificate_identity& cert, const std::string& issuer)
+            -> std::string {
+            const auto role_arn = checked_role_arn();
+            const auto session_name = checked_session_name();
+            const auto requested = optional_int("DurationSeconds");
+            const auto [role, partition, role_account] = find_role(role_arn);
+            const auto denied = [] {
+                query::detail::fail("AccessDenied",
+                                    "Not authorized to exchange this certificate for the role");
+            };
+            if (!role) {
+                denied();
+            }
+            bool registered = false;
+            read([&](const iam_state_machine& sm) {
+                if (const auto* a = sm.account(role_account)) {
+                    registered = a->oidc_providers.contains(issuer);
+                }
+            });
+            if (!registered) {
+                denied();  // the account has not chosen to trust the Kythira issuer
+            }
+            const auto duration =
+                validate::web_identity_duration(requested, role->max_session_duration);
+            if (!duration.has_value()) {
+                query::detail::fail("ValidationError", duration.error());
+            }
+            const auto provider_arn =
+                "arn:" + partition + ":iam::" + role_account + ":oidc-provider/" + issuer;
+            aws_auth::authz_request r;
+            r.action = "sts:AssumeRoleWithWebIdentity";
+            r.resource = role_arn;
+            r.resource_account = role_account;
+            r.resource_policy = role->trust_policy;
+            r.resource_kind = aws_auth::resource_policy_kind::trust;
+            r.resource_tags.assign(role->tags.begin(), role->tags.end());
+            r.keys.push_back({"sts:RoleSessionName", {session_name}});
+            if (!cert.uri_sans.empty()) {
+                r.keys.push_back({"kythira:cert/san-uri", cert.uri_sans});
+            }
+            if (!cert.dns_sans.empty()) {
+                r.keys.push_back({"kythira:cert/san-dns", cert.dns_sans});
+            }
+            if (!cert.serial_hex.empty()) {
+                r.keys.push_back({"kythira:cert/serial", {cert.serial_hex}});
+            }
+            r.source_ip = facts.source_ip;
+            r.user_agent = facts.user_agent;
+            r.region = facts.region;
+            r.secure_transport = facts.secure_transport;
+            if (!api._authz->authorize_web_identity(provider_arn, r).allowed) {
+                denied();
+            }
+            session s;
+            s.account = role_account;
+            s.issuer_kind = std::string(k_issuer_role);
+            s.role_arn = role_arn;
+            s.role_name = role->name;
+            s.session_name = session_name;
+            s.principal_arn = "arn:" + partition + ":sts::" + role_account + ":assumed-role/" +
+                              role->name + "/" + session_name;
+            s.userid = role->id + ":" + session_name;
+            const auto principal_arn = s.principal_arn;
+            const auto userid = s.userid;
+            const auto m = mint_raw(std::move(s), duration.value());
+            return boost::json::serialize(boost::json::object{
+                {"credentials", boost::json::object{{"accessKeyId", m.access_key_id},
+                                                    {"secretAccessKey", m.secret_access_key},
+                                                    {"sessionToken", m.token},
+                                                    {"expiration", query::iso8601(m.exp)}}},
+                {"assumedRoleUser",
+                 boost::json::object{{"arn", principal_arn}, {"assumedRoleId", userid}}}});
         }
 
         // ── GetSessionToken ──

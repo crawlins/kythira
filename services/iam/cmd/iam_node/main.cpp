@@ -222,6 +222,16 @@ public:
         if (_cfg.replica) {
             _authz.set_freshness([this] { return _freshness.fresh(); });
         }
+        if (!_cfg.kythira_issuer_local.empty()) {
+            // The Kythira issuer's keys straight from a CA member, trusted
+            // through --oidc-ca-file when given, else the cluster's own CA,
+            // never the system store.
+            iam::oidc::fetch_rules local;
+            local.ca_file = !_cfg.oidc_ca_file.empty()      ? _cfg.oidc_ca_file
+                            : !_cfg.rpc_tls_ca_path.empty() ? _cfg.rpc_tls_ca_path
+                                                            : _cfg.client_ca_path;
+            _jwks.set_direct(issuer_name(), _cfg.kythira_issuer_local, make_fetcher_with(local));
+        }
     }
 
     member(const member&) = delete;
@@ -342,18 +352,68 @@ private:
     /// cpp-httplib's TLS client every fetch fails, which the action
     /// reports as IDPCommunicationError.
     static auto make_fetcher(const iam_node::config& cfg) -> iam::oidc::fetcher {
-#ifdef KYTHIRA_IAM_HAS_HTTPS_FETCHER
         iam::oidc::fetch_rules rules;
         rules.allowed_hosts = cfg.oidc_allowed_hosts;
         rules.proxy = cfg.oidc_proxy;
         rules.ca_file = cfg.oidc_ca_file;
+        return make_fetcher_with(std::move(rules));
+    }
+
+    static auto make_fetcher_with(iam::oidc::fetch_rules rules) -> iam::oidc::fetcher {
+#ifdef KYTHIRA_IAM_HAS_HTTPS_FETCHER
         return iam::oidc::https_fetcher(std::move(rules));
 #else
-        (void)cfg;
+        (void)rules;
         return [](const std::string&) {
             return iam::oidc::fetch_result{0, {}, "built without an HTTPS client"};
         };
 #endif
+    }
+
+    /// The Kythira issuer as IAM names OIDC providers: host/path, no scheme.
+    [[nodiscard]] auto issuer_name() const -> std::string {
+        return _cfg.kythira_issuer.substr(std::string_view("https://").size());
+    }
+
+    /// `POST /v1/iam/credentials` (task 20, Requirement 12.3): role
+    /// credentials for the verified client certificate, with no JWT step.
+    auto handle_credentials_exchange(const https::request& req, const https::request_context& ctx)
+        -> https::response {
+        const auto json = [&](unsigned status, std::string body) {
+            https::response res{static_cast<http::status>(status), req.version()};
+            res.set(http::field::content_type, "application/json");
+            res.body() = std::move(body);
+            res.keep_alive(req.keep_alive());
+            return res;
+        };
+        if (!_cfg.credentials_exchange) {
+            return json(404, R"({"code":"NotFound","message":"The credentials exchange is off."})");
+        }
+        if (!ctx.tls || !ctx.client_verified) {
+            return json(
+                403,
+                R"({"code":"AccessDenied","message":"A Kythira-CA client certificate is required."})");
+        }
+        if (!_node->is_leader()) {
+            return redirect_to_leader(req);
+        }
+        const auto form = kythira::aws_query::form::parse(std::string_view(req.body()));
+        if (!form) {
+            return json(
+                400,
+                R"({"code":"MalformedQueryString","message":"The form body could not be decoded."})");
+        }
+        iam::query::request_facts facts;
+        facts.request_id = routing::request_id();
+        facts.source_ip = ctx.peer_address;
+        facts.user_agent = std::string(req[http::field::user_agent]);
+        facts.secure_transport = true;
+        const auto r = _sts_api.exchange_certificate(
+            {ctx.client_uri_sans, ctx.client_dns_sans, ctx.client_serial_hex}, issuer_name(), *form,
+            facts);
+        auto res = json(r.status, r.body);
+        res.set("x-amzn-RequestId", facts.request_id);
+        return res;
     }
 
     static auto make_registry() -> iam::iam_service_registry {
@@ -760,6 +820,9 @@ private:
             res.body() = _freshness.metrics_text();
             res.keep_alive(req.keep_alive());
             return res;
+        }
+        if (path == "/v1/iam/credentials" && req.method() == http::verb::post) {
+            return handle_credentials_exchange(req, ctx);
         }
         const auto r = routing::route_of(path, std::string_view(auth.data(), auth.size()), query);
         if ((r == routing::route::iam || r == routing::route::sts) && _cfg.replica &&

@@ -26,6 +26,8 @@ Test files are under `services/iam/tests/` unless a path says otherwise:
 - `qa` is `iam_query_api_test.cpp`, and `scn` the AWS CLI step of `docker/iam_node_scenario_test.cpp`;
 - `pol` is `iam_policy_test.cpp` with its corpus, where `corpus:<file>`
   names a file under `corpus/`;
+- `sts` is `iam_sts_test.cpp`, and `kie` is `iam_kythira_issuer_test.cpp`
+  (the CA cluster and `iam_node` as processes);
 - `sigv4` is `tests/sigv4_verifier_test.cpp`.
 
 ## Gaps this review found and fixed
@@ -270,6 +272,9 @@ them from its handler, and its handler test shows one refusal per rule.
 | INV-STS-B6 | A web identity token is signed with RS256/384/512 or ES256/384/512, its `iss` matches a registered provider, its `aud` is one of that provider's client ids, and it is unexpired. Otherwise the call is refused with InvalidIdentityToken or ExpiredToken. | Tested: sts `inv_sts_b6_tokens_are_checked_before_the_trust_policy`, `an_unknown_kid_refetches_the_jwks_once` (task 19). The expiry error is AWS's `ExpiredTokenException`. |
 | INV-STS-B7 | AssumeRoleWithWebIdentity is unsigned, and the role's trust policy must allow the provider's federated principal | Tested: sts `inv_sts_b7_an_unsigned_call_needs_the_provider_in_the_trust_policy`; container scenario step 4 (task 19) |
 | INV-STS-B8 | The assumed-role ARN is `arn:<partition>:sts::<account>:assumed-role/<role>/<session>` | Tested: sts `inv_sts_b8_assume_role_returns_the_assumed_role_arn_and_credentials` (task 17) |
+| INV-STS-K1 | Kythira rule (Requirement 12.2): a Kythira token's `kythira:*` claims are condition keys `<issuer host/path>:kythira:*`, and a composite `kythira:node_id` (`provider:scope:native`) adds `:kythira:node_provider`, `:node_scope` and `:node_native_id`; a numeric id adds no part keys | Tested: sts `kythira_claims_and_composite_node_id_parts_are_condition_keys`; kie `kythira_ca_tokens_and_certificates_become_role_credentials` matches on `:kythira:workload` (task 20) |
+| INV-STS-K2 | Kythira rule (Requirement 12.1): with `--kythira-issuer-local`, the Kythira issuer's keys are read from the CA member's JWKS URL with no discovery document, trusted through `--oidc-ca-file` or the cluster's CA, never the system store | Tested: sts `a_local_kythira_issuer_is_read_without_discovery`; kie as above (task 20) |
+| INV-STS-K3 | Kythira rule (Requirement 12.3): `POST /v1/iam/credentials` answers only when `--iam-credentials-exchange` is on (404 otherwise), only over TLS with a verified client certificate (403), only when the role's account registers the Kythira issuer, and only when the trust policy allows `sts:AssumeRoleWithWebIdentity` with the certificate's `kythira:cert/san-uri`, `san-dns` and `serial` keys; each of the last three refusals is AccessDenied | Tested: sts `a_verified_certificate_is_exchanged_for_role_credentials`; kie as above, with another workload's certificate and no certificate (task 20) |
 | INV-STS-Q1 | STS requests are limited to 600 per second per account | Not adopted: this is AWS's service quota, not a correctness rule. Kythira's request limits are its front end's. |
 
 ## SigV4
