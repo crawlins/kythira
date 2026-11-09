@@ -39,8 +39,15 @@ target_include_directories(docker_cache_cluster_test PRIVATE "${KYTHIRA_REDIS_IN
 add_docker_chaos_scenario_test(docker_txn_bank_chaos_test
     "${CMAKE_CURRENT_SOURCE_DIR}/txn_bank_chaos_test.cpp")
 target_include_directories(docker_txn_bank_chaos_test PRIVATE "${KYTHIRA_REDIS_INCLUDE_DIR}")
+# Engine storage under SIGKILL, and a format-1 snapshot transfer under
+# faults (.kiro/specs/persistent-state-machine/ task 8,
+# .kiro/specs/file-install-snapshot/ task 8): same RESP framing need.
+add_docker_chaos_scenario_test(docker_engine_chaos_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/engine_chaos_test.cpp")
+target_include_directories(docker_engine_chaos_test PRIVATE "${KYTHIRA_REDIS_INCLUDE_DIR}")
 # Where they were built before the move.
 set_target_properties(docker_sccache_e2e_test docker_cache_cluster_test docker_txn_bank_chaos_test
+    docker_engine_chaos_test
     PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/docker_chaos")
 
 if(_RUNTIME_EXE)
@@ -53,6 +60,8 @@ if(_RUNTIME_EXE)
     set(_CACHE_CLIENT_DOCKERFILE         "${KYTHIRA_REDIS_DOCKER_DIR}/cache-cluster/client/Dockerfile")
     set(_TXN_CHAOS_DOCKERFILE            "${KYTHIRA_REDIS_DOCKER_DIR}/txn-chaos/Dockerfile")
     set(_TXN_CHAOS_COMPOSE_FILE          "${KYTHIRA_REDIS_DOCKER_DIR}/txn-chaos-compose.yml")
+    set(_ENGINE_CHAOS_DOCKERFILE         "${KYTHIRA_REDIS_DOCKER_DIR}/engine-chaos/Dockerfile")
+    set(_ENGINE_CHAOS_COMPOSE_FILE       "${KYTHIRA_REDIS_DOCKER_DIR}/engine-chaos-compose.yml")
 
     # The redis-compatible-kv acceptance tests (tasks 12 and 13). Two images:
     # the gateway daemon, staged from the host build exactly like
@@ -235,18 +244,58 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
     )
 
+    # Engine storage under faults (persistent-state-machine task 8,
+    # file-install-snapshot task 8): redis_gateway_node itself, which only a
+    # CONFIG_REDIS_GATEWAY_ENGINE=y configure (RocksDB from the vcpkg feature
+    # rocksdb) builds with KYTHIRA_CACHE_PERSISTENCE=engine.
+    if(NOT ENABLE_COVERAGE AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND folly_FOUND
+       AND KCONFIG_REDIS_GATEWAY_ENGINE)
+        add_custom_target(docker-engine-chaos-image
+            DEPENDS redis_gateway_node
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${KYTHIRA_REDIS_DOCKER_DIR}/engine-chaos/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:redis_gateway_node>"
+                    "${KYTHIRA_REDIS_DOCKER_DIR}/engine-chaos/dist/redis_gateway_node"
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
+                    --file "${_ENGINE_CHAOS_DOCKERFILE}"
+                    --tag kythira-engine-chaos:dev
+                    "${KYTHIRA_IMAGE_CONTEXT}"
+            COMMENT "Staging redis_gateway_node (engine storage) and building kythira-engine-chaos:dev image"
+            WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
+        )
+    else()
+        add_custom_target(docker-engine-chaos-image
+            COMMAND ${CMAKE_COMMAND} -E echo
+                    "'docker-engine-chaos-image' requires redis_gateway_node built with CONFIG_REDIS_GATEWAY_ENGINE=y (folly + a future backend + RocksDB, and not a coverage build)"
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endif()
+
+    add_custom_target(docker-engine-chaos-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_ENGINE_CHAOS_COMPOSE_FILE=${_ENGINE_CHAOS_COMPOSE_FILE}
+                $<TARGET_FILE:docker_engine_chaos_test>
+                --log_level=message
+        DEPENDS docker-engine-chaos-image docker_engine_chaos_test
+        COMMENT "Running the engine storage chaos container test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
+    )
+
     message(STATUS
         "Container runtime: docker-redis-gateway-image, docker-sccache-runner-image, "
         "docker-sccache-e2e-tests, docker-cache-cluster-image, docker-cache-client-image, "
         "docker-cache-cluster-tests, docker-cache-cluster-old-image, "
-        "docker-cache-rolling-upgrade-tests, docker-txn-chaos-image, docker-txn-chaos-tests "
-        "targets available")
+        "docker-cache-rolling-upgrade-tests, docker-txn-chaos-image, docker-txn-chaos-tests, "
+        "docker-engine-chaos-image, docker-engine-chaos-tests targets available")
 else()
     foreach(_t
         docker-redis-gateway-image docker-sccache-runner-image docker-sccache-e2e-tests
         docker-cache-cluster-image docker-cache-client-image docker-cache-cluster-tests
         docker-cache-cluster-old-image docker-cache-rolling-upgrade-tests
-        docker-txn-chaos-image docker-txn-chaos-tests)
+        docker-txn-chaos-image docker-txn-chaos-tests
+        docker-engine-chaos-image docker-engine-chaos-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
                     "'${_t}' requires docker or podman on PATH"

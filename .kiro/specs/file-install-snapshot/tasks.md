@@ -230,7 +230,7 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
       earlier checkpoint, larger than the memory engine's, was still being
       sent at 150 B/s when the test cut the follower.
 
-- [ ] 8. Faults and chaos
+- [x] 8. Faults and chaos
   - Failpoints (corrupt chunk, fsync failure, kill after ingest), leader
     change and follower restart mid-transfer
   - docker-chaos scenario under Docker and rootless Podman
@@ -256,7 +256,18 @@ Tasks 1-3 can proceed in parallel with that spec's tasks 2-4.
     - `doc/persistent_state_machines.md`: kinds, engines, what the node
       does differently, catch-up, configuration, refusals, metrics, fault
       points.
-    - Open, 8.3: the docker-chaos scenario needs a container binary that
-      hosts a persistent group. None exists until persistent-state-machine
-      task 7 (the gateway on `persistent_kv_state_machine` and RocksDB), so
-      the scenario is written with or after that task.
+    - 8.3 (November 9, 2026): the second case of
+      `services/redis/tests/docker/engine_chaos_test.cpp`
+      (persistent-state-machine task 8's scenario). Node 3 is SIGKILLed
+      while the other two take 600 incompressible 64 KiB values, so the
+      leader's log is compacted past it many times
+      (`KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES` is 4 MiB there). It is
+      started again; once its log says it started staging a format-1
+      snapshot, it is cut off the network for 4 s, reconnected, then
+      SIGKILLed and started again, all within the transfer, which
+      `KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC` (new: the gateway's handle on
+      `raft_configuration::_snapshot_pacer`, engine mode only) paces to
+      4 MiB/s. It must then log a finished install, hold about the load in
+      its `engine/` directory, and serve every value (and a write) with
+      node 1 killed, so that it is one of the two voters left. Docker and
+      rootless Podman, in `redis-module.yml`'s `engine-containers` job.

@@ -15,6 +15,10 @@ name: Redis Module
 #   containers     the module's container scenarios, under rootful Docker
 #                  and rootless Podman (CLAUDE.md, "Container runtime
 #                  compatibility")
+#   engine-containers
+#                  the engine storage scenario (KYTHIRA_CACHE_PERSISTENCE=
+#                  engine on RocksDB), under both runtimes too, on the Ion
+#                  Serializer Build job's tree (configs/ci_ion_defconfig)
 #
 # NOT a required check, on purpose. GitHub reports nothing at all for a
 # workflow its `paths` filter skips, so a required check from here would hang
@@ -45,6 +49,14 @@ on:
       - include/raft/txn_*.hpp
       - include/raft/asio_listeners.hpp
       - include/raft/credential_verifier.hpp
+      # Engine storage (the engine-containers job): the persistent state
+      # machine seam, the RocksDB engine, the format-1 snapshot stream, and
+      # the defconfig that job builds.
+      - include/raft/persistent_*.hpp
+      - include/raft/rocksdb_kv_engine.hpp
+      - src/rocksdb_kv_engine.cpp
+      - include/raft/snapshot_stream.hpp
+      - configs/ci_ion_defconfig
   push:
     branches: [main]
     paths:
@@ -65,6 +77,14 @@ on:
       - include/raft/txn_*.hpp
       - include/raft/asio_listeners.hpp
       - include/raft/credential_verifier.hpp
+      # Engine storage (the engine-containers job): the persistent state
+      # machine seam, the RocksDB engine, the format-1 snapshot stream, and
+      # the defconfig that job builds.
+      - include/raft/persistent_*.hpp
+      - include/raft/rocksdb_kv_engine.hpp
+      - src/rocksdb_kv_engine.cpp
+      - include/raft/snapshot_stream.hpp
+      - configs/ci_ion_defconfig
   schedule:
     # Monday 08:00 UTC, an hour after container-tests.yml's run.
     - cron: '0 8 * * 1'
@@ -241,7 +261,7 @@ jobs:
             exit 1
           fi
           leaked=$(ninja -C build -t targets all | sed 's/:.*$//' | grep -v / |
-                   grep -E '^(redis_|resp_protocol|cache_|kythira_redis$|docker-(sccache-e2e|cache-cluster|txn-chaos))' || true)
+                   grep -E '^(redis_|resp_protocol|cache_|kythira_redis$|docker-(sccache-e2e|cache-cluster|txn-chaos|engine-chaos))' || true)
           if [ -n "$leaked" ]; then
             echo "::error::module targets present with the module off:"
             echo "$leaked"
@@ -557,6 +577,127 @@ jobs:
       - name: docker-cache-rolling-upgrade-tests
         if: (success() || failure()) && steps.old-gateway.outcome == 'success'
         run: cmake --build build --target docker-cache-rolling-upgrade-tests -j"$(nproc)"
+
+      - name: Assert binaries were linked by mold
+        if: success() || failure()
+        run: scripts/check-linker.sh mold build
+
+      - name: Podman service log
+        if: always() && matrix.runtime == 'podman'
+        run: tail -n 200 "$RUNNER_TEMP/podman-service.log" || true
+
+      - name: Leftover containers
+        if: always()
+        run: ${{ matrix.runtime }} ps -a
+
+  # Engine storage under SIGKILL, and a format-1 snapshot transfer under
+  # faults (.kiro/specs/persistent-state-machine/ task 8,
+  # .kiro/specs/file-install-snapshot/ task 8). A job of its own because
+  # the daemon must be built with CONFIG_REDIS_GATEWAY_ENGINE=y, which needs
+  # RocksDB (vcpkg feature rocksdb) that the containers job's tree lacks.
+  # It reuses ci.yml's Ion Serializer Build tree instead of adding a third:
+  # same compiler (g++-14, whose libstdc++ is Ubuntu 24.04's, the image
+  # base), same vcpkg features and cache key, same defconfig, so the vcpkg
+  # cache and sccache objects that job writes are what this one reads.
+  engine-containers:
+    name: Engine storage scenarios (${{ matrix.runtime }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ${{ fromJSON(inputs.runtime && inputs.runtime != 'both' && format('["{0}"]', inputs.runtime) || '["docker", "podman"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            g++-14 cmake ninja-build libfiu-dev \
+            autoconf autoconf-archive automake libtool mold
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      - name: Set up the container runtime
+        uses: ./.github/actions/setup-container-runtime
+        with:
+          runtime: ${{ matrix.runtime }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          # The Ion Serializer Build job's key (ci.yml), on purpose.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-ion-rocksdb-g++-14-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # CC/CXX are part of every port's ABI hash: the Ion job's.
+          export CC=gcc-14
+          export CXX=g++-14
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc --x-feature=ion --x-feature=rocksdb
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # Strict, so a tree that lost RocksDB fails here rather than building
+      # a daemon that refuses KYTHIRA_CACHE_PERSISTENCE=engine at start-up.
+      - name: Configure (ci_ion_defconfig, strict)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DKYTHIRA_KCONFIG=configs/ci_ion_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DCONTAINER_RUNTIME=${{ matrix.runtime }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: docker-engine-chaos-tests
+        run: cmake --build build --target docker-engine-chaos-tests -j"$(nproc)"
 
       - name: Assert binaries were linked by mold
         if: success() || failure()

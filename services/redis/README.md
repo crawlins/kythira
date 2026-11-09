@@ -20,7 +20,7 @@ on before it became a module.
 | `include/kythira/redis/` | the library headers, included as `<kythira/redis/…>` |
 | `cmd/redis_gateway_node/` | the daemon (the composition root) |
 | `tests/` | unit and in-process integration tests, the transaction bench rows, `golden/redis/` |
-| `tests/docker/` | the container scenarios (sccache end to end, the cache cluster, transactions under faults) |
+| `tests/docker/` | the container scenarios (sccache end to end, the cache cluster, transactions under faults, engine storage under SIGKILL) |
 | `docker/` | the images and compose files those scenarios use |
 | `boundary-allow.txt` | the core `*_impl.hpp` includes the module may make, with reasons |
 
@@ -34,7 +34,8 @@ binaries are still written to `build/tests/`. The container targets
 `.github/workflows/redis-module.yml` runs on pull requests and pushes to
 `main` that touch `services/redis/**` or the core files listed in its
 `paths` (the multi-Raft host, the transaction wrapper, `asio_listeners.hpp`,
-the boundary checker, the test helpers), weekly, and on dispatch. Its jobs:
+the boundary checker, the test helpers, the persistent state machine and
+RocksDB engine), weekly, and on dispatch. Its jobs:
 
 | Job | What it proves |
 |---|---|
@@ -42,6 +43,7 @@ the boundary checker, the test helpers), weekly, and on dispatch. Its jobs:
 | `module-off` | core builds and its ctest passes with `configs/ci_no_redis_defconfig`, and no module target or test is configured |
 | `module-tests` | the module's targets build and every test under `services/redis/` passes |
 | `containers` (docker, podman) | `docker-sccache-e2e-tests`, `docker-cache-cluster-tests`, `docker-txn-chaos-tests` and `docker-cache-rolling-upgrade-tests` pass under rootful Docker and rootless Podman |
+| `engine-containers` (docker, podman) | `docker-engine-chaos-tests` passes under both runtimes: a daemon on engine storage (`configs/ci_ion_defconfig`, RocksDB) keeps a linearizable history while replicas are SIGKILLed and restarted, and a lagging follower cut off and killed mid snapshot transfer still catches up |
 
 **It is not a required check.** GitHub reports nothing for a workflow its
 `paths` filter skips, so requiring it would hang every unrelated pull

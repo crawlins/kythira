@@ -1,0 +1,121 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Three redis_gateway_node replicas on engine storage
+# (KYTHIRA_CACHE_PERSISTENCE=engine: persistent_kv_state_machine over one
+# RocksDB database per node), for
+# services/redis/tests/docker/engine_chaos_test.cpp:
+#
+#   * .kiro/specs/persistent-state-machine/ Requirement 9.3: replicas are
+#     SIGKILLed and started again under write load, and the history must
+#     pass the linearizability checker.
+#   * .kiro/specs/file-install-snapshot/ Requirement 8.3: a follower that
+#     fell behind the leader's compacted log is caught up by a format-1
+#     snapshot transfer, and is killed and cut off while that runs.
+#
+# Unlike the transaction chaos cluster, a killed node here IS started again:
+# its Raft log, vote and values are on its /data volume, so it rejoins as
+# the same voter. That is the point of the test.
+#
+# CLAUDE.md's container rules, as they apply here:
+#
+#   * **No static IPs.** Raft peers and gateway forwarding address each
+#     other by **service name**; the daemon resolves names when it connects.
+#   * **No runtime named anywhere.** The scenario test drives this file
+#     through `container_runtime()` / `compose_prefix()`
+#     (tests/docker_chaos/os_faults.hpp).
+#   * **No capabilities, no privileged or host networking.** Faults are
+#     `kill` (SIGKILL), `start`, and `network disconnect`/`connect`, which
+#     rootless Podman allows; nothing here needs NET_ADMIN.
+#
+# The network has a fixed name so the test can disconnect a node from it,
+# and reconnects the node with its service-name alias.
+
+x-node: &node
+  image: kythira-engine-chaos:dev
+  networks:
+    engine_chaos_net: {}
+
+x-node-env: &node-env
+  KYTHIRA_PEERS: "1=http://engine-1:7000,2=http://engine-2:7000,3=http://engine-3:7000"
+  KYTHIRA_RAFT_PORT: "7000"
+  KYTHIRA_ALLOW_PLAINTEXT_RAFT: "true"
+  # Two shards, so a node's database holds two groups' ranges and a kill
+  # interrupts two logs at once.
+  KYTHIRA_SHARD_CUTS: "k/2"
+  # A follower fsyncs each batch before it answers; on a slow CI disk the
+  # 150-300 ms RESP-only timeouts would elect on every write burst.
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "800"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "1600"
+  KYTHIRA_HEARTBEAT_INTERVAL_MS: "100"
+  KYTHIRA_REDIS_LISTEN: "0.0.0.0:6379"
+  KYTHIRA_REDIS_ACL_FILE: "/etc/kythira/acl.txt"
+  KYTHIRA_REDIS_INTERNAL_SECRET: "engine-chaos-internal"
+  KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING: "true"
+  KYTHIRA_REDIS_PEER_GATEWAYS: "1=engine-1:6379,2=engine-2:6379,3=engine-3:6379"
+  # Reads go through the log, so the checker may hold every read to
+  # linearizability (the `leader` default lets a deposed leader answer).
+  KYTHIRA_REDIS_READ_CONSISTENCY: "linearizable"
+  KYTHIRA_REDIS_IMMUTABLE_VALUES: "false"
+  KYTHIRA_REDIS_COMMAND_TIMEOUT_MS: "5000"
+  KYTHIRA_CACHE_PERSISTENCE: "engine"
+  KYTHIRA_CACHE_DATA_DIR: "/data"
+  KYTHIRA_CACHE_MAX_DISK_BYTES: "4294967296"
+  KYTHIRA_CACHE_MIN_FREE_BYTES: "268435456"
+  # Small, so the bulk load in the transfer case compacts the leader's log
+  # past the stopped follower many times over, and catching it up takes a
+  # snapshot rather than log entries.
+  KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES: "${KYTHIRA_ENGINE_CHAOS_SNAPSHOT_THRESHOLD_BYTES:-4194304}"
+  # Paced, so a transfer of the bulk load runs for seconds and the test can
+  # kill and cut off the follower in the middle of one.
+  KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC: "${KYTHIRA_ENGINE_CHAOS_SNAPSHOT_BYTES_PER_SEC:-4194304}"
+
+services:
+  engine-1:
+    <<: *node
+    container_name: engine-chaos-1
+    hostname: engine-1
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "1"
+    volumes:
+      - ./engine-chaos/acl.txt:/etc/kythira/acl.txt:ro
+      - engine-1-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16411:6379"
+
+  engine-2:
+    <<: *node
+    container_name: engine-chaos-2
+    hostname: engine-2
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "2"
+    volumes:
+      - ./engine-chaos/acl.txt:/etc/kythira/acl.txt:ro
+      - engine-2-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16412:6379"
+
+  engine-3:
+    <<: *node
+    container_name: engine-chaos-3
+    hostname: engine-3
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "3"
+    volumes:
+      - ./engine-chaos/acl.txt:/etc/kythira/acl.txt:ro
+      - engine-3-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16413:6379"
+
+volumes:
+  engine-1-data:
+  engine-2-data:
+  engine-3-data:
+
+networks:
+  engine_chaos_net:
+    name: kythira_engine_chaos_net
+    driver: bridge
