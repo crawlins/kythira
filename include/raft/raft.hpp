@@ -961,8 +961,10 @@ private:
     // Diagnostic logger for structured logging
     logger_type _logger;
 
-    // Metrics recorder for performance monitoring
-    metrics_type _metrics;
+    // Metrics recorder for performance monitoring. Emitted from handlers,
+    // timers and continuations on many threads, some without _mutex, so it
+    // is held serialized (metrics.hpp, serialized_metrics).
+    kythira::node_metrics_t<metrics_type> _metrics;
 
     // Membership manager for cluster configuration changes
     membership_manager_type _membership;
