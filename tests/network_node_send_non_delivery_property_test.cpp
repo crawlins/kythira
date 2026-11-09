@@ -5,6 +5,7 @@
 #include <boost/test/unit_test.hpp>
 #include <network_simulator/network_simulator.hpp>
 #include <chrono>
+#include <cstdint>
 #include <string>
 
 using namespace network_simulator;
@@ -14,8 +15,18 @@ constexpr const char* test_node_a = "node_a";
 constexpr const char* test_node_b = "node_b";
 constexpr const char* test_payload = "test_message";
 constexpr std::chrono::milliseconds test_latency{10};
-constexpr double low_reliability = 0.1;      // 10% reliability - high chance of drops
-constexpr std::size_t test_iterations = 50;  // More iterations to see drops
+constexpr double low_reliability = 0.1;  // 10% reliability - high chance of drops
+// At 10% reliability the number of successful sends is Binomial(n, 0.1).
+// With n = 50 it was zero about one run in 200 (0.9^50 = 0.5%), which failed
+// the successful_sends > 0 check below and was rescued by ctest's retry five
+// times in a week of CI. With n = 300 it is zero with probability 0.9^300,
+// about 2e-14. Only successful sends pay the 10 ms latency, so this adds
+// roughly 0.25 s.
+constexpr std::size_t test_iterations = 300;
+// A fixed seed makes a failure reproducible. The iteration count, not the
+// seed, is what keeps the check safe: bernoulli_distribution's output for a
+// given seed differs between standard libraries.
+constexpr std::uint32_t test_seed = 20261109;
 }
 
 BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, *boost::unit_test::timeout(30)) {
@@ -27,6 +38,7 @@ BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, *boost::unit_
 
     NetworkSimulator<DefaultNetworkTypes> simulator;
     simulator.start();
+    simulator.seed_rng(test_seed);
 
     // Set up topology with low reliability to simulate message drops
     simulator.add_node(test_node_a);
