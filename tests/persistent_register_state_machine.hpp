@@ -6,8 +6,8 @@
 // The smallest persistent state machine that exercises `node<Types>`'s
 // persistent path (.kiro/specs/persistent-state-machine/ task 3): a map of
 // registers kept in a `memory_kv_engine`. A command is `key=value` and sets
-// one register. The engine is a template parameter, `memory_kv_engine` by
-// default; the RocksDB build of the node suite uses `rocksdb_kv_engine`.
+// one register, or `+key`, which adds one to a counter. The engine is a template parameter,
+// `memory_kv_engine` by default; the RocksDB build of the node suite uses `rocksdb_kv_engine`.
 // Every apply writes the value and the applied index in one
 // batch, and `durable_applied_index()` follows the engine's durable
 // sequence, so a test can hold durability back, crash the engine, and watch
@@ -62,7 +62,13 @@ public:
         const std::string text(reinterpret_cast<const char*>(command.data()), command.size());
         const auto eq = text.find('=');
         write_batch batch;
-        if (eq != std::string::npos) {
+        if (!text.empty() && text.front() == '+') {
+            // `+key` adds one to a counter, so a test can tell an entry
+            // applied twice from one applied once.
+            const auto k = _range.start + text.substr(1);
+            const auto now = engine().get(column_family::data, k);
+            batch.put(column_family::data, k, std::to_string(now ? std::stoull(*now) + 1 : 1));
+        } else if (eq != std::string::npos) {
             batch.put(column_family::data, _range.start + text.substr(0, eq), text.substr(eq + 1));
         }
         batch.put(column_family::meta, meta_key(), std::to_string(index));

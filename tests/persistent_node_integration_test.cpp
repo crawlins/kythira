@@ -1352,6 +1352,108 @@ BOOST_AUTO_TEST_CASE(a_crash_after_ingest_recovers_from_the_engine,
     BOOST_TEST(staging_entries(h) == 0U);
     restarted->stop();
 }
+
+// persistent-state-machine Requirement 9.2: kill between the engine's batch
+// commits and its sync, and between the snapshot and the log truncation.
+// Every entry is a `+key` counter increment, so a lost entry reads 0 and a
+// doubled one reads 2.
+
+namespace {
+
+auto bump(node_type& node, int i) -> void {
+    std::move(node.submit_command(bytes("+" + key(i)), commit_timeout)).get();
+}
+
+auto counts_are_one(node_type& node, int n) -> bool {
+    bool ok = true;
+    for (int i = 1; i <= n; ++i) {
+        const auto v = value_of(node, i);
+        BOOST_TEST_CONTEXT("counter " << i) {
+            BOOST_TEST(v == "1");
+        }
+        ok = ok && v == "1";
+    }
+    return ok;
+}
+
+}  // namespace
+
+#if !defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)
+BOOST_AUTO_TEST_CASE(a_kill_before_the_engine_sync_loses_and_doubles_nothing,
+                     *boost::unit_test::timeout(60)) {
+    harness h;
+    auto cfg = make_compacting_config();
+    cfg._persistent_sync_lag_entries = 2;
+    constexpr int k_entries = 12;
+    {
+        auto node = h.make_node(cfg);
+        node->start();
+        elect(*node, cfg);
+        BOOST_REQUIRE(node->is_leader());
+        bump(*node, 1);
+        // From here no batch is durable unless the node syncs, and every
+        // sync the node attempts dies first.
+        h.engine->hold_durability();
+        armed_fault fault("raft/persistent/before_sync");
+        for (int i = 2; i <= k_entries; ++i) {
+            bump(*node, i);
+        }
+        BOOST_TEST(node->with_state_machine([](const register_sm& sm) { return sm.syncs(); }) ==
+                   0U);
+        node->stop();
+    }
+    // The power goes with the process: every batch after the first is lost.
+    h.engine->simulate_crash();
+    h.engine->release_durability();
+    BOOST_TEST(!h.engine->get(kythira::column_family::data, group_range.start + key(k_entries))
+                    .has_value());
+
+    auto restarted = h.make_node(cfg);
+    restarted->start();
+    elect(*restarted, cfg);
+    BOOST_REQUIRE(restarted->is_leader());
+    // The log was durable, so the new leader's first commit replays every
+    // lost batch, once.
+    bump(*restarted, k_entries + 1);
+    BOOST_TEST(counts_are_one(*restarted, k_entries + 1));
+    restarted->stop();
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(a_kill_between_snapshot_and_compaction_loses_and_doubles_nothing,
+                     *boost::unit_test::timeout(60)) {
+    harness h;
+    auto cfg = make_compacting_config();
+    constexpr int k_entries = 8;
+    std::uint64_t snapshot_index = 0;
+    {
+        auto node = h.make_node(cfg);
+        node->start();
+        elect(*node, cfg);
+        BOOST_REQUIRE(node->is_leader());
+        armed_fault fault("raft/persistent/before_compact");
+        for (int i = 1; i <= k_entries; ++i) {
+            bump(*node, i);
+        }
+        const auto snap = h.persistence.load_snapshot();
+        BOOST_REQUIRE(snap.has_value());
+        snapshot_index = snap->last_included_index();
+        BOOST_REQUIRE(snapshot_index > 1U);
+        // The snapshot point was saved, but the log below it was kept.
+        BOOST_TEST(h.persistence.get_log_entry(1).has_value());
+        node->stop();
+    }
+    auto restarted = h.make_node(cfg);
+    restarted->start();
+    // Entries at or below the snapshot point are in the engine already and
+    // must not apply again, though the log still holds them.
+    BOOST_TEST(restarted->last_applied_index() >= snapshot_index);
+    elect(*restarted, cfg);
+    BOOST_REQUIRE(restarted->is_leader());
+    bump(*restarted, k_entries + 1);
+    BOOST_TEST(counts_are_one(*restarted, k_entries + 1));
+    restarted->stop();
+}
 #endif
 
 #if defined(KYTHIRA_PERSISTENT_TEST_ROCKSDB)

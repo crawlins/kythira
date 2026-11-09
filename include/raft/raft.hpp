@@ -10629,6 +10629,10 @@ template<raft_types Types> auto node<Types>::create_persistent_snapshot_locked()
             const auto durable = _state_machine.durable_applied_index();
             if (bound != 0 && _last_applied > durable &&
                 static_cast<std::size_t>(_last_applied - durable) > bound) {
+                // persistent-state-machine Requirement 9.2: a crash here has
+                // applied batches the engine has not made durable.
+                fiu_do_on("raft/persistent/before_sync",
+                          throw std::runtime_error("chaos: crash before engine sync"););
                 _state_machine.sync_durable();
             }
         }
@@ -10659,6 +10663,10 @@ template<raft_types Types> auto node<Types>::create_persistent_snapshot_locked()
         // the log.
         snapshot_type snap{durable, *term, configuration_at(durable), persistent_snapshot_marker()};
         _persistence.save_snapshot(snap);
+        // Requirement 9.2: a crash here has saved the snapshot point but
+        // kept the log entries below it.
+        fiu_do_on("raft/persistent/before_compact",
+                  throw std::runtime_error("chaos: crash between snapshot and compaction"););
         _bytes_applied_since_snapshot = 0;
 
         _logger.info("Persistent snapshot metadata saved",
