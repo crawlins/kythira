@@ -54,7 +54,9 @@ exactly the cost group commit and the barrier spec worked to avoid.
 
 A persistent group's "snapshot" for compaction is just metadata saved through
 the existing persistence engine: `{last_included_index, term, configuration,
-external_state = true}` with an empty `state_machine_state`. The state itself
+external_state = true}`. As built, the flag is a fixed marker
+(`kythira-persistent-snapshot/1`) carried in `state_machine_state`, so no
+persistence engine's snapshot encoding changes. The state itself
 is already on disk. For sending to a follower, the state machine produces a
 checkpoint directory and a `snapshot_manifest`
 (`.kiro/specs/file-install-snapshot/` carries it on the wire). The checkpoint

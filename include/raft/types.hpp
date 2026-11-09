@@ -208,6 +208,19 @@ concept state_machine = requires(SM& sm, const SM& const_sm, const std::vector<s
     { sm.restore_from_snapshot(snapshot_data, index) } -> std::same_as<void>;
 };
 
+/// @brief The part of `persistent_state_machine` (persistent_state_machine.hpp)
+/// that `raft_types` can check from here: commands apply, and the state
+/// reports its applied and durable applied indices instead of moving as a
+/// buffer. `node<Types>` asserts the full concept.
+template<typename SM, typename LogIndex>
+concept persistent_state_machine_shape =
+    requires(SM& sm, const SM& const_sm, const std::vector<std::byte>& command, LogIndex index) {
+        requires log_index<LogIndex>;
+        { sm.apply(command, index) } -> std::same_as<std::vector<std::byte>>;
+        { const_sm.applied_index() } -> std::same_as<LogIndex>;
+        { const_sm.durable_applied_index() } -> std::same_as<LogIndex>;
+    };
+
 /// @brief Default snapshot implementation.
 /// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
@@ -876,6 +889,18 @@ struct raft_configuration {
     /// replica, leader or follower, counts and snapshots independently.
     std::size_t _snapshot_threshold_bytes{10'000'000};
     std::size_t _snapshot_chunk_size{1'000'000};  ///< Chunk size for InstallSnapshot transfers.
+    /// Persistent state machines only (`.kiro/specs/persistent-state-machine/`):
+    /// whether the node compacts its log, through the state machine's durable
+    /// applied index. Off by default until the node can send a persistent
+    /// snapshot to a follower (`.kiro/specs/file-install-snapshot/`): a
+    /// follower that falls behind a compacted log could not catch up
+    /// (Requirement 10.2).
+    bool _persistent_log_compaction{false};
+    /// Persistent state machines only: when compaction finds the durable
+    /// applied index more than this many entries behind the applied index,
+    /// it asks the state machine to sync first, if it can
+    /// (`sync_durable()`). 0 never syncs (Requirement 3.3).
+    std::size_t _persistent_sync_lag_entries{0};
 
     // ── Retry policies ────────────────────────────────────────────────────────
     retry_policy_config _heartbeat_retry_policy{.initial_delay = std::chrono::milliseconds{50},
@@ -1006,6 +1031,12 @@ struct raft_configuration {
         return _snapshot_threshold_bytes;
     }
     [[nodiscard]] auto snapshot_chunk_size() const -> std::size_t { return _snapshot_chunk_size; }
+    [[nodiscard]] auto persistent_log_compaction() const -> bool {
+        return _persistent_log_compaction;
+    }
+    [[nodiscard]] auto persistent_sync_lag_entries() const -> std::size_t {
+        return _persistent_sync_lag_entries;
+    }
     [[nodiscard]] auto heartbeat_retry_policy() const -> const retry_policy_config& {
         return _heartbeat_retry_policy;
     }
@@ -1344,7 +1375,14 @@ concept raft_types = requires {
     requires serialized_data<typename T::serialized_data_type>;
     requires rpc_serializer<typename T::serializer_type, typename T::serialized_data_type>;
     requires raft_configuration_type<typename T::configuration_type>;
-    requires state_machine<typename T::state_machine_type, typename T::log_index_type>;
+    // Either today's byte-buffer state machine, or one shaped like a
+    // persistent state machine (persistent-state-machine Requirement 1.4).
+    // The full `persistent_state_machine` concept lives in
+    // persistent_state_machine.hpp, which includes this header, so this only
+    // checks the shape; `node<Types>` asserts the full concept.
+    requires state_machine<typename T::state_machine_type, typename T::log_index_type> ||
+                 persistent_state_machine_shape<typename T::state_machine_type,
+                                                typename T::log_index_type>;
 };
 
 /// @brief Ready-to-use type bundle suitable for simulator-based testing.

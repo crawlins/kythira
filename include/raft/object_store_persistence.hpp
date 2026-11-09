@@ -838,6 +838,12 @@ requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> &&
          (Fencing == fencing_mode::none || conditional_key_object_store<Store>)
 class object_store_persistence_engine {
 public:
+    /// A fresh node restored from these objects (or by `raft_object_backup`)
+    /// gets its state from the saved snapshot. A persistent state machine's
+    /// snapshot is metadata only, so `node<Types>` refuses that pairing
+    /// (persistent-state-machine Requirement 10.1).
+    static constexpr bool restores_state_from_snapshot_store = true;
+
     using store_t = Store;
     using log_entry_t = log_entry<TermId, LogIndex>;
     using snapshot_t = snapshot<NodeId, TermId, LogIndex>;

@@ -452,6 +452,12 @@ target_link_libraries(persistent_state_machine_test PRIVATE OpenSSL::Crypto)
 # that span files, zero-length files, corruption and reopen after a crash.
 add_raft_completion_test(snapshot_stream_test snapshot_stream_test.cpp)
 target_link_libraries(snapshot_stream_test PRIVATE OpenSSL::Crypto)
+# persistent-state-machine task 3: node<Types> over a persistent state
+# machine (tests/persistent_register_state_machine.hpp): restart at the
+# engine's applied index, metadata-only snapshots, compaction bound by the
+# durable applied index, crash and replay, reads, InstallSnapshot refused.
+add_raft_completion_test(persistent_node_integration_test persistent_node_integration_test.cpp)
+target_link_libraries(persistent_node_integration_test PRIVATE OpenSSL::Crypto)
 set_tests_properties(state_machine_apply_performance_property_test PROPERTIES
     # Measures real elapsed-time thresholds for state machine apply
     # throughput — CPU contention from co-scheduled tests under `ctest -j`
