@@ -64,6 +64,9 @@ struct cache_options {
     /// Raft log bytes between snapshots. The log carries chunk bytes, so
     /// Raft's 10 MB default would snapshot every few uploads.
     std::size_t _snapshot_threshold_bytes{std::size_t{256} * 1024 * 1024};
+    /// Engine mode only: snapshot bytes per second this node sends to
+    /// followers it catches up, across every shard. 0 is unlimited.
+    std::uint64_t _snapshot_bytes_per_sec{0};
     std::string _http_listen;
     std::string _https_listen;
     bool _allow_plaintext_http{false};

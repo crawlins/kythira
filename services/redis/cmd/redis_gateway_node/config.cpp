@@ -171,6 +171,8 @@ void read_engine_options(node_options& o) {
     c._snapshot_threshold_bytes =
         to_u64("KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES",
                get_opt("KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES", "268435456"));
+    c._snapshot_bytes_per_sec = to_u64("KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC",
+                                       get_opt("KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC", "0"));
     // As in file mode, the disk budget bounds the values, so the memory
     // mode's per-shard RAM bound applies only when set explicitly.
     if (const char* v = std::getenv("KYTHIRA_REDIS_MAX_SHARD_BYTES"); v == nullptr || *v == '\0') {
@@ -185,6 +187,14 @@ void read_engine_options(node_options& o) {
 void read_cache_options(node_options& o) {
     auto& c = o._cache;
     const auto mode = get_opt("KYTHIRA_CACHE_PERSISTENCE", "file");
+    // Snapshot pacing is the engine's catch-up path (file-install-snapshot
+    // task 6); file mode catches a follower up by fetching chunks, which
+    // KYTHIRA_CACHE_FETCH_BYTES_PER_SEC already limits.
+    if (mode != "engine" && is_set("KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC")) {
+        throw std::invalid_argument(
+            "redis_gateway_node: KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC needs "
+            "KYTHIRA_CACHE_PERSISTENCE=engine");
+    }
     if (mode == "memory") {
         c._persistence = cache_persistence::memory;
         // Requirement 5.4's old deployment, exactly. Anything that needs a
@@ -618,6 +628,8 @@ auto usage() -> std::string {
            "[50000000]\n"
            "  KYTHIRA_CACHE_SNAPSHOT_THRESHOLD_BYTES  Raft log bytes per snapshot    "
            "[268435456]\n"
+           "  KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC  engine only: snapshot send rate "
+           "to lagging followers, node-wide, 0 = unlimited [0]\n"
            "  KYTHIRA_CACHE_HTTPS_LISTEN       HTTP/WebDAV front end over TLS\n"
            "  KYTHIRA_CACHE_HTTPS_CERT / _KEY                        [REDIS_TLS_CERT / _KEY]\n"
            "  KYTHIRA_CACHE_HTTP_LISTEN        plaintext front end; needs the opt-in below\n"

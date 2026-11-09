@@ -508,6 +508,12 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
         cfg.config._snapshot_staging_directory = opt._cache._data_dir / "snapshots";
         cfg.config._snapshot_disk_margin_bytes = opt._cache._min_free_bytes;
         cfg.config._snapshot_threshold_bytes = opt._cache._snapshot_threshold_bytes;
+        // One bucket for the whole node: every shard's configuration is a
+        // copy of this one and shares the pointer.
+        if (opt._cache._snapshot_bytes_per_sec != 0) {
+            cfg.config._snapshot_pacer =
+                std::make_shared<kythira::snapshot_pacer>(opt._cache._snapshot_bytes_per_sec);
+        }
         engine_guard = std::make_unique<kythira::cache_disk_guard>(
             node_text(opt._node_id), kythira::cache_disk_guard_options{
                                          ._max_disk_bytes = opt._cache._max_disk_bytes,

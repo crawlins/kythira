@@ -74,6 +74,7 @@ struct gateway_env {
         "KYTHIRA_CACHE_ALLOW_PLAINTEXT_HTTP",
         "KYTHIRA_CACHE_PEER_HTTP",
         "KYTHIRA_CACHE_MIN_FREE_BYTES",
+        "KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC",
         "KYTHIRA_REDIS_TRANSACTIONS",
         "KYTHIRA_REDIS_TXN_ISOLATION",
         "KYTHIRA_REDIS_TXN_LOCK_TTL_MS",
@@ -258,6 +259,32 @@ BOOST_AUTO_TEST_CASE(memory_persistence_refuses_disk_variables) {
     ::unsetenv("KYTHIRA_CACHE_HTTPS_LISTEN");
     ::setenv("KYTHIRA_CACHE_PERSISTENCE", "disk", 1);
     BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
+}
+
+// Snapshot pacing is the engine's catch-up path; file mode's is chunk
+// fetching, with its own rate. Set anywhere else, the variable would be
+// silently ignored, so it is refused.
+BOOST_AUTO_TEST_CASE(snapshot_pacing_needs_engine_persistence) {
+    gateway_env env;
+    ::setenv("KYTHIRA_RAFT_BIND", "127.0.0.1", 1);
+    ::setenv("KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC", "1048576", 1);
+    BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);  // memory
+    ::setenv("KYTHIRA_CACHE_PERSISTENCE", "file", 1);
+    ::setenv("KYTHIRA_CACHE_DATA_DIR", "/var/lib/kythira", 1);
+    ::setenv("KYTHIRA_CACHE_MAX_DISK_BYTES", "107374182400", 1);
+    BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
+    ::unsetenv("KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC");
+    BOOST_CHECK_NO_THROW((void)from_env());
+
+    ::setenv("KYTHIRA_CACHE_PERSISTENCE", "engine", 1);
+#if defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
+    BOOST_TEST(from_env()._cache._snapshot_bytes_per_sec == 0U);  // unlimited
+    ::setenv("KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC", "1048576", 1);
+    BOOST_TEST(from_env()._cache._snapshot_bytes_per_sec == 1048576U);
+#else
+    // A build without the engine refuses the mode itself.
+    BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(chunk_size_and_resp_values_are_bounded_by_one_chunk) {
