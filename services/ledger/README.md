@@ -21,15 +21,20 @@ builds and tests it; every other configuration leaves it off.
 | `include/kythira/ledger/ledger_hash.hpp` | `hash256` and SHA-256 | 2 |
 | `include/kythira/ledger/ion_hash.hpp` | the Amazon Ion hash over ion-c's reader, with any hash function (SHA-256 for the ledger) | 2 |
 | `include/kythira/ledger/merkle.hpp` | QLDB's `dot`, proof folding, in-memory Merkle roots and proofs, and the append-only accumulator over an abstract node store | 2 |
+| `include/kythira/ledger/ion_value.hpp` | a small Ion value tree (containers parsed, scalars kept as their own binary) for taking entries apart, patching documents and building records | 3 |
+| `include/kythira/ledger/journal_types.hpp` | the transaction entry, statements, patch paths, revisions and blocks in Ion, and their hashes | 3 |
+| `include/kythira/ledger/ledger_state_machine.hpp` | `basic_ledger_state_machine<Engine>`: tables, document writes, the journal, the leader's block hash and the replica check, on the persistent state machine contract | 3 |
 | `cmd/ledger_node/` | placeholder daemon (`--self-test`); the server is task 7 | 1 |
 | `tests/ion_hash_test.cpp` | the amazon-ion/ion-hash-test suite (`tests/vectors/`) and the properties the ledger relies on | 2 |
 | `tests/ledger_merkle_test.cpp` | `dot` and folding against the AWS QLDB tutorial's functions, the tree shape, every proof at every tip, reopening, tampering | 2 |
+| `tests/ledger_state_machine_test.cpp` | the state machine on `memory_kv_engine`: every statement, rejections, stale and diverging entries, replicas, restart, checkpoint, the split veto | 3 |
 | `tests/tools/qldb_dot_vectors.py` | prints the vectors `ledger_merkle_test` checks, from the tutorial's published Python | 2 |
 | `tests/vectors/` | `ion_hash_tests.ion`, copied unchanged from amazon-ion/ion-hash-test (Apache-2.0; see its README) | 2 |
 
-The ledger state machine (task 3) and everything after it need the
-persistent state machine (`.kiro/specs/persistent-state-machine/` tasks
-1-3), and catch-up needs `.kiro/specs/file-install-snapshot/`.
+Tasks 3 to 6 build on the persistent state machine contract and
+`memory_kv_engine` (`.kiro/specs/persistent-state-machine/` task 1). Running
+a ledger in a node (task 7) needs that spec's task 3, and catch-up (task 9)
+needs `.kiro/specs/file-install-snapshot/`.
 
 ## Core targets and variables used
 
@@ -39,6 +44,8 @@ package to export.
 | From core | Used for |
 |---|---|
 | `kythira_core_headers` | `include/` and `generated/`, through `kythira_ledger` |
+| `raft/persistent_state_machine.hpp` | the `persistent_state_machine` and `kv_engine` concepts, `write_batch`, `key_range`, `persistent_storage_error` |
+| `raft/memory_kv_engine.hpp` | the engine the unit tests run on |
 | `raft/ion_preflight.hpp` | the ion-c reader owner and the binary-Ion length preflight the Ion hash runs before reading untrusted input |
 | `raft_ion_serializer` | ion-c's link and its `DECNUMDIGITS` definition, through `kythira_ledger` |
 | `OpenSSL::Crypto` | SHA-256, through `kythira_ledger` |

@@ -31,6 +31,12 @@ set_tests_properties(ion_hash_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
 kythira_ledger_test(ledger_merkle_test ledger_merkle_test.cpp)
 set_tests_properties(ledger_merkle_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
 
+# Task 3: the ledger state machine on memory_kv_engine: tables, document
+# writes, revisions, the block chain, the leader's hash check, restart and
+# checkpoint.
+kythira_ledger_test(ledger_state_machine_test ledger_state_machine_test.cpp)
+set_tests_properties(ledger_state_machine_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+
 # Task 1: ledger_node links and runs.
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)
 set_tests_properties(ledger_node_self_test PROPERTIES LABELS "unit;ledger" TIMEOUT 60)
