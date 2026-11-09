@@ -102,6 +102,20 @@ struct disk_guard {
     }
 };
 
+/// A finished session's statements and read set, not yet prepared.
+struct pending_transaction {
+    std::string tx_id;
+    std::vector<ion_value> statements;
+    std::optional<read_set> reads;
+
+    /// The entry against `sm`'s applied state now.
+    template<typename StateMachine>
+    [[nodiscard]] auto prepare(const StateMachine& sm, std::int64_t timestamp) const
+        -> prepared_transaction {
+        return sm.prepare(tx_id, timestamp, statements, reads);
+    }
+};
+
 /// True for apply/prepare rejection codes a client should retry by running
 /// the transaction again (Requirement 7.6).
 inline auto retryable_rejection(std::string_view code) -> bool {
@@ -236,9 +250,10 @@ public:
         return id;
     }
 
-    /// End the session and build the entry to propose, or the rejection.
-    /// `timestamp` is the leader's wall clock in ms (prepare clamps it).
-    auto commit(const std::string& token, std::int64_t timestamp) -> prepared_transaction {
+    /// End the session and hand back what it buffered, for a caller that
+    /// prepares (and re-prepares after stale_block) under its own commit
+    /// lock. Throws empty_transaction if nothing was buffered.
+    auto finish(const std::string& token) -> pending_transaction {
         session s;
         {
             const std::lock_guard lock(mutex_);
@@ -249,8 +264,19 @@ public:
         if (s.statements.empty()) {
             throw ledger_session_error("empty_transaction", "nothing to commit", false);
         }
-        return sm_->prepare(new_id(), timestamp, s.statements,
-                            s.reads.empty() ? std::nullopt : std::optional(s.reads));
+        pending_transaction out;
+        out.tx_id = new_id();
+        out.statements = std::move(s.statements);
+        if (!s.reads.empty()) {
+            out.reads = std::move(s.reads);
+        }
+        return out;
+    }
+
+    /// End the session and build the entry to propose, or the rejection.
+    /// `timestamp` is the leader's wall clock in ms (prepare clamps it).
+    auto commit(const std::string& token, std::int64_t timestamp) -> prepared_transaction {
+        return finish(token).prepare(*sm_, timestamp);
     }
 
     /// Discard a session.
@@ -262,6 +288,13 @@ public:
     /// A one-call transaction (Requirement 7.7): blind writes, no reads.
     auto execute(std::uint64_t term, const std::vector<ion_value>& statements_to_run,
                  std::int64_t timestamp) -> prepared_transaction {
+        return execute_pending(term, statements_to_run).prepare(*sm_, timestamp);
+    }
+
+    /// execute() without the prepare, for a caller with its own commit
+    /// lock; the statements are checked against the session limits.
+    auto execute_pending(std::uint64_t term, const std::vector<ion_value>& statements_to_run)
+        -> pending_transaction {
         const auto token = begin(term);
         try {
             for (const auto& st : statements_to_run) {
@@ -271,7 +304,7 @@ public:
             abort(token);
             throw;
         }
-        return commit(token, timestamp);
+        return finish(token);
     }
 
     /// This node lost leadership, or a new term began: every open session

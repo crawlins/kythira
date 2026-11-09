@@ -57,6 +57,10 @@ target_compile_definitions(ledger_verifier_test PRIVATE
 add_dependencies(ledger_verifier_test ledger_ctl)
 set_tests_properties(ledger_verifier_test PROPERTIES LABELS "unit;ledger" TIMEOUT 180)
 
+# Task 7: the ledger catalog and the native API over an in-process backend.
+kythira_ledger_test(ledger_api_test ledger_api_test.cpp)
+set_tests_properties(ledger_api_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120)
+
 # Task 1: ledger_node links and runs.
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)
 set_tests_properties(ledger_node_self_test PROPERTIES LABELS "unit;ledger" TIMEOUT 60)
