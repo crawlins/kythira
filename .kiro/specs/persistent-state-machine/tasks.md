@@ -301,6 +301,23 @@ RocksDB is linked. Each task is one PR unless noted.
   - docker-chaos scenario: `SIGKILL` replicas under write load, Redis
     linearizability checker; Docker and rootless Podman
   - _Requirements: 9.2, 9.3_
+  - Progress (November 9, 2026):
+    - Fault points `raft/persistent/before_sync` (compaction, just before
+      the node asks the engine to sync) and `raft/persistent/before_compact`
+      (after the snapshot point is saved, before the log is truncated), in
+      `node<Types>::create_persistent_snapshot_locked`.
+    - Kill tests in `persistent_node_fault_test`: every entry is a counter
+      increment (`+key` in the register test machine), so a lost entry
+      reads 0 and a doubled one 2. Killing before the sync with durability
+      held loses every batch after the first; the restarted node replays
+      them from the log, once each. Killing between the snapshot and the
+      truncation leaves log entries the engine already holds; none applies
+      again.
+    - Open: the docker-chaos scenario (SIGKILL under write load with the
+      Redis linearizability checker). It needs a container job that builds
+      `redis_gateway_node` with `CONFIG_REDIS_GATEWAY_ENGINE=y`, so RocksDB
+      in that job's vcpkg tree; file-install-snapshot task 8.3 rides on the
+      same scenario.
 
 - [ ] 9. Measurement and docs
   - Bench rows: in-memory vs RocksDB (proposals/s, p99), restart time for a

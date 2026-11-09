@@ -116,8 +116,11 @@ current list of outstanding work, see [TODO.md](TODO.md).
   metadata save; each is refused or recovered, and the new
   `persistent_node_fault_test` checks all three. A follower restarted mid-
   transfer starts again from zero, and a leader change mid-transfer still
-  catches the follower up. `doc/persistent_state_machines.md` describes
-  persistent groups for operators.
+  catches the follower up. Two more fault points kill compaction before
+  the engine sync and between the snapshot and the log truncation; the
+  restarted node neither loses nor repeats an entry.
+  `doc/persistent_state_machines.md` describes persistent groups for
+  operators.
 
 - **Node metrics are safe to emit from any thread.** `node<Types>` built
   metrics from several threads at once, some without its mutex, which

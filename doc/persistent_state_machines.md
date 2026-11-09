@@ -145,6 +145,8 @@ fault points:
 | `raft/snapshot/corrupt_chunk` | Flips a byte of an incoming chunk. The transfer is refused with `checksum`. |
 | `raft/snapshot/fsync_file` | Fails a staged file's fsync. The transfer is refused with `io_error`. |
 | `raft/snapshot/crash_after_ingest` | Throws between ingest and the metadata save. On restart the node takes the applied index from the engine. |
+| `raft/persistent/before_sync` | Fails compaction just before the node syncs the engine, leaving applied batches that a power cut loses. The log replays them on restart. |
+| `raft/persistent/before_compact` | Fails compaction after the snapshot point is saved and before the log is truncated. Entries the engine already holds do not apply again. |
 
 ## Tests
 
