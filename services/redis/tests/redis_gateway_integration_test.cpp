@@ -2193,4 +2193,80 @@ BOOST_AUTO_TEST_CASE(auth_attribute_selects_the_verifier_and_both_falls_back_to_
     }
 }
 
+// IAM task 22 (Requirements 13.5, 13.7, 3.8): a verifier's deadline is
+// extended by re-AUTH on the open connection; refused tokens spend the
+// source's failure budget like wrong passwords; and the forward links an
+// IAM user's commands travel over still authenticate as the internal user
+// with its secret, never through the verifier.
+BOOST_AUTO_TEST_CASE(reauth_extends_a_verified_connection_and_denials_spend_the_budget,
+                     *boost::unit_test::timeout(120)) {
+    test_verifier verifier;
+    redis_gateway_config cfg;
+    cfg._credential_verifier = kythira::erase_credential_verifier(verifier);
+    auto modes = std::make_shared<redis_acl>();
+    modes->reload(acl_text());
+    cfg._credential_verifier_users = [modes](std::string_view user) {
+        const auto mode = modes->auth_mode_of(user);
+        return mode == kythira::redis_auth_mode::iam || mode == kythira::redis_auth_mode::both;
+    };
+    cfg._auth_failure_limit = 3;
+    cfg._auth_failure_window = std::chrono::seconds{3};
+    cluster c(cfg);
+    BOOST_REQUIRE(c.await_all_leaders(std::chrono::seconds{20}));
+
+    // Re-AUTH with a fresh credential moves the deadline: "short" lapses
+    // in 1.5 s, but the connection that re-AUTHs with "good" outlives it.
+    auto follower = c.a_follower_of(2);
+    BOOST_REQUIRE_NE(follower, 0u);
+    auto& gw = c.gateway(follower);
+    {
+        resp_client iam(c.port(follower));
+        const auto expired_before = gw.stats()._credential_expiries.load();
+        BOOST_REQUIRE_EQUAL(iam.auth("iamfarm", "short"), "+OK\r\n");
+        BOOST_REQUIRE_EQUAL(iam.auth("iamfarm", "good"), "+OK\r\n");
+        std::this_thread::sleep_for(std::chrono::milliseconds{2500});
+        // A shard-2 key from a shard-2 follower: forwarded to the leader's
+        // gateway over the internal link.
+        const auto forwards_before = gw.stats()._forwards.load();
+        BOOST_CHECK_EQUAL(iam.call({"SET", "sccache/zzz-iam", "v"}), "+OK\r\n");
+        BOOST_CHECK_EQUAL(iam.call({"GET", "sccache/zzz-iam"}), bulk("v"));
+        BOOST_CHECK_GT(gw.stats()._forwards.load(), forwards_before);
+        BOOST_CHECK_EQUAL(gw.stats()._forward_failures.load(), 0u);
+        BOOST_CHECK_EQUAL(gw.stats()._credential_expiries.load(), expired_before);
+        // The forward link never asked the verifier: only the IAM user did.
+        for (const auto& u : verifier.users_asked()) {
+            BOOST_CHECK_EQUAL(u, "iamfarm");
+        }
+    }
+    // Without the re-AUTH the same credential closes the connection.
+    {
+        resp_client brief(c.port(follower));
+        BOOST_REQUIRE_EQUAL(brief.auth("iamfarm", "short"), "+OK\r\n");
+        BOOST_CHECK(brief.wait_closed());
+    }
+
+    // Three refused tokens from one address use up its budget: the fourth
+    // AUTH is refused before the verifier is asked, even with a good token
+    // and on a fresh connection.
+    const auto leader_port = c.port(c.leader_of(k_sccache_group));
+    const std::string wrongpass =
+        "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+    {
+        resp_client guess(leader_port);
+        BOOST_CHECK_EQUAL(guess.auth("iamfarm", "forged-1"), wrongpass);
+        BOOST_CHECK_EQUAL(guess.auth("iamfarm", "forged-2"), wrongpass);
+        BOOST_CHECK_EQUAL(guess.auth("bothfarm", "forged-3"), wrongpass);
+        const auto asked_before = verifier.users_asked().size();
+        resp_client again(leader_port);
+        auto limited = again.auth("iamfarm", "good");
+        BOOST_CHECK(limited.rfind("-ERR too many authentication failures", 0) == 0);
+        BOOST_CHECK_EQUAL(verifier.users_asked().size(), asked_before);
+    }
+    std::this_thread::sleep_for(cfg._auth_failure_window + std::chrono::milliseconds{500});
+    {
+        resp_client later(leader_port);
+        BOOST_CHECK_EQUAL(later.auth("iamfarm", "good"), "+OK\r\n");
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

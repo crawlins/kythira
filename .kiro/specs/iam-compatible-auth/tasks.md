@@ -864,7 +864,7 @@ because each has a zero-spend fallback.
     `auth=`, `iam_auth.cpp` in `redis_gateway_node`, the `module-adapter`
     boundary line; INV-REDIS-1 to 9. See design "As built (task 21)".
 
-- [ ] 22. Connection lifetime, limiter and rollout
+- [x] 22. Connection lifetime, limiter and rollout
   - The 12-hour deadline on IAM-authenticated connections, through the
     per-connection `expires` from `redis-gateway-module` task 6, extended by
     re-AUTH.
