@@ -8,7 +8,12 @@
 #include <boost/test/unit_test.hpp>
 
 #include "history.hpp"
+#include "runner.hpp"
 #include "workload.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <mutex>
 
 #include <deque>
 #include <map>
@@ -385,3 +390,34 @@ BOOST_AUTO_TEST_CASE(structural_rules) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// A workload that continues an earlier history (chaos_ctl sets
+// WORKLOAD_FIRST_PROCESS and WORKLOAD_TIME_OFFSET_NS) never reuses a
+// process id below its first one and stamps every event past the offset.
+BOOST_AUTO_TEST_CASE(runner_continues_from_a_first_process_and_time_offset) {
+    std::mutex m;
+    std::vector<h::event> seen;
+    std::atomic<int> emitted{0};
+    const std::int64_t offset = 5'000'000'000;
+    const auto next = w::run(
+        three_nodes(),
+        [] {
+            return w::transport([](const std::string&, const std::string&, const std::string&) {
+                return w::response{.status = 0, .body = {}, .sent = false, .error = "refused"};
+            });
+        },
+        w::run_options{.concurrency = 2, .rate = 0, .first_process = 10, .time_offset_ns = offset},
+        [&emitted] { return emitted.load() >= 20; },
+        [&](const h::event& e) {
+            std::lock_guard<std::mutex> lock(m);
+            seen.push_back(e);
+            ++emitted;
+        },
+        std::chrono::steady_clock::now());
+    BOOST_REQUIRE(!seen.empty());
+    for (const auto& e : seen) {
+        BOOST_TEST(e.process >= 10);
+        BOOST_TEST(e.time_ns >= offset);
+    }
+    BOOST_TEST(next >= 12);
+}

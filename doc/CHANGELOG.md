@@ -3,6 +3,15 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (November 9, 2026)
+
+- **A Cairn run can start the workload again after stopping it.** A
+  later `workload.start` continues the run's history: chaos_workload
+  takes `WORKLOAD_FIRST_PROCESS` and `WORKLOAD_TIME_OFFSET_NS`, so process
+  ids are never reused and times stay in order, and the checkers still
+  read one history. Before this the tool refused a second workload, and
+  M3 run 1 spent 156 calls retrying it.
+
 ### What Changed (November 5, 2026)
 
 - **Network tests pick their ports at run time.** Tests that listened on
