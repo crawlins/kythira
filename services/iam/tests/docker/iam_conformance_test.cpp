@@ -18,7 +18,10 @@
 //      identity token the driver left in the shared volume, and checks its
 //      own credential providers resolve a two-role chain, a
 //      web_identity_token_file profile and the AWS_ROLE_ARN /
-//      AWS_WEB_IDENTITY_TOKEN_FILE pair against Kythira's STS.
+//      AWS_WEB_IDENTITY_TOKEN_FILE pair against Kythira's STS;
+//   6. applies conformance/terraform/main.tf with Terraform and the AWS
+//      provider pinned, plans again expecting no changes, and destroys it
+//      (task 24), failing on any NotImplemented.
 //
 // KYTHIRA_IAM_CONFORMANCE_NO_REDIS=1 leaves the gateways out (a local run
 // on a host that cannot build redis_gateway_node); the driver then skips its
@@ -325,5 +328,23 @@ BOOST_AUTO_TEST_CASE(sdk_and_cli_conformance) {
         BOOST_TEST(r.out.find("arn:aws:sts::111111111111:assumed-role/conf-web/cli-env") !=
                        std::string::npos,
                    "AWS_ROLE_ARN pair: " << r.out);
+    }
+
+    // Task 24 (Requirement 15.2): Terraform applies the configuration,
+    // a second plan finds nothing to change (every resource reads back as
+    // written), and destroy removes it all. Any NotImplemented on the way
+    // fails the case even if the provider tolerated it.
+    {
+        auto tf = os::real_exec(compose_cmd(
+            {"--profile", "cli", "run", "--rm", "-T", "-e", "IAM_ENDPOINT=" + endpoint(leader),
+             "-e", "AWS_ACCESS_KEY_ID=" + a.id, "-e", "AWS_SECRET_ACCESS_KEY=" + a.secret, "-e",
+             "AWS_REGION=us-east-1", "terraform"}));
+        BOOST_TEST(tf.code == 0, "terraform exited " << tf.code << ":\n" << tf.out);
+        BOOST_TEST(tf.out.find("NotImplemented") == std::string::npos,
+                   "terraform met NotImplemented:\n"
+                       << tf.out);
+        BOOST_TEST(tf.out.find("Apply complete!") != std::string::npos, tf.out);
+        BOOST_TEST(tf.out.find("No changes.") != std::string::npos, tf.out);
+        BOOST_TEST(tf.out.find("Destroy complete!") != std::string::npos, tf.out);
     }
 }
