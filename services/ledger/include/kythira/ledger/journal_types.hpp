@@ -35,8 +35,12 @@
 // Hashes (design "Hashing"): a statement hashes as the Ion hash of its
 // struct; a revision as dot(ionhash(data), ionhash(metadata)), metadata only
 // for a delete; entriesHash is the Merkle root (dot) of the statement hashes
-// followed by the revision hashes; blockHash is the Ion hash of
-// {hashVersion, seq, txId, blockTimestamp, entriesHash, previousBlockHash}.
+// followed by the revision hashes; blockHash is
+// dot(dot(entriesHash, ionhash({hashVersion, seq, txId, blockTimestamp})),
+// previousBlockHash). The block hash uses only `dot` above the Ion hashes so
+// that a revision's proof (its entries-tree path, the header hash, the
+// previous block hash, then the accumulator path) folds onto the revision
+// hash all the way to the digest, as AWS's verification procedure expects.
 // The first block's previousBlockHash is 32 zero bytes.
 
 #include <kythira/ledger/ion_value.hpp>
@@ -724,20 +728,44 @@ struct block {
         return merkle_root(leaves);
     }
 
-    /// The hashed header {hashVersion, seq, txId, blockTimestamp,
-    /// entriesHash, previousBlockHash}.
+    /// The block's own fields {hashVersion, seq, txId, blockTimestamp},
+    /// hashed as one leaf of the block hash.
     [[nodiscard]] auto header() const -> ion_value {
         ion_value h = ion_value::make_struct();
         h.set("hashVersion", ion_value::integer(hash_version))
             .set("seq", ion_value::integer(static_cast<std::int64_t>(seq)))
             .set("txId", ion_value::string(tx_id))
-            .set("blockTimestamp", timestamp_value(timestamp))
-            .set("entriesHash", hash_value(entries_hash))
-            .set("previousBlockHash", hash_value(previous_block_hash));
+            .set("blockTimestamp", timestamp_value(timestamp));
         return h;
     }
 
-    [[nodiscard]] auto compute_block_hash() const -> hash256 { return header().hash(); }
+    /// dot(dot(entriesHash, ionhash(header)), previousBlockHash): built
+    /// from `dot` alone, so a revision's proof folds through its block to
+    /// the digest (design "Hashing").
+    [[nodiscard]] auto compute_block_hash() const -> hash256 {
+        return dot(dot(entries_hash, header().hash()), previous_block_hash);
+    }
+
+    /// The proof that revision `i` is under this block's hash: its path in
+    /// the entries tree, then the header hash and the previous block hash.
+    /// Fold it onto the revision hash to get block_hash.
+    [[nodiscard]] auto revision_proof(std::size_t i) const -> std::vector<hash256> {
+        if (i >= revisions.size()) {
+            throw std::out_of_range("block: revision index out of range");
+        }
+        std::vector<hash256> leaves;
+        leaves.reserve(statements.size() + revisions.size());
+        for (const auto& s : statements) {
+            leaves.push_back(s.hash());
+        }
+        for (const auto& r : revisions) {
+            leaves.push_back(r.hash);
+        }
+        auto proof = merkle_proof(leaves, statements.size() + i);
+        proof.push_back(header().hash());
+        proof.push_back(previous_block_hash);
+        return proof;
+    }
 
     /// True if every stored hash matches what the contents give.
     [[nodiscard]] auto verify() const -> bool {
@@ -746,9 +774,12 @@ struct block {
                compute_entries_hash() == entries_hash && compute_block_hash() == block_hash;
     }
 
-    /// The header plus blockHash, statements and revisions.
+    /// The header plus entriesHash, previousBlockHash, blockHash,
+    /// statements and revisions.
     [[nodiscard]] auto to_ion() const -> ion_value {
         ion_value b = header();
+        b.set("entriesHash", hash_value(entries_hash))
+            .set("previousBlockHash", hash_value(previous_block_hash));
         ion_value list = ion_value::make_list();
         for (const auto& s : statements) {
             list.push_back(s);

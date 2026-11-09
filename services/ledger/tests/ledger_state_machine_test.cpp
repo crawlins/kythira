@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The ledger state machine on memory_kv_engine
-// (.kiro/specs/verifiable-ledger/ task 3, Requirements 2.1, 2.2, 3.1-3.4,
-// 5.1-5.5): tables, document writes, revisions and their hashes, the block
+// (.kiro/specs/verifiable-ledger/ tasks 3-4, Requirements 2.1, 2.2, 3.1-3.4,
+// 4.1-4.4, 5.1-5.5): tables, document writes, revisions and their hashes, the block
 // chain, the leader's hash in the entry and the replica check, stale and
-// rejected transactions, restart, checkpoint and the split veto.
+// rejected transactions, restart, checkpoint and the split veto; and the
+// digest, block and revision proofs at every tip.
 
 #define BOOST_TEST_MODULE ledger_state_machine_test
 #include <boost/test/unit_test.hpp>
 
+#include <kythira/ledger/engine_merkle_store.hpp>
 #include <kythira/ledger/ion_value.hpp>
 #include <kythira/ledger/journal_types.hpp>
 #include <kythira/ledger/ledger_state_machine.hpp>
@@ -19,6 +21,7 @@
 #include <raft/persistent_state_machine.hpp>
 
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -674,6 +677,242 @@ BOOST_AUTO_TEST_CASE(blocks_and_revisions_round_trip_and_detect_tampering) {
     auto bad_prev = *blk;
     bad_prev.previous_block_hash[0] ^= 1U;
     BOOST_TEST(!bad_prev.verify());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Task 4: digests and proofs (Requirements 4.1-4.4, 4.6)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A fixture with `blocks` committed blocks of mixed shapes: table
+/// creation, multi-statement inserts, patches, replaces and deletes.
+struct journal_fixture : fixture {
+    std::vector<std::string> ids;
+
+    explicit journal_fixture(std::size_t blocks) {
+        BOOST_REQUIRE(
+            run({statements::create_table("t"), statements::create_table("u")}).committed);
+        while (tip()->seq + 1 < blocks) {
+            const auto n = tip()->seq;
+            if (n % 4 == 1 || ids.size() < 2) {
+                const auto a = new_id();
+                const auto b = new_id();
+                BOOST_REQUIRE(
+                    run({statements::insert("t", a, doc("{n: " + std::to_string(n) + "}")),
+                         statements::insert("u", b, doc("[" + std::to_string(n) + "]"))})
+                        .committed);
+                ids.push_back(a);
+            } else if (n % 4 == 2) {
+                BOOST_REQUIRE(
+                    run({statements::patch("t", ids.back(),
+                                           {{{std::string("p")},
+                                             ion_value::integer(static_cast<std::int64_t>(n))}},
+                                           {})})
+                        .committed);
+            } else if (n % 4 == 3) {
+                BOOST_REQUIRE(
+                    run({statements::replace("t", ids.front(), doc("{r: 1}"))}).committed);
+            } else {
+                const auto victim = ids.back();
+                ids.pop_back();
+                BOOST_REQUIRE(run({statements::remove("t", victim)}).committed);
+            }
+        }
+    }
+
+    auto tip() const -> std::optional<block_tip> { return sm.tip(); }
+
+    /// Merkle node keys in the engine.
+    auto merkle_keys() const -> std::size_t {
+        std::size_t count = 0;
+        const std::string from = "l/books/merkle/";
+        std::string to = from;
+        to.back() = '0';
+        engine.scan(column_family::data, kythira::key_range{from, to},
+                    kythira::scan_direction::forward, [&](std::string_view, std::string_view) {
+                        ++count;
+                        return true;
+                    });
+        return count;
+    }
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(digests_and_proofs)
+
+BOOST_AUTO_TEST_CASE(the_block_hash_is_a_dot_fold_of_entries_header_and_previous) {
+    journal_fixture f(3);
+    for (std::uint64_t s = 0; s < 3; ++s) {
+        const auto b = *f.sm.get_block(s);
+        BOOST_TEST(b.block_hash ==
+                   dot(dot(b.entries_hash, b.header().hash()), b.previous_block_hash));
+        for (std::size_t i = 0; i < b.revisions.size(); ++i) {
+            BOOST_TEST(verify_proof(b.revisions[i].hash, b.revision_proof(i), b.block_hash));
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(the_digest_is_the_accumulator_over_block_hashes) {
+    fixture f;
+    BOOST_TEST(!f.sm.get_digest().has_value());
+    BOOST_CHECK_THROW((void)f.sm.digest_at(0), ledger_query_error);
+    memory_merkle_store ref_store;
+    merkle_accumulator<memory_merkle_store> ref(ref_store);
+    const auto id = new_id();
+    f.run({statements::create_table("t")});
+    ref.append(f.sm.tip()->hash);
+    for (int i = 0; i < 20; ++i) {
+        // Rejections add no leaf.
+        BOOST_TEST(!f.run({statements::create_table("t")}).committed);
+        const auto r =
+            i == 0 ? f.run({statements::insert("t", id, doc("{i: 0}"))})
+                   : f.run({statements::replace("t", id, doc("{i: " + std::to_string(i) + "}"))});
+        BOOST_REQUIRE(r.committed);
+        ref.append(r.block_hash);
+        const auto d = f.sm.get_digest();
+        BOOST_REQUIRE(d.has_value());
+        BOOST_TEST(d->tip == r.seq);
+        BOOST_TEST(d->digest == *ref.digest());
+    }
+    for (std::uint64_t t = 0; t <= f.sm.tip()->seq; ++t) {
+        BOOST_TEST(f.sm.digest_at(t) == ref.digest_at(t + 1));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(every_block_proves_at_every_tip) {
+    journal_fixture f(24);
+    const auto last = f.sm.tip()->seq;
+    for (std::uint64_t tip = 0; tip <= last; ++tip) {
+        const auto digest = f.sm.digest_at(tip);
+        for (std::uint64_t seq = 0; seq <= tip; ++seq) {
+            const auto p = f.sm.get_block_proof(seq, tip);
+            BOOST_TEST(p.blk.seq == seq);
+            BOOST_TEST(p.digest == digest);
+            BOOST_TEST(p.blk.verify());
+            BOOST_TEST(verify_proof(p.blk.block_hash, p.proof, digest));
+            BOOST_TEST(p.proof.size() <= static_cast<std::size_t>(std::bit_width(tip)));
+        }
+    }
+    BOOST_CHECK_THROW((void)f.sm.get_block_proof(5, 4), ledger_query_error);
+    BOOST_CHECK_THROW((void)f.sm.get_block_proof(0, last + 1), ledger_query_error);
+}
+
+BOOST_AUTO_TEST_CASE(every_revision_proves_at_every_tip) {
+    journal_fixture f(16);
+    const auto last = f.sm.tip()->seq;
+    std::size_t checked = 0;
+    for (std::uint64_t seq = 0; seq <= last; ++seq) {
+        const auto blk = f.sm.get_block(seq);
+        for (const auto& r : blk->revisions) {
+            for (std::uint64_t tip = seq; tip <= last; ++tip) {
+                const auto p = f.sm.get_revision_proof(r.table, r.id, r.version, tip);
+                BOOST_REQUIRE(p.has_value());
+                BOOST_TEST(p->rev.hash == r.hash);
+                BOOST_TEST(p->digest == f.sm.digest_at(tip));
+                BOOST_TEST(verify_proof(p->rev.hash, p->proof, p->digest));
+                ++checked;
+            }
+            if (seq > 0) {
+                BOOST_CHECK_THROW((void)f.sm.get_revision_proof(r.table, r.id, r.version, seq - 1),
+                                  ledger_query_error);
+            }
+        }
+    }
+    BOOST_TEST(checked > 50U);
+    BOOST_TEST(!f.sm.get_revision_proof("t", new_id(), 0, last).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(a_proof_does_not_verify_against_another_digest_or_leaf) {
+    journal_fixture f(9);
+    const auto p = f.sm.get_block_proof(3, 8);
+    BOOST_TEST(!verify_proof(p.blk.block_hash, p.proof, f.sm.digest_at(7)));
+    BOOST_TEST(!verify_proof(f.sm.get_block(4)->block_hash, p.proof, p.digest));
+    auto cut = p.proof;
+    cut.pop_back();
+    BOOST_TEST(!verify_proof(p.blk.block_hash, cut, p.digest));
+}
+
+BOOST_AUTO_TEST_CASE(the_merkle_nodes_are_written_with_their_blocks) {
+    for (const std::size_t n : {1U, 2U, 7U, 8U, 13U}) {
+        journal_fixture f(n);
+        // Every complete node, leaves included: 2n - popcount(n).
+        BOOST_TEST(f.merkle_keys() == 2 * n - static_cast<std::size_t>(std::popcount(n)));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(reopening_rebuilds_the_frontier) {
+    journal_fixture f(11);
+    const auto d = f.sm.get_digest();
+    ledger_sm reopened;
+    reopened.open(f.engine, ledger_range("books"));
+    BOOST_TEST(reopened.get_digest()->digest == d->digest);
+    BOOST_TEST(reopened.get_digest()->tip == d->tip);
+    // And keeps appending the same way as the original would.
+    auto p = reopened.prepare(new_id(), f.clock + 1000, {statements::create_table("z")});
+    BOOST_REQUIRE(p.entry.has_value());
+    const auto r = apply_result::decode(reopened.apply(p.command, f.index + 1));
+    BOOST_REQUIRE(r.committed);
+    memory_merkle_store ref_store;
+    merkle_accumulator<memory_merkle_store> ref(ref_store);
+    for (std::uint64_t s = 0; s <= r.seq; ++s) {
+        ref.append(reopened.get_block(s)->block_hash);
+    }
+    BOOST_TEST(reopened.get_digest()->digest == *ref.digest());
+    const auto proof = reopened.get_block_proof(4, r.seq);
+    BOOST_TEST(verify_proof(proof.blk.block_hash, proof.proof, proof.digest));
+}
+
+BOOST_AUTO_TEST_CASE(a_checkpoint_carries_the_merkle_nodes) {
+    journal_fixture src(10);
+    temp_dir dir;
+    const auto ckpt = dir.path() / "checkpoint";
+    const auto manifest = src.sm.checkpoint(ckpt);
+    memory_kv_engine engine;
+    ledger_sm dst;
+    dst.open(engine, ledger_range("books"));
+    dst.ingest(ckpt, manifest, src.index);
+    BOOST_TEST(dst.get_digest()->digest == src.sm.get_digest()->digest);
+    for (std::uint64_t s = 0; s <= 9; ++s) {
+        const auto p = dst.get_block_proof(s, 9);
+        BOOST_TEST(verify_proof(p.blk.block_hash, p.proof, p.digest));
+    }
+    dst.drop();
+    BOOST_TEST(!dst.get_digest().has_value());
+}
+
+BOOST_AUTO_TEST_CASE(a_tampered_node_breaks_the_proofs_through_it) {
+    journal_fixture f(8);
+    const auto good = f.sm.get_block_proof(0, 7);
+    BOOST_REQUIRE(verify_proof(good.blk.block_hash, good.proof, good.digest));
+    // Node (1, 1) covers blocks 2-3; it is in block 0's path to the root.
+    engine_merkle_store<memory_kv_engine> store(f.engine, "l/books/merkle/");
+    hash256 junk{};
+    junk.fill(0xAB);
+    f.engine.write(kythira::write_batch{}.put(column_family::data, store.key(1, 1),
+                                              std::string(junk.begin(), junk.end())));
+    const auto bad = f.sm.get_block_proof(0, 7);
+    BOOST_TEST(!verify_proof(bad.blk.block_hash, bad.proof, good.digest));
+    // A missing node is an error, not a silently short proof.
+    f.engine.write(kythira::write_batch{}.erase(column_family::data, store.key(1, 1)));
+    BOOST_CHECK_THROW((void)f.sm.get_block_proof(0, 7), merkle_store_error);
+}
+
+BOOST_AUTO_TEST_CASE(a_divergent_entry_leaves_the_accumulator_untouched) {
+    journal_fixture f(3);
+    auto p = f.prepare({statements::create_table("x")});
+    auto tampered = *p.entry;
+    tampered.block_hash[0] ^= 1U;
+    BOOST_CHECK_THROW(f.sm.apply(to_bytes(encode_entry(tampered)), f.index + 1),
+                      ledger_divergence_error);
+    BOOST_TEST(f.sm.get_digest()->tip == 2U);
+    const auto r = apply_result::decode(f.sm.apply(p.command, ++f.index));
+    BOOST_REQUIRE(r.committed);
+    const auto proof = f.sm.get_block_proof(3, 3);
+    BOOST_TEST(verify_proof(r.block_hash, proof.proof, proof.digest));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -53,8 +53,14 @@ blocks are still in `journal`; a partial file is overwritten).
   struct (`{op, table, id, value, ...}`).
 - `entriesHash` = Merkle root with `dot` over statement hashes followed by
   revision hashes, in block order.
-- `blockHash` = `ionhash({hashVersion, seq, txId, blockTimestamp,
-  entriesHash, previousBlockHash})`.
+- `blockHash` = `dot(dot(entriesHash, ionhash({hashVersion, seq, txId,
+  blockTimestamp})), previousBlockHash)`. Only `dot` sits above the Ion
+  hashes, so a revision proof is one fold: the revision's path in the
+  entries tree, the header hash, the previous block hash, then the
+  accumulator path to the digest (Requirement 4.3, 4.6). An Ion hash over a
+  header that contains entriesHash, as first written here, would break that
+  chain at the block: no `dot` fold can pass through it. Changed in task 4,
+  before any ledger existed.
 - Ion hash is implemented in C++ over ion-c's reader (no C/C++
   implementation exists upstream); it is small and has public test vectors.
 
