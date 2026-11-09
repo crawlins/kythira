@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 12/26 tasks complete
+## Status: 13/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -643,7 +643,7 @@ because each has a zero-spend fallback.
     170 `evaluate` cases in `corpus/evaluate/` (498 in all).
   - _Requirements: 6.1–6.7_
 
-- [ ] 13. Authorizer hook, service registry and replicas
+- [x] 13. Authorizer hook, service registry and replicas
   - `iam_authorizer`:
     - `authenticate` covers AKIA and ASIA keys, the latter through task
       17's token decoder, which is stubbed until then;
@@ -664,13 +664,24 @@ because each has a zero-spend fallback.
   - Invariants (`invariants.md`): INV-KEY-4. Each one needs a named
     unit test, and the PR updates its row there.
   - _Requirements: 7.1–7.6, 14.2–14.4_
-  - Part 1 done: core `aws_request_authorizer.hpp`;
-    `iam_service_registry.hpp`; `services/iam_actions.hpp` (99 actions)
-    and `services/sts_actions.hpp` (9); `iam_authorizer.hpp`
-    (`authenticate` for AKIA keys, ASIA stubbed as InvalidClientTokenId,
-    `authorize`, `audit_log`); `iam_authorizer_test.cpp` (INV-KEY-4,
-    no secrets in audit lines). Part 2 left: the `elasticache` table,
-    replicas, the lag metric, fail-closed staleness, `--arn-partition`.
+  - Done in two PRs.
+    - Part 1: core `aws_request_authorizer.hpp`; `iam_service_registry.hpp`;
+      `services/iam_actions.hpp` (99 actions) and `sts_actions.hpp` (9);
+      `iam_authorizer.hpp` (`authenticate` for AKIA keys, with ASIA keys
+      answered InvalidClientTokenId until task 17; `authorize`;
+      `audit_log`); `iam_authorizer_test.cpp` (INV-KEY-4, no secrets in
+      audit lines).
+    - Part 2: core `node::last_caught_up()`, the staleness clock;
+      `iam_replica.hpp` (`iam_replica<Types>`, `replica_freshness`, the
+      `kythira_iam_replica_lag_seconds` gauge); `iam_authorizer::set_freshness`
+      (fail closed); `services/elasticache_actions.hpp` (`Connect`);
+      `iam_node --iam-max-staleness-secs`, with the lag in `/healthz` and
+      `/metrics`; `iam_replica_test.cpp` (5 s propagation, a partition
+      past the bound fails closed); `--arn-partition` was already in every
+      ARN built, and a test now covers a non-`aws` partition.
+    - The replica route is `POST /v1/admin/replicas` (task 9), not
+      `/v1/iam/replicas`; a front end's self-registration arrives with the
+      front ends.
 
 ### Phase C — IAM Query API
 

@@ -29,11 +29,15 @@
 // started with --replica) in the IAM state, and the leader adds it as a Raft
 // learner. Every leader, including one elected later, reads the registered
 // replicas from the state and makes each reachable, so the address list
-// lives in the replicated log rather than in each member's flags.
+// lives in the replicated log rather than in each member's flags. A replica
+// reports its lag (seconds since it last held every committed change) in
+// /healthz and as `kythira_iam_replica_lag_seconds` on /metrics, and past
+// --iam-max-staleness-secs answers IAM and STS requests ServiceUnavailable.
 
 #include "config.hpp"
 
 #include <kythira/iam/iam_admin.hpp>
+#include <kythira/iam/iam_replica.hpp>
 #include <kythira/iam/iam_routing.hpp>
 #include <kythira/iam/iam_state_machine.hpp>
 
@@ -192,7 +196,9 @@ public:
           _keks(std::move(passphrase)),
           _tls(std::move(tls)),
           _rpc_client(make_client()),
-          _node(make_node()) {}
+          _node(make_node()),
+          _freshness([n = _node.get()] { return n->last_caught_up(); },
+                     std::chrono::duration_cast<std::chrono::milliseconds>(cfg.max_staleness)) {}
 
     member(const member&) = delete;
     auto operator=(const member&) -> member& = delete;
@@ -493,6 +499,12 @@ private:
         local["leader"] = leader ? boost::json::value(id_text(*leader)) : boost::json::value();
         local["term"] = _node->get_current_term();
         local["unsealed"] = _unsealed.load();
+        if (_cfg.replica) {
+            // Requirement 7.4: how far behind this replica can be.
+            const auto lag = _freshness.lag();
+            local["lag_seconds"] = lag ? boost::json::value(lag->count()) : boost::json::value();
+            local["fresh"] = _freshness.fresh();
+        }
         return json_reply(req, 200, local);
     }
 
@@ -579,7 +591,23 @@ private:
         const auto path = target.substr(0, q);
         const auto query = q == std::string_view::npos ? std::string_view{} : target.substr(q + 1);
         const auto auth = req[http::field::authorization];
-        switch (routing::route_of(path, std::string_view(auth.data(), auth.size()), query)) {
+        if (_cfg.replica && path == "/metrics" && req.method() == http::verb::get) {
+            https::response res{http::status::ok, req.version()};
+            res.set(http::field::content_type, "text/plain; version=0.0.4");
+            res.body() = _freshness.metrics_text();
+            res.keep_alive(req.keep_alive());
+            return res;
+        }
+        const auto r = routing::route_of(path, std::string_view(auth.data(), auth.size()), query);
+        if ((r == routing::route::iam || r == routing::route::sts) && _cfg.replica &&
+            !_freshness.fresh()) {
+            // Fail closed (Requirement 7.4): a stale replica may still hold
+            // a key or policy since changed.
+            return query_error(req, r == routing::route::sts, 503,
+                               iam::iam_authorizer::k_service_unavailable,
+                               "The IAM state on this node is stale; retry shortly.");
+        }
+        switch (r) {
             case routing::route::health:
                 return health(req);
             case routing::route::admin:
@@ -616,6 +644,7 @@ private:
     std::optional<typename Types::network_client_type> _rpc_client_handle;
     std::optional<typename Types::network_server_type> _rpc_server_handle;
     std::unique_ptr<raft_node_t> _node;
+    iam::replica_freshness _freshness;
     std::unique_ptr<https::server> _server;
     std::thread _election_timer;
     std::thread _heartbeat_timer;

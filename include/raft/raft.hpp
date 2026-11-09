@@ -554,6 +554,20 @@ public:
     /// `shard_stats` reports it too.
     [[nodiscard]] auto last_applied_index() const -> log_index_type;
 
+    /// @brief When an accepted AppendEntries last left this node caught up.
+    ///
+    /// Set when, after the request is handled, this node's commit index has
+    /// reached the leader's commit index the request carried and every
+    /// committed entry is applied. A heartbeat carries the leader's commit
+    /// index, so on a healthy follower or learner this moves once per
+    /// heartbeat interval; on one cut off from its leader, or falling
+    /// behind, it stops. `now - last_caught_up()` is then a bound on how
+    /// stale the local state machine can be, which read replicas export
+    /// as their lag and fail closed on. A leader never sets it, and
+    /// std::nullopt means the node has never been caught up.
+    [[nodiscard]] auto last_caught_up() const
+        -> std::optional<std::chrono::steady_clock::time_point>;
+
     /// @brief Snapshot the state machine at `last_applied_index()` and compact the log.
     ///
     /// Captures `state_machine.get_state()` together with the term of the last
@@ -1051,6 +1065,12 @@ private:
     // first election. Only handle_append_entries() sets a value; nothing
     // ever resets it back to nullopt.
     std::optional<std::chrono::steady_clock::time_point> _last_leader_contact;
+
+    // Last time an accepted AppendEntries left this follower holding and
+    // having applied everything its leader had committed: the staleness
+    // clock of a read replica (`.kiro/specs/iam-compatible-auth/`
+    // Requirement 7.4). std::nullopt until that first happens.
+    std::optional<std::chrono::steady_clock::time_point> _last_caught_up;
 
     // ========================================================================
     // Leadership transfer (dissertation §3.10)
@@ -1813,6 +1833,7 @@ node<Types>::node(node_config<Types> cfg)
       _heartbeat_interval{cfg.config.heartbeat_interval()},
       _last_heartbeat{std::chrono::steady_clock::now()},
       _last_leader_contact{std::nullopt},
+      _last_caught_up{std::nullopt},
       _rng{std::random_device{}()},
       _self_address{std::move(cfg.self_address)},
       _peer_discovery{std::move(cfg.peer_discovery)},
@@ -3115,6 +3136,12 @@ auto node<Types>::log_entries_between(log_index_type from, log_index_type to) co
 template<raft_types Types> auto node<Types>::last_applied_index() const -> log_index_type {
     std::lock_guard<std::mutex> lock(_mutex);
     return _last_applied;
+}
+
+template<raft_types Types>
+auto node<Types>::last_caught_up() const -> std::optional<std::chrono::steady_clock::time_point> {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _last_caught_up;
 }
 
 template<raft_types Types>
@@ -6075,6 +6102,13 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
         // branch only a later commit-index advance would retry it, so a
         // follower stayed behind for as long as the cluster took no writes.
         apply_committed_entries();
+    }
+
+    // A batch-limited apply can leave entries for the next request, and a
+    // follower still being sent the log has a commit index short of the
+    // leader's: neither is caught up yet.
+    if (_commit_index >= request.leader_commit() && _last_applied >= _commit_index) {
+        _last_caught_up = std::chrono::steady_clock::now();
     }
 
     _logger.debug("AppendEntries succeeded",

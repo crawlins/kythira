@@ -284,9 +284,20 @@ public:
           _clock(clock ? std::move(clock)
                        : clock_fn([] { return std::chrono::system_clock::now(); })) {}
 
+    /// Requirement 7.4: on a replica, whether its state is recent enough
+    /// to answer from (`replica_freshness::fresh`). Unset, the state is
+    /// the leader's own and always is.
+    void set_freshness(std::function<bool()> fresh) { _fresh = std::move(fresh); }
+
     /// Requirement 7.1: who signed `req`, or the AWS error to answer with.
     [[nodiscard]] auto authenticate(const sigv4::request& req, const sigv4::service_rules& rules)
         -> aws_auth::authn_result {
+        if (stale()) {
+            // Fail closed: a stale replica may still hold a key since
+            // deleted or deactivated.
+            return sigv4::aws_error{std::string(k_service_unavailable),
+                                    "The IAM state on this node is stale; retry shortly.", 503};
+        }
         const auto now = std::chrono::floor<std::chrono::seconds>(_clock());
         auto parsed = sigv4::parse(req, rules, now);
         if (!parsed) {
@@ -340,6 +351,11 @@ public:
     [[nodiscard]] auto authorize(const aws_auth::principal_context& who,
                                  const aws_auth::authz_request& r) -> aws_auth::authz_decision {
         aws_auth::authz_decision out;
+        if (stale()) {
+            out.reason = "the IAM replica is stale";
+            record(who, r, out);
+            return out;
+        }
         if (_registry->find(r.action) == nullptr) {
             out.reason = "the action is not registered by any service";
             record(who, r, out);
@@ -398,7 +414,11 @@ public:
     /// changed (the replica's apply loop calls this).
     void forget_key(std::string_view access_key_id) { _keys.invalidate(access_key_id); }
 
+    static constexpr std::string_view k_service_unavailable = "ServiceUnavailable";
+
 private:
+    [[nodiscard]] auto stale() const -> bool { return _fresh && !_fresh(); }
+
     [[nodiscard]] auto context_for(
         const aws_auth::principal_context& who, const aws_auth::authz_request& r,
         const std::vector<std::pair<std::string, std::string>>& entity_tags) const -> context_keys {
@@ -475,6 +495,7 @@ private:
     const iam_service_registry* _registry;
     audit_log* _audit;
     clock_fn _clock;
+    std::function<bool()> _fresh;
     sigv4::signing_key_cache _keys;
 };
 

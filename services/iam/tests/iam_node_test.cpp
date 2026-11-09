@@ -11,7 +11,9 @@
 //  - IAM and STS requests route by credential scope (NotImplemented until
 //    tasks 14 and 17), unsigned ones are refused;
 //  - rotate-sts-key retires the previous key;
-//  - a read replica joins as a learner and applies the log;
+//  - a read replica joins as a learner and applies the log, reports its
+//    lag in /healthz and /metrics, and with every voter frozen answers the
+//    signed routes ServiceUnavailable until they resume (task 13);
 //  - the leader is stopped, a new one serves writes, and the old one
 //    catches up on restart;
 //  - a member restarted with the wrong unseal passphrase exits.
@@ -288,6 +290,9 @@ public:
                                       "2000"};
         if (m.replica) {
             args.emplace_back("--replica");
+            // Short, so the frozen-voters check below is quick.
+            args.emplace_back("--iam-max-staleness-secs");
+            args.emplace_back("3");
         }
         const auto log = (m.dir / "node.log").string();
         const pid_t pid = ::fork();
@@ -561,6 +566,49 @@ BOOST_AUTO_TEST_CASE(cluster_lifecycle, *boost::unit_test::timeout(600)) {
                                    c.pki.admin_cert.string(), c.pki.admin_key.string());
     BOOST_REQUIRE(rep_redirect.has_value());
     BOOST_TEST(rep_redirect->status == 307U);
+
+    // Requirement 7.4: a caught-up replica reports a small lag, exports it
+    // as a metric, and serves the signed routes.
+    BOOST_TEST(rh->at("fresh").as_bool());
+    BOOST_TEST(rh->at("lag_seconds").to_number<double>() < 3.0);
+    auto metrics = https_call(replica.http_port, c.pki, http::verb::get, "/metrics");
+    BOOST_REQUIRE(metrics.has_value());
+    BOOST_TEST(metrics->status == 200U);
+    BOOST_TEST(metrics->body.find("kythira_iam_replica_lag_seconds ") != std::string::npos);
+    auto fresh_call = https_call(replica.http_port, c.pki, http::verb::post, "/", {}, {}, iam_auth);
+    BOOST_REQUIRE(fresh_call.has_value());
+    BOOST_TEST(fresh_call->status == 501U);
+
+    // With every voter frozen (a network that delivers nothing), the
+    // replica fails closed once past its 3 s bound, and recovers after.
+    for (auto* v : c.voters()) {
+        ::kill(v->pid, SIGSTOP);
+    }
+    bool went_stale = false;
+    for (const auto deadline = std::chrono::steady_clock::now() + 30s;
+         !went_stale && std::chrono::steady_clock::now() < deadline;) {
+        auto h = c.health(replica);
+        went_stale = h && !h->at("fresh").as_bool();
+        std::this_thread::sleep_for(200ms);
+    }
+    BOOST_TEST(went_stale);
+    auto stale_call = https_call(replica.http_port, c.pki, http::verb::post, "/", {}, {}, iam_auth);
+    for (auto* v : c.voters()) {
+        ::kill(v->pid, SIGCONT);
+    }
+    BOOST_REQUIRE(stale_call.has_value());
+    BOOST_TEST(stale_call->status == 503U);
+    BOOST_TEST(stale_call->body.find("<Code>ServiceUnavailable</Code>") != std::string::npos);
+    bool recovered = false;
+    for (const auto deadline = std::chrono::steady_clock::now() + 60s;
+         !recovered && std::chrono::steady_clock::now() < deadline;) {
+        auto h = c.health(replica);
+        recovered = h && h->at("fresh").as_bool();
+        std::this_thread::sleep_for(200ms);
+    }
+    BOOST_TEST(recovered);
+    leader = c.wait_leader();
+    BOOST_REQUIRE(leader != nullptr);
 
     // Stop the leader: another voter takes over and serves writes, and the
     // replica keeps applying through the new leader.

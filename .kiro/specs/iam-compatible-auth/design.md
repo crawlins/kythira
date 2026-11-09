@@ -350,6 +350,19 @@ the AWS page section.
   the last heartbeat. It is exported as `kythira_iam_replica_lag_seconds`.
 - Past `--iam-max-staleness` (default 60 s), `authenticate` fails closed with
   `ServiceUnavailable`.
+- As built (task 13):
+  - Lag is the time since the replica was last caught up: core's
+    `node::last_caught_up()` moves when an accepted AppendEntries leaves
+    the node holding and having applied the leader's commit index, so a
+    healthy replica's lag stays under a heartbeat interval and a cut-off
+    one grows without bound. An entry count is not exported.
+  - `iam_replica<Types>` takes the front end's own `node_config` and
+    needs no timers (a learner never stands for election).
+  - `iam_authorizer::set_freshness` makes both `authenticate`
+    (`ServiceUnavailable`, 503) and `authorize` (deny, audited) fail
+    closed. The flag is `--iam-max-staleness-secs`.
+  - `iam_node --replica` reports the lag in `/healthz`, serves the gauge
+    on `/metrics`, and answers IAM and STS requests 503 when stale.
 
 ## Component 7: `iam_node` and `kythira-iam` (Requirement 8)
 
