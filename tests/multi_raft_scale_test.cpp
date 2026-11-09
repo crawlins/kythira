@@ -472,13 +472,36 @@ BOOST_AUTO_TEST_CASE(a_request_wakes_only_the_shard_it_is_addressed_to,
         c.host(0).is_hibernating(k_woken_group),
         "group " << k_woken_group << " never hibernated, so waking it proves nothing");
 
-    const auto hibernating_before = report._hibernating_count;
-    BOOST_REQUIRE(c.host(0).wake(k_woken_group));
+    // Judge the wake against groups asleep on all three hosts, not against
+    // host 0's hibernating count. The groups still settling have a live
+    // leader elsewhere, and host 0's follower of such a group dozes after
+    // half an election timeout without a heartbeat and wakes on the next one.
+    // On a loaded runner one tick of three thousand replicas outlasts that,
+    // so the count moves on its own: CI saw it drop by 11 and by 29 across
+    // the tick after wake(), and blamed the wake. A group asleep everywhere
+    // has nobody left to send it anything (the liveness check is an hour
+    // away), so only wake() can rouse it.
+    std::vector<group_id_type> quiet;
+    for (std::size_t i = 1; i <= k_groups; ++i) {
+        const auto g = static_cast<group_id_type>(i);
+        if (g != k_woken_group && c.host(0).is_hibernating(g) && c.host(1).is_hibernating(g) &&
+            c.host(2).is_hibernating(g)) {
+            quiet.push_back(g);
+        }
+    }
+    BOOST_TEST_MESSAGE("groups asleep on every host: " << quiet.size());
+    BOOST_REQUIRE_GE(quiet.size(), k_groups / 2);
 
-    const auto after = c.tick();
-    BOOST_CHECK_MESSAGE(
-        after._hibernating_count + 8 >= hibernating_before,
-        "waking one shard woke " << hibernating_before - after._hibernating_count << " of them");
+    BOOST_REQUIRE(c.host(0).wake(k_woken_group));
+    c.tick();
+
+    const auto woken =
+        static_cast<std::size_t>(std::count_if(quiet.begin(), quiet.end(), [&c](group_id_type g) {
+            return !c.host(0).is_hibernating(g);
+        }));
+    BOOST_CHECK(!c.host(0).is_hibernating(k_woken_group));
+    BOOST_CHECK_MESSAGE(woken == 0, "waking one shard woke " << woken << " of the " << quiet.size()
+                                                             << " groups asleep on every host");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
