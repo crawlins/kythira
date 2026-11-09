@@ -212,9 +212,11 @@ struct redis_gateway_config {
     /// them. An accepted credential takes the ACL user's role and key
     /// prefixes, and its expiry closes the connection.
     ///
-    /// Nothing sets these yet. IAM task 21 sets the verifier when
-    /// `CONFIG_REDIS_GATEWAY_IAM` is on and selects users from the ACL's
-    /// `auth=` attribute (services/redis/README.md, "Authentication seam").
+    /// redis_gateway_node sets both when built with
+    /// `CONFIG_REDIS_GATEWAY_IAM` (IAM task 21): the verifier is IAM's, and
+    /// the predicate selects the ACL's `auth=iam` and `auth=both` users. A
+    /// `both` user the verifier refuses is then checked against its
+    /// password in the same admission slot.
     credential_verifier_fn _credential_verifier;
     std::function<bool(std::string_view user)> _credential_verifier_users;
 };

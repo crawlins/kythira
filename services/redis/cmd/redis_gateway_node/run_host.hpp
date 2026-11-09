@@ -334,6 +334,14 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
         acl.reload(read_file(opt._acl_file));
     }
     auto gateway_cfg = opt._gateway;
+    // With a credential verifier (IAM, in a CONFIG_REDIS_GATEWAY_IAM build),
+    // the ACL's `auth=iam` and `auth=both` users are the verifier's.
+    if (gateway_cfg._credential_verifier && !gateway_cfg._credential_verifier_users) {
+        gateway_cfg._credential_verifier_users = [&acl](std::string_view user) {
+            const auto mode = acl.auth_mode_of(user);
+            return mode == kythira::redis_auth_mode::iam || mode == kythira::redis_auth_mode::both;
+        };
+    }
     if (!gateway_cfg._internal_secret.empty() && !acl.empty()) {
         // The internal user is what forwarded commands authenticate as. It
         // is created here from the secret rather than written into the ACL

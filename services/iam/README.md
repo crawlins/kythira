@@ -33,6 +33,10 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `include/kythira/iam/iam_sts_api.hpp` | the STS Query API: AssumeRole (with session policies, session tags and source identity), AssumeRoleWithWebIdentity, GetSessionToken, GetCallerIdentity and GetAccessKeyInfo | 17-19 |
 | `include/kythira/iam/iam_oidc_jwks.hpp` | the JWKS cache for web identity tokens, its HTTPS fetcher with the allowlist and private-address refusal, and the direct JWKS URL for a local Kythira issuer | 19-20 |
 | `tests/iam_sts_test.cpp` | those actions, cross-account trust, `ExternalId`, key rotation, expiry, forged tokens, session policies and tags, session revocation, web identity tokens, the JWKS fetch rules, the `kythira:*` claim keys and the certificate exchange | 17-20 |
+| `include/kythira/iam/iam_redis_verifier.hpp` | the Redis gateway's `credential_verifier`: ElastiCache IAM auth tokens, `elasticache:Connect` on the user and replication group | 21 |
+| `include/kythira/iam/iam_embedded_replica.hpp` | a front end's IAM side in one object: the replica over mutual-TLS RPC, the unsealing key, the registry and the authorizer | 21 |
+| `tests/iam_redis_verifier_test.cpp`, `tests/iam_redis_token_test_support.hpp`, `tests/tools/gen_redis_iam_token.py` | tokens from botocore (a fixed vector the script regenerates) and presigned in the test | 21 |
+| `tests/iam_embedded_replica_test.cpp` | three `iam_node` processes and an embedded replica in process checking tokens as policies change | 21 |
 | `tests/iam_kythira_issuer_test.cpp` | a ca_cluster_node and `iam_node` as processes: a Kythira workload token and certificate exchanged for role credentials (`--kythira-issuer`, `--kythira-issuer-local`, `POST /v1/iam/credentials`) | 20 |
 | `include/kythira/iam/iam_state_machine.hpp` | the IAM Raft group's state machine, its command set, and the leader-side stamping helpers | 8 |
 | `include/kythira/iam/iam_seal.hpp` | KEK derivation and AES-256-GCM sealing of access-key and STS-key secrets | 8 |

@@ -744,6 +744,39 @@ denial is a `WRONGPASS` counted by `redis_auth_limiter`.
 and the replica flags shared with every front end. These are registered by
 the adapter, so a build without `CONFIG_REDIS_GATEWAY_IAM` has none of them.
 
+**As built (task 21).**
+- The ACL's `auth=` is parsed before the secret field, because it changes
+  what `nopass` (no `cert=` needed) and `disabled` (no password, but still a
+  login through the verifier) mean for an `iam` or `both` user. That makes
+  `disabled` the rolling-upgrade guard the requirement asks for: an old
+  build refuses the user, a new one admits it by token only.
+- The gateway asks the verifier first for a `both` user and falls back to
+  the password in the same admission slot when it refuses. A PBKDF2 check
+  costs far more than a local token check, so the cheap test goes first.
+- botocore 1.35.0 hashes the empty body into the presigned canonical
+  request (as SigV4 does outside S3), not `UNSIGNED-PAYLOAD` as written
+  above; the verifier checks that form and, on a signature mismatch, S3's
+  `UNSIGNED-PAYLOAD` form, so either kind of presigner works.
+- The daemon is configured by environment, so the flags above are
+  `KYTHIRA_IAM_ACCOUNT_ID`, `KYTHIRA_IAM_REGION`, `KYTHIRA_IAM_CACHE_NAME`
+  and the replica's `KYTHIRA_IAM_VOTERS`, `_REPLICA_NODE_ID`,
+  `_REPLICA_RPC_BIND`, `_REPLICA_RPC_PORT`, `_DATA_DIR`,
+  `_UNSEAL_KEY_FILE`, `_RPC_TLS_CERT/_KEY/_CA`, `_MAX_STALENESS_SECS` and
+  `_ARN_PARTITION`. They live in the composition root's `iam_auth.cpp`,
+  not in the adapter, so the adapter stays usable by front ends configured
+  by flags.
+- `iam_embedded_replica.hpp` is the reusable piece every front end needs:
+  `iam_replica` over TLS TCP RPC with file persistence, the KEK cache from
+  the unseal passphrase, a registry the caller fills, and the authorizer
+  with the replica's freshness. It has no plaintext mode, since it holds
+  the unsealing passphrase.
+- `scripts/check_module_boundaries.py` gained the `module-adapter` line
+  kind: `<cmd/ file> module-adapter <other module's header> <why>`, allowed
+  only for the composition root. Redis lists the three IAM headers
+  `iam_auth.cpp` includes.
+- `CONFIG_REDIS_GATEWAY_IAM` defaults to `y` whenever the gateway and IAM
+  are both on, so every CI leg that builds both covers the wiring.
+
 ## Configuration
 
 | Flag | Daemon | Default |

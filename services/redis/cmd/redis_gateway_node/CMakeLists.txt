@@ -50,6 +50,21 @@ endif()
 if(KCONFIG_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
     target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_REDIS_GATEWAY_SNAPSHOT_ISOLATION)
 endif()
+# IAM authentication (.kiro/specs/iam-compatible-auth/ task 21): the
+# composition root wires in the IAM module's embedded replica and verifier.
+# Without CONFIG_REDIS_GATEWAY_IAM the daemon has no IAM code and no
+# KYTHIRA_IAM_* variables (checked by redis_gateway_node_iam_switch below).
+set(_REDIS_GATEWAY_IAM OFF)
+if(KCONFIG_REDIS_GATEWAY_IAM AND KYTHIRA_BUILD_IAM AND TARGET certificate_authority)
+    set(_REDIS_GATEWAY_IAM ON)
+    target_sources(redis_gateway_node PRIVATE iam_auth.cpp)
+    target_compile_definitions(redis_gateway_node PRIVATE KYTHIRA_REDIS_GATEWAY_IAM)
+    # kythira_iam is defined by services/iam/, which the top level enters
+    # after this module; CMake resolves the name when it generates.
+    # certificate_authority carries KYTHIRA_HAS_OPENSSL, which the IAM
+    # replica's TLS RPC headers need, as for iam_node.
+    target_link_libraries(redis_gateway_node PRIVATE kythira_iam certificate_authority)
+endif()
 target_compile_features(redis_gateway_node PRIVATE cxx_std_23)
 
 set_target_properties(redis_gateway_node PROPERTIES
@@ -90,3 +105,15 @@ set_target_properties(redis_gateway_node_snapshot PROPERTIES
     JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+
+# A build with CONFIG_REDIS_GATEWAY_IAM off has no IAM variables, and one
+# with it on documents them (iam-compatible-auth task 21).
+add_test(NAME redis_gateway_node_iam_switch COMMAND redis_gateway_node --help)
+if(_REDIS_GATEWAY_IAM)
+    set_tests_properties(redis_gateway_node_iam_switch PROPERTIES
+        PASS_REGULAR_EXPRESSION "KYTHIRA_IAM_VOTERS")
+else()
+    set_tests_properties(redis_gateway_node_iam_switch PROPERTIES
+        FAIL_REGULAR_EXPRESSION "KYTHIRA_IAM_")
+endif()
+set_tests_properties(redis_gateway_node_iam_switch PROPERTIES LABELS "unit;redis" TIMEOUT 30)

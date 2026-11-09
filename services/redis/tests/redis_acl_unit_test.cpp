@@ -184,34 +184,83 @@ BOOST_AUTO_TEST_CASE(role_names_round_trip, *boost::unit_test::timeout(30)) {
     BOOST_CHECK_EQUAL(redis_role_name(redis_role::read_write), "read_write");
 }
 
-// Pins today's reading of an `auth=` word after the role, before IAM task 21
-// gives it a meaning (.kiro/specs/redis-gateway-module/ task 1, design
-// "The ACL `auth=` attribute"). Today it is an ordinary key prefix, so an
-// older gateway that meets `auth=iam` in an ACL file still allows password
-// AUTH for that user, scoped to keys starting "auth=iam". Task 21 must
-// change this test, and roll every gateway before any ACL uses `auth=`.
-BOOST_AUTO_TEST_CASE(auth_attribute_is_read_as_a_key_prefix_today, *boost::unit_test::timeout(30)) {
+// IAM task 21 (Requirement 13.1): `auth=` is a reserved attribute, like
+// `cert=`, not the key prefix it was before (redis-gateway-module task 1
+// pinned that reading here). An `auth=iam` user has no password, whatever
+// its record says; `auth=both` keeps it.
+BOOST_AUTO_TEST_CASE(auth_attribute_is_reserved_not_a_key_prefix, *boost::unit_test::timeout(30)) {
     redis_acl acl;
     acl.reload("user farm " + redis_acl::hash_secret("farm-secret", test_iters) +
-               " read_write auth=iam sccache/\n" + "user iamonly " +
-               redis_acl::hash_secret("iam-secret", test_iters) + " read_only auth=iam\n");
+               " read_write auth=iam sccache/\n" + "user both " +
+               redis_acl::hash_secret("both-secret", test_iters) +
+               " read_only sccache/ auth=both\n" + "user plain " +
+               redis_acl::hash_secret("plain-secret", test_iters) + " read_only sccache/\n" +
+               "user explicit " + redis_acl::hash_secret("explicit-secret", test_iters) +
+               " read_only sccache/ auth=password\n");
 
     const auto users =
         redis_acl::parse("user farm " + redis_acl::hash_secret("farm-secret", test_iters) +
                          " read_write auth=iam sccache/\n");
     BOOST_REQUIRE_EQUAL(users.size(), 1U);
-    BOOST_CHECK(users[0]._key_prefixes == (std::vector<std::string>{"auth=iam", "sccache/"}));
+    BOOST_CHECK(users[0]._key_prefixes == (std::vector<std::string>{"sccache/"}));
+    BOOST_CHECK(users[0]._auth == kythira::redis_auth_mode::iam);
 
-    auto farm = acl.authenticate("farm", "farm-secret");
+    BOOST_CHECK(!acl.authenticate("farm", "farm-secret").has_value());
+    BOOST_CHECK(acl.auth_mode_of("farm") == kythira::redis_auth_mode::iam);
+    auto farm = acl.identity_of("farm");
     BOOST_REQUIRE(farm.has_value());
-    BOOST_CHECK(farm->_key_prefixes == (std::vector<std::string>{"auth=iam", "sccache/"}));
-    BOOST_CHECK(redis_acl::key_in_scope(*farm, "sccache/obj"));
-    BOOST_CHECK(redis_acl::key_in_scope(*farm, "auth=iam/anything"));
+    BOOST_CHECK(farm->_key_prefixes == (std::vector<std::string>{"sccache/"}));
 
-    // A user whose only word after the role is `auth=iam` still has a
-    // password and a one-prefix scope: there is no IAM-only user yet.
-    auto iamonly = acl.authenticate("iamonly", "iam-secret");
-    BOOST_REQUIRE(iamonly.has_value());
-    BOOST_CHECK(iamonly->_key_prefixes == (std::vector<std::string>{"auth=iam"}));
-    BOOST_CHECK(!redis_acl::key_in_scope(*iamonly, "sccache/obj"));
+    BOOST_CHECK(acl.authenticate("both", "both-secret").has_value());
+    BOOST_CHECK(acl.auth_mode_of("both") == kythira::redis_auth_mode::both);
+    BOOST_CHECK(acl.authenticate("plain", "plain-secret").has_value());
+    BOOST_CHECK(acl.auth_mode_of("plain") == kythira::redis_auth_mode::password);
+    BOOST_CHECK(acl.auth_mode_of("explicit") == kythira::redis_auth_mode::password);
+    BOOST_CHECK(!acl.auth_mode_of("nobody").has_value());
+}
+
+BOOST_AUTO_TEST_CASE(auth_attribute_rejects_repeated_and_unknown_values,
+                     *boost::unit_test::timeout(30)) {
+    const auto secret = redis_acl::hash_secret("s", test_iters);
+    BOOST_CHECK_THROW(
+        (void)redis_acl::parse("user u " + secret + " read_only p/ auth=iam auth=iam"),
+        kythira::redis_acl_parse_error);
+    BOOST_CHECK_THROW(
+        (void)redis_acl::parse("user u " + secret + " read_only p/ auth=iam auth=password"),
+        kythira::redis_acl_parse_error);
+    BOOST_CHECK_THROW((void)redis_acl::parse("user u " + secret + " read_only p/ auth=IAM"),
+                      kythira::redis_acl_parse_error);
+    BOOST_CHECK_THROW((void)redis_acl::parse("user u " + secret + " read_only p/ auth="),
+                      kythira::redis_acl_parse_error);
+    BOOST_CHECK_THROW((void)redis_acl::parse("user u " + secret + " read_only p/ auth=token"),
+                      kythira::redis_acl_parse_error);
+    // A bad edit keeps the table in force.
+    redis_acl acl;
+    acl.reload("user u " + secret + " read_only p/\n");
+    BOOST_CHECK_THROW(acl.reload("user u " + secret + " read_only p/ auth=nope\n"),
+                      kythira::redis_acl_parse_error);
+    BOOST_CHECK(acl.authenticate("u", "s").has_value());
+}
+
+// `nopass` and `disabled` for a user that is not `password`: no `cert=` is
+// needed, and `disabled` means no password rather than no login. An older
+// gateway refuses a `disabled` user outright, which is how an IAM-only user
+// stays IAM-only while the gateways roll (Requirement 13.1).
+BOOST_AUTO_TEST_CASE(an_iam_user_needs_no_password_and_disabled_keeps_it_iam_only,
+                     *boost::unit_test::timeout(30)) {
+    redis_acl acl;
+    acl.reload(
+        "user a nopass read_only p/ auth=iam\nuser b disabled read_write p/ auth=iam\n"
+        "user c disabled read_only p/\nuser d disabled read_only p/ auth=both\n");
+    BOOST_CHECK(acl.identity_of("a").has_value());
+    BOOST_CHECK(acl.identity_of("b").has_value());
+    BOOST_CHECK(acl.auth_mode_of("b") == kythira::redis_auth_mode::iam);
+    BOOST_CHECK(!acl.authenticate("b", "disabled").has_value());
+    BOOST_CHECK(!acl.identity_of("c").has_value());
+    BOOST_CHECK(!acl.auth_mode_of("c").has_value());
+    BOOST_CHECK(acl.identity_of("d").has_value());
+    BOOST_CHECK(!acl.authenticate("d", "").has_value());
+    // A password user with `nopass` still needs a certificate.
+    BOOST_CHECK_THROW((void)redis_acl::parse("user e nopass read_only p/\n"),
+                      kythira::redis_acl_parse_error);
 }

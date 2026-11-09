@@ -49,3 +49,18 @@ config REDIS_GATEWAY_SNAPSHOT_ISOLATION
 	  every node of a cluster must be built the same way. See
 	  .kiro/specs/multi-raft-transactions/ task 14 and
 	  doc/redis-gateway.md.
+
+config REDIS_GATEWAY_IAM
+	bool "IAM authentication in redis_gateway_node (AUTH with IAM tokens)"
+	default y
+	depends on REDIS_GATEWAY && IAM
+	help
+	  Builds redis_gateway_node with the IAM module's credential
+	  verifier: an ACL user marked auth=iam or auth=both can AUTH with
+	  an ElastiCache-style IAM auth token, checked against an embedded
+	  read replica of the IAM Raft group, so an AUTH makes no network
+	  call. Configured by the KYTHIRA_IAM_* environment variables;
+	  without this option the daemon reads none of them and has no
+	  IAM code. The Redis module itself never
+	  includes IAM: only the daemon's composition root does. See
+	  .kiro/specs/iam-compatible-auth/ task 21.

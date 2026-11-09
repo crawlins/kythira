@@ -16,6 +16,10 @@
 
 #include <kythira/redis/redis_acl.hpp>
 
+#ifdef KYTHIRA_REDIS_GATEWAY_IAM
+#include "iam_auth.hpp"
+#endif
+
 #include <folly/init/Init.h>
 
 #include <atomic>
@@ -82,6 +86,9 @@ auto hash_secret(int argc, char** argv) -> int {
 auto main(int argc, char** argv) -> int {
     if (argc >= 2 && (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0)) {
         std::cout << kythira::redis_node::usage();
+#ifdef KYTHIRA_REDIS_GATEWAY_IAM
+        std::cout << "\n" << kythira::redis_node::iam_auth_usage();
+#endif
         return 0;
     }
     if (argc >= 2 && std::strcmp(argv[1], "--hash-secret") == 0) {
@@ -96,8 +103,19 @@ auto main(int argc, char** argv) -> int {
     folly::Init init(&argc, &argv);
 
     kythira::redis_node::node_options opt;
+#ifdef KYTHIRA_REDIS_GATEWAY_IAM
+    // Before the gateway starts and after the environment is read; it
+    // outlives every gateway configured with its verifier.
+    std::unique_ptr<kythira::redis_node::iam_auth> iam;
+#endif
     try {
         opt = kythira::redis_node::from_env();
+#ifdef KYTHIRA_REDIS_GATEWAY_IAM
+        iam = kythira::redis_node::start_iam_auth_from_env();
+        if (iam) {
+            opt._gateway._credential_verifier = iam->verifier();
+        }
+#endif
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";
         return 2;

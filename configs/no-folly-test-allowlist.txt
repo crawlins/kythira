@@ -171,6 +171,7 @@ proxygen_transport_test the proxygen transport depends on Folly (Kconfig: PROXYG
 raft_submit_command_timeout_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 redis_gateway_disk_store_integration_test the disk-store twin of `redis_gateway_integration_test`: gated on folly_FOUND in tests/CMakeLists.txt
 redis_gateway_integration_test gated on folly_FOUND in services/redis/tests/CMakeLists.txt, like the redis_gateway_node daemon
+redis_gateway_node_iam_switch checks redis_gateway_node --help, and the daemon is built only when folly_FOUND (services/redis/cmd/redis_gateway_node/CMakeLists.txt)
 redis_gateway_snapshot_test the snapshot-isolation twin of `redis_gateway_txn_test`: gated on folly_FOUND in tests/CMakeLists.txt, with redis_gateway_integration_test
 redis_gateway_txn_test gated on folly_FOUND in tests/CMakeLists.txt, with redis_gateway_integration_test
 semi_promise_concept_requirements_property_test uses Folly directly (`folly::Unit`, `folly::exception_wrapper`)

@@ -15,13 +15,25 @@
 ///
 /// ACL file format, one user per line, `#` comments and blank lines ignored:
 ///
-///     user <name> <secret-record|nopass> <role> [prefix ...] [cert=<subject>]
+///     user <name> <secret-record|nopass|disabled> <role> [prefix ...]
+///          [cert=<subject>] [auth=password|iam|both]
 ///
 /// where `<secret-record>` is `pbkdf2-sha256$<iterations>$<b64 salt>$<b64 dk>`
 /// as produced by `redis_acl::hash_secret` (and the daemon's `--hash-secret`
 /// subcommand). A user with no prefix can reach no keys: scope is granted,
 /// never assumed. A `cert=` subject lets an mTLS client authenticate without
 /// an AUTH command.
+///
+/// `auth=` (IAM task 21, Requirement 13.1) says how `AUTH` authenticates the
+/// user: `password` (the default) against the secret record, `iam` only
+/// through the gateway's credential verifier (an IAM auth token), and `both`
+/// through the verifier first and then the password. It is a reserved
+/// attribute like `cert=`, never a key prefix; a repeated or unknown value is
+/// a parse error. For a user that is not `password`, `nopass` needs no
+/// `cert=` and `disabled` means "no password" rather than "no login": an
+/// older gateway, which reads `auth=iam` as a key prefix, refuses a
+/// `disabled` user outright, so that is how an IAM-only user stays IAM-only
+/// during a rolling upgrade.
 
 #include <algorithm>
 #include <cstddef>
@@ -75,6 +87,27 @@ enum class redis_role : std::uint8_t {
     return std::nullopt;
 }
 
+/// How `AUTH` authenticates a user (the ACL's `auth=` attribute).
+enum class redis_auth_mode : std::uint8_t {
+    password,
+    iam,
+    both
+};
+
+[[nodiscard]] inline auto parse_redis_auth_mode(std::string_view s)
+    -> std::optional<redis_auth_mode> {
+    if (s == "password") {
+        return redis_auth_mode::password;
+    }
+    if (s == "iam") {
+        return redis_auth_mode::iam;
+    }
+    if (s == "both") {
+        return redis_auth_mode::both;
+    }
+    return std::nullopt;
+}
+
 struct redis_acl_user {
     std::string _name;
     /// `pbkdf2-sha256$<iters>$<b64 salt>$<b64 dk>`, or empty for `nopass`.
@@ -87,6 +120,8 @@ struct redis_acl_user {
     std::vector<std::string> _key_prefixes;
     /// TLS client-certificate subjects that authenticate as this user.
     std::vector<std::string> _cert_subjects;
+    /// How `AUTH` authenticates this user.
+    redis_auth_mode _auth = redis_auth_mode::password;
 };
 
 /// What a connection carries after authentication succeeds.
@@ -393,7 +428,9 @@ public:
         auto table = snapshot();
         const auto* u = table->find(user);
         bool ok = false;
-        if (u != nullptr && u->_enabled && !u->_secret.empty()) {
+        // An `auth=iam` user has no password, whatever its record says.
+        if (u != nullptr && u->_enabled && !u->_secret.empty() &&
+            u->_auth != redis_auth_mode::iam) {
             ok = verify_secret(u->_secret, secret);
         } else {
             // Burn the same KDF work as a real verification would.
@@ -416,6 +453,18 @@ public:
             return std::nullopt;
         }
         return redis_identity{u->_name, u->_role, u->_key_prefixes};
+    }
+
+    /// The `auth=` mode of an enabled user, or nothing for an unknown or
+    /// disabled one. The composition root selects the users the credential
+    /// verifier handles from this (`iam` and `both`).
+    [[nodiscard]] auto auth_mode_of(std::string_view user) const -> std::optional<redis_auth_mode> {
+        auto table = snapshot();
+        const auto* u = table->find(user);
+        if (u == nullptr || !u->_enabled) {
+            return std::nullopt;
+        }
+        return u->_auth;
     }
 
     /// mTLS: map a verified client-certificate subject to a user.
@@ -486,7 +535,9 @@ public:
                 fail("expected 'user'");
             }
             if (words.size() < 4) {
-                fail("expected: user <name> <secret|nopass> <role> [prefix ...] [cert=<subject>]");
+                fail(
+                    "expected: user <name> <secret|nopass|disabled> <role> [prefix ...] "
+                    "[cert=<subject>] [auth=password|iam|both]");
             }
             redis_acl_user u;
             u._name = words[1];
@@ -498,10 +549,29 @@ public:
                     fail("duplicate user '" + u._name + "'");
                 }
             }
+            // `auth=` first: it changes what `nopass` and `disabled` mean.
+            bool auth_seen = false;
+            for (std::size_t i = 4; i < words.size(); ++i) {
+                if (words[i].rfind("auth=", 0) != 0) {
+                    continue;
+                }
+                if (auth_seen) {
+                    fail("repeated auth= attribute");
+                }
+                auth_seen = true;
+                auto mode = parse_redis_auth_mode(std::string_view(words[i]).substr(5));
+                if (!mode) {
+                    fail("unknown auth= value '" + words[i].substr(5) + "' (password|iam|both)");
+                }
+                u._auth = *mode;
+            }
             if (words[2] == "nopass") {
                 u._secret.clear();
             } else if (words[2] == "disabled") {
-                u._enabled = false;
+                // No password. For a password user that means no login at
+                // all; an iam or both user still logs in through the
+                // verifier.
+                u._enabled = u._auth != redis_auth_mode::password;
             } else if (redis_acl_detail::parse_secret_record(words[2]).has_value()) {
                 u._secret = words[2];
             } else {
@@ -514,6 +584,9 @@ public:
             u._role = *role;
             for (std::size_t i = 4; i < words.size(); ++i) {
                 const auto& w = words[i];
+                if (w.rfind("auth=", 0) == 0) {
+                    continue;  // read above
+                }
                 if (w.rfind("cert=", 0) == 0) {
                     auto subject = w.substr(5);
                     if (subject.empty()) {
@@ -526,7 +599,8 @@ public:
                     u._key_prefixes.push_back(w);
                 }
             }
-            if (u._enabled && u._secret.empty() && u._cert_subjects.empty()) {
+            if (u._enabled && u._secret.empty() && u._cert_subjects.empty() &&
+                u._auth == redis_auth_mode::password) {
                 fail("'nopass' user '" + u._name +
                      "' needs a cert=<subject>; it cannot authenticate by password");
             }

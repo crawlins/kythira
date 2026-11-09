@@ -16,7 +16,9 @@ The check needs no build and no compiler. It reads #include lines and CMake
 files, resolves each include the way the compiler would on the module's
 include path, classifies the target and applies these rules:
 
-  other-module           a module file includes another module's header.
+  other-module           a module file includes another module's header,
+                         other than a composition-root include its
+                         boundary-allow.txt lists as a `module-adapter`.
   impl-header            a module file includes a core *_impl.hpp that its
                          boundary-allow.txt does not list for that file.
   core-tests             a module file includes something under the top-level
@@ -41,7 +43,8 @@ include path, classifies the target and applies these rules:
   allow-entry            a boundary-allow.txt line is malformed, names a file
                          outside the module's cmd/ (the composition root) and
                          tests/, names a header that is not a core *_impl.hpp,
-                         or is never used.
+                         or is never used. A `module-adapter` line must name a
+                         composition-root file and another module's header.
 
 services/<m>/boundary-allow.txt holds the exceptions, one per line, `#`
 starting a comment. Only the composition root (the daemon under cmd/) and
@@ -53,6 +56,16 @@ never may.
 
 The header is either a basename (multi_raft_impl.hpp) or a path relative to
 include/ (raft/multi_raft_impl.hpp). The reason is required.
+
+A second kind of line lets a composition root wire in another module's
+adapter to a core concept (iam-compatible-auth Requirement 17.5), the one
+place two modules may meet:
+
+    <file under cmd/>  module-adapter  <header as included>  <why>
+
+where the header is spelled as the include spells it, relative to the other
+module's include/ (kythira/iam/iam_redis_verifier.hpp). Library headers and
+tests may never include another module.
 
 Each violation prints as `<file>:<line>: [<rule>] <message>`, and as a GitHub
 annotation when GITHUB_ACTIONS is set. The exit status is 1 if there is any
@@ -110,6 +123,9 @@ class AllowEntry:
     file: str
     header: str
     used: bool = False
+    # A `module-adapter` line: `header` is another module's, by its path
+    # under that module's include/.
+    adapter: bool = False
 
     def matches(self, rel_file: str, include_rel: str) -> bool:
         if rel_file != self.file:
@@ -203,6 +219,11 @@ class Checker:
             line = raw.split("#", 1)[0].strip()
             if not line:
                 continue
+            if line.split(None, 1)[1:2] and line.split()[1] == "module-adapter":
+                entry = self.load_adapter_entry(module, allow_path, n, line)
+                if entry is not None:
+                    entries.append(entry)
+                continue
             fields = line.split(None, 2)
             if len(fields) < 3:
                 self.report(allow_path, n, "allow-entry",
@@ -238,6 +259,34 @@ class Checker:
             entries.append(AllowEntry(n, file, header))
         return entries
 
+    def load_adapter_entry(self, module: str, allow_path: Path, n: int,
+                           line: str) -> AllowEntry | None:
+        fields = line.split(None, 3)
+        if len(fields) < 4:
+            self.report(allow_path, n, "allow-entry",
+                        "expected `<file> module-adapter <header> <why>`; "
+                        "the reason is required")
+            return None
+        file, _kind, header, _why = fields
+        if not (self.services / module / file).is_file():
+            self.report(allow_path, n, "allow-entry",
+                        f"{file} does not exist in services/{module}/")
+            return None
+        if not file.startswith("cmd/"):
+            self.report(allow_path, n, "allow-entry",
+                        f"{file} is not the composition root "
+                        f"(services/{module}/cmd/); only it may wire in "
+                        f"another module's adapter")
+            return None
+        owners = [m for m in self.modules if m != module
+                  and (self.services / m / "include" / header).is_file()]
+        if not owners:
+            self.report(allow_path, n, "allow-entry",
+                        f"{header} is not a header under another module's "
+                        f"include/")
+            return None
+        return AllowEntry(n, file, header, adapter=True)
+
     def check_module_file(self, module: str, path: Path,
                           allow: list[AllowEntry]) -> None:
         mod_dir = self.services / module
@@ -269,6 +318,15 @@ class Checker:
             if tgt_mod == module:
                 continue
             if tgt_mod is not None:
+                inc_rel = target.relative_to(
+                    self.services / tgt_mod / "include").as_posix() \
+                    if self.under(target, f"services/{tgt_mod}/include") else None
+                hit = [e for e in allow if e.adapter and e.file == rel_in_mod
+                       and e.header == inc_rel]
+                for e in hit:
+                    e.used = True
+                if hit:
+                    continue
                 self.report(path, n, "other-module",
                             f"includes {self.rel(target)} from module "
                             f"'{tgt_mod}'; share it through a core concept "
@@ -277,7 +335,8 @@ class Checker:
             if self.under(target, "include"):
                 inc_rel = target.relative_to(self.root / "include").as_posix()
                 if target.name.endswith("_impl.hpp"):
-                    hit = [e for e in allow if e.matches(rel_in_mod, inc_rel)]
+                    hit = [e for e in allow
+                           if not e.adapter and e.matches(rel_in_mod, inc_rel)]
                     for e in hit:
                         e.used = True
                     if not hit:

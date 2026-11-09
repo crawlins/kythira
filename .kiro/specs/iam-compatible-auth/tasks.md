@@ -825,7 +825,7 @@ because each has a zero-spend fallback.
 
 ### Phase E — Redis
 
-- [ ] 21. Redis AUTH with IAM tokens
+- [x] 21. Redis AUTH with IAM tokens
   - Needs `redis-gateway-module` tasks 4 and 6 merged (both done). Paths:
     the gateway and ACL are under `services/redis/include/kythira/redis/`,
     the seam is `include/raft/credential_verifier.hpp`, and the hooks are
@@ -860,6 +860,9 @@ because each has a zero-spend fallback.
     - a password user unchanged;
     - a build with `CONFIG_REDIS_GATEWAY_IAM` off has no IAM flags or code.
   - _Requirements: 13.1–13.4, 13.6, 13.7, 17.5_
+  - Done: `iam_redis_verifier.hpp`, `iam_embedded_replica.hpp`, the ACL's
+    `auth=`, `iam_auth.cpp` in `redis_gateway_node`, the `module-adapter`
+    boundary line; INV-REDIS-1 to 9. See design "As built (task 21)".
 
 - [ ] 22. Connection lifetime, limiter and rollout
   - The 12-hour deadline on IAM-authenticated connections, through the

@@ -153,7 +153,7 @@ useless.
 One user per line; `#` starts a comment and blank lines are ignored:
 
 ```
-user <name> <secret-record|nopass> <role> [prefix ...] [cert=<subject>]
+user <name> <secret-record|nopass|disabled> <role> [prefix ...] [cert=<subject>] [auth=password|iam|both]
 ```
 
 - `<secret-record>` is `pbkdf2-sha256$<iterations>$<base64 salt>$<base64 key>`
@@ -172,6 +172,22 @@ user <name> <secret-record|nopass> <role> [prefix ...] [cert=<subject>]
   granted, never assumed.
 - `cert=<subject>` maps an mTLS client certificate's subject to this user,
   so it is authenticated on connect without an `AUTH`.
+- `auth=` says how `AUTH` authenticates the user: `password` (the default)
+  against the secret record, `iam` only with an ElastiCache-style IAM auth
+  token, and `both` with a token first and then the password. A repeated or
+  unknown value rejects the file. Tokens are checked only by a
+  `redis_gateway_node` built with `CONFIG_REDIS_GATEWAY_IAM` and started
+  with `KYTHIRA_IAM_VOTERS` (see "IAM authentication" below); anywhere else
+  an `auth=iam` user cannot log in at all and an `auth=both` user logs in by
+  password. For an `iam` or `both` user, `nopass` needs no `cert=`, and
+  `disabled` means "no password" rather than "no login".
+
+**Rolling upgrades.** A gateway built before `auth=` existed reads
+`auth=iam` as a key prefix and still accepts the user's password for keys
+starting `auth=iam`. Run the new build on every gateway in the cluster
+before any ACL file uses `auth=`. Where that cannot be guaranteed, give an
+IAM-only user the secret `disabled`: an old build refuses that user
+outright, and a new one logs it in with a token only.
 
 Example, the shape of a build farm:
 
@@ -204,6 +220,32 @@ write is fine; the `SET` is parsed after `AUTH` has run. A client that stops
 reading its replies stops having its commands executed once
 `_max_output_buffer_bytes` (32 MiB; 64 KiB before `AUTH`) of replies are
 waiting for it, and the idle timeout eventually closes it.
+
+### IAM authentication
+
+A `redis_gateway_node` built with `CONFIG_REDIS_GATEWAY_IAM` (on whenever
+the gateway and the IAM module both are) can embed a read replica of the
+IAM Raft group and accept, for `auth=iam` and `auth=both` users, the IAM
+auth tokens ElastiCache clients already make: a SigV4 presigned
+`GET http://<cache name>/?Action=connect&User=<user>` for service
+`elasticache`, valid for at most 15 minutes, sent as the `AUTH` password
+(or in `HELLO ... AUTH`). Every check runs against the local replica, so an
+`AUTH` makes no network call. The token's signer must be allowed
+`elasticache:Connect` on both
+`arn:aws:elasticache:<region>:<account>:user:<user>` and
+`arn:aws:elasticache:<region>:<account>:replicationgroup:<cache name>`. The
+ACL user's role and key prefixes then apply as for a password login. The
+forwarding link between gateways keeps its internal ACL user and never needs
+IAM.
+
+`redis_gateway_node --help` lists the variables. `KYTHIRA_IAM_VOTERS` turns
+the feature on; the replica also needs its id in the IAM group
+(registered with `kythira-iam replica-add`), an RPC port, a data
+directory, the IAM cluster's unseal passphrase file, mutual-TLS material
+whose certificate carries the replica id's reserved peer name, and the
+cache's account, region and name. A replica that falls more than
+`KYTHIRA_IAM_MAX_STALENESS_SECS` behind refuses IAM logins until it
+catches up; password logins are unaffected.
 
 ## Configuring sccache
 
