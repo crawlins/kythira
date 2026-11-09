@@ -1,0 +1,1233 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples.html",
+  "description": "Example policies from the IAM User Guide, evaluated end to end.",
+  "cases": [
+    {
+      "name": "manage own access keys: own user",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:CreateAccessKey",
+      "resource": "arn:aws:iam::111122223333:user/alice",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_iam_credentials_console.html",
+      "context": {
+        "aws:username": "alice"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ManageOwnAccessKeys",
+              "Effect": "Allow",
+              "Action": [
+                "iam:CreateAccessKey",
+                "iam:DeleteAccessKey",
+                "iam:ListAccessKeys",
+                "iam:UpdateAccessKey"
+              ],
+              "Resource": "arn:aws:iam::*:user/${aws:username}"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "manage own access keys: another user",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:CreateAccessKey",
+      "resource": "arn:aws:iam::111122223333:user/bob",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_iam_credentials_console.html",
+      "context": {
+        "aws:username": "alice"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ManageOwnAccessKeys",
+              "Effect": "Allow",
+              "Action": [
+                "iam:CreateAccessKey",
+                "iam:DeleteAccessKey",
+                "iam:ListAccessKeys",
+                "iam:UpdateAccessKey"
+              ],
+              "Resource": "arn:aws:iam::*:user/${aws:username}"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "manage own access keys: no username (a role session)",
+      "kind": "evaluate",
+      "principal": "role/r/s",
+      "action": "iam:CreateAccessKey",
+      "resource": "arn:aws:iam::111122223333:user/alice",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_iam_credentials_console.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ManageOwnAccessKeys",
+              "Effect": "Allow",
+              "Action": [
+                "iam:CreateAccessKey",
+                "iam:DeleteAccessKey",
+                "iam:ListAccessKeys",
+                "iam:UpdateAccessKey"
+              ],
+              "Resource": "arn:aws:iam::*:user/${aws:username}"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "S3 home directory: own prefix",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::home-bucket/home/alice/notes.txt",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_s3_home-directory-console.html",
+      "context": {
+        "aws:username": "alice"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Home",
+              "Effect": "Allow",
+              "Action": "s3:*",
+              "Resource": "arn:aws:s3:::home-bucket/home/${aws:username}/*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "S3 home directory: another prefix",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::home-bucket/home/bob/notes.txt",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_s3_home-directory-console.html",
+      "context": {
+        "aws:username": "alice"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Home",
+              "Effect": "Allow",
+              "Action": "s3:*",
+              "Resource": "arn:aws:s3:::home-bucket/home/${aws:username}/*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "S3 home directory: username with a wildcard character is literal",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::home-bucket/home/bob/notes.txt",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_s3_home-directory-console.html",
+      "context": {
+        "aws:username": "*"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "Home",
+              "Effect": "Allow",
+              "Action": "s3:*",
+              "Resource": "arn:aws:s3:::home-bucket/home/${aws:username}/*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "deny outside requested regions: allowed region",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_deny-requested-region.html",
+      "context": {
+        "aws:RequestedRegion": "eu-west-1"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAllOutsideRequestedRegions",
+              "Effect": "Deny",
+              "NotAction": [
+                "iam:*",
+                "sts:*"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringNotEquals": {
+                  "aws:RequestedRegion": [
+                    "eu-central-1",
+                    "eu-west-1"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "deny outside requested regions: other region",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_deny-requested-region.html",
+      "context": {
+        "aws:RequestedRegion": "us-east-1"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAllOutsideRequestedRegions",
+              "Effect": "Deny",
+              "NotAction": [
+                "iam:*",
+                "sts:*"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringNotEquals": {
+                  "aws:RequestedRegion": [
+                    "eu-central-1",
+                    "eu-west-1"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "decided_by": "identity[0]#DenyAllOutsideRequestedRegions",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "deny outside requested regions: global IAM is exempt",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:ListUsers",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_deny-requested-region.html",
+      "context": {
+        "aws:RequestedRegion": "us-east-1"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAllOutsideRequestedRegions",
+              "Effect": "Deny",
+              "NotAction": [
+                "iam:*",
+                "sts:*"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringNotEquals": {
+                  "aws:RequestedRegion": [
+                    "eu-central-1",
+                    "eu-west-1"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "deny outside requested regions: no region key is denied",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_deny-requested-region.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAllOutsideRequestedRegions",
+              "Effect": "Deny",
+              "NotAction": [
+                "iam:*",
+                "sts:*"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringNotEquals": {
+                  "aws:RequestedRegion": [
+                    "eu-central-1",
+                    "eu-west-1"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "date range: inside",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:RunInstances",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws-dates.html",
+      "context": {
+        "aws:CurrentTime": "2026-05-15T12:00:00Z"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*",
+              "Condition": {
+                "DateGreaterThan": {
+                  "aws:CurrentTime": "2026-04-01T00:00:00Z"
+                },
+                "DateLessThan": {
+                  "aws:CurrentTime": "2026-06-30T23:59:59Z"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "date range: before",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:RunInstances",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws-dates.html",
+      "context": {
+        "aws:CurrentTime": "2026-03-31T12:00:00Z"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*",
+              "Condition": {
+                "DateGreaterThan": {
+                  "aws:CurrentTime": "2026-04-01T00:00:00Z"
+                },
+                "DateLessThan": {
+                  "aws:CurrentTime": "2026-06-30T23:59:59Z"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "date range: after",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:RunInstances",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws-dates.html",
+      "context": {
+        "aws:CurrentTime": "2026-07-01T00:00:00Z"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*",
+              "Condition": {
+                "DateGreaterThan": {
+                  "aws:CurrentTime": "2026-04-01T00:00:00Z"
+                },
+                "DateLessThan": {
+                  "aws:CurrentTime": "2026-06-30T23:59:59Z"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "deny by source IP: inside the ranges",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_deny-ip.html",
+      "context": {
+        "aws:SourceIp": "192.0.2.10",
+        "aws:ViaAWSService": "false"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyOutsideIp",
+              "Effect": "Deny",
+              "Action": "*",
+              "Resource": "*",
+              "Condition": {
+                "NotIpAddress": {
+                  "aws:SourceIp": [
+                    "192.0.2.0/24",
+                    "203.0.113.0/24"
+                  ]
+                },
+                "Bool": {
+                  "aws:ViaAWSService": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "deny by source IP: outside the ranges",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_deny-ip.html",
+      "context": {
+        "aws:SourceIp": "198.51.100.1",
+        "aws:ViaAWSService": "false"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyOutsideIp",
+              "Effect": "Deny",
+              "Action": "*",
+              "Resource": "*",
+              "Condition": {
+                "NotIpAddress": {
+                  "aws:SourceIp": [
+                    "192.0.2.0/24",
+                    "203.0.113.0/24"
+                  ]
+                },
+                "Bool": {
+                  "aws:ViaAWSService": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "deny by source IP: a call via a service is not denied",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_deny-ip.html",
+      "context": {
+        "aws:SourceIp": "198.51.100.1",
+        "aws:ViaAWSService": "true"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyOutsideIp",
+              "Effect": "Deny",
+              "Action": "*",
+              "Resource": "*",
+              "Condition": {
+                "NotIpAddress": {
+                  "aws:SourceIp": [
+                    "192.0.2.0/24",
+                    "203.0.113.0/24"
+                  ]
+                },
+                "Bool": {
+                  "aws:ViaAWSService": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "MFA example: Kythira reports no MFA, so the deny applies",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_my-sec-creds-self-manage.html",
+      "context": {
+        "aws:MultiFactorAuthPresent": "false"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAllExceptListedIfNoMFA",
+              "Effect": "Deny",
+              "NotAction": [
+                "iam:ChangePassword",
+                "iam:GetUser",
+                "sts:GetSessionToken"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "BoolIfExists": {
+                  "aws:MultiFactorAuthPresent": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "MFA example: listed actions stay allowed",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:GetUser",
+      "resource": "arn:aws:iam::111122223333:user/alice",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_my-sec-creds-self-manage.html",
+      "context": {
+        "aws:MultiFactorAuthPresent": "false"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAllExceptListedIfNoMFA",
+              "Effect": "Deny",
+              "NotAction": [
+                "iam:ChangePassword",
+                "iam:GetUser",
+                "sts:GetSessionToken"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "BoolIfExists": {
+                  "aws:MultiFactorAuthPresent": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "MFA example: key absent, IfExists makes the deny apply",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_my-sec-creds-self-manage.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAllExceptListedIfNoMFA",
+              "Effect": "Deny",
+              "NotAction": [
+                "iam:ChangePassword",
+                "iam:GetUser",
+                "sts:GetSessionToken"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "BoolIfExists": {
+                  "aws:MultiFactorAuthPresent": "false"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "ABAC: matching project tag",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:StartInstances",
+      "resource": "arn:aws:ec2:us-east-1:111122223333:instance/i-1",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_attribute-based-access-control.html",
+      "context": {
+        "aws:ResourceTag/Project": "pegasus",
+        "aws:PrincipalTag/Project": "pegasus"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "TagMatch",
+              "Effect": "Allow",
+              "Action": [
+                "ec2:StartInstances",
+                "ec2:StopInstances"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceTag/Project": "${aws:PrincipalTag/Project}"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "ABAC: different project tag",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:StartInstances",
+      "resource": "arn:aws:ec2:us-east-1:111122223333:instance/i-1",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_attribute-based-access-control.html",
+      "context": {
+        "aws:ResourceTag/Project": "unicorn",
+        "aws:PrincipalTag/Project": "pegasus"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "TagMatch",
+              "Effect": "Allow",
+              "Action": [
+                "ec2:StartInstances",
+                "ec2:StopInstances"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceTag/Project": "${aws:PrincipalTag/Project}"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "ABAC: principal has no project tag",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:StartInstances",
+      "resource": "arn:aws:ec2:us-east-1:111122223333:instance/i-1",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_attribute-based-access-control.html",
+      "context": {
+        "aws:ResourceTag/Project": "pegasus"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "TagMatch",
+              "Effect": "Allow",
+              "Action": [
+                "ec2:StartInstances",
+                "ec2:StopInstances"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceTag/Project": "${aws:PrincipalTag/Project}"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "request tags: allowed keys and value",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:CreateTags",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_tags.html",
+      "context": {
+        "aws:TagKeys": [
+          "Project"
+        ],
+        "aws:RequestTag/Project": "pegasus"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:CreateTags",
+              "Resource": "*",
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "Project",
+                    "Owner"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "aws:RequestTag/Project": [
+                    "pegasus",
+                    "unicorn"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "request tags: a disallowed key",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:CreateTags",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_tags.html",
+      "context": {
+        "aws:TagKeys": [
+          "Project",
+          "Cost"
+        ],
+        "aws:RequestTag/Project": "pegasus"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:CreateTags",
+              "Resource": "*",
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "Project",
+                    "Owner"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "aws:RequestTag/Project": [
+                    "pegasus",
+                    "unicorn"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "request tags: a disallowed value",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "ec2:CreateTags",
+      "resource": "*",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_tags.html",
+      "context": {
+        "aws:TagKeys": [
+          "Project"
+        ],
+        "aws:RequestTag/Project": "other"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:CreateTags",
+              "Resource": "*",
+              "Condition": {
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "Project",
+                    "Owner"
+                  ]
+                },
+                "StringEqualsIfExists": {
+                  "aws:RequestTag/Project": [
+                    "pegasus",
+                    "unicorn"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "bucket policy denies plain HTTP",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html",
+      "context": {
+        "aws:SecureTransport": "false"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "DenyInsecure",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": [
+              "arn:aws:s3:::bucket",
+              "arn:aws:s3:::bucket/*"
+            ],
+            "Condition": {
+              "Bool": {
+                "aws:SecureTransport": "false"
+              }
+            }
+          }
+        ]
+      },
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "bucket policy allows TLS through the identity policy",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html",
+      "context": {
+        "aws:SecureTransport": "true"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "DenyInsecure",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": [
+              "arn:aws:s3:::bucket",
+              "arn:aws:s3:::bucket/*"
+            ],
+            "Condition": {
+              "Bool": {
+                "aws:SecureTransport": "false"
+              }
+            }
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "bucket policy for principals of one account: same account",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html",
+      "context": {
+        "aws:PrincipalAccount": "111122223333"
+      },
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "OwnAccountOnly",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*",
+            "Condition": {
+              "StringEquals": {
+                "aws:PrincipalAccount": "111122223333"
+              }
+            }
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "bucket policy for principals of one account: other account",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html",
+      "principal_account": "444455556666",
+      "resource_account": "111122223333",
+      "context": {
+        "aws:PrincipalAccount": "444455556666"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "resource_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "OwnAccountOnly",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::bucket/*",
+            "Condition": {
+              "StringEquals": {
+                "aws:PrincipalAccount": "111122223333"
+              }
+            }
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "Version 2008-10-17: variables are literal",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:GetUser",
+      "resource": "arn:aws:iam::111122223333:user/alice",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_version.html",
+      "context": {
+        "aws:username": "alice"
+      },
+      "identity": [
+        {
+          "Version": "2008-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "iam:GetUser",
+              "Resource": "arn:aws:iam::*:user/${aws:username}"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "change own password",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:ChangePassword",
+      "resource": "arn:aws:iam::111122223333:user/alice",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_my-sec-creds-self-manage-password-only.html",
+      "context": {
+        "aws:username": "alice"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ViewAndUpdateOwnPassword",
+              "Effect": "Allow",
+              "Action": [
+                "iam:ChangePassword",
+                "iam:GetUser"
+              ],
+              "Resource": "arn:aws:iam::*:user/${aws:username}"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "change another user password",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:ChangePassword",
+      "resource": "arn:aws:iam::111122223333:user/bob",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_aws_my-sec-creds-self-manage-password-only.html",
+      "context": {
+        "aws:username": "alice"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ViewAndUpdateOwnPassword",
+              "Effect": "Allow",
+              "Action": [
+                "iam:ChangePassword",
+                "iam:GetUser"
+              ],
+              "Resource": "arn:aws:iam::*:user/${aws:username}"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "PassRole to the named service",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:PassRole",
+      "resource": "arn:aws:iam::111122223333:role/ec2-web",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html",
+      "context": {
+        "iam:PassedToService": "ec2.amazonaws.com"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "iam:PassRole",
+              "Resource": "arn:aws:iam::111122223333:role/ec2-*",
+              "Condition": {
+                "StringEquals": {
+                  "iam:PassedToService": "ec2.amazonaws.com"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "PassRole to another service",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:PassRole",
+      "resource": "arn:aws:iam::111122223333:role/ec2-web",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html",
+      "context": {
+        "iam:PassedToService": "lambda.amazonaws.com"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "iam:PassRole",
+              "Resource": "arn:aws:iam::111122223333:role/ec2-*",
+              "Condition": {
+                "StringEquals": {
+                  "iam:PassedToService": "ec2.amazonaws.com"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "PassRole for a role outside the pattern",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:PassRole",
+      "resource": "arn:aws:iam::111122223333:role/admin",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html",
+      "context": {
+        "iam:PassedToService": "ec2.amazonaws.com"
+      },
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "iam:PassRole",
+              "Resource": "arn:aws:iam::111122223333:role/ec2-*",
+              "Condition": {
+                "StringEquals": {
+                  "iam:PassedToService": "ec2.amazonaws.com"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    }
+  ]
+}

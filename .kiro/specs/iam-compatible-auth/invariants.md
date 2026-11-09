@@ -21,6 +21,7 @@ Test files are under `services/iam/tests/` unless a path says otherwise:
 - `val` is `iam_validation_test.cpp`;
 - `sm` is `iam_state_machine_test.cpp`;
 - `adm` is `iam_admin_test.cpp`;
+- `ev` is `iam_evaluator_test.cpp`;
 - `pol` is `iam_policy_test.cpp` with its corpus, where `corpus:<file>`
   names a file under `corpus/`;
 - `sigv4` is `tests/sigv4_verifier_test.cpp`.
@@ -197,23 +198,24 @@ plus pol suite `iam_conditions`.
 
 ## Evaluation (task 12)
 
-Source: [policy evaluation logic][evallogic] and its cross-account page.
-The tests are corpus cases in task 12's PR, one or more per row.
+Source: [policy evaluation logic][evallogic], its subpage on how the
+enforcement code decides, and its cross-account page. Each row has a named
+case in `ev` and corpus cases under `corpus/evaluate/`.
 
 | Id | Invariant | Status |
 |---|---|---|
-| INV-EVAL-1 | Default deny: with no allow, the request is denied | Task 12 |
-| INV-EVAL-2 | An explicit deny in any applicable policy wins over every allow | Task 12 |
-| INV-EVAL-3 | The order is the deny scan, then the RCP and SCP seam, then resource-based, identity-based, boundary and session policies | Task 12 |
-| INV-EVAL-4 | In the same account, a resource-policy allow grants without an identity allow, except in role trust policies (and KMS key policies), which need both | Task 12 |
-| INV-EVAL-5 | A boundary limits identity-policy allows only. A resource policy naming an IAM user ARN is not limited by it. | Task 12 |
-| INV-EVAL-6 | A resource-policy grant to a role ARN is limited by the session's boundary and session policy, but a grant to the session ARN is not | Task 12 |
-| INV-EVAL-7 | A grant to a federated-user ARN is not limited by the session policy | Task 12 (with task 26) |
-| INV-EVAL-8 | When a session policy is present, an identity-based allow also needs a session-policy allow | Task 12 |
-| INV-EVAL-9 | Cross-account access needs an allow on both sides | Task 12 |
-| INV-EVAL-10 | The root user is allowed unless an explicit deny or the SCP seam stops it | Task 12 |
-| INV-EVAL-11 | NotAction, NotResource and NotPrincipal invert the match, and a Deny with NotPrincipal exempts the listed principals | Task 12 |
-| INV-EVAL-12 | `Principal: "*"` narrowed by `aws:PrincipalArn` is treated like a grant to that principal: neither the boundary nor the session policy limits it | Task 12 |
+| INV-EVAL-1 | Default deny: with no allow, the request is denied | Tested: ev `inv_eval_1_default_deny`, `corpus:evaluate/order_and_deny.json` |
+| INV-EVAL-2 | An explicit deny in any applicable policy wins over every allow | Tested: ev `inv_eval_2_explicit_deny_in_any_policy_wins`, `corpus:evaluate/order_and_deny.json` |
+| INV-EVAL-3 | The order is the deny scan, then the RCP and SCP seam, then resource-based, identity-based, boundary and session policies | Tested: ev `inv_eval_3_deny_scan_comes_before_every_allow`, `corpus:evaluate/order_and_deny.json` |
+| INV-EVAL-4 | In the same account, a resource-policy allow grants without an identity allow. Role trust policies and KMS key policies are the exception: they must allow the principal themselves, and an identity allow alone is not enough. A grant naming the account (its id or root ARN) delegates to identity policies, so it needs an identity allow too. | Tested: ev `inv_eval_4_resource_grant_alone_except_trust_and_key_policies`, `corpus:evaluate/resource_same_account.json` |
+| INV-EVAL-5 | A boundary limits identity-policy allows only. A resource policy naming an IAM user ARN is not limited by it. | Tested: ev `inv_eval_5_boundary_limits_identity_allows_only`, `corpus:evaluate/resource_same_account.json`, `corpus:evaluate/boundaries_sessions.json` |
+| INV-EVAL-6 | A resource-policy grant to a role ARN is limited by the session's boundary and session policy, but a grant to the session ARN is not | Tested: ev `inv_eval_6_role_arn_grant_limited_session_arn_grant_not`, `corpus:evaluate/resource_same_account.json` |
+| INV-EVAL-7 | A grant to a federated-user ARN is not limited by the session policy | Tested: ev `inv_eval_7_federated_user_arn_grant_not_limited_by_session_policy`, `corpus:evaluate/resource_same_account.json` (STS side: task 26) |
+| INV-EVAL-8 | When a session policy is present, an identity-based allow also needs a session-policy allow | Tested: ev `inv_eval_8_session_policy_must_also_allow`, `corpus:evaluate/boundaries_sessions.json` |
+| INV-EVAL-9 | Cross-account access needs an allow on both sides | Tested: ev `inv_eval_9_cross_account_needs_both_sides`, `corpus:evaluate/cross_account.json` |
+| INV-EVAL-10 | The root user is allowed unless an explicit deny or the SCP seam stops it | Tested: ev `inv_eval_10_root_user_allowed_unless_denied`, `corpus:evaluate/principals.json` |
+| INV-EVAL-11 | NotAction, NotResource and NotPrincipal invert the match, and a Deny with NotPrincipal exempts the listed principals | Tested: ev `inv_eval_11_not_elements_invert_and_not_principal_exempts`, `corpus:evaluate/order_and_deny.json`, `corpus:evaluate/principals.json` |
+| INV-EVAL-12 | `Principal: "*"` narrowed by `aws:PrincipalArn` is treated like a grant to that principal: neither the boundary nor the session policy limits it | Tested: ev `inv_eval_12_principal_star_narrowed_by_principal_arn_is_not_limited`, `corpus:evaluate/resource_same_account.json` |
 
 ## STS parameters
 

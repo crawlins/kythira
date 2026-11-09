@@ -1,0 +1,665 @@
+{
+  "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+  "description": "Permissions boundaries and session policies as intersections with identity-based allows (INV-EVAL-5, -8).",
+  "cases": [
+    {
+      "name": "identity allow within the boundary",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "boundary alone grants nothing",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "boundary allows, identity does not",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "boundary allows another resource only",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "arn:aws:s3:::other/*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "boundary with a condition that holds",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:RequestedRegion": "us-east-1"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "aws:RequestedRegion": "us-east-1"
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "boundary with a condition that fails",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:RequestedRegion": "us-east-1"
+              }
+            }
+          }
+        ]
+      },
+      "context": {
+        "aws:RequestedRegion": "eu-west-1"
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "boundary on a role session limits its identity allow",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "boundary example: deny IAM changes to the boundary itself",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "iam:DeleteUserPermissionsBoundary",
+      "resource": "arn:aws:iam::111122223333:user/alice",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          },
+          {
+            "Sid": "NoBoundaryChange",
+            "Effect": "Deny",
+            "Action": [
+              "iam:DeleteUserPermissionsBoundary",
+              "iam:PutUserPermissionsBoundary"
+            ],
+            "Resource": "*"
+          }
+        ]
+      },
+      "decided_by": "boundary#NoBoundaryChange",
+      "expect": "explicit_deny"
+    },
+    {
+      "name": "role session without a session policy is not limited",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "session policy is an intersection (INV-EVAL-8)",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "identity and session both allow",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:Get*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "session policy alone grants nothing",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session",
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "any of several session policies may allow",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        },
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "session policy wider than the role does not widen it",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "federated user: identity and session policy both allow",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_request.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "federated user without a session policy has no permissions",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_request.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "federated user: session policy narrower than the user",
+      "kind": "evaluate",
+      "principal": "federated/fed1/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_request.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    },
+    {
+      "name": "a session policy has no effect on an IAM user",
+      "kind": "evaluate",
+      "principal": "user/alice",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowGet",
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "arn:aws:s3:::bucket/*"
+            }
+          ]
+        }
+      ],
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "ec2:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "boundary, identity and session all allow",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "s3:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "boundary blocks what identity and session allow",
+      "kind": "evaluate",
+      "principal": "role/dev/s",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::bucket/key",
+      "source": "https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html",
+      "identity": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "boundary": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ec2:*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "session": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "expect": "implicit_deny"
+    }
+  ]
+}

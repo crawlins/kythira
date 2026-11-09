@@ -12,12 +12,14 @@
 #include <boost/test/unit_test.hpp>
 
 #include <kythira/iam/iam_conditions.hpp>
+#include <kythira/iam/iam_evaluator.hpp>
 #include <kythira/iam/iam_policy.hpp>
 
 #include <boost/json.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -74,6 +76,137 @@ auto context_of(const boost::json::object& c) -> iam::context_keys {
         }
     }
     return ctx;
+}
+
+// An `evaluate` case's `principal`, from its shorthand (corpus/README.md):
+// `root`, `user/NAME`, `role/ROLE/SESSION`, `federated/NAME/USER`,
+// `service/NAME`, `web/PROVIDER` or `anonymous`, in `principal_account`
+// (default 111122223333).
+auto principal_of(const boost::json::object& c) -> iam::principal {
+    const std::string spec(c.at("principal").as_string());
+    std::string account = "111122223333";
+    if (const auto* a = c.if_contains("principal_account")) {
+        account = std::string(a->as_string());
+    }
+    std::vector<std::string> parts;
+    std::stringstream in(spec);
+    for (std::string part; std::getline(in, part, '/');) {
+        parts.push_back(part);
+    }
+    iam::principal p;
+    const auto iam_arn = [&](const std::string& rest) {
+        return "arn:aws:iam::" + account + ":" + rest;
+    };
+    const auto sts_arn = [&](const std::string& rest) {
+        return "arn:aws:sts::" + account + ":" + rest;
+    };
+    const auto& head = parts.at(0);
+    if (head == "root") {
+        p.kind = iam::principal_kind::root;
+        p.account = account;
+        p.arn = iam_arn("root");
+    } else if (head == "user") {
+        p.kind = iam::principal_kind::user;
+        p.account = account;
+        p.arn = iam_arn("user/" + parts.at(1));
+    } else if (head == "role") {
+        p.kind = iam::principal_kind::role_session;
+        p.account = account;
+        p.role_arn = iam_arn("role/" + parts.at(1));
+        p.arn = sts_arn("assumed-role/" + parts.at(1) + "/" + parts.at(2));
+    } else if (head == "federated") {
+        p.kind = iam::principal_kind::federated_user;
+        p.account = account;
+        p.arn = sts_arn("federated-user/" + parts.at(1));
+        p.user_arn = iam_arn("user/" + parts.at(2));
+    } else if (head == "service") {
+        p.kind = iam::principal_kind::service;
+        p.name = spec.substr(head.size() + 1);
+    } else if (head == "web") {
+        p.kind = iam::principal_kind::web_identity;
+        p.name = spec.substr(head.size() + 1);
+    } else {
+        BOOST_REQUIRE_MESSAGE(head == "anonymous", "unknown principal shorthand " << spec);
+    }
+    return p;
+}
+
+void run_evaluate(const boost::json::object& c) {
+    // The documents live here for the request's lifetime; a deque keeps
+    // their addresses stable as more are added.
+    std::deque<iam::policy_document> docs;
+    const auto parse = [&](const boost::json::value& v,
+                           iam::policy_type t) -> const iam::policy_document* {
+        docs.push_back(iam::parse_policy(boost::json::serialize(v), t));
+        return &docs.back();
+    };
+    iam::evaluation_request r;
+    r.who = principal_of(c);
+    r.action = std::string(c.at("action").as_string());
+    r.resource = c.contains("resource") ? std::string(c.at("resource").as_string()) : "*";
+    if (const auto* a = c.if_contains("resource_account")) {
+        r.resource_account = std::string(a->as_string());
+    }
+    r.context = context_of(c);
+    const auto list = [&](const char* key, iam::policy_type t,
+                          std::vector<iam::named_policy>& out) {
+        if (const auto* v = c.if_contains(key)) {
+            std::size_t i = 0;
+            for (const auto& d : v->as_array()) {
+                out.push_back({std::string(key) + "[" + std::to_string(i++) + "]", parse(d, t)});
+            }
+        }
+    };
+    list("identity", iam::policy_type::identity, r.identity);
+    list("session", iam::policy_type::session, r.session);
+    if (const auto* b = c.if_contains("boundary")) {
+        r.boundary = iam::named_policy{"boundary", parse(*b, iam::policy_type::boundary)};
+    }
+    std::string kind = "ordinary";
+    if (const auto* k = c.if_contains("resource_kind")) {
+        kind = std::string(k->as_string());
+    }
+    if (kind == "trust") {
+        r.resource_kind = iam::resource_policy_kind::trust;
+    } else if (kind == "key") {
+        r.resource_kind = iam::resource_policy_kind::key;
+    } else {
+        BOOST_REQUIRE_MESSAGE(kind == "ordinary", "unknown resource_kind " << kind);
+    }
+    if (const auto* rp = c.if_contains("resource_policy")) {
+        r.resource_policy = iam::named_policy{
+            "resource",
+            parse(*rp, kind == "trust" ? iam::policy_type::trust : iam::policy_type::resource)};
+    }
+
+    const auto d = iam::evaluate(r);
+    const std::string want(c.at("expect").as_string());
+    std::string got;
+    switch (d.result) {
+        case iam::decision::outcome::allow:
+            got = "allow";
+            break;
+        case iam::decision::outcome::explicit_deny:
+            got = "explicit_deny";
+            break;
+        case iam::decision::outcome::implicit_deny:
+            got = "implicit_deny";
+            break;
+    }
+    BOOST_TEST(got == want, "reason: " << d.reason);
+    if (const auto* by = c.if_contains("decided_by")) {
+        // "policy" or "policy#Sid"; null when no statement decided.
+        if (by->is_null()) {
+            BOOST_TEST(!d.deciding.has_value());
+        } else {
+            BOOST_REQUIRE(d.deciding.has_value());
+            std::string where = d.deciding->policy;
+            if (!d.deciding->sid.empty()) {
+                where += "#" + d.deciding->sid;
+            }
+            BOOST_TEST(where == std::string(by->as_string()));
+        }
+    }
 }
 
 // Runs one corpus case. A case the runner does not understand (an unknown
@@ -173,6 +306,10 @@ void run_case(const boost::json::object& c, const std::string& file_source) {
         const bool got =
             iam::resource_matches(m, std::string(c.at("value").as_string()), context_of(c), vars);
         BOOST_TEST(got == c.at("match").as_bool(), pattern << " vs " << c.at("value"));
+        return;
+    }
+    if (kind == "evaluate") {
+        run_evaluate(c);
         return;
     }
     BOOST_ERROR("unknown corpus case kind " << kind);

@@ -1,6 +1,6 @@
 # Implementation Plan — IAM-Compatible Authentication and Authorization
 
-## Status: 11/26 tasks complete
+## Status: 12/26 tasks complete
 
 **Last Updated**: November 2, 2026. The spec was written from the scoping
 doc "IAM for Kythira — scoping" and Clark's decisions of the same day. It
@@ -624,7 +624,7 @@ because each has a zero-spend fallback.
     and `corpus/parse/condition_operators.json` (328 in all).
   - _Requirements: 5.4–5.6_
 
-- [ ] 12. Evaluator and corpus
+- [x] 12. Evaluator and corpus
   - `evaluate()`, transcribed from AWS's evaluation-logic pages:
     - explicit deny, then the SCP seam;
     - same-account resource-policy rules, including the user-ARN and
@@ -637,6 +637,10 @@ because each has a zero-spend fallback.
     examples. Every case cites its source page.
   - Invariants (`invariants.md`): INV-EVAL-1..12. Each one needs a named
     unit test, and the PR updates its row there.
+  - Done: `iam_evaluator.hpp` (`evaluate(evaluation_request)`; gathering a
+    principal's policies is the caller's, task 13's authorizer and the
+    STS handlers); `iam_evaluator_test.cpp` with one case per invariant;
+    170 `evaluate` cases in `corpus/evaluate/` (498 in all).
   - _Requirements: 6.1–6.7_
 
 - [ ] 13. Authorizer hook, service registry and replicas

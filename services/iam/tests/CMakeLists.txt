@@ -28,6 +28,11 @@ target_compile_definitions(iam_policy_test PRIVATE
     KYTHIRA_IAM_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus")
 set_tests_properties(iam_policy_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 120)
 
+# Task 12: the policy evaluator, one named case per INV-EVAL-* invariant;
+# its corpus cases (corpus/evaluate/) run in iam_policy_test.
+kythira_iam_test(iam_evaluator_test iam_evaluator_test.cpp)
+set_tests_properties(iam_evaluator_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
+
 # Task 8: the IAM state machine and its secret sealing, with property tests
 # that replicas and snapshot restores agree and no plaintext secret reaches
 # the log or a snapshot.
