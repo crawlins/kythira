@@ -223,6 +223,23 @@ and a digest you saved earlier.
    that never run backwards. With `--digest` it also checks the digest at
    that tip. Export objects are checked against the manifest's sizes and
    SHA-256 first. A failure names the first bad block.
+
+   A running cluster can be checked the same way through the API:
+
+   ```
+   ledger_ctl verify --api https://node:8443[,https://node2:8443] --ledger L \
+       --tls-ca server-ca.pem --cert me.pem --key me.key \
+       [--digest digest.ion] [--ca ca.pem]
+   ```
+
+   This reads the ledger's current digest, fetches every block up to its
+   tip one `GetBlock` at a time, and re-hashes them as above. The journal
+   must hash to the node's digest, and to the saved digest at its tip
+   when `--digest` is given, so a node that changed history cannot match
+   a digest saved before the change. The client certificate needs the
+   read role on the ledger. `--ca` checks the saved digest's signature, or
+   the node's when no digest is saved. A node that cannot be reached, or
+   refuses the certificate, is an error (2), not a failed verification.
 4. **Signed digests.** With `--ca`, the digest must be signed by a
    certificate that chains to that CA bundle, and was valid at `signedAt`.
    A signed digest shows the digest came from this cluster, not just that

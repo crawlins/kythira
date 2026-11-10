@@ -28,14 +28,18 @@
 #include <raft/private_file.hpp>
 
 #include <atomic>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
+
+#include <sys/wait.h>
 
 using namespace kythira::ledger;
 using kythira::memory_kv_engine;
@@ -279,6 +283,12 @@ auto get_req(std::string path) -> api_request {
     r.method = "GET";
     r.path = std::move(path);
     return r;
+}
+
+/// The ledger's digest at an earlier block, from a block proof's answer.
+auto digest_of_tip(ledger_client& c, std::uint64_t tip) -> saved_digest {
+    const auto p = proof_document::from_ion(c.block("bank", 0, tip));
+    return saved_digest{p.tip, p.digest};
 }
 
 }  // namespace
@@ -563,3 +573,94 @@ BOOST_AUTO_TEST_CASE(percent_coding_round_trips) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+#ifdef KYTHIRA_LEDGER_CTL
+
+// Task 10, Requirement 9.1: `ledger_ctl verify --api` re-hashes a running
+// node's journal through GetDigest and GetBlock.
+BOOST_AUTO_TEST_SUITE(ledger_ctl_api)
+
+namespace {
+
+auto ledger_ctl(const std::string& args, const std::filesystem::path& log) -> int {
+    const std::string cmd =
+        std::string(KYTHIRA_LEDGER_CTL) + " " + args + " >" + log.string() + " 2>&1";
+    const int rc = std::system(cmd.c_str());  // NOLINT(cert-env33-c,concurrency-mt-unsafe)
+    return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+}
+
+auto output(const std::filesystem::path& log) -> std::string {
+    return read_file(log).value_or("");
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(verify_through_the_api_re_hashes_every_block) {
+    member m;
+    auto admin = client_for(shared_pki().admin, {m.url()});
+    make_bank(admin);
+    for (int i = 0; i < 5; ++i) {
+        admin.execute("bank", {statements::insert("acct", new_id(), account("o", i))});
+    }
+    const auto& p = shared_pki();
+    const auto dir = raft::make_private_temp_directory(std::filesystem::temp_directory_path(),
+                                                       "ledger-ctl-api-");
+    const auto log = dir / "out.txt";
+    const std::string base = "verify --api " + m.url() + " --ledger bank --tls-ca " + p.ca_path +
+                             " --cert " + p.auditor.cert + " --key " + p.auditor.key;
+
+    BOOST_TEST(ledger_ctl(base, log) == 0, output(log));
+    BOOST_TEST(output(log).find("verified 6 blocks of ledger bank") != std::string::npos,
+               output(log));
+
+    // A digest saved at block 3 is checked on the way to the tip.
+    const auto saved = digest_of_tip(admin, 3);
+    const auto digest_file = dir / "digest.ion";
+    write_file_durably(digest_file, saved.to_ion().to_text());
+    BOOST_TEST(ledger_ctl(base + " --digest " + digest_file.string(), log) == 0, output(log));
+    BOOST_TEST(output(log).find("saved digest at block 3") != std::string::npos, output(log));
+
+    // A saved digest that does not match fails without naming a block.
+    auto wrong = saved;
+    wrong.digest[0] ^= 0x01U;
+    write_file_durably(digest_file, wrong.to_ion().to_text());
+    BOOST_TEST(ledger_ctl(base + " --digest " + digest_file.string(), log) == 1, output(log));
+    BOOST_TEST(output(log).find("FAILED: digest at block 3") != std::string::npos, output(log));
+
+    // A revision altered in the node's engine: the failure names block 2.
+    {
+        const auto id = m.backend.cat.get("bank")->ledger_id;
+        const std::string key = ledger_range(id).start + "journal/00000000000000000002";
+        const auto stored = m.backend.engine.get(kythira::column_family::data, key);
+        BOOST_REQUIRE(stored.has_value());
+        auto b = block::from_ion(ion_value::parse(std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(stored->data()), stored->size())));
+        BOOST_REQUIRE(!b.revisions.empty());
+        b.revisions.at(0).data->set("balance", ion_value::integer(1'000'000));
+        const auto bytes = b.to_ion().to_binary();
+        m.backend.engine.write(kythira::write_batch{}.put(
+            kythira::column_family::data, key,
+            std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size())));
+    }
+    BOOST_TEST(ledger_ctl(base, log) == 1, output(log));
+    BOOST_TEST(output(log).find("FAILED at block 2") != std::string::npos, output(log));
+
+    // A client the node does not accept, or a ledger it does not have, is
+    // an error (2), not a verdict.
+    BOOST_TEST(ledger_ctl("verify --api " + m.url() + " --ledger bank --tls-ca " + p.ca_path +
+                              " --cert " + p.stranger.cert + " --key " + p.stranger.key,
+                          log) == 2,
+               output(log));
+    BOOST_TEST(ledger_ctl("verify --api " + m.url() + " --ledger nope --tls-ca " + p.ca_path +
+                              " --cert " + p.auditor.cert + " --key " + p.auditor.key,
+                          log) == 2,
+               output(log));
+    BOOST_TEST(ledger_ctl("verify --api " + m.url() + " --ledger bank", log) == 2, output(log));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+#endif
