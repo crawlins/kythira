@@ -133,6 +133,8 @@ kythira_kinesis_test(kinesis_retention_test kinesis_retention_test.cpp)
 # Task 11: SplitShard, MergeShards and UpdateShardCount (lineage, routing,
 # refusals, tiling) and the repair of an abandoned reshard.
 kythira_kinesis_test(kinesis_reshard_test kinesis_reshard_test.cpp)
+# Task 12: UpdateStreamMode and the on-demand capacity controller.
+kythira_kinesis_test(kinesis_on_demand_test kinesis_on_demand_test.cpp)
 # Task 6: the gateway's HTTP surface on a real listener (API, internal
 # propose and segment endpoints, health) and the peer client over plain
 # HTTP and verified TLS. certificate_authority issues the test PKI.

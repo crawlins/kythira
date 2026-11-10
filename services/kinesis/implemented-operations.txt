@@ -30,3 +30,6 @@ IncreaseStreamRetentionPeriod
 MergeShards
 SplitShard
 UpdateShardCount
+
+# Task 12: on-demand capacity mode.
+UpdateStreamMode

@@ -42,5 +42,4 @@ unknown-operation error rather than a retryable fault.
 | `UpdateAccountSettings` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `UpdateChannel` | none | Not in the spec. Channels deliver a stream's records to Amazon S3 or S3 Tables (Iceberg), a delivery service like Firehose, which Requirement 1 leaves out of scope. Open question for the owner. | `UnknownOperationException`, HTTP 400 |
 | `UpdateMaxRecordSize` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
-| `UpdateStreamMode` | task 12 | Not built yet (on-demand mode). | `UnknownOperationException`, HTTP 400 |
-| `UpdateStreamWarmThroughput` | task 12 | Not built yet (on-demand mode). | `UnknownOperationException`, HTTP 400 |
+| `UpdateStreamWarmThroughput` | none | Warm throughput is unlocked by an AWS account's `MinimumThroughputBillingCommitment`, a billing arrangement with no Kythira equivalent; the on-demand controller (task 12) scales from observed writes instead. `UpdateStreamMode` refuses its `WarmThroughputMiBps` the same way. | `UnknownOperationException`, HTTP 400 |

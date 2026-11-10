@@ -256,6 +256,9 @@ struct stream_record {
     std::map<std::string, std::string> _tags{};
     encryption_type _encryption = encryption_type::none;
     std::string _key_id{};
+    /// When the capacity mode last changed, newest last, at most two
+    /// (task 12): AWS allows two switches in 24 hours.
+    std::vector<std::int64_t> _mode_changes_ms{};
 
     [[nodiscard]] auto open_shard_count() const -> std::size_t {
         std::size_t n = 0;
@@ -464,6 +467,10 @@ inline auto encode(codec::writer& w, const stream_record& s) -> void {
         w.str(k).str(v);
     }
     w.u8(static_cast<std::uint8_t>(s._encryption)).str(s._key_id);
+    w.u8(static_cast<std::uint8_t>(s._mode_changes_ms.size()));
+    for (const auto t : s._mode_changes_ms) {
+        w.i64(t);
+    }
 }
 
 inline auto decode_stream_record(codec::reader& r) -> stream_record {
@@ -490,6 +497,13 @@ inline auto decode_stream_record(codec::reader& r) -> stream_record {
     }
     s._encryption = r.enumeration<encryption_type>(1);
     s._key_id = r.str();
+    const auto changes = r.u8();
+    if (changes > 2) {
+        throw kinesis_codec_error("kinesis codec: more than two mode changes");
+    }
+    for (std::uint8_t i = 0; i < changes; ++i) {
+        s._mode_changes_ms.push_back(r.i64());
+    }
     return s;
 }
 

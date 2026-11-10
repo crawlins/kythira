@@ -318,6 +318,7 @@ public:
               bind(&kinesis_service::increase_stream_retention_period));
         fe.on("DecreaseStreamRetentionPeriod",
               bind(&kinesis_service::decrease_stream_retention_period));
+        fe.on("UpdateStreamMode", bind(&kinesis_service::update_stream_mode));
         if constexpr (transacts<Cluster>) {
             fe.on("SplitShard", bind(&kinesis_service::split_shard));
             fe.on("MergeShards", bind(&kinesis_service::merge_shards));
@@ -326,7 +327,7 @@ public:
     }
 
     /// The operations `register_with` adds, for implemented-operations.txt.
-    static constexpr std::array<std::string_view, 16> k_operations{"CreateStream",
+    static constexpr std::array<std::string_view, 17> k_operations{"CreateStream",
                                                                    "DecreaseStreamRetentionPeriod",
                                                                    "DeleteStream",
                                                                    "DescribeLimits",
@@ -341,7 +342,8 @@ public:
                                                                    "PutRecord",
                                                                    "PutRecords",
                                                                    "SplitShard",
-                                                                   "UpdateShardCount"};
+                                                                   "UpdateShardCount",
+                                                                   "UpdateStreamMode"};
 
     using result = aws_json::result<boost::json::object>;
 
@@ -559,6 +561,126 @@ public:
         return boost::json::object{};
     }
 
+    // ---- capacity mode (task 12) ---------------------------------------------
+
+    /// `UpdateStreamMode`: PROVISIONED or ON_DEMAND, on an ACTIVE stream, at
+    /// most twice in 24 hours. The shards stay as they are; in ON_DEMAND
+    /// the capacity controller (`kinesis_on_demand.hpp`) splits them as
+    /// writes grow. `WarmThroughputMiBps` is refused: there is no billing
+    /// commitment to unlock it.
+    auto update_stream_mode(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        if (in.contains("WarmThroughputMiBps")) {
+            return invalid_argument("WarmThroughputMiBps is not supported by this endpoint.");
+        }
+        std::optional<stream_mode> mode;
+        if (const auto* d = in.if_contains("StreamModeDetails"); d != nullptr && d->is_object()) {
+            if (auto m = detail::string_member(d->get_object(), "StreamMode")) {
+                if (*m == "ON_DEMAND") {
+                    mode = stream_mode::on_demand;
+                } else if (*m == "PROVISIONED") {
+                    mode = stream_mode::provisioned;
+                }
+            }
+        }
+        if (!mode) {
+            return invalid_argument(
+                "StreamModeDetails.StreamMode must be PROVISIONED or ON_DEMAND.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        if (rec._status != stream_status::active) {
+            return not_active(rec);
+        }
+        if (rec._mode == *mode) {
+            return boost::json::object{};
+        }
+        const auto now = _cluster.now_ms();
+        constexpr std::int64_t k_day_ms = std::int64_t{24} * 3600 * 1000;
+        if (rec._mode_changes_ms.size() >= 2 && now - rec._mode_changes_ms.front() < k_day_ms) {
+            return service_detail::limit_exceeded(
+                "Stream " + rec._name + " under account " + rec._account +
+                " has had its capacity mode updated twice in the last 24 hours.");
+        }
+        if (*mode == stream_mode::on_demand && profile_of(rec)._aws_count_limits) {
+            std::size_t on_demand = 0;
+            if (!read_catalog([&](const auto& sm) {
+                    for (const auto* other : sm.list_streams(rec._account)) {
+                        on_demand += other->_mode == stream_mode::on_demand ? 1 : 0;
+                    }
+                })) {
+                return internal_failure();
+            }
+            if (on_demand + 1 > _config._limits._on_demand_stream_limit) {
+                return service_detail::limit_exceeded(
+                    "This request would exceed the on-demand stream limit for the account " +
+                    rec._account + " in " + ctx._region +
+                    ". Limit: " + std::to_string(_config._limits._on_demand_stream_limit) + ".");
+            }
+        }
+        const auto r =
+            propose(set_stream_mode_command{rec._account, rec._name, rec._id, *mode, now});
+        if (!r) {
+            return internal_failure();
+        }
+        if (r->_status == apply_status::not_found) {
+            return service_detail::not_found(rec._name, rec._account);
+        }
+        if (r->_status == apply_status::bad_transition) {
+            return not_active(rec);
+        }
+        if (r->_status != apply_status::ok) {
+            return internal_failure();
+        }
+        return boost::json::object{};
+    }
+
+    /// The capacity controller's split: shard `ordinal` of stream `id` at the
+    /// middle of its hash range, while the stream is still ON_DEMAND and the
+    /// shard still open. False when it did not happen (another reshard, the
+    /// shard limit, or a failure); the controller tries again later.
+    auto split_for_capacity(const std::string& account, const std::string& name, std::uint64_t id,
+                            std::uint32_t ordinal) -> bool
+    requires transacts<Cluster>
+    {
+        std::optional<stream_record> rec;
+        if (!read_catalog([&](const auto& sm) {
+                if (const auto* found = sm.find_stream(account, name)) {
+                    rec = *found;
+                }
+            }) ||
+            !rec || rec->_id != id || rec->_status != stream_status::active) {
+            return false;
+        }
+        const auto done =
+            run_reshard(*rec, [&](const stream_record& r) -> aws_json::result<reshard_plan> {
+                const auto* sh = r.find_shard(ordinal);
+                if (r._mode != stream_mode::on_demand || sh == nullptr || !sh->open() ||
+                    sh->_range._end - sh->_range._start < 2) {
+                    return invalid_argument("no longer a capacity split");
+                }
+                if (profile_of(r)._aws_count_limits &&
+                    r.open_shard_count() + 1 > _config._limits._shard_limit) {
+                    return service_detail::limit_exceeded("shard limit");
+                }
+                const auto width = sh->_range._end - sh->_range._start;
+                const auto mid = sh->_range._start + width / 2 + 1;
+                reshard_plan plan;
+                plan._closing.push_back(ordinal);
+                plan._children.push_back(
+                    child(r._next_ordinal, ordinal, std::nullopt, {sh->_range._start, mid - 1}));
+                plan._children.push_back(
+                    child(r._next_ordinal + 1, ordinal, std::nullopt, {mid, sh->_range._end}));
+                return plan;
+            });
+        return done.has_value();
+    }
+
     // ---- resharding (task 11) ------------------------------------------------
 
     /// One reshard: which shards close and which open.
@@ -583,6 +705,9 @@ public:
         }
         auto done =
             run_reshard(*s, [&](const stream_record& rec) -> aws_json::result<reshard_plan> {
+                if (auto e = provisioned_only(rec, "SplitShard")) {
+                    return *e;
+                }
                 auto parent = shard_to_reshard(rec, shard_text);
                 if (!parent) {
                     return parent.error();
@@ -624,6 +749,9 @@ public:
         }
         auto done =
             run_reshard(*s, [&](const stream_record& rec) -> aws_json::result<reshard_plan> {
+                if (auto e = provisioned_only(rec, "MergeShards")) {
+                    return *e;
+                }
                 auto a = shard_to_reshard(rec, first_text);
                 if (!a) {
                     return a.error();
@@ -696,6 +824,9 @@ public:
         while (s->open_shard_count() != wanted) {
             auto done =
                 run_reshard(*s, [&](const stream_record& rec) -> aws_json::result<reshard_plan> {
+                    if (auto e = provisioned_only(rec, "UpdateShardCount")) {
+                        return *e;
+                    }
                     return uniform_step(rec, wanted);
                 });
             if (!done) {
@@ -1419,6 +1550,20 @@ private:
     }
 
     // ---- resharding internals ------------------------------------------------
+
+    // AWS: SplitShard, MergeShards and UpdateShardCount are "only supported
+    // for the data streams with the provisioned capacity mode". The error
+    // code and wording are ours until a recording shows AWS's.
+    [[nodiscard]] static auto provisioned_only(const stream_record& rec, std::string_view op)
+        -> std::optional<aws_json::error> {
+        if (rec._mode != stream_mode::on_demand) {
+            return std::nullopt;
+        }
+        return kinesis_error_style().modeled(
+            "ValidationException", std::string(op) + " is not supported for stream " + rec._name +
+                                       " under account " + rec._account +
+                                       " in ON_DEMAND capacity mode.");
+    }
 
     [[nodiscard]] static auto child(std::uint32_t ordinal, std::uint32_t parent,
                                     std::optional<std::uint32_t> adjacent_parent, hash_range range)

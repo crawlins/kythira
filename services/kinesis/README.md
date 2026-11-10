@@ -54,6 +54,7 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `include/kythira/kinesis/kinesis_tiering.hpp`, `cmd/kinesis_gateway_node/tier_s3.cpp` | sealed segments in object storage: deterministic object keys, fetch-back on read, the S3 tier of the daemon | 10 |
 | `include/kythira/kinesis/kinesis_disk_guard.hpp` | the disk guard: appends refused below a free-space floor, on the proposing node and the leader | 10 |
 | `doc/resharding.md` | SplitShard, MergeShards and UpdateShardCount: the UPDATING lock, the cross-group transaction, ending sequence numbers and the repair of an abandoned reshard | 11 |
+| `doc/on-demand.md`, `include/kythira/kinesis/kinesis_on_demand.hpp` | on-demand capacity mode: `UpdateStreamMode` and the controller that splits shards that stay hot | 12 |
 
 Core pieces the module builds on live in `include/raft/`, because DynamoDB
 uses them too: `record_segment_store.hpp` (task 3), the CBOR and

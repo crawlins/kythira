@@ -27,6 +27,7 @@
 #include <kythira/kinesis/kinesis_iterators.hpp>
 #include <kythira/kinesis/kinesis_lease_api.hpp>
 #include <kythira/kinesis/kinesis_maintenance.hpp>
+#include <kythira/kinesis/kinesis_on_demand.hpp>
 #include <kythira/kinesis/kinesis_peer_client.hpp>
 #include <kythira/kinesis/kinesis_raft_cluster.hpp>
 #include <kythira/kinesis/kinesis_service.hpp>
@@ -423,6 +424,8 @@ auto run(const node_options& opt) -> int {
             ._tier_after_ms =
                 static_cast<std::int64_t>(opt._tier_after_hours) * kinesis::k_ms_per_hour,
             ._keep_fetched_ms = std::int64_t{10} * 60 * 1000});
+    // On-demand streams (task 12): each node splits the hot shards it leads.
+    kinesis::on_demand_controller<cluster_type> on_demand(cluster, service);
     std::atomic<bool> maintaining{true};
     std::thread maintainer([&] {
         auto next = std::chrono::steady_clock::now() + opt._maintenance_interval;
@@ -433,6 +436,14 @@ auto run(const node_options& opt) -> int {
             }
             next = std::chrono::steady_clock::now() + opt._maintenance_interval;
             const auto st = maintenance.run_once();
+            const auto od = on_demand.run_once(cluster.now_ms());
+            if (od._splits + od._failures > 0) {
+                logger.log(kythira::log_level::info,
+                           "kinesis on-demand: hot=" + std::to_string(od._hot) +
+                               " splits=" + std::to_string(od._splits) +
+                               " failures=" + std::to_string(od._failures),
+                           {});
+            }
             // A reshard whose caller died after its transaction committed
             // is finished here once it has sat UPDATING for a minute.
             const auto repaired = service.repair_reshards(cluster.now_ms(), 60000);
