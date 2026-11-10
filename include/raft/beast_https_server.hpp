@@ -32,6 +32,9 @@
 /// certificate was presented and its URI SANs, and decides what that
 /// identity may do.
 ///
+/// `Expect: 100-continue` is answered with an interim 100 once the headers
+/// have been read, before the body.
+///
 /// Whole bodies are read into memory, up to `max_body_bytes`: the Query and
 /// JSON protocols this serves carry small bodies. A streaming handler for
 /// S3 objects would be a separate entry point.
@@ -200,6 +203,13 @@ inline auto serial_hex(X509* cert) -> std::string {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return out;
+}
+
+/// True when the request carries `Expect: 100-continue` (the only
+/// expectation HTTP defines; compared case-insensitively).
+template<typename Header> auto expects_continue(const Header& h) -> bool {
+    const auto it = h.find(boost::beast::http::field::expect);
+    return it != h.end() && boost::beast::iequals(it->value(), "100-continue");
 }
 
 inline auto plain_reply(unsigned status, std::string_view body) -> response {
@@ -496,6 +506,18 @@ private:
                 break;  // closed, timed out, or not HTTP
             }
             if (!parser.is_done()) {
+                if (detail::expects_continue(parser.get())) {
+                    // RFC 9110 15.2.1: a client that sent Expect:
+                    // 100-continue may wait for this before its body (KPL
+                    // waits its whole continue timeout on every batch).
+                    http::response<http::empty_body> go{http::status::continue_,
+                                                        parser.get().version()};
+                    lowest(stream).expires_after(_config.io_timeout);
+                    ec = drive(c.ioc, [&](auto h) { http::async_write(stream, go, std::move(h)); });
+                    if (ec) {
+                        break;
+                    }
+                }
                 lowest(stream).expires_after(_config.io_timeout);
                 ec = drive(c.ioc,
                            [&](auto h) { http::async_read(stream, buffer, parser, std::move(h)); });

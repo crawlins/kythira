@@ -250,6 +250,47 @@ BOOST_AUTO_TEST_CASE(plaintext_only_when_asked) {
     BOOST_TEST(res.body().find("tls=0") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(expect_100_continue_is_answered_before_the_body) {
+    // KPL sends Expect: 100-continue on every batch and waits for the
+    // interim response before its body.
+    namespace beast = boost::beast;
+    namespace http = beast::http;
+    pki p;
+    auto cfg = config_for(p);
+    cfg.insecure_plaintext = true;
+    kythira::https::server srv(cfg, echo);
+    srv.start();
+
+    boost::asio::io_context ioc;
+    beast::tcp_stream s(ioc);
+    s.connect(
+        boost::asio::ip::tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"), srv.port()));
+    const std::string head =
+        "POST /c HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n";
+    boost::asio::write(s, boost::asio::buffer(head));
+
+    beast::flat_buffer buf;
+    http::response_parser<http::empty_body> interim;
+    interim.skip(false);
+    s.expires_after(std::chrono::seconds{5});
+    beast::error_code ec;
+    http::async_read_header(s, buf, interim, [&](beast::error_code e, std::size_t) { ec = e; });
+    ioc.run();
+    ioc.restart();
+    BOOST_REQUIRE_MESSAGE(!ec, ec.message());
+    BOOST_TEST(interim.get().result_int() == 100U);
+
+    boost::asio::write(s, boost::asio::buffer(std::string("hello")));
+    // Through a parser: reading into a message moves it into a parser and
+    // back, which clang-analyzer reads as a use after move.
+    http::response_parser<http::string_body> parser;
+    http::read(s, buf, parser, ec);
+    BOOST_REQUIRE_MESSAGE(!ec, ec.message());
+    const auto& res = parser.get();
+    BOOST_TEST(res.result_int() == 200U);
+    BOOST_TEST(res.body().find("body=hello") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(body_and_header_limits) {
     pki p;
     auto cfg = config_for(p);
