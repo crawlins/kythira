@@ -69,6 +69,7 @@ element, substituting variables from `context` unless `version` is
 | `resource_kind` | optional: `ordinary` (default), `trust` or `key` |
 | `expect` | `allow`, `explicit_deny` or `implicit_deny` |
 | `decided_by` | optional: `identity[0]#Sid`, `resource`, `boundary#Sid`, ... (without `#` when the statement has no Sid), or `null` when no statement decided |
+| `aws_simulator`, `aws_simulator_note` | optional: the decision AWS's `SimulateCustomPolicy` gives where it departs from the documented enforcement in `expect`, and why the corpus keeps `expect`. The runner ignores both; `tests/tools/simulate_corpus_on_aws.py` reports such a case as a known divergence (task 24) |
 
 For `condition`, `variable`, `resource_match` and `evaluate`, `context` maps each condition key to a string
 (single-valued) or an array (multivalued, possibly empty); a key not

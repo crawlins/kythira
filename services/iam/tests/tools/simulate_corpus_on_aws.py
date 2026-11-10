@@ -20,8 +20,12 @@ account.
 Each disagreement is written, with AWS's answer as the expected decision,
 to the output file (default corpus/evaluate/aws_simulator.json) in the
 corpus's own format, so iam_policy_test fails on it until the evaluator
-agrees with AWS. The run prints a summary and exits 1 if any case
-disagreed, 2 on an error.
+agrees with AWS or the case is marked as a simulator divergence. A case
+whose `aws_simulator` field names the decision AWS gave is a known place
+where the simulator departs from documented enforcement: it is reported as
+KNOWN and not counted. Before committing an output file, put the example
+account back in place of the real one. The run prints a summary and exits
+1 if any case disagreed, 2 on an error.
 
 Usage:
     simulate_corpus_on_aws.py [--profile NAME] [--corpus DIR] [--out FILE]
@@ -141,7 +145,7 @@ def main():
     account = session.client("sts").get_caller_identity()["Account"]
     iam = session.client("iam", config=Config(retries={"max_attempts": 8, "mode": "adaptive"}))
 
-    disagreements, errors = [], []
+    disagreements, known, errors = [], [], []
     for name, file_source, case in selected:
         try:
             r = iam.simulate_custom_policy(**request_of(case, account))
@@ -149,7 +153,10 @@ def main():
         except Exception as e:  # report every case, stop on none
             errors.append(f"{name}: {case['name']}: {e}")
             continue
-        if got != case["expect"]:
+        if got != case["expect"] and got == case.get("aws_simulator"):
+            print(f"KNOWN {name}: {case['name']}: corpus {case['expect']}, AWS simulator {got}")
+            known.append(case["name"])
+        elif got != case["expect"]:
             print(f"DISAGREE {name}: {case['name']}: corpus {case['expect']}, AWS {got}")
             new = dict(case)
             new["name"] = f"{case['name']} (AWS simulator, from {name})"
@@ -160,7 +167,8 @@ def main():
         time.sleep(0.1)
 
     print(f"compared {len(selected) - len(errors)} cases with SimulateCustomPolicy: "
-          f"{len(disagreements)} disagreed, {len(errors)} errors")
+          f"{len(disagreements)} disagreed, {len(known)} known simulator divergences, "
+          f"{len(errors)} errors")
     for e in errors:
         print(f"ERROR {e}", file=sys.stderr)
     if disagreements:
