@@ -40,3 +40,10 @@ test_results/
 **/*.env
 !**/*.env.example
 !**/.env.example
+
+# Gradle state and outputs of host builds of the Kinesis Java projects;
+# the KCL sample image builds them afresh.
+services/kinesis/java/*/.gradle/
+services/kinesis/java/*/build/
+services/kinesis/tests/kcl/*/.gradle/
+services/kinesis/tests/kcl/*/build/

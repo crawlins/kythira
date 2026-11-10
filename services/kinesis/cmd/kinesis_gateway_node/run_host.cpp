@@ -21,6 +21,7 @@
 #include <kythira/kinesis/kinesis_front_end.hpp>
 #include <kythira/kinesis/kinesis_gateway.hpp>
 #include <kythira/kinesis/kinesis_iterators.hpp>
+#include <kythira/kinesis/kinesis_lease_api.hpp>
 #include <kythira/kinesis/kinesis_peer_client.hpp>
 #include <kythira/kinesis/kinesis_raft_cluster.hpp>
 #include <kythira/kinesis/kinesis_service.hpp>
@@ -207,6 +208,8 @@ auto run(const node_options& opt) -> int {
         kinesis::parse_static_keys(read_file(opt._static_keys_file, "KINESIS_STATIC_KEYS_FILE")),
         opt._partition);
     authorizer.register_service(kinesis::kinesis_static_roles());
+    // The Lease API authorizes on the DynamoDB actions KCL needs on AWS.
+    authorizer.register_service(kinesis::lease_static_roles());
     auto profile = kinesis::cluster_profile(opt._compat);
     if (!profile) {
         throw std::invalid_argument("kinesis_gateway_node: KINESIS_COMPAT refused");
@@ -332,6 +335,10 @@ auto run(const node_options& opt) -> int {
         [&cluster](const std::string& key, const std::vector<std::byte>& command,
                    kinesis::admission mode) { return cluster.propose_local(key, command, mode); },
         &store, opt._forward_secret);
+    kinesis::lease_api<cluster_type, aws_auth::static_key_authorizer> leases(cluster, authorizer,
+                                                                             fc);
+    gateway.set_lease_handler(
+        [&leases](const kinesis::front_end_request& r) { return leases.handle(r); });
 
     https::server_config hc;
     hc.bind_address = opt._listen_host;

@@ -28,6 +28,7 @@ set(_KINESIS_DOCKER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../docker")
 set(_KINESIS_NODE_DOCKERFILE "${_KINESIS_DOCKER_DIR}/kinesis_gateway_node/Dockerfile")
 set(_KINESIS_NODE_DIST "${_KINESIS_DOCKER_DIR}/kinesis_gateway_node/dist")
 set(_KINESIS_CLIENTS_DOCKERFILE "${_KINESIS_DOCKER_DIR}/kinesis_clients/Dockerfile")
+set(_KINESIS_KCL_DOCKERFILE "${_KINESIS_DOCKER_DIR}/kinesis_kcl_sample/Dockerfile")
 set(_KINESIS_COMPOSE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/compose.yml")
 
 if(_RUNTIME_EXE)
@@ -48,7 +49,12 @@ if(_RUNTIME_EXE)
                     --file "${_KINESIS_CLIENTS_DOCKERFILE}"
                     --tag kythira-kinesis-clients:dev
                     "${KYTHIRA_IMAGE_CONTEXT}"
-            COMMENT "Staging kinesis_gateway_node and building kythira-kinesis-node:dev and kythira-kinesis-clients:dev"
+            # The KCL sample workers (Java, built inside the image).
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
+                    --file "${_KINESIS_KCL_DOCKERFILE}"
+                    --tag kythira-kinesis-kcl:dev
+                    "${KYTHIRA_IMAGE_CONTEXT}"
+            COMMENT "Staging kinesis_gateway_node and building the kythira-kinesis-node, -clients and -kcl :dev images"
             WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
         )
     else()

@@ -24,7 +24,8 @@
 # on the host, so two stacks never contend for a port.
 #
 # The clients are in the `clients` profile, so `up` never starts them; the
-# scenario runs each with `compose --profile clients run --rm`. Each node
+# scenario runs each with `compose --profile clients run --rm`. The KCL
+# workers are in the `kcl` profile for the same reason. Each node
 # keeps its Raft state and segments in its own named volume, so
 # `stop`/`start` resumes it and `down -v` is a clean slate.
 
@@ -99,6 +100,31 @@ services:
       - kinesis_net
     environment:
       AWS_EC2_METADATA_DISABLED: "true"
+
+  # KCL 2.x workers with their leases on the cluster (task 9), one per
+  # node so that killing a node also cuts one worker off. In the `kcl`
+  # profile; the scenario starts them with `up -d` and reads their EVENT
+  # lines from `logs`.
+  kcl-1: &kcl
+    image: kythira-kinesis-kcl:dev
+    profiles: ["kcl"]
+    networks:
+      - kinesis_net
+    environment:
+      AWS_ACCESS_KEY_ID: AKIDKINESISCLIENT01
+      AWS_SECRET_ACCESS_KEY: kinesis-scenario-client-secret
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      KCL_FAILOVER_MILLIS: "10000"
+    command: ["http://kin-1:4567", "kcl", "kcl-app", "worker-1"]
+
+  kcl-2:
+    <<: *kcl
+    command: ["http://kin-2:4567", "kcl", "kcl-app", "worker-2"]
+
+  kcl-3:
+    <<: *kcl
+    command: ["http://kin-3:4567", "kcl", "kcl-app", "worker-3"]
 
 networks:
   kinesis_net:

@@ -8,7 +8,7 @@
 ///        (`.kiro/specs/kinesis-compatible-streams/` task 6, design "Front
 ///        end: Beast host, forwarding, replica reads").
 ///
-/// One listener carries four things:
+/// One listener carries five things:
 ///
 /// - `POST /` and everything else: the Kinesis API, handed to the front end
 ///   (`kinesis_front_end.hpp`) as a `front_end_request`.
@@ -23,6 +23,9 @@
 ///   query, so a segment cannot be read by anyone without the cluster
 ///   secret.
 /// - `GET /healthz`: 200 while the process serves.
+/// - `/v1/leases/…`: the Lease API (`kinesis_lease_api.hpp`), when the
+///   composition root sets a lease handler; otherwise the front end, which
+///   refuses it.
 ///
 /// The internal endpoints answer 404 when no forwarding secret is
 /// configured: a single-node gateway has no peers to listen to.
@@ -33,6 +36,7 @@
 
 #include <kythira/kinesis/kinesis_forward.hpp>
 #include <kythira/kinesis/kinesis_front_end.hpp>
+#include <kythira/kinesis/kinesis_leases.hpp>
 #include <kythira/kinesis/kinesis_peer_client.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
 
@@ -220,6 +224,7 @@ struct gateway_stats {
 template<typename FrontEnd> class gateway {
 public:
     using clock_fn = std::function<std::chrono::system_clock::time_point()>;
+    using lease_handler = std::function<aws_json::http_response(const front_end_request&)>;
 
     gateway(
         FrontEnd& front_end, local_proposer propose, const record_segment_store* store,
@@ -247,7 +252,9 @@ public:
         if (path == k_segment_path) {
             return segment(req, query);
         }
-        const auto r = _front_end.handle(gateway_detail::to_front_end_request(req, ctx));
+        const auto r = _leases && path.starts_with(k_lease_path_prefix)
+                           ? _leases(gateway_detail::to_front_end_request(req, ctx))
+                           : _front_end.handle(gateway_detail::to_front_end_request(req, ctx));
         https::response res{static_cast<http::status>(r.status), req.version()};
         for (const auto& [k, v] : r.headers) {
             res.set(k, v);
@@ -260,8 +267,13 @@ public:
 
     [[nodiscard]] auto stats() const noexcept -> const gateway_stats& { return _stats; }
 
+    /// Serve the Lease API under `k_lease_path_prefix`. Set before the
+    /// listener starts.
+    void set_lease_handler(lease_handler h) { _leases = std::move(h); }
+
 private:
     FrontEnd& _front_end;
+    lease_handler _leases;
     local_proposer _propose;
     const record_segment_store* _store;
     std::string _secret;

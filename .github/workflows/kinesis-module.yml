@@ -29,7 +29,9 @@
 # scenario (services/kinesis/tests/docker/) under rootful Docker and
 # rootless Podman (CLAUDE.md, "Container runtime compatibility"): three
 # kinesis_gateway_node containers by service name, the AWS CLI v2 and a
-# boto3 producer and polling consumer, and a node stopped and restarted.
+# boto3 producer and polling consumer, and a node stopped and restarted;
+# then three KCL 2.x workers with leases on the cluster (task 9) while each
+# node is killed in turn. The java job runs the KCL lease layer's tests.
 
 name: Kinesis Module
 
@@ -96,6 +98,34 @@ jobs:
         run: python3 scripts/tests/test_check_module_boundaries.py -v
       - name: services/kinesis uses only Kythira's public surface
         run: python3 scripts/check_module_boundaries.py
+
+  java:
+    # The KCL lease layer (services/kinesis/java/kythira-kcl-leases, task 9):
+    # its unit tests, and the sample consumer the container scenario runs.
+    # In the same digest-pinned Gradle image the KCL sample's Dockerfile
+    # builds in, so there is one JDK and Gradle version to keep current.
+    name: KCL lease layer tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lease layer tests and sample build
+        env:
+          GRADLE_IMAGE: gradle:8.14.3-jdk21@sha256:21bd311ed01360c189b8870c6b6e988199ff10f72d445d02fb39d3cff9da91d7
+        run: |
+          # One worker: Maven Central answers bursts of parallel downloads
+          # with 429s.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e GRADLE_USER_HOME=/work/.gradle-home \
+            -v "$PWD:/work" -w /work/services/kinesis/java/kythira-kcl-leases \
+            "$GRADLE_IMAGE" gradle --no-daemon --max-workers=1 test
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e GRADLE_USER_HOME=/work/.gradle-home \
+            -v "$PWD:/work" -w /work/services/kinesis/tests/kcl/sample \
+            "$GRADLE_IMAGE" gradle --no-daemon --max-workers=1 installDist
 
   build:
     name: Kinesis module on and off (clang++-18, x64)
