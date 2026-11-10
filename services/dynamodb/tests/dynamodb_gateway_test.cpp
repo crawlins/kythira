@@ -142,9 +142,9 @@ BOOST_AUTO_TEST_CASE(bad_settings_are_refused_with_the_variable_named) {
     BOOST_TEST(config_error(vars) == "KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES: not a byte count: '1G'");
 
     vars = minimal_env();
-    vars["KYTHIRA_DYNAMODB_ENGINE"] = "rocksdb";
+    vars["KYTHIRA_DYNAMODB_ENGINE"] = "leveldb";
     BOOST_TEST(config_error(vars) ==
-               "KYTHIRA_DYNAMODB_ENGINE: unknown engine 'rocksdb' (only 'memory' so far)");
+               "KYTHIRA_DYNAMODB_ENGINE: unknown engine 'leveldb' (memory or rocksdb)");
 
     vars = minimal_env();
     vars.erase("KYTHIRA_DYNAMODB_STATIC_KEYS");
@@ -315,4 +315,213 @@ BOOST_AUTO_TEST_CASE(roles_and_signatures_are_enforced) {
     BOOST_TEST(res.result_int() == 400U);
     BOOST_TEST(std::string(body_of(res).at("message").as_string()) ==
                "Request is missing Authentication Token");
+}
+
+// ---------------------------------------------------------------------------
+// A cluster node: its settings, and the forward endpoint peers send ops to.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::string_view k_forward_secret = "0123456789abcdef-forward";
+
+auto cluster_env() -> std::map<std::string, std::string> {
+    auto vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_NODE_ID"] = "1";
+    vars["KYTHIRA_DYNAMODB_PEERS"] =
+        "1=http://10.0.0.1:7000, 2=http://10.0.0.2:7000,"
+        "3=http://10.0.0.3:7000";
+    vars["KYTHIRA_DYNAMODB_PEER_GATEWAYS"] = "2=10.0.0.2:8000,3=[fd00::3]:8443";
+    vars["KYTHIRA_DYNAMODB_FORWARD_SECRET"] = std::string(k_forward_secret);
+    return vars;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(cluster_settings_are_read) {
+    auto vars = cluster_env();
+    vars["KYTHIRA_DYNAMODB_RAFT_BIND"] = "10.0.0.1";
+    vars["KYTHIRA_DYNAMODB_RAFT_PORT"] = "7100";
+    vars["KYTHIRA_DYNAMODB_FORWARD_CA"] = "/etc/kythira/ca.pem";
+    vars["KYTHIRA_DYNAMODB_ENGINE"] = "rocksdb";
+    vars["KYTHIRA_DYNAMODB_DATA_DIR"] = "/var/lib/kythira";
+    BOOST_REQUIRE_EQUAL(config_error(vars), "ok");
+    auto r = ddb::gateway_config_from_env(env_of(vars));
+    const auto& c = std::get<ddb::gateway_config>(r);
+    BOOST_TEST(c.engine == "rocksdb");
+    BOOST_TEST(c.cluster.enabled());
+    BOOST_TEST(c.cluster.node_id == "1");
+    BOOST_TEST(c.cluster.peers.size() == 3U);
+    BOOST_TEST(c.cluster.peers.at("2") == "http://10.0.0.2:7000");
+    BOOST_TEST(c.cluster.raft_bind == "10.0.0.1");
+    BOOST_TEST(c.cluster.raft_port == 7100U);
+    BOOST_TEST(c.cluster.forward_secret == k_forward_secret);
+    BOOST_TEST(c.cluster.forward_ca_path == "/etc/kythira/ca.pem");
+    BOOST_REQUIRE(c.cluster.peer_gateways.size() == 2U);
+    BOOST_TEST(c.cluster.peer_gateways.at("2").host == "10.0.0.2");
+    BOOST_TEST(c.cluster.peer_gateways.at("3").host == "fd00::3");
+    BOOST_TEST(c.cluster.peer_gateways.at("3").port == 8443U);
+
+    // Without PEERS there is no cluster; one PEERS entry is a cluster of
+    // one, which needs no secret or gateways.
+    BOOST_TEST(!std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(minimal_env())))
+                    .cluster.enabled());
+    auto one = minimal_env();
+    one["KYTHIRA_DYNAMODB_NODE_ID"] = "a";
+    one["KYTHIRA_DYNAMODB_PEERS"] = "a=http://127.0.0.1:7000";
+    BOOST_TEST(config_error(one) == "ok");
+}
+
+BOOST_AUTO_TEST_CASE(bad_cluster_settings_are_refused_with_the_variable_named) {
+    const auto with = [](const std::string& name, const std::optional<std::string>& value) {
+        auto vars = cluster_env();
+        if (value) {
+            vars[name] = *value;
+        } else {
+            vars.erase(name);
+        }
+        return config_error(vars);
+    };
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_NODE_ID", std::nullopt) ==
+               "KYTHIRA_DYNAMODB_NODE_ID is required with KYTHIRA_DYNAMODB_PEERS");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_NODE_ID", "9") ==
+               "KYTHIRA_DYNAMODB_PEERS must include this node's own id '9'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_PEERS", "1=http://a:1,1=http://b:1") ==
+               "KYTHIRA_DYNAMODB_PEERS: id '1' appears twice");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_PEERS", "1") ==
+               "KYTHIRA_DYNAMODB_PEERS: expected id=value, got '1'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_RAFT_PORT", "70000") ==
+               "KYTHIRA_DYNAMODB_RAFT_PORT: not a port: '70000'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_FORWARD_SECRET", "short")
+                   .find("KYTHIRA_DYNAMODB_FORWARD_SECRET is required") == 0U);
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_FORWARD_SECRET", std::nullopt)
+                   .find("KYTHIRA_DYNAMODB_FORWARD_SECRET is required") == 0U);
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_PEER_GATEWAYS", "2=10.0.0.2:8000") ==
+               "KYTHIRA_DYNAMODB_PEER_GATEWAYS has no gateway for peer '3'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_PEER_GATEWAYS", "2=10.0.0.2,3=h:1") ==
+               "KYTHIRA_DYNAMODB_PEER_GATEWAYS: '10.0.0.2' is not host:port");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_ENGINE", "rocksdb") ==
+               "KYTHIRA_DYNAMODB_ENGINE=rocksdb needs KYTHIRA_DYNAMODB_DATA_DIR");
+    auto single = minimal_env();
+    single["KYTHIRA_DYNAMODB_ENGINE"] = "rocksdb";
+    BOOST_TEST(config_error(single) ==
+               "KYTHIRA_DYNAMODB_ENGINE=rocksdb needs a cluster: set "
+               "KYTHIRA_DYNAMODB_PEERS (it may list only this node)");
+}
+
+BOOST_AUTO_TEST_CASE(a_forwarded_op_needs_a_fresh_mac_over_its_body) {
+    const std::uint64_t t = 1794300000123ULL;
+    const auto mac = ddb::forward_mac(k_forward_secret, t, "op");
+    BOOST_TEST(mac.size() == 64U);
+    BOOST_TEST(ddb::forward_authentic(k_forward_secret, std::to_string(t), mac, "op", t));
+    // Within the allowed skew either way, and not beyond it.
+    BOOST_TEST(ddb::forward_authentic(k_forward_secret, std::to_string(t), mac, "op", t + 60000));
+    BOOST_TEST(!ddb::forward_authentic(k_forward_secret, std::to_string(t), mac, "op", t + 60001));
+    BOOST_TEST(!ddb::forward_authentic(k_forward_secret, std::to_string(t), mac, "op", t - 60001));
+    // Another body, time, secret or MAC fails.
+    BOOST_TEST(!ddb::forward_authentic(k_forward_secret, std::to_string(t), mac, "op2", t));
+    BOOST_TEST(!ddb::forward_authentic(k_forward_secret, std::to_string(t + 1), mac, "op", t));
+    BOOST_TEST(!ddb::forward_authentic("another-secret-16", std::to_string(t), mac, "op", t));
+    BOOST_TEST(
+        !ddb::forward_authentic(k_forward_secret, std::to_string(t), mac.substr(1), "op", t));
+    // A malformed time, or no secret at all, fails.
+    BOOST_TEST(!ddb::forward_authentic(k_forward_secret, "", mac, "op", t));
+    BOOST_TEST(!ddb::forward_authentic(k_forward_secret, "12x", mac, "op", t));
+    BOOST_TEST(
+        !ddb::forward_authentic("", std::to_string(t), ddb::forward_mac("", t, "op"), "op", t));
+}
+
+namespace {
+
+/// local_backend that also runs forwarded ops, as raft_backend does: here
+/// it echoes them.
+struct op_backend : ddb::local_backend<> {
+    using ddb::local_backend<>::local_backend;
+    auto serve(std::string_view op) -> std::string { return "served:" + std::string(op); }
+};
+
+/// A gateway over op_backend with a forward secret, on a free port.
+struct forwarding {
+    kythira::memory_kv_engine engine;
+    op_backend backend{engine};
+    std::optional<ddb::gateway<op_backend>> gw;
+
+    explicit forwarding(std::string_view secret) {
+        auto vars = minimal_env();
+        vars["KYTHIRA_DYNAMODB_BIND"] = "127.0.0.1";
+        vars["KYTHIRA_DYNAMODB_PORT"] = "0";
+        auto c = ddb::gateway_config_from_env(env_of(vars));
+        BOOST_REQUIRE(std::holds_alternative<ddb::gateway_config>(c));
+        auto cfg = std::get<ddb::gateway_config>(c);
+        cfg.cluster.forward_secret = std::string(secret);
+        gw.emplace(cfg, backend);
+        gw->start();
+    }
+
+    auto post(const std::string& body, std::optional<std::uint64_t> time, const std::string& mac)
+        -> http::response<http::string_body> {
+        boost::asio::io_context ioc;
+        boost::beast::tcp_stream s(ioc);
+        s.expires_after(std::chrono::seconds(10));
+        s.connect({boost::asio::ip::make_address("127.0.0.1"), gw->port()});
+        http::request<http::string_body> req{http::verb::post, ddb::k_forward_path, 11};
+        req.set(http::field::host, "127.0.0.1");
+        if (time) {
+            req.set(ddb::k_forward_time_header, std::to_string(*time));
+        }
+        req.set(ddb::k_forward_mac_header, mac);
+        req.body() = body;
+        req.prepare_payload();
+        http::write(s, req);
+        boost::beast::flat_buffer buf;
+        http::response<http::string_body> res;
+        http::read(s, buf, res);
+        return res;
+    }
+};
+
+auto now_ms() -> std::uint64_t {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(the_forward_endpoint_serves_authentic_ops_only) {
+    forwarding f(k_forward_secret);
+    const auto t = now_ms();
+    auto r = f.post("abc", t, ddb::forward_mac(k_forward_secret, t, "abc"));
+    BOOST_TEST(r.result_int() == 200U);
+    BOOST_TEST(r.body() == "served:abc");
+
+    // A wrong MAC, a stale time, or no time: refused, and the op not run.
+    BOOST_TEST(f.post("abc", t, ddb::forward_mac(k_forward_secret, t, "abd")).result_int() == 403U);
+    const auto old = t - 120000;
+    BOOST_TEST(f.post("abc", old, ddb::forward_mac(k_forward_secret, old, "abc")).result_int() ==
+               403U);
+    BOOST_TEST(
+        f.post("abc", std::nullopt, ddb::forward_mac(k_forward_secret, t, "abc")).result_int() ==
+        403U);
+
+    // The forward client reaches it and gets the answer back.
+    const ddb::forward_client client(
+        ddb::forward_client_config{.secret = std::string(k_forward_secret), .tls = false},
+        {{"7", ddb::forward_peer{"127.0.0.1", f.gw->port()}}});
+    BOOST_TEST(client.send("7", "xyz").value_or("none") == "served:xyz");
+    BOOST_TEST(!client.send("8", "xyz").has_value());  // no such peer
+    const ddb::forward_client wrong(
+        ddb::forward_client_config{.secret = "a-different-secret", .tls = false},
+        {{"7", ddb::forward_peer{"127.0.0.1", f.gw->port()}}});
+    BOOST_TEST(!wrong.send("7", "xyz").has_value());  // refused: 403
+}
+
+BOOST_AUTO_TEST_CASE(without_a_secret_the_forward_path_is_not_served) {
+    // A single node has no secret: the path is just an unsigned request to
+    // the front end, which refuses it.
+    forwarding f("");
+    const auto t = now_ms();
+    const auto r = f.post("abc", t, ddb::forward_mac("", t, "abc"));
+    BOOST_TEST(r.result_int() == 400U);
+    BOOST_TEST(r.body().find("served:") == std::string::npos);
 }

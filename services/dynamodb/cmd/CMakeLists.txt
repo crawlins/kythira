@@ -20,10 +20,19 @@ add_executable(dynamodb_gateway_node dynamodb_gateway_node/main.cpp)
 target_link_libraries(dynamodb_gateway_node PRIVATE
     kythira_dynamodb    # <kythira/dynamodb/...>, the core headers, Boost.JSON, OpenSSL
     network_simulator   # the future backend
+    kythira_host_node_id   # KYTHIRA_NODE_ID_KIND, for the cluster's node ids
     Threads::Threads
 )
+# A cluster node keeps its groups in one RocksDB database when the build
+# has the engine (CONFIG_ENGINE_ROCKSDB); otherwise only the memory engine
+# is offered and KYTHIRA_DYNAMODB_ENGINE=rocksdb is refused at start.
+if(TARGET raft_rocksdb_engine)
+    target_compile_definitions(dynamodb_gateway_node PRIVATE KYTHIRA_DYNAMODB_ROCKSDB)
+    target_link_libraries(dynamodb_gateway_node PRIVATE raft_rocksdb_engine)
+endif()
 target_compile_features(dynamodb_gateway_node PRIVATE cxx_std_23)
 set_target_properties(dynamodb_gateway_node PROPERTIES
+    JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
 # --help documents every setting the daemon reads.

@@ -93,6 +93,21 @@ target_link_libraries(dynamodb_gateway_test PRIVATE Threads::Threads)
 set_tests_properties(dynamodb_gateway_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 
+# dynamodb_gateway_node as a three-node cluster in one process: the daemon's
+# run_cluster() on the memory engine, Raft and gateways on free loopback
+# ports, requests on every node crossing the forward link (task 7). Only
+# where the daemon itself builds.
+if(TARGET dynamodb_gateway_node)
+    kythira_dynamodb_test(dynamodb_gateway_cluster_test dynamodb_gateway_cluster_test.cpp)
+    target_include_directories(dynamodb_gateway_cluster_test PRIVATE
+        "${KYTHIRA_DYNAMODB_SOURCE_DIR}/cmd/dynamodb_gateway_node")
+    # kythira_test_support: tests/test_ports.hpp.
+    target_link_libraries(dynamodb_gateway_cluster_test PRIVATE
+        kythira_test_support kythira_host_node_id)
+    set_target_properties(dynamodb_gateway_cluster_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
+    set_tests_properties(dynamodb_gateway_cluster_test PROPERTIES
+        LABELS "integration;dynamodb;dynamodb-module" TIMEOUT 300)
+endif()
 # Task 8: Query, Scan and the batch operations at their limits (1 MB pages,
 # segments, the 16 MB BatchGetItem response), and the operations corpus,
 # tests/data/ops_corpus.jsonl, recorded against DynamoDB Local by
