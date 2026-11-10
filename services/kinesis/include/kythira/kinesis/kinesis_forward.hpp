@@ -26,10 +26,13 @@
 /// answers 503 and the first node fails the write as unavailable, which the
 /// client retries.
 ///
-/// Wire: body = u32 key length (big-endian), key bytes, command bytes.
+/// Wire: body = u32 key length (big-endian), key bytes, one admission byte
+/// (`kinesis_throttle.hpp`: whether the leader applies its write buckets,
+/// under the MAC so a caller cannot strip it), command bytes.
 /// Header `x-kythira-forward: <unix seconds>:<hex HMAC>`.
 
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
+#include <kythira/kinesis/kinesis_throttle.hpp>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -54,6 +57,7 @@ inline constexpr std::chrono::seconds k_max_skew{60};
 struct proposal {
     std::string _key;
     std::vector<std::byte> _command;
+    admission _admission = admission::none;
 };
 
 [[nodiscard]] inline auto encode_body(const proposal& p) -> std::string {
@@ -64,6 +68,7 @@ struct proposal {
     out.push_back(static_cast<char>((n >> 8U) & 0xFFU));
     out.push_back(static_cast<char>(n & 0xFFU));
     out += p._key;
+    out.push_back(static_cast<char>(p._admission));
     for (const auto b : p._command) {
         out.push_back(static_cast<char>(b));
     }
@@ -78,12 +83,17 @@ struct proposal {
         return static_cast<std::uint32_t>(static_cast<unsigned char>(body[i]));
     };
     const auto n = (byte(0) << 24U) | (byte(1) << 16U) | (byte(2) << 8U) | byte(3);
-    if (body.size() - 4 < n) {
+    if (body.size() - 4 <= n) {
         return std::nullopt;
     }
     proposal p;
     p._key = std::string(body.substr(4, n));
-    const auto rest = body.substr(4 + n);
+    const auto mode = static_cast<unsigned char>(body[4 + n]);
+    if (mode > static_cast<unsigned char>(admission::shard_limits)) {
+        return std::nullopt;
+    }
+    p._admission = static_cast<admission>(mode);
+    const auto rest = body.substr(4 + n + 1);
     p._command.reserve(rest.size());
     for (const char c : rest) {
         p._command.push_back(static_cast<std::byte>(c));

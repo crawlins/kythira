@@ -384,6 +384,9 @@ enum class apply_status : std::uint8_t {
     invalid = 4,
     /// A status change the lifecycle does not allow.
     bad_transition = 5,
+    /// Never from `apply()`: the leader's write buckets refused the append
+    /// before proposing it (`kinesis_throttle.hpp`).
+    throttled = 6,
 };
 
 /// One part of an `append_batch_command`'s result: what that shard's
@@ -428,7 +431,7 @@ struct apply_result {
 [[nodiscard]] inline auto decode_result(std::span<const std::byte> bytes) -> apply_result {
     codec::reader r(bytes);
     apply_result out;
-    out._status = r.enumeration<apply_status>(5);
+    out._status = r.enumeration<apply_status>(6);
     out._id = r.u64();
     out._first_counter = r.u64();
     out._last_counter = r.u64();
@@ -438,7 +441,7 @@ struct apply_result {
         out._parts.reserve(std::min<std::size_t>(n, r.remaining() / 25));
         for (std::uint32_t i = 0; i < n; ++i) {
             append_part_result p;
-            p._status = r.enumeration<apply_status>(5);
+            p._status = r.enumeration<apply_status>(6);
             p._first_counter = r.u64();
             p._last_counter = r.u64();
             p._arrival_ms = r.i64();

@@ -296,6 +296,9 @@ auto run(const node_options& opt) -> int {
     host->start();
 
     const auto gateways = opt._peer_gateways;
+    // The leader's write buckets (task 8): what a stream with the
+    // throttling switch on meets when this node proposes for it.
+    kinesis::write_throttle write_limits;
     cluster_type cluster(
         *host,
         kinesis::make_http_forwarder<kythira::host_node_id>(
@@ -304,7 +307,7 @@ auto run(const node_options& opt) -> int {
                 const auto it = gateways.find(id);
                 return it == gateways.end() ? std::nullopt : std::optional{it->second};
             }),
-        opt._command_timeout);
+        opt._command_timeout, &write_limits);
 
     kinesis::front_end_config fc;
     fc._region = opt._region;
@@ -326,9 +329,8 @@ auto run(const node_options& opt) -> int {
     service.register_with(front_end);
     gateway_type gateway(
         front_end,
-        [&cluster](const std::string& key, const std::vector<std::byte>& command) {
-            return cluster.propose_local(key, command);
-        },
+        [&cluster](const std::string& key, const std::vector<std::byte>& command,
+                   kinesis::admission mode) { return cluster.propose_local(key, command, mode); },
         &store, opt._forward_secret);
 
     https::server_config hc;

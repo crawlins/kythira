@@ -516,6 +516,14 @@ BOOST_AUTO_TEST_CASE(batches_and_their_results_round_trip) {
     const k::apply_result plain{._first_counter = 7, ._last_counter = 9, ._arrival_ms = 3};
     BOOST_TEST(k::encode_result(plain).size() == 1 + 8 * 4U);
     BOOST_TEST((k::decode_result(k::encode_result(plain)) == plain));
+    // A leader's throttled answer crosses the forwarding hop too, whole or
+    // per part.
+    const k::apply_result throttled{._status = k::apply_status::throttled};
+    BOOST_TEST((k::decode_result(k::encode_result(throttled)) == throttled));
+    const k::apply_result some_throttled{
+        ._parts = {{._status = k::apply_status::ok, ._first_counter = 1, ._last_counter = 1},
+                   {._status = k::apply_status::throttled}}};
+    BOOST_TEST((k::decode_result(k::encode_result(some_throttled)) == some_throttled));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

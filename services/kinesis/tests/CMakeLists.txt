@@ -121,6 +121,9 @@ kythira_kinesis_test(kinesis_reads_test kinesis_reads_test.cpp)
 # Task 6: forwarding proposals to the group leader (wire, HMAC) and the
 # multi-raft cluster adapter.
 kythira_kinesis_test(kinesis_forward_test kinesis_forward_test.cpp)
+# Task 8: per-shard token buckets, leader-side write admission and the
+# throttling errors on the API.
+kythira_kinesis_test(kinesis_throttle_test kinesis_throttle_test.cpp)
 # Task 6: the gateway's HTTP surface on a real listener (API, internal
 # propose and segment endpoints, health) and the peer client over plain
 # HTTP and verified TLS. certificate_authority issues the test PKI.

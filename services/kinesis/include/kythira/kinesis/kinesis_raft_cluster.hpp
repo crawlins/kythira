@@ -14,6 +14,9 @@
 /// - `propose_local` is what the forwarding endpoint calls: it never
 ///   forwards again, so a leadership change mid-flight cannot bounce a
 ///   command around the cluster.
+/// - Write admission (`admission::shard_limits`) happens only where the
+///   command is proposed: tokens a non-leader took are refunded before it
+///   forwards, and the leader admits the forwarded command itself.
 /// - `read` runs on this node's replica of the owning group (a replica
 ///   read: possibly behind the leader by the entries in flight).
 ///
@@ -23,6 +26,7 @@
 
 #include <kythira/kinesis/kinesis_cluster.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
+#include <kythira/kinesis/kinesis_throttle.hpp>
 
 #include <raft/shard_exceptions.hpp>
 
@@ -45,20 +49,22 @@ public:
     /// Sends `command` for `key` to `leader`'s gateway; the decoded result,
     /// or nullopt when the leader could not be reached or did not commit.
     using forwarder = std::function<std::optional<apply_result>(
-        const node_id_type& leader, const std::string& key, const std::vector<std::byte>& command)>;
+        const node_id_type& leader, const std::string& key, const std::vector<std::byte>& command,
+        admission mode)>;
 
     raft_stream_cluster(Host& host, forwarder forward,
-                        std::chrono::milliseconds timeout = std::chrono::seconds{5})
-        : _host(host), _forward(std::move(forward)), _timeout(timeout) {}
+                        std::chrono::milliseconds timeout = std::chrono::seconds{5},
+                        write_throttle* throttle = nullptr)
+        : _host(host), _forward(std::move(forward)), _timeout(timeout), _throttle(throttle) {}
 
-    auto propose(const std::string& key, std::vector<std::byte> command)
-        -> std::optional<apply_result> {
-        return submit(key, command, true);
+    auto propose(const std::string& key, std::vector<std::byte> command,
+                 admission mode = admission::none) -> std::optional<apply_result> {
+        return submit(key, command, mode, true);
     }
 
-    auto propose_local(const std::string& key, const std::vector<std::byte>& command)
-        -> std::optional<apply_result> {
-        return submit(key, command, false);
+    auto propose_local(const std::string& key, const std::vector<std::byte>& command,
+                       admission mode = admission::none) -> std::optional<apply_result> {
+        return submit(key, command, mode, false);
     }
 
     auto read(const std::string& key, const stream_reader& f) -> bool {
@@ -97,20 +103,23 @@ private:
     Host& _host;
     forwarder _forward;
     std::chrono::milliseconds _timeout;
+    write_throttle* _throttle;
     std::atomic<std::uint64_t> _forwarded{0};
 
-    auto submit(const std::string& key, const std::vector<std::byte>& command, bool may_forward)
-        -> std::optional<apply_result> {
+    auto submit(const std::string& key, const std::vector<std::byte>& command, admission mode,
+                bool may_forward) -> std::optional<apply_result> {
         try {
-            auto bytes = _host.submit_command(key, command, _timeout).get();
-            return decode_result(bytes);
+            return propose_admitted(_throttle, mode, command, [&](const auto& bytes) {
+                return std::optional{
+                    decode_result(_host.submit_command(key, bytes, _timeout).get())};
+            });
         } catch (const shard_not_leader_exception<group_id_type, node_id_type>& e) {
             if (!may_forward || !_forward || !e.leader_hint() ||
                 *e.leader_hint() == _host.node_id()) {
                 return std::nullopt;
             }
             ++_forwarded;
-            return _forward(*e.leader_hint(), key, command);
+            return _forward(*e.leader_hint(), key, command, mode);
         } catch (const std::exception&) {
             // Unrouted key, no local replica, timeout, frozen shard: all
             // "not now" to the client, which retries.

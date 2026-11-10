@@ -96,6 +96,10 @@ auto ring_of(std::uint32_t id, std::string secret) -> kin::iterator_key_ring {
 auto service_config() -> kin::kinesis_service_config {
     kin::kinesis_service_config c;
     c._iterator_keys = ring_of(7, "a test iterator key of some length");
+    // These cases page fast; the read limits have their own tests.
+    c._throughput._read_calls_per_s = 1e9;
+    c._throughput._iterator_calls_per_s = 1e9;
+    c._throughput._read_bytes_per_s = 1e12;
     return c;
 }
 

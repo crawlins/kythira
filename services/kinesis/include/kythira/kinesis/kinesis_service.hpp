@@ -43,9 +43,17 @@
 ///
 /// Not here yet: consumers (EnforceConsumerDeletion has nothing to enforce
 /// until task 13), naming a stream by `StreamId` and `DryRun` (refused with
-/// InvalidArgumentException rather than silently ignored), throughput limits
-/// (task 8), and the per-stream maximum record size (`MaxRecordSizeInKiB`,
-/// AWS's default of 1 MiB applies).
+/// InvalidArgumentException rather than silently ignored), and the
+/// per-stream maximum record size (`MaxRecordSizeInKiB`, AWS's default of
+/// 1 MiB applies).
+///
+/// Throughput (task 8, `kinesis_throttle.hpp`). With the stream's
+/// `throttling` switch on (the default), appends are proposed with
+/// `admission::shard_limits`: the leader admits the longest prefix of each
+/// shard's records its buckets allow, and the rest fail with
+/// ProvisionedThroughputExceededException (the whole PutRecord, or each
+/// record of a PutRecords). GetRecords and GetShardIterator meet this
+/// node's read buckets.
 
 #include <kythira/kinesis/kinesis_catalog.hpp>
 #include <kythira/kinesis/kinesis_cluster.hpp>
@@ -57,6 +65,7 @@
 #include <kythira/kinesis/kinesis_records.hpp>
 #include <kythira/kinesis/kinesis_sequence.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
+#include <kythira/kinesis/kinesis_throttle.hpp>
 
 #include <raft/aws_json_protocol.hpp>
 
@@ -112,6 +121,11 @@ struct kinesis_service_config {
     /// the same ring. Empty: the service makes a random key, which suits
     /// one node only (iterators from other nodes would not verify).
     iterator_key_ring _iterator_keys{};
+    /// AWS's per-shard rates (task 8). Writes meet them on the proposing
+    /// leader (the cluster's `write_throttle`); reads on this node.
+    throughput_limits _throughput{};
+    /// The clock the read buckets refill by.
+    monotonic_ms _monotonic = steady_now_ms;
 };
 
 /// `shardId-` and the ordinal: twelve digits in the `aws` id format, bare
@@ -262,7 +276,9 @@ struct pending_record {
 template<stream_cluster Cluster> class kinesis_service {
 public:
     kinesis_service(Cluster& cluster, kinesis_service_config config = {})
-        : _cluster(cluster), _config(std::move(config)) {
+        : _cluster(cluster),
+          _config(std::move(config)),
+          _reads(_config._throughput, _config._monotonic) {
         if (_config._iterator_keys._keys.empty()) {
             std::array<unsigned char, 32> key{};
             if (RAND_bytes(key.data(), static_cast<int>(key.size())) != 1) {
@@ -713,6 +729,9 @@ public:
             return results.error();
         }
         const auto& r = results->at(0);
+        if (r._throttled) {
+            return throughput_exceeded(r._message);
+        }
         if (r._error) {
             return internal_failure();
         }
@@ -754,7 +773,11 @@ public:
         std::int64_t failed = 0;
         for (const auto& r : *results) {
             boost::json::object entry;
-            if (r._error) {
+            if (r._throttled) {
+                ++failed;
+                entry["ErrorCode"] = "ProvisionedThroughputExceededException";
+                entry["ErrorMessage"] = r._message;
+            } else if (r._error) {
                 ++failed;
                 entry["ErrorCode"] = "InternalFailure";
                 entry["ErrorMessage"] = "Internal service failure.";
@@ -789,6 +812,10 @@ public:
             return shard_not_found(shard_text, rec);
         }
         const auto key = routing_key(rec._id, entry->_ordinal);
+        if (profile._throttling && !_reads.admit_get_shard_iterator(key)) {
+            return throughput_exceeded(
+                shard_rate_exceeded(format_shard_id(entry->_ordinal, profile._id_format), rec));
+        }
         const auto state = read_shard_state(key);
         if (!state) {
             return internal_failure();
@@ -906,6 +933,11 @@ public:
             return shard_not_found(format_shard_id(it._ordinal, profile._id_format), rec);
         }
         const auto key = routing_key(rec._id, it._ordinal);
+        if (profile._throttling && !_reads.admit_get_records(key)) {
+            return throughput_exceeded("Rate exceeded for Shard - " + rec._account + ":" +
+                                       rec._name + ":" +
+                                       format_shard_id(it._ordinal, profile._id_format));
+        }
         const auto limit =
             static_cast<std::size_t>(service_detail::int_member(in, "Limit").value_or(10'000));
         const segment_read_limits limits{
@@ -931,6 +963,13 @@ public:
         }
         if (!got || got->_missing) {
             return internal_failure();
+        }
+        if (profile._throttling) {
+            std::uint64_t bytes = 0;
+            for (const auto& rr : got->_records) {
+                bytes += rr._record._data.size() + rr._record._partition_key.size();
+            }
+            _reads.charge(key, bytes);
         }
 
         boost::json::array records;
@@ -996,6 +1035,18 @@ public:
 private:
     Cluster& _cluster;
     kinesis_service_config _config;
+    read_throttle _reads;
+
+    [[nodiscard]] static auto shard_rate_exceeded(std::string_view shard, const stream_record& rec)
+        -> std::string {
+        return "Rate exceeded for shard " + std::string(shard) + " in stream " + rec._name +
+               " under account " + rec._account + ".";
+    }
+
+    [[nodiscard]] static auto throughput_exceeded(std::string message) -> aws_json::error {
+        return kinesis_error_style().modeled("ProvisionedThroughputExceededException",
+                                             std::move(message));
+    }
 
     /// A shard's state as this replica has it, copied out of the read so
     /// the store is read without holding the state machine.
@@ -1052,8 +1103,11 @@ private:
 
     struct record_result {
         bool _error = false;
+        /// The shard's write buckets refused it (with `_error`).
+        bool _throttled = false;
         std::string _shard_id;
         std::string _sequence;
+        std::string _message;
     };
 
     struct shards_token {
@@ -1063,9 +1117,11 @@ private:
         std::int64_t _created_ms = 0;
     };
 
-    template<typename Command> auto propose(const Command& c) -> std::optional<apply_result> {
+    template<typename Command>
+    auto propose(const Command& c, admission mode = admission::none)
+        -> std::optional<apply_result> {
         const stream_command cmd = c;
-        return _cluster.propose(command_key(cmd), encode_command(cmd));
+        return _cluster.propose(command_key(cmd), encode_command(cmd), mode);
     }
 
     template<typename F> auto read_catalog(F&& f) -> bool {
@@ -1168,9 +1224,9 @@ private:
     /// share one entry (`append_batch_command`, group commit); a part that
     /// finds its shard gone from that group (a split since this node
     /// routed) is proposed again on its own, under its own key.
-    void commit(std::vector<shard_append>& appends) {
-        const auto alone = [this](shard_append& a) {
-            const auto r = propose(a._command);
+    void commit(std::vector<shard_append>& appends, admission mode) {
+        const auto alone = [this, mode](shard_append& a) {
+            const auto r = propose(a._command, mode);
             if (r) {
                 a._result = append_part_result{._status = r->_status,
                                                ._first_counter = r->_first_counter,
@@ -1208,7 +1264,7 @@ private:
             for (const auto* a : batch) {
                 c._appends.push_back(a->_command);
             }
-            const auto r = propose(c);
+            const auto r = propose(c, mode);
             if (!r || r->_parts.size() != batch.size()) {
                 continue;  // not committed in time: every record fails
             }
@@ -1253,7 +1309,7 @@ private:
                 }
                 appends.push_back(std::move(a));
             }
-            commit(appends);
+            commit(appends, profile._throttling ? admission::shard_limits : admission::none);
             for (auto& a : appends) {
                 const auto& res = a._result;
                 if (res && res->_status == apply_status::shard_closed &&
@@ -1264,9 +1320,21 @@ private:
                     continue;
                 }
                 const bool ok = res && res->_status == apply_status::ok;
+                // The leader's buckets admit a prefix of a shard's records;
+                // the rest are throttled one by one (Requirement 12.1).
+                const std::size_t admitted =
+                    ok ? static_cast<std::size_t>(res->_last_counter - res->_first_counter + 1) : 0;
+                const bool throttling = res && (res->_status == apply_status::throttled ||
+                                                (ok && admitted < a._records.size()));
                 for (std::size_t i = 0; i < a._records.size(); ++i) {
                     auto& result = out[a._records[i]->_index];
-                    result._error = !ok;
+                    result._error = !ok || i >= admitted;
+                    if (throttling && i >= admitted) {
+                        result._throttled = true;
+                        result._message = shard_rate_exceeded(
+                            format_shard_id(a._ordinal, profile._id_format), rec);
+                        continue;
+                    }
                     if (ok) {
                         result._shard_id = format_shard_id(a._ordinal, profile._id_format);
                         result._sequence =

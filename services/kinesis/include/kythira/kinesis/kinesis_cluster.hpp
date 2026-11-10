@@ -16,6 +16,7 @@
 /// tests and a single-node development mode.
 
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
+#include <kythira/kinesis/kinesis_throttle.hpp>
 
 #include <chrono>
 #include <concepts>
@@ -33,22 +34,24 @@ using stream_reader = std::function<void(const stream_state_machine<std::uint64_
 
 /// What a handler needs from the cluster:
 ///
-/// - `propose(key, command)`: commit `command` (an encoded `stream_command`)
-///   in the group owning `key` and return its decoded result, or nullopt
-///   when it could not be committed in time (no leader, timeout). A nullopt
-///   is ambiguous: the command may still commit.
+/// - `propose(key, command, admission)`: commit `command` (an encoded
+///   `stream_command`) in the group owning `key` and return its decoded
+///   result, or nullopt when it could not be committed in time (no leader,
+///   timeout). A nullopt is ambiguous: the command may still commit. With
+///   `admission::shard_limits` an append first meets the write buckets of
+///   whichever node proposes it (`kinesis_throttle.hpp`).
 /// - `read(key, f)`: run `f` on the state machine of the group owning `key`,
 ///   as this node's replica has it; false when this node cannot (no local
 ///   replica of that group).
 /// - `now_ms()`: the wall clock leaders stamp arrival times and creation
 ///   times with (Requirement 8.3).
 template<typename C>
-concept stream_cluster =
-    requires(C& c, const std::string& key, std::vector<std::byte> command, stream_reader f) {
-        { c.propose(key, std::move(command)) } -> std::same_as<std::optional<apply_result>>;
-        { c.read(key, f) } -> std::same_as<bool>;
-        { c.now_ms() } -> std::same_as<std::int64_t>;
-    };
+concept stream_cluster = requires(C& c, const std::string& key, std::vector<std::byte> command,
+                                  stream_reader f, admission a) {
+    { c.propose(key, std::move(command), a) } -> std::same_as<std::optional<apply_result>>;
+    { c.read(key, f) } -> std::same_as<bool>;
+    { c.now_ms() } -> std::same_as<std::int64_t>;
+};
 
 /// Optional: `group_of(key)` names the group owning `key` as this node
 /// routes it now, or nullopt when unknown. A cluster that has it lets
@@ -75,13 +78,22 @@ public:
             })
         : _machine(store), _clock(std::move(clock)) {}
 
-    auto propose(const std::string& /*key*/, std::vector<std::byte> command)
-        -> std::optional<apply_result> {
+    auto propose(const std::string& /*key*/, std::vector<std::byte> command,
+                 admission mode = admission::none) -> std::optional<apply_result> {
         const std::scoped_lock lock(_mutex);
         if (_unavailable) {
             return std::nullopt;
         }
-        return decode_result(_machine.apply(command, ++_index));
+        return propose_admitted(_throttle, mode, command, [this](const auto& bytes) {
+            return std::optional{decode_result(_machine.apply(bytes, ++_index))};
+        });
+    }
+
+    /// The write buckets proposals with `admission::shard_limits` meet; null
+    /// (the default) admits everything. Must outlive this object.
+    void set_write_throttle(write_throttle* t) {
+        const std::scoped_lock lock(_mutex);
+        _throttle = t;
     }
 
     auto read(const std::string& /*key*/, const stream_reader& f) -> bool {
@@ -114,6 +126,7 @@ private:
     stream_state_machine<std::uint64_t> _machine;
     std::uint64_t _index = 0;
     bool _unavailable = false;
+    write_throttle* _throttle = nullptr;
     clock_fn _clock;
 };
 
