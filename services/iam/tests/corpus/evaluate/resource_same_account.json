@@ -354,7 +354,9 @@
           }
         ]
       },
-      "expect": "implicit_deny"
+      "expect": "implicit_deny",
+      "aws_simulator": "allow",
+      "aws_simulator_note": "AWS's SimulateCustomPolicy allows (2026-11-10, task 24). Real AWS denies: measured the same day with S3 GetObject by an IAM user whose boundary allows only ec2:*, against a bucket policy granting the account root (403, 'no permissions boundary allows the s3:GetObject action'); the same grant to the user's own ARN gave 200, and without the boundary the account grant gave 200. The corpus follows real AWS."
     },
     {
       "name": "role ARN grant stands in for an identity allow (INV-EVAL-6)",

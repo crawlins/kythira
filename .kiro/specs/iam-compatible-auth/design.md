@@ -886,6 +886,16 @@ the adapter, so a build without `CONFIG_REDIS_GATEWAY_IAM` has none of them.
   disagreement becomes a case in `corpus/evaluate/aws_simulator.json` with
   AWS's decision expected. It needs only `iam:SimulateCustomPolicy` on
   `*`, creates nothing and is free; it runs by hand, not in CI.
+- First run, 2026-11-10 (kythira-dev, boto3 1.43): 71 of 73 cases agreed.
+  The two that did not are places where the simulator departs from the
+  enforcement AWS documents: it denies a caller exempted by a Deny
+  `NotPrincipal` listing the user's ARN with its account, and it lets a
+  same-account grant to the account escape a permissions boundary, which
+  the boundaries page reserves for a grant naming the user's ARN. Both
+  corpus cases keep the documented decision and carry the simulator's in
+  `aws_simulator` (Clark, 2026-11-10: follow real enforcement, which the
+  docs describe); the script reports them as
+  known divergences.
 
 ## Configuration
 

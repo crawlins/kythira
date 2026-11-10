@@ -412,7 +412,9 @@
           }
         ]
       },
-      "expect": "allow"
+      "expect": "allow",
+      "aws_simulator": "explicit_deny",
+      "aws_simulator_note": "AWS's SimulateCustomPolicy denies (2026-11-10, task 24). Real AWS allows: measured the same day with S3 GetObject by an IAM user without a boundary against a bucket policy denying NotPrincipal [the user's ARN, the account] (the bare account id, which S3 stores as the root ARN, and the root ARN both gave 200; an unlisted user got an explicit deny). The corpus follows real AWS."
     },
     {
       "name": "Deny NotPrincipal: a user listed without its account is still denied",
