@@ -62,6 +62,11 @@
 // DynamoDB Local. Four applications read one stream; each processes every
 // record, and after a restart carries on from its checkpoints.
 //
+// A differential case (task 17, Requirement 17.1) runs a seeded operation
+// mix against two nodes and checks they answer alike, then replays the
+// checked-in AWS Kinesis recordings (tests/differential/recordings/) against
+// a third and checks the cluster answers as AWS did.
+//
 // The last case (task 17, Requirement 11.3) recreates the nodes with
 // tiering to an in-memory S3 mock (the `s3` profile) five seconds after a
 // segment's last record. A producer writes while every node is killed in
@@ -158,6 +163,17 @@ os::CmdResult sdk_cpp(std::initializer_list<std::string> args, const char* key_i
     auto cmd = compose_cmd({"--profile", "clients", "run", "--rm", "-T", "-e",
                             std::string("AWS_ACCESS_KEY_ID=") + key_id, "-e",
                             std::string("AWS_SECRET_ACCESS_KEY=") + secret, "sdk-cpp"});
+    cmd.insert(cmd.end(), args);
+    return os::real_exec(cmd);
+}
+
+/// tests/differential/kinesis_differential.py in the boto3 client image,
+/// with the AWS recordings at /usr/local/share/kinesis-diff/ (task 17).
+os::CmdResult differential(std::initializer_list<std::string> args) {
+    auto cmd = compose_cmd({"--profile", "clients", "run", "--rm", "-T", "--entrypoint", "python3",
+                            "-e", std::string("AWS_ACCESS_KEY_ID=") + k_admin_id, "-e",
+                            std::string("AWS_SECRET_ACCESS_KEY=") + k_admin_secret, "boto3",
+                            "/usr/local/bin/kinesis_differential.py"});
     cmd.insert(cmd.end(), args);
     return os::real_exec(cmd);
 }
@@ -1006,6 +1022,24 @@ BOOST_AUTO_TEST_CASE(flink_source_and_sink_copy_every_record) {
                     "flink-out", "--expect", "500", "--timeout", "180"});
     BOOST_TEST(c.code == 0, "the Flink job never copied all 500 records:\n" << c.out);
     os::real_exec(compose_cmd({"--profile", "flink", "stop", "flink"}));
+}
+
+// Task 17 (Requirement 17.1): the operation mix gets the same answers from
+// two different nodes, and the same answers AWS Kinesis gave when the
+// checked-in recordings were made. Runs before the tiering case, which
+// recreates the nodes.
+BOOST_AUTO_TEST_CASE(differential_replay_matches_the_aws_recordings) {
+    const logs_on_failure logs;
+
+    auto self = differential({"self-check", "--endpoints", endpoint(1) + "," + endpoint(3),
+                              "--seed", "7", "--steps", "80"});
+    BOOST_TEST(self.code == 0, "self-check across kin-1 and kin-3 failed:\n" << self.out);
+
+    auto replay = differential({"compare", "--endpoint", endpoint(2), "--recording",
+                                "/usr/local/share/kinesis-diff/", "--allow",
+                                "/usr/local/share/kinesis-diff/allow.json"});
+    BOOST_TEST(replay.code == 0, "replay of the AWS recordings failed:\n" << replay.out);
+    BOOST_TEST_MESSAGE("differential replay:\n" << replay.out);
 }
 
 // Task 17: tiering through leader kills and S3 faults. Runs last, since it

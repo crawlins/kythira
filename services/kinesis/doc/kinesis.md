@@ -193,3 +193,5 @@ the spec, and `UpdateStreamWarmThroughput`. `tools/check_coverage.py`
 keeps the list complete. Other differences from AWS are noted on each
 subject's page under "Limits and differences" or "Not yet checked against
 AWS".
+[differential.md](differential.md) describes the test that replays
+recordings of real AWS Kinesis against Kythira.
