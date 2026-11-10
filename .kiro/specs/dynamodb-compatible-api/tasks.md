@@ -140,6 +140,17 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
   - KCL 2.x sample consumer with leases on Kythira (Docker and rootless
     Podman), against a Kythira or test Kinesis stream
   - _Requirements: 7.1, 8.1, 8.6, 20.3_
+  - Progress (November 10, 2026):
+    - Done: the control plane and single-item handlers (`table_api.hpp`,
+      `item_api.hpp`) over the `dynamo_backend` concept, with
+      `local_backend` applying commands in-process (`backend.hpp`);
+      `dynamodb_gateway_node` on core's Beast HTTPS host with static keys,
+      one node on `memory_kv_engine` (`gateway.hpp`). boto3 and the AWS CLI
+      ran create, waiters, put, update, get, conditions, tags and delete
+      against it.
+    - Left: the Raft-hosted backend on the RocksDB engine (after
+      persistent-state-machine task 5), warm throughput, and the KCL
+      sample.
 
 - [ ] 8. Query, Scan and batch operations
   - Range reads with every `Query` option; cross-shard `Scan` cursors;

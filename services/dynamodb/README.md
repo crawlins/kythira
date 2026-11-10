@@ -47,12 +47,35 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/table_api.hpp` | `CreateTable`, `DescribeTable`, `ListTables`, `UpdateTable`, `DeleteTable`, `DescribeLimits` and the tagging operations, with AWS's wording | 7 |
 | `include/kythira/dynamodb/item_api.hpp` | `GetItem`, `PutItem`, `UpdateItem` and `DeleteItem` | 7 |
 | `tests/dynamodb_api_test.cpp` | the control plane and single-item handlers through the front end on `local_backend` | 7 |
+| `include/kythira/dynamodb/gateway.hpp` | `dynamodb_gateway_node`'s settings from the environment, and the front end and handlers served over core's Beast HTTPS host | 7 |
+| `cmd/dynamodb_gateway_node/` | the daemon | 7 |
+| `tests/dynamodb_gateway_test.cpp` | the settings, and the gateway serving signed requests over a socket | 7 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
 Shared pieces live in core `include/raft/`, because the Kinesis module uses
 them too: the AWS JSON protocol codec (`aws_json_protocol.hpp`) and its
 model generator (`scripts/gen_aws_json_shapes.py`).
+
+## Running the daemon
+
+So far `dynamodb_gateway_node` runs one node on the in-memory engine, with
+no Raft and nothing kept across a restart, like DynamoDB Local's
+`-inMemory`. The Raft-hosted backend on RocksDB comes next in task 7.
+Settings come from the environment; `dynamodb_gateway_node --help` lists
+them, and `gateway.hpp` documents each one.
+
+```
+KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT=1 \
+KYTHIRA_DYNAMODB_STATIC_KEYS=AKIDLOCAL:localsecret:111122223333:dev:admin \
+  build/dynamodb_gateway_node &
+AWS_ACCESS_KEY_ID=AKIDLOCAL AWS_SECRET_ACCESS_KEY=localsecret \
+  aws dynamodb list-tables --endpoint-url http://localhost:8000 --region us-east-1
+```
+
+Outside tests, serve TLS (`KYTHIRA_DYNAMODB_TLS_CERT`,
+`KYTHIRA_DYNAMODB_TLS_KEY`) and keep the keys in a file
+(`KYTHIRA_DYNAMODB_STATIC_KEYS_FILE`), not in the environment.
 
 ## Core targets and variables used
 
@@ -64,6 +87,8 @@ package to export.
 | `kythira_core_headers` | `include/` (the AWS JSON codec), through `kythira_dynamodb` |
 | `boost_json` | the codec and the tests, through `kythira_dynamodb` |
 | `OpenSSL::SSL`, `OpenSSL::Crypto` | SigV4 in the front end, through `kythira_dynamodb` |
+| `network_simulator`, `KYTHIRA_FUTURE_BACKEND_AVAILABLE` | the selected future backend, which the state machines' persistence headers need, for `dynamodb_gateway_node` |
+| `include/raft/beast_https_server.hpp` | the daemon's HTTPS listener |
 | `include/raft/aws_request_authorizer.hpp`, `static_key_authorizer.hpp` | the authorizer the front end takes (IAM's, or static keys without IAM) |
 | `Python3_EXECUTABLE` | the `*_model_header_fresh` and `dynamodb_actions_header_fresh` ctests |
 | `KYTHIRA_AWS_JSON_SHAPES_GENERATOR` | the same ctests (core's `scripts/gen_aws_json_shapes.py`) |

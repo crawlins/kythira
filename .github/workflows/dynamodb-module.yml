@@ -213,6 +213,9 @@ jobs:
           mapfile -t targets < <(ninja -C build -t targets all | sed 's/:.*//' | sort -u)
           mapfile -t binaries < <(comm -12 <(printf '%s\n' "${tests[@]}" | sort -u) \
             <(printf '%s\n' "${targets[@]}"))
+          # dynamodb_gateway_node_help runs the daemon, which is not a
+          # test target of its own.
+          binaries+=(dynamodb_gateway_node)
           echo "Building: ${binaries[*]}"
           cmake --build build -j"$(nproc)" --target "${binaries[@]}"
 
