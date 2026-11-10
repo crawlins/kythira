@@ -16,9 +16,12 @@
 /// AWS's wording.
 ///
 /// Features that later tasks add are refused outright with a message that
-/// names them, rather than silently ignored: secondary indexes (tasks 9 and
-/// 11), streams (16), encryption settings, resource policies, on-demand and
-/// and replicas (22).
+/// names them, rather than silently ignored: global secondary indexes
+/// (task 11), streams (16), encryption settings, resource policies,
+/// on-demand throughput and replicas (22).
+///
+/// Local secondary indexes (task 9) are checked with DynamoDB Local's
+/// wording, which is the only recording there is, and fixed at creation.
 ///
 /// Warm throughput is recorded and reported but limits nothing: Kythira
 /// has no per-partition throughput ceiling for it to raise. A table shows
@@ -192,6 +195,146 @@ inline constexpr std::uint64_t k_default_warm_write = 4000;
 }  // namespace table_api_detail
 
 /// A descriptor as a `TableDescription`.
+/// `CreateTable`'s `LocalSecondaryIndexes`, checked in DynamoDB Local's
+/// order and words. `type_of` gives an attribute's definition.
+template<typename TypeOf>
+[[nodiscard]] auto local_indexes_from(const boost::json::array& list, const std::string& table_hash,
+                                      const std::string* table_range, const TypeOf& type_of)
+    -> aws_json::result<std::vector<local_index>> {
+    if (table_range == nullptr) {
+        return validation_error(
+            "Local Secondary indices are not allowed on hash tables, only hash and range tables");
+    }
+    if (list.size() > k_max_local_indexes) {
+        return validation_error("Cannot have more than 5 local secondary indexes per table");
+    }
+    std::vector<local_index> out;
+    std::size_t projected = 0;
+    for (const auto& entry : list) {
+        const auto& o = entry.as_object();
+        local_index lsi;
+        lsi.name = std::string(o.at("IndexName").as_string());
+        lsi.number = static_cast<std::uint8_t>(out.size());
+        if (!table_api_detail::valid_table_name(lsi.name)) {
+            return table_api_detail::bad_table_name();
+        }
+        const auto& ks = o.at("KeySchema").as_array();
+        std::vector<std::string> hash;
+        std::vector<std::string> range;
+        for (const auto& k : ks) {
+            const auto& ko = k.as_object();
+            (ko.at("KeyType").as_string() == "HASH" ? hash : range)
+                .emplace_back(ko.at("AttributeName").as_string());
+        }
+        if (hash.empty()) {
+            return validation_error(
+                "No Hash Key specified in schema.  All Dynamo DB tables must have exactly one "
+                "hash key");
+        }
+        if (hash.size() > 1) {
+            return validation_error(
+                "Too many hash keys specified.  All Dynamo DB tables must have exactly one hash "
+                "key");
+        }
+        if (ks[0].as_object().at("KeyType").as_string() != "HASH") {
+            return validation_error(
+                "Invalid key order. Hash Key must be specified first in key schema, Range Key "
+                "must be specifed second");
+        }
+        if (range.empty()) {
+            return validation_error("Local secondary indices must have a range key");
+        }
+        if (hash[0] != table_hash) {
+            return validation_error(
+                "Local Secondary indices must have the same hash key as the main table");
+        }
+        if (range[0] == hash[0]) {
+            return validation_error("Two keys can not have the same name");
+        }
+        const auto type = type_of(range[0]);
+        if (!type) {
+            return validation_error(
+                "Local Secondary Index range key not specified in Attribute Definitions.Type "
+                "unknown.");
+        }
+        lsi.sort_name = range[0];
+        lsi.sort_type = *type;
+        const auto& p = o.at("Projection").as_object();
+        const auto* pt = p.if_contains("ProjectionType");
+        const auto* nk = p.if_contains("NonKeyAttributes");
+        if (pt == nullptr) {
+            return validation_error("Indexes must have a projection specified");
+        }
+        const auto kind = pt->as_string();
+        if (kind != "INCLUDE" && nk != nullptr) {
+            return validation_error(
+                "No attributes should be specified to be projected unless projection type is "
+                "INCLUDE");
+        }
+        if (kind == "INCLUDE") {
+            if (nk == nullptr || nk->as_array().empty()) {
+                return validation_error(
+                    "If Projection type INCLUDE is specified, some non-key attributes to include "
+                    "in the projection must be specified as well");
+            }
+            for (const auto& a : nk->as_array()) {
+                std::string name(a.as_string());
+                if (std::find(lsi.non_key.begin(), lsi.non_key.end(), name) != lsi.non_key.end()) {
+                    return validation_error("Cannot have two attributes with the same name");
+                }
+                lsi.non_key.push_back(std::move(name));
+            }
+            projected += lsi.non_key.size();
+        }
+        lsi.projection = kind == "ALL"       ? projection_kind::all
+                         : kind == "INCLUDE" ? projection_kind::include
+                                             : projection_kind::keys_only;
+        out.push_back(std::move(lsi));
+    }
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        for (std::size_t j = i + 1; j < out.size(); ++j) {
+            if (out[i].name == out[j].name) {
+                return validation_error("Two local secondary indices have the same name");
+            }
+        }
+    }
+    if (projected > k_max_projected_attributes) {
+        // DynamoDB Local's text; the limit it enforces is AWS's 100.
+        return validation_error(
+            "No more than 20 attributes per table can be projected into Local Secondary Indices");
+    }
+    return out;
+}
+
+/// `LocalSecondaryIndexes` in a table description.
+[[nodiscard]] inline auto local_index_descriptions(const table_descriptor& d,
+                                                   const call_context& ctx) -> boost::json::array {
+    boost::json::array out;
+    for (const auto& lsi : d.lsis) {
+        boost::json::object projection{{"ProjectionType", projection_name(lsi.projection)}};
+        if (lsi.projection == projection_kind::include) {
+            boost::json::array names;
+            for (const auto& n : lsi.non_key) {
+                names.emplace_back(n);
+            }
+            projection["NonKeyAttributes"] = std::move(names);
+        }
+        out.push_back(boost::json::object{
+            {"IndexName", lsi.name},
+            {"KeySchema",
+             boost::json::array{
+                 boost::json::object{{"AttributeName", d.schema.partition_name},
+                                     {"KeyType", "HASH"}},
+                 boost::json::object{{"AttributeName", lsi.sort_name}, {"KeyType", "RANGE"}}}},
+            {"Projection", std::move(projection)},
+            {"IndexSizeBytes", 0},
+            {"ItemCount", 0},
+            {"IndexArn", ctx.table_arn(d.name) + "/index/" + lsi.name},
+        });
+    }
+    return out;
+}
+
 [[nodiscard]] inline auto table_description(const table_descriptor& d, const call_context& ctx)
     -> boost::json::object {
     using namespace table_api_detail;
@@ -206,6 +349,17 @@ inline constexpr std::uint64_t k_default_warm_write = 4000;
                                            {"AttributeType", type_letter(d.schema.sort_type)}});
         keys.push_back(
             boost::json::object{{"AttributeName", *d.schema.sort_name}, {"KeyType", "RANGE"}});
+    }
+    for (std::size_t i = 0; i < d.lsis.size(); ++i) {
+        const auto& lsi = d.lsis[i];
+        bool seen = lsi.sort_name == d.schema.sort_name;
+        for (std::size_t j = 0; j < i; ++j) {
+            seen = seen || d.lsis[j].sort_name == lsi.sort_name;
+        }
+        if (!seen) {
+            defs.push_back(boost::json::object{{"AttributeName", lsi.sort_name},
+                                               {"AttributeType", type_letter(lsi.sort_type)}});
+        }
     }
     boost::json::object out;
     out["AttributeDefinitions"] = std::move(defs);
@@ -230,6 +384,9 @@ inline constexpr std::uint64_t k_default_warm_write = 4000;
             boost::json::object{{"TableClass", "STANDARD_INFREQUENT_ACCESS"}};
     }
     out["DeletionProtectionEnabled"] = d.deletion_protection;
+    if (!d.lsis.empty()) {
+        out["LocalSecondaryIndexes"] = local_index_descriptions(d, ctx);
+    }
     out["WarmThroughput"] = boost::json::object{
         {"ReadUnitsPerSecond", warm_read_of(d)},
         {"WriteUnitsPerSecond", warm_write_of(d)},
@@ -273,8 +430,8 @@ public:
         if (!valid_table_name(name)) {
             return bad_table_name();
         }
-        for (const char* member : {"LocalSecondaryIndexes", "GlobalSecondaryIndexes",
-                                   "SSESpecification", "ResourcePolicy", "OnDemandThroughput"}) {
+        for (const char* member : {"GlobalSecondaryIndexes", "SSESpecification", "ResourcePolicy",
+                                   "OnDemandThroughput"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
@@ -355,7 +512,28 @@ public:
                     keys + "], AttributeDefinitions: [" + attrs + "]");
             }
         }
+        std::vector<local_index> lsis;
+        const auto* lsi_list = in.if_contains("LocalSecondaryIndexes");
+        if (lsi_list != nullptr) {
+            auto parsed = local_indexes_from(lsi_list->as_array(), hash[0],
+                                             range.empty() ? nullptr : &range[0], type_of);
+            if (!parsed) {
+                return parsed.error();
+            }
+            lsis = std::move(*parsed);
+            for (const auto& lsi : lsis) {
+                if (std::find(key_names.begin(), key_names.end(), lsi.sort_name) ==
+                    key_names.end()) {
+                    key_names.push_back(lsi.sort_name);
+                }
+            }
+        }
         if (defs.size() != key_names.size()) {
+            if (lsi_list != nullptr) {
+                return validation_error(
+                    "The number of attributes in key schema must match the number of attributes "
+                    "defined in attribute definitions.");
+            }
             return invalid(
                 "Number of attributes in KeySchema does not exactly match number of "
                 "attributes defined in AttributeDefinitions");
@@ -369,6 +547,7 @@ public:
             d.schema.sort_name = range[0];
             d.schema.sort_type = *type_of(range[0]);
         }
+        d.lsis = std::move(lsis);
         if (auto e = billing_from(in, d, /*creating=*/true)) {
             return *e;
         }

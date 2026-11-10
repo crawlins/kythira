@@ -101,6 +101,12 @@ set_tests_properties(dynamodb_gateway_test PROPERTIES
 kythira_dynamodb_test(dynamodb_query_test dynamodb_query_test.cpp)
 set_tests_properties(dynamodb_query_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Local secondary indexes beyond the corpus: engine entries, the item
+# collection limit, ItemCollectionMetrics, drops and stored forms
+# (Requirements 11.1, 11.5).
+kythira_dynamodb_test(dynamodb_lsi_test dynamodb_lsi_test.cpp)
+set_tests_properties(dynamodb_lsi_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")

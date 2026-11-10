@@ -138,6 +138,15 @@ public:
 
     auto now_ms() -> std::uint64_t { return _clock(); }
 
+    /// The item collection limit of tables with LSIs (tests lower it).
+    auto set_collection_limit(std::uint64_t bytes) -> void {
+        const std::lock_guard lock(_mu);
+        _items.set_collection_limit(bytes);
+    }
+
+    /// The item state machine (tests inspect it).
+    [[nodiscard]] auto items() const -> const dynamo_item_state_machine<Engine>& { return _items; }
+
     /// Items deleted per drop step.
     static constexpr std::uint32_t k_drop_step_keys = 1000;
 

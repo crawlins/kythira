@@ -19,6 +19,10 @@
 /// AWS's 16 MB limit, with each table's read settings, so the caller can
 /// retry them as AWS documents. `UnprocessedItems` is empty: a write either
 /// commits or fails the call. Throttling (task 12) will fill both.
+///
+/// Writes to a table with local secondary indexes keep its entries, and
+/// `ReturnItemCollectionMetrics=SIZE` lists each item collection the batch
+/// wrote once, with its size after the batch.
 
 #include <kythira/dynamodb/api_common.hpp>
 #include <kythira/dynamodb/backend.hpp>
@@ -212,6 +216,7 @@ public:
                 item_command c;
                 c.table_id = w.table.table_id;
                 c.schema = w.table.schema;
+                c.lsis = w.table.lsis;
                 if (put != nullptr) {
                     auto it = item_from_json(put->as_object().at("Item").as_object());
                     if (!it) {
@@ -221,6 +226,9 @@ public:
                         return *err;
                     }
                     if (auto err = check_item_size(*it)) {
+                        return *err;
+                    }
+                    if (auto err = validate_index_keys(*it, w.table.lsis)) {
                         return *err;
                     }
                     c.op = item_command::kind::put;
@@ -252,7 +260,10 @@ public:
             }
         }
         boost::json::array consumed;
+        boost::json::object metrics;
         for (const auto& w : writes) {
+            // Each collection's metrics after the batch's last write to it.
+            std::map<std::string, boost::json::object> collections;
             for (const auto& c : w.commands) {
                 const auto r = _backend.write(c);
                 if (r.outcome == item_result::status::error) {
@@ -261,6 +272,18 @@ public:
                     e.message = r.error_message;
                     return e;
                 }
+                if (auto m = api_detail::collection_metrics(in, w.table, c.payload, r)) {
+                    collections[partition_prefix(
+                        c.table_id, *find_attribute(c.payload, c.schema.partition_name))] =
+                        std::move(*m);
+                }
+            }
+            if (!collections.empty()) {
+                boost::json::array list;
+                for (auto& [unused, m] : collections) {
+                    list.push_back(std::move(m));
+                }
+                metrics[w.table.name] = std::move(list);
             }
             if (api_detail::wants_capacity(in)) {
                 consumed.push_back(api_detail::capacity(in, w.table.name, w.units));
@@ -269,6 +292,9 @@ public:
         boost::json::object out{{"UnprocessedItems", boost::json::object{}}};
         if (api_detail::wants_capacity(in)) {
             out["ConsumedCapacity"] = std::move(consumed);
+        }
+        if (!metrics.empty()) {
+            out["ItemCollectionMetrics"] = std::move(metrics);
         }
         return out;
     }

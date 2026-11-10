@@ -20,6 +20,7 @@
 #include <boost/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -77,6 +78,30 @@ template<dynamo_backend Backend>
     const auto units = static_cast<double>(
         std::max<std::size_t>(1, (bytes + k_read_unit_bytes - 1) / k_read_unit_bytes));
     return consistent ? units : units / 2.0;
+}
+
+/// `ItemCollectionMetrics` for a write to `table` whose key (or item) is
+/// `key`, when the request asked for them and the table has local
+/// secondary indexes. `SizeEstimateRangeGB` brackets the size between
+/// whole gigabytes, as AWS's estimate does.
+[[nodiscard]] inline auto collection_metrics(const boost::json::object& in,
+                                             const table_descriptor& table, const item& key,
+                                             const item_result& r)
+    -> std::optional<boost::json::object> {
+    if (table.lsis.empty() || !r.collection_bytes ||
+        text(in, "ReturnItemCollectionMetrics") != "SIZE") {
+        return std::nullopt;
+    }
+    const auto* pk = find_attribute(key, table.schema.partition_name);
+    if (pk == nullptr) {
+        return std::nullopt;
+    }
+    constexpr double k_gigabyte = 1024.0 * 1024.0 * 1024.0;
+    const double low = std::floor(static_cast<double>(*r.collection_bytes) / k_gigabyte);
+    return boost::json::object{
+        {"ItemCollectionKey", item_to_json(item{{table.schema.partition_name, *pk}})},
+        {"SizeEstimateRangeGB", boost::json::array{low, low + 1.0}},
+    };
 }
 
 /// One unit per 1 KB written (at least one).

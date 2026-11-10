@@ -104,6 +104,8 @@ struct table_descriptor {
     /// 0 when never set. `DescribeTable` shows at least AWS's defaults.
     std::uint64_t warm_read = 0;
     std::uint64_t warm_write = 0;
+    /// Local secondary indexes, fixed at creation (task 9).
+    std::vector<local_index> lsis;
     std::vector<std::pair<std::string, std::string>> tags;
     /// Bumped by every entry that changes the descriptor.
     std::uint64_t revision = 0;
@@ -232,6 +234,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     out.push_back(d.deletion_protection ? '\1' : '\0');
     detail::put_varint(out, d.warm_read);
     detail::put_varint(out, d.warm_write);
+    put_local_indexes(out, d.lsis);
     detail::put_varint(out, d.tags.size());
     for (const auto& [k, v] : d.tags) {
         detail::put_bytes(out, k);
@@ -255,9 +258,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     const auto protection = get_flag(r);
     const auto warm_read = r.varint();
     const auto warm_write = r.varint();
-    const auto tag_count = r.count();
+    auto lsis = get_local_indexes(r);
+    const auto tag_count = lsis ? r.count() : std::nullopt;
     if (!name || !id || !schema || !status || *status > 3 || !created || !billing || *billing > 1 ||
-        !rcu || !wcu || !cls || *cls > 1 || !protection || !warm_read || !warm_write ||
+        !rcu || !wcu || !cls || *cls > 1 || !protection || !warm_read || !warm_write || !lsis ||
         !tag_count) {
         return std::nullopt;
     }
@@ -285,6 +289,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     d.deletion_protection = *protection;
     d.warm_read = *warm_read;
     d.warm_write = *warm_write;
+    d.lsis = std::move(*lsis);
     d.revision = *revision;
     return d;
 }

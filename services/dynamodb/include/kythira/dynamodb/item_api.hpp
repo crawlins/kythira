@@ -27,6 +27,12 @@
 ///   when eventually consistent.
 /// - A put costs one unit per 1 KB of the new item. Updates and deletes
 ///   cost one unit.
+///
+/// A write to a table with local secondary indexes carries the indexes in
+/// its command, so `apply()` updates their entries in the same batch, and
+/// answers `ReturnItemCollectionMetrics=SIZE` with the collection's size
+/// (task 9). DynamoDB Local never returns `ItemCollectionMetrics`; the
+/// shape is AWS's documented one.
 
 #include <kythira/dynamodb/api_common.hpp>
 #include <kythira/dynamodb/backend.hpp>
@@ -119,6 +125,9 @@ public:
             return *e;
         }
         if (auto e = check_item_size(*parsed)) {
+            return *e;
+        }
+        if (auto e = validate_index_keys(*parsed, table->lsis)) {
             return *e;
         }
         item_command c = command(item_command::kind::put, *table, std::move(*parsed), in);
@@ -235,6 +244,7 @@ private:
         c.table_id = table.table_id;
         c.schema = table.schema;
         c.payload = std::move(payload);
+        c.lsis = table.lsis;
         c.old_on_condition_failure = text(in, "ReturnValuesOnConditionCheckFailure") == "ALL_OLD";
         return c;
     }
@@ -288,6 +298,9 @@ private:
         }
         if (wants_capacity(in)) {
             out["ConsumedCapacity"] = capacity(in, table.name, units);
+        }
+        if (auto m = api_detail::collection_metrics(in, table, c.payload, r)) {
+            out["ItemCollectionMetrics"] = std::move(*m);
         }
         return out;
     }

@@ -12,8 +12,11 @@
 // and Kythira hash differently), so a Scan page is compared by its counts
 // and whether it has a cursor, and the ScanAll and ScanSegments steps, which
 // page to the end, by the multiset of items. BatchGetItem responses are
-// compared per table as multisets. A step marked `divergence` is checked
-// against its `kythira` answer when it has one, and otherwise only run.
+// compared per table as multisets. A created or described table is
+// compared by its LocalSecondaryIndexes, as a multiset without the ARNs
+// (timestamps and ARNs differ, and DynamoDB Local lists indexes in its own
+// order). A step marked `divergence` is checked against its `kythira`
+// answer when it has one, and otherwise only run.
 
 #define BOOST_TEST_MODULE dynamodb_ops_corpus_test
 
@@ -108,6 +111,21 @@ auto compare(std::string_view op, const json::object& step, const json::object& 
     }
     const auto& w = want.at("response").as_object();
     const auto& g = got.at("response").as_object();
+    if (op == "CreateTable" || op == "DescribeTable") {
+        const auto* member = op == "CreateTable" ? "TableDescription" : "Table";
+        const auto indexes = [&](const json::object& r) {
+            json::array out;
+            if (const auto* l = r.at(member).as_object().if_contains("LocalSecondaryIndexes")) {
+                for (const auto& x : l->as_array()) {
+                    auto o = x.as_object();
+                    o.erase("IndexArn");
+                    out.push_back(std::move(o));
+                }
+            }
+            return multiset(out);
+        };
+        return indexes(w) == indexes(g) ? "" : "different LocalSecondaryIndexes";
+    }
     if (op == "Scan") {
         const bool paged = step.at("input").as_object().contains("Limit");
         if (w.at("Count") != g.at("Count") || w.at("ScannedCount") != g.at("ScannedCount")) {

@@ -13,6 +13,8 @@
 /// |---|---|---|
 /// | Catalog | data | `\0meta/dynamodb/table/<name>`, `.../job/<id>`, `.../next-table-id` |
 /// | Base item | data | `t/<id>/<h16(pk)><enc(pk)>\0<enc(sk)>` |
+/// | LSI entry | data | `t/<id>/<h16(pk)><enc(pk)>\1<lsi no><enc(lsi sk)><enc(sk)>` |
+/// | Item collection size | meta | `t/<id>/<h16(pk)><enc(pk)>\2` (tables with LSIs) |
 /// | Item version | meta | the base item's key |
 ///
 /// `<id>` is the table id as 8 big-endian bytes, so one table's keys are
