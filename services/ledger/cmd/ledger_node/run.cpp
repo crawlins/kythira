@@ -31,6 +31,7 @@
 #include <raft/metrics.hpp>
 #include <raft/multi_raft_impl.hpp>
 #include <raft/multi_raft_transport_handles.hpp>
+#include <raft/prometheus_metrics.hpp>
 #include <raft/rocksdb_kv_engine.hpp>
 
 #include <algorithm>
@@ -219,6 +220,56 @@ auto read_text(const std::filesystem::path& path) -> std::string {
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
+/// Samples every ledger this node hosts into the registry as gauges
+/// (Requirement 11.1): the state machine's counts since open, its journal
+/// bytes by where they live, and whether this node leads the ledger.
+auto sample_metrics(kythira::prometheus_registry& reg, const ledger_host& host, raft_host& raft)
+    -> void {
+    using dims = std::vector<std::pair<std::string, std::string>>;
+    const auto hs = host.stats();
+    reg.observe_gauge("kythira_ledger_node_groups_created", {}, double(hs.groups_created));
+    reg.observe_gauge("kythira_ledger_node_groups_destroyed", {}, double(hs.groups_destroyed));
+    reg.observe_gauge("kythira_ledger_node_index_steps", {}, double(hs.index_steps));
+    reg.observe_gauge("kythira_ledger_node_seals", {}, double(hs.seals));
+    reg.observe_gauge("kythira_ledger_node_maintenance_errors", {}, double(hs.maintenance_errors));
+    reg.observe_gauge("kythira_ledger_node_split_merge_vetoes", {}, double(hs.split_merge_vetoes));
+    std::vector<kythira::ledger::ledger_record> ledgers;
+    try {
+        ledgers = host.catalog().list();
+    } catch (const kythira::ledger::ledger_not_leader&) {
+        return;  // the catalog group has not opened here yet
+    }
+    for (const auto& r : ledgers) {
+        const auto sm = host.ledger(r.ledger_id);
+        if (!sm || r.state != "active") {
+            continue;
+        }
+        const auto st = sm->stats();
+        const dims d{{"ledger", r.name}};
+        reg.observe_gauge("kythira_ledger_blocks", d, double(st.blocks));
+        reg.observe_gauge("kythira_ledger_blocks_applied", d, double(st.blocks_applied));
+        for (const auto& [code, n] : st.rejections) {
+            reg.observe_gauge("kythira_ledger_rejections", {{"ledger", r.name}, {"code", code}},
+                              double(n));
+        }
+        reg.observe_gauge("kythira_ledger_hash_check_failures", d, double(st.hash_mismatches));
+        for (const auto& [where, n] : {std::pair{"unsealed", st.journal_bytes_unsealed},
+                                       std::pair{"local", st.journal_bytes_local},
+                                       std::pair{"offloaded", st.journal_bytes_offloaded}}) {
+            reg.observe_gauge("kythira_ledger_journal_bytes",
+                              {{"ledger", r.name}, {"where", where}}, double(n));
+        }
+        reg.observe_gauge("kythira_ledger_segments", d, double(st.segments));
+        reg.observe_gauge("kythira_ledger_indexes_building", d, double(st.indexes_building));
+        bool leads = false;
+        if (r.group) {
+            const auto* n = raft.group_node(*r.group);
+            leads = n != nullptr && n->is_leader();
+        }
+        reg.observe_gauge("kythira_ledger_leader", d, leads ? 1.0 : 0.0);
+    }
+}
+
 auto make_raft_config(const node_options& opt, raft_stack& stack,
                       const std::shared_ptr<group_sm::context>& ctx) -> raft_config {
     const auto raft_dir = opt.data_dir / "raft";
@@ -276,21 +327,31 @@ auto run(const node_options& opt) -> int {
         return o;
     });
     const auto self = kythira::host_node_id_text(opt.node_id);
-    ctx->on_open = [&log, self](const kythira::key_range& range, const group_sm::opened& sm) {
+    std::shared_ptr<kythira::prometheus_registry> metrics;
+    if (opt.metrics_port != 0) {
+        metrics = std::make_shared<kythira::prometheus_registry>();
+    }
+    ctx->on_open = [&log, self, metrics](const kythira::key_range& range,
+                                         const group_sm::opened& sm) {
         const auto* l = std::get_if<std::shared_ptr<ledger_sm>>(&sm);
         if (l == nullptr) {
             return;
         }
         const auto id = kythira::ledger::ledger_id_of_range(range).value_or(range.start);
-        (*l)->set_hash_mismatch_handler(
-            [&log, self, id](const kythira::ledger::ledger_hash_mismatch& m) {
-                log(kythira::log_level::critical, "ledger: block hash mismatch",
-                    {{"ledger", id},
-                     {"block", std::to_string(m.seq)},
-                     {"leader_hash", kythira::ledger::to_hex(m.leader)},
-                     {"replica_hash", kythira::ledger::to_hex(m.replica)},
-                     {"replica", self}});
-            });
+        (*l)->set_hash_mismatch_handler([&log, self, id,
+                                         metrics](const kythira::ledger::ledger_hash_mismatch& m) {
+            // The alert metric: a counter, so an alert rule fires on
+            // any increase without waiting for the next sample.
+            if (metrics) {
+                metrics->observe_counter("kythira_ledger_hash_mismatch", {{"ledger_id", id}}, 1.0);
+            }
+            log(kythira::log_level::critical, "ledger: block hash mismatch",
+                {{"ledger", id},
+                 {"block", std::to_string(m.seq)},
+                 {"leader_hash", kythira::ledger::to_hex(m.leader)},
+                 {"replica_hash", kythira::ledger::to_hex(m.replica)},
+                 {"replica", self}});
+        });
     };
 
     raft_stack stack(opt);
@@ -332,21 +393,59 @@ auto run(const node_options& opt) -> int {
     http.tls_key_path = opt.tls_key;
     http.client_ca_path = opt.client_ca;
     http.max_body_bytes = opt.max_body_bytes;
+    // GetDigest's latency per ledger (Requirement 11.1), timed around the
+    // whole API call: digest, signature and encoding.
+    const auto handle = [&api, metrics](const kythira::ledger::api_request& r) {
+        constexpr std::string_view prefix = "/v1/ledgers/";
+        constexpr std::string_view suffix = "/digest";
+        if (!metrics || r.method != "GET" || !r.path.starts_with(prefix) ||
+            !r.path.ends_with(suffix) || r.path.size() <= prefix.size() + suffix.size()) {
+            return api.handle(r);
+        }
+        const auto started = std::chrono::steady_clock::now();
+        auto response = api.handle(r);
+        if (response.status == 200) {
+            const auto name =
+                r.path.substr(prefix.size(), r.path.size() - prefix.size() - suffix.size());
+            metrics->observe_duration("kythira_ledger_digest_latency", {{"ledger", name}},
+                                      std::chrono::duration<double, std::milli>(
+                                          std::chrono::steady_clock::now() - started)
+                                          .count());
+        }
+        return response;
+    };
     kythira::https::server server(
-        http, kythira::ledger::make_ledger_handler([&api](const auto& r) { return api.handle(r); }),
+        http, kythira::ledger::make_ledger_handler(handle),
         [&log](bool error, std::string_view message) {
             log(error ? kythira::log_level::warning : kythira::log_level::info, message);
         });
 
+    std::unique_ptr<kythira::prometheus_scrape_server> scrape;
     int status = 0;
     try {
         server.start();
+        if (metrics) {
+            sample_metrics(*metrics, *host, *raft);
+            scrape = std::make_unique<kythira::prometheus_scrape_server>(metrics, opt.metrics_bind,
+                                                                         opt.metrics_port);
+        }
         std::cout << "ledger_node " << self << " ready: raft=" << opt.raft_port
                   << (opt.raft_tls ? " (mutual TLS)" : " (plaintext)") << " api=" << server.port()
                   << " members=" << opt.peers.size() << " replication=" << opt.replication
-                  << " signing=" << (signer ? "on" : "off") << std::endl;
+                  << " signing=" << (signer ? "on" : "off")
+                  << " metrics=" << (scrape ? std::to_string(scrape->port()) : "off") << std::endl;
+        auto next_sample = std::chrono::steady_clock::now() + opt.metrics_interval;
         while (!g_stop.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            if (metrics && std::chrono::steady_clock::now() >= next_sample) {
+                next_sample += opt.metrics_interval;
+                try {
+                    sample_metrics(*metrics, *host, *raft);
+                } catch (const std::exception& e) {
+                    log(kythira::log_level::warning, "ledger_node: metrics sample failed",
+                        {{"error", e.what()}});
+                }
+            }
         }
         log(kythira::log_level::info, "ledger_node: stopping");
     } catch (const std::exception& e) {
@@ -356,6 +455,9 @@ auto run(const node_options& opt) -> int {
 
     // The order matters: no request may reach a host or group being torn
     // down.
+    if (scrape) {
+        scrape->stop();
+    }
     server.stop();
     host->stop();
     driving.store(false, std::memory_order_release);

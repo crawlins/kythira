@@ -49,6 +49,12 @@ struct node_options {
     /// Digest signing (Requirement 4.5): both or neither.
     std::string signing_key;
     std::string signing_chain;
+    /// Prometheus scrape endpoint (`GET /metrics`, plaintext and
+    /// unauthenticated); off while metrics_port is 0.
+    std::string metrics_bind{"127.0.0.1"};
+    std::uint16_t metrics_port{0};
+    /// How often the per-ledger gauges are sampled.
+    std::chrono::milliseconds metrics_interval{5000};
 
     // ── Ledgers and storage ─────────────────────────────────────────────────
     std::filesystem::path data_dir;
