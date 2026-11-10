@@ -174,6 +174,19 @@ asked.
   - Measurement: hot shards per group at the `aws` write limit, recorded in
     `doc/`
   - _Requirements: 3.5, 12.1, 12.2_
+  - Progress: token buckets (`kinesis_throttle.hpp`), one second deep,
+    refilled on a monotonic clock. Writes are admitted on the proposing
+    leader: `PutRecords` takes the longest prefix of each shard's records
+    that fits and answers the rest throttled in place, a forwarded append
+    carries its admission mode, and a node that learns it is not leader
+    refunds. Reads (`GetRecords` calls and bytes, with debt;
+    `GetShardIterator`) are limited on the serving node. AWS's messages for
+    both. The switch is tested on by default, off per cluster, off per
+    stream, and with the stream winning. Measurement in
+    `services/kinesis/doc/throughput.md`: one group held 4 hot shards at
+    the write limit on a shared-disk sandbox (disk-bound past that).
+    Open: per-account control-plane call rates (`LimitExceededException`);
+    a re-run on separate disks.
 
 ### Phase 3: KCL 2.x with the native lease layer (first consumer milestone)
 

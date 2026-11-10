@@ -60,7 +60,7 @@ inline constexpr std::string_view k_health_path = "/healthz";
 /// Proposes a forwarded command on this node without forwarding it again
 /// (`raft_stream_cluster::propose_local`).
 using local_proposer = std::function<std::optional<apply_result>(
-    const std::string& key, const std::vector<std::byte>& command)>;
+    const std::string& key, const std::vector<std::byte>& command, admission mode)>;
 
 namespace gateway_detail {
 
@@ -295,7 +295,7 @@ private:
             return refuse(req, 400, "malformed proposal");
         }
         ++_stats._forwarded_in;
-        const auto r = _propose ? _propose(p->_key, p->_command) : std::nullopt;
+        const auto r = _propose ? _propose(p->_key, p->_command, p->_admission) : std::nullopt;
         if (!r) {
             // Not the leader any more, or no commit in time: the first node
             // fails the write as unavailable and the client retries.
@@ -343,9 +343,9 @@ template<typename NodeId>
         return std::chrono::system_clock::now();
     }) {
     return [&client, secret = std::move(secret), address_of = std::move(address_of),
-            clock = std::move(clock)](
-               const NodeId& leader, const std::string& key,
-               const std::vector<std::byte>& command) -> std::optional<apply_result> {
+            clock = std::move(clock)](const NodeId& leader, const std::string& key,
+                                      const std::vector<std::byte>& command,
+                                      admission mode) -> std::optional<apply_result> {
         if (secret.empty()) {
             return std::nullopt;
         }
@@ -353,7 +353,7 @@ template<typename NodeId>
         if (!address) {
             return std::nullopt;
         }
-        auto body = forward::encode_body({._key = key, ._command = command});
+        auto body = forward::encode_body({._key = key, ._command = command, ._admission = mode});
         const auto signature = forward::sign(secret, body, clock());
         const auto res = client.request(*address, boost::beast::http::verb::post, forward::k_path,
                                         {{std::string(forward::k_header), signature},

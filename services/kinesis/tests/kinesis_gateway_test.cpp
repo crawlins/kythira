@@ -128,8 +128,8 @@ struct node {
         _service->register_with(_fe);
         _gateway = std::make_unique<gateway_type>(
             _fe,
-            [this](const std::string& key, const std::vector<std::byte>& cmd) {
-                return _cluster->propose(key, cmd);
+            [this](const std::string& key, const std::vector<std::byte>& cmd, kin::admission mode) {
+                return _cluster->propose(key, cmd, mode);
             },
             _store.get(), std::move(secret));
         https::server_config sc;
@@ -199,28 +199,28 @@ BOOST_AUTO_TEST_CASE(a_signed_forwarded_write_commits_and_answers_its_result) {
     auto forward = kin::make_http_forwarder<std::string>(
         c, std::string(k_secret),
         [&address](const std::string&) { return std::optional<std::string>(address); });
-    const auto r = forward("leader", "k", create("s"));
+    const auto r = forward("leader", "k", create("s"), kin::admission::none);
     BOOST_TEST_REQUIRE(r.has_value());
     BOOST_TEST((r->_status == kin::apply_status::ok));
     BOOST_TEST(n._gateway->stats()._forwarded_in == 1U);
     // Applied exactly once: the second create is a conflict, answered too.
-    const auto again = forward("leader", "k", create("s"));
+    const auto again = forward("leader", "k", create("s"), kin::admission::none);
     BOOST_TEST_REQUIRE(again.has_value());
     BOOST_TEST((again->_status == kin::apply_status::already_exists));
 
     // A wrong secret, a stale clock, or an unknown leader reach nothing.
     auto wrong = kin::make_http_forwarder<std::string>(
         c, "other", [&address](const std::string&) { return std::optional<std::string>(address); });
-    BOOST_TEST(!wrong("leader", "k", create("t")).has_value());
+    BOOST_TEST(!wrong("leader", "k", create("t"), kin::admission::none).has_value());
     auto stale = kin::make_http_forwarder<std::string>(
         c, std::string(k_secret),
         [&address](const std::string&) { return std::optional<std::string>(address); },
         [] { return std::chrono::system_clock::now() - std::chrono::minutes{5}; });
-    BOOST_TEST(!stale("leader", "k", create("t")).has_value());
+    BOOST_TEST(!stale("leader", "k", create("t"), kin::admission::none).has_value());
     auto nowhere = kin::make_http_forwarder<std::string>(
         c, std::string(k_secret),
         [](const std::string&) -> std::optional<std::string> { return std::nullopt; });
-    BOOST_TEST(!nowhere("leader", "k", create("t")).has_value());
+    BOOST_TEST(!nowhere("leader", "k", create("t"), kin::admission::none).has_value());
     BOOST_TEST(n._gateway->stats()._forward_refused == 2U);
 
     // Nothing proposed by the refused ones.
@@ -238,7 +238,7 @@ BOOST_AUTO_TEST_CASE(an_unavailable_leader_answers_503_and_the_forwarder_gives_u
     auto forward = kin::make_http_forwarder<std::string>(
         c, std::string(k_secret),
         [&address](const std::string&) { return std::optional<std::string>(address); });
-    BOOST_TEST(!forward("leader", "k", create("s")).has_value());
+    BOOST_TEST(!forward("leader", "k", create("s"), kin::admission::none).has_value());
 
     // Raw: the status is 503.
     auto body = kin::forward::encode_body({._key = "k", ._command = create("s")});
