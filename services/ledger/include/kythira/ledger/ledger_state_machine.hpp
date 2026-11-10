@@ -7,7 +7,8 @@
 // Requirements 2.1, 2.2, 3.1-3.4, 4.1-4.4, 5.1-5.5): tables, documents, the
 // journal, and digests and proofs over it, on the persistent state machine contract
 // (include/raft/persistent_state_machine.hpp), so the state lives in the
-// engine and a snapshot is an engine checkpoint of the ledger's range.
+// engine and a snapshot is an engine checkpoint of the ledger's range plus
+// its local sealed segment files (Requirement 10.1).
 //
 // One ledger is one Raft group over the range `l/<ledger id>/`. Each Raft
 // entry is one transaction (journal_types.hpp). apply() checks it against
@@ -85,8 +86,9 @@
 //   data  P hist/<t>/<seq>/<id>/<v> table history key (empty), commit order
 //   data  P merkle/<level>/<index>  Merkle node, 32 bytes (engine_merkle_store.hpp)
 //
-// Everything is inside the range, so checkpoint, ingest and drop move the
-// whole ledger.
+// Everything but the sealed segment files is inside the range, so
+// checkpoint, ingest and drop move the whole ledger once they carry the
+// files too (checkpoint() adds each local segment as `ledger-<file>`).
 
 #include <kythira/ledger/engine_merkle_store.hpp>
 #include <kythira/ledger/ion_value.hpp>
@@ -108,6 +110,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -541,19 +544,70 @@ public:
         return best;
     }
 
+    /// Names a sealed segment's file has in a snapshot, beside the engine's
+    /// own checkpoint files (no engine writes a name with this prefix).
+    static constexpr std::string_view snapshot_segment_prefix = "ledger-";
+
+    /// The snapshot (Requirement 10.1): an engine checkpoint of the range,
+    /// which holds the segment list, plus every sealed segment that lives
+    /// only here, as `ledger-<file>`. An offloaded segment is not sent; a
+    /// follower fetches it from the object store like any other replica.
+    /// A local segment that no longer matches its SHA-256 fails the
+    /// checkpoint rather than send a follower a journal with a hole.
     auto checkpoint(const std::filesystem::path& dir) -> kythira::snapshot_manifest {
         const std::lock_guard lock(mutex_);
-        return engine_->checkpoint(range_, dir);
+        auto manifest = engine_->checkpoint(range_, dir);
+        for (const auto& seg : stored_segments()) {
+            if (seg.object_key) {
+                continue;
+            }
+            const auto bytes = segment_bytes_locked(seg);
+            const std::string name = std::string(snapshot_segment_prefix) + seg.file;
+            write_file_durably(dir / name, bytes);
+            manifest.files.push_back(kythira::checkpoint_file{name, seg.size, seg.sha256});
+        }
+        return manifest;
     }
 
+    /// Installs a snapshot from checkpoint(). The segment files go into the
+    /// segment directory first: a segment's bytes depend only on its
+    /// blocks, so writing one early can never disagree with any state, and
+    /// a crash before the engine ingest leaves the old state whole. Then
+    /// the engine takes the range, and segment files the new state does
+    /// not list are removed.
     auto ingest(const std::filesystem::path& dir, const kythira::snapshot_manifest& manifest,
                 std::uint64_t index) -> void {
         const std::lock_guard lock(mutex_);
-        engine_->ingest(range_, dir, manifest);
+        kythira::snapshot_manifest engine_manifest = manifest;
+        engine_manifest.files.clear();
+        std::vector<kythira::checkpoint_file> segment_files;
+        for (const auto& f : manifest.files) {
+            if (f.name.starts_with(snapshot_segment_prefix)) {
+                segment_files.push_back(f);
+            } else {
+                engine_manifest.files.push_back(f);
+            }
+        }
+        if (!segment_files.empty() && options_.segment_directory.empty()) {
+            throw kythira::persistent_storage_error(
+                "ledger snapshot has sealed segments but this replica has no segment directory");
+        }
+        for (const auto& f : segment_files) {
+            const auto bytes = read_file(dir / f.name);
+            if (!bytes || bytes->size() != f.size || sha256_of(*bytes) != f.sha256) {
+                throw kythira::persistent_storage_error("ledger snapshot segment " + f.name +
+                                                        " is missing or does not match");
+            }
+            std::filesystem::create_directories(options_.segment_directory);
+            write_file_durably(
+                options_.segment_directory / f.name.substr(snapshot_segment_prefix.size()), *bytes);
+        }
+        engine_->ingest(range_, dir, engine_manifest);
         const auto seq = engine_->write(kythira::write_batch{}.put(
             kythira::column_family::meta, key_applied(), std::to_string(index)));
         load_locked();
         seqs_.emplace_back(index, seq);
+        remove_unlisted_segment_files_locked();
     }
 
     auto drop() -> void {
@@ -1824,6 +1878,28 @@ private:
             return std::nullopt;
         }
         return segment_info::from_ion(parse_stored(*v));
+    }
+
+    /// Deletes segment files in the segment directory that no stored
+    /// segment names (left by a state a snapshot replaced). Only names a
+    /// seal writes are touched.
+    auto remove_unlisted_segment_files_locked() -> void {
+        if (options_.segment_directory.empty()) {
+            return;
+        }
+        std::set<std::string> listed;
+        for (const auto& seg : stored_segments()) {
+            listed.insert(seg.file);
+        }
+        std::error_code ec;
+        for (const auto& entry :
+             std::filesystem::directory_iterator(options_.segment_directory, ec)) {
+            const auto name = entry.path().filename().string();
+            if (name.starts_with("seg-") && name.ends_with(".kyl") && !listed.contains(name)) {
+                std::error_code ignored;
+                std::filesystem::remove(entry.path(), ignored);
+            }
+        }
     }
 
     [[nodiscard]] auto stored_segments() const -> std::vector<segment_info> {

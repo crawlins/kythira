@@ -298,6 +298,20 @@ task is one PR unless noted.
   - Checkpoint plus segment list as the snapshot, file-install-snapshot
     catch-up test for a lagging follower
   - _Requirements: 10.1_
+  - Done so far: `basic_ledger_state_machine::checkpoint()` adds every
+    sealed segment that is not offloaded to the engine's checkpoint as
+    `ledger-<file>`, after checking its SHA-256 (a damaged local copy
+    fails the checkpoint rather than send a journal with a hole).
+    `ingest()` splits those files from the engine's, checks each against
+    the manifest, writes them into the segment directory before the
+    engine ingest (a segment's bytes depend only on its blocks, so an
+    early write never disagrees with any state), then ingests the range
+    and removes `seg-*.kyl` files the new state does not list. Tests in
+    `ledger_segments_test` stream the checkpoint through
+    `snapshot_stream_reader`/`snapshot_stream_writer` as Raft does. Left:
+    the lagging-follower test over multi_raft, which needs compaction and
+    per-group staging directories for persistent groups
+    (file-install-snapshot task 7).
 
 - [ ] 10. `ledger_ctl`, digest signing and observability
   - `verify` and `prove` (API, data directory, export); optional CA-signed
