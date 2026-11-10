@@ -30,3 +30,28 @@ secret:
     # Master Secret both endpoints agree on, and using the published one keeps
     # it obviously non-production.
     - tests/coap_libnyoci_oscore_test.cpp
+
+    # A fixed ElastiCache IAM auth token vector: a presigned URL botocore made
+    # with the made-up pair AKIAKYTHIRAREDIS2345 / "kythira/redis/test/secret/
+    # not/a/real/key" (no AWS account has that key id). The test re-derives the
+    # signature from the same pair, so both must stay literal. Flagged on PR
+    # #744 (commit 17eff6b).
+    - services/iam/tests/iam_redis_verifier_test.cpp
+
+    # Wire recordings of real SDK clients talking to a local recording stub
+    # (services/dynamodb/tools/evidence/recording_stub.py), never to AWS. The
+    # stub masks signatures, dates and payload hashes and the clients sign with
+    # "evidence-secret-not-a-credential"; what is left that looks random is
+    # SDK-generated per-run noise such as KCL consumer ids. Flagged on PR #748
+    # (commit 096f0bd, a random ClientRequestToken UUID since masked). Only the
+    # .jsonl recordings: the recorder and client programs stay scanned.
+    - services/dynamodb/evidence/*.jsonl
+
+    # The Kinesis container scenario's static-key fixtures: keys.txt is the
+    # gateway's key file and compose.yml / the scenario test hand the matching
+    # made-up pairs (AKIDKINESIS..., "kinesis-scenario-*-secret") to the
+    # clients. The cluster only ever runs in a throwaway container network.
+    # Flagged on PR #751 (commit c71550d).
+    - services/kinesis/tests/docker/keys.txt
+    - services/kinesis/tests/docker/compose.yml
+    - services/kinesis/tests/docker/kinesis_node_scenario_test.cpp
