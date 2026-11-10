@@ -69,6 +69,16 @@ foreach(_ddb_test IN ITEMS dynamodb_expression_corpus_test dynamodb_expression_f
         LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 300)
 endforeach()
 
+# Task 6: the item state machine (conditions in apply(), versions,
+# ReturnValues, splits only between item collections, the bounded drop of a
+# deleted table) and the catalog with the disk guard (Requirements 7.2-7.4,
+# 8.2, 20.1, 20.2), on memory_kv_engine.
+foreach(_ddb_test IN ITEMS dynamodb_item_state_machine_test dynamodb_catalog_test)
+    kythira_dynamodb_test(${_ddb_test} ${_ddb_test}.cpp)
+    set_tests_properties(${_ddb_test} PROPERTIES
+        LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
+endforeach()
+
 # The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
 # (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned models, so a model
 # upgrade carries its regenerated tables and their diff (Requirement 2.4).

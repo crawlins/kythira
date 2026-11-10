@@ -113,13 +113,22 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     Kythira names the clashing pair, and the test compares only the kind
     of clash there.
 
-- [ ] 6. Catalog and item state machine
+- [x] 6. Catalog and item state machine
   - Catalog range, descriptors, status transitions, table ids, background
     jobs with progress entries
   - `dynamo_item_state_machine` on `kv_engine`: atomic apply with the
     applied index, item versions, condition evaluation in `apply()`
   - Disk guard
   - _Requirements: 7.2-7.4, 8.2, 20.1, 20.2_
+  - Done: `key_layout.hpp`, `item_state_machine.hpp`, `catalog.hpp` and
+    `disk_guard.hpp`, tested on `memory_kv_engine`. Item versions live in
+    the meta column family under the base item's key rather than a `v/`
+    prefix, so a group's range holds an item and its version together.
+    Item groups split only at partition boundaries. A deleted table is
+    removed by bounded `drop_table_step` entries, each recorded in the
+    catalog as a `job_progress` entry. The disk guard runs at the gateway
+    before a write is proposed, because free space differs between
+    replicas and so cannot be checked in `apply()`.
 
 - [ ] 7. Control plane and single-item API
   - `CreateTable`, `DescribeTable`, `ListTables`, `UpdateTable` (basic),

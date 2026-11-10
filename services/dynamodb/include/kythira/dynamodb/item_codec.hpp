@@ -546,6 +546,8 @@ struct key_schema {
     attribute_type partition_type = attribute_type::S;
     std::optional<std::string> sort_name;
     attribute_type sort_type = attribute_type::S;
+
+    friend auto operator==(const key_schema&, const key_schema&) -> bool = default;
 };
 
 namespace detail {
