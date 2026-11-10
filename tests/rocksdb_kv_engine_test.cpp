@@ -173,4 +173,31 @@ BOOST_AUTO_TEST_CASE(sync_every_write_makes_each_write_durable) {
     BOOST_TEST(e.durable_sequence() == s);
 }
 
+BOOST_AUTO_TEST_CASE(a_secondary_reads_a_database_the_primary_holds_open) {
+    const temp_dir dir;
+    rocksdb_kv_engine primary(dir.path() / "db");
+    primary.write(
+        write_batch{}.put(column_family::data, "a", "1").put(column_family::meta, "m", "x"));
+    // Unflushed: the secondary replays the primary's WAL to see it.
+    rocksdb_kv_engine_options options;
+    options.secondary_path = dir.path() / "secondary";
+    rocksdb_kv_engine reader(dir.path() / "db", options);
+    BOOST_TEST(reader.get(column_family::data, "a").value_or("") == "1");
+    BOOST_TEST(reader.get(column_family::meta, "m").value_or("") == "x");
+    BOOST_CHECK_THROW(reader.write(write_batch{}.put(column_family::data, "b", "2")),
+                      kythira::persistent_storage_error);
+    BOOST_CHECK_THROW(reader.drop(key_range{"a", "b"}), kythira::persistent_storage_error);
+    // The primary keeps writing while the secondary is open.
+    primary.write(write_batch{}.put(column_family::data, "c", "3"));
+    BOOST_TEST(primary.get(column_family::data, "c").value_or("") == "3");
+}
+
+BOOST_AUTO_TEST_CASE(a_secondary_of_a_missing_database_throws) {
+    const temp_dir dir;
+    rocksdb_kv_engine_options options;
+    options.secondary_path = dir.path() / "secondary";
+    BOOST_CHECK_THROW(rocksdb_kv_engine(dir.path() / "nope", options),
+                      kythira::persistent_storage_error);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

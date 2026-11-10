@@ -66,6 +66,14 @@ struct rocksdb_kv_engine_options {
     /// (doc/persistent_state_machines.md): a restart after a 1 GiB load took
     /// 2.4 s to open on the default and 0.9 s with this one.
     std::uint64_t max_total_wal_bytes = std::uint64_t{256} << 20U;
+    /// Non-empty: open the database as a read-only RocksDB *secondary*
+    /// instance, keeping its own info log in this directory, so a tool can
+    /// read a database a running node holds open (RocksDB refuses a second
+    /// primary, and a plain read-only open is not safe against a primary
+    /// that deletes files under it). It sees the database as of the open.
+    /// Every write, sync, ingest and drop fails with
+    /// `persistent_storage_error`; `create_if_missing` is ignored.
+    std::filesystem::path secondary_path{};
 };
 
 class rocksdb_kv_engine {
