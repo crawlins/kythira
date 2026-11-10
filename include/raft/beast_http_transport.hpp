@@ -422,7 +422,16 @@ private:
 /// `try_executing_one()` returns false because work posted here runs on the
 /// caller-owned `io_context` thread(s), never on a thread that has borrowed
 /// this executor to drain it.
-class asio_strand_executor {
+///
+/// Boost stores the executor by reference, so a chain via()'d onto a
+/// connection's executor would call `submit()` on freed memory once the
+/// connection was released from one of the chain's own continuations --
+/// the hazard the Folly specialisation below answers with `KeepAlive`.
+/// `keep_alive()` is the Boost backend's answer: `Future::via()`
+/// (future_boost.hpp) holds what it returns for as long as any link of the
+/// chain can still submit here. Empty for a by-value executor (the server
+/// session's), whose owner's continuations already capture the owner.
+class asio_strand_executor : public std::enable_shared_from_this<asio_strand_executor> {
 public:
     /// @param context_keeper  see the Folly specialisation below -- accepted on
     ///     every backend so callers need not be backend-conditional.
@@ -431,6 +440,9 @@ public:
         : _context_keeper(std::move(context_keeper)), _ex(std::move(ex)) {}
 
     auto handle() -> asio_strand_executor& { return *this; }
+
+    /// This executor's owner, when it is shared-owned; see the class comment.
+    [[nodiscard]] auto keep_alive() -> std::shared_ptr<void> { return weak_from_this().lock(); }
 
     template<typename Work> auto submit(Work&& work) -> void {
         net::post(_ex, std::forward<Work>(work));

@@ -75,6 +75,7 @@
 #include <chrono>
 #include <exception>
 #include <functional>
+#include <concepts>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -692,13 +693,33 @@ public:
     // (duck-typed, any type with the right submit-shaped interface), so
     // via() mirrors that rather than artificially narrowing to one base
     // class most concrete executors don't actually derive from.
+    //
+    // An executor with a `keep_alive()` member (returning shared_ptr<void>)
+    // is held alive by every link of the chain, not just referenced: the
+    // Beast transport's per-connection executor is released with its
+    // connection, routinely from inside one of the chain's own
+    // continuations, and the next link would then submit() to freed memory.
     template<typename Ex> auto via(Ex& ex) -> Future<T> {
+        std::shared_ptr<void> owner;
+        if constexpr (requires {
+                          { ex.keep_alive() } -> std::convertible_to<std::shared_ptr<void>>;
+                      }) {
+            owner = ex.keep_alive();
+        }
         auto continuation =
-            _f.then(ex, [](boost::future<T> completed) -> T { return completed.get(); });
+            _f.then(ex, [owner](boost::future<T> completed) -> T { return completed.get(); });
         // Binds ex for the whole remaining chain, not just this hop --
         // see executor_ref_ptr's comment for why that distinction matters.
-        return Future<T>(std::move(continuation),
-                         std::make_shared<boost::executors::generic_executor_ref>(ex));
+        // The aliasing pointer shares the holder's control block, so every
+        // then_on() keep_alive copy pins `owner` too.
+        struct holder {
+            std::shared_ptr<void> owner;
+            boost::executors::generic_executor_ref ref;
+        };
+        auto h = std::make_shared<holder>(
+            holder{std::move(owner), boost::executors::generic_executor_ref(ex)});
+        boost::executors::generic_executor_ref* ref = &h->ref;
+        return Future<T>(std::move(continuation), executor_ref_ptr(std::move(h), ref));
     }
     // void* overload: required by the future_continuation concept
     // (`f.via(std::declval<void*>())`), mirroring include/raft/future.hpp's
