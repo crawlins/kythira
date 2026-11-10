@@ -1,0 +1,118 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Three ledger_node members for services/ledger/tests/docker/
+# ledger_chaos_test.cpp (.kiro/specs/verifiable-ledger/ task 11,
+# Requirement 12.5): a ledger workload runs while members are SIGKILLed,
+# started again and cut off the network, and every member's journal is
+# verified afterwards.
+#
+# A killed member IS started again: its Raft logs, RocksDB database and
+# segment files are on its /data volume, so it rejoins as the same voter.
+#
+# CLAUDE.md's container rules, as they apply here:
+#
+#   * **No static IPs.** Raft peers address each other by **service name**
+#     (ledger-1 .. ledger-3), and the node certificate carries every
+#     service name as a DNS SAN.
+#   * **No runtime named anywhere.** The scenario test drives this file
+#     through `container_runtime()` / `compose_prefix()`
+#     (tests/docker_chaos/os_faults.hpp).
+#   * **No capabilities, no privileged or host networking.** Faults are
+#     `kill` (SIGKILL), `start`, and `network disconnect`/`connect`, which
+#     rootless Podman allows.
+#
+# The test writes a throwaway PKI (a CA, one node certificate for both the
+# API and Raft, an admin client certificate, the roles file) into a host
+# directory, world-readable so uid 10001 can read it under Docker's uid
+# mapping and rootless Podman's alike, and passes the directory in as
+# KYTHIRA_LEDGER_CHAOS_PKI_DIR. Raft is mutual TLS and the API is HTTPS
+# with client certificates; no plaintext opt-in is given.
+#
+# The API is published on loopback so the test's client can reach every
+# member; redirects name those published URLs (KYTHIRA_LEDGER_API_URLS),
+# which is all they are used for. The network has a fixed name so the test
+# can disconnect a member from it, and reconnects it with its service-name
+# alias.
+
+x-node: &node
+  image: kythira-ledger-chaos:dev
+  networks:
+    ledger_chaos_net: {}
+
+x-node-env: &node-env
+  KYTHIRA_PEERS: "1=https://ledger-1:7000,2=https://ledger-2:7000,3=https://ledger-3:7000"
+  KYTHIRA_RAFT_PORT: "7000"
+  KYTHIRA_LEDGER_API_LISTEN: "0.0.0.0:8443"
+  KYTHIRA_LEDGER_API_URLS: "1=https://localhost:16521,2=https://localhost:16522,3=https://localhost:16523"
+  KYTHIRA_LEDGER_DATA_DIR: "/data"
+  KYTHIRA_LEDGER_TLS_CERT: "/pki/node.pem"
+  KYTHIRA_LEDGER_TLS_KEY: "/pki/node.key"
+  KYTHIRA_LEDGER_CLIENT_CA: "/pki/ca.pem"
+  KYTHIRA_LEDGER_ROLES_FILE: "/pki/roles.txt"
+  KYTHIRA_LEDGER_SIGNING_KEY: "/pki/node.key"
+  KYTHIRA_LEDGER_SIGNING_CHAIN: "/pki/node.pem"
+  # Small, so the workload seals many segments and compacts each group's
+  # log many times: a member that was down or cut off comes back through
+  # a format-1 snapshot (with its segment files) as well as through log
+  # entries, and kills land in the middle of seals.
+  KYTHIRA_LEDGER_SEGMENT_BYTES: "16384"
+  KYTHIRA_LEDGER_SNAPSHOT_THRESHOLD_BYTES: "65536"
+  KYTHIRA_LEDGER_SNAPSHOT_DISK_MARGIN_BYTES: "0"
+  KYTHIRA_LEDGER_MAINTENANCE_INTERVAL_MS: "200"
+  # A follower fsyncs each batch before it answers; on a slow CI disk the
+  # default 300-600 ms timeouts would elect on every write burst.
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "1000"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "2000"
+  KYTHIRA_HEARTBEAT_INTERVAL_MS: "150"
+  KYTHIRA_LOG_LEVEL: "info"
+
+services:
+  ledger-1:
+    <<: *node
+    container_name: ledger-chaos-1
+    hostname: ledger-1
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "1"
+    volumes:
+      - ${KYTHIRA_LEDGER_CHAOS_PKI_DIR:?the scenario test sets it}:/pki:ro
+      - ledger-1-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16521:8443"
+
+  ledger-2:
+    <<: *node
+    container_name: ledger-chaos-2
+    hostname: ledger-2
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "2"
+    volumes:
+      - ${KYTHIRA_LEDGER_CHAOS_PKI_DIR:?the scenario test sets it}:/pki:ro
+      - ledger-2-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16522:8443"
+
+  ledger-3:
+    <<: *node
+    container_name: ledger-chaos-3
+    hostname: ledger-3
+    environment:
+      <<: *node-env
+      KYTHIRA_NODE_ID: "3"
+    volumes:
+      - ${KYTHIRA_LEDGER_CHAOS_PKI_DIR:?the scenario test sets it}:/pki:ro
+      - ledger-3-data:/data
+    ports:
+      - "${KYTHIRA_BIND_ADDRESS:-127.0.0.1}:16523:8443"
+
+volumes:
+  ledger-1-data:
+  ledger-2-data:
+  ledger-3-data:
+
+networks:
+  ledger_chaos_net:
+    name: kythira_ledger_chaos_net
+    driver: bridge
