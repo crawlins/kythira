@@ -12,10 +12,10 @@ offline verification, signed digests, the native API with its HTTPS server
 and the C++ client are built and tested, and so is the node's core over
 multi_raft (ledger placement, routing, background index builds and seals),
 which runs in tests on an in-process network, and the `ledger_node`
-daemon (below). A ledger's snapshot carries its segment files. Not yet
-built: the daemon's metrics endpoint and its object-store export runner,
-and the crash and chaos tests. A replica that falls behind its ledger's
-compacted log catches up through a snapshot that carries the segment files.
+daemon (below) with its metrics endpoint. A replica that falls behind its
+ledger's compacted log catches up through a snapshot that carries the
+segment files. Not yet built: the daemon's object-store export runner,
+and the crash and chaos tests.
 
 ## Model
 
@@ -241,6 +241,21 @@ and a digest you saved earlier.
    read role on the ledger. `--ca` checks the saved digest's signature, or
    the node's when no digest is saved. A node that cannot be reached, or
    refuses the certificate, is an error (2), not a failed verification.
+
+   A node's data directory can be checked directly, on the node's host,
+   whether or not the node is running:
+
+   ```
+   ledger_ctl verify --data-dir /var/lib/kythira-ledger --ledger L \
+       [--digest digest.ion [--ca ca.pem]]
+   ```
+
+   This opens the node's RocksDB database as a read-only secondary
+   instance (so it never conflicts with the running node), finds the
+   ledger in the catalog, and re-hashes every block, reading sealed blocks
+   from `segments/<ledger id>/`. It checks the journal as it stood when it
+   was opened. Sealed segments already offloaded to object storage, with
+   no local copy, cannot be read this way; use an export.
 4. **Signed digests.** With `--ca`, the digest must be signed by a
    certificate that chains to that CA bundle, and was valid at `signedAt`.
    A signed digest shows the digest came from this cluster, not just that
@@ -290,16 +305,31 @@ KYTHIRA_LEDGER_SIGNING_CHAIN=/etc/kythira/signer-chain.pem
 
 ## Operations
 
-- **Metrics.** The state machine reports blocks, blocks applied and
-  rejections by code (from which commit and conflict rates follow),
-  hash-check failures, unsealed, local and offloaded journal bytes,
-  segments, and indexes still backfilling. A metrics endpoint on
-  `ledger_node` is still to come.
+- **Metrics.** With `KYTHIRA_LEDGER_METRICS_LISTEN=host:port`,
+  `ledger_node` serves Prometheus text on `GET /metrics`. The endpoint is
+  plaintext and unauthenticated and names every ledger the node hosts, so
+  bind it to loopback or a monitoring network. Every
+  `KYTHIRA_LEDGER_METRICS_INTERVAL_MS` (5 s) the node samples, for each
+  active ledger it hosts, labelled `ledger="<name>"`:
+  `kythira_ledger_blocks`, `kythira_ledger_blocks_applied` (since the
+  node started), `kythira_ledger_rejections{code}` (since start; with
+  blocks applied, the commit and conflict rates),
+  `kythira_ledger_hash_check_failures`,
+  `kythira_ledger_journal_bytes{where="unsealed|local|offloaded"}`,
+  `kythira_ledger_segments`, `kythira_ledger_indexes_building` and
+  `kythira_ledger_leader` (1 on the node that leads the ledger). Node-wide
+  gauges are `kythira_ledger_node_groups_created`, `_groups_destroyed`,
+  `_index_steps`, `_seals`, `_maintenance_errors` and
+  `_split_merge_vetoes`. All of these are gauges; a gauge for a ledger
+  that is later deleted keeps its last value until the node restarts.
+  GetDigest's latency on this node is the histogram
+  `kythira_ledger_digest_latency{ledger}` (milliseconds).
 - **Hash mismatch.** If a replica computes a different block hash from
   the leader's for the same entry, the replica stops applying that group
   rather than store a block it disagrees with. The state machine reports
   the block and both hashes, and `ledger_node` logs them at critical
-  level.
+  level and counts them in `kythira_ledger_hash_mismatch_total{ledger_id}`
+  at once, without waiting for a sample, so alert on any increase.
 - **Threads and ion-c.** ion-c 1.1.3 keeps a system symbol table per
   thread and does not free it when the thread exits. Code that parses Ion
   should run on long-lived threads; the HTTPS handler hands requests to a

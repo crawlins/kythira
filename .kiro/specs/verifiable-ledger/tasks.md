@@ -257,8 +257,14 @@ task is one PR unless noted.
       as long as a chain via()'d onto it can submit to it (the Folly
       backend already did, through `KeepAlive`); killing a member crashed
       the survivors with a use-after-free in the Raft client.
-  - Still owed: metrics export (a `/metrics` endpoint) and the
-    object-store export runner; exports finish as failed until then.
+  - Metrics export: `KYTHIRA_LEDGER_METRICS_LISTEN` serves the
+    Prometheus scrape endpoint (`prometheus_scrape_server`); the node
+    samples each hosted ledger's `stats()` and the host's counters as
+    gauges every `KYTHIRA_LEDGER_METRICS_INTERVAL_MS`, and the
+    hash-mismatch handler bumps `kythira_ledger_hash_mismatch_total` at
+    once. `ledger_node_cluster_test` scrapes node 1.
+  - Still owed: the object-store export runner; exports finish as failed
+    until then.
 
 - [x] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and
@@ -336,7 +342,7 @@ task is one PR unless noted.
     staging transfers and leader checkpoints of every group already
     running, since a node clears its staging directory when it starts.
 
-- [ ] 10. `ledger_ctl`, digest signing and observability
+- [x] 10. `ledger_ctl`, digest signing and observability
   - `verify` and `prove` (API, data directory, export); optional CA-signed
     digests; metrics and the hash-mismatch alert path; tamper tests
   - _Requirements: 4.5, 9.1-9.3, 11.1, 11.2, 12.3_
@@ -393,6 +399,16 @@ task is one PR unless noted.
       hashes before apply throws `ledger_divergence_error`, so the node
       can log it with its replica id and raise the alert metric. Digest
       latency is measured by the node.
+    - `ledger_ctl verify --data-dir DIR --ledger L`: opens a node's
+      RocksDB database as a read-only secondary instance
+      (`rocksdb_kv_engine_options::secondary_path`, so it works beside a
+      running node; every write, sync and ingest then throws), maps the
+      name through the catalog, and runs `verify_state_machine` over the
+      ledger's range with its segment directory. Built where
+      `raft_rocksdb_engine` exists. `ledger_node_cluster_test` checks a
+      running member's directory and a stopped one's.
+    - Metrics export and the alert path on `ledger_node`: see 7c (the
+      Prometheus endpoint and `kythira_ledger_hash_mismatch_total`).
 
 - [ ] 11. Crash, chaos and docs
   - Failpoint kills during apply, sealing and offload; identical journals

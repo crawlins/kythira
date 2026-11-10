@@ -8,6 +8,7 @@
 //   ledger_ctl verify --segments DIR [--digest FILE [--ca FILE]]
 //   ledger_ctl verify --api URL --ledger NAME --tls-ca FILE --cert FILE --key FILE
 //                     [--digest FILE] [--ca FILE]
+//   ledger_ctl verify --data-dir DIR --ledger NAME [--digest FILE [--ca FILE]]
 //   ledger_ctl prove --proof FILE --digest FILE [--ca FILE]
 //
 // With --ca, the digest file must be a CA-signed digest (Requirement 4.5)
@@ -15,7 +16,9 @@
 // that failing is a verification failure (1).
 // Exit status: 0 verified, 1 verification failed (the first bad block is
 // named), 2 usage or I/O error (including a node that cannot be reached).
-// Verifying from a live data directory waits on ledger_node (task 7).
+// --data-dir reads a ledger_node data directory, even one a running node
+// holds open: the RocksDB database as a read-only secondary instance, the
+// sealed segments from segments/<ledger id>/.
 
 #include <kythira/ledger/ion_value.hpp>
 #include <kythira/ledger/journal_segments.hpp>
@@ -25,11 +28,20 @@
 #ifdef KYTHIRA_LEDGER_CTL_API
 #include <kythira/ledger/ledger_client.hpp>
 #endif
+#ifdef KYTHIRA_LEDGER_CTL_DATA_DIR
+#include <kythira/ledger/ledger_catalog.hpp>
+#include <kythira/ledger/ledger_state_machine.hpp>
+
+#include <raft/rocksdb_kv_engine.hpp>
+
+#include <unistd.h>
+#endif
 
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -43,6 +55,7 @@ constexpr std::string_view usage =
     "usage: ledger_ctl verify (--export DIR | --segments DIR) [--digest FILE [--ca FILE]]\n"
     "       ledger_ctl verify --api URL[,URL...] --ledger NAME --tls-ca FILE --cert FILE\n"
     "                         --key FILE [--digest FILE] [--ca FILE]\n"
+    "       ledger_ctl verify --data-dir DIR --ledger NAME [--digest FILE [--ca FILE]]\n"
     "       ledger_ctl prove --proof FILE --digest FILE [--ca FILE]\n"
     "\n"
     "verify   re-hash every block (revisions, entriesHash, blockHash), check\n"
@@ -57,6 +70,10 @@ constexpr std::string_view usage =
     "                         and to the saved one at its tip if --digest is\n"
     "                         given. --ca checks the digest's signature (the\n"
     "                         saved digest's, or else the node's).\n"
+    "         --data-dir DIR  a ledger_node data directory, even while the node\n"
+    "                         runs: the ledger's journal as of the moment it is\n"
+    "                         opened, read from the node's RocksDB database and\n"
+    "                         its sealed segments.\n"
     "prove    check a block or revision proof (as GetBlock or GetRevision\n"
     "         returns it, in Ion) against a saved digest.\n"
     "\n"
@@ -241,6 +258,87 @@ auto verify_api(const std::map<std::string, std::string>& /*flags*/) -> int {
 }
 #endif
 
+#ifdef KYTHIRA_LEDGER_CTL_DATA_DIR
+/// A directory removed on scope exit (the secondary instance's own log).
+struct scratch_dir {
+    std::filesystem::path path;
+    ~scratch_dir() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
+/// verify --data-dir: the catalog names the ledger's id, the state
+/// machine over its range reads every block (from the engine, or from a
+/// sealed segment), and each is re-hashed as from any other source.
+auto verify_data_dir(const std::map<std::string, std::string>& flags) -> int {
+    const auto ledger_it = flags.find("ledger");
+    if (ledger_it == flags.end()) {
+        throw usage_error("verify --data-dir needs --ledger");
+    }
+    const std::string name = ledger_it->second;
+    const std::filesystem::path dir = flags.at("data-dir");
+    std::optional<ledger::saved_digest> saved;
+    if (const auto it = flags.find("digest"); it != flags.end()) {
+        saved = load_digest(flags, it->second);
+    }
+
+    const scratch_dir secondary{std::filesystem::temp_directory_path() /
+                                ("ledger_ctl-secondary-" + std::to_string(::getpid()))};
+    kythira::rocksdb_kv_engine_options eo;
+    eo.secondary_path = secondary.path;
+    std::unique_ptr<kythira::rocksdb_kv_engine> engine;
+    try {
+        engine = std::make_unique<kythira::rocksdb_kv_engine>(dir / "engine", eo);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ledger_ctl: cannot open %s: %s\n", (dir / "engine").c_str(),
+                     e.what());
+        return 2;
+    }
+    ledger::basic_ledger_catalog<kythira::rocksdb_kv_engine> catalog;
+    catalog.open(*engine, ledger::catalog_range());
+    std::optional<ledger::ledger_record> record;
+    for (auto& r : catalog.list()) {
+        if (r.name == name && r.state == "active") {
+            record = std::move(r);
+        }
+    }
+    if (!record) {
+        std::fprintf(stderr, "ledger_ctl: %s has no active ledger named %s\n", dir.c_str(),
+                     name.c_str());
+        return 2;
+    }
+    ledger::ledger_options lo;
+    lo.segment_directory = dir / "segments" / record->ledger_id;
+    ledger::basic_ledger_state_machine<kythira::rocksdb_kv_engine> sm(lo);
+    sm.open(*engine, ledger::ledger_range(record->ledger_id));
+    const auto tip = sm.tip();
+    if (saved && (!tip || saved->tip > tip->seq)) {
+        std::fprintf(stderr, "FAILED: the saved digest's tip %llu is beyond the journal\n",
+                     static_cast<unsigned long long>(saved->tip));
+        return 1;
+    }
+    ledger::journal_verifier v(0, saved);
+    if (!ledger::verify_state_machine(sm, v)) {
+        print_failure(v);
+        return 1;
+    }
+    std::printf("verified %llu blocks of ledger %s from data dir %s",
+                static_cast<unsigned long long>(v.blocks()), name.c_str(), dir.c_str());
+    if (v.digest_checked()) {
+        std::printf("; digest at block %llu matches", static_cast<unsigned long long>(saved->tip));
+    } else if (const auto d = v.digest()) {
+        std::printf("; digest %s", ledger::to_hex(*d).c_str());
+    }
+    std::printf("\n");
+    return 0;
+}
+#else
+auto verify_data_dir(const std::map<std::string, std::string>& /*flags*/) -> int {
+    throw usage_error("this ledger_ctl was built without --data-dir (it needs RocksDB)");
+}
+#endif
+
 /// The blocks of an export or segment directory, and a name for it.
 auto read_blocks(const std::map<std::string, std::string>& flags,
                  std::vector<ledger::block>& blocks, std::string& source) -> void {
@@ -259,6 +357,9 @@ auto verify(const std::map<std::string, std::string>& flags) -> int {
     if (flags.contains("api")) {
         return verify_api(flags);
     }
+    if (flags.contains("data-dir")) {
+        return verify_data_dir(flags);
+    }
     std::optional<ledger::saved_digest> saved;
     if (const auto it = flags.find("digest"); it != flags.end()) {
         saved = load_digest(flags, it->second);
@@ -266,7 +367,7 @@ auto verify(const std::map<std::string, std::string>& flags) -> int {
     std::vector<ledger::block> blocks;
     std::string source;
     if (!flags.contains("export") && !flags.contains("segments")) {
-        throw usage_error("verify needs --export, --segments or --api");
+        throw usage_error("verify needs --export, --segments, --api or --data-dir");
     }
     try {
         read_blocks(flags, blocks, source);

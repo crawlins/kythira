@@ -20,6 +20,8 @@
 
 #include "test_ports.hpp"
 
+#include <httplib.h>
+
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -228,6 +230,7 @@ public:
             raft_ports.push_back(kythira::testing::free_port());
             api_ports_.push_back(kythira::testing::free_port());
         }
+        metrics_port_ = kythira::testing::free_port();
         std::string peers;
         std::string api_urls;
         for (int i = 0; i < k_members; ++i) {
@@ -258,6 +261,11 @@ public:
                 "KYTHIRA_LEDGER_MAINTENANCE_INTERVAL_MS=100",
                 "KYTHIRA_LOG_LEVEL=warning",
             };
+            if (i == 0) {
+                env.push_back("KYTHIRA_LEDGER_METRICS_LISTEN=127.0.0.1:" +
+                              std::to_string(metrics_port_));
+                env.emplace_back("KYTHIRA_LEDGER_METRICS_INTERVAL_MS=200");
+            }
             nodes_.push_back(std::make_unique<node_process>(
                 i + 1, std::move(env), pki_.dir / ("node-" + std::to_string(i + 1) + ".log")));
         }
@@ -299,6 +307,9 @@ public:
             n->stop();
         }
     }
+    [[nodiscard]] auto data_dir(int i) const -> std::filesystem::path {
+        return pki_.dir / ("node-" + std::to_string(i + 1));
+    }
     [[nodiscard]] auto node(int i) -> node_process& { return *nodes_[static_cast<std::size_t>(i)]; }
     [[nodiscard]] auto certs() const -> const pki& { return pki_; }
 
@@ -316,8 +327,17 @@ public:
         return {o, https_transport(t)};
     }
 
+    /// Node 1's Prometheus endpoint, or "" if it does not answer.
+    [[nodiscard]] auto scrape() const -> std::string {
+        httplib::Client client("127.0.0.1", metrics_port_);
+        client.set_connection_timeout(std::chrono::seconds{2});
+        const auto res = client.Get("/metrics");
+        return res && res->status == 200 ? res->body : std::string();
+    }
+
 private:
     pki pki_;
+    std::uint16_t metrics_port_ = 0;
     std::vector<std::uint16_t> api_ports_;
     std::vector<std::unique_ptr<node_process>> nodes_;
 };
@@ -398,6 +418,14 @@ auto verified_blocks(const std::string& out) -> int {
     }
 }
 
+/// ledger_ctl verify --data-dir on member i's data directory.
+auto ledger_ctl_verify_dir(const cluster& c, int i, const std::filesystem::path& log) -> int {
+    const std::string cmd = std::string(KYTHIRA_LEDGER_CTL) + " verify --data-dir " +
+                            c.data_dir(i).string() + " --ledger bank >" + log.string() + " 2>&1";
+    const int rc = std::system(cmd.c_str());  // NOLINT(cert-env33-c,concurrency-mt-unsafe)
+    return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+}
+
 auto ledger_ctl_verify(const cluster& c, const std::filesystem::path& log) -> int {
     const auto& p = c.certs();
     const std::string cmd = std::string(KYTHIRA_LEDGER_CTL) + " verify --api " + c.url(0) + "," +
@@ -447,6 +475,26 @@ BOOST_AUTO_TEST_CASE(a_three_node_cluster_serves_verifies_and_survives_restarts)
     BOOST_TEST(ledger_ctl_verify(c, log) == 0, slurp(log));
     // The table and ten inserts; no write has been retried yet.
     BOOST_TEST(verified_blocks(slurp(log)) == 11, slurp(log));
+    // ...and so does a running member's data directory, read beside it.
+    BOOST_TEST(ledger_ctl_verify_dir(c, 1, log) == 0, slurp(log));
+    BOOST_TEST(verified_blocks(slurp(log)) == 11, slurp(log));
+
+    // Node 1 exports the ledger's gauges: the journal, and the bytes not
+    // yet sealed into a segment.
+    const auto has_metric = [&](const std::string& line) {
+        return c.scrape().find(line) != std::string::npos;
+    };
+    for (int i = 0; i < 100 && !has_metric(R"(kythira_ledger_blocks{ledger="bank"} 11)"); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+    const auto scraped = c.scrape();
+    BOOST_TEST(scraped.find(R"(kythira_ledger_blocks{ledger="bank"} 11)") != std::string::npos,
+               scraped);
+    BOOST_TEST(scraped.find(R"(kythira_ledger_journal_bytes{ledger="bank",where="unsealed"})") !=
+                   std::string::npos,
+               scraped);
+    BOOST_TEST(scraped.find(R"(kythira_ledger_leader{ledger="bank"})") != std::string::npos,
+               scraped);
 
     // Writes go on with any one member killed, and it catches up after.
     c.node(2).kill_hard();
@@ -474,5 +522,11 @@ BOOST_AUTO_TEST_CASE(a_three_node_cluster_serves_verifies_and_survives_restarts)
     BOOST_TEST(ledger_ctl_verify(c, log) == 0, slurp(log));
     // Seven more inserts. A resent insert that finds its document already
     // there is rejected, and a rejection makes no block.
+    BOOST_TEST(verified_blocks(slurp(log)) == 18, slurp(log));
+
+    // A stopped member's data directory verifies offline, including the
+    // blocks it caught up on after being killed.
+    c.stop_all();
+    BOOST_TEST(ledger_ctl_verify_dir(c, 2, log) == 0, slurp(log));
     BOOST_TEST(verified_blocks(slurp(log)) == 18, slurp(log));
 }

@@ -233,6 +233,18 @@ auto from_env() -> node_options {
     o.propose_timeout = ms_opt("KYTHIRA_LEDGER_PROPOSE_TIMEOUT_MS", o.propose_timeout);
     o.maintenance_interval =
         ms_opt("KYTHIRA_LEDGER_MAINTENANCE_INTERVAL_MS", o.maintenance_interval);
+    if (const auto m = get_opt("KYTHIRA_LEDGER_METRICS_LISTEN"); !m.empty()) {
+        const auto listen = split_listen("KYTHIRA_LEDGER_METRICS_LISTEN", m);
+        o.metrics_bind = listen.first;
+        o.metrics_port = listen.second;
+        if (o.metrics_port == 0) {
+            throw fail("KYTHIRA_LEDGER_METRICS_LISTEN needs a port other than 0");
+        }
+    }
+    o.metrics_interval = ms_opt("KYTHIRA_LEDGER_METRICS_INTERVAL_MS", o.metrics_interval);
+    if (o.metrics_interval.count() <= 0) {
+        throw fail("KYTHIRA_LEDGER_METRICS_INTERVAL_MS must be positive");
+    }
 
     const auto level = get_opt("KYTHIRA_LOG_LEVEL", "info");
     static const std::map<std::string, kythira::log_level> levels{
@@ -289,6 +301,9 @@ Optional:
   KYTHIRA_LEDGER_SNAPSHOT_DISK_MARGIN_BYTES free space kept when staging (1073741824)
   KYTHIRA_LEDGER_PROPOSE_TIMEOUT_MS         commit wait per write (5000)
   KYTHIRA_LEDGER_MAINTENANCE_INTERVAL_MS    index builds, seals, exports (500)
+  KYTHIRA_LEDGER_METRICS_LISTEN host:port for a Prometheus GET /metrics
+                               endpoint, plaintext and unauthenticated (off)
+  KYTHIRA_LEDGER_METRICS_INTERVAL_MS        how often ledger gauges refresh (5000)
   KYTHIRA_TICK_INTERVAL_MS (5), KYTHIRA_ELECTION_TIMEOUT_MIN_MS (300),
   KYTHIRA_ELECTION_TIMEOUT_MAX_MS (600), KYTHIRA_HEARTBEAT_INTERVAL_MS (75),
   KYTHIRA_RPC_TIMEOUT_MS (2000)
