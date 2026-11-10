@@ -386,9 +386,11 @@ unverified completion claim.
 
 ## Known Follow-ups
 
-- **`node<Types>::_known_leader` is written and read under different
-  mutexes** (found November 9, 2026, by ThreadSanitizer on the RocksDB node
-  suite). `handle_append_entries` sets it under `_mutex`; `run_reconnect`
+- **FIXED November 10, 2026: `node<Types>::_known_leader` is written and
+  read under different mutexes** (found November 9, 2026, by
+  ThreadSanitizer on the RocksDB node suite). Now written under both
+  mutexes, so the reconnect thread's read under `_reconnect_cv_mutex` alone
+  is safe. `handle_append_entries` sets it under `_mutex`; `run_reconnect`
   reads it under `_reconnect_cv_mutex`, so the reconnect thread can see a
   torn `std::optional`. Not fixed with file-install-snapshot task 7, which
   only exposed it. Fix: write it under `_reconnect_cv_mutex` too (the
