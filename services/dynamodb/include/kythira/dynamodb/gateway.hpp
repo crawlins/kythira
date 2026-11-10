@@ -43,10 +43,12 @@
 /// unauthenticated requests.
 
 #include <kythira/dynamodb/backend.hpp>
+#include <kythira/dynamodb/batch_api.hpp>
 #include <kythira/dynamodb/disk_guard.hpp>
 #include <kythira/dynamodb/dynamodb_actions.hpp>
 #include <kythira/dynamodb/front_end.hpp>
 #include <kythira/dynamodb/item_api.hpp>
+#include <kythira/dynamodb/query_api.hpp>
 #include <kythira/dynamodb/table_api.hpp>
 
 #include <raft/beast_https_server.hpp>
@@ -319,6 +321,8 @@ public:
                      : std::make_unique<disk_guard>(_config.data_dir, _config.disk_floor_bytes)),
           _tables(backend),
           _items(backend, _guard.get()),
+          _queries(backend),
+          _batches(backend, _guard.get()),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -346,6 +350,8 @@ public:
         _front = std::make_unique<front_end<authorizer>>(std::move(front), _auth);
         _tables.register_with(*_front);
         _items.register_with(*_front);
+        _queries.register_with(*_front);
+        _batches.register_with(*_front);
         _ready.store(true);
     }
 
@@ -382,6 +388,8 @@ private:
     std::unique_ptr<disk_guard> _guard;
     table_api<Backend> _tables;
     item_api<Backend> _items;
+    query_api<Backend> _queries;
+    batch_api<Backend> _batches;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

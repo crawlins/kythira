@@ -16,6 +16,9 @@
 /// - `write(cmd)` commits an item entry on the group that owns the key.
 /// - `read(...)` serves `GetItem`: a linearizable read when `consistent`,
 ///   otherwise any replica's committed state (Requirement 8.6).
+/// - `read_range(...)` serves `Query` and `Scan`: the items whose base keys
+///   fall in a range, in key order or reverse, across every group the range
+///   covers, until the visitor returns false. Consistency as for `read`.
 /// - `describe` and `list_tables` read the catalog.
 /// - `now_ms()` is the clock that stamps entries. Replicas never read their
 ///   own clocks.
@@ -49,17 +52,23 @@
 
 namespace kythira::dynamodb {
 
+/// Gets each item of a range read with its base key; returns false to stop.
+using range_visitor = std::function<bool(std::string_view base_key, const item&)>;
+
 template<typename B>
-concept dynamo_backend = requires(B& b, const catalog_command& cc, const item_command& ic,
-                                  std::string_view name, std::size_t limit, std::uint64_t table_id,
-                                  const key_schema& schema, const item& key, bool consistent) {
-    { b.catalog(cc) } -> std::same_as<catalog_result>;
-    { b.write(ic) } -> std::same_as<item_result>;
-    { b.read(table_id, schema, key, consistent) } -> std::same_as<std::optional<item>>;
-    { b.describe(name) } -> std::same_as<std::optional<table_descriptor>>;
-    { b.list_tables(name, limit) } -> std::same_as<std::vector<std::string>>;
-    { b.now_ms() } -> std::same_as<std::uint64_t>;
-};
+concept dynamo_backend =
+    requires(B& b, const catalog_command& cc, const item_command& ic, std::string_view name,
+             std::size_t limit, std::uint64_t table_id, const key_schema& schema, const item& key,
+             bool consistent, const kythira::key_range& range, kythira::scan_direction direction,
+             const range_visitor& visit) {
+        { b.catalog(cc) } -> std::same_as<catalog_result>;
+        { b.write(ic) } -> std::same_as<item_result>;
+        { b.read(table_id, schema, key, consistent) } -> std::same_as<std::optional<item>>;
+        { b.read_range(range, direction, consistent, visit) } -> std::same_as<void>;
+        { b.describe(name) } -> std::same_as<std::optional<table_descriptor>>;
+        { b.list_tables(name, limit) } -> std::same_as<std::vector<std::string>>;
+        { b.now_ms() } -> std::same_as<std::uint64_t>;
+    };
 
 /// Both state machines on one engine, applied in-process.
 template<kythira::kv_engine Engine = kythira::memory_kv_engine> class local_backend {
@@ -106,6 +115,14 @@ public:
         // One copy: every read is linearizable.
         const std::lock_guard lock(_mu);
         return _items.get_item(table_id, schema, key);
+    }
+
+    auto read_range(const kythira::key_range& range, kythira::scan_direction direction,
+                    bool /*consistent*/, const range_visitor& visit) -> void {
+        // The visitor runs under the lock, so a page is one snapshot; it
+        // must not call back into the backend.
+        const std::lock_guard lock(_mu);
+        _items.scan_items(range, direction, visit);
     }
 
     auto describe(std::string_view name) -> std::optional<table_descriptor> {
