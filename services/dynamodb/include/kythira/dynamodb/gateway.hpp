@@ -15,10 +15,10 @@
 /// `healthy: dynamodb.<region>.amazonaws.com `, which SDK and load-balancer
 /// health checks expect.
 ///
-/// The daemon starts with `local_backend` on `memory_kv_engine`: one node,
-/// no Raft, and nothing kept across a restart, like DynamoDB Local's
-/// `-inMemory`. The Raft-hosted backend on the RocksDB engine replaces it
-/// behind the same `dynamo_backend` concept.
+/// The backend is the daemon's choice: `local_backend` on `memory_kv_engine`
+/// (one node, no Raft, nothing kept across a restart, like DynamoDB Local's
+/// `-inMemory`), or `raft_backend` on a cluster. A gateway over a
+/// `raft_backend` also serves the forward endpoint peers send ops to.
 ///
 /// ## Environment
 ///
@@ -26,16 +26,27 @@
 /// |---|---|---|
 /// | `KYTHIRA_DYNAMODB_BIND` | `0.0.0.0` | address to listen on, or `*` |
 /// | `KYTHIRA_DYNAMODB_PORT` | `8000` | port; 0 picks a free one |
-/// | `KYTHIRA_DYNAMODB_TLS_CERT`, `KYTHIRA_DYNAMODB_TLS_KEY` | | PEM chain and key; required unless
-/// plaintext | | `KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT` | `0` | `1` serves plain HTTP (tests only;
-/// warns at start) | | `KYTHIRA_DYNAMODB_REGION` | `us-east-1` | region in ARNs and the SigV4 scope
-/// | | `KYTHIRA_DYNAMODB_PARTITION` | `aws` | partition in ARNs | |
-/// `KYTHIRA_DYNAMODB_ADVERTISED_ENDPOINT` | `localhost:<port>` | what `DescribeEndpoints` answers |
+/// | `KYTHIRA_DYNAMODB_TLS_CERT`, `_TLS_KEY` | | PEM chain and key; required unless plaintext |
+/// | `KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT` | `0` | `1` serves plain HTTP (tests; warns) |
+/// | `KYTHIRA_DYNAMODB_REGION` | `us-east-1` | region in ARNs and the SigV4 scope |
+/// | `KYTHIRA_DYNAMODB_PARTITION` | `aws` | partition in ARNs |
+/// | `KYTHIRA_DYNAMODB_ADVERTISED_ENDPOINT` | `localhost:<port>` | what `DescribeEndpoints` says |
 /// | `KYTHIRA_DYNAMODB_STATIC_KEYS_FILE` | | access keys, one per line (below) |
 /// | `KYTHIRA_DYNAMODB_STATIC_KEYS` | | the same, `,`-separated, for tests |
-/// | `KYTHIRA_DYNAMODB_DATA_DIR` | | directory the disk guard watches; unset means no guard |
+/// | `KYTHIRA_DYNAMODB_DATA_DIR` | | the disk guard's directory, and the database's |
 /// | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | 1 GiB | free space below which writes are refused |
-/// | `KYTHIRA_DYNAMODB_ENGINE` | `memory` | the storage engine; only `memory` so far |
+/// | `KYTHIRA_DYNAMODB_ENGINE` | `memory` | `memory`, or `rocksdb` (needs `PEERS`, `DATA_DIR`) |
+/// | `KYTHIRA_DYNAMODB_NODE_ID` | | this node's id, with `PEERS` |
+/// | `KYTHIRA_DYNAMODB_PEERS` | | `id=http://host:port,...`: every voter's Raft address |
+/// | `KYTHIRA_DYNAMODB_RAFT_BIND`, `_RAFT_PORT` | `0.0.0.0`, `7000` | the Raft listener |
+/// | `KYTHIRA_DYNAMODB_PEER_GATEWAYS` | | `id=host:port,...`: every other voter's gateway |
+/// | `KYTHIRA_DYNAMODB_FORWARD_SECRET` | | the secret gateways forward with (16+ chars) |
+/// | `KYTHIRA_DYNAMODB_FORWARD_CA` | system roots | PEM bundle peers' certificates chain to |
+///
+/// Without `PEERS` the daemon is one node on `local_backend`, with no Raft.
+/// With it, the node joins a Raft cluster on `raft_backend` (one `PEERS`
+/// entry is a one-node cluster), and forwards each request to the group
+/// leader's gateway (`forward_link.hpp`).
 ///
 /// A key is `access-key-id:secret:account:name:role`, with role `read-only`,
 /// `read-write` or `admin`. Blank lines and lines starting with `#` are
@@ -46,6 +57,7 @@
 #include <kythira/dynamodb/batch_api.hpp>
 #include <kythira/dynamodb/disk_guard.hpp>
 #include <kythira/dynamodb/dynamodb_actions.hpp>
+#include <kythira/dynamodb/forward_link.hpp>
 #include <kythira/dynamodb/front_end.hpp>
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/query_api.hpp>
@@ -58,9 +70,12 @@
 
 #include <atomic>
 #include <charconv>
+#include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -72,6 +87,27 @@
 
 namespace kythira::dynamodb {
 
+/// A Raft cluster of gateways. Empty `peers` means one node with no Raft
+/// (`local_backend`).
+struct cluster_config {
+    /// This node's id, as text (numeric or composite by the build's
+    /// `KYTHIRA_NODE_ID_KIND`; the daemon parses it).
+    std::string node_id;
+    /// Every voter, this node included: id text to Raft URL
+    /// (`http://host:port`).
+    std::map<std::string, std::string> peers;
+    std::string raft_bind = "0.0.0.0";
+    std::uint16_t raft_port = 7000;
+    /// Every other voter's gateway listener, for forwarded ops.
+    std::map<std::string, forward_peer> peer_gateways;
+    std::string forward_secret;
+    /// PEM bundle the peers' gateway certificates chain to; empty uses the
+    /// system's.
+    std::string forward_ca_path;
+
+    [[nodiscard]] auto enabled() const -> bool { return !peers.empty(); }
+};
+
 struct gateway_config {
     https::server_config http{};
     front_end_config front{};
@@ -79,7 +115,10 @@ struct gateway_config {
     /// Empty: no disk guard.
     std::string data_dir;
     std::uint64_t disk_floor_bytes = disk_guard::k_default_floor_bytes;
+    /// `memory`, or `rocksdb` (a Raft cluster's database under the data
+    /// directory).
     std::string engine = "memory";
+    cluster_config cluster;
 };
 
 /// Reads one environment variable; empty optional when unset.
@@ -189,7 +228,128 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_STATIC_KEYS          the same, ','-separated\n"
     "  KYTHIRA_DYNAMODB_DATA_DIR             directory the disk guard watches\n"
     "  KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES     free-space floor for writes (1 GiB)\n"
-    "  KYTHIRA_DYNAMODB_ENGINE               storage engine (memory)\n";
+    "  KYTHIRA_DYNAMODB_ENGINE               storage engine: memory, or rocksdb\n"
+    "                                        (needs PEERS and DATA_DIR) (memory)\n"
+    "  KYTHIRA_DYNAMODB_NODE_ID              this node's id (with PEERS)\n"
+    "  KYTHIRA_DYNAMODB_PEERS                id=http://host:port,... every voter's\n"
+    "                                        Raft address, self included; unset\n"
+    "                                        runs one node with no Raft\n"
+    "  KYTHIRA_DYNAMODB_RAFT_BIND            Raft listener address (0.0.0.0)\n"
+    "  KYTHIRA_DYNAMODB_RAFT_PORT            Raft listener port (7000)\n"
+    "  KYTHIRA_DYNAMODB_PEER_GATEWAYS        id=host:port,... every other voter's\n"
+    "                                        gateway, for forwarded requests\n"
+    "  KYTHIRA_DYNAMODB_FORWARD_SECRET       shared secret between gateways\n"
+    "                                        (16 or more characters)\n"
+    "  KYTHIRA_DYNAMODB_FORWARD_CA           PEM bundle peers' certificates chain\n"
+    "                                        to (system roots)\n";
+
+namespace gateway_detail {
+
+/// `id=value,...`. Error text on a malformed or repeated entry.
+[[nodiscard]] inline auto parse_id_map(std::string_view name, std::string_view text)
+    -> std::variant<std::map<std::string, std::string>, std::string> {
+    std::map<std::string, std::string> out;
+    for (const auto raw : split(text, ',')) {
+        const auto entry = trim(raw);
+        if (entry.empty()) {
+            continue;
+        }
+        const auto eq = entry.find('=');
+        if (eq == std::string_view::npos || eq == 0 || eq + 1 == entry.size()) {
+            return std::string(name) + ": expected id=value, got '" + std::string(entry) + "'";
+        }
+        if (!out.emplace(std::string(trim(entry.substr(0, eq))),
+                         std::string(trim(entry.substr(eq + 1))))
+                 .second) {
+            return std::string(name) + ": id '" + std::string(entry.substr(0, eq)) +
+                   "' appears twice";
+        }
+    }
+    return out;
+}
+
+/// `host:port`, or `[v6]:port`.
+[[nodiscard]] inline auto parse_host_port(std::string_view text) -> std::optional<forward_peer> {
+    const auto colon = text.rfind(':');
+    if (colon == std::string_view::npos || colon == 0) {
+        return std::nullopt;
+    }
+    auto host = text.substr(0, colon);
+    if (host.size() > 2 && host.front() == '[' && host.back() == ']') {
+        host = host.substr(1, host.size() - 2);
+    }
+    const auto port = number<std::uint16_t>(text.substr(colon + 1));
+    if (!port || *port == 0 || host.empty()) {
+        return std::nullopt;
+    }
+    return forward_peer{std::string(host), *port};
+}
+
+/// Reads the cluster settings into `c.cluster`; error text on failure.
+[[nodiscard]] inline auto cluster_from_env(const env_lookup& env, gateway_config& c)
+    -> std::optional<std::string> {
+    auto& k = c.cluster;
+    const auto peers = env("KYTHIRA_DYNAMODB_PEERS");
+    if (!peers || trim(*peers).empty()) {
+        if (c.engine != "memory") {
+            return std::string("KYTHIRA_DYNAMODB_ENGINE=") + c.engine +
+                   " needs a cluster: set KYTHIRA_DYNAMODB_PEERS (it may list only this node)";
+        }
+        return std::nullopt;
+    }
+    auto parsed = parse_id_map("KYTHIRA_DYNAMODB_PEERS", *peers);
+    if (auto* e = std::get_if<std::string>(&parsed)) {
+        return *e;
+    }
+    k.peers = std::move(std::get<0>(parsed));
+    k.node_id = env("KYTHIRA_DYNAMODB_NODE_ID").value_or("");
+    if (k.node_id.empty()) {
+        return std::string("KYTHIRA_DYNAMODB_NODE_ID is required with KYTHIRA_DYNAMODB_PEERS");
+    }
+    if (!k.peers.contains(k.node_id)) {
+        return "KYTHIRA_DYNAMODB_PEERS must include this node's own id '" + k.node_id + "'";
+    }
+    k.raft_bind = env("KYTHIRA_DYNAMODB_RAFT_BIND").value_or("0.0.0.0");
+    if (auto v = env("KYTHIRA_DYNAMODB_RAFT_PORT")) {
+        const auto p = number<std::uint16_t>(*v);
+        if (!p) {
+            return "KYTHIRA_DYNAMODB_RAFT_PORT: not a port: '" + *v + "'";
+        }
+        k.raft_port = *p;
+    }
+    k.forward_ca_path = env("KYTHIRA_DYNAMODB_FORWARD_CA").value_or("");
+    if (k.peers.size() > 1) {
+        k.forward_secret = env("KYTHIRA_DYNAMODB_FORWARD_SECRET").value_or("");
+        if (k.forward_secret.size() < k_min_forward_secret) {
+            return "KYTHIRA_DYNAMODB_FORWARD_SECRET is required with more than one peer, and "
+                   "needs " +
+                   std::to_string(k_min_forward_secret) + " or more characters";
+        }
+        auto gw = parse_id_map("KYTHIRA_DYNAMODB_PEER_GATEWAYS",
+                               env("KYTHIRA_DYNAMODB_PEER_GATEWAYS").value_or(""));
+        if (auto* e = std::get_if<std::string>(&gw)) {
+            return *e;
+        }
+        for (const auto& [id, text] : std::get<0>(gw)) {
+            const auto hp = parse_host_port(text);
+            if (!hp) {
+                return "KYTHIRA_DYNAMODB_PEER_GATEWAYS: '" + text + "' is not host:port";
+            }
+            k.peer_gateways.emplace(id, *hp);
+        }
+        for (const auto& [id, url] : k.peers) {
+            if (id != k.node_id && !k.peer_gateways.contains(id)) {
+                return "KYTHIRA_DYNAMODB_PEER_GATEWAYS has no gateway for peer '" + id + "'";
+            }
+        }
+    }
+    if (c.engine == "rocksdb" && c.data_dir.empty()) {
+        return std::string("KYTHIRA_DYNAMODB_ENGINE=rocksdb needs KYTHIRA_DYNAMODB_DATA_DIR");
+    }
+    return std::nullopt;
+}
+
+}  // namespace gateway_detail
 
 /// Builds the configuration from the environment. Returns the error text
 /// on a bad or missing setting.
@@ -267,8 +427,11 @@ inline constexpr std::string_view k_gateway_env_help =
         c.disk_floor_bytes = *f;
     }
     c.engine = env("KYTHIRA_DYNAMODB_ENGINE").value_or("memory");
-    if (c.engine != "memory") {
-        return "KYTHIRA_DYNAMODB_ENGINE: unknown engine '" + c.engine + "' (only 'memory' so far)";
+    if (c.engine != "memory" && c.engine != "rocksdb") {
+        return "KYTHIRA_DYNAMODB_ENGINE: unknown engine '" + c.engine + "' (memory or rocksdb)";
+    }
+    if (auto e = gateway_detail::cluster_from_env(env, c)) {
+        return *e;
     }
     return c;
 }
@@ -319,6 +482,7 @@ public:
           _guard(_config.data_dir.empty()
                      ? nullptr
                      : std::make_unique<disk_guard>(_config.data_dir, _config.disk_floor_bytes)),
+          _backend(backend),
           _tables(backend),
           _items(backend, _guard.get()),
           _queries(backend),
@@ -379,13 +543,47 @@ public:
             res.prepare_payload();
             return res;
         }
+        if constexpr (serves_ops) {
+            if (req.target() == k_forward_path && !_config.cluster.forward_secret.empty()) {
+                return forwarded(req);
+            }
+        }
         return to_https_response(_front->handle(to_front_end_request(req, ctx)), req.version());
     }
 
 private:
+    /// A `raft_backend`, which runs ops peers forward to this node.
+    static constexpr bool serves_ops = requires(Backend& b, std::string_view op) {
+        { b.serve(op) } -> std::same_as<std::string>;
+    };
+
+    /// A peer's op: refused unless it carries a fresh, valid MAC.
+    auto forwarded(const https::request& req) -> https::response {
+        namespace http = boost::beast::http;
+        const auto now =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                           std::chrono::system_clock::now().time_since_epoch())
+                                           .count());
+        const auto time = req.find(k_forward_time_header);
+        const auto mac = req.find(k_forward_mac_header);
+        if (req.method() != http::verb::post || time == req.end() || mac == req.end() ||
+            !forward_authentic(_config.cluster.forward_secret, time->value(), mac->value(),
+                               req.body(), now)) {
+            https::response res{http::status::forbidden, req.version()};
+            res.prepare_payload();
+            return res;
+        }
+        https::response res{http::status::ok, req.version()};
+        res.set(http::field::content_type, "application/octet-stream");
+        res.body() = _backend.serve(req.body());
+        res.prepare_payload();
+        return res;
+    }
+
     gateway_config _config;
     authorizer _auth;
     std::unique_ptr<disk_guard> _guard;
+    Backend& _backend;
     table_api<Backend> _tables;
     item_api<Backend> _items;
     query_api<Backend> _queries;

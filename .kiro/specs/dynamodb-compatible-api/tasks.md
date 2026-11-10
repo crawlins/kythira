@@ -155,9 +155,18 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       reads, range reads that walk groups page by page, and the catalog
       leader's follow-on work on a worker thread. Three in-process nodes
       cover it (`dynamodb_raft_backend_test`).
-    - Left: `dynamodb_gateway_node` on that backend over the RocksDB
-      engine, with the forward endpoint between gateways; warm
-      throughput; the KCL sample.
+    - Done: `dynamodb_gateway_node` as a cluster node
+      (`cmd/dynamodb_gateway_node/run_cluster.hpp`). `KYTHIRA_DYNAMODB_PEERS`
+      turns it on; each node runs the `multi_raft` host on core's Beast
+      transport with the bootstrap groups, and the gateway forwards an op
+      to the group leader's gateway over HTTP(S) with a time-stamped
+      HMAC-SHA256 (`forward_link.hpp`). `KYTHIRA_DYNAMODB_ENGINE=rocksdb`
+      keeps the groups in one RocksDB database under the data directory
+      when the build has the engine. Covered by three nodes in one
+      process (`dynamodb_gateway_cluster_test`); boto3 against three
+      processes ran create, puts through every node, consistent gets,
+      Query, Scan and delete.
+    - Left: warm throughput; the KCL sample.
 
 - [x] 8. Query, Scan and batch operations
   - Range reads with every `Query` option; cross-shard `Scan` cursors;

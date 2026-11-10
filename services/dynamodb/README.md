@@ -49,10 +49,13 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_api_test.cpp` | the control plane and single-item handlers through the front end on `local_backend` | 7 |
 | `include/kythira/dynamodb/gateway.hpp` | `dynamodb_gateway_node`'s settings from the environment, and the front end and handlers served over core's Beast HTTPS host | 7 |
 | `cmd/dynamodb_gateway_node/` | the daemon | 7 |
-| `tests/dynamodb_gateway_test.cpp` | the settings, and the gateway serving signed requests over a socket | 7 |
+| `tests/dynamodb_gateway_test.cpp` | the settings (cluster ones included), the gateway serving signed requests over a socket, and the forward endpoint's MAC checks | 7 |
 | `include/kythira/dynamodb/group_state_machine.hpp` | `dynamo_group_state_machine`: the one state machine a `multi_raft` host runs, the catalog or an item group by its range | 7 |
 | `include/kythira/dynamodb/raft_backend.hpp` | `raft_backend`: the `dynamo_backend` over `multi_raft`, hopping to each group's leader, read barriers, range reads across groups, and the catalog leader's follow-on work | 7 |
 | `tests/dynamodb_raft_backend_test.cpp` | three in-process nodes: requests on any node, a split under range reads, losing an item group's leader, delete jobs | 7 |
+| `include/kythira/dynamodb/forward_link.hpp` | how one gateway hands a `raft_backend` op to the group leader's gateway: an HTTP(S) POST to `/_kythira/dynamodb/forward` with a time-stamped HMAC-SHA256 over the body | 7 |
+| `cmd/dynamodb_gateway_node/run_cluster.hpp` | the daemon as a cluster node: the `multi_raft` host on core's Beast transport, the bootstrap groups, `raft_backend` and the gateway, and their shutdown order | 7 |
+| `tests/dynamodb_gateway_cluster_test.cpp` | three `run_cluster()` nodes in one process: requests on every node, consistent reads across nodes, conditions, Query, Scan and DeleteTable over the forward link | 7 |
 | `include/kythira/dynamodb/api_common.hpp` | helpers the data-plane handlers share: request members, usable tables, simple capacity units | 7, 8 |
 | `include/kythira/dynamodb/query_api.hpp` | `Query` and `Scan`: key-condition ranges, hash-sliced segments, 1 MB pages, cursors | 8 |
 | `include/kythira/dynamodb/batch_api.hpp` | `BatchGetItem` and `BatchWriteItem` | 8 |
