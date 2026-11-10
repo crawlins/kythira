@@ -128,15 +128,16 @@ BOOST_AUTO_TEST_CASE(sets_are_non_empty_and_duplicate_free) {
                "One or more parameter values were invalid: An number set  may not be empty");
     BOOST_TEST(error_of(R"({"a":{"BS":[]}})") ==
                "One or more parameter values were invalid: An binary set  may not be empty");
+    // DynamoDB words a duplicate differently for each set type (as
+    // DynamoDB Local 3.3.2 answers PutItem).
     BOOST_TEST(error_of(R"({"a":{"SS":["a","b","a"]}})") ==
                "One or more parameter values were invalid: Input collection [a, b, a] contains "
-               "duplicates.");
+               "duplicates");
     // Numerically equal elements are duplicates.
-    BOOST_TEST(error_of(R"({"a":{"NS":["1","1.0"]}})") ==
-               "One or more parameter values were invalid: Input collection [1, 1.0] contains "
+    BOOST_TEST(error_of(R"({"a":{"NS":["1","1.0"]}})") == "Input collection contains duplicates");
+    BOOST_TEST(error_of(R"({"a":{"BS":["AA==","AA=="]}})") ==
+               "One or more parameter values were invalid: Input collection of type BS contains "
                "duplicates.");
-    BOOST_TEST(error_of(R"({"a":{"BS":["AA==","AA=="]}})").find("contains duplicates") !=
-               std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(nesting_stops_at_32_levels) {

@@ -256,10 +256,17 @@ namespace detail {
         }
         return std::nullopt;
     };
-    const auto duplicates = [&]() {
+    // DynamoDB words a duplicate differently for each set type.
+    const auto duplicates = [&](attribute_type t) -> aws_json::error {
+        if (t == attribute_type::NS) {
+            return validation_error("Input collection contains duplicates");
+        }
+        if (t == attribute_type::BS) {
+            return detail::invalid("Input collection of type BS contains duplicates.");
+        }
         return detail::invalid("Input collection " +
                                detail::render_collection(member->get_array()) +
-                               " contains duplicates.");
+                               " contains duplicates");
     };
     if (tag == "S") {
         if (!member->is_string()) {
@@ -298,7 +305,7 @@ namespace detail {
                 return detail::invalid("Invalid string set");
             }
             if (!seen.insert(s.get_string()).second) {
-                return duplicates();
+                return duplicates(attribute_type::SS);
             }
             v.names.emplace_back(s.get_string());
         }
@@ -314,7 +321,7 @@ namespace detail {
             }
             // Numeric duplicates: "1" and "1.0" are the same element.
             if (std::find(v.nums.begin(), v.nums.end(), n) != v.nums.end()) {
-                return duplicates();
+                return duplicates(attribute_type::NS);
             }
             v.nums.push_back(n);
         }
@@ -330,7 +337,7 @@ namespace detail {
                 return *e;
             }
             if (!seen.insert(raw).second) {
-                return duplicates();
+                return duplicates(attribute_type::BS);
             }
             v.names.push_back(std::move(raw));
         }
