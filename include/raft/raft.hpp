@@ -1239,7 +1239,9 @@ private:
     // Peer discovery implementation (default: no_op — founds a single-node cluster)
     peer_discovery_type _peer_discovery{};
 
-    // Last known leader (populated from incoming AppendEntries)
+    // Last known leader (populated from incoming AppendEntries). Written
+    // under both _mutex and _reconnect_cv_mutex, so either one suffices to
+    // read it.
     std::optional<node_id_type> _known_leader;
 
     // Terms this node won, appended by become_leader(); see leadership_history().
@@ -6221,10 +6223,14 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     _last_leader_contact = std::chrono::steady_clock::now();
 
     // Track the current leader for ClusterJoin redirect responses and notify
-    // the reconnect thread that peer contact has been established.
-    _known_leader = request.leader_id();
+    // the reconnect thread that peer contact has been established. Written
+    // under both mutexes (this one is already held): the other readers take
+    // _mutex, but run_reconnect() reads it under _reconnect_cv_mutex alone,
+    // and a write under _mutex only let that thread see a torn optional
+    // (found by ThreadSanitizer, November 9, 2026).
     {
         std::lock_guard<std::mutex> lk(_reconnect_cv_mutex);
+        _known_leader = request.leader_id();
         _reconnect_cv.notify_all();
     }
 
