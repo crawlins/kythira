@@ -110,6 +110,12 @@ BOOST_AUTO_TEST_CASE(create_table_checks_in_aws_order_and_wording) {
                     pt + R"(,"GlobalSecondaryIndexes":[{"IndexName":"gsi","KeySchema":[)" + hash +
                         R"(],"Projection":{"ProjectionType":"ALL"}}])"),
          "Kythira does not support GlobalSecondaryIndexes yet"},
+        // Vector indexes come with task 26.
+        {try_create(ad1, "[" + hash + "]",
+                    pt + R"(,"VectorIndexes":[{"IndexName":"vec","VectorAttribute":)"
+                         R"({"AttributeName":"v"},"Projection":{"ProjectionType":"ALL"},)"
+                         R"("Dimensions":3,"DistanceFunction":"COSINE"}])"),
+         "Kythira does not support VectorIndexes yet"},
     };
     for (const auto& c : cases) {
         BOOST_TEST(c.got.status == 400U);
@@ -140,6 +146,9 @@ BOOST_AUTO_TEST_CASE(update_table) {
     BOOST_TEST(r.message() ==
                "At least one of ProvisionedThroughput, BillingMode, UpdateStreamEnabled, "
                "GlobalSecondaryIndexUpdates or SSESpecification or ReplicaUpdates is required");
+    r = f.call("UpdateTable",
+               R"({"TableName":"orders","VectorIndexUpdates":[{"Delete":{"IndexName":"vec"}}]})");
+    BOOST_TEST(r.message() == "Kythira does not support VectorIndexUpdates yet");
     r = f.call(
         "UpdateTable",
         R"({"TableName":"orders","ProvisionedThroughput":{"ReadCapacityUnits":5,"WriteCapacityUnits":5}})");
