@@ -27,14 +27,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnghttp2-14 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY services/kinesis/docker/kinesis_gateway_node/dist/kinesis_gateway_node \
-     /usr/local/bin/kinesis_gateway_node
+# Everything staged in dist/: kinesis_gateway_node, and chaos_s3_mock when
+# the build has it (the scenario's tiering case runs it as the `s3mock`
+# service from this same image, so no second image is needed).
+COPY services/kinesis/docker/kinesis_gateway_node/dist/ /usr/local/bin/
 
 # Fail the image build, naming the library, rather than leave a container
 # to exit 127 with nothing in its log if the host build links a shared
 # library this image does not carry.
-RUN missing="$(ldd /usr/local/bin/kinesis_gateway_node | sed -n '/not found/p')"; \
-    if [ -n "$missing" ]; then echo "$missing" >&2; exit 1; fi
+RUN test -x /usr/local/bin/kinesis_gateway_node; \
+    for bin in /usr/local/bin/kinesis_gateway_node /usr/local/bin/chaos_s3_mock; do \
+      [ -e "$bin" ] || continue; \
+      missing="$(ldd "$bin" | sed -n '/not found/p')"; \
+      if [ -n "$missing" ]; then echo "$bin: $missing" >&2; exit 1; fi; \
+    done
 
 # Raft RPC and the Kinesis API. See `kinesis_gateway_node --help`.
 EXPOSE 7100 4567

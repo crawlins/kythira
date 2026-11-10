@@ -152,7 +152,7 @@ every shard in another.
 |---|---|---|
 | Prometheus metrics on `GET /metrics` (unauthenticated) | `KINESIS_METRICS=true` | [tags-policies-metrics.md](tags-policies-metrics.md) |
 | Encryption at rest | `KINESIS_KMS=local` with `KINESIS_KMS_PASSPHRASE[_FILE]`, or `KINESIS_KMS=aws` with `KINESIS_KMS_REGION` and AWS credentials | [encryption.md](encryption.md) |
-| Tiering to S3 | `KINESIS_TIER_AFTER_HOURS`, `KINESIS_TIER_S3_BUCKET`, `_PREFIX`, `_REGION`, `_ENDPOINT` | [retention.md](retention.md) |
+| Tiering to S3 | `KINESIS_TIER_AFTER_HOURS` (or `_MS`), `KINESIS_TIER_S3_BUCKET`, `_PREFIX`, `_REGION`, `_ENDPOINT` | [retention.md](retention.md) |
 | Disk floor | `KINESIS_DISK_FLOOR_BYTES` (1 GiB by default, 0 turns it off) | [retention.md](retention.md) |
 
 ### Containers

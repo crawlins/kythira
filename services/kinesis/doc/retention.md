@@ -42,6 +42,11 @@ age, then proposes `tier_segment_command`. When it applies, every replica
 marks the segment tiered in the shard's state (which the snapshot carries)
 and deletes its local copy.
 
+The tier age is in hours. `KINESIS_TIER_AFTER_MS` sets it in milliseconds
+instead (at least 1000) and wins when set, so a test or a demo can watch
+segments tier within seconds; the container scenario's tiering case uses
+five seconds.
+
 - **Object keys are deterministic:**
   `<prefix>kinesis/segments/<hex of the shard's routing key>/<first counter, 20 digits>-<SHA-256 hex>`.
   The state records only *that* a segment is tiered, and any node finds it

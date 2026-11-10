@@ -15,6 +15,7 @@ kinesis_node_scenario_test, against the gateways by compose service name:
     kinesis_e2e.py lineage-consume --endpoints URL,URL --stream S --count N --keys K --tag T
     kinesis_e2e.py batch-produce --endpoints URL,URL --stream S --count N --keys K --tag T
     kinesis_e2e.py fan-out-consume --endpoints URL,URL --stream S --count N --keys K --tag T
+    kinesis_e2e.py s3-control --url URL [--put-delay MS] [--fail-puts N --prefix P]
 
 `produce` writes records `T-0` .. `T-<N-1>` with PutRecords in batches of
 100, retrying records that fail, and prints how many went to each shard.
@@ -50,6 +51,10 @@ thread per shard. When a subscription ends, by its lifetime, an exception
 event or a lost node, it subscribes again through the next endpoint, after
 its continuation sequence number. It fails unless every record arrives,
 in order under each key, by the deadline.
+
+`s3-control` drives the S3 mock's control side for the tiering case (task
+17): it optionally sets the PUT delay and arms a number of failing PUTs
+under a key prefix, then prints the mock's counters as one JSON line.
 """
 
 import argparse
@@ -57,6 +62,7 @@ import json
 import sys
 import threading
 import time
+import urllib.request
 
 import boto3
 from botocore.config import Config
@@ -365,6 +371,25 @@ def fan_out_consume(args):
         )
 
 
+def s3_control(args):
+    def call(path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(
+            args.url + path,
+            data=data,
+            method="GET" if body is None else "POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read().decode()
+
+    if args.put_delay is not None:
+        call("/control/put_delay", {"ms": args.put_delay})
+    if args.fail_puts is not None:
+        call("/control/fail_puts", {"prefix": args.prefix, "count": args.fail_puts})
+    print(call("/control"))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -392,6 +417,11 @@ def main():
         o.add_argument("--tag", required=True)
         o.add_argument("--limit", type=int, default=100)
         o.add_argument("--timeout", type=int, default=600)
+    s3 = sub.add_parser("s3-control")
+    s3.add_argument("--url", required=True)
+    s3.add_argument("--put-delay", type=int)
+    s3.add_argument("--fail-puts", type=int)
+    s3.add_argument("--prefix", default="")
     args = p.parse_args()
     {
         "create": create,
@@ -401,6 +431,7 @@ def main():
         "lineage-consume": lineage_consume,
         "batch-produce": batch_produce,
         "fan-out-consume": fan_out_consume,
+        "s3-control": s3_control,
     }[args.command](args)
 
 

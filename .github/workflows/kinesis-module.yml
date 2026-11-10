@@ -31,7 +31,8 @@
 # kinesis_gateway_node containers by service name, the AWS CLI v2 and a
 # boto3 producer and polling consumer, and a node stopped and restarted;
 # then three KCL 2.x workers with leases on the cluster (task 9) while each
-# node is killed in turn. The java job runs the KCL lease layer's tests.
+# node is killed in turn, and the chaos cases of task 17, the last tiering
+# to cmd/chaos_s3_mock (built here and staged into the node image). The java job runs the KCL lease layer's tests.
 
 name: Kinesis Module
 
@@ -53,6 +54,9 @@ on:
       - "include/raft/record_segment_store.hpp"
       - "tests/record_segment_store_conformance.hpp"
       - "tests/record_segment_store_test.cpp"
+      # The container scenario's tiering case runs the S3 mock.
+      - "cmd/chaos_s3_mock/**"
+      - "tests/s3_stateful_mock.hpp"
       - ".github/workflows/kinesis-module.yml"
   pull_request:
     branches: ['**']
@@ -72,6 +76,9 @@ on:
       - "include/raft/record_segment_store.hpp"
       - "tests/record_segment_store_conformance.hpp"
       - "tests/record_segment_store_test.cpp"
+      # The container scenario's tiering case runs the S3 mock.
+      - "cmd/chaos_s3_mock/**"
+      - "tests/s3_stateful_mock.hpp"
       - ".github/workflows/kinesis-module.yml"
   workflow_dispatch:
 

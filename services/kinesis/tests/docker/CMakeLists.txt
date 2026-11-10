@@ -36,11 +36,26 @@ if(_RUNTIME_EXE)
     # Not a coverage build: an instrumented binary in a container writes its
     # counters nowhere useful.
     if(NOT ENABLE_COVERAGE AND TARGET kinesis_gateway_node)
+        # The tiering case's S3 mock rides in the node image when the build
+        # has it (top-level CMakeLists.txt adds cmd/chaos_s3_mock before
+        # services/). Without it the stale copy is removed, so the image
+        # never carries a mock from an older build, and the case fails
+        # naming the missing binary.
+        if(TARGET chaos_s3_mock)
+            set(_KINESIS_S3_MOCK_DEP chaos_s3_mock)
+            set(_KINESIS_S3_MOCK_STAGE ${CMAKE_COMMAND} -E copy
+                "$<TARGET_FILE:chaos_s3_mock>" "${_KINESIS_NODE_DIST}/chaos_s3_mock")
+        else()
+            set(_KINESIS_S3_MOCK_DEP)
+            set(_KINESIS_S3_MOCK_STAGE ${CMAKE_COMMAND} -E rm -f
+                "${_KINESIS_NODE_DIST}/chaos_s3_mock")
+        endif()
         add_custom_target(docker-kinesis-node-image
-            DEPENDS kinesis_gateway_node
+            DEPENDS kinesis_gateway_node ${_KINESIS_S3_MOCK_DEP}
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_KINESIS_NODE_DIST}"
             COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:kinesis_gateway_node>"
                     "${_KINESIS_NODE_DIST}/kinesis_gateway_node"
+            COMMAND ${_KINESIS_S3_MOCK_STAGE}
             COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_KINESIS_NODE_DOCKERFILE}"
                     --tag kythira-kinesis-node:dev
@@ -54,7 +69,7 @@ if(_RUNTIME_EXE)
                     --file "${_KINESIS_KCL_DOCKERFILE}"
                     --tag kythira-kinesis-kcl:dev
                     "${KYTHIRA_IMAGE_CONTEXT}"
-            COMMENT "Staging kinesis_gateway_node and building the kythira-kinesis-node, -clients and -kcl :dev images"
+            COMMENT "Staging kinesis_gateway_node (and chaos_s3_mock) and building the kythira-kinesis-node, -clients and -kcl :dev images"
             WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
         )
     else()

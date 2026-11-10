@@ -45,6 +45,14 @@
 // killed. A reshard the kill interrupts is finished by the maintenance
 // pass. Read in lineage order, parents before children, every record is
 // there and each key's records are in the order they were written.
+//
+// The last case (task 17, Requirement 11.3) recreates the nodes with
+// tiering to an in-memory S3 mock (the `s3` profile) five seconds after a
+// segment's last record. A producer writes while every node is killed in
+// turn, with uploads slowed and the first six failing, so leaders die with
+// uploads in flight and the pass must retry. Every injected failure fires,
+// segments reach the store, and a reader through every node gets every
+// record back, in order under each key, from tiered segments.
 
 #define BOOST_TEST_MODULE kinesis_node_scenario_test
 #include <boost/test/results_collector.hpp>
@@ -204,7 +212,8 @@ struct stack_fixture {
     ~stack_fixture() {
         os::try_exec(os::real_exec,
                      compose_cmd({"--profile", "clients", "--profile", "kcl", "--profile",
-                                  "kcl-efo", "down", "-v", "--remove-orphans"}));
+                                  "kcl-efo", "--profile", "s3", "down", "-v",
+                                  "--remove-orphans"}));
     }
     stack_fixture(const stack_fixture&) = delete;
     stack_fixture& operator=(const stack_fixture&) = delete;
@@ -753,4 +762,101 @@ BOOST_AUTO_TEST_CASE(reshards_survive_a_node_kill_with_no_lost_or_reordered_reco
     BOOST_TEST(c.code == 0, "lineage-consume failed:\n" << c.out);
     BOOST_TEST(c.out.find("\"consumed\": " + std::to_string(k_records)) != std::string::npos,
                c.out);
+}
+
+// Task 17: tiering through leader kills and S3 faults. Runs last, since it
+// recreates the nodes with tiering on (the volumes, and so the cluster,
+// survive the recreate).
+BOOST_AUTO_TEST_CASE(tiered_segments_survive_leader_kills_and_s3_faults) {
+    const logs_on_failure logs;
+    const std::string control = "http://s3mock:9001";
+    const auto s3 = [&](std::initializer_list<std::string> extra) {
+        std::vector<std::string> args = {"--profile", "clients", "run", "--rm", "-T", "boto3",
+                                         "s3-control", "--url", control};
+        args.insert(args.end(), extra);
+        auto r = os::real_exec(compose_cmd(args));
+        return r.code == 0 ? last_json(r.out) : std::nullopt;
+    };
+    const auto number = [](const boost::json::object& o, const char* key) -> std::int64_t {
+        const auto* v = o.if_contains(key);
+        return v != nullptr && v->is_int64() ? v->as_int64()
+               : v != nullptr && v->is_uint64() ? static_cast<std::int64_t>(v->as_uint64())
+                                                : -1;
+    };
+
+    // The mock first, then every node recreated to tier sealed segments
+    // five seconds after their last record (compose.yml reads these).
+    os::checked_exec(os::real_exec, compose_cmd({"--profile", "s3", "up", "-d", "s3mock"}));
+    BOOST_REQUIRE_MESSAGE(eventually([&] { return s3({}).has_value(); }, 60s),
+                          "the S3 mock never answered on " << control);
+    ::setenv("KINESIS_SCENARIO_TIER_AFTER_MS", "5000", 1);
+    ::setenv("KINESIS_SCENARIO_TIER_BUCKET", "kinesis-tier", 1);
+    ::setenv("KINESIS_SCENARIO_TIER_ENDPOINT", "http://s3mock:9000", 1);
+    os::checked_exec(os::real_exec, compose_cmd({"up", "-d", "--force-recreate", "--no-deps",
+                                                 "kin-1", "kin-2", "kin-3"}));
+    for (int n : {1, 2, 3}) {
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 180s),
+            service(n) << " never answered ListStreams with tiering on");
+    }
+    {
+        auto r = boto3({"create", "--endpoint", endpoint(1), "--stream", "tier", "--shards", "2"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create failed:\n" << r.out);
+    }
+
+    // Slow uploads, so a kill lands while one is in flight, and the next
+    // six uploads fail outright: the pass must retry them, and a successor
+    // leader must finish what a killed one started.
+    BOOST_REQUIRE(s3({"--put-delay", "400", "--fail-puts", "6"}).has_value());
+
+    const std::string all = endpoint(1) + "," + endpoint(2) + "," + endpoint(3);
+    constexpr int k_records = 3000;
+    const auto count = std::to_string(k_records);
+    os::CmdResult produced;
+    std::thread producer([&] {
+        produced = boto3({"batch-produce", "--endpoints", all, "--stream", "tier", "--count",
+                          count, "--keys", "8", "--tag", "t", "--timeout", "600"});
+    });
+    for (int n : {1, 2, 3}) {
+        // Long enough for a segment to seal and its upload to start.
+        std::this_thread::sleep_for(8s);
+        os::checked_exec(os::real_exec, compose_cmd({"kill", service(n)}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(k_failover_ms));
+        os::checked_exec(os::real_exec, compose_cmd({"start", service(n)}));
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered after restarting");
+    }
+    producer.join();
+    BOOST_REQUIRE_MESSAGE(produced.code == 0, "batch-produce failed:\n" << produced.out);
+
+    // Every injected failure fired and the uploads went through anyway:
+    // both shards have tiered segments once writes stop and the last ones
+    // age past the threshold.
+    BOOST_REQUIRE(s3({"--put-delay", "0"}).has_value());
+    std::int64_t puts = -1;
+    BOOST_TEST(eventually(
+                   [&] {
+                       auto j = s3({});
+                       if (!j) {
+                           return false;
+                       }
+                       puts = number(*j, "puts");
+                       return number(*j, "fail_prefix_pending") == 0 && puts >= 2;
+                   },
+                   120s),
+               "segments never tiered: " << puts << " successful PUTs");
+    // Let the last segments age out and tier, so the read below goes to S3
+    // for most of the stream.
+    std::this_thread::sleep_for(15s);
+
+    // Read back through every node, from the trim horizon: tiered segments
+    // come back from the store (replicas dropped their copies), and every
+    // record is there in order under each key.
+    auto c = boto3({"lineage-consume", "--endpoints", all, "--stream", "tier", "--count", count,
+                    "--keys", "8", "--tag", "t", "--timeout", "240"});
+    BOOST_TEST(c.code == 0, "lineage-consume failed:\n" << c.out);
+    BOOST_TEST(c.out.find("\"consumed\": " + count) != std::string::npos, c.out);
+    BOOST_TEST_MESSAGE("tiering case: " << puts << " segment uploads");
 }

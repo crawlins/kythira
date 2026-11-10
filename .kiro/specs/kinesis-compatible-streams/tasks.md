@@ -373,10 +373,17 @@ asked.
     record arrives, in order under each key, pushed and polled (a local
     three-node run passed: 6000/6000, 8 duplicates from a retried batch
     whose answer was lost). Leader kills during resharding are task 11's
-    case; the KCL fan-out case kills a node too. Left: the differential
-    test (emulator choice asked of Clark 11-10; kinesis-mock recommended),
-    tiering chaos (needs an S3 container), and conformance jobs for KPL,
-    aws-sdk-cpp and the Flink connector.
+    case; the KCL fan-out case kills a node too. Tiering chaos: the
+    scenario's last case recreates the nodes tiering to the in-repo S3 mock
+    (`cmd/chaos_s3_mock`, staged into the node image) five seconds after a
+    segment's last record (`KINESIS_TIER_AFTER_MS`), slows uploads, fails
+    the first six, and kills every node in turn under a producer; every
+    failure must fire, segments must reach the store, and every record
+    must read back in order under each key through every node. It needs
+    the AWS SDK's s3 component, so it runs only in CI. Left: the
+    differential test (emulator choice asked of Clark 11-10; kinesis-mock
+    recommended) and conformance jobs for KPL, aws-sdk-cpp and the Flink
+    connector.
 
 - [x] 18. Documentation
   - `doc/kinesis.md`: model, profile switches, limits, clock assumption,
