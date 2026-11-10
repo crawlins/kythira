@@ -186,10 +186,38 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 3: indexes and transactions (KCL 3.x works after task 11)
 
-- [ ] 9. Local secondary indexes
+- [x] 9. Local secondary indexes
   - LSI entries in the same apply, projections, split veto inside item
     collections, the 10 GB limit and `ItemCollectionMetrics`
   - _Requirements: 11.1, 11.5_
+  - Done (November 10, 2026):
+    - `local_index.hpp`: an entry is keyed
+      `<collection>\1<index no><enc(index sk)><enc(sk)>`, inside its item
+      collection, and each collection's size is a meta-family counter at
+      `<collection>\2`. Splits are already allowed only at partition
+      prefixes, so a collection, its entries and its counter never part.
+    - Each write command carries the table's LSIs, and `apply()` moves the
+      item's entries and updates the counter in the entry's one batch. A
+      write that would grow a collection past 10 GB fails with
+      `ItemCollectionSizeLimitExceededException`; one that shrinks it
+      always applies. `ReturnItemCollectionMetrics=SIZE` answers in AWS's
+      documented shape (DynamoDB Local never returns it). A table drop
+      clears entries and counters.
+    - `CreateTable` takes `LocalSecondaryIndexes` with DynamoDB Local's
+      checks and wording; `DescribeTable` lists them. `Query` and `Scan`
+      take `IndexName`. Attributes the index does not project come from
+      the table, a `Query` filter may name only projected attributes, and
+      index cursors carry the table keys and the index sort key.
+    - The ops corpus gained an LSI scenario and a CreateTable scenario: 8
+      scenarios, 218 steps, all matching, 23 marked divergences (model
+      limits, metrics, and DynamoDB Local accepting an index key of the
+      wrong type on `UpdateItem`). Items with equal index keys are ordered
+      by the table's sort key; DynamoDB promises no order for ties, so the
+      corpus avoids them. `dynamodb_lsi_test` covers what the corpus
+      cannot.
+    - A `Scan` of an index walks the table's hash slice and skips the
+      other keys; a cheaper walk would need a per-index prefix, which
+      would separate entries from their collection.
 
 - [ ] 10. Transactions
   - `validate` hook in `transactional_state_machine` (multi-raft-transactions

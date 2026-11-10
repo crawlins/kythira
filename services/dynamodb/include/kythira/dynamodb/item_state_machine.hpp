@@ -23,13 +23,21 @@
 ///
 /// The command carries the table id and key schema, so a group needs no
 /// catalog lookup to apply it, and replicas cannot disagree about a schema
-/// they read at different times. Later tasks add LSI entries, the TTL
-/// index and change records to the same batch.
+/// they read at different times. The command also carries the table's
+/// local secondary indexes, and the same batch updates the item's entries
+/// in them and its collection's size (`local_index.hpp`, task 9). Later
+/// tasks add the TTL index and change records to that batch.
+///
+/// A table with LSIs has a limit on each item collection (10 GB on AWS):
+/// a write that would grow a collection past it fails with
+/// `ItemCollectionSizeLimitExceededException`, while a write that shrinks
+/// one always applies.
 
 #include <kythira/dynamodb/expr.hpp>
 #include <kythira/dynamodb/expr_eval.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
+#include <kythira/dynamodb/local_index.hpp>
 
 #include <raft/memory_kv_engine.hpp>
 #include <raft/persistent_state_machine.hpp>
@@ -81,6 +89,8 @@ struct item_command {
     /// `ReturnValuesOnConditionCheckFailure=ALL_OLD`.
     bool old_on_condition_failure = false;
     std::uint32_t max_keys = 0;
+    /// The table's local secondary indexes, maintained by every write.
+    std::vector<local_index> lsis;
 
     friend auto operator==(const item_command&, const item_command&) -> bool = default;
 };
@@ -107,6 +117,9 @@ struct item_result {
     /// `drop_table_step`: items deleted, and whether any remain here.
     std::uint64_t deleted = 0;
     bool more = false;
+    /// The item collection's size after a write that applied, for a table
+    /// with LSIs (`ItemCollectionMetrics`).
+    std::optional<std::uint64_t> collection_bytes;
 
     friend auto operator==(const item_result&, const item_result&) -> bool = default;
 };
@@ -189,6 +202,7 @@ inline void put_schema(std::string& out, const key_schema& s) {
     out.push_back(static_cast<char>(c.returns));
     out.push_back(c.old_on_condition_failure ? '\1' : '\0');
     detail::put_varint(out, c.max_keys);
+    put_local_indexes(out, c.lsis);
     return out;
 }
 
@@ -233,7 +247,8 @@ enum class item_command_status : std::uint8_t {
     const auto returns = r.byte();
     const auto old_flag = r.byte();
     const auto max_keys = r.varint();
-    if (!schema || !payload_bytes || !expr_bytes || !returns || !old_flag || !max_keys ||
+    auto lsis = get_local_indexes(r);
+    if (!schema || !payload_bytes || !expr_bytes || !returns || !old_flag || !max_keys || !lsis ||
         !r.done() || *returns > static_cast<std::uint8_t>(return_values::updated_new) ||
         *old_flag > 1 || *max_keys > UINT32_MAX) {
         return item_command_status::malformed;
@@ -255,6 +270,7 @@ enum class item_command_status : std::uint8_t {
     c.returns = static_cast<return_values>(*returns);
     c.old_on_condition_failure = *old_flag == 1;
     c.max_keys = static_cast<std::uint32_t>(*max_keys);
+    c.lsis = std::move(*lsis);
     out = std::move(c);
     return item_command_status::ok;
 }
@@ -275,6 +291,10 @@ enum class item_command_status : std::uint8_t {
     }
     detail::put_bytes(out, r.error_type);
     detail::put_bytes(out, r.error_message);
+    out.push_back(r.collection_bytes ? '\1' : '\0');
+    if (r.collection_bytes) {
+        detail::put_varint(out, *r.collection_bytes);
+    }
     return out;
 }
 
@@ -312,7 +332,17 @@ enum class item_command_status : std::uint8_t {
     }
     auto type = r.bytes();
     auto message = r.bytes();
-    if (!type || !message || !r.done()) {
+    const auto has_size = r.byte();
+    if (!type || !message || !has_size || *has_size > 1) {
+        return std::nullopt;
+    }
+    if (*has_size == 1) {
+        out.collection_bytes = r.varint();
+        if (!out.collection_bytes) {
+            return std::nullopt;
+        }
+    }
+    if (!r.done()) {
         return std::nullopt;
     }
     out.error_type = std::move(*type);
@@ -471,6 +501,17 @@ public:
         return is_partition_boundary(key);
     }
 
+    /// The item collection limit of tables with LSIs. Every replica of a
+    /// group must use the same value; tests lower it.
+    auto set_collection_limit(std::uint64_t bytes) -> void { _collection_limit = bytes; }
+
+    /// The size of an item collection, as `ItemCollectionMetrics` counts it
+    /// (0 for a table without LSIs, which keeps no count).
+    [[nodiscard]] auto collection_size(std::uint64_t table_id, const attribute_value& pk) const
+        -> std::uint64_t {
+        return load_counter(collection_size_key(table_id, pk));
+    }
+
     // -- Reads ----------------------------------------------------------------
 
     /// The stored item under `key`, read from the committed state. Corrupt
@@ -538,7 +579,7 @@ private:
         return it;
     }
 
-    [[nodiscard]] auto load_version(const std::string& key) const -> std::uint64_t {
+    [[nodiscard]] auto load_counter(const std::string& key) const -> std::uint64_t {
         const auto v = engine().get(kythira::column_family::meta, key);
         if (!v) {
             return 0;
@@ -546,9 +587,13 @@ private:
         std::string_view in(*v);
         const auto n = item_sm_detail::get_u64(in);
         if (!n || !in.empty()) {
-            throw kythira::persistent_storage_error("dynamo_item_state_machine: corrupt version");
+            throw kythira::persistent_storage_error("dynamo_item_state_machine: corrupt counter");
         }
         return *n;
+    }
+
+    [[nodiscard]] auto load_version(const std::string& key) const -> std::uint64_t {
+        return load_counter(key);
     }
 
     static auto put_applied_at(kythira::write_batch& batch, const std::string& at, LogIndex index)
@@ -647,6 +692,18 @@ private:
 
         item_result r;
         if (next) {
+            if (auto e = validate_index_keys(*next, c.lsis)) {
+                return error_result(*e);
+            }
+        }
+        if (!c.lsis.empty()) {
+            std::uint64_t size = 0;
+            if (auto e = update_indexes(c, old, next, batch, size)) {
+                return error_result(*e);
+            }
+            r.collection_bytes = size;
+        }
+        if (next) {
             r.version = load_version(*key) + 1;
             std::string v;
             item_sm_detail::put_u64(v, r.version);
@@ -684,6 +741,67 @@ private:
         return r;
     }
 
+    /// Moves `c`'s table's LSI entries from `old` to `next` and updates
+    /// the collection's size, in `batch`. Returns the error instead when
+    /// the write would grow the collection past the limit.
+    auto update_indexes(const item_command& c, const std::optional<item>& old,
+                        const std::optional<item>& next, kythira::write_batch& batch,
+                        std::uint64_t& size_out) const -> std::optional<aws_json::error> {
+        const auto* pk = find_attribute(c.payload, c.schema.partition_name);
+        if (pk == nullptr) {
+            throw std::invalid_argument("dynamo_item_state_machine: command without its key");
+        }
+        const auto size_key = collection_size_key(c.table_id, *pk);
+        const auto size = load_counter(size_key);
+        std::uint64_t removed = old ? item_size(*old) : 0;
+        std::uint64_t added = next ? item_size(*next) : 0;
+        std::vector<std::pair<std::string, item>> before;
+        std::vector<std::pair<std::string, item>> after;
+        for (const auto& lsi : c.lsis) {
+            if (old) {
+                if (auto e = index_entry(c.schema, lsi, *old)) {
+                    removed += entry_size(*e);
+                    before.emplace_back(*index_entry_key(c.table_id, c.schema, lsi, *old),
+                                        std::move(*e));
+                }
+            }
+            if (next) {
+                if (auto e = index_entry(c.schema, lsi, *next)) {
+                    added += entry_size(*e);
+                    after.emplace_back(*index_entry_key(c.table_id, c.schema, lsi, *next),
+                                       std::move(*e));
+                }
+            }
+        }
+        const auto total = size - std::min(size, removed) + added;
+        if (added > removed && total > _collection_limit) {
+            aws_json::error e;
+            e.type =
+                dynamodb_error_style().service_prefix + "ItemCollectionSizeLimitExceededException";
+            e.message = "Item collection size limit exceeded";
+            return e;
+        }
+        for (const auto& [k, unused] : before) {
+            const bool kept = std::any_of(after.begin(), after.end(),
+                                          [&](const auto& a) { return a.first == k; });
+            if (!kept) {
+                batch.erase(kythira::column_family::data, k);
+            }
+        }
+        for (auto& [k, entry] : after) {
+            batch.put(kythira::column_family::data, k, encode_item(entry));
+        }
+        if (total == 0) {
+            batch.erase(kythira::column_family::meta, size_key);
+        } else {
+            std::string v;
+            item_sm_detail::put_u64(v, total);
+            batch.put(kythira::column_family::meta, size_key, std::move(v));
+        }
+        size_out = total;
+        return std::nullopt;
+    }
+
     auto drop_table_step(const item_command& c, kythira::write_batch& batch) const -> item_result {
         const auto table = table_range(c.table_id);
         // The part of the table this group owns.
@@ -695,16 +813,42 @@ private:
         if (mine.empty()) {
             return r;
         }
+        // `limit` bounds the keys one entry erases; `deleted` counts only
+        // base items, for the job's progress.
         const std::size_t limit = c.max_keys == 0 ? 1 : c.max_keys;
+        std::size_t erased = 0;
         engine().scan(kythira::column_family::data, mine, kythira::scan_direction::forward,
                       [&](std::string_view k, std::string_view) {
-                          if (r.deleted == limit) {
+                          if (erased == limit) {
                               r.more = true;
                               return false;
                           }
                           batch.erase(kythira::column_family::data, std::string(k));
                           batch.erase(kythira::column_family::meta, std::string(k));
-                          ++r.deleted;
+                          ++erased;
+                          const auto cls = classify_item_key(k, c.schema.partition_type);
+                          if (cls && cls->what == item_key_class::kind::base) {
+                              ++r.deleted;
+                          }
+                          return true;
+                      });
+        if (r.more) {
+            return r;
+        }
+        // Then the keys with no item beside them: collection sizes. Item
+        // versions went with their items; the group's applied index (at
+        // the range start) stays.
+        engine().scan(kythira::column_family::meta, mine, kythira::scan_direction::forward,
+                      [&](std::string_view k, std::string_view) {
+                          if (k == _range.start || classify_item_key(k, c.schema.partition_type)) {
+                              return true;
+                          }
+                          if (erased == limit) {
+                              r.more = true;
+                              return false;
+                          }
+                          batch.erase(kythira::column_family::meta, std::string(k));
+                          ++erased;
                           return true;
                       });
         return r;
@@ -722,6 +866,7 @@ private:
     }
 
     engine_type* _engine = nullptr;
+    std::uint64_t _collection_limit = k_max_collection_bytes;
     kythira::key_range _range;
     LogIndex _applied{};
     LogIndex _durable_floor{};

@@ -27,8 +27,18 @@
 /// when no item follows it. `ExclusiveStartKey` resumes after that key,
 /// whether or not an item still has it.
 ///
-/// Secondary indexes arrive with tasks 9 and 11; until then every
-/// `IndexName` names an index the table does not have.
+/// A local secondary index (task 9) is read the same way. Its entries sit
+/// in each item collection after the base items
+/// (`<collection>\1<index no><enc(index sk)><enc(sk)>`), so a `Query` on
+/// one is again one range read, and a `Scan` of one walks the table's
+/// hash slice and keeps only that index's entries (a table `Scan` skips
+/// them). Entries hold the index's projection. Asking for attributes it
+/// does not project (`Select=ALL_ATTRIBUTES`, or a projection naming
+/// them) reads each matching item from the table, as AWS does for LSIs. A
+/// `Query` filter may only name projected attributes, while a `Scan` filter
+/// may name any, as DynamoDB Local allows. An index's `LastEvaluatedKey`
+/// and `ExclusiveStartKey` carry the table keys and the index sort key.
+/// Global secondary indexes arrive with task 11.
 
 #include <kythira/dynamodb/api_common.hpp>
 #include <kythira/dynamodb/backend.hpp>
@@ -38,6 +48,7 @@
 #include <kythira/dynamodb/front_end.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
+#include <kythira/dynamodb/local_index.hpp>
 
 #include <raft/aws_json_protocol.hpp>
 #include <raft/persistent_state_machine.hpp>
@@ -47,9 +58,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace kythira::dynamodb {
 
@@ -73,37 +86,86 @@ inline constexpr std::size_t k_page_bytes = std::size_t{1024} * 1024;
     return enc;
 }
 
-/// The base-key range a key condition can match in table `id`.
-[[nodiscard]] inline auto query_range(std::uint64_t table_id, const key_condition& k)
+/// The keys under `base` (a collection's base items, or one index's
+/// entries in it) whose sort key component, which follows `base`, can
+/// match the key condition. An index entry key goes on past its sort key
+/// (with the table's sort key), so every bound past a value is the end of
+/// that value's prefix, never the value's own key.
+[[nodiscard]] inline auto range_under(const std::string& base, const key_condition& k)
     -> kythira::key_range {
-    auto base = partition_prefix(table_id, k.partition_value);
-    base.push_back('\0');
     auto whole = prefix_range(base);
     if (!k.sort) {
         return whole;
     }
     const auto& v = k.sort->values;
+    const auto at = [&](std::size_t i) { return base + encode_key_component(v[i]); };
+    const auto past = [&](std::size_t i) { return prefix_end(at(i)).value_or(*whole.end); };
     switch (k.sort->op) {
-        case expr_op::eq: {
-            auto exact = base + encode_key_component(v[0]);
-            return {exact, just_after(exact)};
-        }
+        case expr_op::eq:
+            return prefix_range(at(0));
         case expr_op::lt:
-            return {whole.start, base + encode_key_component(v[0])};
+            return {whole.start, at(0)};
         case expr_op::le:
-            return {whole.start, just_after(base + encode_key_component(v[0]))};
+            return {whole.start, past(0)};
         case expr_op::gt:
-            return {just_after(base + encode_key_component(v[0])), whole.end};
+            return {past(0), whole.end};
         case expr_op::ge:
-            return {base + encode_key_component(v[0]), whole.end};
+            return {at(0), whole.end};
         case expr_op::between:
-            return {base + encode_key_component(v[0]),
-                    just_after(base + encode_key_component(v[1]))};
+            return {at(0), past(1)};
         case expr_op::begins_with:
             return prefix_range(base + escaped_prefix(v[0]));
         default:
             return whole;
     }
+}
+
+/// The base-key range a key condition can match in table `id`.
+[[nodiscard]] inline auto query_range(std::uint64_t table_id, const key_condition& k)
+    -> kythira::key_range {
+    auto base = partition_prefix(table_id, k.partition_value);
+    base.push_back('\0');
+    return range_under(base, k);
+}
+
+/// The entry range a key condition can match in index `lsi` of table `id`.
+[[nodiscard]] inline auto index_query_range(std::uint64_t table_id, const local_index& lsi,
+                                            const key_condition& k) -> kythira::key_range {
+    return range_under(index_prefix(table_id, k.partition_value, lsi.number), k);
+}
+
+/// The index named `name`, or null.
+[[nodiscard]] inline auto find_index(const table_descriptor& table, std::string_view name)
+    -> const local_index* {
+    for (const auto& lsi : table.lsis) {
+        if (lsi.name == name) {
+            return &lsi;
+        }
+    }
+    return nullptr;
+}
+
+/// The top-level attribute names `n` reads.
+inline void names_in(const expr_node& n, std::set<std::string>& out) {
+    if (n.op == expr_op::path) {
+        out.insert(n.path.front().name);
+    }
+    for (const auto& a : n.args) {
+        names_in(a, out);
+    }
+}
+
+/// The names in `names` that `lsi` does not project.
+[[nodiscard]] inline auto unprojected(const key_schema& table, const local_index& lsi,
+                                      const std::set<std::string>& names)
+    -> std::vector<std::string> {
+    std::vector<std::string> out;
+    for (const auto& n : names) {
+        if (!projects(table, lsi, n)) {
+            out.push_back(n);
+        }
+    }
+    return out;
 }
 
 /// Two hash bytes, big-endian.
@@ -126,11 +188,14 @@ inline constexpr std::size_t k_page_bytes = std::size_t{1024} * 1024;
     return r;
 }
 
-/// The key attributes of `it`, as `LastEvaluatedKey`.
-[[nodiscard]] inline auto key_of(const item& it, const key_schema& schema) -> item {
+/// The key attributes of `it`, as `LastEvaluatedKey`: the table's, and
+/// the index's sort key when reading an index.
+[[nodiscard]] inline auto key_of(const item& it, const key_schema& schema,
+                                 const local_index* lsi = nullptr) -> item {
     item out;
     for (const auto& [name, value] : it) {
-        if (name == schema.partition_name || (schema.sort_name && name == *schema.sort_name)) {
+        if (name == schema.partition_name || (schema.sort_name && name == *schema.sort_name) ||
+            (lsi != nullptr && name == lsi->sort_name)) {
             out.emplace_back(name, value);
         }
     }
@@ -165,6 +230,35 @@ inline constexpr std::size_t k_page_bytes = std::size_t{1024} * 1024;
                                 " when choosing to get only the Count");
     }
     return std::nullopt;
+}
+
+/// Checks an index's `ExclusiveStartKey` (the table keys and the index
+/// sort key), with DynamoDB Local's wording, and returns the entry key it
+/// names.
+[[nodiscard]] inline auto index_start_key(const boost::json::value& v,
+                                          const table_descriptor& table, const local_index& lsi)
+    -> aws_json::result<std::pair<item, std::string>> {
+    auto key = item_from_json(v.as_object());
+    if (!key) {
+        return key.error();
+    }
+    const bool shared = table.schema.sort_name == lsi.sort_name;
+    if (key->size() != (shared ? 2U : 3U)) {
+        return validation_error("Exclusive Start Key must have same size as table's key schema");
+    }
+    const auto* ls = find_attribute(*key, lsi.sort_name);
+    if (find_attribute(*key, table.schema.partition_name) == nullptr ||
+        find_attribute(*key, *table.schema.sort_name) == nullptr || ls == nullptr) {
+        return validation_error("The provided starting key is invalid");
+    }
+    if (ls->type != lsi.sort_type) {
+        return validation_error("Type mismatch for attribute to update");
+    }
+    if (auto e = validate_key(key_of(*key, table.schema), table.schema)) {
+        return validation_error("The provided starting key is invalid: " + e->message.value_or(""));
+    }
+    auto entry = index_entry_key(table.table_id, table.schema, lsi, *key);
+    return std::pair{std::move(*key), std::move(*entry)};
 }
 
 /// Checks `ExclusiveStartKey`'s shape against the schema and returns its
@@ -208,35 +302,56 @@ public:
         if (!table) {
             return table.error();
         }
+        const local_index* lsi = nullptr;
         if (const auto index = api_detail::text(in, "IndexName"); !index.empty()) {
-            return no_such_index(index);
+            lsi = find_index(*table, index);
+            if (lsi == nullptr) {
+                return no_such_index(index);
+            }
         }
         request_keys keys;
         keys.table = table->schema;
+        if (lsi != nullptr) {
+            keys.index = index_schema(table->schema, *lsi);
+        }
         auto compiled = compile_request("Query", in, keys);
         if (!compiled) {
             return compiled.error();
         }
-        if (auto e = select_error(in, compiled->projection.has_value(), false)) {
+        if (auto e = select_error(in, compiled->projection.has_value(), lsi != nullptr)) {
             return *e;
         }
+        if (lsi != nullptr && compiled->filter) {
+            std::set<std::string> names;
+            names_in(*compiled->filter, names);
+            if (const auto missing = unprojected(table->schema, *lsi, names); !missing.empty()) {
+                std::string list;
+                for (const auto& n : missing) {
+                    list += (list.empty() ? "" : ", ") + n;
+                }
+                return validation_error(
+                    std::string(k_invalid_parameters) + "Secondary index " + lsi->name +
+                    " does not project one or more filter attributes: [" + list + "]");
+            }
+        }
         const auto& k = *compiled->key;
-        auto range = query_range(table->table_id, k);
+        auto range = lsi != nullptr ? index_query_range(table->table_id, *lsi, k)
+                                    : query_range(table->table_id, k);
         const bool forward =
             !in.contains("ScanIndexForward") || api_detail::flag(in, "ScanIndexForward");
         if (const auto* esk = in.if_contains("ExclusiveStartKey")) {
-            auto start = start_key(*esk, table->table_id, table->schema);
+            auto start = resume_key(*esk, *table, lsi);
             if (!start) {
                 return start.error();
             }
-            if (!matches_key(k, *start)) {
+            if (!matches_key(k, start->first)) {
                 return validation_error(
                     "The provided starting key does not match the range key predicate");
             }
-            narrow(range, *base_item_key(table->table_id, table->schema, *start), forward);
+            narrow(range, start->second, forward);
         }
         return read_page(
-            in, *table, *compiled, range,
+            in, *table, lsi, *compiled, range,
             forward ? kythira::scan_direction::forward : kythira::scan_direction::reverse, &k);
     }
 
@@ -246,8 +361,12 @@ public:
         if (!table) {
             return table.error();
         }
+        const local_index* lsi = nullptr;
         if (const auto index = api_detail::text(in, "IndexName"); !index.empty()) {
-            return no_such_index(index);
+            lsi = find_index(*table, index);
+            if (lsi == nullptr) {
+                return no_such_index(index);
+            }
         }
         const auto* seg = in.if_contains("Segment");
         const auto* total = in.if_contains("TotalSegments");
@@ -276,29 +395,49 @@ public:
         }
         request_keys keys;
         keys.table = table->schema;
+        if (lsi != nullptr) {
+            keys.index = index_schema(table->schema, *lsi);
+        }
         auto compiled = compile_request("Scan", in, keys);
         if (!compiled) {
             return compiled.error();
         }
-        if (auto e = select_error(in, compiled->projection.has_value(), false)) {
+        if (auto e = select_error(in, compiled->projection.has_value(), lsi != nullptr)) {
             return *e;
         }
         auto range = segment_range(table->table_id, segment, segments);
         if (const auto* esk = in.if_contains("ExclusiveStartKey")) {
-            auto start = start_key(*esk, table->table_id, table->schema);
+            auto start = resume_key(*esk, *table, lsi);
             if (!start) {
                 return start.error();
             }
-            const auto key = *base_item_key(table->table_id, table->schema, *start);
+            const auto& key = start->second;
             if (key < range.start || (range.end && key >= *range.end)) {
                 return validation_error("Exclusive start key must lie within the segment");
             }
             narrow(range, key, true);
         }
-        return read_page(in, *table, *compiled, range, kythira::scan_direction::forward, nullptr);
+        return read_page(in, *table, lsi, *compiled, range, kythira::scan_direction::forward,
+                         nullptr);
     }
 
 private:
+    /// `ExclusiveStartKey` checked for the table or the index, with the
+    /// key it names in the engine.
+    static auto resume_key(const boost::json::value& esk, const table_descriptor& table,
+                           const local_index* lsi)
+        -> aws_json::result<std::pair<item, std::string>> {
+        if (lsi != nullptr) {
+            return query_detail::index_start_key(esk, table, *lsi);
+        }
+        auto start = query_detail::start_key(esk, table.table_id, table.schema);
+        if (!start) {
+            return start.error();
+        }
+        auto key = *base_item_key(table.table_id, table.schema, *start);
+        return std::pair{std::move(*start), std::move(key)};
+    }
+
     /// Resumes a range after `key` in the read's direction.
     static void narrow(kythira::key_range& range, const std::string& key, bool forward) {
         if (forward) {
@@ -308,57 +447,108 @@ private:
         }
     }
 
+    /// Whether answering from `lsi` needs each item read from the table:
+    /// the request wants attributes the index does not project.
+    static auto needs_table(const boost::json::object& in, const table_descriptor& table,
+                            const local_index* lsi, const expression_set& compiled) -> bool {
+        if (lsi == nullptr || lsi->projection == projection_kind::all) {
+            return false;
+        }
+        if (api_detail::text(in, "Select") == "ALL_ATTRIBUTES") {
+            return true;
+        }
+        std::set<std::string> names;
+        if (compiled.projection) {
+            for (const auto& p : compiled.projection->paths) {
+                names.insert(p.front().name);
+            }
+        }
+        if (compiled.filter) {
+            query_detail::names_in(*compiled.filter, names);
+        }
+        return !query_detail::unprojected(table.schema, *lsi, names).empty();
+    }
+
     auto read_page(const boost::json::object& in, const table_descriptor& table,
-                   const expression_set& compiled, const kythira::key_range& range,
-                   kythira::scan_direction direction, const key_condition* key) -> result {
+                   const local_index* lsi, const expression_set& compiled,
+                   const kythira::key_range& range, kythira::scan_direction direction,
+                   const key_condition* key) -> result {
         const bool consistent = api_detail::flag(in, "ConsistentRead");
         const bool count_only = api_detail::text(in, "Select") == "COUNT";
+        // A Scan reads the whole slice: keep only what it asked for.
+        const bool sift = key == nullptr && !table.lsis.empty();
         std::size_t limit = SIZE_MAX;
         if (const auto* l = in.if_contains("Limit")) {
             limit = static_cast<std::size_t>(l->to_number<std::int64_t>());
         }
-        boost::json::array items;
-        std::size_t scanned = 0;
-        std::size_t count = 0;
+        std::vector<item> read;
         std::size_t bytes = 0;
-        std::optional<item> last;
         bool stopped = false;
         if (!range.empty()) {
             _backend.read_range(
-                range, direction, consistent, [&](std::string_view /*base_key*/, const item& it) {
+                range, direction, consistent, [&](std::string_view at, const item& it) {
+                    if (sift) {
+                        const auto cls = classify_item_key(at, table.schema.partition_type);
+                        const bool wanted =
+                            cls && (lsi == nullptr ? cls->what == item_key_class::kind::base
+                                                   : cls->what == item_key_class::kind::index &&
+                                                         cls->number == lsi->number);
+                        if (!wanted) {
+                            return true;
+                        }
+                    }
                     if (key != nullptr && !matches_key(*key, it)) {
                         return true;
                     }
                     const auto size = item_size(it);
-                    if (scanned > 0 && bytes + size > query_detail::k_page_bytes) {
+                    if (!read.empty() && bytes + size > query_detail::k_page_bytes) {
                         stopped = true;
                         return false;
                     }
                     bytes += size;
-                    ++scanned;
-                    last = it;
-                    if (!compiled.filter || evaluate_condition(*compiled.filter, it)) {
-                        ++count;
-                        if (!count_only) {
-                            items.push_back(item_to_json(
-                                compiled.projection ? project_item(*compiled.projection, it) : it));
-                        }
-                    }
-                    if (scanned == limit) {
+                    read.push_back(it);
+                    if (read.size() == limit) {
                         stopped = true;
                         return false;
                     }
                     return true;
                 });
         }
+        // The table reads happen after the range read, which holds the
+        // backend while it runs.
+        const bool from_table = needs_table(in, table, lsi, compiled);
+        const bool all_attributes = api_detail::text(in, "Select") == "ALL_ATTRIBUTES";
+        boost::json::array items;
+        std::size_t count = 0;
+        for (const auto& entry : read) {
+            std::optional<item> whole;
+            if (from_table) {
+                whole = _backend.read(table.table_id, table.schema,
+                                      query_detail::key_of(entry, table.schema), consistent);
+            }
+            const item& source = whole ? *whole : entry;
+            if (compiled.filter && !evaluate_condition(*compiled.filter, source)) {
+                continue;
+            }
+            ++count;
+            if (count_only) {
+                continue;
+            }
+            if (compiled.projection) {
+                items.push_back(item_to_json(project_item(*compiled.projection, source)));
+            } else {
+                items.push_back(item_to_json(all_attributes || lsi == nullptr ? source : entry));
+            }
+        }
         boost::json::object out;
         if (!count_only) {
             out["Items"] = std::move(items);
         }
         out["Count"] = count;
-        out["ScannedCount"] = scanned;
-        if (stopped && last) {
-            out["LastEvaluatedKey"] = item_to_json(query_detail::key_of(*last, table.schema));
+        out["ScannedCount"] = read.size();
+        if (stopped && !read.empty()) {
+            out["LastEvaluatedKey"] =
+                item_to_json(query_detail::key_of(read.back(), table.schema, lsi));
         }
         if (api_detail::wants_capacity(in)) {
             out["ConsumedCapacity"] =
