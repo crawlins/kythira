@@ -124,7 +124,11 @@ BOOST_AUTO_TEST_CASE(create_describe_and_list_a_stream) {
     BOOST_TEST(str(summary.at("StreamModeDetails").at("StreamMode")) == "PROVISIONED");
     BOOST_TEST(summary.at("StreamCreationTimestamp").as_double() == 1'762'776'000.0);
     BOOST_TEST(str(summary.at("EncryptionType")) == "NONE");
-    BOOST_TEST(str(summary.at("StreamId")) == "00000000000000000001-kyt");
+    // As AWS answers (task 17 recordings): no StreamId, the record size
+    // limit and the channel count.
+    BOOST_TEST(!summary.contains("StreamId"));
+    BOOST_TEST(summary.at("MaxRecordSizeInKiB").as_int64() == 1024);
+    BOOST_TEST(summary.at("ChannelCount").as_int64() == 0);
     BOOST_TEST(!summary.contains("KythiraRelaxedCompatibility"));
 
     const auto d =
@@ -235,7 +239,7 @@ BOOST_AUTO_TEST_CASE(put_record_routes_by_md5_and_numbers_in_order) {
         // Same length, so string order is integer order.
         BOOST_TEST(seq > previous);
         previous = seq;
-        BOOST_TEST(str(r.at("EncryptionType")) == "NONE");
+        BOOST_TEST(!r.contains("EncryptionType"));
     }
     // An explicit hash key overrides the partition key.
     const auto top =
@@ -427,9 +431,14 @@ BOOST_AUTO_TEST_CASE(a_stream_not_yet_active_takes_no_writes) {
 BOOST_AUTO_TEST_CASE(record_and_batch_size_limits) {
     fixture f;
     (void)f.ok("CreateStream", {{"StreamName", "orders"}, {"ShardCount", 1}});
-    // 1 MiB of data plus a partition key is over the record limit.
+    // The limit is on the data alone: AWS takes 1 MiB of data with a
+    // partition key (the task 17 recordings) and refuses a byte more.
     const std::string mib(std::size_t{1024} * 1024, 'a');
-    const auto big = kin::service_detail::base64_encode(mib);
+    BOOST_TEST(f.ok("PutRecord", {{"StreamName", "orders"},
+                                  {"PartitionKey", "k"},
+                                  {"Data", kin::service_detail::base64_encode(mib)}})
+                   .contains("SequenceNumber"));
+    const auto big = kin::service_detail::base64_encode(mib + "a");
     BOOST_TEST(f.error_type("PutRecord",
                             {{"StreamName", "orders"}, {"PartitionKey", "k"}, {"Data", big}}) ==
                "InvalidArgumentException");
@@ -441,6 +450,26 @@ BOOST_AUTO_TEST_CASE(record_and_batch_size_limits) {
     }
     BOOST_TEST(f.error_type("PutRecords", {{"StreamName", "orders"}, {"Records", records}}) ==
                "InvalidArgumentException");
+}
+
+// AWS refuses an AT_TIMESTAMP iterator for a time after now, naming both
+// times in milliseconds (the task 17 recordings), and takes now itself.
+BOOST_AUTO_TEST_CASE(at_timestamp_in_the_future_is_refused) {
+    fixture f;
+    (void)f.ok("CreateStream", {{"StreamName", "orders"}, {"ShardCount", 1}});
+    const auto at = [&](double seconds) {
+        return f.call("GetShardIterator", {{"StreamName", "orders"},
+                                           {"ShardId", "shardId-000000000000"},
+                                           {"ShardIteratorType", "AT_TIMESTAMP"},
+                                           {"Timestamp", seconds}});
+    };
+    const auto future = at(static_cast<double>(f.clock + 1000) / 1000.0);
+    BOOST_TEST(future.status == 400U);
+    BOOST_TEST(future.body.find("InvalidArgumentException") != std::string::npos);
+    BOOST_TEST(future.body.find("timestampInMillis: 1762776001000, currentTimestampInMillis: "
+                                "1762776000000") != std::string::npos,
+               future.body);
+    BOOST_TEST(at(static_cast<double>(f.clock) / 1000.0).status == 200U);
 }
 
 BOOST_AUTO_TEST_CASE(base64_round_trips) {

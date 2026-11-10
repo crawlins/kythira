@@ -324,13 +324,15 @@ BOOST_AUTO_TEST_CASE(the_byte_limit_admits_a_prefix) {
                                           &throttle);
     kin::append_records_command big;
     big._key = key;
-    for (int i = 0; i < 3; ++i) {
-        // 400 KiB each with its key: two fit in 1 MiB, the third does not.
+    for (int i = 0; i < 4; ++i) {
+        // 400 KiB each with its key. A record is taken while the 1 MiB
+        // bucket is still positive before it: the third overdraws it and
+        // the fourth waits.
         big._records.push_back({"pk", std::vector<std::byte>(400 * 1024 - 2, std::byte{2})});
     }
     const auto r = c.propose(key, kin::encode_command(big), kin::admission::shard_limits);
     BOOST_TEST_REQUIRE(r.has_value());
-    BOOST_TEST(count(*r) == 2U);
+    BOOST_TEST(count(*r) == 3U);
 }
 
 BOOST_AUTO_TEST_CASE(a_follower_refunds_and_the_leader_admits) {

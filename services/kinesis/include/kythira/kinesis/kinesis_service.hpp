@@ -1457,7 +1457,11 @@ public:
         boost::json::object d = common_description(ctx, rec);
         d["OpenShardCount"] = rec.open_shard_count();
         d["ConsumerCount"] = 0;
-        d["StreamId"] = stream_id_text(rec._id);
+        // As AWS answers today (task 17 recordings): the record size limit
+        // and the channel count, and no StreamId, which the model lists but
+        // AWS does not return.
+        d["MaxRecordSizeInKiB"] = 1024;
+        d["ChannelCount"] = 0;
         if (const auto relaxed = profile.relaxed(); !relaxed.empty()) {
             // Kythira's extension (Requirement 3.3): which AWS behaviours
             // this stream runs without. Absent when it runs as AWS.
@@ -1724,7 +1728,11 @@ public:
         boost::json::object out;
         out["ShardId"] = r._shard_id;
         out["SequenceNumber"] = r._sequence;
-        out["EncryptionType"] = r._encrypted ? "KMS" : "NONE";
+        // AWS answers EncryptionType only for an encrypted stream (seen in
+        // the task 17 recordings): absent, not "NONE", otherwise.
+        if (r._encrypted) {
+            out["EncryptionType"] = "KMS";
+        }
         return out;
     }
 
@@ -1779,7 +1787,9 @@ public:
         boost::json::object out;
         out["FailedRecordCount"] = failed;
         out["Records"] = std::move(records);
-        out["EncryptionType"] = encrypted ? "KMS" : "NONE";
+        if (encrypted) {
+            out["EncryptionType"] = "KMS";
+        }
         return out;
     }
 
@@ -2149,9 +2159,15 @@ private:
                 return invalid_argument(
                     "Timestamp must be provided for ShardIteratorType AT_TIMESTAMP.");
             }
-            return std::pair{first,
-                             std::max<std::int64_t>(
-                                 1, static_cast<std::int64_t>(std::llround(*timestamp * 1000.0)))};
+            const auto at_ms = static_cast<std::int64_t>(std::llround(*timestamp * 1000.0));
+            // AWS refuses a timestamp in the future (task 17 recordings).
+            if (const auto now = _cluster.now_ms(); at_ms > now) {
+                return invalid_argument(
+                    "The timestampInMillis parameter cannot be greater than the "
+                    "currentTimestampInMillis. timestampInMillis: " +
+                    std::to_string(at_ms) + ", currentTimestampInMillis: " + std::to_string(now));
+            }
+            return std::pair{first, std::max<std::int64_t>(1, at_ms)};
         }
         return invalid_argument("Invalid ShardIteratorType: " + std::string(type) + ".");
     }
@@ -3371,10 +3387,11 @@ private:
         r._data.resize(data->size());
         std::transform(data->begin(), data->end(), r._data.begin(),
                        [](char c) { return static_cast<std::byte>(c); });
-        if (r._data.size() + r._partition_key.size() > _config._limits._max_record_bytes) {
+        // AWS limits the data blob alone to MaxRecordSizeInKiB: a 1 MiB blob
+        // with a partition key is accepted (task 17 recordings).
+        if (r._data.size() > _config._limits._max_record_bytes) {
             return invalid_argument(
-                "Record size including partition key exceeds the maximum "
-                "record size of 1024 KiB for this stream.");
+                "Record size exceeds the maximum record size of 1024 KiB for this stream.");
         }
         if (auto explicit_key = detail::string_member(in, "ExplicitHashKey")) {
             auto k = parse_hash_key(*explicit_key);
@@ -3585,13 +3602,6 @@ private:
         }
     }
 
-    /// AWS's StreamId shape is `[a-z0-9]{20}-[a-z0-9]{3}`: the catalog's
-    /// stream id in twenty decimal digits and a fixed `kyt` suffix.
-    [[nodiscard]] static auto stream_id_text(std::uint64_t id) -> std::string {
-        auto digits = std::to_string(id);
-        return std::string(20 - digits.size(), '0') + digits + "-kyt";
-    }
-
     [[nodiscard]] static auto arn_of(const call_context& ctx, const stream_record& s)
         -> std::string {
         return "arn:" + ctx._partition + ":kinesis:" + ctx._region + ":" + s._account + ":stream/" +
@@ -3646,8 +3656,11 @@ private:
             sequence_number{._ordinal = sh._ordinal, ._counter = sh._starting_counter},
             p._id_format);
         if (sh._ending_counter) {
+            // One past the shard's last record: AWS's EndingSequenceNumber
+            // is a number no record carries (the task 17 recordings show a
+            // closed parent's ending as new, never its last record's).
             seq["EndingSequenceNumber"] = format_sequence(
-                sequence_number{._ordinal = sh._ordinal, ._counter = *sh._ending_counter},
+                sequence_number{._ordinal = sh._ordinal, ._counter = *sh._ending_counter + 1},
                 p._id_format);
         }
         o["SequenceNumberRange"] = std::move(seq);

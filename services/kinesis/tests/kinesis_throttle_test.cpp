@@ -185,11 +185,26 @@ BOOST_AUTO_TEST_CASE(write_admission_takes_a_prefix_and_refunds) {
     kin::admission_ticket again;
     BOOST_TEST(t.admit({&a}, again)[0] == 700U);
 
-    // The byte bucket: 1 MiB, data plus partition key.
+    // The byte bucket: 1 MiB, data plus partition key. A record is taken
+    // while the bucket is still positive before it, so the fourth 300 KiB
+    // record overdraws it and the fifth waits.
     kin::write_throttle bytes({}, [&now] { return now; });
     const auto big = append("s3", 5, 300 * 1024);
     kin::admission_ticket tb;
-    BOOST_TEST(bytes.admit({&big}, tb)[0] == 3U);
+    BOOST_TEST(bytes.admit({&big}, tb)[0] == 4U);
+    // In debt: nothing until it refills past zero, about 0.17 s later.
+    const auto one = append("s3", 1, 1);
+    kin::admission_ticket t1;
+    BOOST_TEST(bytes.admit({&one}, t1)[0] == 0U);
+    now += 200;
+    BOOST_TEST(bytes.admit({&one}, t1)[0] == 1U);
+
+    // A full 1 MiB of data with its partition key fits a fresh bucket,
+    // as AWS takes it.
+    kin::write_throttle fresh({}, [&now] { return now; });
+    const auto mib = append("s4", 1, (1024 * 1024) + 1);
+    kin::admission_ticket tm;
+    BOOST_TEST(fresh.admit({&mib}, tm)[0] == 1U);
 }
 
 BOOST_AUTO_TEST_CASE(idle_write_buckets_are_forgotten) {
