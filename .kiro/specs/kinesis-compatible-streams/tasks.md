@@ -262,10 +262,21 @@ asked.
     separate groups, a producer writing throughout) passes under Docker
     locally; tick once the CI Podman leg passes too.
 
-- [ ] 12. On-demand mode
+- [x] 12. On-demand mode
   - `UpdateStreamMode`; leader-side controller that splits hot shards and
     scales from observed write rates within AWS's on-demand limits
   - _Requirements: 10.3_
+  - Progress: `UpdateStreamMode` (`set_stream_mode_command`; ACTIVE only,
+    two switches per 24 hours, the on-demand stream limit;
+    `WarmThroughputMiBps` refused). `SplitShard`, `MergeShards` and
+    `UpdateShardCount` refuse on-demand streams, as AWS documents. The
+    controller (`kinesis_on_demand.hpp`, every node's maintenance pass,
+    acting on the shards it leads) samples each on-demand shard's counter
+    and bytes and splits one at its middle once it has taken half a
+    shard's write limit for 60 seconds; at most 200 open shards; never
+    merges. `kinesis_on_demand_test`, 4 cases; `doc/on-demand.md`; a local
+    three-node run split a shard at 700 records/s. Open: the refusal
+    wording is not checked against a recording of AWS.
 
 ### Phase 5: enhanced fan-out
 

@@ -260,6 +260,17 @@ struct set_ending_counters_command {
     std::vector<std::pair<std::uint32_t, std::uint64_t>> _endings{};
 };
 
+/// `UpdateStreamMode` (task 12), at the catalog group: the stream must be
+/// ACTIVE. Switching to the mode it has changes nothing; a switch records
+/// `_at_ms` (leader-stamped) among the stream's last two mode changes.
+struct set_stream_mode_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    stream_mode _mode = stream_mode::provisioned;
+    std::int64_t _at_ms = 0;
+};
+
 /// What a lease write requires of the lease's current state.
 enum class lease_condition : std::uint8_t {
     /// Whatever is there (or nothing).
@@ -326,7 +337,7 @@ using stream_command =
                  drop_shard_command, trim_shard_command, append_batch_command, lease_write_command,
                  lease_read_command, lease_drop_application_command, set_retention_command,
                  seal_shard_command, tier_segment_command, reshard_catalog_command,
-                 set_ending_counters_command>;
+                 set_ending_counters_command, set_stream_mode_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -339,7 +350,8 @@ inline constexpr std::uint8_t stream_command_version = 1;
                           std::is_same_v<T, remove_stream_command> ||
                           std::is_same_v<T, set_retention_command> ||
                           std::is_same_v<T, reshard_catalog_command> ||
-                          std::is_same_v<T, set_ending_counters_command>) {
+                          std::is_same_v<T, set_ending_counters_command> ||
+                          std::is_same_v<T, set_stream_mode_command>) {
                 return stream_key(v._account, v._name);
             } else if constexpr (std::is_same_v<T, append_batch_command>) {
                 return v._appends.empty() ? std::string() : v._appends.front()._key;
@@ -453,6 +465,9 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
                 for (const auto& [o, c] : v._endings) {
                     w.u32(o).u64(c);
                 }
+            } else if constexpr (std::is_same_v<T, set_stream_mode_command>) {
+                w.str(v._account).str(v._name).u64(v._id);
+                w.u8(static_cast<std::uint8_t>(v._mode)).i64(v._at_ms);
             } else {
                 w.str(v._key);
             }
@@ -630,6 +645,16 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
                 const auto o = r.u32();
                 c._endings.emplace_back(o, r.u64());
             }
+            out = std::move(c);
+            break;
+        }
+        case 17: {
+            set_stream_mode_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            c._mode = r.enumeration<stream_mode>(1);
+            c._at_ms = r.i64();
             out = std::move(c);
             break;
         }
@@ -1295,6 +1320,24 @@ private:
             return {._status = apply_status::not_found};
         }
         rec->_retention_hours = c._retention_hours;
+        return {._id = rec->_id};
+    }
+
+    auto apply_one(const set_stream_mode_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        if (rec->_status != stream_status::active) {
+            return {._status = apply_status::bad_transition};
+        }
+        if (rec->_mode != c._mode) {
+            rec->_mode = c._mode;
+            rec->_mode_changes_ms.push_back(c._at_ms);
+            if (rec->_mode_changes_ms.size() > 2) {
+                rec->_mode_changes_ms.erase(rec->_mode_changes_ms.begin());
+            }
+        }
         return {._id = rec->_id};
     }
 
