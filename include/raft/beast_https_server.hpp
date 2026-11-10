@@ -38,9 +38,27 @@
 /// Whole bodies are read into memory, up to `max_body_bytes`: the Query and
 /// JSON protocols this serves carry small bodies. A streaming handler for
 /// S3 objects would be a separate entry point.
+///
+/// **Streaming responses.** A `stream_handler` (`set_stream_handler`) sees
+/// each request first and may answer with a `streaming_response`: its head
+/// is sent with `Transfer-Encoding: chunked`, then each piece `next`
+/// produces as one chunk, until `next` says the body is complete (Kinesis
+/// `SubscribeToShard` event streams). The connection closes after it.
+///
+/// **HTTP/2.** With `http2` set, and where the build has nghttp2
+/// (KYTHIRA_HAS_NGHTTP2), the server also speaks HTTP/2: over TLS when ALPN
+/// picks "h2" (offered before "http/1.1"), and in plaintext when a client
+/// opens with the prior-knowledge preface (h2c). Requests reach the same
+/// handlers as Beast requests, and a streaming response becomes DATA frames
+/// on its own stream while the connection stays open for others
+/// (`h2_server_session.hpp`). HTTP/1.1 clients are served as before.
 
 #include <raft/asio_listeners.hpp>
 #include <raft/http_connection_gate.hpp>
+
+#if defined(KYTHIRA_HAS_NGHTTP2)
+#include <raft/h2_server_session.hpp>
+#endif
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -54,6 +72,7 @@
 
 #include <sys/socket.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -64,6 +83,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -94,6 +114,9 @@ struct server_config {
     std::chrono::seconds idle_timeout{60};
     std::chrono::seconds io_timeout{60};
     std::chrono::seconds handshake_timeout{10};
+    /// Also speak HTTP/2 (see the file comment). Ignored, with a warning
+    /// at start, in a build without nghttp2.
+    bool http2{false};
 };
 
 /// What the server knows about who sent a request.
@@ -118,6 +141,22 @@ using response = boost::beast::http::response<boost::beast::http::string_body>;
 /// Answers one request. Runs on the connection's thread. An exception
 /// closes the connection with a 500.
 using handler = std::function<response(const request&, const request_context&)>;
+/// A response whose body is produced while it is sent.
+struct streaming_response {
+    /// Status and headers; its body is ignored.
+    response head;
+    /// Fills `chunk` with the next piece of the body, which may be empty
+    /// when nothing is ready yet (the server then checks that it is still
+    /// running and calls again). Returns false once the body is complete.
+    /// Should not block for long: a second or so.
+    std::function<bool(std::string& chunk)> next;
+    /// Called when the body ends early: the client went away, a write
+    /// timed out, or the server is stopping. May be empty.
+    std::function<void()> cancel;
+};
+/// Sees each request before `handler`; nullopt passes it on.
+using stream_handler =
+    std::function<std::optional<streaming_response>(const request&, const request_context&)>;
 /// Receives the server's own log lines: (is_warning, message).
 using log_sink = std::function<void(bool, std::string_view)>;
 
@@ -257,6 +296,11 @@ public:
                                   ssl::context::no_sslv3 | ssl::context::no_tlsv1 |
                                   ssl::context::no_tlsv1_1);
             SSL_CTX_set_min_proto_version(_ssl_ctx->native_handle(), TLS1_2_VERSION);
+#if defined(KYTHIRA_HAS_NGHTTP2)
+            if (_config.http2) {
+                SSL_CTX_set_alpn_select_cb(_ssl_ctx->native_handle(), &select_alpn, nullptr);
+            }
+#endif
             _ssl_ctx->use_certificate_chain_file(_config.tls_cert_path);
             _ssl_ctx->use_private_key_file(_config.tls_key_path, ssl::context::pem);
             if (!_config.client_ca_path.empty()) {
@@ -275,6 +319,13 @@ public:
                                                static_cast<unsigned int>(sid.size()));
             }
         }
+#if !defined(KYTHIRA_HAS_NGHTTP2)
+        if (_config.http2) {
+            warn(
+                "https server: HTTP/2 requested, but this build has no nghttp2; serving "
+                "HTTP/1.1 only");
+        }
+#endif
         _gate = std::make_shared<http_detail::connection_gate>(_config.max_connections);
         _acceptors = net_bind::open_asio_acceptors(_accept_ioc, _config.bind_address, _config.port,
                                                    "https server");
@@ -326,6 +377,10 @@ public:
 
     [[nodiscard]] auto port() const noexcept -> std::uint16_t { return _port; }
     [[nodiscard]] auto stats() const noexcept -> const server_stats& { return _stats; }
+
+    /// Answers requests with a streaming body (see the file comment). Set
+    /// before `start()`.
+    void set_stream_handler(stream_handler h) { _stream_handler = std::move(h); }
 
 private:
     using tcp = boost::asio::ip::tcp;
@@ -484,6 +539,17 @@ private:
             }
         }
         boost::beast::flat_buffer buffer;
+#if defined(KYTHIRA_HAS_NGHTTP2)
+        if (_config.http2 && start_h2(c, stream, ctx, buffer)) {
+            lowest(stream).expires_after(std::chrono::seconds{1});
+            if constexpr (!std::is_same_v<Stream, plain_stream>) {
+                (void)drive(c.ioc, [&](auto h) { stream.async_shutdown(std::move(h)); });
+            }
+            boost::system::error_code ignored;
+            (void)lowest(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
+            return;
+        }
+#endif
         bool first = true;
         while (_running.load()) {
             http::request_parser<http::string_body> parser;
@@ -531,6 +597,20 @@ private:
             }
             ++_stats.requests;
             const auto& req = parser.get();
+            if (_stream_handler) {
+                std::optional<streaming_response> streamed;
+                try {
+                    streamed = _stream_handler(req, ctx);
+                } catch (const std::exception& e) {
+                    warn(std::string("https server: stream handler failed: ") + e.what());
+                    (void)write(c, stream, detail::plain_reply(500, "internal error\n"));
+                    break;
+                }
+                if (streamed) {
+                    write_streaming(c, stream, req.version(), std::move(*streamed));
+                    break;
+                }
+            }
             response res;
             bool failed = false;
             try {
@@ -558,6 +638,145 @@ private:
         (void)lowest(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
     }
 
+#if defined(KYTHIRA_HAS_NGHTTP2)
+    // Prefers h2 when the client offers it; no ALPN answer otherwise.
+    static auto select_alpn(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
+                            const unsigned char* in, unsigned int inlen, void* /*arg*/) -> int {
+        unsigned char* chosen = nullptr;
+        if (SSL_select_next_proto(
+                &chosen, outlen,
+                reinterpret_cast<const unsigned char*>(h2::k_alpn_protocols.data()),
+                static_cast<unsigned int>(h2::k_alpn_protocols.size()), in,
+                inlen) != OPENSSL_NPN_NEGOTIATED) {
+            return SSL_TLSEXT_ERR_NOACK;
+        }
+        *out = chosen;
+        return SSL_TLSEXT_ERR_OK;
+    }
+
+    struct h2_hooks {
+        server& _server;
+        const request_context& _ctx;
+        auto handle(const request& req) -> response {
+            ++_server._stats.requests;
+            return _server._handler(req, _ctx);
+        }
+        auto stream(const request& req) -> std::optional<streaming_response> {
+            if (!_server._stream_handler) {
+                return std::nullopt;
+            }
+            auto s = _server._stream_handler(req, _ctx);
+            if (s) {
+                ++_server._stats.requests;
+            }
+            return s;
+        }
+        [[nodiscard]] auto running() const -> bool { return _server._running.load(); }
+    };
+
+    // Serves the connection as HTTP/2 when the client speaks it: ALPN "h2"
+    // on TLS, or the prior-knowledge preface in plaintext (peeked into
+    // `buffer`, which HTTP/1.1 then reads on from). True when it did.
+    template<typename Stream>
+    auto start_h2(connection& c, Stream& stream, const request_context& ctx,
+                  boost::beast::flat_buffer& buffer) -> bool {
+        std::string preread;
+        if constexpr (std::is_same_v<Stream, plain_stream>) {
+            const auto preface = h2::k_preface;
+            for (;;) {
+                const std::string_view have(static_cast<const char*>(buffer.data().data()),
+                                            buffer.size());
+                const auto n = std::min(have.size(), preface.size());
+                if (have.substr(0, n) != preface.substr(0, n)) {
+                    return false;  // HTTP/1.1
+                }
+                if (n == preface.size()) {
+                    break;
+                }
+                detail::lowest(stream).expires_after(_config.header_timeout);
+                std::size_t got = 0;
+                const auto ec = detail::drive(c.ioc, [&](auto h) {
+                    stream.async_read_some(buffer.prepare(4096),
+                                           [&got, h = std::move(h)](boost::beast::error_code e,
+                                                                    std::size_t k) mutable {
+                                               got = k;
+                                               h(e);
+                                           });
+                });
+                buffer.commit(got);
+                if (ec) {
+                    return false;  // the HTTP/1.1 read sees the same failure
+                }
+            }
+            preread.assign(static_cast<const char*>(buffer.data().data()), buffer.size());
+        } else {
+            const unsigned char* proto = nullptr;
+            unsigned int len = 0;
+            SSL_get0_alpn_selected(stream.native_handle(), &proto, &len);
+            if (std::string_view(reinterpret_cast<const char*>(proto), len) != "h2") {
+                return false;
+            }
+        }
+        detail::lowest(stream).expires_never();
+        h2_hooks hooks{*this, ctx};
+        h2::session<Stream, h2_hooks> session(
+            c.ioc, stream, hooks,
+            h2::limits{.max_header_bytes = _config.max_header_bytes,
+                       .max_body_bytes = _config.max_body_bytes,
+                       .idle_timeout = _config.idle_timeout,
+                       .io_timeout = _config.io_timeout,
+                       .max_concurrent_streams = 100});
+        session.run(preread);
+        return true;
+    }
+#endif
+
+    // The head, then each piece as a chunk, then the last chunk. Any failure
+    // ends the body early and cancels it.
+    template<typename Stream>
+    void write_streaming(connection& c, Stream& stream, unsigned version, streaming_response s) {
+        namespace http = boost::beast::http;
+        auto& head = s.head;
+        head.version(version);
+        head.keep_alive(false);
+        head.chunked(true);
+        head.body().clear();
+        bool complete = false;
+        try {
+            http::response_serializer<http::string_body> sr{head};
+            detail::lowest(stream).expires_after(_config.io_timeout);
+            auto ec = detail::drive(
+                c.ioc, [&](auto h) { http::async_write_header(stream, sr, std::move(h)); });
+            std::string piece;
+            while (!ec && _running.load()) {
+                piece.clear();
+                const bool more = s.next(piece);
+                if (!piece.empty()) {
+                    detail::lowest(stream).expires_after(_config.io_timeout);
+                    ec = detail::drive(c.ioc, [&](auto h) {
+                        boost::asio::async_write(
+                            stream, http::make_chunk(boost::asio::buffer(piece)), std::move(h));
+                    });
+                }
+                if (!more) {
+                    if (!ec) {
+                        detail::lowest(stream).expires_after(_config.io_timeout);
+                        ec = detail::drive(c.ioc, [&](auto h) {
+                            boost::asio::async_write(stream, http::make_chunk_last(), std::move(h));
+                        });
+                    }
+                    complete = !ec;
+                    break;
+                }
+            }
+        } catch (const std::exception& e) {
+            debug(std::string("https server: streaming response ended: ") + e.what());
+        }
+        if (!complete && s.cancel) {
+            s.cancel();
+        }
+    }
+
     template<typename Stream> auto write(connection& c, Stream& stream, response res) -> bool {
         namespace http = boost::beast::http;
         detail::lowest(stream).expires_after(_config.io_timeout);
@@ -569,6 +788,7 @@ private:
 
     server_config _config;
     handler _handler;
+    stream_handler _stream_handler;
     log_sink _log;
     server_stats _stats;
     std::atomic<bool> _running{false};

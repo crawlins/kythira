@@ -53,6 +53,9 @@
       ]
     },
     {
+      "name": "nghttp2"
+    },
+    {
       "name": "openssl",
       "version>=": "3.6.5"
     },
