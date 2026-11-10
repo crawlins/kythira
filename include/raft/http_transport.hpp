@@ -24,6 +24,7 @@
 #include <optional>
 #include <mutex>
 #include <condition_variable>
+#include <deque>
 #include <atomic>
 #include <thread>
 #include <stop_token>
@@ -309,10 +310,58 @@ private:
     auto load_client_certificates() -> void;
     auto validate_certificate_files() const -> void;
 
+    /// Runs `send_rpc_now` on a worker of `target`'s send lane and returns
+    /// at once, so a caller that sends to several peers in turn (the Raft
+    /// leader's tick thread above all) never waits for one peer's round
+    /// trip before reaching the next. Future types with no promise to
+    /// complete from another thread fall back to `send_rpc_now`.
     template<typename Request, typename Response>
     auto send_rpc(const NodeId& target, const std::string& endpoint, const Request& request,
                   std::chrono::milliseconds timeout) ->
         typename Types::template future_template<Response>;
+
+    /// The blocking RPC: returns a future that is already complete.
+    template<typename Request, typename Response>
+    auto send_rpc_now(const NodeId& target, const std::string& endpoint, const Request& request,
+                      std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<Response>;
+
+    /// One job on a send lane. `run(true)` sends; `run(false)` fails the
+    /// caller's future because the client is being destroyed first.
+    using send_job = std::function<void(bool)>;
+
+    /// The workers that send to one peer. They start on demand, at most
+    /// `connection_pool_size` of them (one per connection the pool can
+    /// lease), and stay once started. Per peer, so a peer whose requests
+    /// stall holds only its own workers and never another peer's sends.
+    struct send_lane {
+        std::deque<send_job> jobs;
+        std::size_t workers{0};
+        std::size_t idle{0};
+        std::condition_variable work;
+    };
+
+    enum class enqueue_result {
+        queued,
+        stopping,
+        full
+    };
+    /// Queues `job` on `target`'s lane, starting a worker if none is idle
+    /// and the lane has room. `full` when the peer already has
+    /// `send_lane_queue_factor` times the pool size waiting: a peer that is
+    /// down must not grow a backlog of heartbeats without bound.
+    auto enqueue_send(const NodeId& target, send_job job) -> enqueue_result;
+    static constexpr std::size_t send_lane_queue_factor = 4;
+    auto send_lane_worker(send_lane& lane) -> void;
+    /// Stops and joins every lane worker. Jobs not yet started are failed.
+    auto stop_send_lanes() -> void;
+
+    std::mutex _lanes_mutex;
+    /// unique_ptr so a lane's condition variable stays put while others are
+    /// added.
+    std::unordered_map<NodeId, std::unique_ptr<send_lane>> _lanes;
+    std::vector<std::thread> _lane_threads;
+    bool _lanes_stopping{false};
 };
 
 // HTTP server implementation. `NodeId` is the id type the requests it decodes

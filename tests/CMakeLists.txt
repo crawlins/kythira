@@ -2696,6 +2696,26 @@ else()
     message(STATUS "negotiation_failure_test: skipped (requires Folly)")
 endif()
 
+# cpp_httplib_client sends on per-peer lanes, so a slow peer never holds up a
+# send to another one (the leader's tick thread replicating to followers in
+# turn). Raw httplib::Servers stand in for the followers: the delay has to be
+# in the handler, and cpp_httplib_server has no hook for one.
+if(TARGET Folly::folly)
+    add_executable(http_client_send_lanes_test http_client_send_lanes_test.cpp)
+    target_link_libraries(http_client_send_lanes_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(http_client_send_lanes_test PRIVATE cxx_std_23)
+    add_test(NAME http_client_send_lanes_test COMMAND http_client_send_lanes_test)
+    set_tests_properties(http_client_send_lanes_test
+        PROPERTIES TIMEOUT 120 LABELS "http;integration")
+else()
+    message(STATUS "http_client_send_lanes_test: skipped (requires Folly)")
+endif()
+
 # Single-serializer wire behaviour is unchanged by registries (spec Task 13).
 if(TARGET Folly::folly)
     add_executable(single_serializer_regression_test single_serializer_regression_test.cpp)

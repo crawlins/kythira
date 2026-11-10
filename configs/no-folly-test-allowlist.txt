@@ -119,6 +119,7 @@ http_client_connection_pool_test uses Folly directly (`folly::CPUThreadPoolExecu
 http_client_connection_test uses Folly directly (`folly::CPUThreadPoolExecutor`)
 http_client_per_call_timeout_test uses Folly directly (`folly::CPUThreadPoolExecutor`)
 http_client_property_tests uses Folly directly (`folly::CPUThreadPoolExecutor`)
+http_client_send_lanes_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its transport bundle names folly::CPUThreadPoolExecutor as the executor, as the negotiation suites' does
 http_client_test uses Folly directly (`folly::CPUThreadPoolExecutor`)
 http_client_tls_settings_integration_test uses Folly directly (`folly::CPUThreadPoolExecutor`)
 http_integration_test uses Folly directly (`folly::CPUThreadPoolExecutor`)
