@@ -148,9 +148,16 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       one node on `memory_kv_engine` (`gateway.hpp`). boto3 and the AWS CLI
       ran create, waiters, put, update, get, conditions, tags and delete
       against it.
-    - Left: the Raft-hosted backend on the RocksDB engine (after
-      persistent-state-machine task 5), warm throughput, and the KCL
-      sample.
+    - Done: the Raft-hosted backend (`raft_backend.hpp`): one
+      `dynamo_group_state_machine` per `multi_raft` group (the catalog
+      group, item groups over `t/`), requests on any node hopping to each
+      group's leader as ops a peer serves, read barriers for consistent
+      reads, range reads that walk groups page by page, and the catalog
+      leader's follow-on work on a worker thread. Three in-process nodes
+      cover it (`dynamodb_raft_backend_test`).
+    - Left: `dynamodb_gateway_node` on that backend over the RocksDB
+      engine, with the forward endpoint between gateways; warm
+      throughput; the KCL sample.
 
 - [x] 8. Query, Scan and batch operations
   - Range reads with every `Query` option; cross-shard `Scan` cursors;

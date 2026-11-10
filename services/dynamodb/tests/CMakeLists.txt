@@ -107,6 +107,14 @@ set_tests_properties(dynamodb_query_test PROPERTIES
 kythira_dynamodb_test(dynamodb_lsi_test dynamodb_lsi_test.cpp)
 set_tests_properties(dynamodb_lsi_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# The Raft-hosted backend over three in-process multi_raft hosts: requests on
+# any node, the catalog leader's follow-on work, range reads across a split,
+# and an item group losing its leader (task 7). The in-process fabric comes
+# from kythira_test_support.
+kythira_dynamodb_test(dynamodb_raft_backend_test dynamodb_raft_backend_test.cpp)
+target_link_libraries(dynamodb_raft_backend_test PRIVATE kythira_test_support)
+set_tests_properties(dynamodb_raft_backend_test PROPERTIES
+    LABELS "integration;dynamodb;dynamodb-module" TIMEOUT 300)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")
