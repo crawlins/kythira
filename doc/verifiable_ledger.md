@@ -18,8 +18,8 @@ segment files. A replica killed at any point of applying, sealing or
 offloading recovers the same journal (`ledger_crash_test`), and a
 three-member cluster in containers keeps every acknowledged write and
 identical journals on all replicas through kills and partitions (the
-chaos scenario, below). Not yet built: the daemon's object-store export
-runner.
+chaos scenario, below). `ExportJournal` jobs write to S3 or any
+S3-compatible store (Journal exports, below).
 
 ## Model
 
@@ -309,6 +309,20 @@ KYTHIRA_LEDGER_SIGNING_CHAIN=/etc/kythira/signer-chain.pem
 
 ## Operations
 
+- **Journal exports.** `POST /v1/ledgers/{L}/exports` records a job; the
+  ledger's leader then writes `<prefix><jobId>/` objects of up to 1000
+  blocks each and a `manifest.json` (sizes and SHA-256) to the job's
+  bucket, and records the job `completed` or `failed` (with a message).
+  The store is S3: set `KYTHIRA_LEDGER_EXPORT_S3_REGION` on every member
+  (any member may lead the ledger when the job runs), and
+  `KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT` for an S3-compatible endpoint such
+  as MinIO (path-style addressing). Credentials come from the AWS SDK's
+  default chain: environment, profile, or the instance role, which needs
+  `s3:PutObject` on the bucket's prefix. Without a region, jobs finish as
+  failed with "this node has no export store". The objects re-hash
+  offline with `ledger_ctl verify --export` once copied into a directory.
+  A build without the AWS SDK's S3 client (`CONFIG_AWS_S3_PERSISTENCE=n`)
+  refuses the region variable at start-up.
 - **Metrics.** With `KYTHIRA_LEDGER_METRICS_LISTEN=host:port`,
   `ledger_node` serves Prometheus text on `GET /metrics`. The endpoint is
   plaintext and unauthenticated and names every ledger the node hosts, so

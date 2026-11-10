@@ -186,7 +186,7 @@ task is one PR unless noted.
       budget (1 MiB default; a page always holds at least one document)
       and an equality filter on a path.
 
-- [ ] 7. Native HTTP API, client and `ledger_node`
+- [x] 7. Native HTTP API, client and `ledger_node`
   - HTTP/JSON and Ion API with mTLS roles and request limits; C++ client
     with OCC retry; the daemon with config and data-directory layout; the
     ledger catalog group; the split/merge policy veto for ledger ranges and
@@ -263,8 +263,14 @@ task is one PR unless noted.
     gauges every `KYTHIRA_LEDGER_METRICS_INTERVAL_MS`, and the
     hash-mismatch handler bumps `kythira_ledger_hash_mismatch_total` at
     once. `ledger_node_cluster_test` scrapes node 1.
-  - Still owed: the object-store export runner; exports finish as failed
-    until then.
+  - Export runner: with `KYTHIRA_LEDGER_EXPORT_S3_REGION` (and optionally
+    `_ENDPOINT` for an S3-compatible store) the node gives the host a
+    `run_export` over `aws_s3_client`, behind `export_store`, a virtual
+    key_object_store so only `export_store.cpp` parses an SDK header.
+    Built where the SDK's S3 client is (CONFIG_AWS_S3_PERSISTENCE); the
+    variable is refused elsewhere. `ledger_node_cluster_test` exports the
+    ledger to `s3_stateful_mock` and re-hashes the objects with
+    `ledger_ctl verify --export`.
 
 - [x] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and

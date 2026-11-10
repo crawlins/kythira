@@ -56,6 +56,17 @@ struct node_options {
     /// How often the per-ledger gauges are sampled.
     std::chrono::milliseconds metrics_interval{5000};
 
+    // ── Journal exports ─────────────────────────────────────────────────────
+    /// ExportJournal jobs write to S3 (the job names the bucket) when this
+    /// is set; with it empty they finish as failed. Credentials come from
+    /// the AWS SDK's default chain (environment, profile, instance role).
+    std::string export_s3_region;
+    /// An S3-compatible endpoint instead of AWS's (MinIO, a test mock):
+    /// path-style addressing, no IMDS.
+    std::string export_s3_endpoint;
+    /// Each S3 request's timeout.
+    std::chrono::milliseconds export_s3_timeout{30000};
+
     // ── Ledgers and storage ─────────────────────────────────────────────────
     std::filesystem::path data_dir;
     std::size_t replication{3};

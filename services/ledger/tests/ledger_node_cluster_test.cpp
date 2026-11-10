@@ -19,6 +19,9 @@
 #include <raft/private_file.hpp>
 
 #include "test_ports.hpp"
+#if defined(KYTHIRA_LEDGER_NODE_S3)
+#include "s3_stateful_mock.hpp"
+#endif
 
 #include <httplib.h>
 
@@ -261,6 +264,16 @@ public:
                 "KYTHIRA_LEDGER_MAINTENANCE_INTERVAL_MS=100",
                 "KYTHIRA_LOG_LEVEL=warning",
             };
+#if defined(KYTHIRA_LEDGER_NODE_S3)
+            // Exports go to the in-process S3 mock: path-style, no IMDS,
+            // and credentials the mock never checks.
+            env.push_back("KYTHIRA_LEDGER_EXPORT_S3_REGION=us-east-1");
+            env.push_back("KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT=" + s3_.endpoint());
+            env.emplace_back("KYTHIRA_LEDGER_EXPORT_S3_TIMEOUT_MS=10000");
+            env.emplace_back("AWS_ACCESS_KEY_ID=AKIDLEDGERTEST");
+            env.emplace_back("AWS_SECRET_ACCESS_KEY=ledger-test-secret");
+            env.emplace_back("AWS_EC2_METADATA_DISABLED=true");
+#endif
             if (i == 0) {
                 env.push_back("KYTHIRA_LEDGER_METRICS_LISTEN=127.0.0.1:" +
                               std::to_string(metrics_port_));
@@ -312,6 +325,9 @@ public:
     }
     [[nodiscard]] auto node(int i) -> node_process& { return *nodes_[static_cast<std::size_t>(i)]; }
     [[nodiscard]] auto certs() const -> const pki& { return pki_; }
+#if defined(KYTHIRA_LEDGER_NODE_S3)
+    [[nodiscard]] auto s3() const -> const kythira::testing::s3_stateful_mock& { return s3_; }
+#endif
 
     [[nodiscard]] auto client(std::vector<int> members = {0, 1, 2}) const -> ledger_client {
         https_transport_options t;
@@ -337,6 +353,10 @@ public:
 
 private:
     pki pki_;
+#if defined(KYTHIRA_LEDGER_NODE_S3)
+    // Before the nodes, which are given its endpoint and stop first.
+    kythira::testing::s3_stateful_mock s3_;
+#endif
     std::uint16_t metrics_port_ = 0;
     std::vector<std::uint16_t> api_ports_;
     std::vector<std::unique_ptr<node_process>> nodes_;
@@ -436,6 +456,56 @@ auto ledger_ctl_verify(const cluster& c, const std::filesystem::path& log) -> in
     return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
 }
 
+#if defined(KYTHIRA_LEDGER_NODE_S3)
+/// Exports the bank ledger to the S3 mock as Ion binary, waits for the
+/// job to finish, copies its objects into `dir` and runs
+/// `ledger_ctl verify --export` on them; returns ledger_ctl's exit status
+/// (its output is in `log`).
+auto export_and_verify(const cluster& c, ledger_client& client, const std::filesystem::path& dir,
+                       const std::filesystem::path& log) -> int {
+    ion_value spec = ion_value::make_struct();
+    spec.set("start", ion_value::string("2000-01-01T00:00:00Z"))
+        .set("end", ion_value::string("2100-01-01T00:00:00Z"))
+        .set("format", ion_value::string("ion_binary"))
+        .set("bucket", ion_value::string("ledger-exports"))
+        .set("prefix", ion_value::string("bank/"));
+    const ion_value started = eventually([&] { return client.start_export("bank", spec); });
+    const ion_value* id = started.find("jobId");
+    BOOST_REQUIRE_MESSAGE(id != nullptr && id->as_text(), "no jobId in " << started.to_text());
+    const std::string job(*id->as_text());
+
+    std::string status;
+    std::string message;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+    while (status.empty() || status == "in_progress") {
+        BOOST_REQUIRE_MESSAGE(std::chrono::steady_clock::now() < deadline,
+                              "export " << job << " still " << status);
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        const ion_value j = eventually([&] { return client.get_export("bank", job); });
+        const ion_value* s = j.find("status");
+        status = s != nullptr ? std::string(s->as_text().value_or("")) : "";
+        const ion_value* m = j.find("message");
+        message = m != nullptr ? std::string(m->as_text().value_or("")) : "";
+    }
+    BOOST_REQUIRE_MESSAGE(status == "completed",
+                          "export " << job << " " << status << ": " << message);
+
+    std::filesystem::create_directories(dir);
+    const auto keys = c.s3().keys("ledger-exports", "bank/" + job + "/");
+    BOOST_REQUIRE_MESSAGE(keys.size() >= 2, "expected objects and a manifest, got " << keys.size());
+    for (const auto& key : keys) {
+        const auto obj = c.s3().object("ledger-exports", key);
+        BOOST_REQUIRE(obj.has_value());
+        std::ofstream out(dir / std::filesystem::path(key).filename(), std::ios::binary);
+        out << obj->body;
+    }
+    const std::string cmd = std::string(KYTHIRA_LEDGER_CTL) + " verify --export " + dir.string() +
+                            " >" + log.string() + " 2>&1";
+    const int rc = std::system(cmd.c_str());  // NOLINT(cert-env33-c,concurrency-mt-unsafe)
+    return WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+}
+#endif
+
 }  // namespace
 
 BOOST_AUTO_TEST_CASE(a_three_node_cluster_serves_verifies_and_survives_restarts) {
@@ -478,6 +548,14 @@ BOOST_AUTO_TEST_CASE(a_three_node_cluster_serves_verifies_and_survives_restarts)
     // ...and so does a running member's data directory, read beside it.
     BOOST_TEST(ledger_ctl_verify_dir(c, 1, log) == 0, slurp(log));
     BOOST_TEST(verified_blocks(slurp(log)) == 11, slurp(log));
+
+#if defined(KYTHIRA_LEDGER_NODE_S3)
+    // ExportJournal: the ledger's leader writes the journal to S3, and the
+    // objects it wrote re-hash on their own.
+    const auto exported = c.certs().dir / "export";
+    BOOST_TEST(export_and_verify(c, client, exported, log) == 0, slurp(log));
+    BOOST_TEST(slurp(log).find("verified 11 blocks from export") != std::string::npos, slurp(log));
+#endif
 
     // Node 1 exports the ledger's gauges: the journal, and the bytes not
     // yet sealed into a segment.
