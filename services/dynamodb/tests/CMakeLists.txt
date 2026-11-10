@@ -93,6 +93,20 @@ target_link_libraries(dynamodb_gateway_test PRIVATE Threads::Threads)
 set_tests_properties(dynamodb_gateway_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 
+# Task 8: Query, Scan and the batch operations at their limits (1 MB pages,
+# segments, the 16 MB BatchGetItem response), and the operations corpus,
+# tests/data/ops_corpus.jsonl, recorded against DynamoDB Local by
+# tools/ops-corpus/record.sh, replayed through the handlers (Requirements
+# 9.1, 9.2, 10.1, 10.2, 21.1).
+kythira_dynamodb_test(dynamodb_query_test dynamodb_query_test.cpp)
+set_tests_properties(dynamodb_query_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
+target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
+    KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")
+set_tests_properties(dynamodb_ops_corpus_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+
 # The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
 # (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned models, so a model
 # upgrade carries its regenerated tables and their diff (Requirement 2.4).

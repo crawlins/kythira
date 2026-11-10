@@ -28,6 +28,7 @@
 /// - A put costs one unit per 1 KB of the new item. Updates and deletes
 ///   cost one unit.
 
+#include <kythira/dynamodb/api_common.hpp>
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/disk_guard.hpp>
 #include <kythira/dynamodb/errors.hpp>
@@ -174,29 +175,15 @@ public:
     }
 
 private:
-    static auto not_found() -> aws_json::error {
-        return table_api_detail::modeled("ResourceNotFoundException",
-                                         "Requested resource not found");
-    }
-
     static auto flag(const boost::json::object& in, std::string_view member) -> bool {
-        const auto* v = in.if_contains(member);
-        return v != nullptr && v->is_bool() && v->as_bool();
+        return api_detail::flag(in, member);
     }
-
     static auto text(const boost::json::object& in, std::string_view member) -> std::string_view {
-        const auto* v = in.if_contains(member);
-        return v != nullptr && v->is_string() ? std::string_view(v->get_string())
-                                              : std::string_view();
+        return api_detail::text(in, member);
     }
 
     auto usable_table(const boost::json::object& in) -> aws_json::result<table_descriptor> {
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
-        auto d = _backend.describe(name);
-        if (!d || d->status == table_status::creating || d->status == table_status::deleting) {
-            return not_found();
-        }
-        return std::move(*d);
+        return api_detail::usable_table(_backend, in.at("TableName").as_string());
     }
 
     static auto compile(std::string_view op, const boost::json::object& in,
@@ -253,31 +240,20 @@ private:
     }
 
     static auto wants_capacity(const boost::json::object& in) -> bool {
-        const auto rc = text(in, "ReturnConsumedCapacity");
-        return rc == "TOTAL" || rc == "INDEXES";
+        return api_detail::wants_capacity(in);
     }
 
     static auto capacity(const boost::json::object& in, const std::string& table, double units)
         -> boost::json::object {
-        boost::json::object out{{"TableName", table}, {"CapacityUnits", units}};
-        if (text(in, "ReturnConsumedCapacity") == "INDEXES") {
-            out["Table"] = boost::json::object{{"CapacityUnits", units}};
-        }
-        return out;
+        return api_detail::capacity(in, table, units);
     }
 
     static auto read_units(const std::optional<item>& found, bool consistent) -> double {
-        constexpr std::size_t k_read_unit_bytes = 4096;
-        const std::size_t size = found ? item_size(*found) : 0;
-        const auto units = static_cast<double>(
-            std::max<std::size_t>(1, (size + k_read_unit_bytes - 1) / k_read_unit_bytes));
-        return consistent ? units : units / 2.0;
+        return api_detail::read_units(found ? item_size(*found) : 0, consistent);
     }
 
     static auto write_units(const item& it) -> double {
-        constexpr std::size_t k_write_unit_bytes = 1024;
-        return static_cast<double>(std::max<std::size_t>(
-            1, (item_size(it) + k_write_unit_bytes - 1) / k_write_unit_bytes));
+        return api_detail::write_units(item_size(it));
     }
 
     auto finish(const boost::json::object& in, const table_descriptor& table, const item_command& c,

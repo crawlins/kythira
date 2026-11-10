@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -491,6 +492,30 @@ public:
             return 0;
         }
         return load_version(*k);
+    }
+
+    /// Visits the committed items whose keys fall in `r` and in this
+    /// group's range, in key order (or reverse key order), until `visit`
+    /// returns false. Each call gets the item's base key and the item.
+    /// Corrupt bytes are a storage fault.
+    auto scan_items(const kythira::key_range& r, kythira::scan_direction direction,
+                    const std::function<bool(std::string_view, const item&)>& visit) const -> void {
+        kythira::key_range mine{std::max(r.start, _range.start), r.end};
+        if (_range.end && (!mine.end || *_range.end < *mine.end)) {
+            mine.end = _range.end;
+        }
+        if (mine.empty()) {
+            return;
+        }
+        engine().scan(kythira::column_family::data, mine, direction,
+                      [&](std::string_view k, std::string_view v) {
+                          auto it = decode_item(v);
+                          if (!it) {
+                              throw kythira::persistent_storage_error(
+                                  "dynamo_item_state_machine: corrupt item");
+                          }
+                          return visit(k, *it);
+                      });
     }
 
 private:

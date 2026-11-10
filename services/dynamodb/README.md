@@ -50,6 +50,12 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/gateway.hpp` | `dynamodb_gateway_node`'s settings from the environment, and the front end and handlers served over core's Beast HTTPS host | 7 |
 | `cmd/dynamodb_gateway_node/` | the daemon | 7 |
 | `tests/dynamodb_gateway_test.cpp` | the settings, and the gateway serving signed requests over a socket | 7 |
+| `include/kythira/dynamodb/api_common.hpp` | helpers the data-plane handlers share: request members, usable tables, simple capacity units | 7, 8 |
+| `include/kythira/dynamodb/query_api.hpp` | `Query` and `Scan`: key-condition ranges, hash-sliced segments, 1 MB pages, cursors | 8 |
+| `include/kythira/dynamodb/batch_api.hpp` | `BatchGetItem` and `BatchWriteItem` | 8 |
+| `tools/ops-corpus/` | the operations corpus's scenarios and recorder (`record.sh`: DynamoDB Local under Docker or rootless Podman) | 8 |
+| `tests/data/ops_corpus.jsonl`, `tests/dynamodb_ops_corpus_test.cpp` | the recorded scenarios and their replay through the handlers | 8 |
+| `tests/dynamodb_test_fixture.hpp`, `tests/dynamodb_query_test.cpp` | the shared handler fixture; Query, Scan and batches at their limits | 8 |
 
 The rest follows the plan in the spec's `tasks.md`.
 

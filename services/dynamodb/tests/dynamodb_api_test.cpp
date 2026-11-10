@@ -14,133 +14,16 @@
 
 #include <boost/test/unit_test.hpp>
 
-#include <kythira/dynamodb/backend.hpp>
-#include <kythira/dynamodb/disk_guard.hpp>
-#include <kythira/dynamodb/front_end.hpp>
-#include <kythira/dynamodb/item_api.hpp>
-#include <kythira/dynamodb/table_api.hpp>
-
-#include <raft/memory_kv_engine.hpp>
-#include <raft/static_key_authorizer.hpp>
+#include "dynamodb_test_fixture.hpp"
 
 #include <boost/json.hpp>
 
-#include <chrono>
 #include <cstdint>
-#include <filesystem>
-#include <memory>
-#include <optional>
 #include <string>
-#include <string_view>
-#include <vector>
 
-namespace ddb = kythira::dynamodb;
-namespace az = kythira::aws_auth;
-namespace sv4 = kythira::sigv4;
-namespace json = boost::json;
+using namespace dynamodb_test;
 
 namespace {
-
-constexpr std::string_view k_secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
-constexpr std::string_view k_account = "111122223333";
-const auto k_now = sv4::detail::parse_amz_date("20261110T120000Z").value();
-
-auto signed_request(std::string_view op, const std::string& body) -> ddb::front_end_request {
-    ddb::front_end_request r;
-    r.method = "POST";
-    r.path = "/";
-    r.body = body;
-    r.source_ip = "192.0.2.10";
-    r.headers = {{"Host", "localhost:8000"},
-                 {"Content-Type", "application/x-amz-json-1.0"},
-                 {"X-Amz-Date", "20261110T120000Z"},
-                 {"X-Amz-Target", "DynamoDB_20120810." + std::string(op)}};
-    sv4::service_rules rules;
-    rules.service = "dynamodb";
-    rules.protocol = sv4::error_protocol::json;
-    const sv4::credential_scope scope{"20261110", "us-east-1", "dynamodb"};
-    r.headers.emplace_back("Authorization",
-                           "AWS4-HMAC-SHA256 Credential=AKIDADMIN/" + scope.text() +
-                               ", SignedHeaders=content-type;host;x-amz-date;x-amz-target"
-                               ", Signature=" +
-                               std::string(64, '0'));
-    const auto parsed =
-        sv4::parse(sv4::request{r.method, r.path, r.query, r.headers, r.body}, rules, k_now);
-    BOOST_REQUIRE(parsed.has_value());
-    const auto sig = sv4::compute_signature(*parsed, sv4::derive_signing_key(k_secret, scope));
-    r.headers.back().second.replace(r.headers.back().second.size() - 64, 64, sig);
-    return r;
-}
-
-struct reply {
-    unsigned status = 0;
-    json::object body;
-
-    [[nodiscard]] auto type() const -> std::string {
-        const auto* t = body.if_contains("__type");
-        if (t == nullptr) {
-            return {};
-        }
-        const std::string full(t->as_string());
-        return full.substr(full.find('#') + 1);
-    }
-    [[nodiscard]] auto message() const -> std::string {
-        for (const char* k : {"message", "Message"}) {
-            if (const auto* m = body.if_contains(k)) {
-                return std::string(m->as_string());
-            }
-        }
-        return {};
-    }
-};
-
-struct fixture {
-    kythira::memory_kv_engine engine;
-    std::uint64_t clock_ms = 1794300000123ULL;
-    std::optional<std::uintmax_t> free_bytes = std::uintmax_t{1} << 40U;
-    ddb::local_backend<> backend{engine, [this] { return clock_ms; }};
-    ddb::disk_guard guard{"/data", 1024,
-                          [this](const std::filesystem::path&) { return free_bytes; }};
-    az::static_key_authorizer auth{
-        std::vector<az::static_key>{{"AKIDADMIN", std::string(k_secret), std::string(k_account),
-                                     "admin", az::static_role::admin}},
-        "aws", [] { return std::chrono::system_clock::time_point(k_now); }};
-    std::unique_ptr<ddb::front_end<az::static_key_authorizer>> fe;
-    ddb::table_api<ddb::local_backend<>> tables{backend};
-    ddb::item_api<ddb::local_backend<>> items{backend, &guard};
-
-    fixture() {
-        auth.register_service(ddb::dynamodb_static_roles());
-        ddb::front_end_config cfg;
-        cfg.advertised_endpoint = "localhost:8000";
-        fe = std::make_unique<ddb::front_end<az::static_key_authorizer>>(cfg, auth);
-        tables.register_with(*fe);
-        items.register_with(*fe);
-    }
-
-    auto call(std::string_view op, const std::string& body) -> reply {
-        const auto r = fe->handle(signed_request(op, body));
-        return reply{r.status, json::parse(r.body).as_object()};
-    }
-
-    auto ok(std::string_view op, const std::string& body) -> json::object {
-        auto r = call(op, body);
-        BOOST_REQUIRE_MESSAGE(r.status == 200U,
-                              std::string(op) + " failed: " + r.type() + ": " + r.message());
-        return r.body;
-    }
-
-    auto create(const std::string& name, const std::string& extra = "") -> json::object {
-        return ok("CreateTable",
-                  R"({"TableName":")" + name +
-                      R"(","AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"},)"
-                      R"({"AttributeName":"sk","AttributeType":"N"}],)"
-                      R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"},)"
-                      R"({"AttributeName":"sk","KeyType":"RANGE"}],)"
-                      R"("ProvisionedThroughput":{"ReadCapacityUnits":5,"WriteCapacityUnits":5})" +
-                      extra + "}");
-    }
-};
 
 const std::string k_arn = "arn:aws:dynamodb:us-east-1:111122223333:table/orders";
 

@@ -19,10 +19,6 @@ test reads the table rows: keep one operation per row, in the
 
 | Service | Operation | Why |
 |---|---|---|
-| DynamoDB | `Query` | planned, task 8 |
-| DynamoDB | `Scan` | planned, task 8 |
-| DynamoDB | `BatchGetItem` | planned, task 8 |
-| DynamoDB | `BatchWriteItem` | planned, task 8 |
 | DynamoDB | `TransactWriteItems` | planned, task 10 |
 | DynamoDB | `TransactGetItems` | planned, task 10 |
 | DynamoDB | `UpdateTimeToLive` | planned, task 13 |

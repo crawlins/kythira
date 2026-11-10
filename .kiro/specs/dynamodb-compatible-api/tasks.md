@@ -152,12 +152,37 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       persistent-state-machine task 5), warm throughput, and the KCL
       sample.
 
-- [ ] 8. Query, Scan and batch operations
+- [x] 8. Query, Scan and batch operations
   - Range reads with every `Query` option; cross-shard `Scan` cursors;
     parallel segments; `BatchGetItem`, `BatchWriteItem` with unprocessed
     items
   - Differential test harness against DynamoDB Local, first op mix
   - _Requirements: 9.1-9.3, 10.1, 10.2, 21.1_
+  - Done (November 10, 2026):
+    - `query_api.hpp`: a key condition becomes one base-key range inside
+      the item collection, and each item read is checked against the
+      condition again. Scan segments are slices of the 2-byte partition
+      hash, so they stay balanced. A cursor is a base key, so it does not
+      depend on which group serves the range. Pages stop at `Limit` or
+      before 1 MB, and either way return `LastEvaluatedKey`, as DynamoDB
+      Local does.
+    - `batch_api.hpp`: the whole batch is validated before anything runs.
+      Each write is its own entry, so there is no atomicity across items.
+      Keys past the 16 MB response limit come back in `UnprocessedKeys`
+      together with their table's read settings.
+    - `dynamo_backend::read_range` serves both. On `local_backend` it is a
+      single group. The Raft backend (task 7) has to walk the groups the
+      range covers in key order.
+    - The harness is `tools/ops-corpus/`: 6 scenarios and 125 steps,
+      recorded against DynamoDB Local 3.3.2 and replayed by
+      `dynamodb_ops_corpus_test`. There are no mismatches. 16 steps are
+      marked as divergences, and each is one of four kinds:
+      - AWS's data-plane not-found message;
+      - AWS's `Key` message ("The provided key element does not match
+        the schema");
+      - AWS's item key messages, which name the key;
+      - the core codec's model-constraint messages, where DynamoDB Local
+        has its own.
 
 ### Phase 3: indexes and transactions (KCL 3.x works after task 11)
 

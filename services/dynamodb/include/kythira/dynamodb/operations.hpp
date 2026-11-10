@@ -33,12 +33,15 @@ inline constexpr std::string_view k_streams_target_prefix = "DynamoDBStreams_201
 inline constexpr std::string_view k_dynamodb_error_namespace = "com.amazonaws.dynamodb.v20120810";
 
 /// Implemented DynamoDB operations: DescribeEndpoints (task 4, built into
-/// the front end), and the control plane (`table_api.hpp`) and single-item
-/// API (`item_api.hpp`) of task 7.
-inline constexpr std::array<std::string_view, 14> k_implemented_dynamodb_operations{
-    "DescribeEndpoints", "CreateTable",    "DescribeTable", "ListTables",    "UpdateTable",
-    "DeleteTable",       "DescribeLimits", "TagResource",   "UntagResource", "ListTagsOfResource",
-    "GetItem",           "PutItem",        "UpdateItem",    "DeleteItem"};
+/// the front end), the control plane (`table_api.hpp`) and single-item
+/// API (`item_api.hpp`) of task 7, and the range reads (`query_api.hpp`)
+/// and batches (`batch_api.hpp`) of task 8.
+inline constexpr std::array<std::string_view, 18> k_implemented_dynamodb_operations{
+    "DescribeEndpoints", "CreateTable",        "DescribeTable",  "ListTables",
+    "UpdateTable",       "DeleteTable",        "DescribeLimits", "TagResource",
+    "UntagResource",     "ListTagsOfResource", "GetItem",        "PutItem",
+    "UpdateItem",        "DeleteItem",         "Query",          "Scan",
+    "BatchGetItem",      "BatchWriteItem"};
 
 /// Implemented DynamoDB Streams operations (task 16).
 inline constexpr std::array<std::string_view, 0> k_implemented_streams_operations{};
