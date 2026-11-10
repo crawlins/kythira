@@ -190,6 +190,16 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       - AWS's item key messages, which name the key;
       - the core codec's model-constraint messages, where DynamoDB Local
         has its own.
+    - Added later (November 10, 2026): `doc/invariants.md`, 93 rules from
+      the developer guide and API reference (limits, types, expressions,
+      writes, Query, Scan, batches, tables, LSIs), each with its source and
+      a case in `dynamodb_invariants_test`. The same cases ran against
+      DynamoDB Local 3.3.2 and agree apart from three places Local departs
+      from the documentation. The list found four gaps, now fixed: empty
+      attribute names were accepted, `BatchGetItem` could pass 16 MB by one
+      item, items could nest one level too deep, and a test expected the
+      over-limit answer. Rules for later tasks are listed there as
+      deferred.
 
 ### Phase 3: indexes and transactions (KCL 3.x works after task 11)
 
