@@ -22,6 +22,9 @@ target_link_libraries(kythira_dynamodb INTERFACE kythira_core_headers boost_json
     OpenSSL::SSL OpenSSL::Crypto)
 target_compile_features(kythira_dynamodb INTERFACE cxx_std_23)
 
+# dynamodb_gateway_node (task 7).
+add_subdirectory(cmd)
+
 # The tests, under the guard the top level enters tests/ with. tests/
 # defines kythira_test_pch, which add_raft_completion_test links, so its
 # presence is the check.

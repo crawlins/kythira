@@ -85,6 +85,14 @@ kythira_dynamodb_test(dynamodb_api_test dynamodb_api_test.cpp)
 set_tests_properties(dynamodb_api_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 
+# Task 7: dynamodb_gateway_node's configuration from the environment, and
+# the gateway serving signed requests over a socket on a free port.
+find_package(Threads REQUIRED)
+kythira_dynamodb_test(dynamodb_gateway_test dynamodb_gateway_test.cpp)
+target_link_libraries(dynamodb_gateway_test PRIVATE Threads::Threads)
+set_tests_properties(dynamodb_gateway_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
+
 # The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
 # (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned models, so a model
 # upgrade carries its regenerated tables and their diff (Requirement 2.4).
