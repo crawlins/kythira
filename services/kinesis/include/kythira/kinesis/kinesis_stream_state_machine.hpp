@@ -637,6 +637,13 @@ public:
         return it == _map.end() ? nullptr : std::get_if<shard_state>(&it->second);
     }
 
+    /// The store record bytes live in (null for a catalog-only machine), and
+    /// the fetcher that installs a segment from the group's peers. Readers
+    /// copy a shard's state under the cluster's read and then read the
+    /// store outside it, so `GetRecords` file I/O never holds up `apply()`.
+    [[nodiscard]] auto store() const noexcept -> record_segment_store* { return _store; }
+    [[nodiscard]] auto fetcher() const -> const segment_fetcher& { return _fetch; }
+
     /// The id the next `CreateStream` gets.
     [[nodiscard]] auto next_stream_id() const -> std::uint64_t {
         auto it = _map.find(next_id_key());

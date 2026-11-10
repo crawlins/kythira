@@ -25,9 +25,11 @@
 # request. Whoever merges a pull request that touches the module waits for
 # this workflow too (services/README.md).
 #
-# The container job, which runs the module's compose scenario under rootful
-# Docker and rootless Podman (CLAUDE.md, "Container runtime compatibility"),
-# joins with task 7, the first task with a daemon that serves requests.
+# The container job (task 7, Requirement 17.3) runs the module's compose
+# scenario (services/kinesis/tests/docker/) under rootful Docker and
+# rootless Podman (CLAUDE.md, "Container runtime compatibility"): three
+# kinesis_gateway_node containers by service name, the AWS CLI v2 and a
+# boto3 producer and polling consumer, and a node stopped and restarted.
 
 name: Kinesis Module
 
@@ -255,3 +257,161 @@ jobs:
             rc=1
           fi
           exit $rc
+
+  container:
+    name: Kinesis cluster in containers (${{ matrix.runtime }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install system dependencies
+        run: |
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev \
+                 autoconf autoconf-archive automake libtool mold; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      # Rootless Podman as container-tests.yml sets it up (see the comment
+      # there): netavark and aardvark-dns so service names resolve, and
+      # `podman compose` driving the runner's docker-compose through
+      # Podman's API socket. This scenario shapes no traffic, so no kernel
+      # modules are loaded.
+      - name: Set up rootless Podman
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            podman netavark aardvark-dns slirp4netns uidmap
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          provider=""
+          for p in /usr/libexec/docker/cli-plugins/docker-compose \
+                   /usr/local/lib/docker/cli-plugins/docker-compose \
+                   "$(command -v docker-compose || true)"; do
+            if [ -n "$p" ] && [ -x "$p" ]; then provider="$p"; break; fi
+          done
+          test -n "$provider"
+          mkdir -p ~/.config/containers
+          cat > ~/.config/containers/containers.conf <<EOF
+          [network]
+          network_backend = "netavark"
+
+          [engine]
+          compose_providers = ["$provider"]
+          compose_warning_logs = false
+          EOF
+          if ! podman unshare true; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            podman unshare true
+          fi
+          podman system reset --force
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+          test "$(podman info --format '{{.Host.NetworkBackend}}')" = netavark
+          sock="$(podman info --format '{{.Host.RemoteSocket.Path}}')"
+          mkdir -p "$(dirname "$sock")"
+          setsid nohup podman system service --time=0 "unix://$sock" \
+            > "$RUNNER_TEMP/podman-service.log" 2>&1 < /dev/null &
+          for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+          test -S "$sock"
+
+      - name: Verify the container runtime
+        run: |
+          ${{ matrix.runtime }} version
+          ${{ matrix.runtime }} compose version
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: x64-linux
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # The build job's key, so both share one tree.
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          export CC=clang-18 CXX=clang++-18
+          export LDFLAGS="-Wl,--push-state,--no-as-needed -latomic -Wl,--pop-state"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      # CONTAINER_RUNTIME is explicit because the runner has both binaries
+      # and auto-detection prefers docker.
+      - name: Configure (module on, ci_full_defconfig)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DCONTAINER_RUNTIME=${{ matrix.runtime }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      # Builds kinesis_gateway_node and the scenario, stages the node image,
+      # builds the boto3 client image, and runs the scenario against a live
+      # stack.
+      - name: docker-kinesis-node-tests
+        run: cmake --build build --target docker-kinesis-node-tests -j"$(nproc)"
+
+      - name: Podman service log
+        if: always() && matrix.runtime == 'podman'
+        run: tail -n 200 "$RUNNER_TEMP/podman-service.log" || true
+
+      - name: Leftover containers
+        if: always()
+        run: ${{ matrix.runtime }} ps -a

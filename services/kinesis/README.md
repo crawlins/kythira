@@ -33,12 +33,16 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `include/kythira/kinesis/kinesis_actions.hpp` | the `kinesis` action table for IAM, the operation-to-action map (with which operations write) and the static-key roles | 4 |
 | `include/kythira/kinesis/kinesis_compat_profile.hpp` | the AWS-behaviour switches, cluster config overlaid with `kythira:compat:*` stream tags | 4 |
 | `include/kythira/kinesis/kinesis_front_end.hpp`, `kinesis_errors.hpp` | SigV4, JSON and CBOR framing, authorization and dispatch to operation handlers | 4 |
-| `include/kythira/kinesis/kinesis_service.hpp` | the stream lifecycle and write handlers (`CreateStream` through `PutRecords`) | 6 |
+| `include/kythira/kinesis/kinesis_service.hpp` | the operation handlers: stream lifecycle and writes (task 6), `GetShardIterator` and `GetRecords` (task 7) | 6, 7 |
 | `include/kythira/kinesis/kinesis_cluster.hpp` | what handlers need from the cluster (`stream_cluster`), and an in-process implementation for tests and one-node use | 6 |
 | `include/kythira/kinesis/kinesis_raft_cluster.hpp` | `stream_cluster` over the multi-raft host: propose to the key's group, forward to its leader, read the local replica | 6 |
 | `include/kythira/kinesis/kinesis_forward.hpp` | the gateway-to-gateway wire for forwarded writes and its HMAC (`KINESIS_FORWARD_SECRET`) | 6 |
 | `include/kythira/kinesis/kinesis_gateway.hpp`, `kinesis_peer_client.hpp` | the listener's routes (API, internal propose and segment endpoints, `/healthz`) and the client that calls other gateways | 6 |
 | `include/kythira/kinesis/kinesis_static_keys.hpp` | the `KINESIS_STATIC_KEYS_FILE` format for clusters without IAM | 6 |
+| `include/kythira/kinesis/kinesis_iterators.hpp` | shard iterators: HMAC-SHA256 tokens, the key ring and its rotation, `KINESIS_ITERATOR_KEYS_FILE` | 7 |
+| `docker/kinesis_gateway_node/Dockerfile`, `docker/kinesis_clients/Dockerfile` | the node image (the host-built daemon) and the boto3 client image of the container scenario | 7 |
+| `tests/docker/` | the container scenario: `compose.yml` (three nodes by service name, the AWS CLI v2, boto3), `kinesis_e2e.py`, `kinesis_node_scenario_test.cpp`; run by `cmake --build build --target docker-kinesis-node-tests` under Docker or rootless Podman | 7 |
+| `include/kythira/kinesis/kinesis_records.hpp` | reading a shard from the segment store on any replica, fetching a missing sealed segment from a peer | 7 |
 
 Core pieces the module builds on live in `include/raft/`, because DynamoDB
 uses them too: `record_segment_store.hpp` (task 3), the CBOR and
@@ -69,7 +73,11 @@ aws --endpoint-url http://127.0.0.1:4562 kinesis create-stream --stream-name s -
 Any node takes any request: a write whose group this node does not lead
 goes to the leader's gateway, signed with the shared secret, and a node
 restoring a snapshot fetches the segments it lacks from its peers the same
-way. Off a trusted network, give each gateway `KINESIS_TLS_CERT` and
+way. Shard iterators are signed with a key derived from that secret, so
+an iterator from one node works on every other; to rotate iterator keys
+without breaking live consumers, give every gateway the same
+`KINESIS_ITERATOR_KEYS_FILE` (`id secret` per line, the signing key first,
+the previous one kept for at least five minutes). Off a trusted network, give each gateway `KINESIS_TLS_CERT` and
 `KINESIS_TLS_KEY` and the peers' CA as `KINESIS_PEER_CA`; Raft RPC itself is
 plaintext, as in `redis_gateway_node`, so `KYTHIRA_ALLOW_PLAINTEXT_RAFT` is
 required off loopback.
@@ -95,7 +103,8 @@ package to export.
 | `KYTHIRA_AWS_JSON_SHAPES_GENERATOR` | the model-header freshness test |
 | `boost_json` | the AWS JSON codec, through `kythira_kinesis` |
 | `kythira_test_pch` | the guard the tests are entered under, and what the C++ tests link |
-| `cmake/kythira_test_helpers.cmake` | `kythira_scale_test_timeouts`, `add_raft_completion_test` |
+| `cmake/kythira_test_helpers.cmake` | `kythira_scale_test_timeouts`, `add_raft_completion_test`; for the container scenario `kythira_detect_container_runtime`, `add_docker_chaos_scenario_test` and `KYTHIRA_IMAGE_CONTEXT` |
+| `tests/docker_chaos/os_faults.hpp`, `httplib_FOUND` | the container scenario's runtime-neutral compose commands |
 
 ## What a split would still need
 

@@ -251,6 +251,7 @@ void read_kinesis_side(const reader& r, node_options& o) {
             "KINESIS_FORWARD_SECRET (or _FILE) of at least 16 bytes is required with more than "
             "one voter: the gateways sign forwarded writes and segment fetches with it");
     }
+    o._iterator_keys_file = r.opt("KINESIS_ITERATOR_KEYS_FILE", "");
     if (r.set("KINESIS_PEER_GATEWAYS")) {
         o._peer_gateways =
             parse_id_map("KINESIS_PEER_GATEWAYS", r.required("KINESIS_PEER_GATEWAYS"));
@@ -309,7 +310,12 @@ auto describe(const node_options& o) -> std::string {
         << "region=" << o._region << " partition=" << o._partition << '\n'
         << "data_dir=" << o._data_dir.string() << '\n'
         << "static_keys_file=" << o._static_keys_file << '\n'
-        << "forward_secret=" << (o._forward_secret.empty() ? "unset" : "set") << '\n';
+        << "forward_secret=" << (o._forward_secret.empty() ? "unset" : "set") << '\n'
+        << "iterator_keys="
+        << (!o._iterator_keys_file.empty() ? o._iterator_keys_file
+            : o._forward_secret.empty()    ? std::string("random (this process only)")
+                                           : std::string("derived from the forward secret"))
+        << '\n';
     for (const auto& [id, gw] : o._peer_gateways) {
         out << "peer_gateway " << kythira::host_node_id_text(id) << '=' << gw << '\n';
     }
@@ -349,6 +355,8 @@ auto usage() -> std::string {
            "(required)\n"
            "  KINESIS_DATA_DIR                 Raft state and record segments (required)\n"
            "  KINESIS_FORWARD_SECRET[_FILE]    shared by the gateways; required with >1 voter\n"
+           "  KINESIS_ITERATOR_KEYS_FILE       shard-iterator keys: id secret, first signs\n"
+           "                                   (default: derived from the forward secret)\n"
            "  KINESIS_PEER_GATEWAYS            id=host:port,... (default: Raft host, own port)\n"
            "  KINESIS_PEER_CA                  CA bundle for peer gateways (system store)\n"
            "  KINESIS_COMPAT                   cluster compatibility settings, k=v,...\n"

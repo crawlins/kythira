@@ -4,11 +4,12 @@
 #pragma once
 
 /// @file kinesis_service.hpp
-/// @brief Stream lifecycle and writes (`.kiro/specs/kinesis-compatible-streams/`
-///        task 6, Requirements 6.1, 7.1-7.5, 8.2): the handlers for
-///        CreateStream, DeleteStream, DescribeStream, DescribeStreamSummary,
-///        ListStreams, ListShards, DescribeLimits, PutRecord and PutRecords,
-///        over any `stream_cluster`.
+/// @brief The Kinesis operation handlers over any `stream_cluster`
+///        (`.kiro/specs/kinesis-compatible-streams/`): stream lifecycle and
+///        writes (task 6, Requirements 6.1, 7.1-7.5, 8.2: CreateStream,
+///        DeleteStream, DescribeStream, DescribeStreamSummary, ListStreams,
+///        ListShards, DescribeLimits, PutRecord, PutRecords) and reads
+///        (task 7, Requirement 9: GetShardIterator, GetRecords).
 ///
 /// Lifecycle. CreateStream commits the stream record in CREATING at the
 /// catalog group (which allocates the stream id), opens each shard under its
@@ -27,6 +28,15 @@
 /// stream and retries. Sequence numbers come from the shard's counter
 /// (8.1, 8.2), printed in the stream's id format.
 ///
+/// Reads. GetShardIterator signs the position into a stateless token
+/// (`kinesis_iterators.hpp`); GetRecords checks it, authorizes
+/// `kinesis:GetRecords` on the token's stream, and reads the shard from
+/// this replica's segment store (`kinesis_records.hpp`), so any node
+/// answers. An iterator's expiry is the stream's `iterator-lifetime` switch
+/// at read time: five minutes, or a day relaxed. A closed shard read to its
+/// end answers no NextShardIterator and its ChildShards; closing shards
+/// comes with resharding (task 11).
+///
 /// Reads of the catalog are served by the local replica, so a describe right
 /// after a write on another node may briefly show the old state, as AWS's
 /// describes are eventually consistent too.
@@ -43,6 +53,8 @@
 #include <kythira/kinesis/kinesis_errors.hpp>
 #include <kythira/kinesis/kinesis_front_end.hpp>
 #include <kythira/kinesis/kinesis_hash.hpp>
+#include <kythira/kinesis/kinesis_iterators.hpp>
+#include <kythira/kinesis/kinesis_records.hpp>
 #include <kythira/kinesis/kinesis_sequence.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
 
@@ -50,8 +62,11 @@
 
 #include <boost/json.hpp>
 
+#include <openssl/rand.h>
+
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -74,6 +89,10 @@ struct kinesis_limits {
     std::size_t _max_record_bytes = std::size_t{1024} * 1024;
     /// A PutRecords request's records, data plus partition keys.
     std::size_t _max_put_records_bytes = std::size_t{5} * 1024 * 1024;
+    /// A GetRecords answer's record bytes (AWS: 10 MiB), and the bound
+    /// with the `limits` switch relaxed.
+    std::uint64_t _max_get_records_bytes = std::uint64_t{10} * 1024 * 1024;
+    std::uint64_t _relaxed_get_records_bytes = std::uint64_t{64} * 1024 * 1024;
 
     /// AWS's quota for `region`.
     [[nodiscard]] static auto for_region(std::string_view region) -> kinesis_limits {
@@ -89,6 +108,10 @@ struct kinesis_service_config {
     kinesis_limits _limits{};
     /// Appends that find their shard closed are retried this many times.
     int _closed_shard_retries = 3;
+    /// Signs and checks shard iterators; every gateway of a cluster needs
+    /// the same ring. Empty: the service makes a random key, which suits
+    /// one node only (iterators from other nodes would not verify).
+    iterator_key_ring _iterator_keys{};
 };
 
 /// `shardId-` and the ordinal: twelve digits in the `aws` id format, bare
@@ -128,6 +151,14 @@ namespace service_detail {
         if (v->is_uint64()) {
             return static_cast<std::int64_t>(v->get_uint64());
         }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] inline auto number_member(const boost::json::object& o, std::string_view key)
+    -> std::optional<double> {
+    if (const auto* v = o.if_contains(key); v != nullptr && v->is_number()) {
+        return v->to_number<double>();
     }
     return std::nullopt;
 }
@@ -231,7 +262,16 @@ struct pending_record {
 template<stream_cluster Cluster> class kinesis_service {
 public:
     kinesis_service(Cluster& cluster, kinesis_service_config config = {})
-        : _cluster(cluster), _config(std::move(config)) {}
+        : _cluster(cluster), _config(std::move(config)) {
+        if (_config._iterator_keys._keys.empty()) {
+            std::array<unsigned char, 32> key{};
+            if (RAND_bytes(key.data(), static_cast<int>(key.size())) != 1) {
+                throw std::runtime_error("kinesis: no randomness for the iterator key");
+            }
+            _config._iterator_keys._keys.push_back(
+                {._id = 0, ._secret = std::string(key.begin(), key.end())});
+        }
+    }
 
     /// Registers this service's operations with `fe`.
     template<typename FrontEnd> void register_with(FrontEnd& fe) {
@@ -249,12 +289,15 @@ public:
         fe.on("DescribeLimits", bind(&kinesis_service::describe_limits));
         fe.on("PutRecord", bind(&kinesis_service::put_record));
         fe.on("PutRecords", bind(&kinesis_service::put_records));
+        fe.on("GetShardIterator", bind(&kinesis_service::get_shard_iterator));
+        fe.on("GetRecords", bind(&kinesis_service::get_records));
     }
 
     /// The operations `register_with` adds, for implemented-operations.txt.
-    static constexpr std::array<std::string_view, 9> k_operations{
-        "CreateStream", "DeleteStream", "DescribeLimits", "DescribeStream", "DescribeStreamSummary",
-        "ListShards",   "ListStreams",  "PutRecord",      "PutRecords"};
+    static constexpr std::array<std::string_view, 11> k_operations{
+        "CreateStream",          "DeleteStream", "DescribeLimits",   "DescribeStream",
+        "DescribeStreamSummary", "GetRecords",   "GetShardIterator", "ListShards",
+        "ListStreams",           "PutRecord",    "PutRecords"};
 
     using result = aws_json::result<boost::json::object>;
 
@@ -728,9 +771,284 @@ public:
         return out;
     }
 
+    // ---- reads --------------------------------------------------------------
+
+    auto get_shard_iterator(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find_readable(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        const auto profile = profile_of(rec);
+        const std::string shard_text(*detail::string_member(in, "ShardId"));
+        const auto* entry = shard_named(rec, shard_text);
+        if (entry == nullptr) {
+            return shard_not_found(shard_text, rec);
+        }
+        const auto key = routing_key(rec._id, entry->_ordinal);
+        const auto state = read_shard_state(key);
+        if (!state) {
+            return internal_failure();
+        }
+        if (!state->_found) {
+            return shard_not_found(shard_text, rec);
+        }
+        const auto first = std::max(entry->_starting_counter + 1, state->_state._trim_before);
+        shard_iterator it;
+        it._account = rec._account;
+        it._stream = rec._name;
+        it._stream_id = rec._id;
+        it._ordinal = entry->_ordinal;
+        const std::string type(*detail::string_member(in, "ShardIteratorType"));
+        if (type == "TRIM_HORIZON") {
+            it._counter = first;
+        } else if (type == "LATEST") {
+            it._counter = entry->_ending_counter ? *entry->_ending_counter + 1
+                                                 : state->_state._last_counter + 1;
+        } else if (type == "AT_SEQUENCE_NUMBER" || type == "AFTER_SEQUENCE_NUMBER") {
+            const auto text = detail::string_member(in, "StartingSequenceNumber");
+            if (!text) {
+                return invalid_argument(
+                    "StartingSequenceNumber must be provided for ShardIteratorType "
+                    "AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER.");
+            }
+            auto seq = parse_sequence(*text, sequence_profile::aws);
+            if (!seq) {
+                seq = parse_sequence(*text, sequence_profile::compact);
+            }
+            if (!seq) {
+                return invalid_argument("StartingSequenceNumber " + std::string(*text) +
+                                        " used in GetShardIterator on shard " + shard_text +
+                                        " in stream " + rec._name + " under account " +
+                                        rec._account + " is invalid.");
+            }
+            if (seq->_ordinal != entry->_ordinal) {
+                return invalid_argument("Invalid StartingSequenceNumber. It encodes " +
+                                        format_shard_id(seq->_ordinal, profile._id_format) +
+                                        ", while it was used in a call to a shard with " +
+                                        format_shard_id(entry->_ordinal, profile._id_format));
+            }
+            it._counter = seq->_counter + (type == "AFTER_SEQUENCE_NUMBER" ? 1 : 0);
+        } else if (type == "AT_TIMESTAMP") {
+            const auto ts = service_detail::number_member(in, "Timestamp");
+            if (!ts) {
+                return invalid_argument(
+                    "Timestamp must be provided for ShardIteratorType AT_TIMESTAMP.");
+            }
+            it._counter = first;
+            it._min_timestamp_ms =
+                std::max<std::int64_t>(1, static_cast<std::int64_t>(std::llround(*ts * 1000.0)));
+        } else {
+            return invalid_argument("Invalid ShardIteratorType: " + type + ".");
+        }
+        it._issued_ms = _cluster.now_ms();
+        boost::json::object out;
+        out["ShardIterator"] = encode_iterator(it, _config._iterator_keys);
+        return out;
+    }
+
+    auto get_records(call_context& ctx, boost::json::object& in) -> result {
+        const auto now = _cluster.now_ms();
+        const std::string token(*detail::string_member(in, "ShardIterator"));
+        const auto decoded = decode_iterator(token, _config._iterator_keys);
+        if (!decoded) {
+            return invalid_argument("Invalid ShardIterator.");
+        }
+        const auto& it = *decoded;
+        if (ctx._stream &&
+            (ctx._stream->_account != it._account || ctx._stream->_name != it._stream)) {
+            return invalid_argument("StreamARN " + ctx._stream->_arn +
+                                    " does not match the stream of the ShardIterator.");
+        }
+        // The token names the stream: authorize it now.
+        aws_auth::authz_request r;
+        r.action = "kinesis:GetRecords";
+        r.resource = "arn:" + ctx._partition + ":kinesis:" + ctx._region + ":" + it._account +
+                     ":stream/" + it._stream;
+        if (auto denied = ctx.authorize(std::move(r))) {
+            return *denied;
+        }
+
+        std::optional<stream_record> found;
+        if (!read_catalog([&](const auto& sm) {
+                if (const auto* s = sm.find_stream(it._account, it._stream)) {
+                    found = *s;
+                }
+            })) {
+            return internal_failure();
+        }
+        if (!found || found->_id != it._stream_id ||
+            (found->_status != stream_status::active &&
+             found->_status != stream_status::updating)) {
+            return service_detail::not_found(it._stream, it._account);
+        }
+        const auto& rec = *found;
+        const auto profile = profile_of(rec);
+        if (const auto lifetime = lifetime_of(profile); iterator_expired(it, now, lifetime)) {
+            return kinesis_error_style().modeled(
+                "ExpiredIteratorException",
+                "Iterator expired. The iterator was created at time " +
+                    java_date_text(it._issued_ms) + " while right now it is " +
+                    java_date_text(now) +
+                    " which is further in the future than the tolerated delay of " +
+                    std::to_string(lifetime) + " milliseconds.");
+        }
+        const shard_entry* entry = nullptr;
+        for (const auto& sh : rec._shards) {
+            if (sh._ordinal == it._ordinal) {
+                entry = &sh;
+            }
+        }
+        if (entry == nullptr) {
+            return shard_not_found(format_shard_id(it._ordinal, profile._id_format), rec);
+        }
+        const auto key = routing_key(rec._id, it._ordinal);
+        const auto limit =
+            static_cast<std::size_t>(service_detail::int_member(in, "Limit").value_or(10'000));
+        const segment_read_limits limits{
+            ._max_records = limit,
+            ._max_bytes = profile._aws_limits ? _config._limits._max_get_records_bytes
+                                              : _config._limits._relaxed_get_records_bytes};
+
+        std::optional<shard_read> got;
+        std::int64_t tip_arrival = 0;
+        for (int attempt = 0; attempt < 2 && (!got || got->_missing); ++attempt) {
+            // A segment can go missing between the copy and the read (a trim
+            // or tiering in between): read again with a fresh copy once.
+            const auto state = read_shard_state(key);
+            if (!state || !state->_found || state->_store == nullptr) {
+                if (state && !state->_found) {
+                    return shard_not_found(format_shard_id(it._ordinal, profile._id_format), rec);
+                }
+                return internal_failure();
+            }
+            got = read_shard(*state->_store, state->_fetch, key, state->_state, it._counter,
+                             it._min_timestamp_ms, limits);
+            tip_arrival = state->_state._last_arrival_ms;
+        }
+        if (!got || got->_missing) {
+            return internal_failure();
+        }
+
+        boost::json::array records;
+        for (const auto& rr : got->_records) {
+            boost::json::object o;
+            o["SequenceNumber"] =
+                format_sequence(sequence_number{._ordinal = it._ordinal, ._counter = rr._counter},
+                                profile._id_format);
+            o["ApproximateArrivalTimestamp"] = service_detail::epoch_seconds(rr._arrival_ms);
+            o["Data"] = service_detail::base64_encode(std::string_view(
+                reinterpret_cast<const char*>(rr._record._data.data()), rr._record._data.size()));
+            o["PartitionKey"] = rr._record._partition_key;
+            records.push_back(std::move(o));
+        }
+        boost::json::object out;
+        std::int64_t behind = 0;
+        if (!got->_caught_up && !got->_records.empty()) {
+            behind = std::max<std::int64_t>(0, now - got->_records.back()._arrival_ms);
+        } else if (!got->_caught_up) {
+            behind = std::max<std::int64_t>(0, now - tip_arrival);
+        }
+        out["MillisBehindLatest"] = behind;
+        const bool exhausted =
+            entry->_ending_counter && got->_next_counter > *entry->_ending_counter;
+        if (exhausted) {
+            // A closed shard read to its end: no next iterator, and the
+            // children to move to (Requirement 9.3).
+            out["MillisBehindLatest"] = 0;
+            boost::json::array children;
+            for (const auto& sh : sorted_shards(rec)) {
+                if (sh._parent != it._ordinal && sh._adjacent_parent != it._ordinal) {
+                    continue;
+                }
+                boost::json::array parents;
+                if (sh._parent) {
+                    parents.emplace_back(format_shard_id(*sh._parent, profile._id_format));
+                }
+                if (sh._adjacent_parent) {
+                    parents.emplace_back(format_shard_id(*sh._adjacent_parent, profile._id_format));
+                }
+                boost::json::object c;
+                c["ShardId"] = format_shard_id(sh._ordinal, profile._id_format);
+                c["ParentShards"] = std::move(parents);
+                c["HashKeyRange"] =
+                    boost::json::object{{"StartingHashKey", to_decimal(sh._range._start)},
+                                        {"EndingHashKey", to_decimal(sh._range._end)}};
+                children.push_back(std::move(c));
+            }
+            out["ChildShards"] = std::move(children);
+        } else {
+            shard_iterator next = it;
+            next._counter = got->_next_counter;
+            if (!got->_records.empty()) {
+                next._min_timestamp_ms = 0;  // resolved: a plain position now
+            }
+            next._issued_ms = now;
+            out["NextShardIterator"] = encode_iterator(next, _config._iterator_keys);
+        }
+        out["Records"] = std::move(records);
+        return out;
+    }
+
 private:
     Cluster& _cluster;
     kinesis_service_config _config;
+
+    /// A shard's state as this replica has it, copied out of the read so
+    /// the store is read without holding the state machine.
+    struct shard_snapshot {
+        bool _found = false;
+        shard_state _state;
+        record_segment_store* _store = nullptr;
+        segment_fetcher _fetch;
+    };
+
+    auto read_shard_state(const std::string& key) -> std::optional<shard_snapshot> {
+        shard_snapshot snap;
+        if (!_cluster.read(key, stream_reader([&](const auto& sm) {
+                               if (const auto* st = sm.find_shard(key)) {
+                                   snap._found = true;
+                                   snap._state = *st;
+                               }
+                               snap._store = sm.store();
+                               snap._fetch = sm.fetcher();
+                           }))) {
+            return std::nullopt;
+        }
+        return snap;
+    }
+
+    [[nodiscard]] static auto lifetime_of(const kinesis_compat_profile& p) -> std::int64_t {
+        return p._aws_iterator_lifetime ? k_iterator_lifetime_ms : k_relaxed_iterator_lifetime_ms;
+    }
+
+    [[nodiscard]] static auto shard_named(const stream_record& rec, std::string_view text)
+        -> const shard_entry* {
+        const auto ordinal = parse_shard_id(text);
+        if (!ordinal) {
+            return nullptr;
+        }
+        for (const auto& sh : rec._shards) {
+            if (sh._ordinal == *ordinal) {
+                return &sh;
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] static auto shard_not_found(std::string_view shard, const stream_record& rec)
+        -> aws_json::error {
+        return resource_not_found("Shard " + std::string(shard) + " in stream " + rec._name +
+                                  " under account " + rec._account + " does not exist");
+    }
+
+    // Reads need an ACTIVE or UPDATING stream, as writes do.
+    auto find_readable(const call_context& ctx) -> aws_json::result<stream_record> {
+        return find_writable(ctx);
+    }
 
     struct record_result {
         bool _error = false;
@@ -843,7 +1161,7 @@ private:
         std::uint32_t _ordinal = 0;
         std::vector<service_detail::pending_record*> _records;
         append_records_command _command;
-        std::optional<append_part_result> _result;
+        std::optional<append_part_result> _result{};
     };
 
     /// Commits every shard's append. Shards the cluster places in one group

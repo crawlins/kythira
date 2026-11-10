@@ -63,7 +63,7 @@ if(TARGET kinesis_gateway_node)
         COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env}
                 $<TARGET_FILE:kinesis_gateway_node> --check-config)
     set_tests_properties(kinesis_gateway_node_config PROPERTIES
-        PASS_REGULAR_EXPRESSION "forward_secret=set\npeer_gateway 1=127.0.0.1:4567\npeer_gateway 2=127.0.0.1:4567"
+        PASS_REGULAR_EXPRESSION "forward_secret=set\niterator_keys=derived from the forward secret\npeer_gateway 1=127.0.0.1:4567\npeer_gateway 2=127.0.0.1:4567"
         FAIL_REGULAR_EXPRESSION "0123456789abcdef0123")
     # Two voters and no secret: refused, naming the variable.
     add_test(NAME kinesis_gateway_node_config_needs_secret
@@ -115,6 +115,9 @@ kythira_kinesis_test(kinesis_compat_profile_test kinesis_compat_profile_test.cpp
 # Task 6: stream lifecycle and writes, through the front end over the
 # in-process cluster.
 kythira_kinesis_test(kinesis_service_test kinesis_service_test.cpp)
+# Task 7: shard iterators, the shard reader, GetShardIterator and
+# GetRecords.
+kythira_kinesis_test(kinesis_reads_test kinesis_reads_test.cpp)
 # Task 6: forwarding proposals to the group leader (wire, HMAC) and the
 # multi-raft cluster adapter.
 kythira_kinesis_test(kinesis_forward_test kinesis_forward_test.cpp)
@@ -148,3 +151,8 @@ set_tests_properties(kinesis_model_header_fresh kinesis_actions_header_fresh PRO
     LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
 
 kythira_scale_test_timeouts()
+
+# Task 7: the cluster in containers (docker/), by service name only, with
+# the AWS CLI v2 and boto3, under Docker or rootless Podman. Custom
+# targets, not CTest entries.
+add_subdirectory(docker)

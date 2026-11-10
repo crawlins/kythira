@@ -17,3 +17,7 @@ ListShards
 ListStreams
 PutRecord
 PutRecords
+
+# Task 7: reads and iterators.
+GetRecords
+GetShardIterator
