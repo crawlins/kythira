@@ -12,7 +12,9 @@ offline verification, signed digests, the native API with its HTTPS server
 and the C++ client are built and tested, and so is the node's core over
 multi_raft (ledger placement, routing, background index builds and seals),
 which runs in tests on an in-process network. The `ledger_node` daemon
-waits on the RocksDB engine, and snapshot catch-up (task 9) after it.
+waits on the RocksDB engine. A ledger's snapshot carries its segment
+files; catching a lagging follower up through multi_raft waits on log
+compaction for persistent groups.
 
 ## Model
 
@@ -56,6 +58,13 @@ waits on the RocksDB engine, and snapshot catch-up (task 9) after it.
   (64 MiB by default) that are byte-identical on every replica, and from
   there optionally to object storage. Reads and proofs fetch them back
   and check each one's SHA-256.
+- **Snapshots.** A follower too far behind the leader's log gets a
+  snapshot: an engine checkpoint of the ledger's range (which holds the
+  segment list) plus each segment file kept only on local disk, sent as
+  one file set. Offloaded segments are not sent; the follower reads them
+  from object storage like any replica. The follower checks each segment
+  against the manifest before it changes anything, and removes segment
+  files the new state does not list.
 
 ## Placement and routing
 

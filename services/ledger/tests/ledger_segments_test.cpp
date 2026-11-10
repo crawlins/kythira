@@ -5,7 +5,9 @@
 // 3.5, 3.6, 10.2): sealing blocks out of the engine into byte-identical
 // segment files on every replica, reading and proving sealed blocks,
 // redoing a seal a crash interrupted, and offloading segments to an object
-// store and reading them back with their SHA-256 checked.
+// store and reading them back with their SHA-256 checked; and snapshots
+// (task 9, Requirement 10.1) that carry the local segment files to a
+// follower through the format-1 stream.
 
 #define BOOST_TEST_MODULE ledger_segments_test
 #include <boost/test/unit_test.hpp>
@@ -18,6 +20,7 @@
 
 #include <raft/key_object_store.hpp>
 #include <raft/memory_kv_engine.hpp>
+#include <raft/snapshot_stream.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -650,6 +653,136 @@ BOOST_AUTO_TEST_CASE(export_entries_are_checked) {
     job.job_id = new_id();
     job.end_ms = job.start_ms - 1;
     BOOST_TEST(status_of(r.apply(to_command(encode_export_start(job)))) == "invalid_entry");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(snapshots)
+
+namespace {
+
+/// Sends `manifest` from `from` through the format-1 stream a follower
+/// stages (snapshot_stream_reader to snapshot_stream_writer, in small
+/// chunks), as Raft's InstallSnapshot does, into `to`.
+auto stream_snapshot(const std::filesystem::path& from, const kythira::snapshot_manifest& manifest,
+                     const std::filesystem::path& to) -> void {
+    const kythira::snapshot_stream_reader reader(from, manifest);
+    kythira::snapshot_stream_writer_options o;
+    o.disk_margin_bytes = 0;
+    auto writer = kythira::snapshot_stream_writer::create(to, manifest, o);
+    std::uint64_t offset = 0;
+    while (offset < reader.total_bytes()) {
+        const auto chunk = reader.read(offset, 997);
+        writer->write(offset, chunk);
+        offset += chunk.size();
+    }
+    writer->finish();
+}
+
+auto segment_files_in(const kythira::snapshot_manifest& m) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    for (const auto& f : m.files) {
+        if (f.name.starts_with(ledger_sm::snapshot_segment_prefix)) {
+            out.push_back(f.name);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(a_snapshot_carries_the_local_segments_to_a_lagging_follower) {
+    replica leader;
+    std::int64_t clock = t0;
+    commit_blocks(leader, {}, 10, clock);
+    BOOST_TEST(status_of(leader.apply(to_command(encode_seal({0, 3})))) == "sealed");
+    BOOST_TEST(status_of(leader.apply(to_command(encode_seal({4, 6})))) == "sealed");
+    // The first segment is offloaded: the snapshot leaves it out, and the
+    // follower reads it from the store like any replica.
+    memory_store store;
+    const segment_offload_target target{"bucket", "ledgers/audit/segments/"};
+    const auto first = leader.sm->segments().at(0);
+    const auto key = upload_segment(store, target, first, leader.sm->read_segment(0));
+    leader.sm->set_segment_fetcher(segment_fetcher(store, "bucket"));
+    BOOST_TEST(status_of(leader.apply(to_command(encode_offload({0, key})))) == "offloaded");
+    const auto second = leader.sm->segments().at(1);
+
+    // The follower has a segment file a replaced state left (it names
+    // blocks this ledger never sealed) and a file a seal never writes.
+    replica follower;
+    std::filesystem::create_directories(follower.options.segment_directory);
+    const auto stale = follower.options.segment_directory / segment_info::file_name(0, 5);
+    write_file_durably(stale, "stale");
+    const auto other = follower.options.segment_directory / "notes.txt";
+    write_file_durably(other, "keep");
+
+    temp_dir dir;
+    const auto manifest = leader.sm->checkpoint(dir.path / "checkpoint");
+    BOOST_TEST(segment_files_in(manifest) == std::vector<std::string>{"ledger-" + second.file});
+    stream_snapshot(dir.path / "checkpoint", manifest, dir.path / "staging");
+    follower.sm->ingest(dir.path / "staging", manifest, leader.index);
+    follower.index = leader.index;
+    follower.sm->set_segment_fetcher(segment_fetcher(store, "bucket"));
+
+    BOOST_TEST(follower.sm->applied_index() == leader.index);
+    BOOST_TEST(follower.sm->get_digest()->digest == leader.sm->get_digest()->digest);
+    BOOST_REQUIRE_EQUAL(follower.sm->segments().size(), 2U);
+    const auto copied = read_file(follower.options.segment_directory / second.file);
+    BOOST_REQUIRE(copied);
+    BOOST_TEST(sha256_of(*copied) == second.sha256);
+    BOOST_TEST(!std::filesystem::exists(follower.options.segment_directory / first.file));
+    BOOST_TEST(!std::filesystem::exists(stale));
+    BOOST_TEST(std::filesystem::exists(other));
+    check_every_proof(*follower.sm);
+
+    // It goes on from there with the leader, and survives a restart.
+    commit_blocks(leader, {&follower}, 3, clock);
+    BOOST_TEST(follower.sm->get_digest()->digest == leader.sm->get_digest()->digest);
+    follower.reopen();
+    follower.sm->set_segment_fetcher(segment_fetcher(store, "bucket"));
+    check_every_proof(*follower.sm);
+}
+
+BOOST_AUTO_TEST_CASE(a_damaged_segment_in_a_snapshot_is_refused_before_anything_changes) {
+    replica leader;
+    std::int64_t clock = t0;
+    commit_blocks(leader, {}, 6, clock);
+    BOOST_TEST(status_of(leader.apply(to_command(encode_seal({0, 3})))) == "sealed");
+    temp_dir dir;
+    const auto ckpt = dir.path / "checkpoint";
+    const auto manifest = leader.sm->checkpoint(ckpt);
+    const auto names = segment_files_in(manifest);
+    BOOST_REQUIRE_EQUAL(names.size(), 1U);
+    auto bytes = *read_file(ckpt / names[0]);
+    bytes[bytes.size() / 2] = static_cast<char>(bytes[bytes.size() / 2] ^ 0x01);
+    write_file_durably(ckpt / names[0], bytes);
+
+    replica follower;
+    BOOST_CHECK_THROW(follower.sm->ingest(ckpt, manifest, leader.index),
+                      kythira::persistent_storage_error);
+    BOOST_TEST(!follower.sm->tip().has_value());
+    BOOST_TEST(follower.sm->applied_index() == 0U);
+    BOOST_TEST(!std::filesystem::exists(follower.options.segment_directory /
+                                        leader.sm->segments().at(0).file));
+
+    // A replica with nowhere to put segments cannot take one either.
+    ledger_sm bare{ledger_options{}};
+    memory_kv_engine engine;
+    bare.open(engine, ledger_range("audit"));
+    BOOST_CHECK_THROW(bare.ingest(ckpt, manifest, leader.index), kythira::persistent_storage_error);
+}
+
+BOOST_AUTO_TEST_CASE(a_damaged_local_segment_fails_the_checkpoint) {
+    replica leader;
+    std::int64_t clock = t0;
+    commit_blocks(leader, {}, 6, clock);
+    BOOST_TEST(status_of(leader.apply(to_command(encode_seal({0, 3})))) == "sealed");
+    const auto path = leader.options.segment_directory / leader.sm->segments().at(0).file;
+    auto bytes = *read_file(path);
+    bytes[10] = static_cast<char>(bytes[10] ^ 0x01);
+    write_file_durably(path, bytes);
+    temp_dir dir;
+    BOOST_CHECK_THROW((void)leader.sm->checkpoint(dir.path / "checkpoint"), ledger_segment_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
