@@ -430,8 +430,10 @@ public:
         if (!valid_table_name(name)) {
             return bad_table_name();
         }
+        // VectorIndexes come with task 26; refusing them beats creating a
+        // table without the index the caller asked for.
         for (const char* member : {"GlobalSecondaryIndexes", "SSESpecification", "ResourcePolicy",
-                                   "OnDemandThroughput"}) {
+                                   "OnDemandThroughput", "VectorIndexes"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
@@ -621,7 +623,7 @@ public:
         for (const char* member :
              {"AttributeDefinitions", "GlobalSecondaryIndexUpdates", "StreamSpecification",
               "SSESpecification", "ReplicaUpdates", "OnDemandThroughput", "MultiRegionConsistency",
-              "GlobalTableWitnessUpdates"}) {
+              "GlobalTableWitnessUpdates", "VectorIndexUpdates"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
