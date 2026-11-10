@@ -44,6 +44,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -128,6 +129,11 @@ struct catalog_command {
         update_table = 3,
         delete_table = 4,
         job_progress = 5,
+        /// `TagResource`: `table.tags` are added or overwrite same-keyed
+        /// tags.
+        tag_resource = 6,
+        /// `UntagResource`: the keys of `table.tags` are removed.
+        untag_resource = 7,
     };
 
     /// Which settings an `update_table` changes.
@@ -367,7 +373,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
         return std::nullopt;
     }
     const auto op = static_cast<std::uint8_t>(bytes[1]);
-    if (version == 0 || op < 1 || op > 5) {
+    if (version == 0 || op < 1 || op > 7) {
         return std::nullopt;
     }
     detail::reader r(bytes.substr(2));
@@ -492,6 +498,10 @@ public:
                 break;
             case catalog_command::kind::job_progress:
                 result = job_progress(*c, batch);
+                break;
+            case catalog_command::kind::tag_resource:
+            case catalog_command::kind::untag_resource:
+                result = retag(*c, batch);
                 break;
         }
         batch.put(kythira::column_family::meta, applied_key(),
@@ -648,6 +658,9 @@ private:
             return failure("ResourceInUseException", "Table already exists: " + c.table.name);
         }
         table_descriptor d = c.table;
+        // One value per tag key, in key order, as TagResource keeps them.
+        const std::map<std::string, std::string> tags(d.tags.begin(), d.tags.end());
+        d.tags.assign(tags.begin(), tags.end());
         d.table_id = next_table_id();
         d.status = table_status::creating;
         d.created_ms = c.now_ms;
@@ -780,6 +793,32 @@ private:
         }
         batch.put(kythira::column_family::data, key, encode_delete_job(*job));
         r.table = describe(job->name);
+        return r;
+    }
+
+    /// Tags in key order. AWS keeps one value per key; a deleting table
+    /// cannot be tagged.
+    auto retag(const catalog_command& c, kythira::write_batch& batch) const -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || (c.table.table_id != 0 && d->table_id != c.table.table_id)) {
+            return not_found(c.table.name);
+        }
+        if (d->status == table_status::deleting) {
+            return in_use(*d);
+        }
+        std::map<std::string, std::string> tags(d->tags.begin(), d->tags.end());
+        for (const auto& [k, v] : c.table.tags) {
+            if (c.op == catalog_command::kind::tag_resource) {
+                tags[k] = v;
+            } else {
+                tags.erase(k);
+            }
+        }
+        d->tags.assign(tags.begin(), tags.end());
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(d);
         return r;
     }
 

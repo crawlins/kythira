@@ -19,19 +19,6 @@ test reads the table rows: keep one operation per row, in the
 
 | Service | Operation | Why |
 |---|---|---|
-| DynamoDB | `CreateTable` | planned, task 7 |
-| DynamoDB | `DescribeTable` | planned, task 7 |
-| DynamoDB | `ListTables` | planned, task 7 |
-| DynamoDB | `UpdateTable` | planned, task 7 |
-| DynamoDB | `DeleteTable` | planned, task 7 |
-| DynamoDB | `DescribeLimits` | planned, task 7 |
-| DynamoDB | `TagResource` | planned, task 7 |
-| DynamoDB | `UntagResource` | planned, task 7 |
-| DynamoDB | `ListTagsOfResource` | planned, task 7 |
-| DynamoDB | `GetItem` | planned, task 7 |
-| DynamoDB | `PutItem` | planned, task 7 |
-| DynamoDB | `UpdateItem` | planned, task 7 |
-| DynamoDB | `DeleteItem` | planned, task 7 |
 | DynamoDB | `Query` | planned, task 8 |
 | DynamoDB | `Scan` | planned, task 8 |
 | DynamoDB | `BatchGetItem` | planned, task 8 |

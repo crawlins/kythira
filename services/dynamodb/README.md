@@ -43,6 +43,10 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/catalog.hpp` | `dynamo_catalog_state_machine`: table descriptors, status transitions, table ids that are never reused, delete jobs | 6 |
 | `include/kythira/dynamodb/disk_guard.hpp` | refuses writes before the data directory's free space falls below a floor | 6 |
 | `tests/dynamodb_item_state_machine_test.cpp`, `tests/dynamodb_catalog_test.cpp` | the item state machine, the catalog and the disk guard on `memory_kv_engine` | 6 |
+| `include/kythira/dynamodb/backend.hpp` | `dynamo_backend`, what the handlers need from the cluster, and `local_backend`, which applies the commands in-process on one engine | 7 |
+| `include/kythira/dynamodb/table_api.hpp` | `CreateTable`, `DescribeTable`, `ListTables`, `UpdateTable`, `DeleteTable`, `DescribeLimits` and the tagging operations, with AWS's wording | 7 |
+| `include/kythira/dynamodb/item_api.hpp` | `GetItem`, `PutItem`, `UpdateItem` and `DeleteItem` | 7 |
+| `tests/dynamodb_api_test.cpp` | the control plane and single-item handlers through the front end on `local_backend` | 7 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
