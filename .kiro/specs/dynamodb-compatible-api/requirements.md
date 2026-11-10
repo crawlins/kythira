@@ -395,3 +395,27 @@ the freedom to relax it where my workload needs it.
    service-name addressing.
 6. A recording run against real AWS DynamoDB, to settle behaviour DynamoDB
    Local does not reproduce, SHALL need Clark's go in his own words.
+
+### Requirement 22: Bulk put and vector search
+
+Added November 10, 2026, when AWS's model gained these operations after the
+spec was written; Clark chose to plan both.
+
+#### Acceptance Criteria
+
+1. `StartBulkPutItems` SHALL load items from object-store files in the AWS
+   input formats into an existing table as an asynchronous operation,
+   honouring `ClientToken`, `MaxWriteRequestUnits` and the output report
+   location; `DescribeBulkOperation`, `ListBulkOperations` (90 days, newest
+   first, paginated) and `CancelBulkOperation` SHALL behave as AWS
+   documents, and cancelling SHALL keep the items already written.
+2. Vector indexes SHALL be created and dropped through `CreateTable`
+   (`VectorIndexes`) and `UpdateTable` (`VectorIndexUpdates`) and described
+   in `TableDescription`.
+3. `SearchVectors` SHALL return the `TopK` items nearest `SearchVector`
+   under the index's distance function (cosine, Euclidean, dot product),
+   sorted and scored as AWS documents, with `SearchConditionExpression`,
+   projection and consumed capacity.
+4. Index maintenance SHALL follow the item's writes asynchronously, as GSIs
+   do, and a search SHALL never return an item that is not in the table.
+
