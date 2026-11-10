@@ -141,16 +141,25 @@ public:
         boost::json::object unprocessed;
         boost::json::array consumed;
         std::size_t response_bytes = 0;
+        // Once an item would take the response past the limit, it and every
+        // key after it come back unprocessed: the response never exceeds
+        // 16 MB (DynamoDB Local answers the same way).
+        bool full = false;
         for (auto& g : gets) {
             boost::json::array found;
             boost::json::array left;
             double units = 0;
             for (const auto& key : g.keys) {
-                if (response_bytes >= k_max_response_bytes) {
+                if (full) {
                     left.push_back(item_to_json(key));
                     continue;
                 }
                 const auto it = _backend.read(g.table.table_id, g.table.schema, key, g.consistent);
+                if (it && response_bytes + item_size(*it) > k_max_response_bytes) {
+                    full = true;
+                    left.push_back(item_to_json(key));
+                    continue;
+                }
                 units += api_detail::read_units(it ? item_size(*it) : 0, g.consistent);
                 if (it) {
                     response_bytes += item_size(*it);

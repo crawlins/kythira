@@ -13,10 +13,10 @@
 /// `AttributeValue` reaching `attribute_from_json` is an object whose members
 /// have the right JSON types and whose `B` values are base64. What is left is
 /// what the model cannot say: exactly one type member, `NULL` only `true`,
-/// numbers in range, sets non-empty and duplicate-free, at most 32 levels of
-/// nested `M` and `L`. Key attributes add the key schema's types, no empty
-/// `S` or `B`, and AWS's 2048-byte partition-key and 1024-byte sort-key
-/// limits; items add the 400 KB size limit.
+/// numbers in range, sets non-empty and duplicate-free, at most 32 levels
+/// counting the attribute itself (31 nested `M` and `L`). Key attributes add the key schema's
+/// types, no empty `S` or `B`, and AWS's 2048-byte partition-key and 1024-byte sort-key limits;
+/// items add the 400 KB size limit.
 ///
 /// Messages are AWS's as far as published sources and the AWS SDKs' tests
 /// show them; task 8's DynamoDB Local differential pins the rest. They are
@@ -342,7 +342,10 @@ namespace detail {
             v.names.push_back(std::move(raw));
         }
     } else if (tag == "L" || tag == "M") {
-        if (depth + 1 > k_max_nesting_depth) {
+        // The attribute itself is level 1, so its elements are at level
+        // depth + 2: at most 31 containers deep, as DynamoDB Local 3.3.2
+        // answers PutItem (32 nested lists or maps are refused).
+        if (depth + 2 > k_max_nesting_depth) {
             return validation_error("Nesting Levels have exceeded supported limits");
         }
         if (tag == "L") {
@@ -364,6 +367,10 @@ namespace detail {
             v.type = attribute_type::M;
             std::vector<std::pair<std::string, attribute_value>> entries;
             for (const auto& kv : member->get_object()) {
+                // A name is at least one character, at any depth.
+                if (kv.key().empty()) {
+                    return validation_error("Empty attribute name");
+                }
                 auto inner = attribute_from_json(kv.value(), depth + 1);
                 if (!inner) {
                     return inner.error();
@@ -454,6 +461,9 @@ namespace detail {
     item out;
     out.reserve(json.size());
     for (const auto& kv : json) {
+        if (kv.key().empty()) {
+            return validation_error("Empty attribute name");
+        }
         auto v = attribute_from_json(kv.value());
         if (!v) {
             return v.error();
@@ -901,6 +911,8 @@ private:
         }
         case storage_tag::l:
         case storage_tag::m: {
+            // A level looser than the wire, so what an older build stored
+            // still reads back.
             if (depth + 1 > k_max_nesting_depth) {
                 return std::nullopt;
             }
