@@ -33,7 +33,7 @@ The surfaces:
 | SSRF through a caller-chosen URL | Sound. Only registered providers' issuers are fetched; https only, optional host allowlist, non-public addresses refused, connection pinned to the checked address. |
 | Containers as root, published ports (M9, M10, M11) | Test-only. The IAM images are test images (as their Dockerfiles say) and run as root like every other test image; the compose files publish nothing on the host. A production image is out of this spec. |
 
-## One deviation from Requirement 14.3
+## Requirement 14.3 (amended)
 
 Requirement 14.3 asks that an unknown access key and a bad signature take
 the same code path and comparable time. They do not: an unknown key is
@@ -44,6 +44,6 @@ already say which case applies, so equal timing would hide nothing the
 response does not reveal. Access key ids are not secrets in AWS's model.
 The per-key failure budget bounds the guessing either way.
 
-Recommendation: keep AWS's behaviour and amend Requirement 14.3 to "an
-unknown key and a bad signature are both refused, and a secret is compared
-in constant time". Recorded here for Clark to decide; no code change.
+Resolved 2026-11-10: Clark chose to keep AWS's behaviour, and Requirement
+14.3 now reads "both refused, with AWS's error codes, and compared in
+constant time". No code change.
