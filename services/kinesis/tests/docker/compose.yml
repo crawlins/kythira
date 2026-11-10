@@ -51,6 +51,12 @@ x-env: &env
   # Peer gateways default to each Raft host with this node's listen port:
   # kin-N:4567.
   KINESIS_FORWARD_SECRET: kinesis-scenario-forward-secret
+  # The catalog in one group and every shard in another, so a reshard is a
+  # cross-group transaction (task 11).
+  KYTHIRA_SHARD_CUTS: "k/"
+  # Seconds, not a minute, between maintenance passes: the resharding case
+  # waits for the pass to finish a reshard a node kill interrupted.
+  KINESIS_MAINTENANCE_INTERVAL_MS: "2000"
 
 services:
   kin-1:

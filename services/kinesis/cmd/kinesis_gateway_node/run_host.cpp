@@ -10,7 +10,9 @@
 /// persistence engine under `KINESIS_DATA_DIR/raft/<group>`. Every group's
 /// state machine is a `stream_state_machine` over the node's one
 /// `record_segment_store` (`KINESIS_DATA_DIR/segments`), so splitting or
-/// merging groups moves no record bytes. The API, the internal endpoints
+/// merging groups moves no record bytes. It is wrapped in
+/// `transactional_state_machine` so a reshard commits its catalog, parent
+/// and child entries across groups as one transaction. The API, the internal endpoints
 /// and health share one HTTPS listener (`kinesis_gateway.hpp`).
 
 #include "config.hpp"
@@ -45,6 +47,7 @@
 #include <raft/persistence.hpp>
 #include <raft/record_segment_store.hpp>
 #include <raft/static_key_authorizer.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -128,6 +131,15 @@ struct beast_stack {
     std::atomic<bool> _stopped{false};
 };
 
+/// The routing key a command names, so the host's cross-shard admission
+/// check runs on every proposal and the transaction layer knows which keys an
+/// entry touches.
+struct stream_partitioner {
+    [[nodiscard]] auto key_of(const std::vector<std::byte>& command) const -> std::string {
+        return kinesis::command_key(kinesis::decode_command(command));
+    }
+};
+
 struct host_types {
     using future_type = kythira::future_default<std::vector<std::byte>>;
     using promise_type = kythira::promise_default<std::vector<std::byte>>;
@@ -151,7 +163,12 @@ struct host_types {
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-    using state_machine_type = kinesis::stream_state_machine<log_index_type>;
+    /// Wrapped for tier-1 transactions, which resharding commits through
+    /// (task 11): the wrapper locks keys a transaction holds and passes
+    /// every other entry to the stream state machine.
+    using state_machine_type =
+        kythira::transactional_state_machine<kinesis::stream_state_machine<log_index_type>,
+                                             std::string, stream_partitioner>;
 
     using configuration_type = kythira::raft_configuration;
 
@@ -192,14 +209,6 @@ auto read_file(const std::string& path, std::string_view what) -> std::string {
     buf << in.rdbuf();
     return buf.str();
 }
-
-/// The routing key a command names, so the host's cross-shard admission
-/// check runs on every proposal.
-struct stream_partitioner {
-    [[nodiscard]] auto key_of(const std::vector<std::byte>& command) const -> std::string {
-        return kinesis::command_key(kinesis::decode_command(command));
-    }
-};
 
 }  // namespace
 
@@ -286,7 +295,8 @@ auto run(const node_options& opt) -> int {
             },
     };
     cfg.state_machine_factory = [&store, &fetch](const std::uint64_t&) {
-        return host_types::state_machine_type(&store, fetch);
+        return host_types::state_machine_type(
+            kinesis::stream_state_machine<std::uint64_t>(&store, fetch));
     };
     cfg.logger = kythira::console_logger{opt._log_level};
     cfg.logger_factory = [level = opt._log_level](const std::uint64_t&) {
@@ -328,15 +338,24 @@ auto run(const node_options& opt) -> int {
     kinesis::write_throttle write_limits;
     // The disk guard (Requirement 11.4) on the segment disk.
     kinesis::disk_guard guard(opt._data_dir / "segments", opt._disk_floor_bytes);
+    const auto address_of =
+        [gateways](const kythira::host_node_id& id) -> std::optional<std::string> {
+        const auto it = gateways.find(id);
+        return it == gateways.end() ? std::nullopt : std::optional{it->second};
+    };
     cluster_type cluster(
         *host,
-        kinesis::make_http_forwarder<kythira::host_node_id>(
-            peers, opt._forward_secret,
-            [gateways](const kythira::host_node_id& id) -> std::optional<std::string> {
-                const auto it = gateways.find(id);
-                return it == gateways.end() ? std::nullopt : std::optional{it->second};
-            }),
+        kinesis::make_http_forwarder<kythira::host_node_id>(peers, opt._forward_secret, address_of),
         opt._command_timeout, &write_limits, &guard);
+    // Transaction ops (resharding, task 11) go to the leading gateway, and
+    // the host's lock resolver asks other groups' leaders the same way.
+    cluster.set_txn_forwarder(kinesis::make_http_txn_forwarder<kythira::host_node_id>(
+        peers, opt._forward_secret, address_of));
+    host->set_txn_forwarder([&cluster](const std::vector<std::string>& keys,
+                                       const std::vector<std::byte>& envelope,
+                                       std::chrono::milliseconds timeout) {
+        return cluster.txn_send(keys, envelope, timeout);
+    });
 
     kinesis::front_end_config fc;
     fc._region = opt._region;
@@ -365,6 +384,10 @@ auto run(const node_options& opt) -> int {
                                                                              fc);
     gateway.set_lease_handler(
         [&leases](const kinesis::front_end_request& r) { return leases.handle(r); });
+    gateway.set_txn_handler(
+        [&cluster](const std::vector<std::string>& keys, const std::vector<std::byte>& envelope) {
+            return cluster.txn_submit_local(keys, envelope);
+        });
 
     https::server_config hc;
     hc.bind_address = opt._listen_host;
@@ -410,6 +433,15 @@ auto run(const node_options& opt) -> int {
             }
             next = std::chrono::steady_clock::now() + opt._maintenance_interval;
             const auto st = maintenance.run_once();
+            // A reshard whose caller died after its transaction committed
+            // is finished here once it has sat UPDATING for a minute.
+            const auto repaired = service.repair_reshards(cluster.now_ms(), 60000);
+            if (repaired > 0) {
+                logger.log(kythira::log_level::info,
+                           "kinesis maintenance: completed " + std::to_string(repaired) +
+                               " abandoned reshard(s)",
+                           {});
+            }
             if (st._seals + st._trims + st._tiered + st._objects_deleted + st._evicted +
                     st._failures >
                 0) {

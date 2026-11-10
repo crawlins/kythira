@@ -225,8 +225,15 @@ struct shard_entry {
     std::uint64_t _starting_counter = 0;
     /// Set once the shard is closed by resharding: its last counter.
     std::optional<std::uint64_t> _ending_counter = std::nullopt;
+    /// Closed by a reshard whose ending counter is not recorded yet (task
+    /// 11): the reshard transaction closes the shard in its own group, and
+    /// the counter it ended at is copied here by a follow-up entry. Until
+    /// then the shard takes no writes and its state has the last counter.
+    bool _closing = false;
 
-    [[nodiscard]] auto open() const noexcept -> bool { return !_ending_counter.has_value(); }
+    [[nodiscard]] auto open() const noexcept -> bool {
+        return !_ending_counter.has_value() && !_closing;
+    }
     friend auto operator==(const shard_entry&, const shard_entry&) -> bool = default;
 };
 
@@ -423,7 +430,7 @@ private:
 inline auto encode(codec::writer& w, const shard_entry& s) -> void {
     w.u32(s._ordinal).opt_u32(s._parent).opt_u32(s._adjacent_parent);
     w.hash(s._range._start).hash(s._range._end);
-    w.u64(s._starting_counter).opt_u64(s._ending_counter);
+    w.u64(s._starting_counter).opt_u64(s._ending_counter).u8(s._closing ? 1 : 0);
 }
 
 inline auto decode_shard_entry(codec::reader& r) -> shard_entry {
@@ -435,6 +442,7 @@ inline auto decode_shard_entry(codec::reader& r) -> shard_entry {
     s._range._end = r.hash();
     s._starting_counter = r.u64();
     s._ending_counter = r.opt_u64();
+    s._closing = r.boolean();
     if (s._range._start > s._range._end) {
         throw kinesis_codec_error("kinesis codec: shard range ends before it starts");
     }

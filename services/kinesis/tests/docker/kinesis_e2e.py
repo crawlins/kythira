@@ -11,6 +11,8 @@ kinesis_node_scenario_test, against the gateways by compose service name:
     kinesis_e2e.py create  --endpoint URL --stream S --shards N
     kinesis_e2e.py produce --endpoint URL --stream S --count N --tag T
     kinesis_e2e.py consume --endpoints URL,URL --stream S --expect N
+    kinesis_e2e.py ordered-produce --endpoints URL,URL --stream S --count N --keys K --tag T
+    kinesis_e2e.py lineage-consume --endpoints URL,URL --stream S --count N --keys K --tag T
 
 `produce` writes records `T-0` .. `T-<N-1>` with PutRecords in batches of
 100, retrying records that fail, and prints how many went to each shard.
@@ -22,6 +24,19 @@ and that no record arrives twice or goes missing, then prints one JSON
 line with the counts. Credentials come from
 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY. Any failure exits non-zero with
 the reason on stderr.
+
+The last two are the resharding case (task 11). `ordered-produce` writes
+`T-0` .. `T-<N-1>` one PutRecord at a time over `K` partition keys
+(`T-i` under key `i mod K`), waiting for each to succeed before the next,
+and moves to the next endpoint when a node does not answer, so the stream
+is written straight through a node kill and a reshard. A write retried
+after a lost answer may land twice. `lineage-consume` reads every shard,
+open or closed, from TRIM_HORIZON to its end or the stream's present, and
+starts a child only once its parents are read to their ends, as KCL does;
+it reads the stream again until every record is there or the deadline
+passes. It fails unless, under each partition key, records arrived in the
+order they were written. A record may arrive twice (a retried write), and
+the two copies are then next to each other.
 """
 
 import argparse
@@ -134,6 +149,94 @@ def consume(args):
     print(json.dumps({"consumed": len(seen), "per_shard": per_shard}))
 
 
+def ordered_produce(args):
+    clients = [client(e) for e in args.endpoints.split(",")]
+    turn = 0
+    retries = 0
+    deadline = time.time() + args.timeout
+    for i in range(args.count):
+        while True:
+            if time.time() > deadline:
+                fail(f"record {i} still failing after {args.timeout} s")
+            try:
+                clients[turn % len(clients)].put_record(
+                    StreamName=args.stream,
+                    Data=f"{args.tag}-{i}".encode(),
+                    PartitionKey=f"pk-{args.tag}-{i % args.keys}",
+                )
+                break
+            except Exception:  # noqa: BLE001 - any failure: next node, again
+                retries += 1
+                turn += 1
+                time.sleep(0.2)
+    print(json.dumps({"produced": args.count, "retries": retries}))
+
+
+def lineage_pass(clients, args):
+    """One read of the whole stream in lineage order: per key, the indexes
+    in arrival order. A closed shard is read to its end, an open one to the
+    present."""
+    turn = 0
+    prefix = f"{args.tag}-"
+    by_key = {}
+    shards = clients[0].list_shards(StreamName=args.stream)["Shards"]
+    done = set()
+    pending = list(shards)
+    while pending:
+        ready = [
+            s
+            for s in pending
+            if all(
+                s[k] in done for k in ("ParentShardId", "AdjacentParentShardId") if k in s
+            )
+        ]
+        if not ready:
+            fail("shards whose parents are not listed: " + ",".join(s["ShardId"] for s in pending))
+        for s in ready:
+            pending.remove(s)
+            sid = s["ShardId"]
+            it = clients[turn % len(clients)].get_shard_iterator(
+                StreamName=args.stream, ShardId=sid, ShardIteratorType="TRIM_HORIZON"
+            )["ShardIterator"]
+            while it:
+                c = clients[turn % len(clients)]
+                turn += 1
+                out = c.get_records(ShardIterator=it, Limit=args.limit)
+                for r in out["Records"]:
+                    data = r["Data"].decode()
+                    if data.startswith(prefix):
+                        i = int(data[len(prefix):])
+                        by_key.setdefault(i % args.keys, []).append(i)
+                it = out.get("NextShardIterator")
+                if not out["Records"] and out.get("MillisBehindLatest", 0) == 0:
+                    break
+            done.add(sid)
+    return by_key, len(shards)
+
+
+def lineage_consume(args):
+    clients = [client(e) for e in args.endpoints.split(",")]
+    deadline = time.time() + args.timeout
+    while True:
+        by_key, shards = lineage_pass(clients, args)
+        seen = {i for got in by_key.values() for i in got}
+        missing = sorted(set(range(args.count)) - seen)
+        if not missing:
+            break
+        if time.time() > deadline:
+            fail(f"{len(missing)} of {args.count} records never read, first {missing[0]}")
+        time.sleep(2)
+    for key, got in by_key.items():
+        for a, b in zip(got, got[1:]):
+            if b < a:
+                fail(f"key {key}: {b} arrived after {a}")
+        for i in set(got):
+            if got.count(i) > 2:
+                fail(f"key {key}: {i} arrived {got.count(i)} times")
+    dups = sum(len(g) - len(set(g)) for g in by_key.values())
+    print(json.dumps({"consumed": len(seen), "shards": shards, "duplicates": dups}))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -152,8 +255,23 @@ def main():
     co.add_argument("--expect", type=int, required=True)
     co.add_argument("--limit", type=int, default=37)
     co.add_argument("--timeout", type=int, default=120)
+    for name in ("ordered-produce", "lineage-consume"):
+        o = sub.add_parser(name)
+        o.add_argument("--endpoints", required=True)
+        o.add_argument("--stream", required=True)
+        o.add_argument("--count", type=int, required=True)
+        o.add_argument("--keys", type=int, required=True)
+        o.add_argument("--tag", required=True)
+        o.add_argument("--limit", type=int, default=100)
+        o.add_argument("--timeout", type=int, default=600)
     args = p.parse_args()
-    {"create": create, "produce": produce, "consume": consume}[args.command](args)
+    {
+        "create": create,
+        "produce": produce,
+        "consume": consume,
+        "ordered-produce": ordered_produce,
+        "lineage-consume": lineage_consume,
+    }[args.command](args)
 
 
 if __name__ == "__main__":

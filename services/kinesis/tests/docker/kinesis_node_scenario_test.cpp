@@ -24,6 +24,16 @@
 // the lease group's leader is killed whichever node holds it. Every record
 // is processed, and no shard is processed by two workers at once for longer
 // than the failover time.
+//
+// A third case (task 11, Requirement 10) reshards a stream three times
+// (UpdateShardCount, SplitShard, MergeShards), each call through one node
+// while another is killed with SIGKILL, and a producer writes straight
+// through, one record at a time over eight partition keys. The catalog and
+// the shards live in different Raft groups (KYTHIRA_SHARD_CUTS), so each
+// reshard is a cross-group transaction, and in turn the leader of each is
+// killed. A reshard the kill interrupts is finished by the maintenance
+// pass. Read in lineage order, parents before children, every record is
+// there and each key's records are in the order they were written.
 
 #define BOOST_TEST_MODULE kinesis_node_scenario_test
 #include <boost/test/results_collector.hpp>
@@ -47,6 +57,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -491,4 +502,113 @@ BOOST_AUTO_TEST_CASE(kcl_workers_keep_one_owner_per_shard_through_node_kills) {
     for (const auto& b : double_ownership(events)) {
         BOOST_ERROR("shard processed by two workers past the failover time: " << b);
     }
+}
+
+// Task 11: resharding with a node killed in the middle of each reshard.
+BOOST_AUTO_TEST_CASE(reshards_survive_a_node_kill_with_no_lost_or_reordered_records) {
+    const logs_on_failure logs;
+    for (int n : {1, 2, 3}) {
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered ListStreams");
+    }
+    {
+        auto r = boto3({"create", "--endpoint", endpoint(1), "--stream", "rs", "--shards", "2"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create failed:\n" << r.out);
+    }
+    const std::string all = endpoint(1) + "," + endpoint(2) + "," + endpoint(3);
+    constexpr int k_records = 600;
+    os::CmdResult produced;
+    std::thread producer([&] {
+        produced = boto3({"ordered-produce", "--endpoints", all, "--stream", "rs", "--count",
+                          std::to_string(k_records), "--keys", "8", "--tag", "r"});
+    });
+
+    // Each reshard goes through `via` while `victim` is killed as the call
+    // starts (a reshard on a settled cluster takes well under a second, so
+    // a later kill would miss it). Whatever the call answers, the stream must
+    // be ACTIVE again once the kill's reshard is finished, by the call or by
+    // the maintenance pass. A call refused outright (InternalFailure while a
+    // killed leader's group elects a new one, or ResourceInUse while an
+    // interrupted reshard is still being finished) changed nothing, so it is
+    // made again, as a client would, until the stream has the target count:
+    // each reshard happens exactly once, kill or no kill.
+    const auto open_shards = [&](int n) -> std::int64_t {
+        auto r = aws_cli(n, {"describe-stream-summary", "--stream-name", "rs"});
+        auto j = r.code == 0 ? last_json(r.out) : std::nullopt;
+        if (!j) {
+            return -1;
+        }
+        const auto* d = j->if_contains("StreamDescriptionSummary");
+        const auto* v =
+            d != nullptr && d->is_object() ? d->as_object().if_contains("OpenShardCount") : nullptr;
+        return v != nullptr && v->is_int64() ? v->as_int64() : -1;
+    };
+    const auto reshard_with_kill = [&](int via, int victim, int target) {
+        const std::vector<std::string> call = {
+            "update-shard-count",   "--stream-name",        "rs",
+            "--target-shard-count", std::to_string(target), "--scaling-type",
+            "UNIFORM_SCALING"};
+        const auto update = [&] {
+            auto cmd =
+                compose_cmd({"--profile", "clients", "run", "--rm", "-T", "-e",
+                             std::string("AWS_ACCESS_KEY_ID=") + k_admin_id, "-e",
+                             std::string("AWS_SECRET_ACCESS_KEY=") + k_admin_secret, "aws-cli",
+                             "--endpoint-url", endpoint(via), "--output", "json", "kinesis"});
+            cmd.insert(cmd.end(), call.begin(), call.end());
+            return os::real_exec(cmd);
+        };
+        os::CmdResult answer;
+        std::thread caller([&] { answer = update(); });
+        std::this_thread::sleep_for(20ms);
+        os::checked_exec(os::real_exec, compose_cmd({"kill", service(victim)}));
+        caller.join();
+        BOOST_TEST_MESSAGE("reshard through " << service(via) << " with " << service(victim)
+                                              << " killed: exit " << answer.code << "\n"
+                                              << answer.out);
+        BOOST_TEST(eventually([&] { return stream_status(via, "rs") == "ACTIVE"; }, 240s),
+                   "the stream never returned to ACTIVE after killing " << service(victim));
+        os::checked_exec(os::real_exec, compose_cmd({"start", service(victim)}));
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(victim, {"list-streams"}).code == 0; }, 120s),
+            service(victim) << " never answered after restarting");
+        BOOST_TEST(eventually(
+                       [&] {
+                           if (stream_status(via, "rs") != "ACTIVE") {
+                               return false;
+                           }
+                           if (open_shards(via) == target) {
+                               return true;
+                           }
+                           auto again = update();
+                           BOOST_TEST_MESSAGE("reshard to " << target << " again through "
+                                                            << service(via) << ": exit "
+                                                            << again.code << "\n"
+                                                            << again.out);
+                           return false;
+                       },
+                       300s),
+                   "the stream never reached " << target << " open shards");
+    };
+    std::this_thread::sleep_for(2s);
+    reshard_with_kill(2, 1, 4);
+    reshard_with_kill(3, 2, 2);
+    reshard_with_kill(1, 3, 3);
+    producer.join();
+    BOOST_REQUIRE_MESSAGE(produced.code == 0, "ordered-produce failed:\n" << produced.out);
+
+    // Lineage: some shards closed with an ending sequence number, children
+    // naming their parents.
+    {
+        auto r = aws_cli(1, {"list-shards", "--stream-name", "rs"});
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "list-shards failed:\n" << r.out);
+        BOOST_TEST(r.out.find("EndingSequenceNumber") != std::string::npos, r.out);
+        BOOST_TEST(r.out.find("ParentShardId") != std::string::npos, r.out);
+    }
+    auto c = boto3({"lineage-consume", "--endpoints", all, "--stream", "rs", "--count",
+                    std::to_string(k_records), "--keys", "8", "--tag", "r", "--timeout", "180"});
+    BOOST_TEST(c.code == 0, "lineage-consume failed:\n" << c.out);
+    BOOST_TEST(c.out.find("\"consumed\": " + std::to_string(k_records)) != std::string::npos,
+               c.out);
 }

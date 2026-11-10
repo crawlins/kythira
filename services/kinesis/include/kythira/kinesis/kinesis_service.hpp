@@ -75,12 +75,15 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -115,8 +118,12 @@ struct kinesis_limits {
 struct kinesis_service_config {
     kinesis_compat_profile _cluster_profile{};
     kinesis_limits _limits{};
-    /// Appends that find their shard closed are retried this many times.
-    int _closed_shard_retries = 3;
+    /// Appends that find their shard closed (resharded since this replica's
+    /// catalog was read) are retried this many times, the first at once and
+    /// then after `_closed_shard_backoff`, doubling, while the catalog
+    /// replica catches up with the reshard.
+    int _closed_shard_retries = 8;
+    std::chrono::milliseconds _closed_shard_backoff{10};
     /// Signs and checks shard iterators; every gateway of a cluster needs
     /// the same ring. Empty: the service makes a random key, which suits
     /// one node only (iterators from other nodes would not verify).
@@ -311,10 +318,15 @@ public:
               bind(&kinesis_service::increase_stream_retention_period));
         fe.on("DecreaseStreamRetentionPeriod",
               bind(&kinesis_service::decrease_stream_retention_period));
+        if constexpr (transacts<Cluster>) {
+            fe.on("SplitShard", bind(&kinesis_service::split_shard));
+            fe.on("MergeShards", bind(&kinesis_service::merge_shards));
+            fe.on("UpdateShardCount", bind(&kinesis_service::update_shard_count));
+        }
     }
 
     /// The operations `register_with` adds, for implemented-operations.txt.
-    static constexpr std::array<std::string_view, 13> k_operations{"CreateStream",
+    static constexpr std::array<std::string_view, 16> k_operations{"CreateStream",
                                                                    "DecreaseStreamRetentionPeriod",
                                                                    "DeleteStream",
                                                                    "DescribeLimits",
@@ -325,8 +337,11 @@ public:
                                                                    "IncreaseStreamRetentionPeriod",
                                                                    "ListShards",
                                                                    "ListStreams",
+                                                                   "MergeShards",
                                                                    "PutRecord",
-                                                                   "PutRecords"};
+                                                                   "PutRecords",
+                                                                   "SplitShard",
+                                                                   "UpdateShardCount"};
 
     using result = aws_json::result<boost::json::object>;
 
@@ -542,6 +557,166 @@ public:
             return internal_failure();
         }
         return boost::json::object{};
+    }
+
+    // ---- resharding (task 11) ------------------------------------------------
+
+    /// One reshard: which shards close and which open.
+    struct reshard_plan {
+        std::vector<std::uint32_t> _closing;
+        std::vector<shard_entry> _children;
+    };
+
+    auto split_shard(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const std::string shard_text(*detail::string_member(in, "ShardToSplit"));
+        const std::string key_text(*detail::string_member(in, "NewStartingHashKey"));
+        const auto new_start = parse_hash_key(key_text);
+        if (!new_start) {
+            return invalid_argument("NewStartingHashKey " + key_text + " is not a valid hash key.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        auto done =
+            run_reshard(*s, [&](const stream_record& rec) -> aws_json::result<reshard_plan> {
+                auto parent = shard_to_reshard(rec, shard_text);
+                if (!parent) {
+                    return parent.error();
+                }
+                const auto& p = **parent;
+                // AWS's rule: strictly inside the range, with room on each
+                // side.
+                if (*new_start <= p._range._start + 1 || *new_start >= p._range._end) {
+                    return invalid_argument(
+                        "NewStartingHashKey " + key_text + " used in SplitShard() on shard " +
+                        shard_text + " in stream " + rec._name + " under account " + rec._account +
+                        " is not both greater than one plus the shard's StartingHashKey " +
+                        to_decimal(p._range._start) + " and less than the shard's EndingHashKey " +
+                        to_decimal(p._range._end) + ".");
+                }
+                reshard_plan plan;
+                plan._closing.push_back(p._ordinal);
+                plan._children.push_back(child(rec._next_ordinal, p._ordinal, std::nullopt,
+                                               {p._range._start, *new_start - 1}));
+                plan._children.push_back(child(rec._next_ordinal + 1, p._ordinal, std::nullopt,
+                                               {*new_start, p._range._end}));
+                return plan;
+            });
+        if (!done) {
+            return done.error();
+        }
+        return boost::json::object{};
+    }
+
+    auto merge_shards(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const std::string first_text(*detail::string_member(in, "ShardToMerge"));
+        const std::string second_text(*detail::string_member(in, "AdjacentShardToMerge"));
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        auto done =
+            run_reshard(*s, [&](const stream_record& rec) -> aws_json::result<reshard_plan> {
+                auto a = shard_to_reshard(rec, first_text);
+                if (!a) {
+                    return a.error();
+                }
+                auto b = shard_to_reshard(rec, second_text);
+                if (!b) {
+                    return b.error();
+                }
+                const auto& x = **a;
+                const auto& y = **b;
+                if (!adjacent(x._range, y._range)) {
+                    return invalid_argument(
+                        "Shards " + first_text + " and " + second_text + " in stream " + rec._name +
+                        " under account " + rec._account +
+                        " are not an adjacent pair of shards eligible for merging");
+                }
+                reshard_plan plan;
+                plan._closing = {x._ordinal, y._ordinal};
+                plan._children.push_back(child(rec._next_ordinal, x._ordinal, y._ordinal,
+                                               {std::min(x._range._start, y._range._start),
+                                                std::max(x._range._end, y._range._end)}));
+                return plan;
+            });
+        if (!done) {
+            return done.error();
+        }
+        return boost::json::object{};
+    }
+
+    /// UNIFORM_SCALING as a series of single reshards: split the widest open
+    /// shard at its middle, or merge the narrowest adjacent pair, until the
+    /// target count. AWS's limits apply: at most double and at least half
+    /// the open shards, per call.
+    auto update_shard_count(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const auto target = service_detail::int_member(in, "TargetShardCount");
+        const auto scaling = detail::string_member(in, "ScalingType");
+        if (!scaling || *scaling != "UNIFORM_SCALING") {
+            return invalid_argument("ScalingType must be UNIFORM_SCALING.");
+        }
+        if (!target || *target < 1) {
+            return invalid_argument("TargetShardCount must be at least 1.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto current = static_cast<std::int64_t>(s->open_shard_count());
+        if (*target > 2 * current) {
+            return invalid_argument(
+                "UpdateShardCount cannot scale up over double your current open shard count. "
+                "Current open shard count: " +
+                std::to_string(current) + " Target shard count: " + std::to_string(*target));
+        }
+        if (2 * *target < current) {
+            return invalid_argument(
+                "UpdateShardCount cannot scale down below half your current open shard count. "
+                "Current open shard count: " +
+                std::to_string(current) + " Target shard count: " + std::to_string(*target));
+        }
+        if (*target > static_cast<std::int64_t>(_config._limits._shard_limit)) {
+            return service_detail::limit_exceeded(
+                "This request would exceed the shard limit for the account " + s->_account +
+                ". Current shard count: " + std::to_string(current) +
+                ". Limit: " + std::to_string(_config._limits._shard_limit) + ".");
+        }
+        const auto wanted = static_cast<std::size_t>(*target);
+        while (s->open_shard_count() != wanted) {
+            auto done =
+                run_reshard(*s, [&](const stream_record& rec) -> aws_json::result<reshard_plan> {
+                    return uniform_step(rec, wanted);
+                });
+            if (!done) {
+                return done.error();
+            }
+            // The next step plans from the table this one left, so wait
+            // for this replica to show the stream ACTIVE again.
+            auto fresh = record_once(s->_account, s->_name, s->_id, [](const stream_record& r) {
+                return r._status == stream_status::active;
+            });
+            if (!fresh) {
+                return internal_failure();
+            }
+            s = std::move(*fresh);
+        }
+        boost::json::object out;
+        out["StreamName"] = s->_name;
+        out["StreamARN"] = arn_of(ctx, *s);
+        out["CurrentShardCount"] = current;
+        out["TargetShardCount"] = *target;
+        return out;
     }
 
     // ---- describes ----------------------------------------------------------
@@ -910,7 +1085,10 @@ public:
             return internal_failure();
         }
         if (!state->_found) {
-            return shard_not_found(shard_text, rec);
+            // The catalog lists the shard but this replica of its group has
+            // not applied the open yet (a node just restarted, or behind a
+            // reshard): a retryable failure, not a missing shard.
+            return internal_failure();
         }
         const auto first = std::max(entry->_starting_counter + 1, state->_state._trim_before);
         shard_iterator it;
@@ -1041,9 +1219,8 @@ public:
             // or tiering in between): read again with a fresh copy once.
             const auto state = read_shard_state(key);
             if (!state || !state->_found || state->_store == nullptr) {
-                if (state && !state->_found) {
-                    return shard_not_found(format_shard_id(it._ordinal, profile._id_format), rec);
-                }
+                // Not found here although the catalog lists it: this
+                // replica is behind (see GetShardIterator). Retryable.
                 return internal_failure();
             }
             got = read_shard(*state->_store, state->_fetch, key, state->_state, it._counter,
@@ -1239,6 +1416,297 @@ private:
                 "MaxRecordSizeInKiB other than 1024 is not supported by this endpoint.");
         }
         return std::nullopt;
+    }
+
+    // ---- resharding internals ------------------------------------------------
+
+    [[nodiscard]] static auto child(std::uint32_t ordinal, std::uint32_t parent,
+                                    std::optional<std::uint32_t> adjacent_parent, hash_range range)
+        -> shard_entry {
+        shard_entry c;
+        c._ordinal = ordinal;
+        c._parent = parent;
+        c._adjacent_parent = adjacent_parent;
+        c._range = range;
+        return c;
+    }
+
+    [[nodiscard]] static auto adjacent(const hash_range& a, const hash_range& b) -> bool {
+        return (a._end != max_hash_key && a._end + 1 == b._start) ||
+               (b._end != max_hash_key && b._end + 1 == a._start);
+    }
+
+    // The open shard a reshard names, or AWS's refusal.
+    [[nodiscard]] static auto shard_to_reshard(const stream_record& rec, const std::string& text)
+        -> aws_json::result<const shard_entry*> {
+        const auto ordinal = parse_shard_id(text);
+        const auto* sh = ordinal ? rec.find_shard(*ordinal) : nullptr;
+        if (sh == nullptr) {
+            return resource_not_found("Could not find shard " + text + " in stream " + rec._name +
+                                      " under account " + rec._account + ".");
+        }
+        if (!sh->open()) {
+            return service_detail::in_use(
+                "Shard " + text + " in stream " + rec._name + " under account " + rec._account +
+                " has already been merged or split, and thus is not eligible for merging or "
+                "splitting.");
+        }
+        return sh;
+    }
+
+    // One step of UNIFORM_SCALING towards `target` open shards.
+    [[nodiscard]] static auto uniform_step(const stream_record& rec, std::size_t target)
+        -> aws_json::result<reshard_plan> {
+        std::vector<const shard_entry*> open;
+        for (const auto& sh : rec._shards) {
+            if (sh.open()) {
+                open.push_back(&sh);
+            }
+        }
+        std::sort(open.begin(), open.end(),
+                  [](const auto* a, const auto* b) { return a->_range._start < b->_range._start; });
+        const auto width = [](const hash_range& r) { return r._end - r._start; };
+        reshard_plan plan;
+        if (open.size() < target) {
+            const auto* widest = *std::max_element(
+                open.begin(), open.end(),
+                [&](const auto* a, const auto* b) { return width(a->_range) < width(b->_range); });
+            const auto mid = widest->_range._start + width(widest->_range) / 2 + 1;
+            plan._closing.push_back(widest->_ordinal);
+            plan._children.push_back(child(rec._next_ordinal, widest->_ordinal, std::nullopt,
+                                           {widest->_range._start, mid - 1}));
+            plan._children.push_back(child(rec._next_ordinal + 1, widest->_ordinal, std::nullopt,
+                                           {mid, widest->_range._end}));
+            return plan;
+        }
+        std::size_t best = 0;
+        for (std::size_t i = 1; i + 1 < open.size(); ++i) {
+            if (width(open[i]->_range) + width(open[i + 1]->_range) <
+                width(open[best]->_range) + width(open[best + 1]->_range)) {
+                best = i;
+            }
+        }
+        const auto* x = open[best];
+        const auto* y = open[best + 1];
+        plan._closing = {x->_ordinal, y->_ordinal};
+        plan._children.push_back(
+            child(rec._next_ordinal, x->_ordinal, y->_ordinal, {x->_range._start, y->_range._end}));
+        return plan;
+    }
+
+    // A reshard (Requirement 10.1). The stream goes UPDATING first, which
+    // only one reshard can do at a time, so the plan made from the catalog
+    // read after that cannot be overtaken. The catalog's half, the parents'
+    // close and the children's open then commit as one tier-1 transaction:
+    // appends that reach a parent before it are in the parent, appends after
+    // it find the parent closed and go to the children, and appends during
+    // it wait out the transaction's locks. Last, the counters the parents
+    // ended at go into the catalog and the stream returns to ACTIVE. A
+    // reshard abandoned after the transaction is finished by the
+    // maintenance pass (`complete_reshard`).
+    template<typename Planner>
+    auto run_reshard(const stream_record& rec, Planner&& plan_of) -> aws_json::result<bool>
+    requires transacts<Cluster>
+    {
+        // The compare-and-set decides, not `rec`: this replica can still
+        // show the UPDATING of a reshard that has just finished.
+        const auto began = propose(
+            set_stream_status_command{rec._account, rec._name, rec._id, stream_status::updating});
+        if (!began) {
+            return internal_failure();
+        }
+        if (began->_status == apply_status::bad_transition) {
+            if (rec._status != stream_status::active) {
+                return not_active(rec);
+            }
+            return service_detail::in_use("Stream " + rec._name + " under account " + rec._account +
+                                          " not ACTIVE, instead in state UPDATING");
+        }
+        if (began->_status != apply_status::ok) {
+            return service_detail::not_found(rec._name, rec._account);
+        }
+        const auto back_to_active = [&] {
+            (void)propose(
+                set_stream_status_command{rec._account, rec._name, rec._id, stream_status::active});
+        };
+        // The catalog as UPDATING left it. Read through the log, so a
+        // replica that is behind cannot hand the plan a stale shard table.
+        auto fresh = linearizable_record(rec);
+        if (!fresh) {
+            back_to_active();
+            return internal_failure();
+        }
+        auto plan = plan_of(*fresh);
+        if (!plan) {
+            back_to_active();
+            return plan.error();
+        }
+        std::vector<txn_write> writes;
+        const auto add = [&writes](const stream_command& c) {
+            writes.push_back({command_key(c), encode_command(c)});
+        };
+        add(reshard_catalog_command{rec._account, rec._name, rec._id, plan->_closing,
+                                    plan->_children});
+        for (const auto o : plan->_closing) {
+            add(close_shard_command{routing_key(rec._id, o)});
+        }
+        for (const auto& c : plan->_children) {
+            add(open_shard_command{routing_key(rec._id, c._ordinal), 0});
+        }
+        switch (_cluster.transact(std::move(writes))) {
+            case transact_outcome::committed:
+                break;
+            case transact_outcome::aborted:
+                back_to_active();
+                return internal_failure();
+            case transact_outcome::unknown:
+                // Left UPDATING: the maintenance pass finishes it either way
+                // once the transaction's fate is settled.
+                return internal_failure();
+        }
+        // Wait for this replica to show the children, so the completion
+        // below sees the parents closing.
+        const auto first_child = plan->_children.front()._ordinal;
+        if (!record_once(rec._account, rec._name, rec._id,
+                         [first_child](const stream_record& r) {
+                             return r.find_shard(first_child) != nullptr;
+                         }) ||
+            !complete_reshard(rec._account, rec._name, rec._id)) {
+            return internal_failure();
+        }
+        return true;
+    }
+
+public:
+    /// Finish a reshard whose transaction committed: record the counters the
+    /// closing shards ended at (asked of their groups by re-proposing the
+    /// close, which answers a closed shard's last counter and changes
+    /// nothing) and return the stream to ACTIVE. On a stream whose
+    /// transaction aborted it just returns it to ACTIVE. Safe to repeat.
+    auto complete_reshard(const std::string& account, const std::string& name, std::uint64_t id)
+        -> bool {
+        std::optional<stream_record> rec;
+        if (!read_catalog([&](const auto& sm) {
+                if (const auto* s = sm.find_stream(account, name)) {
+                    rec = *s;
+                }
+            }) ||
+            !rec || rec->_id != id) {
+            return false;
+        }
+        set_ending_counters_command endings{account, name, id, {}};
+        for (const auto& sh : rec->_shards) {
+            if (!sh._closing) {
+                continue;
+            }
+            const auto r = propose(close_shard_command{routing_key(id, sh._ordinal)});
+            if (!r || r->_status != apply_status::ok) {
+                return false;
+            }
+            endings._endings.emplace_back(sh._ordinal, r->_last_counter);
+        }
+        if (!endings._endings.empty()) {
+            const auto r = propose(endings);
+            if (!r || r->_status != apply_status::ok) {
+                return false;
+            }
+        }
+        if (rec->_status == stream_status::updating) {
+            const auto r =
+                propose(set_stream_status_command{account, name, id, stream_status::active});
+            if (!r || r->_status != apply_status::ok) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// The maintenance pass's half of resharding: a stream UPDATING for
+    /// longer than `stale_ms` (seen by this node's earlier calls; a live
+    /// reshard takes a few commit round trips) had its reshard abandoned
+    /// after the transaction, or before it; either way its transaction's
+    /// fate is settled by now, so complete it. Shards still closing on an
+    /// ACTIVE stream get their ending counters too. Returns how many streams
+    /// it completed.
+    auto repair_reshards(std::int64_t now_ms, std::int64_t stale_ms) -> std::size_t
+    requires transacts<Cluster>
+    {
+        std::vector<stream_record> streams;
+        (void)read_catalog([&](const auto& sm) {
+            const auto prefix = streams_prefix();
+            const auto& entries = sm.entries();
+            for (auto it = entries.lower_bound(prefix);
+                 it != entries.end() && it->first.starts_with(prefix); ++it) {
+                if (const auto* r = std::get_if<stream_record>(&it->second)) {
+                    streams.push_back(*r);
+                }
+            }
+        });
+        std::size_t repaired = 0;
+        const std::scoped_lock lock(_updating_mutex);
+        std::map<std::uint64_t, std::int64_t> still;
+        for (const auto& rec : streams) {
+            const bool closing = std::any_of(rec._shards.begin(), rec._shards.end(),
+                                             [](const shard_entry& s) { return s._closing; });
+            if (rec._status == stream_status::updating) {
+                const auto seen = _updating_since.find(rec._id);
+                const auto since = seen == _updating_since.end() ? now_ms : seen->second;
+                still[rec._id] = since;
+                if (now_ms - since < stale_ms) {
+                    continue;
+                }
+            } else if (!closing) {
+                continue;
+            }
+            if (complete_reshard(rec._account, rec._name, rec._id)) {
+                ++repaired;
+                still.erase(rec._id);
+            }
+        }
+        _updating_since = std::move(still);
+        return repaired;
+    }
+
+private:
+    std::mutex _updating_mutex;
+    /// When this node first saw each UPDATING stream (`repair_reshards`).
+    std::map<std::uint64_t, std::int64_t> _updating_since;
+
+    [[nodiscard]] static auto not_active(const stream_record& rec) -> aws_json::error {
+        return service_detail::in_use("Stream " + rec._name + " under account " + rec._account +
+                                      " not ACTIVE, instead in state " +
+                                      std::string(to_string(rec._status)));
+    }
+
+    // The stream record once this replica shows `done(record)`, waiting up
+    // to a second for it to catch up. The catalog's log is ordered, so once
+    // the replica has applied an entry it has applied everything before it.
+    template<typename Done>
+    auto record_once(const std::string& account, const std::string& name, std::uint64_t id,
+                     Done&& done) -> std::optional<stream_record> {
+        for (int attempt = 0; attempt < 50; ++attempt) {
+            std::optional<stream_record> found;
+            if (!read_catalog([&](const auto& sm) {
+                    if (const auto* s = sm.find_stream(account, name)) {
+                        found = *s;
+                    }
+                })) {
+                return std::nullopt;
+            }
+            if (found && found->_id == id && done(*found)) {
+                return found;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+        return std::nullopt;
+    }
+
+    // The record once this replica has applied our UPDATING entry: the
+    // shard table every step of this reshard builds on.
+    auto linearizable_record(const stream_record& rec) -> std::optional<stream_record> {
+        return record_once(rec._account, rec._name, rec._id, [](const stream_record& r) {
+            return r._status == stream_status::updating;
+        });
     }
 
     // The stream the request names, as this replica's catalog has it.
@@ -1445,6 +1913,10 @@ private:
             }
             if (retry.empty()) {
                 return out;
+            }
+            if (attempt > 0) {
+                std::this_thread::sleep_for(_config._closed_shard_backoff *
+                                            (1 << std::min(attempt - 1, 6)));
             }
             std::optional<stream_record> fresh;
             if (!read_catalog([&](const auto& sm) {

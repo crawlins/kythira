@@ -31,11 +31,9 @@ unknown-operation error rather than a retryable fault.
 | `ListStreamConsumers` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
 | `ListTagsForResource` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `ListTagsForStream` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
-| `MergeShards` | task 11 | Not built yet (resharding). | `UnknownOperationException`, HTTP 400 |
 | `PutResourcePolicy` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `RegisterStreamConsumer` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
 | `RemoveTagsFromStream` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
-| `SplitShard` | task 11 | Not built yet (resharding). | `UnknownOperationException`, HTTP 400 |
 | `StartStreamEncryption` | task 14 | Not built yet (encryption at rest). | `UnknownOperationException`, HTTP 400 |
 | `StopStreamEncryption` | task 14 | Not built yet (encryption at rest). | `UnknownOperationException`, HTTP 400 |
 | `SubscribeToShard` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
@@ -44,6 +42,5 @@ unknown-operation error rather than a retryable fault.
 | `UpdateAccountSettings` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `UpdateChannel` | none | Not in the spec. Channels deliver a stream's records to Amazon S3 or S3 Tables (Iceberg), a delivery service like Firehose, which Requirement 1 leaves out of scope. Open question for the owner. | `UnknownOperationException`, HTTP 400 |
 | `UpdateMaxRecordSize` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
-| `UpdateShardCount` | task 11 | Not built yet (resharding). | `UnknownOperationException`, HTTP 400 |
 | `UpdateStreamMode` | task 12 | Not built yet (on-demand mode). | `UnknownOperationException`, HTTP 400 |
 | `UpdateStreamWarmThroughput` | task 12 | Not built yet (on-demand mode). | `UnknownOperationException`, HTTP 400 |

@@ -101,6 +101,75 @@ struct proposal {
     return p;
 }
 
+/// Resharding transactions (task 11): a transaction op another gateway sends
+/// to the leader of the group owning `_keys`, which submits it with
+/// `submit_txn` and answers the encoded `txn_result`. Signed like a proposal.
+inline constexpr std::string_view k_txn_path = "/_kythira/kinesis/v1/txn";
+
+struct txn_op {
+    std::vector<std::string> _keys;
+    std::vector<std::byte> _envelope;
+};
+
+/// A key count, then each key as a 4-byte length and its bytes, then the
+/// envelope to the end.
+[[nodiscard]] inline auto encode_txn_body(const txn_op& op) -> std::string {
+    std::string out;
+    const auto put32 = [&out](std::size_t v) {
+        const auto n = static_cast<std::uint32_t>(v);
+        out.push_back(static_cast<char>((n >> 24U) & 0xFFU));
+        out.push_back(static_cast<char>((n >> 16U) & 0xFFU));
+        out.push_back(static_cast<char>((n >> 8U) & 0xFFU));
+        out.push_back(static_cast<char>(n & 0xFFU));
+    };
+    put32(op._keys.size());
+    for (const auto& k : op._keys) {
+        put32(k.size());
+        out += k;
+    }
+    for (const auto b : op._envelope) {
+        out.push_back(static_cast<char>(b));
+    }
+    return out;
+}
+
+[[nodiscard]] inline auto decode_txn_body(std::string_view body) -> std::optional<txn_op> {
+    std::size_t at = 0;
+    const auto get32 = [&]() -> std::optional<std::uint32_t> {
+        if (body.size() - at < 4) {
+            return std::nullopt;
+        }
+        std::uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) {
+            v = (v << 8U) | static_cast<unsigned char>(body[at++]);
+        }
+        return v;
+    };
+    const auto count = get32();
+    // A key takes at least its 4-byte length: refuse a count the body cannot
+    // hold before reserving anything.
+    if (!count || *count == 0 || *count > (body.size() - at) / 4) {
+        return std::nullopt;
+    }
+    txn_op op;
+    op._keys.reserve(*count);
+    for (std::uint32_t i = 0; i < *count; ++i) {
+        const auto n = get32();
+        if (!n || body.size() - at < *n) {
+            return std::nullopt;
+        }
+        op._keys.emplace_back(body.substr(at, *n));
+        at += *n;
+    }
+    if (at == body.size()) {
+        return std::nullopt;
+    }
+    for (const char c : body.substr(at)) {
+        op._envelope.push_back(static_cast<std::byte>(c));
+    }
+    return op;
+}
+
 [[nodiscard]] inline auto mac_hex(std::string_view secret, std::int64_t unix_seconds,
                                   std::string_view body) -> std::string {
     const auto message = std::to_string(unix_seconds) + "\n" + std::string(body);

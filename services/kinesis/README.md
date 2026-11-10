@@ -34,9 +34,9 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `include/kythira/kinesis/kinesis_actions.hpp` | the `kinesis` action table for IAM, the operation-to-action map (with which operations write) and the static-key roles | 4 |
 | `include/kythira/kinesis/kinesis_compat_profile.hpp` | the AWS-behaviour switches, cluster config overlaid with `kythira:compat:*` stream tags | 4 |
 | `include/kythira/kinesis/kinesis_front_end.hpp`, `kinesis_errors.hpp` | SigV4, JSON and CBOR framing, authorization and dispatch to operation handlers | 4 |
-| `include/kythira/kinesis/kinesis_service.hpp` | the operation handlers: stream lifecycle and writes (task 6), `GetShardIterator` and `GetRecords` (task 7) | 6, 7 |
+| `include/kythira/kinesis/kinesis_service.hpp` | the operation handlers: stream lifecycle and writes (task 6), `GetShardIterator` and `GetRecords` (task 7), resharding (task 11) | 6, 7, 11 |
 | `include/kythira/kinesis/kinesis_cluster.hpp` | what handlers need from the cluster (`stream_cluster`), and an in-process implementation for tests and one-node use | 6 |
-| `include/kythira/kinesis/kinesis_raft_cluster.hpp` | `stream_cluster` over the multi-raft host: propose to the key's group, forward to its leader, read the local replica | 6 |
+| `include/kythira/kinesis/kinesis_raft_cluster.hpp` | `stream_cluster` over the multi-raft host: propose to the key's group, forward to its leader, read the local replica, and run resharding's tier-1 transactions | 6, 11 |
 | `include/kythira/kinesis/kinesis_forward.hpp` | the gateway-to-gateway wire for forwarded writes and its HMAC (`KINESIS_FORWARD_SECRET`) | 6 |
 | `include/kythira/kinesis/kinesis_gateway.hpp`, `kinesis_peer_client.hpp` | the listener's routes (API, internal propose and segment endpoints, `/healthz`) and the client that calls other gateways | 6 |
 | `include/kythira/kinesis/kinesis_static_keys.hpp` | the `KINESIS_STATIC_KEYS_FILE` format for clusters without IAM | 6 |
@@ -53,6 +53,7 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `doc/retention.md`, `include/kythira/kinesis/kinesis_maintenance.hpp` | retention and tiering: the leader's seal, trim and tier entries, the pass that proposes them, and what it costs when a leader dies mid-pass | 10 |
 | `include/kythira/kinesis/kinesis_tiering.hpp`, `cmd/kinesis_gateway_node/tier_s3.cpp` | sealed segments in object storage: deterministic object keys, fetch-back on read, the S3 tier of the daemon | 10 |
 | `include/kythira/kinesis/kinesis_disk_guard.hpp` | the disk guard: appends refused below a free-space floor, on the proposing node and the leader | 10 |
+| `doc/resharding.md` | SplitShard, MergeShards and UpdateShardCount: the UPDATING lock, the cross-group transaction, ending sequence numbers and the repair of an abandoned reshard | 11 |
 
 Core pieces the module builds on live in `include/raft/`, because DynamoDB
 uses them too: `record_segment_store.hpp` (task 3), the CBOR and

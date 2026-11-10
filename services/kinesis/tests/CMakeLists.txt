@@ -130,6 +130,9 @@ kythira_kinesis_test(kinesis_leases_test kinesis_leases_test.cpp)
 # Task 10: retention calls, the seal/tier/trim entries, the maintenance pass
 # (trim, tier, fetch-back, eviction) and the disk guard.
 kythira_kinesis_test(kinesis_retention_test kinesis_retention_test.cpp)
+# Task 11: SplitShard, MergeShards and UpdateShardCount (lineage, routing,
+# refusals, tiling) and the repair of an abandoned reshard.
+kythira_kinesis_test(kinesis_reshard_test kinesis_reshard_test.cpp)
 # Task 6: the gateway's HTTP surface on a real listener (API, internal
 # propose and segment endpoints, health) and the peer client over plain
 # HTTP and verified TLS. certificate_authority issues the test PKI.
