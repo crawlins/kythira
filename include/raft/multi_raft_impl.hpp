@@ -17,6 +17,7 @@
 #include <chrono>
 #include <limits>
 #include <thread>
+#include <format>
 #include <condition_variable>
 #include <stdexcept>
 #include <utility>
@@ -254,6 +255,18 @@ auto multi_raft<Types, Key, GroupId>::create_group_impl(
         node_cfg.state_machine.open(*_cfg.state_engine, detail::engine_range_of(descriptor._range));
     }
     node_cfg.config = _cfg.config;
+    // Each group stages incoming snapshots and keeps its leader checkpoints
+    // in its own subdirectory of the host's (file-install-snapshot
+    // Requirement 3): a node deletes every staging and checkpoint entry in
+    // its directory when it starts, so with one shared directory a group
+    // created at run time wiped the transfers and checkpoints of every
+    // group already running.
+    if constexpr (requires { node_cfg.config._snapshot_staging_directory; } &&
+                  std::formattable<GroupId, char>) {
+        if (!node_cfg.config._snapshot_staging_directory.empty()) {
+            node_cfg.config._snapshot_staging_directory /= std::format("group-{}", group);
+        }
+    }
     // A group never provisions (`group_scoped_types` shadows its manager with
     // `no_op_quorum_manager`), but `add_learner` and `promote_to_voter` consult
     // `topology()` and fail closed on a group with no declared target — which,

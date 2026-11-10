@@ -9,7 +9,7 @@
 // Data directory:
 //   engine/                 the RocksDB database (catalog and every ledger)
 //   raft/<group>/           each group's Raft log
-//   snapshots/              checkpoints and incoming snapshot transfers, on
+//   snapshots/group-<id>/   checkpoints and incoming snapshot transfers, on
 //                           the engine's filesystem
 //   segments/<ledger id>/   each ledger's sealed segment files
 
