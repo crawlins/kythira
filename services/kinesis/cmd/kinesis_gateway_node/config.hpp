@@ -84,6 +84,9 @@ struct node_options {
     /// `KINESIS_DISK_FLOOR_BYTES`: refuse writes below this much free space
     /// on the segment disk; 0 turns the guard off.
     std::uint64_t _disk_floor_bytes{std::uint64_t{1} << 30U};
+    /// `KINESIS_METRICS`: serve per-stream and per-shard metrics on
+    /// `GET /metrics` (unauthenticated; it names streams and accounts).
+    bool _metrics{false};
     /// `KINESIS_MAINTENANCE_INTERVAL_MS`: how often a node runs the
     /// retention and tiering pass.
     std::chrono::milliseconds _maintenance_interval{60000};

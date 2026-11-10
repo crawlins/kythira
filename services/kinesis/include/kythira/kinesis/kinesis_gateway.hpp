@@ -27,6 +27,11 @@
 ///   submitted here with `submit_txn` when the composition root sets a
 ///   transaction handler. Signed like a forwarded write.
 /// - `GET /healthz`: 200 while the process serves.
+/// - `GET /metrics`: this node's per-stream and per-shard metrics in the
+///   Prometheus text format (`kinesis_metrics.hpp`), when the composition
+///   root sets a metrics handler (`KINESIS_METRICS=true`); otherwise the
+///   front end, which refuses it. Unauthenticated, like `/healthz`, for a
+///   scraper: it names streams and accounts, so it is off by default.
 /// - `/v1/leases/…`: the Lease API (`kinesis_lease_api.hpp`), when the
 ///   composition root sets a lease handler; otherwise the front end, which
 ///   refuses it.
@@ -64,6 +69,7 @@ namespace kythira::kinesis {
 
 inline constexpr std::string_view k_segment_path = "/_kythira/kinesis/v1/segment";
 inline constexpr std::string_view k_health_path = "/healthz";
+inline constexpr std::string_view k_metrics_path = "/metrics";
 
 /// Proposes a forwarded command on this node without forwarding it again
 /// (`raft_stream_cluster::propose_local`).
@@ -254,6 +260,9 @@ public:
         if (path == k_health_path && req.method() == http::verb::get) {
             return gateway_detail::reply(req, 200, "ok\n", "text/plain");
         }
+        if (_metrics && path == k_metrics_path && req.method() == http::verb::get) {
+            return gateway_detail::reply(req, 200, _metrics(), "text/plain; version=0.0.4");
+        }
         if (path == forward::k_path) {
             return propose(req);
         }
@@ -286,8 +295,13 @@ public:
     /// listener starts.
     void set_txn_handler(txn_handler h) { _txn = std::move(h); }
 
+    /// Serve `k_metrics_path` with what `h` renders. Set before the
+    /// listener starts.
+    void set_metrics_handler(std::function<std::string()> h) { _metrics = std::move(h); }
+
 private:
     FrontEnd& _front_end;
+    std::function<std::string()> _metrics;
     lease_handler _leases;
     txn_handler _txn;
     local_proposer _propose;

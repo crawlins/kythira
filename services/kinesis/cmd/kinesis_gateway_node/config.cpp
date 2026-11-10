@@ -285,6 +285,7 @@ void read_kinesis_side(const reader& r, node_options& o) {
     o._command_timeout = r.ms("KINESIS_COMMAND_TIMEOUT_MS", "5000");
 
     o._disk_floor_bytes = r.u64("KINESIS_DISK_FLOOR_BYTES", "1073741824");
+    o._metrics = r.flag("KINESIS_METRICS", "false");
     o._maintenance_interval = r.ms("KINESIS_MAINTENANCE_INTERVAL_MS", "60000");
     if (o._maintenance_interval.count() < 100) {
         fail("KINESIS_MAINTENANCE_INTERVAL_MS must be at least 100");
@@ -352,7 +353,8 @@ auto describe(const node_options& o) -> std::string {
         out << "peer_gateway " << kythira::host_node_id_text(id) << '=' << gw << '\n';
     }
     out << "disk_floor_bytes=" << o._disk_floor_bytes << '\n'
-        << "maintenance_interval_ms=" << o._maintenance_interval.count() << '\n';
+        << "maintenance_interval_ms=" << o._maintenance_interval.count() << '\n'
+        << "metrics=" << (o._metrics ? "on (GET /metrics)" : "off") << '\n';
     if (o._tier_after_hours > 0) {
         out << "tier=s3://" << o._tier_bucket << '/' << o._tier_prefix << " after "
             << o._tier_after_hours << "h region=" << o._tier_region
@@ -403,6 +405,8 @@ auto usage() -> std::string {
            "  KINESIS_COMPAT                   cluster compatibility settings, k=v,...\n"
            "  KINESIS_MAX_BODY_BYTES           request body limit (8388608)\n"
            "  KINESIS_COMMAND_TIMEOUT_MS       commit timeout per write (5000)\n"
+           "  KINESIS_METRICS                  serve Prometheus metrics on GET /metrics,\n"
+           "                                   unauthenticated (false)\n"
            "\n"
            "Retention and tiering:\n"
            "  KINESIS_DISK_FLOOR_BYTES         refuse writes below this free space (1073741824;\n"

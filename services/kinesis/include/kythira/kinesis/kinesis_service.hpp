@@ -62,6 +62,7 @@
 #include <kythira/kinesis/kinesis_front_end.hpp>
 #include <kythira/kinesis/kinesis_hash.hpp>
 #include <kythira/kinesis/kinesis_iterators.hpp>
+#include <kythira/kinesis/kinesis_metrics.hpp>
 #include <kythira/kinesis/kinesis_records.hpp>
 #include <kythira/kinesis/kinesis_sequence.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
@@ -81,6 +82,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -319,6 +321,20 @@ public:
         fe.on("DecreaseStreamRetentionPeriod",
               bind(&kinesis_service::decrease_stream_retention_period));
         fe.on("UpdateStreamMode", bind(&kinesis_service::update_stream_mode));
+        fe.on("AddTagsToStream", bind(&kinesis_service::add_tags_to_stream));
+        fe.on("RemoveTagsFromStream", bind(&kinesis_service::remove_tags_from_stream));
+        fe.on("ListTagsForStream", bind(&kinesis_service::list_tags_for_stream));
+        fe.on("TagResource", bind(&kinesis_service::tag_resource));
+        fe.on("UntagResource", bind(&kinesis_service::untag_resource));
+        fe.on("ListTagsForResource", bind(&kinesis_service::list_tags_for_resource));
+        fe.on("PutResourcePolicy", bind(&kinesis_service::put_resource_policy));
+        fe.on("GetResourcePolicy", bind(&kinesis_service::get_resource_policy));
+        fe.on("DeleteResourcePolicy", bind(&kinesis_service::delete_resource_policy));
+        fe.on("EnableEnhancedMonitoring", bind(&kinesis_service::enable_enhanced_monitoring));
+        fe.on("DisableEnhancedMonitoring", bind(&kinesis_service::disable_enhanced_monitoring));
+        fe.on("DescribeAccountSettings", bind(&kinesis_service::describe_account_settings));
+        fe.on("UpdateAccountSettings", bind(&kinesis_service::update_account_settings));
+        fe.on("UpdateMaxRecordSize", bind(&kinesis_service::update_max_record_size));
         if constexpr (transacts<Cluster>) {
             fe.on("SplitShard", bind(&kinesis_service::split_shard));
             fe.on("MergeShards", bind(&kinesis_service::merge_shards));
@@ -327,21 +343,35 @@ public:
     }
 
     /// The operations `register_with` adds, for implemented-operations.txt.
-    static constexpr std::array<std::string_view, 17> k_operations{"CreateStream",
+    static constexpr std::array<std::string_view, 31> k_operations{"AddTagsToStream",
+                                                                   "CreateStream",
                                                                    "DecreaseStreamRetentionPeriod",
+                                                                   "DeleteResourcePolicy",
                                                                    "DeleteStream",
+                                                                   "DescribeAccountSettings",
                                                                    "DescribeLimits",
                                                                    "DescribeStream",
                                                                    "DescribeStreamSummary",
+                                                                   "DisableEnhancedMonitoring",
+                                                                   "EnableEnhancedMonitoring",
                                                                    "GetRecords",
+                                                                   "GetResourcePolicy",
                                                                    "GetShardIterator",
                                                                    "IncreaseStreamRetentionPeriod",
                                                                    "ListShards",
                                                                    "ListStreams",
+                                                                   "ListTagsForResource",
+                                                                   "ListTagsForStream",
                                                                    "MergeShards",
                                                                    "PutRecord",
                                                                    "PutRecords",
+                                                                   "PutResourcePolicy",
+                                                                   "RemoveTagsFromStream",
                                                                    "SplitShard",
+                                                                   "TagResource",
+                                                                   "UntagResource",
+                                                                   "UpdateAccountSettings",
+                                                                   "UpdateMaxRecordSize",
                                                                    "UpdateShardCount",
                                                                    "UpdateStreamMode"};
 
@@ -559,6 +589,223 @@ public:
             return internal_failure();
         }
         return boost::json::object{};
+    }
+
+    // ---- tags, policies, monitoring, account (task 15) -----------------------
+
+    /// AWS's limit on a stream's tags.
+    static constexpr std::size_t k_max_tags = 50;
+
+    auto add_tags_to_stream(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        return change_tags(*s, tag_map_of(in), {});
+    }
+
+    auto remove_tags_from_stream(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        return change_tags(*s, {}, tag_keys_of(in));
+    }
+
+    /// Tags in key order, from after `ExclusiveStartTagKey`, `Limit` of them
+    /// (10 when absent).
+    auto list_tags_for_stream(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto start = detail::string_member(in, "ExclusiveStartTagKey");
+        const auto limit =
+            static_cast<std::size_t>(service_detail::int_member(in, "Limit").value_or(10));
+        boost::json::array tags;
+        bool more = false;
+        for (auto it = start ? s->_tags.upper_bound(std::string(*start)) : s->_tags.begin();
+             it != s->_tags.end(); ++it) {
+            if (tags.size() == limit) {
+                more = true;
+                break;
+            }
+            tags.push_back(boost::json::object{{"Key", it->first}, {"Value", it->second}});
+        }
+        boost::json::object out;
+        out["Tags"] = std::move(tags);
+        out["HasMoreTags"] = more;
+        return out;
+    }
+
+    auto tag_resource(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find_resource(ctx, in);
+        if (!s) {
+            return s.error();
+        }
+        return change_tags(*s, tag_map_of(in), {});
+    }
+
+    auto untag_resource(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find_resource(ctx, in);
+        if (!s) {
+            return s.error();
+        }
+        return change_tags(*s, {}, tag_keys_of(in));
+    }
+
+    auto list_tags_for_resource(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find_resource(ctx, in);
+        if (!s) {
+            return s.error();
+        }
+        boost::json::array tags;
+        for (const auto& [k, v] : s->_tags) {
+            tags.push_back(boost::json::object{{"Key", k}, {"Value", v}});
+        }
+        boost::json::object out;
+        out["Tags"] = std::move(tags);
+        return out;
+    }
+
+    /// AWS's limit on a resource policy's size.
+    static constexpr std::size_t k_max_policy_bytes = 20 * 1024;
+
+    /// The policy is stored as given and evaluated by the authorizer (IAM's
+    /// evaluator) on every later request to the stream. Here it only has to
+    /// be a JSON object with a `Statement`.
+    auto put_resource_policy(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const std::string policy(*detail::string_member(in, "Policy"));
+        if (policy.size() > k_max_policy_bytes) {
+            return service_detail::limit_exceeded(
+                "The resource policy exceeds the maximum size of " +
+                std::to_string(k_max_policy_bytes) + " bytes.");
+        }
+        boost::system::error_code ec;
+        const auto doc = boost::json::parse(policy, ec);
+        if (ec || !doc.is_object() || !doc.as_object().contains("Statement")) {
+            return invalid_argument("The resource policy is not a valid JSON policy document.");
+        }
+        auto s = find_resource(ctx, in);
+        if (!s) {
+            return s.error();
+        }
+        return set_policy(*s, policy);
+    }
+
+    /// The stored policy; `{}` when the stream has none.
+    auto get_resource_policy(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find_resource(ctx, in);
+        if (!s) {
+            return s.error();
+        }
+        boost::json::object out;
+        out["Policy"] = s->_policy.value_or("{}");
+        return out;
+    }
+
+    auto delete_resource_policy(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find_resource(ctx, in);
+        if (!s) {
+            return s.error();
+        }
+        if (!s->_policy) {
+            return resource_not_found("No resource policy found for resource " +
+                                      std::string(*detail::string_member(in, "ResourceARN")) + ".");
+        }
+        return set_policy(*s, std::nullopt);
+    }
+
+    auto enable_enhanced_monitoring(call_context& ctx, boost::json::object& in) -> result {
+        return monitoring(ctx, in, true);
+    }
+
+    auto disable_enhanced_monitoring(call_context& ctx, boost::json::object& in) -> result {
+        return monitoring(ctx, in, false);
+    }
+
+    /// Kythira has no billing commitment: the account setting is always
+    /// DISABLED.
+    auto describe_account_settings(call_context& /*ctx*/, boost::json::object& /*in*/) -> result {
+        boost::json::object out;
+        out["MinimumThroughputBillingCommitment"] = boost::json::object{{"Status", "DISABLED"}};
+        return out;
+    }
+
+    auto update_account_settings(call_context& ctx, boost::json::object& in) -> result {
+        const auto* c = in.if_contains("MinimumThroughputBillingCommitment");
+        const auto status = c != nullptr && c->is_object()
+                                ? detail::string_member(c->get_object(), "Status")
+                                : std::nullopt;
+        if (status && *status == "ENABLED") {
+            return invalid_argument(
+                "A minimum throughput billing commitment is not available on this endpoint.");
+        }
+        return describe_account_settings(ctx, in);
+    }
+
+    /// Records up to 1 MiB, the default, are all this endpoint stores
+    /// (`refuse_unsupported` refuses any other size); setting it is a no-op
+    /// on a stream that exists and is ACTIVE.
+    auto update_max_record_size(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        if (s->_status != stream_status::active) {
+            return not_active(*s);
+        }
+        return boost::json::object{};
+    }
+
+    /// What the front end's authorization needs about `arn`: the stream's
+    /// tags and resource policy. Nullopt for anything but an existing
+    /// stream (the daemon's `resource_lookup`).
+    auto resource_facts_of(std::string_view arn) -> std::optional<resource_facts> {
+        const auto parts = parse_kinesis_arn(arn);
+        const auto name = stream_name_of(arn);
+        if (!parts || !name) {
+            return std::nullopt;
+        }
+        std::optional<resource_facts> out;
+        (void)read_catalog([&](const auto& sm) {
+            if (const auto* rec =
+                    sm.find_stream(std::string(parts->_account), std::string(*name))) {
+                out = resource_facts{._tags = {rec->_tags.begin(), rec->_tags.end()},
+                                     ._policy = rec->_policy};
+            }
+        });
+        return out;
     }
 
     // ---- capacity mode (task 12) ---------------------------------------------
@@ -1208,6 +1455,7 @@ public:
         }
         const auto key = routing_key(rec._id, entry->_ordinal);
         if (profile._throttling && !_reads.admit_get_shard_iterator(key)) {
+            _metrics.read_throttled({rec._account, rec._name, entry->_ordinal});
             return throughput_exceeded(
                 shard_rate_exceeded(format_shard_id(entry->_ordinal, profile._id_format), rec));
         }
@@ -1276,6 +1524,7 @@ public:
     }
 
     auto get_records(call_context& ctx, boost::json::object& in) -> result {
+        const auto started = std::chrono::steady_clock::now();
         const auto now = _cluster.now_ms();
         const std::string token(*detail::string_member(in, "ShardIterator"));
         const auto decoded = decode_iterator(token, _config._iterator_keys);
@@ -1332,6 +1581,7 @@ public:
         }
         const auto key = routing_key(rec._id, it._ordinal);
         if (profile._throttling && !_reads.admit_get_records(key)) {
+            _metrics.read_throttled({rec._account, rec._name, it._ordinal});
             return throughput_exceeded("Rate exceeded for Shard - " + rec._account + ":" +
                                        rec._name + ":" +
                                        format_shard_id(it._ordinal, profile._id_format));
@@ -1426,13 +1676,73 @@ public:
             out["NextShardIterator"] = encode_iterator(next, _config._iterator_keys);
         }
         out["Records"] = std::move(records);
+        {
+            std::uint64_t bytes = 0;
+            for (const auto& rr : got->_records) {
+                bytes += rr._record._data.size() + rr._record._partition_key.size();
+            }
+            const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - started)
+                                  .count();
+            _metrics.read({rec._account, rec._name, it._ordinal}, got->_records.size(), bytes,
+                          static_cast<std::uint64_t>(took), exhausted ? 0 : behind);
+        }
         return out;
+    }
+
+    /// This node's metrics in the Prometheus text format (`GET /metrics`):
+    /// the counters, with every ACTIVE or UPDATING stream's shard table,
+    /// enhanced-monitoring switches and segment bytes from this replica.
+    auto metrics_text() -> std::string {
+        std::vector<stream_record> recs;
+        (void)read_catalog([&](const auto& sm) {
+            const auto prefix = streams_prefix();
+            const auto& entries = sm.entries();
+            for (auto it = entries.lower_bound(prefix);
+                 it != entries.end() && it->first.starts_with(prefix); ++it) {
+                if (const auto* r = std::get_if<stream_record>(&it->second);
+                    r != nullptr && (r->_status == stream_status::active ||
+                                     r->_status == stream_status::updating)) {
+                    recs.push_back(*r);
+                }
+            }
+        });
+        std::vector<stream_metric_view> views;
+        for (const auto& r : recs) {
+            const auto profile = profile_of(r);
+            stream_metric_view v;
+            v._account = r._account;
+            v._stream = r._name;
+            v._shard_metrics = {r._shard_metrics.begin(), r._shard_metrics.end()};
+            for (const auto& sh : r._shards) {
+                stream_metric_view::shard row;
+                row._ordinal = sh._ordinal;
+                row._id = format_shard_id(sh._ordinal, profile._id_format);
+                const auto key = routing_key(r._id, sh._ordinal);
+                if (const auto st = read_shard_state(key); st && st->_found) {
+                    for (const auto& d : st->_state._sealed) {
+                        if (st->_state.is_tiered(d._first_seq)) {
+                            row._tiered_bytes += d._bytes;
+                        }
+                    }
+                    if (st->_store != nullptr) {
+                        for (const auto& d : st->_store->local_segments(key)) {
+                            row._local_bytes += d._bytes;
+                        }
+                    }
+                }
+                v._shards.push_back(std::move(row));
+            }
+            views.push_back(std::move(v));
+        }
+        return render_metrics(views, _metrics.snapshot());
     }
 
 private:
     Cluster& _cluster;
     kinesis_service_config _config;
     read_throttle _reads;
+    stream_metrics _metrics;
 
     [[nodiscard]] static auto shard_rate_exceeded(std::string_view shard, const stream_record& rec)
         -> std::string {
@@ -1550,6 +1860,189 @@ private:
     }
 
     // ---- resharding internals ------------------------------------------------
+
+    // ---- task 15 internals ----------------------------------------------------
+
+    [[nodiscard]] static auto tag_map_of(const boost::json::object& in)
+        -> std::map<std::string, std::string> {
+        std::map<std::string, std::string> out;
+        if (const auto* t = in.if_contains("Tags"); t != nullptr && t->is_object()) {
+            for (const auto& kv : t->get_object()) {
+                out[std::string(kv.key())] =
+                    kv.value().is_string() ? std::string(kv.value().get_string()) : std::string();
+            }
+        }
+        return out;
+    }
+
+    [[nodiscard]] static auto tag_keys_of(const boost::json::object& in)
+        -> std::vector<std::string> {
+        return strings_of(in, "TagKeys");
+    }
+
+    // A list-of-strings member, empty when absent.
+    [[nodiscard]] static auto strings_of(const boost::json::object& in, std::string_view member)
+        -> std::vector<std::string> {
+        std::vector<std::string> out;
+        if (const auto* k = in.if_contains(member); k != nullptr && k->is_array()) {
+            for (const auto& v : k->get_array()) {
+                if (v.is_string()) {
+                    out.emplace_back(v.get_string());
+                }
+            }
+        }
+        return out;
+    }
+
+    // The stream a `ResourceARN` names. A consumer ARN is a resource this
+    // endpoint does not have until enhanced fan-out (task 13).
+    auto find_resource(const call_context& ctx, const boost::json::object& in)
+        -> aws_json::result<stream_record> {
+        const std::string arn(*detail::string_member(in, "ResourceARN"));
+        const auto parts = parse_kinesis_arn(arn);
+        const auto name = stream_name_of(arn);
+        if (!parts || parts->_partition != ctx._partition || parts->_region != ctx._region) {
+            return invalid_argument("ResourceARN " + arn + " is not a Kinesis ARN in " +
+                                    ctx._region + ".");
+        }
+        if (!name) {
+            return resource_not_found("Resource " + arn + " not found.");
+        }
+        std::optional<stream_record> found;
+        if (!read_catalog([&](const auto& sm) {
+                if (const auto* rec =
+                        sm.find_stream(std::string(parts->_account), std::string(*name))) {
+                    found = *rec;
+                }
+            })) {
+            return internal_failure();
+        }
+        if (!found) {
+            return service_detail::not_found(std::string(*name), std::string(parts->_account));
+        }
+        return *found;
+    }
+
+    auto change_tags(const stream_record& rec, std::map<std::string, std::string> set,
+                     std::vector<std::string> remove) -> result {
+        if (rec._status != stream_status::active && rec._status != stream_status::updating) {
+            return not_active(rec);
+        }
+        if (auto bad = check_compat_tags({set.begin(), set.end()})) {
+            return *bad;
+        }
+        auto after = rec._tags;
+        for (const auto& [k, v] : set) {
+            after[k] = v;
+        }
+        for (const auto& k : remove) {
+            after.erase(k);
+        }
+        if (after.size() > k_max_tags) {
+            return service_detail::limit_exceeded(
+                "Failed to add tags to stream " + rec._name + " under account " + rec._account +
+                " because a stream can have at most " + std::to_string(k_max_tags) + " tags.");
+        }
+        const auto r =
+            propose(tag_stream_command{rec._account, rec._name, rec._id, std::move(set),
+                                       std::move(remove), static_cast<std::uint32_t>(k_max_tags)});
+        if (!r) {
+            return internal_failure();
+        }
+        if (r->_status == apply_status::not_found) {
+            return service_detail::not_found(rec._name, rec._account);
+        }
+        if (r->_status == apply_status::invalid) {
+            return service_detail::limit_exceeded(
+                "Failed to add tags to stream " + rec._name + " under account " + rec._account +
+                " because a stream can have at most " + std::to_string(k_max_tags) + " tags.");
+        }
+        if (r->_status != apply_status::ok) {
+            return internal_failure();
+        }
+        return boost::json::object{};
+    }
+
+    auto set_policy(const stream_record& rec, std::optional<std::string> policy) -> result {
+        const auto r =
+            propose(set_policy_command{rec._account, rec._name, rec._id, std::move(policy)});
+        if (!r) {
+            return internal_failure();
+        }
+        if (r->_status == apply_status::not_found) {
+            return service_detail::not_found(rec._name, rec._account);
+        }
+        if (r->_status != apply_status::ok) {
+            return internal_failure();
+        }
+        return boost::json::object{};
+    }
+
+    // The shard-level metrics AWS defines; `ALL` stands for every one.
+    [[nodiscard]] static auto all_shard_metrics() -> const std::vector<std::string>& {
+        static const std::vector<std::string> k_all{"IncomingBytes",
+                                                    "IncomingRecords",
+                                                    "IteratorAgeMilliseconds",
+                                                    "OutgoingBytes",
+                                                    "OutgoingRecords",
+                                                    "ReadProvisionedThroughputExceeded",
+                                                    "WriteProvisionedThroughputExceeded"};
+        return k_all;
+    }
+
+    auto monitoring(call_context& ctx, boost::json::object& in, bool enable) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        if (rec._status != stream_status::active) {
+            return not_active(rec);
+        }
+        std::set<std::string> asked;
+        for (const auto& m : strings_of(in, "ShardLevelMetrics")) {
+            if (m == "ALL") {
+                asked.insert(all_shard_metrics().begin(), all_shard_metrics().end());
+            } else {
+                asked.insert(m);
+            }
+        }
+        std::set<std::string> now(rec._shard_metrics.begin(), rec._shard_metrics.end());
+        auto desired = now;
+        for (const auto& m : asked) {
+            if (enable) {
+                desired.insert(m);
+            } else {
+                desired.erase(m);
+            }
+        }
+        if (desired != now) {
+            const auto r = propose(set_monitoring_command{
+                rec._account, rec._name, rec._id, {desired.begin(), desired.end()}});
+            if (r && r->_status == apply_status::not_found) {
+                return service_detail::not_found(rec._name, rec._account);
+            }
+            if (!r || r->_status != apply_status::ok) {
+                return internal_failure();
+            }
+        }
+        const auto list = [](const std::set<std::string>& names) {
+            boost::json::array a;
+            for (const auto& n : names) {
+                a.emplace_back(n);
+            }
+            return a;
+        };
+        boost::json::object out;
+        out["StreamName"] = rec._name;
+        out["StreamARN"] = arn_of(ctx, rec);
+        out["CurrentShardLevelMetrics"] = list(now);
+        out["DesiredShardLevelMetrics"] = list(desired);
+        return out;
+    }
 
     // AWS: SplitShard, MergeShards and UpdateShardCount are "only supported
     // for the data streams with the provisioned capacity mode". The error
@@ -2037,6 +2530,17 @@ private:
                 const bool throttling = res && (res->_status == apply_status::throttled ||
                                                 (ok && admitted < a._records.size()));
                 const bool full = res && res->_status == apply_status::storage_full;
+                if (ok && admitted > 0) {
+                    std::uint64_t bytes = 0;
+                    for (std::size_t i = 0; i < admitted && i < a._records.size(); ++i) {
+                        bytes += a._records[i]->_data.size() + a._records[i]->_partition_key.size();
+                    }
+                    _metrics.wrote({rec._account, rec._name, a._ordinal}, admitted, bytes);
+                }
+                if (throttling && a._records.size() > admitted) {
+                    _metrics.write_throttled({rec._account, rec._name, a._ordinal},
+                                             a._records.size() - admitted);
+                }
                 for (std::size_t i = 0; i < a._records.size(); ++i) {
                     auto& result = out[a._records[i]->_index];
                     result._error = !ok || i >= admitted;
@@ -2099,8 +2603,12 @@ private:
         d["StreamModeDetails"] = boost::json::object{{"StreamMode", to_string(rec._mode)}};
         d["RetentionPeriodHours"] = rec._retention_hours;
         d["StreamCreationTimestamp"] = service_detail::epoch_seconds(rec._created_ms);
+        boost::json::array metrics;
+        for (const auto& m : rec._shard_metrics) {
+            metrics.emplace_back(m);
+        }
         boost::json::array monitoring;
-        monitoring.push_back(boost::json::object{{"ShardLevelMetrics", boost::json::array{}}});
+        monitoring.push_back(boost::json::object{{"ShardLevelMetrics", std::move(metrics)}});
         d["EnhancedMonitoring"] = std::move(monitoring);
         d["EncryptionType"] = rec._encryption == encryption_type::kms ? "KMS" : "NONE";
         if (!rec._key_id.empty()) {

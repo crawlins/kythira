@@ -271,6 +271,36 @@ struct set_stream_mode_command {
     std::int64_t _at_ms = 0;
 };
 
+/// Tag changes (task 15), at the catalog group: `_set` added or
+/// overwritten, then `_remove` removed. The front end checks the limits;
+/// here a result over `_max_tags` is refused (`invalid`) so two racing
+/// calls cannot both pass.
+struct tag_stream_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    std::map<std::string, std::string> _set{};
+    std::vector<std::string> _remove{};
+    std::uint32_t _max_tags = 50;
+};
+
+/// `PutResourcePolicy` (a policy) or `DeleteResourcePolicy` (none), task 15.
+struct set_policy_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    std::optional<std::string> _policy{};
+};
+
+/// `EnableEnhancedMonitoring` / `DisableEnhancedMonitoring` (task 15): the
+/// stream's shard-level metrics become `_metrics` (sorted, no `ALL`).
+struct set_monitoring_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    std::vector<std::string> _metrics{};
+};
+
 /// What a lease write requires of the lease's current state.
 enum class lease_condition : std::uint8_t {
     /// Whatever is there (or nothing).
@@ -337,7 +367,8 @@ using stream_command =
                  drop_shard_command, trim_shard_command, append_batch_command, lease_write_command,
                  lease_read_command, lease_drop_application_command, set_retention_command,
                  seal_shard_command, tier_segment_command, reshard_catalog_command,
-                 set_ending_counters_command, set_stream_mode_command>;
+                 set_ending_counters_command, set_stream_mode_command, tag_stream_command,
+                 set_policy_command, set_monitoring_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -351,7 +382,10 @@ inline constexpr std::uint8_t stream_command_version = 1;
                           std::is_same_v<T, set_retention_command> ||
                           std::is_same_v<T, reshard_catalog_command> ||
                           std::is_same_v<T, set_ending_counters_command> ||
-                          std::is_same_v<T, set_stream_mode_command>) {
+                          std::is_same_v<T, set_stream_mode_command> ||
+                          std::is_same_v<T, tag_stream_command> ||
+                          std::is_same_v<T, set_policy_command> ||
+                          std::is_same_v<T, set_monitoring_command>) {
                 return stream_key(v._account, v._name);
             } else if constexpr (std::is_same_v<T, append_batch_command>) {
                 return v._appends.empty() ? std::string() : v._appends.front()._key;
@@ -468,6 +502,28 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
             } else if constexpr (std::is_same_v<T, set_stream_mode_command>) {
                 w.str(v._account).str(v._name).u64(v._id);
                 w.u8(static_cast<std::uint8_t>(v._mode)).i64(v._at_ms);
+            } else if constexpr (std::is_same_v<T, tag_stream_command>) {
+                w.str(v._account).str(v._name).u64(v._id);
+                w.u32(static_cast<std::uint32_t>(v._set.size()));
+                for (const auto& [k, val] : v._set) {
+                    w.str(k).str(val);
+                }
+                w.u32(static_cast<std::uint32_t>(v._remove.size()));
+                for (const auto& k : v._remove) {
+                    w.str(k);
+                }
+                w.u32(v._max_tags);
+            } else if constexpr (std::is_same_v<T, set_policy_command>) {
+                w.str(v._account).str(v._name).u64(v._id).u8(v._policy ? 1 : 0);
+                if (v._policy) {
+                    w.str(*v._policy);
+                }
+            } else if constexpr (std::is_same_v<T, set_monitoring_command>) {
+                w.str(v._account).str(v._name).u64(v._id);
+                w.u32(static_cast<std::uint32_t>(v._metrics.size()));
+                for (const auto& m : v._metrics) {
+                    w.str(m);
+                }
             } else {
                 w.str(v._key);
             }
@@ -655,6 +711,49 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
             c._id = r.u64();
             c._mode = r.enumeration<stream_mode>(1);
             c._at_ms = r.i64();
+            out = std::move(c);
+            break;
+        }
+        case 18: {
+            tag_stream_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            const auto n = r.u32();
+            for (std::uint32_t i = 0; i < n; ++i) {
+                auto k = r.str();
+                c._set[std::move(k)] = r.str();
+            }
+            const auto m = r.u32();
+            c._remove.reserve(std::min<std::size_t>(m, r.remaining() / 4));
+            for (std::uint32_t i = 0; i < m; ++i) {
+                c._remove.push_back(r.str());
+            }
+            c._max_tags = r.u32();
+            out = std::move(c);
+            break;
+        }
+        case 19: {
+            set_policy_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            if (r.boolean()) {
+                c._policy = r.str();
+            }
+            out = std::move(c);
+            break;
+        }
+        case 20: {
+            set_monitoring_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            const auto n = r.u32();
+            c._metrics.reserve(std::min<std::size_t>(n, r.remaining() / 4));
+            for (std::uint32_t i = 0; i < n; ++i) {
+                c._metrics.push_back(r.str());
+            }
             out = std::move(c);
             break;
         }
@@ -1338,6 +1437,43 @@ private:
                 rec->_mode_changes_ms.erase(rec->_mode_changes_ms.begin());
             }
         }
+        return {._id = rec->_id};
+    }
+
+    auto apply_one(const tag_stream_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        auto tags = rec->_tags;
+        for (const auto& [k, v] : c._set) {
+            tags[k] = v;
+        }
+        for (const auto& k : c._remove) {
+            tags.erase(k);
+        }
+        if (tags.size() > c._max_tags) {
+            return {._status = apply_status::invalid};
+        }
+        rec->_tags = std::move(tags);
+        return {._id = rec->_id};
+    }
+
+    auto apply_one(const set_policy_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        rec->_policy = c._policy;
+        return {._id = rec->_id};
+    }
+
+    auto apply_one(const set_monitoring_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        rec->_shard_metrics = c._metrics;
         return {._id = rec->_id};
     }
 

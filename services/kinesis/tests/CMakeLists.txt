@@ -135,6 +135,9 @@ kythira_kinesis_test(kinesis_retention_test kinesis_retention_test.cpp)
 kythira_kinesis_test(kinesis_reshard_test kinesis_reshard_test.cpp)
 # Task 12: UpdateStreamMode and the on-demand capacity controller.
 kythira_kinesis_test(kinesis_on_demand_test kinesis_on_demand_test.cpp)
+# Task 15: tags (both forms), resource policies, enhanced monitoring, the
+# account calls and the Prometheus metrics.
+kythira_kinesis_test(kinesis_tags_test kinesis_tags_test.cpp)
 # Task 6: the gateway's HTTP surface on a real listener (API, internal
 # propose and segment endpoints, health) and the peer client over plain
 # HTTP and verified TLS. certificate_authority issues the test PKI.

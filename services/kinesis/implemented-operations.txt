@@ -33,3 +33,19 @@ UpdateShardCount
 
 # Task 12: on-demand capacity mode.
 UpdateStreamMode
+
+# Task 15: tags, resource policies, monitoring and account calls.
+AddTagsToStream
+DeleteResourcePolicy
+DescribeAccountSettings
+DisableEnhancedMonitoring
+EnableEnhancedMonitoring
+GetResourcePolicy
+ListTagsForResource
+ListTagsForStream
+PutResourcePolicy
+RemoveTagsFromStream
+TagResource
+UntagResource
+UpdateAccountSettings
+UpdateMaxRecordSize

@@ -376,6 +376,9 @@ auto run(const node_options& opt) -> int {
     }
     kinesis::kinesis_service<cluster_type> service(cluster, sc);
     service.register_with(front_end);
+    // Authorization sees a stream's tags and resource policy (task 15).
+    front_end.set_resource_lookup(
+        [&service](std::string_view arn) { return service.resource_facts_of(arn); });
     gateway_type gateway(
         front_end,
         [&cluster](const std::string& key, const std::vector<std::byte>& command,
@@ -385,6 +388,9 @@ auto run(const node_options& opt) -> int {
                                                                              fc);
     gateway.set_lease_handler(
         [&leases](const kinesis::front_end_request& r) { return leases.handle(r); });
+    if (opt._metrics) {
+        gateway.set_metrics_handler([&service] { return service.metrics_text(); });
+    }
     gateway.set_txn_handler(
         [&cluster](const std::vector<std::string>& keys, const std::vector<std::byte>& envelope) {
             return cluster.txn_submit_local(keys, envelope);

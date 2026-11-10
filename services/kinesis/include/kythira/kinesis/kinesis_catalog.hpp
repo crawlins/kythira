@@ -259,6 +259,11 @@ struct stream_record {
     /// When the capacity mode last changed, newest last, at most two
     /// (task 12): AWS allows two switches in 24 hours.
     std::vector<std::int64_t> _mode_changes_ms{};
+    /// The stream's resource policy (task 15), JSON as stored.
+    std::optional<std::string> _policy{};
+    /// Shard-level metrics `EnableEnhancedMonitoring` switched on, sorted,
+    /// never `ALL` (task 15).
+    std::vector<std::string> _shard_metrics{};
 
     [[nodiscard]] auto open_shard_count() const -> std::size_t {
         std::size_t n = 0;
@@ -471,6 +476,14 @@ inline auto encode(codec::writer& w, const stream_record& s) -> void {
     for (const auto t : s._mode_changes_ms) {
         w.i64(t);
     }
+    w.u8(s._policy ? 1 : 0);
+    if (s._policy) {
+        w.str(*s._policy);
+    }
+    w.u8(static_cast<std::uint8_t>(s._shard_metrics.size()));
+    for (const auto& m : s._shard_metrics) {
+        w.str(m);
+    }
 }
 
 inline auto decode_stream_record(codec::reader& r) -> stream_record {
@@ -503,6 +516,13 @@ inline auto decode_stream_record(codec::reader& r) -> stream_record {
     }
     for (std::uint8_t i = 0; i < changes; ++i) {
         s._mode_changes_ms.push_back(r.i64());
+    }
+    if (r.boolean()) {
+        s._policy = r.str();
+    }
+    const auto metrics = r.u8();
+    for (std::uint8_t i = 0; i < metrics; ++i) {
+        s._shard_metrics.push_back(r.str());
     }
     return s;
 }
