@@ -543,3 +543,28 @@ BOOST_AUTO_TEST_CASE(the_disk_guard_rechecks_at_most_once_per_interval) {
     kin::disk_guard off(0, [] { return std::optional<std::uint64_t>{0}; }, [] { return 0; });
     BOOST_TEST(!off.below_floor());
 }
+
+// doc/retention.md: apply() never consults the disk guard. An append that
+// is already in the log (proposed through another node) applies on a
+// replica whose own disk is below the floor, so replicas never diverge on
+// a local condition.
+BOOST_AUTO_TEST_CASE(an_append_in_the_log_applies_whatever_the_local_disk) {
+    fixture f;
+    f.create("s");
+    f.put("s", 1);
+    f.free_bytes = std::uint64_t{1} << 20U;  // far below the 1 GiB floor
+    BOOST_REQUIRE(f.guard.below_floor());
+    kin::append_records_command a{._key = f.key(), ._arrival_ms = f.wall};
+    a._records.push_back({._partition_key = "p", ._data = std::vector<std::byte>(4, std::byte{7})});
+    const kin::stream_command cmd = a;
+    // A replica applies committed entries; the local cluster's transact is
+    // that path (no proposal-time checks).
+    BOOST_TEST((f.cluster.transact({{f.key(), kin::encode_command(cmd)}}) ==
+                kin::transact_outcome::committed));
+    BOOST_TEST(f.shard()._last_counter == 2U);
+    BOOST_TEST(f.read_all("s").size() == 2U);
+    // A new proposal from this node is still refused.
+    const auto again = f.cluster.propose(f.key(), kin::encode_command(cmd));
+    BOOST_REQUIRE(again.has_value());
+    BOOST_TEST((again->_status != kin::apply_status::ok));
+}

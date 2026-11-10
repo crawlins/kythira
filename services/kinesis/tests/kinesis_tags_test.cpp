@@ -346,3 +346,75 @@ BOOST_AUTO_TEST_CASE(metrics_count_traffic_and_follow_the_monitoring_switches) {
         text.find(R"(kinesis_outgoing_records_total{account="111122223333",stream="m",shard=)") ==
         std::string::npos);
 }
+
+// AWS's resource policy limit: 20 KiB. A policy of exactly that size is
+// stored; one byte more is refused (LimitExceededException, AWS's error
+// for a limit; not yet checked against a recording) and the old policy
+// stays.
+BOOST_AUTO_TEST_CASE(a_policy_over_20_kib_is_refused) {
+    fixture f;
+    f.create("s", 1);
+    const auto arn = f.arn("s");
+    const auto policy_of_size = [](std::size_t size) {
+        const std::string head = R"({"Version":"2012-10-17","Statement":[{"Sid":")";
+        const std::string tail =
+            R"(","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::444455556666:root"},"Action":"kinesis:GetRecords","Resource":"*"}]})";
+        return head + std::string(size - head.size() - tail.size(), 'x') + tail;
+    };
+    const auto fits = policy_of_size(20 * 1024);
+    BOOST_REQUIRE(fits.size() == 20U * 1024U);
+    BOOST_TEST(f.call("PutResourcePolicy", {{"ResourceARN", arn}, {"Policy", fits}}).status ==
+               200U);
+    const auto over = f.call("PutResourcePolicy",
+                             {{"ResourceARN", arn}, {"Policy", policy_of_size(20 * 1024 + 1)}});
+    BOOST_TEST(over.status == 400U);
+    BOOST_TEST(type_of(over) == "LimitExceededException");
+    BOOST_TEST(f.ok("GetResourcePolicy", {{"ResourceARN", arn}}).at("Policy").as_string() == fits);
+}
+
+// doc/tags-policies-metrics.md: tags change only on an ACTIVE or UPDATING
+// stream. A stream still CREATING answers ResourceInUseException.
+BOOST_AUTO_TEST_CASE(tags_change_only_on_an_active_or_updating_stream) {
+    fixture f;
+    kin::create_stream_command c;
+    c._account = std::string(k_account);
+    c._name = "half";
+    c._shard_count = 1;
+    const kin::stream_command cmd = c;
+    BOOST_REQUIRE(f.cluster.propose(kin::command_key(cmd), kin::encode_command(cmd))->_status ==
+                  kin::apply_status::ok);
+    BOOST_TEST(f.status("half") == "CREATING");
+    const auto add =
+        f.call("AddTagsToStream", {{"StreamName", "half"}, {"Tags", {{"team", "data"}}}});
+    BOOST_TEST(type_of(add) == "ResourceInUseException");
+    const auto remove =
+        f.call("RemoveTagsFromStream", {{"StreamName", "half"}, {"TagKeys", json::array{"team"}}});
+    BOOST_TEST(type_of(remove) == "ResourceInUseException");
+}
+
+// doc/tags-policies-metrics.md: the 50-tag limit is checked again when the
+// entry applies, so two changes that each pass the front end's check
+// against the same old tag set cannot both commit.
+BOOST_AUTO_TEST_CASE(the_tag_limit_is_rechecked_when_the_entry_applies) {
+    fixture f;
+    f.create("s", 1);
+    std::uint64_t id = 0;
+    BOOST_REQUIRE(f.cluster.read(kin::stream_key(std::string(k_account), "s"), [&](const auto& sm) {
+        id = sm.find_stream(std::string(k_account), "s")->_id;
+    }));
+    const auto change = [&](char prefix) {
+        kin::tag_stream_command t;
+        t._account = std::string(k_account);
+        t._name = "s";
+        t._id = id;
+        for (int i = 0; i < 30; ++i) {
+            t._set[std::string(1, prefix) + std::to_string(i)] = "v";
+        }
+        const kin::stream_command cmd = t;
+        return f.cluster.propose(kin::command_key(cmd), kin::encode_command(cmd))->_status;
+    };
+    BOOST_TEST((change('a') == kin::apply_status::ok));
+    BOOST_TEST((change('b') == kin::apply_status::invalid));
+    BOOST_TEST(f.tags("s").size() == 30U);
+    BOOST_TEST(f.tags("s").count("b0") == 0U);
+}

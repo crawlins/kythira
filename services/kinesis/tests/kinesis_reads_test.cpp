@@ -607,3 +607,37 @@ BOOST_AUTO_TEST_CASE(the_iterator_key_file_and_the_derived_key) {
     BOOST_TEST(a._keys.at(0)._secret !=
                kin::derived_iterator_key("another-secret-0123")._keys.at(0)._secret);
 }
+
+// Requirement 7.5: a KPL aggregated record (magic, protobuf body, MD5
+// trailer) is opaque data, stored and returned byte for byte, NULs and high
+// bytes included; only the outer partition key is the record's.
+BOOST_AUTO_TEST_CASE(kpl_aggregated_records_come_back_byte_for_byte) {
+    fixture f;
+    f.create();
+    using std::string_literals::operator""s;
+    std::string aggregated = "\xF3\x89\x9A\xC2"s;
+    aggregated += "\x0A\x03pk1\x0A\x03pk2\x1A\x07\x08\x00\x1A\x03one"s;
+    aggregated += "\x1A\x07\x08\x01\x1A\x03two"s;
+    aggregated += "\x00\xFF\x10\x80\x7F\x00\x01\x02\xFE\xFD\x00\x00\x9A\xC2\x89\xF3"s;
+    BOOST_REQUIRE(aggregated.size() == 4U + 19U + 9U + 16U);
+    (void)f.put(b64(aggregated));
+    const auto r = f.get(f.iterator({{"ShardIteratorType", "TRIM_HORIZON"}}));
+    BOOST_REQUIRE(r.at("Records").as_array().size() == 1U);
+    const auto& rec = r.at("Records").at(0);
+    BOOST_TEST((data_of(rec) == aggregated));
+    BOOST_TEST(std::string(rec.at("PartitionKey").as_string()) == "pk");
+}
+
+// AWS's GetRecords takes a Limit of 1 to 10 000 records; anything else is
+// the model's ValidationException, never silently clamped.
+BOOST_AUTO_TEST_CASE(get_records_limit_follows_the_model) {
+    fixture f;
+    f.create();
+    (void)f.put(b64("one"));
+    const auto it = f.iterator({{"ShardIteratorType", "TRIM_HORIZON"}});
+    BOOST_TEST(f.error_type("GetRecords", {{"ShardIterator", it}, {"Limit", 0}}) ==
+               "ValidationException");
+    BOOST_TEST(f.error_type("GetRecords", {{"ShardIterator", it}, {"Limit", 10'001}}) ==
+               "ValidationException");
+    BOOST_TEST(f.get(it, 1).at("Records").as_array().size() == 1U);
+}
