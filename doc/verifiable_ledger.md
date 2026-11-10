@@ -14,8 +14,9 @@ multi_raft (ledger placement, routing, background index builds and seals),
 which runs in tests on an in-process network, and the `ledger_node`
 daemon (below) with its metrics endpoint. A replica that falls behind its
 ledger's compacted log catches up through a snapshot that carries the
-segment files. Not yet built: the daemon's object-store export runner,
-and the crash and chaos tests.
+segment files. A replica killed at any point of applying, sealing or
+offloading recovers the same journal (`ledger_crash_test`). Not yet
+built: the daemon's object-store export runner and the chaos scenario.
 
 ## Model
 

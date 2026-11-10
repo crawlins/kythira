@@ -28,6 +28,7 @@
 #include <kythira/ledger/journal_types.hpp>
 #include <kythira/ledger/ledger_hash.hpp>
 
+#include <raft/fault_injection.hpp>
 #include <raft/key_object_store.hpp>
 
 #include <array>
@@ -35,6 +36,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -227,6 +229,10 @@ inline auto fsync_path(const std::filesystem::path& p, int flags) -> void {
 /// durable: write a temporary, fsync it, rename it over `path`, fsync the
 /// directory. A crash leaves either the old file, the new one, or a
 /// temporary that the next write replaces.
+/// The exit status of a process killed at one of the ledger's crash test
+/// kill points (`fiu_do_on("ledger/...")`, compiled only with FIU_ENABLE).
+inline constexpr int ledger_crash_exit_code = 86;
+
 inline auto write_file_durably(const std::filesystem::path& path, std::string_view bytes) -> void {
     namespace sd = segment_detail;
     const auto tmp = std::filesystem::path(path.string() + ".tmp");
@@ -252,6 +258,9 @@ inline auto write_file_durably(const std::filesystem::path& path, std::string_vi
         sd::fail("fsync", tmp);
     }
     ::close(fd);
+    // Crash test kill point (FIU_ENABLE builds only): the bytes are in the
+    // temporary file and not yet under their name.
+    fiu_do_on("ledger/segment/before_rename", std::_Exit(ledger_crash_exit_code));
     std::filesystem::rename(tmp, path);
     sd::fsync_path(path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path(),
                    O_RDONLY | O_DIRECTORY);
