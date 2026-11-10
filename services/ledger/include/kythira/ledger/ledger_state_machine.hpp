@@ -105,6 +105,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -448,6 +449,11 @@ public:
             result = apply_result::rejected("invalid_entry", e.what());
         }
         batch.put(kythira::column_family::meta, key_applied(), std::to_string(index));
+        // Crash test kill points (FIU_ENABLE builds only, Requirement 12.4):
+        // with the entry worked out but nothing written, and with the batch
+        // written but the in-memory state and an offloaded copy's removal
+        // not yet done.
+        fiu_do_on("ledger/apply/before_engine_write", std::_Exit(ledger_crash_exit_code));
         kythira::engine_sequence seq{};
         try {
             seq = engine_->write(batch);
@@ -455,6 +461,7 @@ public:
             load_locked();  // the accumulator's frontier moved; the engine did not
             throw;
         }
+        fiu_do_on("ledger/apply/after_engine_write", std::_Exit(ledger_crash_exit_code));
         applied_ = index;
         if (new_tip) {
             tip_ = new_tip;
@@ -2023,7 +2030,11 @@ private:
         seg.size = bytes.size();
         seg.sha256 = sha256_of(bytes);
         std::filesystem::create_directories(options_.segment_directory);
+        fiu_do_on("ledger/seal/before_segment_file", std::_Exit(ledger_crash_exit_code));
         write_file_durably(options_.segment_directory / seg.file, bytes);
+        // The file is complete under its name; the batch that records the
+        // seal and drops the blocks from the engine is not written yet.
+        fiu_do_on("ledger/seal/after_segment_file", std::_Exit(ledger_crash_exit_code));
         batch.put(kythira::column_family::meta, key_segment(seg.first),
                   as_string(seg.to_ion().to_binary()));
         batch.erase_range(kythira::column_family::data,

@@ -118,4 +118,19 @@ else()
     message(STATUS "ledger_node_cluster_test: skipped (requires the ledger_node daemon build)")
 endif()
 
+# Task 11 (Requirement 12.4): a replica on RocksDB killed at every kill
+# point the state machine has (apply before and after the engine batch,
+# sealing before, during and after the segment file, an offload's copy
+# removal), recovered by replaying the same entries, and checked against a
+# replica that never crashed. Needs libfiu (the kill points) and RocksDB.
+if(FIU_FOUND AND TARGET raft_rocksdb_engine)
+    kythira_ledger_test(ledger_crash_test ledger_crash_test.cpp)
+    target_compile_definitions(ledger_crash_test PRIVATE FIU_ENABLE)
+    target_link_libraries(ledger_crash_test PRIVATE raft_rocksdb_engine ${FIU_LDFLAGS})
+    target_include_directories(ledger_crash_test PRIVATE ${FIU_INCLUDE_DIRS})
+    set_tests_properties(ledger_crash_test PROPERTIES LABELS "integration;ledger" TIMEOUT 300)
+else()
+    message(STATUS "ledger_crash_test: skipped (requires libfiu and raft_rocksdb_engine)")
+endif()
+
 kythira_scale_test_timeouts()

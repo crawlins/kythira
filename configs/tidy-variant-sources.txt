@@ -73,5 +73,6 @@ ion services/ledger/tests/ledger_signing_test.cpp
 ion services/ledger/tests/ledger_group_state_machine_test.cpp
 ion services/ledger/tests/ledger_host_test.cpp
 ion services/ledger/tests/ledger_node_cluster_test.cpp
+ion services/ledger/tests/ledger_crash_test.cpp
 
 no-cloud tests/multi_raft_node_s3_unavailable_test.cpp

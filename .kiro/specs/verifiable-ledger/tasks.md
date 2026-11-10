@@ -418,7 +418,19 @@ task is one PR unless noted.
   - `doc/` page: model, API, limits, verification procedure
   - _Requirements: 12.4, 12.5_
   - Done so far: `doc/verifiable_ledger.md` (model, API, limits,
-    verification procedure, operations). It says what waits on
-    `ledger_node` and needs a pass once the daemon and its config land.
-    The crash and chaos tests wait on `ledger_node` and
-    `rocksdb_kv_engine`.
+    verification procedure, operations, running a node).
+  - Crash tests (12.4), `ledger_crash_test`: libfiu kill points in the
+    state machine (`ledger/apply/before_engine_write`,
+    `ledger/apply/after_engine_write`, `ledger/seal/before_segment_file`,
+    `ledger/seal/after_segment_file`) and in `write_file_durably`
+    (`ledger/segment/before_rename`) call `std::_Exit` in FIU_ENABLE
+    builds and compile away otherwise. The test re-runs its own binary as
+    a worker that applies a fixed run of entries (12 commits, three seals,
+    an offload) to a RocksDB replica and dies at the Nth pass of one kill
+    point, for every N; the replica is reopened, given the same entries
+    again as Raft would replay them, and must match a replica that never
+    crashed block for block (hashes, digest, segments with their SHA-256
+    and object keys), re-verify, and hold exactly its local segment
+    files (no `.tmp`, no offloaded copy). 41 kills, all recovered; no
+    bug found.
+  - Still owed: the docker-chaos scenario (12.5).
