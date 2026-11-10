@@ -67,6 +67,10 @@ set_tests_properties(ledger_api_test PROPERTIES LABELS "unit;ledger" TIMEOUT 120
 if(TARGET certificate_authority)
     kythira_ledger_test(ledger_http_test ledger_http_test.cpp)
     target_link_libraries(ledger_http_test PRIVATE certificate_authority OpenSSL::SSL)
+    # ...and ledger_ctl verify --api against it (task 10).
+    target_compile_definitions(ledger_http_test PRIVATE
+        KYTHIRA_LEDGER_CTL="$<TARGET_FILE:ledger_ctl>")
+    add_dependencies(ledger_http_test ledger_ctl)
     set_tests_properties(ledger_http_test PROPERTIES LABELS "unit;ledger;https" TIMEOUT 180)
 
     # Task 10: CA-signed digests, their checks, GetDigest with a signer, and
