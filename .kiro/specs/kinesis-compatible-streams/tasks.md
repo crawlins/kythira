@@ -294,11 +294,27 @@ asked.
     `StartStreamEncryption`, `StopStreamEncryption`; encrypted segments
   - _Requirements: 14.1_
 
-- [ ] 15. Tags, resource policies, monitoring and account calls
+- [x] 15. Tags, resource policies, monitoring and account calls
   - Tag operations (both forms), resource policies through IAM's evaluator,
     enhanced monitoring switches, account-level calls; coverage close-out
     (every pinned operation implemented or listed)
   - _Requirements: 2.1-2.3, 14.2-14.5, 16.2_
+  - Progress: the stream and resource tag operations (one
+    `tag_stream_command`; 50 per stream, checked again in `apply()`;
+    profile tags validated), `Put`/`Get`/`DeleteResourcePolicy` (stored in
+    the catalog record and handed with the tags to the authorizer through
+    the front end's resource lookup), `Enable`/`DisableEnhancedMonitoring`,
+    `DescribeAccountSettings` / `UpdateAccountSettings` (no billing
+    commitment) and `UpdateMaxRecordSize` (1024 KiB only). Per-stream and
+    per-shard metrics in the Prometheus text format on `GET /metrics`
+    (`KINESIS_METRICS`, off by default; shard-level traffic series follow
+    the monitoring switches). Coverage: every pinned operation implemented
+    or listed; what remains listed is channels (not in the spec), fan-out
+    (task 13), encryption (task 14) and warm throughput.
+    `kinesis_tags_test`, 6 cases; `doc/tags-policies-metrics.md`. Open:
+    message wording, `ListTagsForStream`'s default `Limit` and
+    `GetResourcePolicy` without a policy are unverified against a
+    recording of AWS.
 
 ### Phase 7: KCL 3.x and every lease backend
 
