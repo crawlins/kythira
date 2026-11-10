@@ -38,6 +38,11 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/expr_eval.hpp` | condition and key evaluation, update application, projection | 5 |
 | `tools/expr-corpus/` | `cases.py` (about 3000 cases), `record.py` and `record.sh`, which records them against DynamoDB Local 3.3.2 in a container | 5 |
 | `tests/data/expression_corpus.jsonl`, `tests/dynamodb_expression_corpus_test.cpp`, `tests/dynamodb_expression_fuzz_test.cpp` | the recorded corpus, its replay (every answer must match DynamoDB Local's), and seeded fuzzing of expressions and their binary form | 5 |
+| `include/kythira/dynamodb/key_layout.hpp` | where the catalog, items and item versions live in the node's `kv_engine`, and where a group may be split | 6 |
+| `include/kythira/dynamodb/item_state_machine.hpp` | `dynamo_item_state_machine`: single-item writes as Raft entries, conditions evaluated in `apply()`, item versions, `ReturnValues`, splits only between item collections, the bounded background drop of a deleted table | 6 |
+| `include/kythira/dynamodb/catalog.hpp` | `dynamo_catalog_state_machine`: table descriptors, status transitions, table ids that are never reused, delete jobs | 6 |
+| `include/kythira/dynamodb/disk_guard.hpp` | refuses writes before the data directory's free space falls below a floor | 6 |
+| `tests/dynamodb_item_state_machine_test.cpp`, `tests/dynamodb_catalog_test.cpp` | the item state machine, the catalog and the disk guard on `memory_kv_engine` | 6 |
 
 The rest follows the plan in the spec's `tasks.md`.
 

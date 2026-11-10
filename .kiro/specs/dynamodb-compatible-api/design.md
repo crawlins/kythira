@@ -49,7 +49,7 @@ All keys are ordered byte strings inside the engine:
 | Base item | `t/<table id>/<h16(pk)><enc(pk)>\x00<enc(sk)>` | encoded item |
 | LSI entry | `t/<table id>/<h16(pk)><enc(pk)>\x01<lsi no><enc(lsi sk)><enc(base sk)>` | projected item |
 | GSI entry | `t/<index id>/<h16(gsi pk)><enc(gsi pk)>\x00<enc(gsi sk)><enc(base key)>` | projected item, base version |
-| Item version | `v/<table id>/<base key>` | 64-bit version (for GSI and replication ordering) |
+| Item version | the base item key, in the meta column family | 64-bit version (for GSI and replication ordering); kept with the item so a group's range covers both |
 | TTL index | `x/<table id>/<expiry><base key>` | empty (derived, rebuilt on restore if missing) |
 
 `h16` is a 2-byte hash of the encoded partition key, so partitions spread
