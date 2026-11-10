@@ -239,6 +239,56 @@ public:
         return false;
     }
 
+    [[nodiscard]] auto subjects() const -> std::size_t { return grants_.size(); }
+
+    /// Roles from text, one grant per line: `<subject> <ledger or *>
+    /// <read|write|admin>`, separated by spaces or tabs. Blank lines and
+    /// lines starting with `#` are skipped. A subject is a client
+    /// certificate's URI SAN, which holds no whitespace. Throws
+    /// std::invalid_argument naming the first bad line.
+    static auto parse(std::string_view text) -> ledger_roles {
+        ledger_roles out;
+        std::size_t line_no = 0;
+        while (!text.empty()) {
+            const auto nl = text.find('\n');
+            std::string_view line = text.substr(0, nl);
+            text = nl == std::string_view::npos ? std::string_view() : text.substr(nl + 1);
+            ++line_no;
+            std::vector<std::string_view> fields;
+            std::size_t at = 0;
+            while (at < line.size()) {
+                const auto start = line.find_first_not_of(" \t\r", at);
+                if (start == std::string_view::npos) {
+                    break;
+                }
+                const auto end = line.find_first_of(" \t\r", start);
+                fields.push_back(line.substr(start, end - start));
+                at = end == std::string_view::npos ? line.size() : end;
+            }
+            if (fields.empty() || fields.front().starts_with('#')) {
+                continue;
+            }
+            const auto bad = [line_no](const std::string& why) {
+                return std::invalid_argument("roles line " + std::to_string(line_no) + ": " + why);
+            };
+            if (fields.size() != 3) {
+                throw bad("expected <subject> <ledger or *> <read|write|admin>");
+            }
+            ledger_role role{};
+            if (fields[2] == "read") {
+                role = ledger_role::read;
+            } else if (fields[2] == "write") {
+                role = ledger_role::write;
+            } else if (fields[2] == "admin") {
+                role = ledger_role::admin;
+            } else {
+                throw bad("unknown role '" + std::string(fields[2]) + "'");
+            }
+            out.grant(std::string(fields[0]), std::string(fields[1]), role);
+        }
+        return out;
+    }
+
 private:
     std::map<std::string, std::map<std::string, ledger_role>> grants_;
 };

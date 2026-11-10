@@ -462,3 +462,35 @@ BOOST_AUTO_TEST_CASE(timestamps_in_requests_take_any_ion_precision) {
         BOOST_TEST(!any_timestamp(bad), bad);
     }
 }
+
+BOOST_AUTO_TEST_CASE(roles_parse_from_a_file) {
+    const auto roles = ledger_roles::parse(
+        "# operators\n"
+        "spiffe://k/admin * admin\n"
+        "\n"
+        "   # indented comment\n"
+        "spiffe://k/app\tbank\twrite\r\n"
+        "spiffe://k/app audit read\n"
+        "spiffe://k/auditor * read");
+    BOOST_TEST(roles.subjects() == 3U);
+    BOOST_TEST(roles.allows("spiffe://k/admin", "anything", ledger_role::admin));
+    BOOST_TEST(roles.allows("spiffe://k/app", "bank", ledger_role::write));
+    BOOST_TEST(roles.allows("spiffe://k/app", "audit", ledger_role::read));
+    BOOST_TEST(!roles.allows("spiffe://k/app", "audit", ledger_role::write));
+    BOOST_TEST(!roles.allows("spiffe://k/app", "other", ledger_role::read));
+    BOOST_TEST(roles.allows("spiffe://k/auditor", "bank", ledger_role::read));
+    BOOST_TEST(!roles.allows("spiffe://k/auditor", "bank", ledger_role::write));
+    BOOST_TEST(ledger_roles::parse("").subjects() == 0U);
+
+    const auto error_of = [](std::string_view text) -> std::string {
+        try {
+            (void)ledger_roles::parse(text);
+        } catch (const std::invalid_argument& e) {
+            return e.what();
+        }
+        return "";
+    };
+    BOOST_TEST(error_of("a * admin\nb bank owner\n") == "roles line 2: unknown role 'owner'");
+    BOOST_TEST(error_of("a *\n").starts_with("roles line 1: expected"));
+    BOOST_TEST(error_of("a * read extra\n").starts_with("roles line 1: expected"));
+}
