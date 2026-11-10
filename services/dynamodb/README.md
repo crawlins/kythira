@@ -58,6 +58,7 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/batch_api.hpp` | `BatchGetItem` and `BatchWriteItem` | 8 |
 | `tools/ops-corpus/` | the operations corpus's scenarios and recorder (`record.sh`: DynamoDB Local under Docker or rootless Podman) | 8 |
 | `tests/data/ops_corpus.jsonl`, `tests/dynamodb_ops_corpus_test.cpp` | the recorded scenarios and their replay through the handlers | 8 |
+| `doc/invariants.md`, `tests/dynamodb_invariants_test.cpp` | the rules the AWS documentation states, each with its source page and a test case; the cases also run against DynamoDB Local (`KYTHIRA_DYNAMODB_ORACLE`) to check their expectations | 8 |
 | `tests/dynamodb_test_fixture.hpp`, `tests/dynamodb_query_test.cpp` | the shared handler fixture; Query, Scan and batches at their limits | 8 |
 | `include/kythira/dynamodb/local_index.hpp` | local secondary indexes: definitions, where their entries and each item collection's size live, projections, index key checks | 9 |
 | `tests/dynamodb_lsi_test.cpp` | LSI entries in the engine, the item collection limit, `ItemCollectionMetrics`, drops and stored forms | 9 |

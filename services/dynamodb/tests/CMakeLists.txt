@@ -115,6 +115,12 @@ kythira_dynamodb_test(dynamodb_raft_backend_test dynamodb_raft_backend_test.cpp)
 target_link_libraries(dynamodb_raft_backend_test PRIVATE kythira_test_support)
 set_tests_properties(dynamodb_raft_backend_test PROPERTIES
     LABELS "integration;dynamodb;dynamodb-module" TIMEOUT 300)
+# The invariants services/dynamodb/doc/invariants.md collects from the AWS
+# developer guide and API reference, one case per invariant, driven through
+# the front end on the local backend.
+kythira_dynamodb_test(dynamodb_invariants_test dynamodb_invariants_test.cpp)
+set_tests_properties(dynamodb_invariants_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")

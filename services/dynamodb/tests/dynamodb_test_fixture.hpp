@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -119,7 +120,15 @@ struct fixture {
         batches.register_with(*fe);
     }
 
+    /// When set, requests go here instead of the front end: a test can run
+    /// its cases against another implementation (DynamoDB Local) to check
+    /// its own expectations.
+    std::function<reply(const ddb::front_end_request&)> remote;
+
     auto call(std::string_view op, const std::string& body) -> reply {
+        if (remote) {
+            return remote(signed_request(op, body));
+        }
         const auto r = fe->handle(signed_request(op, body));
         return reply{r.status, json::parse(r.body).as_object()};
     }
