@@ -5480,6 +5480,29 @@ else()
     message(STATUS "beast_https_server_test: skipped (requires certificate_authority)")
 endif()
 
+# HTTP/2 in the core HTTPS server (h2_server_session.hpp; Kinesis task 13):
+# h2c and h2 over TLS, multiplexing, streamed bodies, resets and shutdown,
+# driven by the nghttp2 client in h2_test_client.hpp.
+if(TARGET certificate_authority AND TARGET kythira_nghttp2)
+    add_executable(h2_server_test h2_server_test.cpp)
+    target_link_libraries(h2_server_test PRIVATE
+        Boost::unit_test_framework
+        certificate_authority
+        kythira_nghttp2
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        Threads::Threads
+    )
+    target_compile_features(h2_server_test PRIVATE cxx_std_23)
+    add_test(NAME h2_server_test COMMAND h2_server_test)
+    set_tests_properties(h2_server_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;https"
+    )
+else()
+    message(STATUS "h2_server_test: skipped (requires certificate_authority and nghttp2)")
+endif()
+
 # Guarded on httplib_FOUND: acme_test_server.hpp (this trio's shared mock
 # ACME server) uses httplib directly, and these three were previously
 # unconditional here even though every other httplib::httplib-using target

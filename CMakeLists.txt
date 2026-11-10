@@ -982,6 +982,23 @@ target_include_directories(kythira_core_headers INTERFACE
     $<INSTALL_INTERFACE:include>
 )
 
+# HTTP/2 for the core HTTPS server (beast_https_server.hpp,
+# h2_server_session.hpp): Kinesis SubscribeToShard needs it, since AWS SDKs
+# subscribe over HTTP/2. nghttp2 comes from vcpkg (already pinned for curl)
+# or the system. A target that wants HTTP/2 links kythira_nghttp2, which
+# defines KYTHIRA_HAS_NGHTTP2; without nghttp2 the server stays HTTP/1.1.
+find_path(KYTHIRA_NGHTTP2_INCLUDE_DIR nghttp2/nghttp2.h)
+find_library(KYTHIRA_NGHTTP2_LIBRARY NAMES nghttp2)
+if(KYTHIRA_NGHTTP2_INCLUDE_DIR AND KYTHIRA_NGHTTP2_LIBRARY)
+    add_library(kythira_nghttp2 INTERFACE)
+    target_include_directories(kythira_nghttp2 SYSTEM INTERFACE "${KYTHIRA_NGHTTP2_INCLUDE_DIR}")
+    target_link_libraries(kythira_nghttp2 INTERFACE "${KYTHIRA_NGHTTP2_LIBRARY}")
+    target_compile_definitions(kythira_nghttp2 INTERFACE KYTHIRA_HAS_NGHTTP2)
+    message(STATUS "nghttp2: ${KYTHIRA_NGHTTP2_LIBRARY} (HTTP/2 in the core HTTPS server)")
+else()
+    message(STATUS "nghttp2: not found; the core HTTPS server speaks HTTP/1.1 only")
+endif()
+
 # The in-process test fabric's include path (multi_raft_test_fabric.hpp,
 # multi_raft_transport_harness.hpp, docker_chaos/os_faults.hpp and friends),
 # for a module's tests (Requirement 4.2). Module tests include those headers
