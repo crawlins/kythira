@@ -221,6 +221,23 @@ asked.
   - Tiering of sealed segments to the object stores with SHA-256, transparent
     fetch-back, disk guard
   - _Requirements: 11.2-11.4_
+  - Progress: `IncreaseStreamRetentionPeriod` / `DecreaseStreamRetentionPeriod`
+    (24-8760 hours, AWS's refusals, one catalog entry). The maintenance
+    pass (`kinesis_maintenance.hpp`, every node, acting only on shards it
+    leads) proposes `seal_shard_command` for an idle active segment,
+    `trim_shard_command` past retention and `tier_segment_command` after
+    uploading a sealed segment under its deterministic object key
+    (`kinesis_tiering.hpp`); replicas drop tiered local copies, reads fetch
+    them back through the node's fetcher (peers, then the object store,
+    verified by `install_segment`) and the pass evicts fetched copies after
+    ten idle minutes; trimming deletes the objects. The disk guard
+    (`kinesis_disk_guard.hpp`) refuses appends below
+    `KINESIS_DISK_FLOOR_BYTES` on the proposing node and the leader. The
+    daemon tiers to S3 or an S3-compatible endpoint (`tier_s3.cpp`, built
+    with the AWS SDK's s3 component). `kinesis_retention_test`, 12 cases;
+    `doc/retention.md`. Open: the retention refusal messages are AWS's as
+    documented, not yet checked against a recording; other object stores
+    need only their `make_tier_store` call in the daemon.
 
 - [ ] 11. Resharding
   - `SplitShard`, `MergeShards`, `UpdateShardCount` with lineage, ending

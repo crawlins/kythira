@@ -18,7 +18,6 @@ unknown-operation error rather than a retryable fault.
 |---|---|---|---|
 | `AddTagsToStream` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `CreateChannel` | none | Not in the spec. Channels deliver a stream's records to Amazon S3 or S3 Tables (Iceberg), a delivery service like Firehose, which Requirement 1 leaves out of scope. Open question for the owner. | `UnknownOperationException`, HTTP 400 |
-| `DecreaseStreamRetentionPeriod` | task 10 | Not built yet (retention and tiering). | `UnknownOperationException`, HTTP 400 |
 | `DeleteChannel` | none | Not in the spec. Channels deliver a stream's records to Amazon S3 or S3 Tables (Iceberg), a delivery service like Firehose, which Requirement 1 leaves out of scope. Open question for the owner. | `UnknownOperationException`, HTTP 400 |
 | `DeleteResourcePolicy` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `DeregisterStreamConsumer` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
@@ -28,7 +27,6 @@ unknown-operation error rather than a retryable fault.
 | `DisableEnhancedMonitoring` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `EnableEnhancedMonitoring` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
 | `GetResourcePolicy` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |
-| `IncreaseStreamRetentionPeriod` | task 10 | Not built yet (retention and tiering). | `UnknownOperationException`, HTTP 400 |
 | `ListChannels` | none | Not in the spec. Channels deliver a stream's records to Amazon S3 or S3 Tables (Iceberg), a delivery service like Firehose, which Requirement 1 leaves out of scope. Open question for the owner. | `UnknownOperationException`, HTTP 400 |
 | `ListStreamConsumers` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
 | `ListTagsForResource` | task 15 | Not built yet (tags, policies, monitoring, account). | `UnknownOperationException`, HTTP 400 |

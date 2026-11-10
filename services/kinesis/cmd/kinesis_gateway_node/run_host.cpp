@@ -15,18 +15,22 @@
 
 #include "config.hpp"
 #include "stop_signal.hpp"
+#include "tier_s3.hpp"
 
 #include <kythira/kinesis/kinesis_actions.hpp>
 #include <kythira/kinesis/kinesis_compat_profile.hpp>
+#include <kythira/kinesis/kinesis_disk_guard.hpp>
 #include <kythira/kinesis/kinesis_front_end.hpp>
 #include <kythira/kinesis/kinesis_gateway.hpp>
 #include <kythira/kinesis/kinesis_iterators.hpp>
 #include <kythira/kinesis/kinesis_lease_api.hpp>
+#include <kythira/kinesis/kinesis_maintenance.hpp>
 #include <kythira/kinesis/kinesis_peer_client.hpp>
 #include <kythira/kinesis/kinesis_raft_cluster.hpp>
 #include <kythira/kinesis/kinesis_service.hpp>
 #include <kythira/kinesis/kinesis_static_keys.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
+#include <kythira/kinesis/kinesis_tiering.hpp>
 
 #include <raft/beast_http_transport_impl.hpp>
 #include <raft/beast_https_server.hpp>
@@ -233,15 +237,35 @@ auto run(const node_options& opt) -> int {
         }
     }
     const auto transport = kinesis::make_segment_transport(peers, opt._forward_secret);
+    // Tiering (task 10): sealed segments past KINESIS_TIER_AFTER_HOURS go to
+    // S3, and a read that needs one fetches it back.
+    std::unique_ptr<s3_tier> tier_owner;
+#ifdef KYTHIRA_KINESIS_HAS_S3_TIER
+    if (!opt._tier_bucket.empty()) {
+        tier_owner = make_s3_tier(opt);
+    }
+#endif
+    const kinesis::tier_store tier = tier_owner ? tier_owner->store() : kinesis::tier_store{};
+    kinesis::fetched_segments fetched;
+    const auto wall_ms = [] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    };
     // Restore cannot finish without the active segment a snapshot names:
-    // try every peer, and fail the restore (Raft retries it) when none has
-    // it.
-    kinesis::segment_fetcher fetch = [&store, &other_gateways,
-                                      &transport](const kythira::record_segment_descriptor& d) {
-        if (!store.fetch_segment(d, other_gateways, transport)) {
-            throw kythira::record_segment_error("kinesis: no peer served segment " + d._stream +
-                                                " at " + std::to_string(d._first_seq));
+    // try every peer, then the tier, and fail the restore (Raft retries it)
+    // when none has it.
+    kinesis::segment_fetcher fetch = [&store, &other_gateways, &transport, &tier, &fetched,
+                                      &wall_ms](const kythira::record_segment_descriptor& d) {
+        if (store.fetch_segment(d, other_gateways, transport)) {
+            return;
         }
+        if (d._sealed && kinesis::fetch_from_tier(store, tier, d)) {
+            fetched.note(d._stream, d._first_seq, wall_ms());
+            return;
+        }
+        throw kythira::record_segment_error("kinesis: no peer or tier served segment " + d._stream +
+                                            " at " + std::to_string(d._first_seq));
     };
 
     beast_stack stack{opt};
@@ -302,6 +326,8 @@ auto run(const node_options& opt) -> int {
     // The leader's write buckets (task 8): what a stream with the
     // throttling switch on meets when this node proposes for it.
     kinesis::write_throttle write_limits;
+    // The disk guard (Requirement 11.4) on the segment disk.
+    kinesis::disk_guard guard(opt._data_dir / "segments", opt._disk_floor_bytes);
     cluster_type cluster(
         *host,
         kinesis::make_http_forwarder<kythira::host_node_id>(
@@ -310,7 +336,7 @@ auto run(const node_options& opt) -> int {
                 const auto it = gateways.find(id);
                 return it == gateways.end() ? std::nullopt : std::optional{it->second};
             }),
-        opt._command_timeout, &write_limits);
+        opt._command_timeout, &write_limits, &guard);
 
     kinesis::front_end_config fc;
     fc._region = opt._region;
@@ -366,6 +392,38 @@ auto run(const node_options& opt) -> int {
         }
     });
 
+    // Retention and tiering: each node runs the pass; only a shard's leader
+    // seals, trims and tiers it.
+    kinesis::stream_maintenance<cluster_type> maintenance(
+        cluster, store, tier, fetched,
+        kinesis::maintenance_config{
+            ._tier_after_ms =
+                static_cast<std::int64_t>(opt._tier_after_hours) * kinesis::k_ms_per_hour,
+            ._keep_fetched_ms = std::int64_t{10} * 60 * 1000});
+    std::atomic<bool> maintaining{true};
+    std::thread maintainer([&] {
+        auto next = std::chrono::steady_clock::now() + opt._maintenance_interval;
+        while (maintaining.load(std::memory_order_acquire)) {
+            if (std::chrono::steady_clock::now() < next) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                continue;
+            }
+            next = std::chrono::steady_clock::now() + opt._maintenance_interval;
+            const auto st = maintenance.run_once();
+            if (st._seals + st._trims + st._tiered + st._objects_deleted + st._evicted +
+                    st._failures >
+                0) {
+                logger.log(kythira::log_level::info,
+                           "kinesis maintenance: seals=" + std::to_string(st._seals) + " trims=" +
+                               std::to_string(st._trims) + " tiered=" + std::to_string(st._tiered) +
+                               " objects_deleted=" + std::to_string(st._objects_deleted) +
+                               " evicted=" + std::to_string(st._evicted) +
+                               " failures=" + std::to_string(st._failures),
+                           {});
+            }
+        }
+    });
+
     std::cout << "kinesis_gateway_node " << kythira::host_node_id_text(opt._node_id)
               << " ready: raft=" << opt._raft_port << " kinesis=" << server.port()
               << (opt._allow_plaintext ? " (http)" : " (https)") << " groups=" << (cuts.size() + 1)
@@ -375,6 +433,10 @@ auto run(const node_options& opt) -> int {
 
     // The ordering: no request in flight once the host stops, no tick once
     // it is gone.
+    maintaining.store(false, std::memory_order_release);
+    if (maintainer.joinable()) {
+        maintainer.join();
+    }
     server.stop();
     driving.store(false, std::memory_order_release);
     if (driver.joinable()) {

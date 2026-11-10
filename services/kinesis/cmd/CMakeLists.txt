@@ -41,3 +41,26 @@ target_compile_features(kinesis_gateway_node PRIVATE cxx_std_23)
 set_target_properties(kinesis_gateway_node PROPERTIES
     JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+# Tiering to S3 (task 10): only with the AWS SDK's s3 component, compiled in
+# tier_s3.cpp alone so no other unit parses an SDK header. Without it the
+# daemon refuses KINESIS_TIER_S3_BUCKET at startup and keeps every segment
+# on disk.
+if(AWSSDK_FOUND)
+    find_package(AWSSDK QUIET COMPONENTS core s3)
+endif()
+set(_KINESIS_S3_TIER FALSE)
+if(AWSSDK_FOUND)
+    list(FIND AWSSDK_LINK_LIBRARIES aws-cpp-sdk-s3 _KINESIS_S3_LIB)
+    if(NOT _KINESIS_S3_LIB EQUAL -1)
+        set(_KINESIS_S3_TIER TRUE)
+    endif()
+endif()
+if(_KINESIS_S3_TIER)
+    target_sources(kinesis_gateway_node PRIVATE kinesis_gateway_node/tier_s3.cpp)
+    target_link_libraries(kinesis_gateway_node PRIVATE ${AWSSDK_LINK_LIBRARIES})
+    target_compile_definitions(kinesis_gateway_node PRIVATE KYTHIRA_KINESIS_HAS_S3_TIER)
+    message(STATUS "kinesis_gateway_node: S3 tiering enabled")
+else()
+    message(STATUS "kinesis_gateway_node: S3 tiering unavailable (no AWS SDK s3 component)")
+endif()

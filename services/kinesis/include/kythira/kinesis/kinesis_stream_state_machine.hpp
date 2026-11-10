@@ -84,6 +84,14 @@ struct shard_state {
     std::uint64_t _records = 0;
     /// Sealed segments, oldest first.
     std::vector<record_segment_descriptor> _sealed{};
+    /// First counters of the sealed segments that are in object storage
+    /// (task 10), ascending. Replicas hold no local copy of these, except
+    /// one a read fetched back.
+    std::vector<std::uint64_t> _tiered{};
+
+    [[nodiscard]] auto is_tiered(std::uint64_t first_counter) const -> bool {
+        return std::binary_search(_tiered.begin(), _tiered.end(), first_counter);
+    }
 
     friend auto operator==(const shard_state&, const shard_state&) -> bool = default;
 };
@@ -198,6 +206,37 @@ struct trim_shard_command {
     std::uint64_t _before = 0;
 };
 
+/// `IncreaseStreamRetentionPeriod` / `DecreaseStreamRetentionPeriod`, at the
+/// catalog group (task 10). The front end checks the direction against the
+/// current period; here only the range (24 to 8760 hours) and the stream id
+/// are checked.
+struct set_retention_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    std::uint32_t _retention_hours = 24;
+};
+
+/// Seal a shard's active segment (task 10), proposed by the shard's leader
+/// once the segment is old enough to trim or tier. Applies only if the
+/// active segment still starts at `_first_counter`, so a roll in between
+/// turns it into a no-op on every replica alike.
+struct seal_shard_command {
+    std::string _key{};
+    std::uint64_t _first_counter = 0;
+};
+
+/// A sealed segment is in object storage (task 10): proposed by the shard's
+/// leader after it uploaded the segment under its deterministic object key
+/// (`kinesis_tiering.hpp`). Every replica marks it tiered and drops its local
+/// copy. `_sha256` must match the index, so an entry about an older segment
+/// with the same first counter does nothing.
+struct tier_segment_command {
+    std::string _key{};
+    std::uint64_t _first_counter = 0;
+    segment_sha256 _sha256{};
+};
+
 /// What a lease write requires of the lease's current state.
 enum class lease_condition : std::uint8_t {
     /// Whatever is there (or nothing).
@@ -262,7 +301,8 @@ using stream_command =
     std::variant<create_stream_command, set_stream_status_command, remove_stream_command,
                  open_shard_command, append_records_command, close_shard_command,
                  drop_shard_command, trim_shard_command, append_batch_command, lease_write_command,
-                 lease_read_command, lease_drop_application_command>;
+                 lease_read_command, lease_drop_application_command, set_retention_command,
+                 seal_shard_command, tier_segment_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -272,7 +312,8 @@ inline constexpr std::uint8_t stream_command_version = 1;
         []<typename T>(const T& v) -> std::string {
             if constexpr (std::is_same_v<T, create_stream_command> ||
                           std::is_same_v<T, set_stream_status_command> ||
-                          std::is_same_v<T, remove_stream_command>) {
+                          std::is_same_v<T, remove_stream_command> ||
+                          std::is_same_v<T, set_retention_command>) {
                 return stream_key(v._account, v._name);
             } else if constexpr (std::is_same_v<T, append_batch_command>) {
                 return v._appends.empty() ? std::string() : v._appends.front()._key;
@@ -363,6 +404,13 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
                 w.str(v._key).str(v._prefix).u32(v._limit);
             } else if constexpr (std::is_same_v<T, lease_drop_application_command>) {
                 w.str(v._account).str(v._application);
+            } else if constexpr (std::is_same_v<T, set_retention_command>) {
+                w.str(v._account).str(v._name).u64(v._id).u32(v._retention_hours);
+            } else if constexpr (std::is_same_v<T, seal_shard_command>) {
+                w.str(v._key).u64(v._first_counter);
+            } else if constexpr (std::is_same_v<T, tier_segment_command>) {
+                w.str(v._key).u64(v._first_counter);
+                w.raw(std::as_bytes(std::span{v._sha256}));
             } else {
                 w.str(v._key);
             }
@@ -486,6 +534,31 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
             out = std::move(c);
             break;
         }
+        case 12: {
+            set_retention_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            c._retention_hours = r.u32();
+            out = std::move(c);
+            break;
+        }
+        case 13: {
+            seal_shard_command c;
+            c._key = r.str();
+            c._first_counter = r.u64();
+            out = std::move(c);
+            break;
+        }
+        case 14: {
+            tier_segment_command c;
+            c._key = r.str();
+            c._first_counter = r.u64();
+            const auto sha = r.take(c._sha256.size());
+            std::copy(sha.begin(), sha.end(), c._sha256.begin());
+            out = std::move(c);
+            break;
+        }
         default:
             throw kinesis_codec_error("kinesis codec: unknown command kind");
     }
@@ -513,6 +586,9 @@ enum class apply_status : std::uint8_t {
     throttled = 6,
     /// A lease write whose condition does not hold (HTTP 412).
     condition_failed = 7,
+    /// Never from `apply()`: the proposing node's disk guard refused the
+    /// append (task 10, Requirement 11.4).
+    storage_full = 8,
 };
 
 /// One part of an `append_batch_command`'s result: what that shard's
@@ -563,7 +639,7 @@ struct apply_result {
 [[nodiscard]] inline auto decode_result(std::span<const std::byte> bytes) -> apply_result {
     codec::reader r(bytes);
     apply_result out;
-    out._status = r.enumeration<apply_status>(7);
+    out._status = r.enumeration<apply_status>(8);
     out._id = r.u64();
     out._first_counter = r.u64();
     out._last_counter = r.u64();
@@ -573,7 +649,7 @@ struct apply_result {
         out._parts.reserve(std::min<std::size_t>(n, r.remaining() / 25));
         for (std::uint32_t i = 0; i < n; ++i) {
             append_part_result p;
-            p._status = r.enumeration<apply_status>(7);
+            p._status = r.enumeration<apply_status>(8);
             p._first_counter = r.u64();
             p._last_counter = r.u64();
             p._arrival_ms = r.i64();
@@ -822,6 +898,10 @@ public:
                 for (const auto& d : sh._sealed) {
                     w.raw(encode_segment_descriptor(d));
                 }
+                w.u32(static_cast<std::uint32_t>(sh._tiered.size()));
+                for (const auto t : sh._tiered) {
+                    w.u64(t);
+                }
                 auto act = active_descriptor(key);
                 w.u8(act ? 1 : 0);
                 if (act) {
@@ -859,6 +939,11 @@ public:
                     const auto segs = r.u32();
                     for (std::uint32_t j = 0; j < segs; ++j) {
                         sh._sealed.push_back(descriptor(r));
+                    }
+                    const auto tiered = r.u32();
+                    sh._tiered.reserve(std::min<std::size_t>(tiered, r.remaining() / 8));
+                    for (std::uint32_t j = 0; j < tiered; ++j) {
+                        sh._tiered.push_back(r.u64());
                     }
                     if (r.boolean()) {
                         auto d = descriptor(r);
@@ -1115,6 +1200,66 @@ private:
             s->_retained_bytes -= std::min(s->_retained_bytes, it->_bytes);
         }
         s->_sealed.erase(s->_sealed.begin(), keep);
+        // Tiered entries go with their segments; the leader deletes the
+        // objects after this commits (kinesis_maintenance.hpp).
+        std::erase_if(s->_tiered, [s](std::uint64_t first) {
+            return std::none_of(
+                s->_sealed.begin(), s->_sealed.end(),
+                [first](const record_segment_descriptor& d) { return d._first_seq == first; });
+        });
+        return {._last_counter = s->_last_counter};
+    }
+
+    auto apply_one(const set_retention_command& c) -> apply_result {
+        if (c._retention_hours < k_min_retention_hours ||
+            c._retention_hours > k_max_retention_hours) {
+            return {._status = apply_status::invalid};
+        }
+        auto it = _map.find(stream_key(c._account, c._name));
+        auto* rec = it == _map.end() ? nullptr : std::get_if<stream_record>(&it->second);
+        if (rec == nullptr || (c._id != 0 && rec->_id != c._id)) {
+            return {._status = apply_status::not_found};
+        }
+        rec->_retention_hours = c._retention_hours;
+        return {._id = rec->_id};
+    }
+
+    auto apply_one(const seal_shard_command& c) -> apply_result {
+        auto* s = shard_at(c._key);
+        if (s == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        // The active segment is the store's last, and replicas roll
+        // identically, so every replica makes the same decision here.
+        if (_store != nullptr) {
+            if (auto act = active_descriptor(c._key); act && act->_first_seq == c._first_counter) {
+                if (auto d = _store->seal(c._key)) {
+                    s->_sealed.push_back(std::move(*d));
+                }
+            }
+        }
+        return {._last_counter = s->_last_counter};
+    }
+
+    auto apply_one(const tier_segment_command& c) -> apply_result {
+        auto* s = shard_at(c._key);
+        if (s == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        const auto it = std::find_if(
+            s->_sealed.begin(), s->_sealed.end(),
+            [&c](const record_segment_descriptor& d) { return d._first_seq == c._first_counter; });
+        if (it == s->_sealed.end() || it->_sha256 != c._sha256) {
+            return {._status = apply_status::not_found};
+        }
+        if (!s->is_tiered(c._first_counter)) {
+            s->_tiered.insert(
+                std::upper_bound(s->_tiered.begin(), s->_tiered.end(), c._first_counter),
+                c._first_counter);
+            if (_store != nullptr) {
+                _store->remove_segment(c._key, c._first_counter);
+            }
+        }
         return {._last_counter = s->_last_counter};
     }
 

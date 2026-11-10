@@ -307,13 +307,26 @@ public:
         fe.on("PutRecords", bind(&kinesis_service::put_records));
         fe.on("GetShardIterator", bind(&kinesis_service::get_shard_iterator));
         fe.on("GetRecords", bind(&kinesis_service::get_records));
+        fe.on("IncreaseStreamRetentionPeriod",
+              bind(&kinesis_service::increase_stream_retention_period));
+        fe.on("DecreaseStreamRetentionPeriod",
+              bind(&kinesis_service::decrease_stream_retention_period));
     }
 
     /// The operations `register_with` adds, for implemented-operations.txt.
-    static constexpr std::array<std::string_view, 11> k_operations{
-        "CreateStream",          "DeleteStream", "DescribeLimits",   "DescribeStream",
-        "DescribeStreamSummary", "GetRecords",   "GetShardIterator", "ListShards",
-        "ListStreams",           "PutRecord",    "PutRecords"};
+    static constexpr std::array<std::string_view, 13> k_operations{"CreateStream",
+                                                                   "DecreaseStreamRetentionPeriod",
+                                                                   "DeleteStream",
+                                                                   "DescribeLimits",
+                                                                   "DescribeStream",
+                                                                   "DescribeStreamSummary",
+                                                                   "GetRecords",
+                                                                   "GetShardIterator",
+                                                                   "IncreaseStreamRetentionPeriod",
+                                                                   "ListShards",
+                                                                   "ListStreams",
+                                                                   "PutRecord",
+                                                                   "PutRecords"};
 
     using result = aws_json::result<boost::json::object>;
 
@@ -454,6 +467,78 @@ public:
         const auto removed = propose(remove_stream_command{rec._account, rec._name, rec._id});
         if (!removed ||
             (removed->_status != apply_status::ok && removed->_status != apply_status::not_found)) {
+            return internal_failure();
+        }
+        return boost::json::object{};
+    }
+
+    // ---- retention (task 10) ----------------------------------------------
+
+    auto increase_stream_retention_period(call_context& ctx, boost::json::object& in) -> result {
+        return set_retention(ctx, in, true);
+    }
+
+    auto decrease_stream_retention_period(call_context& ctx, boost::json::object& in) -> result {
+        return set_retention(ctx, in, false);
+    }
+
+    // AWS's wording for each refusal (Requirement 11.2). The retention
+    // change itself is one catalog entry; the leader's maintenance pass
+    // trims to the new period on its next round (kinesis_maintenance.hpp).
+    auto set_retention(call_context& ctx, boost::json::object& in, bool increase) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const auto hours = service_detail::int_member(in, "RetentionPeriodHours");
+        if (!hours) {
+            return invalid_argument("RetentionPeriodHours is required.");
+        }
+        if (*hours < k_min_retention_hours) {
+            return invalid_argument("Minimum allowed retention period is " +
+                                    std::to_string(k_min_retention_hours) +
+                                    " hours. Requested retention period (" +
+                                    std::to_string(*hours) + " hours) is too short.");
+        }
+        if (*hours > k_max_retention_hours) {
+            return invalid_argument("Maximum allowed retention period is " +
+                                    std::to_string(k_max_retention_hours) +
+                                    " hours. Requested retention period (" +
+                                    std::to_string(*hours) + " hours) is too long.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        if (rec._status != stream_status::active) {
+            return service_detail::in_use("Stream " + rec._name + " under account " + rec._account +
+                                          " not ACTIVE, instead in state " +
+                                          std::string(to_string(rec._status)));
+        }
+        const auto wanted = static_cast<std::uint32_t>(*hours);
+        if (increase && wanted < rec._retention_hours) {
+            return invalid_argument(
+                "Requested retention period (" + std::to_string(wanted) + " hours) for stream " +
+                rec._name + " can not be shorter than existing retention period (" +
+                std::to_string(rec._retention_hours) + " hours). Use DecreaseRetentionPeriod API.");
+        }
+        if (!increase && wanted > rec._retention_hours) {
+            return invalid_argument(
+                "Requested retention period (" + std::to_string(wanted) + " hours) for stream " +
+                rec._name + " can not be longer than existing retention period (" +
+                std::to_string(rec._retention_hours) + " hours). Use IncreaseRetentionPeriod API.");
+        }
+        if (wanted == rec._retention_hours) {
+            return boost::json::object{};
+        }
+        const auto r = propose(set_retention_command{rec._account, rec._name, rec._id, wanted});
+        if (!r) {
+            return internal_failure();
+        }
+        if (r->_status == apply_status::not_found) {
+            return service_detail::not_found(rec._name, rec._account);
+        }
+        if (r->_status != apply_status::ok) {
             return internal_failure();
         }
         return boost::json::object{};
@@ -732,6 +817,9 @@ public:
         if (r._throttled) {
             return throughput_exceeded(r._message);
         }
+        if (r._storage_full) {
+            return storage_full_error();
+        }
         if (r._error) {
             return internal_failure();
         }
@@ -780,7 +868,8 @@ public:
             } else if (r._error) {
                 ++failed;
                 entry["ErrorCode"] = "InternalFailure";
-                entry["ErrorMessage"] = "Internal service failure.";
+                entry["ErrorMessage"] =
+                    r._storage_full ? k_disk_guard_message : "Internal service failure.";
             } else {
                 entry["SequenceNumber"] = r._sequence;
                 entry["ShardId"] = r._shard_id;
@@ -1105,6 +1194,8 @@ private:
         bool _error = false;
         /// The shard's write buckets refused it (with `_error`).
         bool _throttled = false;
+        /// The disk guard refused it (with `_error`).
+        bool _storage_full = false;
         std::string _shard_id;
         std::string _sequence;
         std::string _message;
@@ -1265,6 +1356,12 @@ private:
                 c._appends.push_back(a->_command);
             }
             const auto r = propose(c, mode);
+            if (r && r->_status == apply_status::storage_full) {
+                for (auto* a : batch) {
+                    a->_result = append_part_result{._status = apply_status::storage_full};
+                }
+                continue;
+            }
             if (!r || r->_parts.size() != batch.size()) {
                 continue;  // not committed in time: every record fails
             }
@@ -1326,9 +1423,11 @@ private:
                     ok ? static_cast<std::size_t>(res->_last_counter - res->_first_counter + 1) : 0;
                 const bool throttling = res && (res->_status == apply_status::throttled ||
                                                 (ok && admitted < a._records.size()));
+                const bool full = res && res->_status == apply_status::storage_full;
                 for (std::size_t i = 0; i < a._records.size(); ++i) {
                     auto& result = out[a._records[i]->_index];
                     result._error = !ok || i >= admitted;
+                    result._storage_full = full;
                     if (throttling && i >= admitted) {
                         result._throttled = true;
                         result._message = shard_rate_exceeded(

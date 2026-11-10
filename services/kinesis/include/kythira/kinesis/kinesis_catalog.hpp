@@ -230,6 +230,10 @@ struct shard_entry {
     friend auto operator==(const shard_entry&, const shard_entry&) -> bool = default;
 };
 
+/// AWS's retention range (Requirement 11.2): a day to a year.
+inline constexpr std::uint32_t k_min_retention_hours = 24;
+inline constexpr std::uint32_t k_max_retention_hours = 8760;
+
 struct stream_record {
     std::uint64_t _id = 0;
     std::string _account{};

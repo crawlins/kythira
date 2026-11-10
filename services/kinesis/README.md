@@ -50,6 +50,9 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `doc/leases.md` | KCL lease coordination: the Lease API, the Java lease layer, how to install it, and which KCL version each lease backend supports | 9 |
 | `java/kythira-kcl-leases/` | the Java lease layer (Gradle, KCL 2.x): `KythiraLeaseRefresher` and `KythiraLeaseManagementFactory` over the Lease API, signed with SigV4 | 9 |
 | `tests/kcl/sample/`, `docker/kinesis_kcl_sample/Dockerfile` | the KCL 2.x sample consumer and its image, the workers of the container scenario's lease case | 9 |
+| `doc/retention.md`, `include/kythira/kinesis/kinesis_maintenance.hpp` | retention and tiering: the leader's seal, trim and tier entries, the pass that proposes them, and what it costs when a leader dies mid-pass | 10 |
+| `include/kythira/kinesis/kinesis_tiering.hpp`, `cmd/kinesis_gateway_node/tier_s3.cpp` | sealed segments in object storage: deterministic object keys, fetch-back on read, the S3 tier of the daemon | 10 |
+| `include/kythira/kinesis/kinesis_disk_guard.hpp` | the disk guard: appends refused below a free-space floor, on the proposing node and the leader | 10 |
 
 Core pieces the module builds on live in `include/raft/`, because DynamoDB
 uses them too: `record_segment_store.hpp` (task 3), the CBOR and
@@ -88,6 +91,17 @@ the previous one kept for at least five minutes). Off a trusted network, give ea
 `KINESIS_TLS_KEY` and the peers' CA as `KINESIS_PEER_CA`; Raft RPC itself is
 plaintext, as in `redis_gateway_node`, so `KYTHIRA_ALLOW_PLAINTEXT_RAFT` is
 required off loopback.
+
+Retention and tiering (`doc/retention.md`) need no setup: every node runs a
+maintenance pass each `KINESIS_MAINTENANCE_INTERVAL_MS` (a minute), and a
+shard's leader trims what is past the stream's retention period. Writes
+stop with `InternalFailure` naming the disk guard when the segment disk has
+less than `KINESIS_DISK_FLOOR_BYTES` free (1 GiB; 0 turns it off). To keep
+long retention off local disks, set `KINESIS_TIER_AFTER_HOURS` and
+`KINESIS_TIER_S3_BUCKET` (with `_PREFIX`, `_REGION` and, for an
+S3-compatible store, `_ENDPOINT`); credentials come from the AWS SDK's
+default chain, and a build without the SDK's s3 component refuses those
+settings.
 
 To upgrade the model, copy `botocore/data/kinesis/<version>/service-2.json`
 from a newer botocore wheel over `model/service-2.json`, bump
