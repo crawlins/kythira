@@ -13,6 +13,8 @@ kinesis_node_scenario_test, against the gateways by compose service name:
     kinesis_e2e.py consume --endpoints URL,URL --stream S --expect N
     kinesis_e2e.py ordered-produce --endpoints URL,URL --stream S --count N --keys K --tag T
     kinesis_e2e.py lineage-consume --endpoints URL,URL --stream S --count N --keys K --tag T
+    kinesis_e2e.py batch-produce --endpoints URL,URL --stream S --count N --keys K --tag T
+    kinesis_e2e.py fan-out-consume --endpoints URL,URL --stream S --count N --keys K --tag T
 
 `produce` writes records `T-0` .. `T-<N-1>` with PutRecords in batches of
 100, retrying records that fail, and prints how many went to each shard.
@@ -37,11 +39,23 @@ it reads the stream again until every record is there or the deadline
 passes. It fails unless, under each partition key, records arrived in the
 order they were written. A record may arrive twice (a retried write), and
 the two copies are then next to each other.
+
+The last two are the chaos case (task 17). `batch-produce` is
+`ordered-produce` with PutRecords: each batch holds the next `K` records,
+one per key, and its failed entries are retried, through the next endpoint
+when a call fails outright, before the next batch starts, so each key's
+records still go in order. `fan-out-consume` registers a consumer (or
+reuses one) and subscribes to every shard with SubscribeToShard, one
+thread per shard. When a subscription ends, by its lifetime, an exception
+event or a lost node, it subscribes again through the next endpoint, after
+its continuation sequence number. It fails unless every record arrives,
+in order under each key, by the deadline.
 """
 
 import argparse
 import json
 import sys
+import threading
 import time
 
 import boto3
@@ -237,6 +251,120 @@ def lineage_consume(args):
     print(json.dumps({"consumed": len(seen), "shards": shards, "duplicates": dups}))
 
 
+def batch_produce(args):
+    clients = [client(e) for e in args.endpoints.split(",")]
+    turn = 0
+    retries = 0
+    deadline = time.time() + args.timeout
+    for start in range(0, args.count, args.keys):
+        pending = [
+            {"Data": f"{args.tag}-{i}".encode(), "PartitionKey": f"pk-{args.tag}-{i % args.keys}"}
+            for i in range(start, min(start + args.keys, args.count))
+        ]
+        while pending:
+            if time.time() > deadline:
+                fail(f"batch at {start} still failing after {args.timeout} s")
+            try:
+                out = clients[turn % len(clients)].put_records(
+                    StreamName=args.stream, Records=pending
+                )
+            except Exception:  # noqa: BLE001 - any failure: next node, again
+                retries += 1
+                turn += 1
+                time.sleep(0.2)
+                continue
+            pending = [r for r, res in zip(pending, out["Records"]) if "ErrorCode" in res]
+            if pending:
+                retries += 1
+                time.sleep(0.1)
+    print(json.dumps({"produced": args.count, "retries": retries}))
+
+
+def fan_out_consume(args):
+    clients = [client(e) for e in args.endpoints.split(",")]
+    c0 = clients[0]
+    arn = c0.describe_stream_summary(StreamName=args.stream)["StreamDescriptionSummary"][
+        "StreamARN"
+    ]
+    name = f"chaos-{args.tag}"
+    try:
+        consumer = c0.register_stream_consumer(StreamARN=arn, ConsumerName=name)["Consumer"]
+    except c0.exceptions.ResourceInUseException:
+        consumer = c0.describe_stream_consumer(StreamARN=arn, ConsumerName=name)[
+            "ConsumerDescription"
+        ]
+    consumer_arn = consumer["ConsumerARN"]
+    prefix = f"{args.tag}-"
+    lock = threading.Lock()
+    by_key = {}
+    seen = set()
+    resubscribes = [0]
+    deadline = time.time() + args.timeout
+    done = threading.Event()
+
+    def follow(shard_id, turn):
+        position = {"Type": "TRIM_HORIZON"}
+        while not done.is_set() and time.time() < deadline:
+            c = clients[turn % len(clients)]
+            turn += 1
+            try:
+                events = c.subscribe_to_shard(
+                    ConsumerARN=consumer_arn, ShardId=shard_id, StartingPosition=position
+                )["EventStream"]
+                for ev in events:
+                    e = ev.get("SubscribeToShardEvent")
+                    if e is None:
+                        break
+                    with lock:
+                        for r in e["Records"]:
+                            data = r["Data"].decode()
+                            if data.startswith(prefix):
+                                i = int(data[len(prefix):])
+                                by_key.setdefault(i % args.keys, []).append(i)
+                                seen.add(i)
+                        if len(seen) >= args.count:
+                            done.set()
+                    if e.get("ContinuationSequenceNumber"):
+                        position = {
+                            "Type": "AFTER_SEQUENCE_NUMBER",
+                            "SequenceNumber": e["ContinuationSequenceNumber"],
+                        }
+                    elif "ChildShards" in e:
+                        return
+                    if done.is_set() or time.time() > deadline:
+                        return
+            except Exception:  # noqa: BLE001 - a lost node or busy slot: again elsewhere
+                pass
+            with lock:
+                resubscribes[0] += 1
+            time.sleep(0.5)
+
+    shards = c0.list_shards(StreamName=args.stream)["Shards"]
+    threads = [
+        threading.Thread(target=follow, args=(s["ShardId"], n), daemon=True)
+        for n, s in enumerate(shards)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(max(0.0, deadline - time.time()) + 30)
+    done.set()
+    with lock:
+        missing = sorted(set(range(args.count)) - seen)
+        if missing:
+            fail(f"{len(missing)} of {args.count} records never pushed, first {missing[0]}")
+        for key, got in by_key.items():
+            for a, b in zip(got, got[1:]):
+                if b < a:
+                    fail(f"key {key}: {b} pushed after {a}")
+        dups = sum(len(g) - len(set(g)) for g in by_key.values())
+        print(
+            json.dumps(
+                {"consumed": len(seen), "duplicates": dups, "resubscribes": resubscribes[0]}
+            )
+        )
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -255,7 +383,7 @@ def main():
     co.add_argument("--expect", type=int, required=True)
     co.add_argument("--limit", type=int, default=37)
     co.add_argument("--timeout", type=int, default=120)
-    for name in ("ordered-produce", "lineage-consume"):
+    for name in ("ordered-produce", "lineage-consume", "batch-produce", "fan-out-consume"):
         o = sub.add_parser(name)
         o.add_argument("--endpoints", required=True)
         o.add_argument("--stream", required=True)
@@ -271,6 +399,8 @@ def main():
         "consume": consume,
         "ordered-produce": ordered_produce,
         "lineage-consume": lineage_consume,
+        "batch-produce": batch_produce,
+        "fan-out-consume": fan_out_consume,
     }[args.command](args)
 
 
