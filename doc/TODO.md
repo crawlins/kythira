@@ -1960,6 +1960,27 @@ unverified completion claim.
       November 9, 2026**, with `cache_http_front_end_test` and
       `redis_gateway_integration_test` (rescued 15, 8 and 2 times in 52
       runs): see "Disk mode applies under the node mutex".
+    - **`iam_node_test`, fixed November 10, 2026** (10 rescues in 52 runs
+      to November 9; 3 were the redirect race #731 fixed). The rest stalled
+      after a restart: the restarted node never applied the second account,
+      or the member restarted with the wrong passphrase never saw the
+      sealed secrets and so never exited. Every failure that dumped the
+      Raft logs showed the same thing on one node: index 1 as an
+      unparseable 42-byte line whose first 24 bytes were a TLS 1.3 record
+      (`17 03 03 00 13` and 19 encrypted bytes, the size of a close_notify
+      alert). `file_persistence` skips a line it cannot parse, so the node
+      came back without index 1 and could apply nothing. The writer was
+      `tls_tcp_rpc_client`: its `fd_guard` was declared after its
+      `ssl_conn_guard`, so the socket was closed first and `SSL_shutdown()`
+      then wrote close_notify to a closed fd number. In `iam_node` another
+      thread had often just reused that number for the Raft log, opened
+      `O_WRONLY` at offset 0 for its fsync. The socket is now closed after
+      `SSL_shutdown()`; `tls_tcp_rpc_integration_test`'s
+      `client_sends_close_notify_before_closing_its_socket` has a raw
+      OpenSSL server check that close_notify arrives (it fails on the old
+      order). Every user of the client was exposed (`iam_node`,
+      `ca_cluster_node`), with whatever file or socket held the reused
+      number as the target. Off the allowlist.
   - **Disk mode applies under the node mutex. OPEN** (found November 9,
     2026). `cache_kv_state_machine` fsyncs a chunk, its pack record and
     the directory inside `apply()`, and `apply_committed_entries()` runs
