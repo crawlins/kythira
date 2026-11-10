@@ -79,7 +79,28 @@ struct node_options {
     std::vector<std::pair<std::string, std::string>> _compat;
     std::uint64_t _max_body_bytes{std::uint64_t{8} * 1024 * 1024};
     std::chrono::milliseconds _command_timeout{5000};
+
+    // ── retention and tiering (task 10) ──────────────────────────────────────
+    /// `KINESIS_DISK_FLOOR_BYTES`: refuse writes below this much free space
+    /// on the segment disk; 0 turns the guard off.
+    std::uint64_t _disk_floor_bytes{std::uint64_t{1} << 30U};
+    /// `KINESIS_MAINTENANCE_INTERVAL_MS`: how often a node runs the
+    /// retention and tiering pass.
+    std::chrono::milliseconds _maintenance_interval{60000};
+    /// `KINESIS_TIER_AFTER_HOURS`: tier sealed segments whose last record is
+    /// this old; 0 never tiers. Needs the S3 settings below.
+    std::uint32_t _tier_after_hours{0};
+    /// `KINESIS_TIER_S3_BUCKET`, `_PREFIX`, `_REGION` (default: the
+    /// region above), `_ENDPOINT` (any S3-compatible store; AWS when empty).
+    /// Credentials come from the AWS SDK's default chain.
+    std::string _tier_bucket;
+    std::string _tier_prefix;
+    std::string _tier_region;
+    std::string _tier_endpoint;
 };
+
+/// Whether this build can tier to S3 (the AWS SDK's s3 component was found).
+[[nodiscard]] auto s3_tier_available() -> bool;
 
 /// Looks a variable up; nullptr when unset. `std::getenv` in the daemon.
 using env_lookup = std::function<const char*(const char*)>;

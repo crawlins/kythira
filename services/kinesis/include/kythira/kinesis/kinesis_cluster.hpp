@@ -15,6 +15,7 @@
 /// implements it over one in-process state machine holding every key, for
 /// tests and a single-node development mode.
 
+#include <kythira/kinesis/kinesis_disk_guard.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
 #include <kythira/kinesis/kinesis_throttle.hpp>
 
@@ -62,6 +63,15 @@ concept groups_keys = requires(C& c, const std::string& key) {
     { c.group_of(key) } -> std::same_as<std::optional<std::uint64_t>>;
 };
 
+/// For the maintenance pass (task 10): `leads(key)` says whether this node
+/// leads the group owning `key` now, so only one node seals, tiers and
+/// trims a shard. A stale answer costs a wasted proposal or upload, never
+/// correctness: every maintenance entry is a no-op when already applied.
+template<typename C>
+concept leads_keys = requires(C& c, const std::string& key) {
+    { c.leads(key) } -> std::same_as<bool>;
+};
+
 /// Every key in one in-process state machine: a one-group cluster with no
 /// replication. Thread-safe; proposals apply in arrival order.
 class local_stream_cluster {
@@ -75,14 +85,18 @@ public:
                 return std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::system_clock::now().time_since_epoch())
                     .count();
-            })
-        : _machine(store), _clock(std::move(clock)) {}
+            },
+        segment_fetcher fetch = {})
+        : _machine(store, std::move(fetch)), _clock(std::move(clock)) {}
 
     auto propose(const std::string& /*key*/, std::vector<std::byte> command,
                  admission mode = admission::none) -> std::optional<apply_result> {
         const std::scoped_lock lock(_mutex);
         if (_unavailable) {
             return std::nullopt;
+        }
+        if (auto refused = refuse_when_full(_guard, command)) {
+            return refused;
         }
         return propose_admitted(_throttle, mode, command, [this](const auto& bytes) {
             return std::optional{decode_result(_machine.apply(bytes, ++_index))};
@@ -95,6 +109,16 @@ public:
         const std::scoped_lock lock(_mutex);
         _throttle = t;
     }
+
+    /// The disk guard appends meet; null (the default) never refuses. Must
+    /// outlive this object.
+    void set_disk_guard(disk_guard* g) {
+        const std::scoped_lock lock(_mutex);
+        _guard = g;
+    }
+
+    /// The one node leads everything.
+    [[nodiscard]] auto leads(const std::string& /*key*/) const -> bool { return true; }
 
     auto read(const std::string& /*key*/, const stream_reader& f) -> bool {
         const std::scoped_lock lock(_mutex);
@@ -127,10 +151,12 @@ private:
     std::uint64_t _index = 0;
     bool _unavailable = false;
     write_throttle* _throttle = nullptr;
+    disk_guard* _guard = nullptr;
     clock_fn _clock;
 };
 
 static_assert(stream_cluster<local_stream_cluster>);
 static_assert(groups_keys<local_stream_cluster>);
+static_assert(leads_keys<local_stream_cluster>);
 
 }  // namespace kythira::kinesis

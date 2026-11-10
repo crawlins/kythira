@@ -54,8 +54,12 @@ public:
 
     raft_stream_cluster(Host& host, forwarder forward,
                         std::chrono::milliseconds timeout = std::chrono::seconds{5},
-                        write_throttle* throttle = nullptr)
-        : _host(host), _forward(std::move(forward)), _timeout(timeout), _throttle(throttle) {}
+                        write_throttle* throttle = nullptr, disk_guard* guard = nullptr)
+        : _host(host),
+          _forward(std::move(forward)),
+          _timeout(timeout),
+          _throttle(throttle),
+          _guard(guard) {}
 
     auto propose(const std::string& key, std::vector<std::byte> command,
                  admission mode = admission::none) -> std::optional<apply_result> {
@@ -91,6 +95,16 @@ public:
         return static_cast<std::uint64_t>(d->_group_id);
     }
 
+    /// Whether this node leads the group owning `key` now.
+    [[nodiscard]] auto leads(const std::string& key) const -> bool {
+        const auto d = _host.resolve(key);
+        if (!d) {
+            return false;
+        }
+        auto* node = _host.group_node(d->_group_id);
+        return node != nullptr && node->is_leader();
+    }
+
     [[nodiscard]] auto now_ms() const -> std::int64_t {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::system_clock::now().time_since_epoch())
@@ -104,10 +118,15 @@ private:
     forwarder _forward;
     std::chrono::milliseconds _timeout;
     write_throttle* _throttle;
+    disk_guard* _guard;
     std::atomic<std::uint64_t> _forwarded{0};
 
     auto submit(const std::string& key, const std::vector<std::byte>& command, admission mode,
                 bool may_forward) -> std::optional<apply_result> {
+        // Here, and again on the leader a forwarded append reaches.
+        if (auto refused = refuse_when_full(_guard, command)) {
+            return refused;
+        }
         try {
             return propose_admitted(_throttle, mode, command, [&](const auto& bytes) {
                 return std::optional{

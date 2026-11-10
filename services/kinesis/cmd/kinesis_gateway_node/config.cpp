@@ -3,6 +3,7 @@
 
 #include "config.hpp"
 
+#include <kythira/kinesis/kinesis_catalog.hpp>
 #include <kythira/kinesis/kinesis_compat_profile.hpp>
 #include <kythira/kinesis/kinesis_peer_client.hpp>
 
@@ -282,9 +283,40 @@ void read_kinesis_side(const reader& r, node_options& o) {
         fail("KINESIS_MAX_BODY_BYTES must be at least 1048576");
     }
     o._command_timeout = r.ms("KINESIS_COMMAND_TIMEOUT_MS", "5000");
+
+    o._disk_floor_bytes = r.u64("KINESIS_DISK_FLOOR_BYTES", "1073741824");
+    o._maintenance_interval = r.ms("KINESIS_MAINTENANCE_INTERVAL_MS", "60000");
+    if (o._maintenance_interval.count() < 100) {
+        fail("KINESIS_MAINTENANCE_INTERVAL_MS must be at least 100");
+    }
+    const auto tier_after = r.u64("KINESIS_TIER_AFTER_HOURS", "0");
+    if (tier_after > kinesis::k_max_retention_hours) {
+        fail("KINESIS_TIER_AFTER_HOURS must be at most 8760");
+    }
+    o._tier_after_hours = static_cast<std::uint32_t>(tier_after);
+    o._tier_bucket = r.opt("KINESIS_TIER_S3_BUCKET", "");
+    o._tier_prefix = r.opt("KINESIS_TIER_S3_PREFIX", "");
+    o._tier_region = r.opt("KINESIS_TIER_S3_REGION", o._region.c_str());
+    o._tier_endpoint = r.opt("KINESIS_TIER_S3_ENDPOINT", "");
+    if (o._tier_after_hours > 0 && o._tier_bucket.empty()) {
+        fail("KINESIS_TIER_AFTER_HOURS needs KINESIS_TIER_S3_BUCKET");
+    }
+    if (!o._tier_bucket.empty() && !s3_tier_available()) {
+        fail(
+            "KINESIS_TIER_S3_BUCKET is set, but this kinesis_gateway_node was built without "
+            "the AWS SDK's s3 component");
+    }
 }
 
 }  // namespace
+
+auto s3_tier_available() -> bool {
+#ifdef KYTHIRA_KINESIS_HAS_S3_TIER
+    return true;
+#else
+    return false;
+#endif
+}
 
 auto is_loopback_address(const std::string& address) -> bool {
     return kythira::net_bind::is_loopback_bind_address(address);
@@ -318,6 +350,15 @@ auto describe(const node_options& o) -> std::string {
         << '\n';
     for (const auto& [id, gw] : o._peer_gateways) {
         out << "peer_gateway " << kythira::host_node_id_text(id) << '=' << gw << '\n';
+    }
+    out << "disk_floor_bytes=" << o._disk_floor_bytes << '\n'
+        << "maintenance_interval_ms=" << o._maintenance_interval.count() << '\n';
+    if (o._tier_after_hours > 0) {
+        out << "tier=s3://" << o._tier_bucket << '/' << o._tier_prefix << " after "
+            << o._tier_after_hours << "h region=" << o._tier_region
+            << (o._tier_endpoint.empty() ? "" : " endpoint=" + o._tier_endpoint) << '\n';
+    } else {
+        out << "tier=off\n";
     }
     for (const auto& [k, v] : o._compat) {
         out << "compat " << k << '=' << v << '\n';
@@ -361,7 +402,17 @@ auto usage() -> std::string {
            "  KINESIS_PEER_CA                  CA bundle for peer gateways (system store)\n"
            "  KINESIS_COMPAT                   cluster compatibility settings, k=v,...\n"
            "  KINESIS_MAX_BODY_BYTES           request body limit (8388608)\n"
-           "  KINESIS_COMMAND_TIMEOUT_MS       commit timeout per write (5000)\n";
+           "  KINESIS_COMMAND_TIMEOUT_MS       commit timeout per write (5000)\n"
+           "\n"
+           "Retention and tiering:\n"
+           "  KINESIS_DISK_FLOOR_BYTES         refuse writes below this free space (1073741824;\n"
+           "                                   0 = off)\n"
+           "  KINESIS_MAINTENANCE_INTERVAL_MS  retention and tiering pass interval (60000)\n"
+           "  KINESIS_TIER_AFTER_HOURS         tier segments this old to S3 (0 = never)\n"
+           "  KINESIS_TIER_S3_BUCKET           bucket for tiered segments\n"
+           "  KINESIS_TIER_S3_PREFIX           key prefix in the bucket\n"
+           "  KINESIS_TIER_S3_REGION           bucket region (default: KINESIS_REGION)\n"
+           "  KINESIS_TIER_S3_ENDPOINT         S3-compatible endpoint (default: AWS)\n";
 }
 
 }  // namespace kythira::kinesis_node

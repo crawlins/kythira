@@ -21,3 +21,7 @@ PutRecords
 # Task 7: reads and iterators.
 GetRecords
 GetShardIterator
+
+# Task 10: retention.
+DecreaseStreamRetentionPeriod
+IncreaseStreamRetentionPeriod
