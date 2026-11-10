@@ -5381,6 +5381,32 @@ set_tests_properties(aws_json_protocol_test PROPERTIES
     LABELS "unit;aws;aws_json"
 )
 
+# Kinesis spec task 2: the codec's CBOR side (application/x-amz-cbor-1.1),
+# RFC 8949 vectors, the shape-guided blob and timestamp mapping, and the
+# codec and dispatcher answering in the request's encoding.
+add_executable(aws_json_cbor_test aws_json_cbor_test.cpp)
+target_link_libraries(aws_json_cbor_test PRIVATE
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(aws_json_cbor_test PRIVATE cxx_std_23)
+add_test(NAME aws_json_cbor_test COMMAND aws_json_cbor_test)
+set_tests_properties(aws_json_cbor_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;aws;aws_json;kinesis"
+)
+
+# Kinesis spec task 2: event-stream framing (SubscribeToShard), against
+# vectors botocore's parser accepts.
+add_executable(aws_eventstream_test aws_eventstream_test.cpp)
+target_link_libraries(aws_eventstream_test PRIVATE Boost::unit_test_framework)
+target_compile_features(aws_eventstream_test PRIVATE cxx_std_23)
+add_test(NAME aws_eventstream_test COMMAND aws_eventstream_test)
+set_tests_properties(aws_eventstream_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;aws;kinesis"
+)
+
 # The checked-in fixture header is what scripts/gen_aws_json_shapes.py makes
 # of the fixture model, so a generator change cannot land without its output.
 # Each module registers the same check for its own pinned models.

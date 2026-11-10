@@ -34,6 +34,11 @@
 ///  - `codec`: framing. Parses a request (method, content type, target,
 ///    body limits, JSON depth), and renders responses and errors with the
 ///    standard headers.
+///  - CBOR (`application/x-amz-cbor-1.1`, Kinesis task 2): `cbor_to_json`
+///    and `json_to_cbor` map CBOR bodies to and from the JSON value a JSON
+///    body would carry, guided by the operation's shapes, so validation and
+///    handlers see one form. The codec accepts CBOR when `accept_cbor` is set
+///    and answers each request in its own encoding.
 ///  - `dispatcher`: routes a parsed, validated request to the handler
 ///    registered for its operation, and turns handler results, handler
 ///    errors and escaped exceptions into responses.
@@ -52,6 +57,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -932,6 +938,600 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// CBOR (application/x-amz-cbor-1.1)
+// ---------------------------------------------------------------------------
+//
+// Kinesis also accepts the JSON 1.1 protocol's data model encoded as CBOR
+// (RFC 8949), and the AWS SDK for Java v2 sends CBOR by default, so KCL and
+// the Flink connector do too (services/kinesis/tests/evidence/README.md).
+// The mapping is the JSON one with three differences:
+//
+//  - a blob is a CBOR byte string, not base64 text;
+//  - a timestamp is a number of epoch *milliseconds*, usually under tag 1
+//    (the Java SDK's CBOR protocol uses UNIX_TIMESTAMP_MILLIS for payload
+//    timestamps); JSON carries epoch seconds;
+//  - containers may be indefinite-length (Jackson's CBOR generator writes
+//    maps that way: the evidence's 34-byte CreateStream body is one).
+//
+// The codec decodes CBOR into the same boost::json value a JSON body would
+// have produced (blobs as base64, timestamps as seconds), guided by the
+// operation's input shape, so the validator and every handler see one form.
+// Responses go the other way, guided by the output shape. A member the
+// model does not know is converted generically (byte strings to base64,
+// tags dropped) and left for the validator to refuse.
+
+/// The unit of a CBOR timestamp. Milliseconds is what the AWS SDKs use for
+/// this protocol; seconds is there in case a recording shows otherwise.
+enum class cbor_timestamp_unit : std::uint8_t {
+    milliseconds,
+    seconds,
+};
+
+inline constexpr std::string_view k_cbor_content_type = "application/x-amz-cbor-1.1";
+
+namespace detail {
+
+/// Whether `s` is well-formed UTF-8 (no overlongs, surrogates or values
+/// above U+10FFFF), as a CBOR text string must be.
+[[nodiscard]] inline auto valid_utf8(std::string_view s) noexcept -> bool {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const auto c = static_cast<unsigned char>(s[i]);
+        std::size_t n = 0;
+        std::uint32_t cp = 0;
+        if (c < 0x80U) {
+            ++i;
+            continue;
+        }
+        if ((c & 0xE0U) == 0xC0U) {
+            n = 1;
+            cp = c & 0x1FU;
+        } else if ((c & 0xF0U) == 0xE0U) {
+            n = 2;
+            cp = c & 0x0FU;
+        } else if ((c & 0xF8U) == 0xF0U) {
+            n = 3;
+            cp = c & 0x07U;
+        } else {
+            return false;
+        }
+        // The continuation bytes are i+1 .. i+n.
+        if (i + n >= s.size()) {
+            return false;
+        }
+        for (std::size_t k = 1; k <= n; ++k) {
+            const auto cc = static_cast<unsigned char>(s[i + k]);
+            if ((cc & 0xC0U) != 0x80U) {
+                return false;
+            }
+            cp = (cp << 6U) | (cc & 0x3FU);
+        }
+        static constexpr std::array<std::uint32_t, 4> min_for = {0, 0x80, 0x800, 0x10000};
+        if (cp < min_for[n] || cp > 0x10FFFFU || (cp >= 0xD800U && cp <= 0xDFFFU)) {
+            return false;
+        }
+        i += n + 1;
+    }
+    return true;
+}
+
+/// IEEE 754 half precision to double (RFC 8949 Appendix D).
+[[nodiscard]] inline auto half_to_double(std::uint16_t h) noexcept -> double {
+    const auto exp = static_cast<int>((h >> 10U) & 0x1FU);
+    const auto mant = static_cast<double>(h & 0x3FFU);
+    double v = 0;
+    if (exp == 0) {
+        v = std::ldexp(mant, -24);
+    } else if (exp != 31) {
+        v = std::ldexp(mant + 1024, exp - 25);
+    } else {
+        v = mant == 0 ? std::numeric_limits<double>::infinity()
+                      : std::numeric_limits<double>::quiet_NaN();
+    }
+    return (h & 0x8000U) != 0 ? -v : v;
+}
+
+/// Decodes one CBOR body into the boost::json value its JSON twin would be.
+class cbor_reader {
+public:
+    cbor_reader(const service_model& model, std::string_view in, std::size_t max_depth,
+                cbor_timestamp_unit unit)
+        : _model(model), _in(in), _max_depth(max_depth), _unit(unit) {}
+
+    /// The whole body as one item of shape `shape` (no_shape: generic).
+    /// On failure, the reason, which becomes a SerializationException.
+    auto read_body(std::uint32_t shape) -> result<boost::json::value> {
+        boost::json::value v;
+        if (auto e = item(shape, 0, v)) {
+            return fail(*e);
+        }
+        if (_pos != _in.size()) {
+            return fail("Trailing bytes after the CBOR body");
+        }
+        return v;
+    }
+
+private:
+    static constexpr std::uint8_t k_break = 0xFF;
+    using failure = std::optional<std::string>;
+
+    [[nodiscard]] static auto fail(std::string why) -> error {
+        error e;
+        e.message = std::move(why);
+        return e;
+    }
+
+    [[nodiscard]] auto shape_at(std::uint32_t idx) const -> const shape* {
+        return idx == no_shape || idx >= _model.shapes.size() ? nullptr : &_model.shapes[idx];
+    }
+
+    auto byte(std::uint8_t& b) -> bool {
+        if (_pos >= _in.size()) {
+            return false;
+        }
+        b = static_cast<std::uint8_t>(_in[_pos++]);
+        return true;
+    }
+
+    /// The argument after an initial byte with additional info `ai`.
+    /// `indefinite` is set for ai 31 (and the value is 0).
+    auto argument(std::uint8_t ai, std::uint64_t& v, bool& indefinite) -> failure {
+        indefinite = false;
+        if (ai < 24) {
+            v = ai;
+            return std::nullopt;
+        }
+        if (ai == 31) {
+            indefinite = true;
+            v = 0;
+            return std::nullopt;
+        }
+        if (ai > 27) {
+            return "Reserved CBOR additional information";
+        }
+        const std::size_t n = std::size_t{1} << (ai - 24U);
+        if (_in.size() - _pos < n) {
+            return "Truncated CBOR body";
+        }
+        v = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            v = (v << 8U) | static_cast<std::uint8_t>(_in[_pos++]);
+        }
+        return std::nullopt;
+    }
+
+    /// A definite string's bytes; a length beyond the body is refused before
+    /// anything is allocated.
+    auto chunk(std::uint64_t len, std::string& out) -> failure {
+        if (len > _in.size() - _pos) {
+            return "Truncated CBOR body";
+        }
+        out.append(_in.substr(_pos, static_cast<std::size_t>(len)));
+        _pos += static_cast<std::size_t>(len);
+        return std::nullopt;
+    }
+
+    /// A byte or text string of major type `major`, definite or chunked.
+    auto string_of(std::uint8_t major, std::uint64_t len, bool indefinite, std::string& out)
+        -> failure {
+        if (!indefinite) {
+            return chunk(len, out);
+        }
+        for (;;) {
+            std::uint8_t ib = 0;
+            if (!byte(ib)) {
+                return "Truncated CBOR body";
+            }
+            if (ib == k_break) {
+                return std::nullopt;
+            }
+            if ((ib >> 5U) != major) {
+                return "A chunk of an indefinite-length string has the wrong type";
+            }
+            std::uint64_t n = 0;
+            bool inner_indef = false;
+            if (auto e = argument(ib & 0x1FU, n, inner_indef)) {
+                return e;
+            }
+            if (inner_indef) {
+                return "Nested indefinite-length string chunk";
+            }
+            if (auto e = chunk(n, out)) {
+                return e;
+            }
+        }
+    }
+
+    /// Timestamps arrive in `_unit`; the JSON form is epoch seconds.
+    [[nodiscard]] auto to_seconds(const boost::json::value& v) const -> boost::json::value {
+        if (_unit == cbor_timestamp_unit::seconds) {
+            return v;
+        }
+        if (v.is_int64()) {
+            const auto ms = v.as_int64();
+            if (ms % 1000 == 0) {
+                return ms / 1000;
+            }
+            return static_cast<double>(ms) / 1000.0;
+        }
+        if (v.is_uint64()) {
+            return static_cast<double>(v.as_uint64()) / 1000.0;
+        }
+        if (v.is_double()) {
+            return v.as_double() / 1000.0;
+        }
+        return v;
+    }
+
+    auto item(std::uint32_t shape_idx, std::size_t depth, boost::json::value& out) -> failure {
+        if (depth > _max_depth) {
+            return "Request nesting exceeds the maximum depth";
+        }
+        std::uint8_t ib = 0;
+        if (!byte(ib)) {
+            return "Truncated CBOR body";
+        }
+        const auto major = static_cast<std::uint8_t>(ib >> 5U);
+        const auto ai = static_cast<std::uint8_t>(ib & 0x1FU);
+        const auto* sh = shape_at(shape_idx);
+        if (major == 7) {
+            return simple(ai, sh, out);
+        }
+        std::uint64_t arg = 0;
+        bool indefinite = false;
+        if (auto e = argument(ai, arg, indefinite)) {
+            return e;
+        }
+        switch (major) {
+            case 0:
+                if (arg <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                    out = static_cast<std::int64_t>(arg);
+                } else {
+                    out = arg;
+                }
+                break;
+            case 1:
+                if (indefinite ||
+                    arg > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                    return "Negative integer out of range";
+                }
+                out = -1 - static_cast<std::int64_t>(arg);
+                break;
+            case 2: {
+                std::string raw;
+                if (auto e = string_of(2, arg, indefinite, raw)) {
+                    return e;
+                }
+                out = base64_encode(std::as_bytes(std::span<const char>(raw.data(), raw.size())));
+                return std::nullopt;
+            }
+            case 3: {
+                std::string text;
+                if (auto e = string_of(3, arg, indefinite, text)) {
+                    return e;
+                }
+                if (!valid_utf8(text)) {
+                    return "Invalid UTF-8 in a CBOR text string";
+                }
+                out = boost::json::string(text);
+                return std::nullopt;
+            }
+            case 4:
+                return array(sh, arg, indefinite, depth, out);
+            case 5:
+                return map(sh, arg, indefinite, depth, out);
+            case 6: {
+                if (indefinite) {
+                    return "Malformed CBOR tag";
+                }
+                // Tag 1 (epoch time) and any other tag: the value is what counts.
+                // The timestamp conversion below keys on the shape, so an
+                // untagged number in a timestamp member is read the same way.
+                return item(shape_idx, depth + 1, out);
+            }
+            default:
+                return "Unknown CBOR major type";
+        }
+        if (sh != nullptr && sh->kind == shape_kind::timestamp) {
+            out = to_seconds(out);
+        }
+        return std::nullopt;
+    }
+
+    auto simple(std::uint8_t ai, const shape* sh, boost::json::value& out) -> failure {
+        double d = 0;
+        switch (ai) {
+            case 20:
+                out = false;
+                return std::nullopt;
+            case 21:
+                out = true;
+                return std::nullopt;
+            case 22:
+            case 23:
+                out = nullptr;
+                return std::nullopt;
+            case 25: {
+                std::uint64_t v = 0;
+                bool indef = false;
+                if (auto e = argument(ai, v, indef)) {
+                    return e;
+                }
+                d = half_to_double(static_cast<std::uint16_t>(v));
+                break;
+            }
+            case 26: {
+                std::uint64_t v = 0;
+                bool indef = false;
+                if (auto e = argument(ai, v, indef)) {
+                    return e;
+                }
+                d = static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(v)));
+                break;
+            }
+            case 27: {
+                std::uint64_t v = 0;
+                bool indef = false;
+                if (auto e = argument(ai, v, indef)) {
+                    return e;
+                }
+                d = std::bit_cast<double>(v);
+                break;
+            }
+            case 31:
+                return "Unexpected CBOR break";
+            default:
+                return "Unsupported CBOR simple value";
+        }
+        out = d;
+        if (sh != nullptr && sh->kind == shape_kind::timestamp) {
+            out = to_seconds(out);
+        }
+        return std::nullopt;
+    }
+
+    /// Whether an indefinite container ends here (consuming the break).
+    auto at_break() -> bool {
+        if (_pos < _in.size() && static_cast<std::uint8_t>(_in[_pos]) == k_break) {
+            ++_pos;
+            return true;
+        }
+        return false;
+    }
+
+    auto array(const shape* sh, std::uint64_t n, bool indefinite, std::size_t depth,
+               boost::json::value& out) -> failure {
+        const auto elem = sh != nullptr && sh->kind == shape_kind::list ? sh->element : no_shape;
+        auto& arr = out.emplace_array();
+        // Each element takes at least one byte: a count beyond the body is
+        // refused before reserving anything.
+        if (!indefinite && n > _in.size() - _pos) {
+            return "Truncated CBOR body";
+        }
+        for (std::uint64_t i = 0; indefinite || i < n; ++i) {
+            if (indefinite && at_break()) {
+                break;
+            }
+            boost::json::value v;
+            if (auto e = item(elem, depth + 1, v)) {
+                return e;
+            }
+            arr.push_back(std::move(v));
+        }
+        return std::nullopt;
+    }
+
+    auto map(const shape* sh, std::uint64_t n, bool indefinite, std::size_t depth,
+             boost::json::value& out) -> failure {
+        auto& obj = out.emplace_object();
+        if (!indefinite && n > (_in.size() - _pos) / 2) {
+            return "Truncated CBOR body";
+        }
+        for (std::uint64_t i = 0; indefinite || i < n; ++i) {
+            if (indefinite && at_break()) {
+                break;
+            }
+            boost::json::value k;
+            if (auto e = item(no_shape, depth + 1, k)) {
+                return e;
+            }
+            if (!k.is_string()) {
+                return "A CBOR map key is not a text string";
+            }
+            std::string key(k.as_string());
+            std::uint32_t value_shape = no_shape;
+            if (sh != nullptr && sh->kind == shape_kind::structure) {
+                for (const auto& m : _model.members_of(*sh)) {
+                    if (m.name == key) {
+                        value_shape = m.shape;
+                        break;
+                    }
+                }
+            } else if (sh != nullptr && sh->kind == shape_kind::map) {
+                value_shape = sh->element;
+            }
+            if (obj.contains(key)) {
+                return "Duplicate key in a CBOR map";
+            }
+            boost::json::value v;
+            if (auto e = item(value_shape, depth + 1, v)) {
+                return e;
+            }
+            obj.emplace(key, std::move(v));
+        }
+        return std::nullopt;
+    }
+
+    const service_model& _model;
+    std::string_view _in;
+    std::size_t _pos = 0;
+    std::size_t _max_depth;
+    cbor_timestamp_unit _unit;
+};
+
+/// Encodes a boost::json value as CBOR, guided by a shape: base64 text in a
+/// blob member becomes a byte string, epoch seconds in a timestamp member
+/// become tag 1 over the unit's integer. Containers are definite-length.
+class cbor_writer {
+public:
+    cbor_writer(const service_model& model, cbor_timestamp_unit unit)
+        : _model(model), _unit(unit) {}
+
+    [[nodiscard]] auto write(const boost::json::value& v, std::uint32_t shape_idx) -> std::string {
+        std::string out;
+        item(v, shape_idx, out);
+        return out;
+    }
+
+private:
+    static void head(std::string& out, std::uint8_t major, std::uint64_t v) {
+        const auto m = static_cast<std::uint8_t>(major << 5U);
+        if (v < 24) {
+            out.push_back(static_cast<char>(m | v));
+        } else if (v <= 0xFFU) {
+            out.push_back(static_cast<char>(m | 24U));
+            out.push_back(static_cast<char>(v));
+        } else if (v <= 0xFFFFU) {
+            out.push_back(static_cast<char>(m | 25U));
+            be(out, v, 2);
+        } else if (v <= 0xFFFFFFFFU) {
+            out.push_back(static_cast<char>(m | 26U));
+            be(out, v, 4);
+        } else {
+            out.push_back(static_cast<char>(m | 27U));
+            be(out, v, 8);
+        }
+    }
+
+    static void be(std::string& out, std::uint64_t v, int n) {
+        for (int i = n - 1; i >= 0; --i) {
+            out.push_back(static_cast<char>((v >> (static_cast<unsigned>(i) * 8U)) & 0xFFU));
+        }
+    }
+
+    static void integer(std::string& out, std::int64_t v) {
+        if (v >= 0) {
+            head(out, 0, static_cast<std::uint64_t>(v));
+        } else {
+            head(out, 1, static_cast<std::uint64_t>(-(v + 1)));
+        }
+    }
+
+    static void text(std::string& out, std::string_view s) {
+        head(out, 3, s.size());
+        out.append(s);
+    }
+
+    [[nodiscard]] auto shape_at(std::uint32_t idx) const -> const shape* {
+        return idx == no_shape || idx >= _model.shapes.size() ? nullptr : &_model.shapes[idx];
+    }
+
+    void timestamp(const boost::json::value& v, std::string& out) const {
+        const double scale = _unit == cbor_timestamp_unit::milliseconds ? 1000.0 : 1.0;
+        double secs = 0;
+        if (v.is_int64()) {
+            secs = static_cast<double>(v.as_int64());
+        } else if (v.is_uint64()) {
+            secs = static_cast<double>(v.as_uint64());
+        } else {
+            secs = v.as_double();
+        }
+        head(out, 6, 1);
+        integer(out, static_cast<std::int64_t>(std::llround(secs * scale)));
+    }
+
+    void item(const boost::json::value& v, std::uint32_t shape_idx, std::string& out) const {
+        const auto* sh = shape_at(shape_idx);
+        if (sh != nullptr && sh->kind == shape_kind::timestamp && v.is_number()) {
+            timestamp(v, out);
+            return;
+        }
+        switch (v.kind()) {
+            case boost::json::kind::null:
+                out.push_back(static_cast<char>(0xF6));
+                return;
+            case boost::json::kind::bool_:
+                out.push_back(static_cast<char>(v.as_bool() ? 0xF5 : 0xF4));
+                return;
+            case boost::json::kind::int64:
+                integer(out, v.as_int64());
+                return;
+            case boost::json::kind::uint64:
+                head(out, 0, v.as_uint64());
+                return;
+            case boost::json::kind::double_:
+                out.push_back(static_cast<char>(0xFB));
+                be(out, std::bit_cast<std::uint64_t>(v.as_double()), 8);
+                return;
+            case boost::json::kind::string: {
+                const auto s = std::string_view(v.as_string());
+                if (sh != nullptr && sh->kind == shape_kind::blob) {
+                    if (auto raw = base64_decode(s)) {
+                        head(out, 2, raw->size());
+                        out.append(reinterpret_cast<const char*>(raw->data()), raw->size());
+                        return;
+                    }
+                }
+                text(out, s);
+                return;
+            }
+            case boost::json::kind::array: {
+                const auto& arr = v.as_array();
+                const auto elem =
+                    sh != nullptr && sh->kind == shape_kind::list ? sh->element : no_shape;
+                head(out, 4, arr.size());
+                for (const auto& e : arr) {
+                    item(e, elem, out);
+                }
+                return;
+            }
+            case boost::json::kind::object: {
+                const auto& obj = v.as_object();
+                head(out, 5, obj.size());
+                for (const auto& kv : obj) {
+                    std::uint32_t value_shape = no_shape;
+                    if (sh != nullptr && sh->kind == shape_kind::structure) {
+                        for (const auto& m : _model.members_of(*sh)) {
+                            if (m.name == kv.key()) {
+                                value_shape = m.shape;
+                                break;
+                            }
+                        }
+                    } else if (sh != nullptr && sh->kind == shape_kind::map) {
+                        value_shape = sh->element;
+                    }
+                    text(out, kv.key());
+                    item(kv.value(), value_shape, out);
+                }
+                return;
+            }
+        }
+    }
+
+    const service_model& _model;
+    cbor_timestamp_unit _unit;
+};
+
+}  // namespace detail
+
+/// A CBOR body as the JSON value of shape `shape` (no_shape: generic). On
+/// failure the error carries only a message; the codec types it.
+[[nodiscard]] inline auto cbor_to_json(const service_model& model, std::uint32_t shape,
+                                       std::string_view body, std::size_t max_depth = 128,
+                                       cbor_timestamp_unit unit = cbor_timestamp_unit::milliseconds)
+    -> result<boost::json::value> {
+    return detail::cbor_reader(model, body, max_depth, unit).read_body(shape);
+}
+
+/// `value` (of shape `shape`, or no_shape) as a CBOR body.
+[[nodiscard]] inline auto json_to_cbor(const service_model& model, std::uint32_t shape,
+                                       const boost::json::value& value,
+                                       cbor_timestamp_unit unit = cbor_timestamp_unit::milliseconds)
+    -> std::string {
+    return detail::cbor_writer(model, unit).write(value, shape);
+}
+
+// ---------------------------------------------------------------------------
 // Framing
 // ---------------------------------------------------------------------------
 
@@ -979,12 +1579,23 @@ struct codec_options {
     request_id_style ids = request_id_style::dynamodb;
     request_limits limits;
     unknown_member_policy unknown_members = unknown_member_policy::reject;
+    /// Also accept `application/x-amz-cbor-1.1` bodies and answer them in
+    /// CBOR (Kinesis). Off by default: DynamoDB has no CBOR protocol.
+    bool accept_cbor = false;
+    cbor_timestamp_unit cbor_timestamps = cbor_timestamp_unit::milliseconds;
+};
+
+/// How a request's body is encoded, and so how its answer is.
+enum class body_encoding : std::uint8_t {
+    json,
+    cbor,
 };
 
 /// A request that framed, parsed and validated.
 struct parsed_request {
     const operation* op = nullptr;
     boost::json::object input;
+    body_encoding encoding = body_encoding::json;
 };
 
 /// Parses requests for one service and renders its responses.
@@ -1017,9 +1628,21 @@ public:
             e.type = style.unknown_operation_type;
             return e;
         }
+        const auto encoding = encoding_of(req.content_type).value_or(body_encoding::json);
         boost::json::value body;
         if (req.body.empty()) {
             body = boost::json::object{};
+        } else if (encoding == body_encoding::cbor) {
+            auto decoded = cbor_to_json(_model, op->input, req.body, _options.limits.max_depth,
+                                        _options.cbor_timestamps);
+            if (!decoded.has_value()) {
+                error e;
+                e.type = style.serialization_type;
+                e.message_key = style.serialization_message_key;
+                e.message = decoded.error().message;
+                return e;
+            }
+            body = std::move(*decoded);
         } else {
             boost::json::parse_options po;
             po.max_depth = _options.limits.max_depth;
@@ -1045,7 +1668,7 @@ public:
         if (auto e = _validator.validate(op->input, body, style); e.has_value()) {
             return std::move(*e);
         }
-        return parsed_request{op, std::move(body.as_object())};
+        return parsed_request{op, std::move(body.as_object()), encoding};
     }
 
     /// The operation `req` names, or null when the method, content type or
@@ -1054,7 +1677,7 @@ public:
         if (req.method != "POST") {
             return nullptr;
         }
-        if (!content_type_matches(req.content_type)) {
+        if (!encoding_of(req.content_type).has_value()) {
             return nullptr;
         }
         const auto dot = req.target.rfind('.');
@@ -1064,18 +1687,28 @@ public:
         return _model.find_operation(req.target.substr(dot + 1));
     }
 
-    /// A 200 response with `output` as its body.
-    [[nodiscard]] auto respond(const boost::json::object& output, std::string request_id) const
-        -> http_response {
+    /// A 200 response with `output` as its body, in `encoding`. A CBOR body
+    /// is shaped by `op`'s output shape (blobs as byte strings, timestamps
+    /// under tag 1); without `op` the conversion is generic.
+    [[nodiscard]] auto respond(const boost::json::object& output, std::string request_id,
+                               body_encoding encoding = body_encoding::json,
+                               const operation* op = nullptr) const -> http_response {
         http_response r;
         r.status = 200;
-        r.body = boost::json::serialize(output);
-        finish(r, std::move(request_id));
+        if (encoding == body_encoding::cbor) {
+            r.body = json_to_cbor(_model, op != nullptr ? op->output : no_shape,
+                                  boost::json::value(output), _options.cbor_timestamps);
+        } else {
+            r.body = boost::json::serialize(output);
+        }
+        finish(r, std::move(request_id), encoding);
         return r;
     }
 
-    /// An error response.
-    [[nodiscard]] auto respond(const error& e, std::string request_id) const -> http_response {
+    /// An error response, in `encoding`.
+    [[nodiscard]] auto respond(const error& e, std::string request_id,
+                               body_encoding encoding = body_encoding::json) const
+        -> http_response {
         boost::json::object body;
         body["__type"] = e.type;
         if (e.message.has_value()) {
@@ -1086,8 +1719,11 @@ public:
         }
         http_response r;
         r.status = e.status;
-        r.body = boost::json::serialize(body);
-        finish(r, std::move(request_id));
+        r.body = encoding == body_encoding::cbor
+                     ? json_to_cbor(_model, no_shape, boost::json::value(std::move(body)),
+                                    _options.cbor_timestamps)
+                     : boost::json::serialize(body);
+        finish(r, std::move(request_id), encoding);
         return r;
     }
 
@@ -1095,24 +1731,37 @@ public:
         return make_request_id(_options.ids);
     }
 
-private:
-    [[nodiscard]] auto content_type_matches(std::string_view ct) const -> bool {
-        // Parameters after ';' (a charset) do not change the media type.
+    /// The encoding a Content-Type names for this service: its JSON version,
+    /// or CBOR when `accept_cbor` is set; nothing for anything else.
+    /// Parameters after ';' (a charset) do not change the media type, and
+    /// the comparison ignores case.
+    [[nodiscard]] auto encoding_of(std::string_view ct) const -> std::optional<body_encoding> {
         if (const auto semi = ct.find(';'); semi != std::string_view::npos) {
             ct = ct.substr(0, semi);
         }
         while (!ct.empty() && (ct.back() == ' ' || ct.back() == '\t')) {
             ct.remove_suffix(1);
         }
-        const auto want = content_type_of(_model.version);
-        return ct.size() == want.size() &&
-               std::equal(ct.begin(), ct.end(), want.begin(), [](char a, char b) {
-                   return std::tolower(static_cast<unsigned char>(a)) == b;
-               });
+        const auto same = [ct](std::string_view want) {
+            return ct.size() == want.size() &&
+                   std::equal(ct.begin(), ct.end(), want.begin(), [](char a, char b) {
+                       return std::tolower(static_cast<unsigned char>(a)) == b;
+                   });
+        };
+        if (same(content_type_of(_model.version))) {
+            return body_encoding::json;
+        }
+        if (_options.accept_cbor && same(k_cbor_content_type)) {
+            return body_encoding::cbor;
+        }
+        return std::nullopt;
     }
 
-    void finish(http_response& r, std::string request_id) const {
-        r.headers.emplace_back("Content-Type", std::string(content_type_of(_model.version)));
+private:
+    void finish(http_response& r, std::string request_id, body_encoding encoding) const {
+        r.headers.emplace_back("Content-Type", std::string(encoding == body_encoding::cbor
+                                                               ? k_cbor_content_type
+                                                               : content_type_of(_model.version)));
         r.headers.emplace_back("x-amzn-RequestId", std::move(request_id));
         r.headers.emplace_back("x-amz-crc32", crc32_header(r.body));
     }
@@ -1167,6 +1816,8 @@ public:
     /// detail in the body.
     [[nodiscard]] auto handle(const http_request_view& req) const -> http_response {
         auto request_id = _codec.new_request_id();
+        // Errors go back in the request's encoding when it names one.
+        const auto encoding = _codec.encoding_of(req.content_type).value_or(body_encoding::json);
         // An operation with no handler is unknown whatever its body says,
         // as it is to a server that predates it: answer before validation,
         // so the coverage test can pin one error per unimplemented
@@ -1176,27 +1827,27 @@ public:
                 op != nullptr && !_handlers.contains(op)) {
                 error e;
                 e.type = _codec.options().style.unknown_operation_type;
-                return _codec.respond(e, std::move(request_id));
+                return _codec.respond(e, std::move(request_id), encoding);
             }
         }
         auto parsed = _codec.parse(req);
         if (!parsed.has_value()) {
-            return _codec.respond(parsed.error(), std::move(request_id));
+            return _codec.respond(parsed.error(), std::move(request_id), encoding);
         }
         const auto it = _handlers.find(parsed->op);
         request_context ctx{parsed->op, request_id};
         try {
             auto out = it->second(ctx, parsed->input);
             if (!out.has_value()) {
-                return _codec.respond(out.error(), std::move(request_id));
+                return _codec.respond(out.error(), std::move(request_id), encoding);
             }
-            return _codec.respond(*out, std::move(request_id));
+            return _codec.respond(*out, std::move(request_id), encoding, parsed->op);
         } catch (const std::exception&) {
             error e;
             e.status = 500;
             e.type = _codec.options().style.internal_type;
             e.message = "Internal server error";
-            return _codec.respond(e, std::move(request_id));
+            return _codec.respond(e, std::move(request_id), encoding);
         }
     }
 
