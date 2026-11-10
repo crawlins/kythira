@@ -241,6 +241,17 @@ struct shard_entry {
 inline constexpr std::uint32_t k_min_retention_hours = 24;
 inline constexpr std::uint32_t k_max_retention_hours = 8760;
 
+/// One data key of an encrypted stream (task 14): the key the records of
+/// generation `_generation` are sealed under, wrapped by the key provider
+/// under `_key_id` (the provider's resolved id, an ARN for AWS KMS). The
+/// plaintext key is never replicated.
+struct data_key_record {
+    std::uint32_t _generation = 0;
+    std::string _key_id{};
+    std::string _wrapped{};
+    friend auto operator==(const data_key_record&, const data_key_record&) -> bool = default;
+};
+
 struct stream_record {
     std::uint64_t _id = 0;
     std::string _account{};
@@ -264,6 +275,26 @@ struct stream_record {
     /// Shard-level metrics `EnableEnhancedMonitoring` switched on, sorted,
     /// never `ALL` (task 15).
     std::vector<std::string> _shard_metrics{};
+    /// Every data key records may be sealed under, oldest first (task 14).
+    /// `StartStreamEncryption` adds one; `StopStreamEncryption` keeps them,
+    /// since records sealed earlier stay readable.
+    std::vector<data_key_record> _data_keys{};
+
+    /// The data key new records are sealed under, or null when the stream
+    /// is not encrypted.
+    [[nodiscard]] auto current_data_key() const -> const data_key_record* {
+        return _encryption == encryption_type::kms && !_data_keys.empty() ? &_data_keys.back()
+                                                                          : nullptr;
+    }
+
+    [[nodiscard]] auto find_data_key(std::uint32_t generation) const -> const data_key_record* {
+        for (const auto& k : _data_keys) {
+            if (k._generation == generation) {
+                return &k;
+            }
+        }
+        return nullptr;
+    }
 
     [[nodiscard]] auto open_shard_count() const -> std::size_t {
         std::size_t n = 0;
@@ -484,6 +515,10 @@ inline auto encode(codec::writer& w, const stream_record& s) -> void {
     for (const auto& m : s._shard_metrics) {
         w.str(m);
     }
+    w.u32(static_cast<std::uint32_t>(s._data_keys.size()));
+    for (const auto& k : s._data_keys) {
+        w.u32(k._generation).str(k._key_id).str(k._wrapped);
+    }
 }
 
 inline auto decode_stream_record(codec::reader& r) -> stream_record {
@@ -523,6 +558,14 @@ inline auto decode_stream_record(codec::reader& r) -> stream_record {
     const auto metrics = r.u8();
     for (std::uint8_t i = 0; i < metrics; ++i) {
         s._shard_metrics.push_back(r.str());
+    }
+    const auto keys = r.u32();
+    for (std::uint32_t i = 0; i < keys; ++i) {
+        data_key_record k;
+        k._generation = r.u32();
+        k._key_id = r.str();
+        k._wrapped = r.str();
+        s._data_keys.push_back(std::move(k));
     }
     return s;
 }

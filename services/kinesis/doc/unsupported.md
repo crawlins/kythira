@@ -24,8 +24,6 @@ unknown-operation error rather than a retryable fault.
 | `ListChannels` | none | Not in the spec. Channels deliver a stream's records to Amazon S3 or S3 Tables (Iceberg), a delivery service like Firehose, which Requirement 1 leaves out of scope. Open question for the owner. | `UnknownOperationException`, HTTP 400 |
 | `ListStreamConsumers` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
 | `RegisterStreamConsumer` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
-| `StartStreamEncryption` | task 14 | Not built yet (encryption at rest). | `UnknownOperationException`, HTTP 400 |
-| `StopStreamEncryption` | task 14 | Not built yet (encryption at rest). | `UnknownOperationException`, HTTP 400 |
 | `SubscribeToShard` | task 13 | Not built yet (enhanced fan-out). | `UnknownOperationException`, HTTP 400 |
 | `UpdateChannel` | none | Not in the spec. Channels deliver a stream's records to Amazon S3 or S3 Tables (Iceberg), a delivery service like Firehose, which Requirement 1 leaves out of scope. Open question for the owner. | `UnknownOperationException`, HTTP 400 |
 | `UpdateStreamWarmThroughput` | none | Warm throughput is unlocked by an AWS account's `MinimumThroughputBillingCommitment`, a billing arrangement with no Kythira equivalent; the on-demand controller (task 12) scales from observed writes instead. `UpdateStreamMode` refuses its `WarmThroughputMiBps` the same way. | `UnknownOperationException`, HTTP 400 |

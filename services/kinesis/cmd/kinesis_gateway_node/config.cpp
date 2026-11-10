@@ -286,6 +286,26 @@ void read_kinesis_side(const reader& r, node_options& o) {
 
     o._disk_floor_bytes = r.u64("KINESIS_DISK_FLOOR_BYTES", "1073741824");
     o._metrics = r.flag("KINESIS_METRICS", "false");
+    o._kms = r.opt("KINESIS_KMS", "off");
+    if (o._kms != "off" && o._kms != "local" && o._kms != "aws") {
+        fail("KINESIS_KMS must be off, local or aws");
+    }
+    if (r.set("KINESIS_KMS_PASSPHRASE") && r.set("KINESIS_KMS_PASSPHRASE_FILE")) {
+        fail("set KINESIS_KMS_PASSPHRASE or KINESIS_KMS_PASSPHRASE_FILE, not both");
+    }
+    if (o._kms == "local") {
+        o._kms_passphrase = r.set("KINESIS_KMS_PASSPHRASE_FILE")
+                                ? read_secret_file(r.required("KINESIS_KMS_PASSPHRASE_FILE"))
+                                : r.opt("KINESIS_KMS_PASSPHRASE", "");
+        if (o._kms_passphrase.size() < 16) {
+            fail("KINESIS_KMS=local needs KINESIS_KMS_PASSPHRASE (or _FILE) of at least 16 bytes");
+        }
+    }
+    o._kms_region = r.opt("KINESIS_KMS_REGION", o._region.c_str());
+    o._kms_endpoint = r.opt("KINESIS_KMS_ENDPOINT", "");
+    if (!o._kms_endpoint.empty() && !kinesis::split_host_port(o._kms_endpoint)) {
+        fail("KINESIS_KMS_ENDPOINT: '" + o._kms_endpoint + "' is not host:port");
+    }
     o._maintenance_interval = r.ms("KINESIS_MAINTENANCE_INTERVAL_MS", "60000");
     if (o._maintenance_interval.count() < 100) {
         fail("KINESIS_MAINTENANCE_INTERVAL_MS must be at least 100");
@@ -354,7 +374,12 @@ auto describe(const node_options& o) -> std::string {
     }
     out << "disk_floor_bytes=" << o._disk_floor_bytes << '\n'
         << "maintenance_interval_ms=" << o._maintenance_interval.count() << '\n'
-        << "metrics=" << (o._metrics ? "on (GET /metrics)" : "off") << '\n';
+        << "metrics=" << (o._metrics ? "on (GET /metrics)" : "off") << '\n'
+        << "kms=" << o._kms
+        << (o._kms == "aws" ? " region=" + o._kms_region +
+                                  (o._kms_endpoint.empty() ? "" : " endpoint=" + o._kms_endpoint)
+                            : std::string())
+        << '\n';
     if (o._tier_after_hours > 0) {
         out << "tier=s3://" << o._tier_bucket << '/' << o._tier_prefix << " after "
             << o._tier_after_hours << "h region=" << o._tier_region
@@ -407,6 +432,11 @@ auto usage() -> std::string {
            "  KINESIS_COMMAND_TIMEOUT_MS       commit timeout per write (5000)\n"
            "  KINESIS_METRICS                  serve Prometheus metrics on GET /metrics,\n"
            "                                   unauthenticated (false)\n"
+           "  KINESIS_KMS                      key provider for encrypted streams: off, local\n"
+           "                                   or aws (off)\n"
+           "  KINESIS_KMS_PASSPHRASE[_FILE]    local: wraps data keys, same on every node\n"
+           "  KINESIS_KMS_REGION               aws: KMS region (default: KINESIS_REGION)\n"
+           "  KINESIS_KMS_ENDPOINT             aws: KMS host:port (default: AWS)\n"
            "\n"
            "Retention and tiering:\n"
            "  KINESIS_DISK_FLOOR_BYTES         refuse writes below this free space (1073741824;\n"

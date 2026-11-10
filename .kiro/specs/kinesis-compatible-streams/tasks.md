@@ -289,10 +289,26 @@ asked.
 
 ### Phase 6: the rest of the surface
 
-- [ ] 14. Encryption at rest
+- [x] 14. Encryption at rest
   - `kms_key_provider` concept, local sealed provider, AWS KMS adapter;
     `StartStreamEncryption`, `StopStreamEncryption`; encrypted segments
   - _Requirements: 14.1_
+  - Progress: records are sealed (AES-256-GCM, random nonce, the routing
+    key and data key generation as additional data) by the gateway that
+    takes the write, so the log, every replica's segments, peer fetches
+    and tiered objects hold ciphertext. The design's per-block encryption
+    became per-record, since sealing must happen before the log and the
+    store builds blocks only on apply. Data keys are wrapped by a
+    `kms_key_provider` and kept per generation in the catalog record;
+    stopping keeps them, so older records stay readable. Providers:
+    `local_kms_provider` (PBKDF2-derived like the CA key,
+    `KINESIS_KMS=local`) and `aws_kms_provider` (KMS JSON protocol with
+    SigV4, no SDK component, `KINESIS_KMS=aws`). `kinesis_encryption_test`,
+    7 cases; `doc/encryption.md`. Open: the AWS adapter has run only
+    against a fake KMS (a real run needs a KMS key and Clark's go); the
+    refusals' wording and `StopStreamEncryption`'s edge cases are
+    unverified against a recording of AWS; data key generations are never
+    pruned.
 
 - [x] 15. Tags, resource policies, monitoring and account calls
   - Tag operations (both forms), resource policies through IAM's evaluator,
