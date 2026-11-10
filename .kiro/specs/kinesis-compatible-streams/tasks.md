@@ -367,6 +367,16 @@ asked.
   - Chaos: leader kills during `PutRecords`, tiering and fan-out
   - Optional recording run against real AWS Kinesis (**Clark's go**)
   - _Requirements: 17.1-17.4_
+  - Progress: the container scenario's chaos case kills every node in turn
+    while `batch-produce` writes 6000 records with PutRecords and
+    `fan-out-consume` follows both shards with SubscribeToShard; every
+    record arrives, in order under each key, pushed and polled (a local
+    three-node run passed: 6000/6000, 8 duplicates from a retried batch
+    whose answer was lost). Leader kills during resharding are task 11's
+    case; the KCL fan-out case kills a node too. Left: the differential
+    test (emulator choice asked of Clark 11-10; kinesis-mock recommended),
+    tiering chaos (needs an S3 container), and conformance jobs for KPL,
+    aws-sdk-cpp and the Flink connector.
 
 - [x] 18. Documentation
   - `doc/kinesis.md`: model, profile switches, limits, clock assumption,

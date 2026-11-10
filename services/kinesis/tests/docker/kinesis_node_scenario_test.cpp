@@ -31,6 +31,11 @@
 // while they read: every record written before, during and after is
 // processed.
 //
+// A chaos case (task 17, Requirement 17.3) kills every node in turn while
+// a producer writes with PutRecords and a fan-out consumer follows the
+// stream: every record arrives, in order under each key, pushed and
+// polled.
+//
 // A third case (task 11, Requirement 10) reshards a stream three times
 // (UpdateShardCount, SplitShard, MergeShards), each call through one node
 // while another is killed with SIGKILL, and a producer writes straight
@@ -584,6 +589,61 @@ BOOST_AUTO_TEST_CASE(kcl_fan_out_workers_read_every_record_through_a_node_kill) 
     const auto consumers = aws_cli(2, {"list-stream-consumers", "--stream-arn",
                                        "arn:aws:kinesis:us-east-1:111122223333:stream/efo"});
     BOOST_TEST(consumers.out.find("efo-app") != std::string::npos, consumers.out);
+}
+
+// Task 17: every node killed in turn while a producer writes with
+// PutRecords and a fan-out consumer follows both shards. No acknowledged
+// record is lost, and each key's records arrive in order, both pushed
+// and polled.
+BOOST_AUTO_TEST_CASE(put_records_and_fan_out_survive_leader_kills) {
+    const logs_on_failure logs;
+    for (int n : {1, 2, 3}) {
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered ListStreams");
+    }
+    {
+        auto r = boto3({"create", "--endpoint", endpoint(1), "--stream", "cx", "--shards", "2"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create failed:\n" << r.out);
+    }
+    const std::string all = endpoint(1) + "," + endpoint(2) + "," + endpoint(3);
+    constexpr int k_records = 6000;
+    const auto count = std::to_string(k_records);
+    os::CmdResult pushed;
+    std::thread consumer([&] {
+        // The admin key: RegisterStreamConsumer is outside the static-key
+        // read-write role (doc/fan-out.md).
+        pushed = boto3({"fan-out-consume", "--endpoints", all, "--stream", "cx", "--count", count,
+                        "--keys", "8", "--tag", "x", "--timeout", "600"},
+                       k_admin_id, k_admin_secret);
+    });
+    std::this_thread::sleep_for(3s);
+    os::CmdResult produced;
+    std::thread producer([&] {
+        produced = boto3({"batch-produce", "--endpoints", all, "--stream", "cx", "--count", count,
+                          "--keys", "8", "--tag", "x", "--timeout", "600"});
+    });
+    // One group leads the catalog and another the shards (KYTHIRA_SHARD_CUTS),
+    // so killing each node in turn kills every leader at least once.
+    for (int n : {1, 2, 3}) {
+        std::this_thread::sleep_for(3s);
+        os::checked_exec(os::real_exec, compose_cmd({"kill", service(n)}));
+        std::this_thread::sleep_for(std::chrono::milliseconds(k_failover_ms));
+        os::checked_exec(os::real_exec, compose_cmd({"start", service(n)}));
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered after restarting");
+    }
+    producer.join();
+    consumer.join();
+    BOOST_REQUIRE_MESSAGE(produced.code == 0, "batch-produce failed:\n" << produced.out);
+    BOOST_TEST(pushed.code == 0, "fan-out-consume failed:\n" << pushed.out);
+    BOOST_TEST(pushed.out.find("\"consumed\": " + count) != std::string::npos, pushed.out);
+    auto c = boto3({"lineage-consume", "--endpoints", all, "--stream", "cx", "--count", count,
+                    "--keys", "8", "--tag", "x", "--timeout", "180"});
+    BOOST_TEST(c.code == 0, "lineage-consume failed:\n" << c.out);
+    BOOST_TEST(c.out.find("\"consumed\": " + count) != std::string::npos, c.out);
 }
 
 // Task 11: resharding with a node killed in the middle of each reshard.
