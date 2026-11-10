@@ -1823,6 +1823,16 @@ unverified completion claim.
       httplib transport need election timeouts well above their followers'
       slowest AppendEntries. Re-survey the test about November 12; if
       clean, de-allowlist it.
+      **Fixed November 10, 2026:** `cpp_httplib_client::send_rpc` now runs
+      the blocking request on a worker of the target peer's send lane (up
+      to `connection_pool_size` workers per peer, started on demand) and
+      returns at once, so the leader's tick thread no longer waits out one
+      follower before sending to the next. A lane holds at most four times
+      the pool size waiting; past that a send fails at once, so a follower
+      that is down does not collect a heartbeat per tick without bound.
+      The CoAP, TCP and gRPC clients already completed their futures from
+      their own threads. `http_client_send_lanes_test` pins it: on the old
+      client a 1.5 s follower held a send to another follower 1.5 s.
       **Re-surveyed November 9** over the 99 `ci.yml` runs since that fix
       (#702): 4 rescues, against 22 in the 94 runs before it, and none a
       lost key, an unanswered read, an election in the window or a bind

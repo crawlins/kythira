@@ -801,7 +801,87 @@ cpp_httplib_client<Types, NodeId>::cpp_httplib_client(
 // Destructor implementation
 template<typename Types, typename NodeId>
 requires kythira::transport_types<Types>
-cpp_httplib_client<Types, NodeId>::~cpp_httplib_client() = default;
+cpp_httplib_client<Types, NodeId>::~cpp_httplib_client() {
+    // Before any member goes: a lane worker in the middle of a send uses the
+    // pools, the registry and the metrics.
+    stop_send_lanes();
+}
+
+namespace detail {
+/// The client whose lane worker this thread is, if any. A send made from
+/// one of them (a continuation that sends again, say) runs inline, as every
+/// send did before lanes, so a worker never waits on a job queued behind it.
+inline thread_local const void* httplib_send_lane_owner = nullptr;
+}  // namespace detail
+
+template<typename Types, typename NodeId>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types, NodeId>::enqueue_send(const NodeId& target, send_job job)
+    -> enqueue_result {
+    std::unique_lock<std::mutex> lock(_lanes_mutex);
+    if (_lanes_stopping) {
+        return enqueue_result::stopping;
+    }
+    auto& lane_ptr = _lanes[target];
+    if (!lane_ptr) {
+        lane_ptr = std::make_unique<send_lane>();
+    }
+    auto& lane = *lane_ptr;
+    const auto capacity = std::max<std::size_t>(1, _config.connection_pool_size);
+    if (lane.jobs.size() >= capacity * send_lane_queue_factor) {
+        return enqueue_result::full;
+    }
+    lane.jobs.push_back(std::move(job));
+    // Compared with the queue, not "no idle worker": two jobs queued before
+    // the one idle worker wakes still need a second worker.
+    if (lane.idle < lane.jobs.size() && lane.workers < capacity) {
+        ++lane.workers;
+        _lane_threads.emplace_back([this, &lane] { send_lane_worker(lane); });
+    } else {
+        lane.work.notify_one();
+    }
+    return enqueue_result::queued;
+}
+
+template<typename Types, typename NodeId>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types, NodeId>::send_lane_worker(send_lane& lane) -> void {
+    detail::httplib_send_lane_owner = this;
+    std::unique_lock<std::mutex> lock(_lanes_mutex);
+    for (;;) {
+        ++lane.idle;
+        lane.work.wait(lock, [&] { return _lanes_stopping || !lane.jobs.empty(); });
+        --lane.idle;
+        if (lane.jobs.empty()) {
+            return;  // stopping, nothing left
+        }
+        auto job = std::move(lane.jobs.front());
+        lane.jobs.pop_front();
+        const bool run = !_lanes_stopping;
+        lock.unlock();
+        job(run);
+        lock.lock();
+    }
+}
+
+template<typename Types, typename NodeId>
+requires kythira::transport_types<Types>
+auto cpp_httplib_client<Types, NodeId>::stop_send_lanes() -> void {
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lock(_lanes_mutex);
+        _lanes_stopping = true;
+        for (auto& [target, lane] : _lanes) {
+            lane->work.notify_all();
+        }
+        threads.swap(_lane_threads);
+    }
+    for (auto& thread : threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+}
 
 // Validate certificate files
 template<typename Types, typename NodeId>
@@ -1225,6 +1305,82 @@ template<typename Request, typename Response>
 auto cpp_httplib_client<Types, NodeId>::send_rpc(const NodeId& target, const std::string& endpoint,
                                                  const Request& request,
                                                  std::chrono::milliseconds timeout) ->
+    typename Types::template future_template<Response> {
+    using future_type = typename Types::template future_template<Response>;
+    // cpp-httplib's client blocks for the whole round trip. Sent inline, a
+    // caller that walks its peers one after another (the Raft leader
+    // replicating on its tick thread) waited out each peer's reply before
+    // sending to the next, so one follower whose AppendEntries sat behind a
+    // slow durable write held back every other follower's heartbeat, and
+    // past an election timeout they started elections. On a lane, each send
+    // waits only for its own peer.
+    constexpr bool has_promise = std::is_same_v<future_type, kythira::future_default<Response>>
+#ifdef FOLLY_AVAILABLE
+                                 || std::is_same_v<future_type, folly::Future<Response>>
+#endif
+        ;
+    if constexpr (!has_promise) {
+        return send_rpc_now<Request, Response>(target, endpoint, request, timeout);
+    } else {
+        if (detail::httplib_send_lane_owner == this) {
+            return send_rpc_now<Request, Response>(target, endpoint, request, timeout);
+        }
+#ifdef FOLLY_AVAILABLE
+        using promise_type =
+            std::conditional_t<std::is_same_v<future_type, folly::Future<Response>>,
+                               folly::Promise<Response>, kythira::promise_default<Response>>;
+#else
+        using promise_type = kythira::promise_default<Response>;
+#endif
+        auto promise = std::make_shared<promise_type>();
+        auto future = promise->getFuture();
+        // The deadline starts now, not when a worker picks the job up: time
+        // spent queued behind this peer's other sends is the caller's too.
+        const auto call_timeout =
+            timeout > std::chrono::milliseconds::zero() ? timeout : _config.request_timeout;
+        const auto deadline = std::chrono::steady_clock::now() + call_timeout;
+        auto job = [this, promise, target, endpoint, request, deadline](bool run) {
+            if (!run) {
+                promise->setException(std::make_exception_ptr(
+                    std::runtime_error("cpp_httplib_client destroyed before the RPC was sent")));
+                return;
+            }
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            try {
+                if (left <= std::chrono::milliseconds::zero()) {
+                    throw kythira::http_timeout_error(
+                        std::format("HTTP request to {} timed out waiting for a free sender",
+                                    node_id_traits<NodeId>::to_text(target)));
+                }
+                promise->setValue(
+                    send_rpc_now<Request, Response>(target, endpoint, request, left).get());
+            } catch (...) {
+                promise->setException(std::current_exception());
+            }
+        };
+        switch (enqueue_send(target, std::move(job))) {
+            case enqueue_result::queued:
+                return future;
+            case enqueue_result::full:
+                return make_future_with_exception<Types, Response>(kythira::http_transport_error(
+                    std::format("too many HTTP requests already waiting for {}",
+                                node_id_traits<NodeId>::to_text(target))));
+            case enqueue_result::stopping:
+                break;
+        }
+        return make_future_with_exception<Types, Response>(
+            std::runtime_error("cpp_httplib_client is shutting down"));
+    }
+}
+
+template<typename Types, typename NodeId>
+requires kythira::transport_types<Types>
+template<typename Request, typename Response>
+auto cpp_httplib_client<Types, NodeId>::send_rpc_now(const NodeId& target,
+                                                     const std::string& endpoint,
+                                                     const Request& request,
+                                                     std::chrono::milliseconds timeout) ->
     typename Types::template future_template<Response> {
     try {
         // The caller's timeout bounds the whole RPC, 415 re-encodes included
