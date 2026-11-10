@@ -1,0 +1,654 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+
+/// @file table_api.hpp
+/// @brief The DynamoDB control plane: `CreateTable`, `DescribeTable`,
+///        `ListTables`, `UpdateTable`, `DeleteTable`, `DescribeLimits` and the
+///        tagging operations (`.kiro/specs/dynamodb-compatible-api/` task 7,
+///        Requirement 7.1).
+///
+/// A handler checks its request the way DynamoDB does, with AWS's wording,
+/// then sends one catalog command through the backend and renders the
+/// descriptor that comes back as a `TableDescription`. DynamoDB Local
+/// words several of these checks differently from AWS, and Kythira keeps
+/// AWS's wording.
+///
+/// Features that later tasks add are refused outright with a message that
+/// names them, rather than silently ignored: secondary indexes (tasks 9 and
+/// 11), streams (16), encryption settings, resource policies, on-demand and
+/// and replicas (22).
+///
+/// Warm throughput is recorded and reported but limits nothing: Kythira
+/// has no per-partition throughput ceiling for it to raise. A table shows
+/// at least AWS's defaults for a new table, 12,000 read and 4,000 write
+/// units per second, or its provisioned capacity when that is higher. A
+/// request may raise the values but never lower them, as on AWS; the
+/// message for a lower value is Kythira's, since it has not been recorded
+/// against AWS.
+
+#include <kythira/dynamodb/backend.hpp>
+#include <kythira/dynamodb/catalog.hpp>
+#include <kythira/dynamodb/errors.hpp>
+#include <kythira/dynamodb/front_end.hpp>
+
+#include <raft/aws_json_protocol.hpp>
+
+#include <boost/json.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+namespace kythira::dynamodb {
+
+/// DescribeLimits' answer: AWS's default quotas.
+inline constexpr std::uint64_t k_account_max_capacity_units = 80000;
+inline constexpr std::uint64_t k_table_max_capacity_units = 40000;
+
+namespace table_api_detail {
+
+[[nodiscard]] inline auto modeled(std::string_view type, std::string message) -> aws_json::error {
+    aws_json::error e;
+    e.type = dynamodb_error_style().service_prefix + std::string(type);
+    e.message = std::move(message);
+    return e;
+}
+
+[[nodiscard]] inline auto invalid(std::string what) -> aws_json::error {
+    return validation_error(std::string(k_invalid_parameters) + std::move(what));
+}
+
+[[nodiscard]] inline auto unsupported(std::string_view what) -> aws_json::error {
+    return validation_error("Kythira does not support " + std::string(what) + " yet");
+}
+
+/// The error a catalog result carries.
+[[nodiscard]] inline auto error_of(const catalog_result& r) -> aws_json::error {
+    aws_json::error e;
+    e.type = r.error_type;
+    e.message = r.error_message;
+    return e;
+}
+
+[[nodiscard]] inline auto valid_table_name(std::string_view name) -> bool {
+    if (name.size() < 3 || name.size() > 255) {
+        return false;
+    }
+    for (const char c : name) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] inline auto bad_table_name() -> aws_json::error {
+    return validation_error(
+        "Invalid table/index name.  Table/index names must be between 3 and 255 characters long, "
+        "and may contain only the characters a-z, A-Z, 0-9, '_', '-', and '.'");
+}
+
+/// A table name, or the name inside a table ARN (DynamoDB accepts either
+/// in `TableName`).
+[[nodiscard]] inline auto table_name_of(std::string_view given) -> std::string {
+    if (given.starts_with("arn:")) {
+        const auto slash = given.find(":table/");
+        if (slash != std::string_view::npos) {
+            auto rest = given.substr(slash + 7);
+            return std::string(rest.substr(0, rest.find('/')));
+        }
+    }
+    return std::string(given);
+}
+
+[[nodiscard]] inline auto type_letter(attribute_type t) -> std::string_view {
+    switch (t) {
+        case attribute_type::N:
+            return "N";
+        case attribute_type::B:
+            return "B";
+        default:
+            return "S";
+    }
+}
+
+[[nodiscard]] inline auto millis_to_seconds(std::uint64_t ms) -> double {
+    // Exact while ms < 2^53, about 285,000 years.
+    return static_cast<double>(ms) / 1000.0;
+}
+
+/// A UUID-shaped `TableId` derived from the table id, stable for a table's
+/// life and never reused, as the id is.
+[[nodiscard]] inline auto table_uuid(std::uint64_t id) -> std::string {
+    std::array<char, 40> buf{};
+    std::snprintf(buf.data(), buf.size(), "00000000-0000-4000-8000-%012llx",
+                  static_cast<unsigned long long>(id & 0xFFFFFFFFFFFFULL));
+    return std::string(buf.data());
+}
+
+[[nodiscard]] inline auto tags_json(const table_descriptor& d) -> boost::json::array {
+    boost::json::array out;
+    for (const auto& [k, v] : d.tags) {
+        out.push_back(boost::json::object{{"Key", k}, {"Value", v}});
+    }
+    return out;
+}
+
+inline constexpr std::uint64_t k_default_warm_read = 12000;
+inline constexpr std::uint64_t k_default_warm_write = 4000;
+
+/// The warm throughput `DescribeTable` shows.
+[[nodiscard]] inline auto warm_read_of(const table_descriptor& d) -> std::uint64_t {
+    return std::max({k_default_warm_read, d.warm_read, d.read_capacity});
+}
+[[nodiscard]] inline auto warm_write_of(const table_descriptor& d) -> std::uint64_t {
+    return std::max({k_default_warm_write, d.warm_write, d.write_capacity});
+}
+
+/// Reads `WarmThroughput` into `d`, refusing a value that is not positive
+/// or is below what the table already shows.
+[[nodiscard]] inline auto warm_from(const boost::json::object& in, table_descriptor& d)
+    -> std::optional<aws_json::error> {
+    const auto* w = in.if_contains("WarmThroughput");
+    if (w == nullptr) {
+        return std::nullopt;
+    }
+    const auto& o = w->as_object();
+    if (!o.contains("ReadUnitsPerSecond") && !o.contains("WriteUnitsPerSecond")) {
+        return invalid("WarmThroughput needs ReadUnitsPerSecond or WriteUnitsPerSecond");
+    }
+    for (const auto& [member, field, shown] :
+         {std::tuple{"ReadUnitsPerSecond", &d.warm_read, warm_read_of(d)},
+          std::tuple{"WriteUnitsPerSecond", &d.warm_write, warm_write_of(d)}}) {
+        const auto* v = o.if_contains(member);
+        if (v == nullptr) {
+            continue;
+        }
+        const auto n = v->to_number<std::int64_t>();
+        if (n <= 0) {
+            return invalid(std::string("WarmThroughput ") + member + " must be positive");
+        }
+        if (static_cast<std::uint64_t>(n) < shown) {
+            return invalid(std::string("WarmThroughput ") + member +
+                           " cannot be lower than the table's current value of " +
+                           std::to_string(shown));
+        }
+        *field = static_cast<std::uint64_t>(n);
+    }
+    return std::nullopt;
+}
+
+}  // namespace table_api_detail
+
+/// A descriptor as a `TableDescription`.
+[[nodiscard]] inline auto table_description(const table_descriptor& d, const call_context& ctx)
+    -> boost::json::object {
+    using namespace table_api_detail;
+    boost::json::array defs;
+    boost::json::array keys;
+    defs.push_back(boost::json::object{{"AttributeName", d.schema.partition_name},
+                                       {"AttributeType", type_letter(d.schema.partition_type)}});
+    keys.push_back(
+        boost::json::object{{"AttributeName", d.schema.partition_name}, {"KeyType", "HASH"}});
+    if (d.schema.sort_name) {
+        defs.push_back(boost::json::object{{"AttributeName", *d.schema.sort_name},
+                                           {"AttributeType", type_letter(d.schema.sort_type)}});
+        keys.push_back(
+            boost::json::object{{"AttributeName", *d.schema.sort_name}, {"KeyType", "RANGE"}});
+    }
+    boost::json::object out;
+    out["AttributeDefinitions"] = std::move(defs);
+    out["TableName"] = d.name;
+    out["KeySchema"] = std::move(keys);
+    out["TableStatus"] = status_name(d.status);
+    out["CreationDateTime"] = millis_to_seconds(d.created_ms);
+    out["ProvisionedThroughput"] = boost::json::object{
+        {"NumberOfDecreasesToday", 0},
+        {"ReadCapacityUnits", d.read_capacity},
+        {"WriteCapacityUnits", d.write_capacity},
+    };
+    out["TableSizeBytes"] = 0;
+    out["ItemCount"] = 0;
+    out["TableArn"] = ctx.table_arn(d.name);
+    out["TableId"] = table_uuid(d.table_id);
+    if (d.billing == billing_mode::pay_per_request) {
+        out["BillingModeSummary"] = boost::json::object{{"BillingMode", "PAY_PER_REQUEST"}};
+    }
+    if (d.storage_class == table_class::standard_infrequent_access) {
+        out["TableClassSummary"] =
+            boost::json::object{{"TableClass", "STANDARD_INFREQUENT_ACCESS"}};
+    }
+    out["DeletionProtectionEnabled"] = d.deletion_protection;
+    out["WarmThroughput"] = boost::json::object{
+        {"ReadUnitsPerSecond", warm_read_of(d)},
+        {"WriteUnitsPerSecond", warm_write_of(d)},
+        {"Status", status_name(d.status)},
+    };
+    return out;
+}
+
+/// The control-plane handlers over a backend.
+template<dynamo_backend Backend> class table_api {
+public:
+    using result = aws_json::result<boost::json::object>;
+
+    explicit table_api(Backend& backend) : _backend(backend) {}
+
+    template<typename FrontEnd> void register_with(FrontEnd& fe) {
+        fe.on("CreateTable",
+              [this](call_context& c, boost::json::object& in) { return create_table(c, in); });
+        fe.on("DescribeTable",
+              [this](call_context& c, boost::json::object& in) { return describe_table(c, in); });
+        fe.on("ListTables",
+              [this](call_context& c, boost::json::object& in) { return list_tables(c, in); });
+        fe.on("UpdateTable",
+              [this](call_context& c, boost::json::object& in) { return update_table(c, in); });
+        fe.on("DeleteTable",
+              [this](call_context& c, boost::json::object& in) { return delete_table(c, in); });
+        fe.on("DescribeLimits",
+              [this](call_context& c, boost::json::object& in) { return describe_limits(c, in); });
+        fe.on("TagResource",
+              [this](call_context& c, boost::json::object& in) { return tag_resource(c, in); });
+        fe.on("UntagResource",
+              [this](call_context& c, boost::json::object& in) { return untag_resource(c, in); });
+        fe.on("ListTagsOfResource", [this](call_context& c, boost::json::object& in) {
+            return list_tags_of_resource(c, in);
+        });
+    }
+
+    auto create_table(call_context& ctx, boost::json::object& in) -> result {
+        using namespace table_api_detail;
+        const auto name = table_name_of(in.at("TableName").as_string());
+        if (!valid_table_name(name)) {
+            return bad_table_name();
+        }
+        for (const char* member : {"LocalSecondaryIndexes", "GlobalSecondaryIndexes",
+                                   "SSESpecification", "ResourcePolicy", "OnDemandThroughput"}) {
+            if (in.contains(member)) {
+                return unsupported(member);
+            }
+        }
+        if (const auto* s = in.if_contains("StreamSpecification")) {
+            if (const auto* e = s->as_object().if_contains("StreamEnabled");
+                e != nullptr && e->is_bool() && e->as_bool()) {
+                return unsupported("StreamSpecification");
+            }
+        }
+
+        // Key schema, in DynamoDB's order of checks.
+        const auto& ks = in.at("KeySchema").as_array();
+        std::vector<std::string> hash;
+        std::vector<std::string> range;
+        for (const auto& k : ks) {
+            const auto& o = k.as_object();
+            (o.at("KeyType").as_string() == "HASH" ? hash : range)
+                .emplace_back(o.at("AttributeName").as_string());
+        }
+        if (hash.empty()) {
+            return validation_error(
+                "No Hash Key specified in schema.  All Dynamo DB tables must "
+                "have exactly one hash key");
+        }
+        if (hash.size() > 1) {
+            return validation_error(
+                "Too many hash keys specified.  All Dynamo DB tables must "
+                "have exactly one hash key");
+        }
+        if (ks[0].as_object().at("KeyType").as_string() != "HASH") {
+            return validation_error(
+                "Invalid key order. Hash Key must be specified first in key "
+                "schema, Range Key must be specifed second");
+        }
+        if (!range.empty() && range[0] == hash[0]) {
+            return validation_error("Two keys can not have the same name");
+        }
+
+        // Attribute definitions: exactly the key attributes.
+        std::vector<std::pair<std::string, attribute_type>> defs;
+        for (const auto& a : in.at("AttributeDefinitions").as_array()) {
+            const auto& o = a.as_object();
+            const std::string attr(o.at("AttributeName").as_string());
+            for (const auto& [seen, unused] : defs) {
+                if (seen == attr) {
+                    return validation_error("Cannot have two attributes with the same name");
+                }
+            }
+            const auto t = o.at("AttributeType").as_string();
+            defs.emplace_back(attr, t == "N"   ? attribute_type::N
+                                    : t == "B" ? attribute_type::B
+                                               : attribute_type::S);
+        }
+        const auto type_of = [&](const std::string& attr) -> std::optional<attribute_type> {
+            for (const auto& [n, t] : defs) {
+                if (n == attr) {
+                    return t;
+                }
+            }
+            return std::nullopt;
+        };
+        std::vector<std::string> key_names = hash;
+        key_names.insert(key_names.end(), range.begin(), range.end());
+        for (const auto& k : key_names) {
+            if (!type_of(k)) {
+                std::string keys;
+                std::string attrs;
+                for (const auto& n : key_names) {
+                    keys += (keys.empty() ? "" : ", ") + n;
+                }
+                for (const auto& [n, t] : defs) {
+                    attrs += (attrs.empty() ? "" : ", ") + n;
+                }
+                return invalid(
+                    "Some index key attributes are not defined in "
+                    "AttributeDefinitions. Keys: [" +
+                    keys + "], AttributeDefinitions: [" + attrs + "]");
+            }
+        }
+        if (defs.size() != key_names.size()) {
+            return invalid(
+                "Number of attributes in KeySchema does not exactly match number of "
+                "attributes defined in AttributeDefinitions");
+        }
+
+        table_descriptor d;
+        d.name = name;
+        d.schema.partition_name = hash[0];
+        d.schema.partition_type = *type_of(hash[0]);
+        if (!range.empty()) {
+            d.schema.sort_name = range[0];
+            d.schema.sort_type = *type_of(range[0]);
+        }
+        if (auto e = billing_from(in, d, /*creating=*/true)) {
+            return *e;
+        }
+        if (const auto* cls = in.if_contains("TableClass")) {
+            d.storage_class = cls->as_string() == "STANDARD_INFREQUENT_ACCESS"
+                                  ? table_class::standard_infrequent_access
+                                  : table_class::standard;
+        }
+        if (const auto* dp = in.if_contains("DeletionProtectionEnabled")) {
+            d.deletion_protection = dp->as_bool();
+        }
+        if (auto e = warm_from(in, d)) {
+            return *e;
+        }
+        if (const auto* tags = in.if_contains("Tags")) {
+            for (const auto& t : tags->as_array()) {
+                const auto& o = t.as_object();
+                d.tags.emplace_back(o.at("Key").as_string(), o.at("Value").as_string());
+            }
+        }
+
+        catalog_command c;
+        c.op = catalog_command::kind::create_table;
+        c.table = std::move(d);
+        c.now_ms = _backend.now_ms();
+        const auto r = _backend.catalog(c);
+        if (!r.ok()) {
+            return error_of(r);
+        }
+        return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
+    auto describe_table(call_context& ctx, boost::json::object& in) -> result {
+        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto d = _backend.describe(name);
+        if (!d) {
+            return not_found(name);
+        }
+        return boost::json::object{{"Table", table_description(*d, ctx)}};
+    }
+
+    auto list_tables(call_context& /*ctx*/, boost::json::object& in) -> result {
+        std::size_t limit = 100;
+        if (const auto* l = in.if_contains("Limit")) {
+            limit = static_cast<std::size_t>(l->to_number<std::int64_t>());
+        }
+        std::string start;
+        if (const auto* s = in.if_contains("ExclusiveStartTableName")) {
+            start = table_api_detail::table_name_of(s->as_string());
+        }
+        // One more than asked tells whether to hand back a cursor.
+        auto names = _backend.list_tables(start, limit + 1);
+        const bool more = names.size() > limit;
+        if (more) {
+            names.resize(limit);
+        }
+        boost::json::array out;
+        for (const auto& n : names) {
+            out.emplace_back(n);
+        }
+        boost::json::object r{{"TableNames", std::move(out)}};
+        if (more) {
+            r["LastEvaluatedTableName"] = names.back();
+        }
+        return r;
+    }
+
+    auto update_table(call_context& ctx, boost::json::object& in) -> result {
+        using namespace table_api_detail;
+        const auto name = table_name_of(in.at("TableName").as_string());
+        for (const char* member :
+             {"AttributeDefinitions", "GlobalSecondaryIndexUpdates", "StreamSpecification",
+              "SSESpecification", "ReplicaUpdates", "OnDemandThroughput", "MultiRegionConsistency",
+              "GlobalTableWitnessUpdates"}) {
+            if (in.contains(member)) {
+                return unsupported(member);
+            }
+        }
+        if (!in.contains("BillingMode") && !in.contains("ProvisionedThroughput") &&
+            !in.contains("TableClass") && !in.contains("DeletionProtectionEnabled") &&
+            !in.contains("WarmThroughput")) {
+            return validation_error(
+                "At least one of ProvisionedThroughput, BillingMode, UpdateStreamEnabled, "
+                "GlobalSecondaryIndexUpdates or SSESpecification or ReplicaUpdates is required");
+        }
+        const auto current = _backend.describe(name);
+        if (!current) {
+            return not_found(name);
+        }
+        catalog_command c;
+        c.op = catalog_command::kind::update_table;
+        c.table = *current;
+        if (in.contains("BillingMode") || in.contains("ProvisionedThroughput")) {
+            if (auto e = billing_from(in, c.table, /*creating=*/false)) {
+                return *e;
+            }
+            if (c.table.billing == billing_mode::provisioned &&
+                current->billing == billing_mode::provisioned &&
+                c.table.read_capacity == current->read_capacity &&
+                c.table.write_capacity == current->write_capacity) {
+                return validation_error(
+                    "The provisioned throughput for the table will not change. The requested "
+                    "value equals the current value. Current ReadCapacityUnits provisioned for "
+                    "the table: " +
+                    std::to_string(current->read_capacity) +
+                    ". Requested ReadCapacityUnits: " + std::to_string(c.table.read_capacity) +
+                    ". Current WriteCapacityUnits provisioned for the table: " +
+                    std::to_string(current->write_capacity) +
+                    ". Requested WriteCapacityUnits: " + std::to_string(c.table.write_capacity) +
+                    ". Refer to the Amazon DynamoDB Developer Guide for current limits and how "
+                    "to request higher limits.");
+            }
+            c.update_fields |= catalog_command::update_billing | catalog_command::update_throughput;
+        }
+        if (const auto* cls = in.if_contains("TableClass")) {
+            c.table.storage_class = cls->as_string() == "STANDARD_INFREQUENT_ACCESS"
+                                        ? table_class::standard_infrequent_access
+                                        : table_class::standard;
+            c.update_fields |= catalog_command::update_class;
+        }
+        if (const auto* dp = in.if_contains("DeletionProtectionEnabled")) {
+            c.table.deletion_protection = dp->as_bool();
+            c.update_fields |= catalog_command::update_deletion_protection;
+        }
+        if (in.contains("WarmThroughput")) {
+            // Checked against the current values, before any billing
+            // change in the same request raises them.
+            table_descriptor before = *current;
+            if (auto e = warm_from(in, before)) {
+                return *e;
+            }
+            c.table.warm_read = before.warm_read;
+            c.table.warm_write = before.warm_write;
+            c.update_fields |= catalog_command::update_warm_throughput;
+        }
+        c.now_ms = _backend.now_ms();
+        const auto r = _backend.catalog(c);
+        if (!r.ok()) {
+            return error_of(r);
+        }
+        return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
+    auto delete_table(call_context& ctx, boost::json::object& in) -> result {
+        catalog_command c;
+        c.op = catalog_command::kind::delete_table;
+        c.table.name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        c.now_ms = _backend.now_ms();
+        const auto r = _backend.catalog(c);
+        if (!r.ok()) {
+            return table_api_detail::error_of(r);
+        }
+        return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
+    auto describe_limits(call_context& /*ctx*/, boost::json::object& /*in*/) -> result {
+        return boost::json::object{
+            {"AccountMaxReadCapacityUnits", k_account_max_capacity_units},
+            {"AccountMaxWriteCapacityUnits", k_account_max_capacity_units},
+            {"TableMaxReadCapacityUnits", k_table_max_capacity_units},
+            {"TableMaxWriteCapacityUnits", k_table_max_capacity_units},
+        };
+    }
+
+    auto tag_resource(call_context& ctx, boost::json::object& in) -> result {
+        catalog_command c;
+        c.op = catalog_command::kind::tag_resource;
+        for (const auto& t : in.at("Tags").as_array()) {
+            const auto& o = t.as_object();
+            c.table.tags.emplace_back(o.at("Key").as_string(), o.at("Value").as_string());
+        }
+        return retag(ctx, in, std::move(c));
+    }
+
+    auto untag_resource(call_context& ctx, boost::json::object& in) -> result {
+        catalog_command c;
+        c.op = catalog_command::kind::untag_resource;
+        for (const auto& k : in.at("TagKeys").as_array()) {
+            c.table.tags.emplace_back(k.as_string(), "");
+        }
+        return retag(ctx, in, std::move(c));
+    }
+
+    auto list_tags_of_resource(call_context& ctx, boost::json::object& in) -> result {
+        const std::string arn(in.at("ResourceArn").as_string());
+        auto name = table_of_arn(ctx, arn);
+        if (!name) {
+            return name.error();
+        }
+        const auto d = _backend.describe(*name);
+        if (!d || d->status == table_status::deleting) {
+            return arn_not_found(arn);
+        }
+        return boost::json::object{{"Tags", table_api_detail::tags_json(*d)}};
+    }
+
+private:
+    static auto not_found(std::string_view name) -> aws_json::error {
+        return table_api_detail::modeled(
+            "ResourceNotFoundException",
+            "Requested resource not found: Table: " + std::string(name) + " not found");
+    }
+
+    // AWS spells it "ResourcArn" in this message.
+    static auto arn_not_found(std::string_view arn) -> aws_json::error {
+        return table_api_detail::modeled(
+            "ResourceNotFoundException",
+            "Requested resource not found: ResourcArn: " + std::string(arn) + " not found");
+    }
+
+    /// The table a `ResourceArn` names in this account and region.
+    static auto table_of_arn(const call_context& ctx, const std::string& arn)
+        -> aws_json::result<std::string> {
+        const auto name = table_api_detail::table_name_of(arn);
+        if (!arn.starts_with("arn:") || name == arn || !table_api_detail::valid_table_name(name)) {
+            return validation_error("Invalid TableArn: Invalid ResourceArn provided as input " +
+                                    arn);
+        }
+        if (ctx.table_arn(name) != arn) {
+            return arn_not_found(arn);
+        }
+        return name;
+    }
+
+    auto retag(call_context& ctx, boost::json::object& in, catalog_command c) -> result {
+        const std::string arn(in.at("ResourceArn").as_string());
+        auto name = table_of_arn(ctx, arn);
+        if (!name) {
+            return name.error();
+        }
+        c.table.name = *name;
+        c.now_ms = _backend.now_ms();
+        const auto r = _backend.catalog(c);
+        if (!r.ok()) {
+            if (r.error_type.ends_with("ResourceNotFoundException")) {
+                return arn_not_found(arn);
+            }
+            return table_api_detail::error_of(r);
+        }
+        return boost::json::object{};
+    }
+
+    /// Billing mode and throughput from a request onto `d`.
+    static auto billing_from(const boost::json::object& in, table_descriptor& d, bool creating)
+        -> std::optional<aws_json::error> {
+        using namespace table_api_detail;
+        if (const auto* m = in.if_contains("BillingMode")) {
+            d.billing = m->as_string() == "PAY_PER_REQUEST" ? billing_mode::pay_per_request
+                                                            : billing_mode::provisioned;
+        } else if (creating) {
+            d.billing = billing_mode::provisioned;
+        }
+        const auto* pt = in.if_contains("ProvisionedThroughput");
+        if (d.billing == billing_mode::pay_per_request) {
+            if (pt != nullptr) {
+                return invalid(
+                    "Neither ReadCapacityUnits nor WriteCapacityUnits can be "
+                    "specified when BillingMode is PAY_PER_REQUEST");
+            }
+            d.read_capacity = 0;
+            d.write_capacity = 0;
+            return std::nullopt;
+        }
+        if (pt == nullptr) {
+            if (creating || d.read_capacity == 0) {
+                return invalid(
+                    "ReadCapacityUnits and WriteCapacityUnits must both be specified "
+                    "when BillingMode is PROVISIONED");
+            }
+            return std::nullopt;
+        }
+        const auto& o = pt->as_object();
+        d.read_capacity =
+            static_cast<std::uint64_t>(o.at("ReadCapacityUnits").to_number<std::int64_t>());
+        d.write_capacity =
+            static_cast<std::uint64_t>(o.at("WriteCapacityUnits").to_number<std::int64_t>());
+        return std::nullopt;
+    }
+
+    Backend& _backend;
+};
+
+}  // namespace kythira::dynamodb

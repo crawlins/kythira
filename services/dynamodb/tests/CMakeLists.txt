@@ -79,6 +79,12 @@ foreach(_ddb_test IN ITEMS dynamodb_item_state_machine_test dynamodb_catalog_tes
         LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 endforeach()
 
+# Task 7: the control plane and single-item handlers through the front end
+# on local_backend (Requirements 7.1, 8.1, 8.6, 20.2).
+kythira_dynamodb_test(dynamodb_api_test dynamodb_api_test.cpp)
+set_tests_properties(dynamodb_api_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
+
 # The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
 # (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned models, so a model
 # upgrade carries its regenerated tables and their diff (Requirement 2.4).

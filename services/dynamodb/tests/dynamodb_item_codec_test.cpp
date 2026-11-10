@@ -222,9 +222,9 @@ BOOST_AUTO_TEST_CASE(a_key_parameter_is_exactly_the_schema) {
         const auto e = ddb::validate_key(item_of(text), schema);
         return e ? e->message.value_or("") : std::string("ok");
     };
-    const std::string mismatch =
-        "One or more parameter values were invalid: The provided key element does not match the "
-        "schema";
+    // AWS sends this one without the "One or more parameter values were
+    // invalid" prefix.
+    const std::string mismatch = "The provided key element does not match the schema";
     BOOST_TEST(msg(R"({"pk":{"S":"a"}})") == "ok");
     BOOST_TEST(msg(R"({"pk":{"S":"a"},"x":{"S":"b"}})") == mismatch);
     BOOST_TEST(msg(R"({"x":{"S":"b"}})") == mismatch);

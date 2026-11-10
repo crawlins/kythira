@@ -599,22 +599,24 @@ namespace detail {
 }
 
 /// Checks a `Key` parameter: exactly the schema's attributes, nothing else.
+/// AWS words a bad `Key` without the usual "One or more parameter values
+/// were invalid" prefix.
 [[nodiscard]] inline auto validate_key(const item& key, const key_schema& schema)
     -> std::optional<aws_json::error> {
     const std::size_t want = schema.sort_name ? 2 : 1;
     if (key.size() != want) {
-        return detail::invalid("The provided key element does not match the schema");
+        return validation_error("The provided key element does not match the schema");
     }
     for (const auto& [name, value] : key) {
         if (name != schema.partition_name && (!schema.sort_name || name != *schema.sort_name)) {
-            return detail::invalid("The provided key element does not match the schema");
+            return validation_error("The provided key element does not match the schema");
         }
     }
     if (auto e = validate_key_attributes(key, schema)) {
         // A Key whose types are wrong gets the schema message, not the
         // item one.
         if (e->message && e->message->find("Type mismatch") != std::string::npos) {
-            return detail::invalid("The provided key element does not match the schema");
+            return validation_error("The provided key element does not match the schema");
         }
         return e;
     }
