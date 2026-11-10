@@ -15,8 +15,11 @@ which runs in tests on an in-process network, and the `ledger_node`
 daemon (below) with its metrics endpoint. A replica that falls behind its
 ledger's compacted log catches up through a snapshot that carries the
 segment files. A replica killed at any point of applying, sealing or
-offloading recovers the same journal (`ledger_crash_test`). Not yet
-built: the daemon's object-store export runner and the chaos scenario.
+offloading recovers the same journal (`ledger_crash_test`), and a
+three-member cluster in containers keeps every acknowledged write and
+identical journals on all replicas through kills and partitions (the
+chaos scenario, below). Not yet built: the daemon's object-store export
+runner.
 
 ## Model
 
@@ -335,3 +338,24 @@ KYTHIRA_LEDGER_SIGNING_CHAIN=/etc/kythira/signer-chain.pem
   thread and does not free it when the thread exits. Code that parses Ion
   should run on long-lived threads; the HTTPS handler hands requests to a
   fixed worker pool for this reason.
+
+## Testing under faults
+
+- **Crash points** (`ledger_crash_test`, in ctest). In a libfiu build,
+  kill points in the state machine and the segment writer end the process
+  at every step of applying, sealing and offloading; the replica is
+  reopened, given the same entries again, and must match one that never
+  crashed, block for block.
+- **Chaos scenario** (`cmake --build build --target
+  docker-ledger-chaos-tests`, and `.github/workflows/ledger-module.yml`
+  under rootful Docker and rootless Podman). Three `ledger_node` members
+  from `services/ledger/docker/ledger-chaos-compose.yml`, addressed by
+  service name, with Raft over mutual TLS and small segment and snapshot
+  thresholds so seals, compactions and snapshot catch-ups happen
+  throughout. Writers insert documents and replace counters while members
+  are SIGKILLed and started again (one at a time, two at once, all three)
+  and each member is cut off the network in turn. Afterwards every
+  acknowledged insert reads back, `ledger_ctl verify --api` re-hashes the
+  journal to the signed digest, and on every member `ledger_ctl verify
+  --data-dir /data` re-hashes that member's own copy to the same digest
+  with the same block count.

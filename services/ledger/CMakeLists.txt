@@ -21,6 +21,11 @@ target_link_libraries(kythira_ledger INTERFACE
     kythira_core_headers raft_ion_serializer OpenSSL::Crypto)
 target_compile_features(kythira_ledger INTERFACE cxx_std_23)
 
+# The container scenario's Dockerfile, compose file and staging directory.
+# Images build from KYTHIRA_IMAGE_CONTEXT (cmake/kythira_test_helpers.cmake),
+# so the Dockerfile's COPY lines name these paths from the source root.
+set(KYTHIRA_LEDGER_DOCKER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/docker")
+
 # ledger_node (task 1 placeholder; the daemon is task 7), before the tests.
 add_subdirectory(cmd)
 

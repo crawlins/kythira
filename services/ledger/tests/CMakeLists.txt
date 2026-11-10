@@ -133,4 +133,12 @@ else()
     message(STATUS "ledger_crash_test: skipped (requires libfiu and raft_rocksdb_engine)")
 endif()
 
+# Task 11 (Requirement 12.5): the container scenario, where the daemon is
+# built (the image carries it), under the guard tests/docker_chaos/ is
+# entered with.
+if(KYTHIRA_LEDGER_NODE_DAEMON AND TARGET certificate_authority AND Boost_FOUND
+   AND httplib_FOUND)
+    add_subdirectory(docker)
+endif()
+
 kythira_scale_test_timeouts()

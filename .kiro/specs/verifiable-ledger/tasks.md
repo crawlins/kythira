@@ -410,7 +410,7 @@ task is one PR unless noted.
     - Metrics export and the alert path on `ledger_node`: see 7c (the
       Prometheus endpoint and `kythira_ledger_hash_mismatch_total`).
 
-- [ ] 11. Crash, chaos and docs
+- [x] 11. Crash, chaos and docs
   - Failpoint kills during apply, sealing and offload; identical journals
     after recovery
   - docker-chaos ledger scenario under Docker and rootless Podman, journal
@@ -433,4 +433,14 @@ task is one PR unless noted.
     and object keys), re-verify, and hold exactly its local segment
     files (no `.tmp`, no offloaded copy). 41 kills, all recovered; no
     bug found.
-  - Still owed: the docker-chaos scenario (12.5).
+  - Chaos scenario (12.5), `docker-ledger-chaos-tests`
+    (services/ledger/tests/docker/, `ledger-module.yml` under Docker and
+    rootless Podman): three members by service name, mutual TLS Raft,
+    16 KiB segments and 64 KiB snapshot thresholds. Writers insert and
+    replace counters through the C++ client while members are SIGKILLed
+    one at a time, two at once and all three, and each is cut off the
+    network in turn. After: every acknowledged insert reads back, each
+    counter holds a value between its last acknowledged and last
+    attempted one, `verify --api` passes against the signed digest, and
+    every member's `verify --data-dir` (inside its container, beside the
+    running node) hashes to that digest with the same block count.
