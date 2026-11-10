@@ -175,6 +175,15 @@ add_test(NAME kinesis_actions_header_fresh
 set_tests_properties(kinesis_model_header_fresh kinesis_actions_header_fresh PROPERTIES
     LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
 
+# Task 17: the differential tool's normaliser and comparison, offline
+# (no boto3, no network). The recordings themselves are replayed by the
+# container scenario case.
+add_test(NAME kinesis_differential_tool
+    COMMAND "${Python3_EXECUTABLE}"
+            "${_kinesis_dir}tests/differential/test_kinesis_differential.py")
+set_tests_properties(kinesis_differential_tool PROPERTIES
+    LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
+
 kythira_scale_test_timeouts()
 
 # Task 7: the cluster in containers (docker/), by service name only, with
