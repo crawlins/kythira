@@ -186,8 +186,25 @@ runs:
         fi
         aws --version
 
+        # Every upload is one PutObject, never a multipart upload. OCI asks
+        # for OBJECT_CREATE *and* OBJECT_OVERWRITE on CreateMultipartUpload
+        # and UploadPart even for a new object, and the pull-request key has
+        # no OBJECT_OVERWRITE, by design, so a PR cannot replace an entry
+        # main wrote. The AWS CLI switches to multipart at 8 MiB by default,
+        # so every larger vcpkg package uploaded from a PR was refused
+        # (OCI answers NoSuchBucket on CreateMultipartUpload); RocksDB's
+        # was the first seen, on 2026-11-10. A single PUT takes up to 5 GiB,
+        # far above any port archive. vcpkg's x-aws backend runs
+        # `aws s3 cp`, which reads these settings from AWS_CONFIG_FILE.
+        aws_config="${RUNNER_TEMP}/oci-build-cache-aws-config"
+        printf '%s\n' '[default]' 's3 =' \
+          '    preferred_transfer_client = classic' \
+          '    multipart_threshold = 5GB' \
+          '    multipart_chunksize = 5GB' > "${aws_config}"
+
         endpoint="https://${NAMESPACE}.compat.objectstorage.${REGION}.oraclecloud.com"
         {
+          echo "AWS_CONFIG_FILE=${aws_config}"
           echo "AWS_ENDPOINT_URL=${endpoint}"
           echo "AWS_REGION=${REGION}"
           echo "AWS_ACCESS_KEY_ID=${key_id}"
@@ -229,7 +246,7 @@ runs:
           # vcpkg scrubs the environment of port builds. Without this the
           # lakers port's cargo build sees no RUSTC_WRAPPER and no
           # credentials, which is the rustc coverage ccache never had.
-          echo "VCPKG_KEEP_ENV_VARS=RUSTC_WRAPPER;SCCACHE_BUCKET;SCCACHE_ENDPOINT;SCCACHE_REGION;SCCACHE_S3_KEY_PREFIX;SCCACHE_S3_USE_SSL;SCCACHE_S3_RW_MODE;AWS_ENDPOINT_URL;AWS_REGION;AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY;AWS_REQUEST_CHECKSUM_CALCULATION;AWS_RESPONSE_CHECKSUM_VALIDATION"
+          echo "VCPKG_KEEP_ENV_VARS=RUSTC_WRAPPER;SCCACHE_BUCKET;SCCACHE_ENDPOINT;SCCACHE_REGION;SCCACHE_S3_KEY_PREFIX;SCCACHE_S3_USE_SSL;SCCACHE_S3_RW_MODE;AWS_ENDPOINT_URL;AWS_REGION;AWS_ACCESS_KEY_ID;AWS_SECRET_ACCESS_KEY;AWS_REQUEST_CHECKSUM_CALCULATION;AWS_RESPONSE_CHECKSUM_VALIDATION;AWS_CONFIG_FILE"
         } >> "$GITHUB_ENV"
         echo "enabled=true" >> "$GITHUB_OUTPUT"
 
