@@ -121,13 +121,27 @@ asked.
     task 8.
   - _Requirements: 6.2-6.4, 8.1, 8.3, 8.4_
 
-- [ ] 6. Stream lifecycle and writes
+- [x] 6. Stream lifecycle and writes
   - `CreateStream`, `DeleteStream`, `DescribeStream`,
     `DescribeStreamSummary`, `ListStreams`, `ListShards`, `DescribeLimits`
   - `PutRecord`, `PutRecords` with MD5 routing, explicit hash keys, ordering,
     per-record results; group commit across shards of one group
   - `kinesis_gateway_node` daemon
   - _Requirements: 6.1, 7.1-7.5, 8.2, 16.1_
+  - Done: the seven lifecycle operations and both writes
+    (`kinesis_service.hpp`, over the `stream_cluster` interface); the
+    multi-raft cluster (`kinesis_raft_cluster.hpp`) forwarding writes to the
+    group leader's gateway, signed with the shared secret
+    (`kinesis_forward.hpp`); the listener's routes and the peer client with
+    verified TLS (`kinesis_gateway.hpp`); segment fetch between gateways for
+    snapshot restore; `kinesis_gateway_node` configured from the
+    environment like `redis_gateway_node`; `Expect: 100-continue` in the
+    shared Beast HTTPS server. Checked locally on a three-node cluster with
+    boto3, through full restarts, a hard kill and a leader loss, with
+    byte-identical segments on every replica. Group commit: `PutRecords`
+    gathers the shards that share a Raft group into one
+    `append_batch_command`, answered per part, so a batch costs one
+    proposal per group rather than one per shard.
 
 - [ ] 7. Reads and iterators
   - HMAC iterator tokens with key rotation; all five iterator types;

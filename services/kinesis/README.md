@@ -22,7 +22,7 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `implemented-operations.txt` | operations the gateway implements | 1 onward |
 | `doc/unsupported.md` | every other operation, with its planned task, reason and the exact error it returns | 1 onward |
 | `tools/check_coverage.py`, `tools/test_check_coverage.py` | the coverage check (Requirement 2.2) and its fixture tests | 1 |
-| `cmd/kinesis_gateway_node/` | the daemon; a placeholder with `--self-test` until task 6 | 1 |
+| `cmd/kinesis_gateway_node/` | the daemon: the multi-raft host, the HTTPS listener, forwarding and health; configured from `KYTHIRA_*` (as `redis_gateway_node`) and `KINESIS_*` variables, listed by `--help`; `--check-config` prints the settings | 1, 6 |
 | `include/kythira/kinesis/kinesis_hash.hpp` | the 128-bit hash-key space: MD5 routing, decimal hash keys, `CreateStream`'s even ranges | 5 |
 | `include/kythira/kinesis/kinesis_sequence.hpp` | sequence numbers (`aws` and `compact` forms) and shard ids | 5 |
 | `include/kythira/kinesis/kinesis_catalog.hpp` | catalog keys, routing keys, stream records and their codec | 5 |
@@ -33,11 +33,46 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `include/kythira/kinesis/kinesis_actions.hpp` | the `kinesis` action table for IAM, the operation-to-action map (with which operations write) and the static-key roles | 4 |
 | `include/kythira/kinesis/kinesis_compat_profile.hpp` | the AWS-behaviour switches, cluster config overlaid with `kythira:compat:*` stream tags | 4 |
 | `include/kythira/kinesis/kinesis_front_end.hpp`, `kinesis_errors.hpp` | SigV4, JSON and CBOR framing, authorization and dispatch to operation handlers | 4 |
+| `include/kythira/kinesis/kinesis_service.hpp` | the stream lifecycle and write handlers (`CreateStream` through `PutRecords`) | 6 |
+| `include/kythira/kinesis/kinesis_cluster.hpp` | what handlers need from the cluster (`stream_cluster`), and an in-process implementation for tests and one-node use | 6 |
+| `include/kythira/kinesis/kinesis_raft_cluster.hpp` | `stream_cluster` over the multi-raft host: propose to the key's group, forward to its leader, read the local replica | 6 |
+| `include/kythira/kinesis/kinesis_forward.hpp` | the gateway-to-gateway wire for forwarded writes and its HMAC (`KINESIS_FORWARD_SECRET`) | 6 |
+| `include/kythira/kinesis/kinesis_gateway.hpp`, `kinesis_peer_client.hpp` | the listener's routes (API, internal propose and segment endpoints, `/healthz`) and the client that calls other gateways | 6 |
+| `include/kythira/kinesis/kinesis_static_keys.hpp` | the `KINESIS_STATIC_KEYS_FILE` format for clusters without IAM | 6 |
 
 Core pieces the module builds on live in `include/raft/`, because DynamoDB
-uses them too: `record_segment_store.hpp` (task 3), and later the CBOR and
+uses them too: `record_segment_store.hpp` (task 3), the CBOR and
 event-stream framing in `aws_json_protocol.hpp` and `aws_eventstream.hpp`
-(task 2).
+(task 2), and the Beast HTTPS server's `Expect: 100-continue` answer that
+KPL waits for (task 6).
+
+## Running a cluster
+
+Each node needs its id, every voter's Raft URL, a data directory and a key
+file; the gateways of a multi-node cluster also share a forwarding secret.
+A three-node cluster on one host, plaintext, for trying it out:
+
+```sh
+printf 'AKIDEXAMPLE0001 secret0001 111122223333 ops admin\n' > keys
+PEERS=1=http://127.0.0.1:7101,2=http://127.0.0.1:7102,3=http://127.0.0.1:7103
+GW=1=127.0.0.1:4561,2=127.0.0.1:4562,3=127.0.0.1:4563
+for i in 1 2 3; do
+  KYTHIRA_NODE_ID=$i KYTHIRA_PEERS=$PEERS KYTHIRA_RAFT_BIND=127.0.0.1 \
+  KYTHIRA_RAFT_PORT=710$i KINESIS_LISTEN=127.0.0.1:456$i \
+  KINESIS_ALLOW_PLAINTEXT=true KINESIS_STATIC_KEYS_FILE=$PWD/keys \
+  KINESIS_DATA_DIR=$PWD/n$i KINESIS_PEER_GATEWAYS=$GW \
+  KINESIS_FORWARD_SECRET=change-me-shared-secret ./kinesis_gateway_node &
+done
+aws --endpoint-url http://127.0.0.1:4562 kinesis create-stream --stream-name s --shard-count 2
+```
+
+Any node takes any request: a write whose group this node does not lead
+goes to the leader's gateway, signed with the shared secret, and a node
+restoring a snapshot fetches the segments it lacks from its peers the same
+way. Off a trusted network, give each gateway `KINESIS_TLS_CERT` and
+`KINESIS_TLS_KEY` and the peers' CA as `KINESIS_PEER_CA`; Raft RPC itself is
+plaintext, as in `redis_gateway_node`, so `KYTHIRA_ALLOW_PLAINTEXT_RAFT` is
+required off loopback.
 
 To upgrade the model, copy `botocore/data/kinesis/<version>/service-2.json`
 from a newer botocore wheel over `model/service-2.json`, bump
@@ -53,7 +88,9 @@ package to export.
 | From core | Used for |
 |---|---|
 | `kythira_core_headers` | `include/` and `generated/`, through `kythira_kinesis` |
-| `OpenSSL::Crypto` | SigV4, segment digests and iterator tokens, through `kythira_kinesis` |
+| `OpenSSL::SSL`, `OpenSSL::Crypto` | SigV4, segment digests, iterator tokens and the peer client's TLS, through `kythira_kinesis` |
+| `network_simulator`, `kythira_host_node_id`, `folly_FOUND`, `KYTHIRA_FUTURE_BACKEND_AVAILABLE`, `ENABLE_COVERAGE` | the daemon: the future backend, node ids, and when it is built |
+| `certificate_authority` | the gateway test's PKI |
 | `Python3_EXECUTABLE` | the coverage and generated-header tests |
 | `KYTHIRA_AWS_JSON_SHAPES_GENERATOR` | the model-header freshness test |
 | `boost_json` | the AWS JSON codec, through `kythira_kinesis` |
@@ -62,7 +99,9 @@ package to export.
 
 ## What a split would still need
 
-Nothing beyond the table above yet: the front end uses core's headers
-only (`aws_json_protocol.hpp`, `sigv4_verifier.hpp`,
-`aws_request_authorizer.hpp`, `static_key_authorizer.hpp`). The daemon
-(task 6) adds the shared Beast HTTPS host and the multi-raft host.
+Nothing beyond the table above: the module uses core's public headers
+(`aws_json_protocol.hpp`, `sigv4_verifier.hpp`, `aws_request_authorizer.hpp`,
+`static_key_authorizer.hpp`, `beast_https_server.hpp`,
+`record_segment_store.hpp`), and only the daemon's `run_host.cpp` includes
+the multi-raft and Beast transport `*_impl.hpp` headers
+(`boundary-allow.txt`).

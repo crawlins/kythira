@@ -4,7 +4,8 @@
 # Core *_impl.hpp headers the Kinesis module may include, one per line, with
 # the reason (services/README.md, "Boundary rules"). Only the composition
 # root (cmd/kinesis_gateway_node) and tests that stand up an in-process
-# cluster may be listed. Empty until the daemon composes its multi-raft host
-# (task 6).
+# cluster may be listed.
 #
 # file                                   allowed core *_impl.hpp       why
+cmd/kinesis_gateway_node/run_host.cpp  multi_raft_impl.hpp           instantiates the multi-raft host
+cmd/kinesis_gateway_node/run_host.cpp  beast_http_transport_impl.hpp instantiates the Beast transport

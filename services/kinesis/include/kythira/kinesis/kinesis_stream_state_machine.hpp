@@ -170,6 +170,16 @@ struct append_records_command {
     std::vector<append_record> _records{};
 };
 
+/// Group commit (task 6): the appends of several shards that live in one
+/// group, in one entry and behind one durability barrier. Each part has its
+/// own result (`apply_result::_parts`, in order). A part whose shard is not
+/// in this group (moved by a split since the leader routed it) answers
+/// `not_found` and touches nothing, so a batch never applies an append in
+/// the wrong group. Proposed under its first part's key.
+struct append_batch_command {
+    std::vector<append_records_command> _appends{};
+};
+
 /// Close a shard (resharding): no more appends, active segment sealed.
 struct close_shard_command {
     std::string _key{};
@@ -190,7 +200,7 @@ struct trim_shard_command {
 using stream_command =
     std::variant<create_stream_command, set_stream_status_command, remove_stream_command,
                  open_shard_command, append_records_command, close_shard_command,
-                 drop_shard_command, trim_shard_command>;
+                 drop_shard_command, trim_shard_command, append_batch_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -202,6 +212,8 @@ inline constexpr std::uint8_t stream_command_version = 1;
                           std::is_same_v<T, set_stream_status_command> ||
                           std::is_same_v<T, remove_stream_command>) {
                 return stream_key(v._account, v._name);
+            } else if constexpr (std::is_same_v<T, append_batch_command>) {
+                return v._appends.empty() ? std::string() : v._appends.front()._key;
             } else {
                 return v._key;
             }
@@ -209,7 +221,34 @@ inline constexpr std::uint8_t stream_command_version = 1;
         c);
 }
 
+namespace command_detail {
+
+inline void encode_append(codec::writer& w, const append_records_command& v) {
+    w.str(v._key).i64(v._arrival_ms).u32(static_cast<std::uint32_t>(v._records.size()));
+    for (const auto& r : v._records) {
+        w.str(r._partition_key).bytes(r._data);
+    }
+}
+
+inline auto decode_append(codec::reader& r) -> append_records_command {
+    append_records_command c;
+    c._key = r.str();
+    c._arrival_ms = r.i64();
+    const auto n = r.u32();
+    c._records.reserve(std::min<std::size_t>(n, r.remaining() / 8));
+    for (std::uint32_t i = 0; i < n; ++i) {
+        append_record a;
+        a._partition_key = r.str();
+        a._data = r.bytes();
+        c._records.push_back(std::move(a));
+    }
+    return c;
+}
+
+}  // namespace command_detail
+
 [[nodiscard]] inline auto encode_command(const stream_command& c) -> std::vector<std::byte> {
+    using command_detail::encode_append;
     codec::writer w;
     w.u8(stream_command_version).u8(static_cast<std::uint8_t>(c.index()));
     std::visit(
@@ -231,9 +270,11 @@ inline constexpr std::uint8_t stream_command_version = 1;
             } else if constexpr (std::is_same_v<T, open_shard_command>) {
                 w.str(v._key).u64(v._starting_counter);
             } else if constexpr (std::is_same_v<T, append_records_command>) {
-                w.str(v._key).i64(v._arrival_ms).u32(static_cast<std::uint32_t>(v._records.size()));
-                for (const auto& r : v._records) {
-                    w.str(r._partition_key).bytes(r._data);
+                encode_append(w, v);
+            } else if constexpr (std::is_same_v<T, append_batch_command>) {
+                w.u32(static_cast<std::uint32_t>(v._appends.size()));
+                for (const auto& a : v._appends) {
+                    encode_append(w, a);
                 }
             } else if constexpr (std::is_same_v<T, trim_shard_command>) {
                 w.str(v._key).u64(v._before);
@@ -295,21 +336,9 @@ inline constexpr std::uint8_t stream_command_version = 1;
             out = std::move(c);
             break;
         }
-        case 4: {
-            append_records_command c;
-            c._key = r.str();
-            c._arrival_ms = r.i64();
-            const auto n = r.u32();
-            c._records.reserve(std::min<std::size_t>(n, r.remaining() / 8));
-            for (std::uint32_t i = 0; i < n; ++i) {
-                append_record a;
-                a._partition_key = r.str();
-                a._data = r.bytes();
-                c._records.push_back(std::move(a));
-            }
-            out = std::move(c);
+        case 4:
+            out = command_detail::decode_append(r);
             break;
-        }
         case 5:
             out = close_shard_command{r.str()};
             break;
@@ -320,6 +349,16 @@ inline constexpr std::uint8_t stream_command_version = 1;
             trim_shard_command c;
             c._key = r.str();
             c._before = r.u64();
+            out = std::move(c);
+            break;
+        }
+        case 8: {
+            append_batch_command c;
+            const auto n = r.u32();
+            c._appends.reserve(std::min<std::size_t>(n, r.remaining() / 16));
+            for (std::uint32_t i = 0; i < n; ++i) {
+                c._appends.push_back(command_detail::decode_append(r));
+            }
             out = std::move(c);
             break;
         }
@@ -347,21 +386,42 @@ enum class apply_status : std::uint8_t {
     bad_transition = 5,
 };
 
+/// One part of an `append_batch_command`'s result: what that shard's
+/// append alone would have answered.
+struct append_part_result {
+    apply_status _status = apply_status::ok;
+    std::uint64_t _first_counter = 0;
+    std::uint64_t _last_counter = 0;
+    std::int64_t _arrival_ms = 0;
+    friend auto operator==(const append_part_result&, const append_part_result&) -> bool = default;
+};
+
 /// The decoded reply of `apply()`. `_id` is the new stream's id
-/// (`create_stream`); the counters and arrival time describe an append.
+/// (`create_stream`); the counters and arrival time describe an append;
+/// `_parts` holds a batch's per-shard results, in order.
 struct apply_result {
     apply_status _status = apply_status::ok;
     std::uint64_t _id = 0;
     std::uint64_t _first_counter = 0;
     std::uint64_t _last_counter = 0;
     std::int64_t _arrival_ms = 0;
+    std::vector<append_part_result> _parts{};
     friend auto operator==(const apply_result&, const apply_result&) -> bool = default;
 };
 
+/// Parts are written only when present, so every other result encodes as
+/// it did before batches existed.
 [[nodiscard]] inline auto encode_result(const apply_result& r) -> std::vector<std::byte> {
     codec::writer w;
     w.u8(static_cast<std::uint8_t>(r._status)).u64(r._id);
     w.u64(r._first_counter).u64(r._last_counter).i64(r._arrival_ms);
+    if (!r._parts.empty()) {
+        w.u32(static_cast<std::uint32_t>(r._parts.size()));
+        for (const auto& p : r._parts) {
+            w.u8(static_cast<std::uint8_t>(p._status));
+            w.u64(p._first_counter).u64(p._last_counter).i64(p._arrival_ms);
+        }
+    }
     return w.take();
 }
 
@@ -373,6 +433,18 @@ struct apply_result {
     out._first_counter = r.u64();
     out._last_counter = r.u64();
     out._arrival_ms = r.i64();
+    if (r.remaining() > 0) {
+        const auto n = r.u32();
+        out._parts.reserve(std::min<std::size_t>(n, r.remaining() / 25));
+        for (std::uint32_t i = 0; i < n; ++i) {
+            append_part_result p;
+            p._status = r.enumeration<apply_status>(5);
+            p._first_counter = r.u64();
+            p._last_counter = r.u64();
+            p._arrival_ms = r.i64();
+            out._parts.push_back(p);
+        }
+    }
     r.expect_end("apply result");
     return out;
 }
@@ -757,6 +829,37 @@ private:
     }
 
     auto apply_one(const append_records_command& c) -> apply_result {
+        auto r = append_one(c);
+        if (_store != nullptr && r._status == apply_status::ok) {
+            _store->barrier();
+        }
+        return r;
+    }
+
+    auto apply_one(const append_batch_command& c) -> apply_result {
+        if (c._appends.empty()) {
+            return {._status = apply_status::invalid};
+        }
+        apply_result out;
+        out._parts.reserve(c._appends.size());
+        bool wrote = false;
+        for (const auto& a : c._appends) {
+            const auto r = append_one(a);
+            wrote = wrote || r._status == apply_status::ok;
+            out._parts.push_back({._status = r._status,
+                                  ._first_counter = r._first_counter,
+                                  ._last_counter = r._last_counter,
+                                  ._arrival_ms = r._arrival_ms});
+        }
+        // One barrier for every shard's records: the point of the batch.
+        if (_store != nullptr && wrote) {
+            _store->barrier();
+        }
+        return out;
+    }
+
+    /// An append without the durability barrier, which the caller owns.
+    auto append_one(const append_records_command& c) -> apply_result {
         auto* s = shard_at(c._key);
         if (s == nullptr) {
             return {._status = apply_status::not_found};
@@ -791,7 +894,6 @@ private:
                     {._seq = first + i, ._timestamp_ms = arrival, ._data = payloads[i]});
             }
             auto result = _store->append(c._key, views);
-            _store->barrier();
             for (auto& d : result._sealed) {
                 s->_sealed.push_back(std::move(d));
             }

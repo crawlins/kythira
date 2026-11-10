@@ -75,7 +75,7 @@ auto make_store(const temp_dir& dir, std::uint64_t max_segment_bytes = 600)
 struct driver {
     sm_type& _sm;
     std::uint64_t _index = 0;
-    std::vector<std::vector<std::byte>> _log;
+    std::vector<std::vector<std::byte>> _log{};
 
     auto run(const k::stream_command& c) -> k::apply_result {
         _log.push_back(k::encode_command(c));
@@ -464,6 +464,58 @@ BOOST_AUTO_TEST_CASE(a_record_over_the_store_limit_is_refused_before_any_write) 
     BOOST_TEST(d.run(c)._status == k::apply_status::invalid);
     BOOST_TEST(sm.find_shard(key)->_last_counter == 0U);
     BOOST_TEST(!store->last_seq(key).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(a_batch_appends_to_each_shard_and_answers_per_part) {
+    temp_dir dir;
+    auto store = make_store(dir, 64 * 1024);
+    sm_type sm(store.get());
+    driver d{sm};
+    const auto id = create_and_open(d, "s", 3);
+    const auto k0 = k::routing_key(id, 0);
+    const auto k1 = k::routing_key(id, 1);
+    const auto k2 = k::routing_key(id, 2);
+    BOOST_TEST(d.run(append(k1, 1000, 2))._last_counter == 2U);
+    BOOST_TEST(d.run(k::close_shard_command{k2})._status == k::apply_status::ok);
+
+    const k::append_batch_command batch{._appends = {append(k0, 2000, 3), append(k1, 2000, 1),
+                                                     append(k2, 2000, 1),
+                                                     append(k::routing_key(id, 9), 2000, 1)}};
+    BOOST_TEST(k::command_key(batch) == k0);
+    const auto r = d.run(batch);
+    BOOST_TEST((r._status == k::apply_status::ok));
+    BOOST_TEST_REQUIRE(r._parts.size() == 4U);
+    BOOST_TEST((r._parts[0]._status == k::apply_status::ok));
+    BOOST_TEST(r._parts[0]._first_counter == 1U);
+    BOOST_TEST(r._parts[0]._last_counter == 3U);
+    BOOST_TEST(r._parts[0]._arrival_ms == 2000);
+    BOOST_TEST(r._parts[1]._first_counter == 3U);  // after the earlier two
+    // A closed shard and a shard this group does not hold are refused and
+    // change nothing; the other parts commit regardless.
+    BOOST_TEST((r._parts[2]._status == k::apply_status::shard_closed));
+    BOOST_TEST((r._parts[3]._status == k::apply_status::not_found));
+    BOOST_TEST(sm.find_shard(k2)->_last_counter == 0U);
+    BOOST_TEST(store->read(k0, 1)._records.size() == 3U);
+    BOOST_TEST(store->read(k1, 1)._records.size() == 3U);
+
+    // An empty batch is malformed.
+    BOOST_TEST((d.run(k::append_batch_command{})._status == k::apply_status::invalid));
+}
+
+BOOST_AUTO_TEST_CASE(batches_and_their_results_round_trip) {
+    const k::append_batch_command batch{
+        ._appends = {append(k::routing_key(1, 0), 5, 2), append(k::routing_key(1, 1), 6, 1)}};
+    const auto bytes = k::encode_command(batch);
+    BOOST_TEST((k::encode_command(k::decode_command(bytes)) == bytes));
+
+    const k::apply_result with_parts{
+        ._parts = {{._status = k::apply_status::ok, ._first_counter = 1, ._last_counter = 2},
+                   {._status = k::apply_status::not_found}}};
+    BOOST_TEST((k::decode_result(k::encode_result(with_parts)) == with_parts));
+    // A result without parts encodes exactly as before batches existed.
+    const k::apply_result plain{._first_counter = 7, ._last_counter = 9, ._arrival_ms = 3};
+    BOOST_TEST(k::encode_result(plain).size() == 1 + 8 * 4U);
+    BOOST_TEST((k::decode_result(k::encode_result(plain)) == plain));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -134,6 +134,10 @@ http_transport_example_test examples/ is added only when folly_FOUND (root CMake
 http_transport_reload_property_test uses Folly directly (`folly::CPUThreadPoolExecutor`)
 http_transport_return_types_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 iam_kythira_issuer_test runs ca_cluster_node as the Kythira issuer, and cmd/ca_cluster_node/CMakeLists.txt returns unless folly_FOUND
+kinesis_gateway_node_config the daemon is built only when folly_FOUND (services/kinesis/cmd/CMakeLists.txt), like redis_gateway_node
+kinesis_gateway_node_config_needs_secret the daemon is built only when folly_FOUND (services/kinesis/cmd/CMakeLists.txt), like redis_gateway_node
+kinesis_gateway_node_config_needs_tls the daemon is built only when folly_FOUND (services/kinesis/cmd/CMakeLists.txt), like redis_gateway_node
+kinesis_gateway_node_self_test the daemon is built only when folly_FOUND (services/kinesis/cmd/CMakeLists.txt), like redis_gateway_node
 kythira_executor_concept_compliance_property_test uses Folly directly (`folly::CPUThreadPoolExecutor`, `folly::InlineExecutor`, `folly::ManualExecutor`)
 kythira_executor_work_submission_property_test uses Folly directly (`folly::CPUThreadPoolExecutor`, `folly::InlineExecutor`, `folly::ManualExecutor`)
 kythira_future_collector_collection_operations_property_test uses Folly directly (`folly::init`)
