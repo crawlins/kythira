@@ -19,7 +19,7 @@ set(KYTHIRA_KINESIS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(KYTHIRA_KINESIS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 add_library(kythira_kinesis INTERFACE)
 target_include_directories(kythira_kinesis INTERFACE "${KYTHIRA_KINESIS_INCLUDE_DIR}")
-target_link_libraries(kythira_kinesis INTERFACE kythira_core_headers OpenSSL::Crypto)
+target_link_libraries(kythira_kinesis INTERFACE kythira_core_headers boost_json OpenSSL::Crypto)
 target_compile_features(kythira_kinesis INTERFACE cxx_std_23)
 
 # kinesis_gateway_node (task 1 placeholder; the daemon is task 6), before

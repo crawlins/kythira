@@ -8,11 +8,11 @@ here with its reason and the exact error it returns.
 operation is in neither list, so a model upgrade that adds one fails until it
 is placed.
 
-Until the front end exists (task 4) no request is served at all. Once it
-does, an operation listed here is answered like an `X-Amz-Target` the model
-does not have: `UnknownOperationException` with HTTP status 400, which is what
-AWS's JSON protocol returns for an unknown target and what every SDK surfaces
-as an unknown-operation error rather than a retryable fault.
+The front end (task 4) answers an operation listed here, once the request
+is signed, like an `X-Amz-Target` the model does not have:
+`UnknownOperationException` with HTTP status 400, which is what AWS's JSON
+protocol returns for an unknown target and what every SDK surfaces as an
+unknown-operation error rather than a retryable fault.
 
 | Operation | Planned | Reason | Error |
 |---|---|---|---|
