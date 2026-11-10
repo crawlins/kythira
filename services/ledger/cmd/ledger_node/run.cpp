@@ -14,6 +14,7 @@
 //   segments/<ledger id>/   each ledger's sealed segment files
 
 #include "config.hpp"
+#include "export_store.hpp"
 
 #include <kythira/ledger/journal_signing.hpp>
 #include <kythira/ledger/ledger_api.hpp>
@@ -365,6 +366,17 @@ auto run(const node_options& opt) -> int {
     hopts.api_urls = {opt.api_urls.begin(), opt.api_urls.end()};
     hopts.propose_timeout = opt.propose_timeout;
     hopts.maintenance_interval = opt.maintenance_interval;
+    // Export jobs run on the maintenance thread of the ledger's leader and
+    // write through this store; without one they finish as failed.
+    const std::shared_ptr<const export_store> exports = make_export_store(opt);
+    if (exports) {
+        hopts.run_export = [exports](const ledger_host::ledger_sm& sm,
+                                     const kythira::ledger::export_job& job) {
+            return kythira::ledger::export_journal(sm, *exports, job);
+        };
+        log(kythira::log_level::info, "ledger_node: journal exports write to S3",
+            {{"region", opt.export_s3_region}, {"endpoint", opt.export_s3_endpoint}});
+    }
     auto host = std::make_unique<ledger_host>(*raft, ctx, hopts);
     api_type api(*host, roles);
     if (signer) {

@@ -112,6 +112,11 @@ if(KYTHIRA_LEDGER_NODE_DAEMON AND TARGET certificate_authority)
         KYTHIRA_LEDGER_NODE="$<TARGET_FILE:ledger_node>"
         KYTHIRA_LEDGER_CTL="$<TARGET_FILE:ledger_ctl>")
     add_dependencies(ledger_node_cluster_test ledger_node ledger_ctl)
+    # With the S3 export store built, the test also exports the ledger to
+    # the in-process S3 mock and re-hashes what the node wrote.
+    if(KYTHIRA_LEDGER_NODE_S3)
+        target_compile_definitions(ledger_node_cluster_test PRIVATE KYTHIRA_LEDGER_NODE_S3=1)
+    endif()
     set_tests_properties(ledger_node_cluster_test PROPERTIES
         LABELS "integration;ledger;https" TIMEOUT 300)
 else()

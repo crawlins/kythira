@@ -246,6 +246,25 @@ auto from_env() -> node_options {
         throw fail("KYTHIRA_LEDGER_METRICS_INTERVAL_MS must be positive");
     }
 
+    o.export_s3_region = get_opt("KYTHIRA_LEDGER_EXPORT_S3_REGION");
+    o.export_s3_endpoint = get_opt("KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT");
+    o.export_s3_timeout = ms_opt("KYTHIRA_LEDGER_EXPORT_S3_TIMEOUT_MS", o.export_s3_timeout);
+    if (!o.export_s3_endpoint.empty() && o.export_s3_region.empty()) {
+        throw fail(
+            "KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT needs KYTHIRA_LEDGER_EXPORT_S3_REGION "
+            "(any region the endpoint accepts in its signatures)");
+    }
+    if (o.export_s3_timeout.count() <= 0) {
+        throw fail("KYTHIRA_LEDGER_EXPORT_S3_TIMEOUT_MS must be positive");
+    }
+#if !defined(KYTHIRA_LEDGER_NODE_S3)
+    if (!o.export_s3_region.empty()) {
+        throw fail(
+            "KYTHIRA_LEDGER_EXPORT_S3_REGION is set, but this ledger_node was built "
+            "without the AWS SDK's S3 client (CONFIG_AWS_S3_PERSISTENCE)");
+    }
+#endif
+
     const auto level = get_opt("KYTHIRA_LOG_LEVEL", "info");
     static const std::map<std::string, kythira::log_level> levels{
         {"trace", kythira::log_level::trace}, {"debug", kythira::log_level::debug},
@@ -304,6 +323,13 @@ Optional:
   KYTHIRA_LEDGER_METRICS_LISTEN host:port for a Prometheus GET /metrics
                                endpoint, plaintext and unauthenticated (off)
   KYTHIRA_LEDGER_METRICS_INTERVAL_MS        how often ledger gauges refresh (5000)
+  KYTHIRA_LEDGER_EXPORT_S3_REGION   ExportJournal jobs write their objects to
+                               S3 in this region (the job names the bucket);
+                               unset, they finish as failed. Credentials come
+                               from the AWS SDK's default chain
+  KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT an S3-compatible endpoint instead of AWS
+                               (path-style), e.g. http://minio:9000
+  KYTHIRA_LEDGER_EXPORT_S3_TIMEOUT_MS       per S3 request (30000)
   KYTHIRA_TICK_INTERVAL_MS (5), KYTHIRA_ELECTION_TIMEOUT_MIN_MS (300),
   KYTHIRA_ELECTION_TIMEOUT_MAX_MS (600), KYTHIRA_HEARTBEAT_INTERVAL_MS (75),
   KYTHIRA_RPC_TIMEOUT_MS (2000)
