@@ -124,6 +124,9 @@ kythira_kinesis_test(kinesis_forward_test kinesis_forward_test.cpp)
 # Task 8: per-shard token buckets, leader-side write admission and the
 # throttling errors on the API.
 kythira_kinesis_test(kinesis_throttle_test kinesis_throttle_test.cpp)
+# Task 9: lease records (versions, conditions, pages, snapshots) and the
+# Lease API over them.
+kythira_kinesis_test(kinesis_leases_test kinesis_leases_test.cpp)
 # Task 6: the gateway's HTTP surface on a real listener (API, internal
 # propose and segment endpoints, health) and the peer client over plain
 # HTTP and verified TLS. certificate_authority issues the test PKI.

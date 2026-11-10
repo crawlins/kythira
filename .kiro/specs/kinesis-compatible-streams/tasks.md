@@ -198,6 +198,21 @@ asked.
     Docker and rootless Podman; leader killed during lease renewal, no shard
     processed by two workers past the failover time
   - _Requirements: 15.1, 15.2, 15.4_
+  - Progress: the Lease API (`kinesis_lease_api.hpp`, records in
+    `kinesis_leases.hpp`): REST under `/v1/leases/<app>/`, versions are
+    the Raft log index of the write, reads go through the catalog group's
+    log, SigV4 for `kinesis` and DynamoDB actions on the application's
+    table ARN. The Java layer (`java/kythira-kcl-leases`, KCL 2.7.4):
+    `KythiraLeaseRefresher` and `KythiraLeaseManagementFactory`, leases
+    stored as KCL's own DynamoDB items, checkpoints through KCL's
+    checkpointer; tested by `gradle test` in the Kinesis Module
+    workflow's java job. The sample consumer (`tests/kcl/sample`) runs as
+    three workers in the container scenario on a four-shard stream while
+    each node is killed in turn (so the catalog leader dies while workers
+    renew): every record arrives and no shard has two owners past the
+    failover time. Passes under Docker locally; the container job runs it
+    under Docker and rootless Podman. Backends by KCL version are in
+    `doc/leases.md`.
 
 ### Phase 4: durability and lifecycle
 

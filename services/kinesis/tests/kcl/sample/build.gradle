@@ -1,0 +1,37 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+// A KCL 2.x consumer on Kythira Kinesis with its leases on Kythira
+// (.kiro/specs/kinesis-compatible-streams/ task 9). The container scenario
+// runs several of these against one stream and checks from their output that
+// every record was processed and no shard had two owners past the failover
+// time.
+
+plugins {
+    id 'application'
+}
+
+repositories {
+    // repo1 is the same Maven Central; the CI proxy rate-limits the other name less.
+    maven { url = 'https://repo1.maven.org/maven2' }
+}
+
+dependencies {
+    implementation 'io.kythira:kythira-kcl-leases:0.1.0'
+    implementation 'software.amazon.kinesis:amazon-kinesis-client:2.7.4'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.17'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+application {
+    mainClass = 'kythira.kcl.sample.SampleConsumer'
+}

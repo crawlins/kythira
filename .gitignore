@@ -100,3 +100,6 @@ __pycache__/
 
 # The aliyun CLI tarball the Alibaba spike downloaded into the tree root
 aliyun-cli-*.tgz
+
+# Gradle user home of the Kinesis module's containerised Java builds
+/.gradle-home/

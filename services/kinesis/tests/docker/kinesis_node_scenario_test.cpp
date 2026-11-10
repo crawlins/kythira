@@ -17,6 +17,13 @@
 //   * with one node stopped the other two keep taking writes and serving
 //     reads, and the stopped node catches up when it starts again and
 //     serves every record itself.
+//
+// A second case (task 9, Requirement 15) runs three unmodified KCL 2.x
+// workers (the `kcl` profile) with their leases on the cluster, one worker
+// per node, and kills each node in turn with SIGKILL while they renew, so
+// the lease group's leader is killed whichever node holds it. Every record
+// is processed, and no shard is processed by two workers at once for longer
+// than the failover time.
 
 #define BOOST_TEST_MODULE kinesis_node_scenario_test
 #include <boost/test/results_collector.hpp>
@@ -26,13 +33,18 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <initializer_list>
 #include <iostream>
+#include <iterator>
+#include <map>
 #include <optional>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -168,8 +180,8 @@ struct stack_fixture {
         }
     }
     ~stack_fixture() {
-        os::try_exec(os::real_exec,
-                     compose_cmd({"--profile", "clients", "down", "-v", "--remove-orphans"}));
+        os::try_exec(os::real_exec, compose_cmd({"--profile", "clients", "--profile", "kcl", "down",
+                                                 "-v", "--remove-orphans"}));
     }
     stack_fixture(const stack_fixture&) = delete;
     stack_fixture& operator=(const stack_fixture&) = delete;
@@ -188,6 +200,114 @@ struct logs_on_failure {
     logs_on_failure& operator=(const logs_on_failure&) = delete;
 };
 
+// ---- KCL workers -----------------------------------------------------------
+
+/// The failover time the workers run with (compose.yml's
+/// KCL_FAILOVER_MILLIS).
+constexpr std::int64_t k_failover_ms = 10'000;
+
+/// One `EVENT <millis> <worker> <what> <shard> [<sequence> <data>]` line of
+/// the sample consumer.
+struct kcl_event {
+    std::int64_t _ms = 0;
+    std::string _worker;
+    std::string _what;
+    std::string _shard;
+    std::string _data;
+};
+
+/// Every worker's events so far, in time order. Compose prefixes each line
+/// with the service name unless told not to, and not every compose takes
+/// --no-log-prefix, so the event is found by its marker.
+std::vector<kcl_event> kcl_events() {
+    auto r = os::real_exec(
+        compose_cmd({"--profile", "kcl", "logs", "--no-color", "kcl-1", "kcl-2", "kcl-3"}));
+    std::vector<kcl_event> out;
+    std::istringstream lines(r.out);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto at = line.find("EVENT ");
+        if (at == std::string::npos) {
+            continue;
+        }
+        std::istringstream f(line.substr(at + 6));
+        kcl_event e;
+        std::string seq;
+        if (!(f >> e._ms >> e._worker >> e._what >> e._shard)) {
+            continue;
+        }
+        if (e._what == "record") {
+            f >> seq >> e._data;
+        }
+        out.push_back(std::move(e));
+    }
+    std::stable_sort(out.begin(), out.end(),
+                     [](const kcl_event& a, const kcl_event& b) { return a._ms < b._ms; });
+    return out;
+}
+
+std::set<std::string> kcl_records(const std::vector<kcl_event>& events) {
+    std::set<std::string> out;
+    for (const auto& e : events) {
+        if (e._what == "record") {
+            out.insert(e._data);
+        }
+    }
+    return out;
+}
+
+/// Shards processed by two workers at once for longer than the failover
+/// time. A tenure is one worker's hold on one shard, from `init` to `lost`
+/// or `ended`; two tenures of different workers overlap by the span their
+/// first and last records share.
+std::vector<std::string> double_ownership(const std::vector<kcl_event>& events) {
+    struct tenure {
+        std::string _worker;
+        std::int64_t _first = -1;
+        std::int64_t _last = -1;
+    };
+    std::map<std::string, std::vector<tenure>> by_shard;
+    std::map<std::pair<std::string, std::string>, std::size_t> open;
+    for (const auto& e : events) {
+        auto& ts = by_shard[e._shard];
+        const auto key = std::make_pair(e._worker, e._shard);
+        if (e._what == "init") {
+            open[key] = ts.size();
+            ts.push_back({._worker = e._worker});
+        } else if (e._what == "record") {
+            if (!open.contains(key)) {
+                open[key] = ts.size();
+                ts.push_back({._worker = e._worker});
+            }
+            auto& t = ts[open[key]];
+            if (t._first < 0) {
+                t._first = e._ms;
+            }
+            t._last = e._ms;
+        } else if (e._what == "lost" || e._what == "ended") {
+            open.erase(key);
+        }
+    }
+    std::vector<std::string> bad;
+    for (const auto& [shard, ts] : by_shard) {
+        for (std::size_t i = 0; i < ts.size(); ++i) {
+            for (std::size_t j = i + 1; j < ts.size(); ++j) {
+                const auto& a = ts[i];
+                const auto& b = ts[j];
+                if (a._worker == b._worker || a._first < 0 || b._first < 0) {
+                    continue;
+                }
+                const auto overlap = std::min(a._last, b._last) - std::max(a._first, b._first);
+                if (overlap > k_failover_ms) {
+                    bad.push_back(shard + ": " + a._worker + " and " + b._worker + " for " +
+                                  std::to_string(overlap) + " ms");
+                }
+            }
+        }
+    }
+    return bad;
+}
+
 }  // namespace
 
 BOOST_TEST_GLOBAL_FIXTURE(stack_fixture);
@@ -200,9 +320,9 @@ BOOST_AUTO_TEST_CASE(sdks_against_a_cluster_by_service_name) {
     // 1. Every node answers once the cluster has a leader: ListStreams is a
     //    replica read, CreateStream needs the catalog group's leader.
     for (int n : {1, 2, 3}) {
-        BOOST_REQUIRE_MESSAGE(eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; },
-                                         120s),
-                              service(n) << " never answered ListStreams");
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered ListStreams");
     }
     BOOST_REQUIRE_MESSAGE(
         eventually(
@@ -266,9 +386,9 @@ BOOST_AUTO_TEST_CASE(sdks_against_a_cluster_by_service_name) {
         BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 produce failed:\n" << r.out);
     }
     {
-        auto r = boto3({"consume", "--endpoints",
-                        endpoint(1) + "," + endpoint(2) + "," + endpoint(3), "--stream", "py",
-                        "--expect", "500"});
+        auto r =
+            boto3({"consume", "--endpoints", endpoint(1) + "," + endpoint(2) + "," + endpoint(3),
+                   "--stream", "py", "--expect", "500"});
         BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 consume failed:\n" << r.out);
         BOOST_TEST(r.out.find("\"consumed\": 500") != std::string::npos, r.out);
     }
@@ -279,8 +399,8 @@ BOOST_AUTO_TEST_CASE(sdks_against_a_cluster_by_service_name) {
         auto r = boto3({"produce", "--endpoint", endpoint(2), "--stream", "py", "--count", "100",
                         "--tag", "b"});
         BOOST_REQUIRE_MESSAGE(r.code == 0, "produce with kin-1 down failed:\n" << r.out);
-        auto c = boto3({"consume", "--endpoints", endpoint(2) + "," + endpoint(3), "--stream",
-                        "py", "--expect", "600"});
+        auto c = boto3({"consume", "--endpoints", endpoint(2) + "," + endpoint(3), "--stream", "py",
+                        "--expect", "600"});
         BOOST_REQUIRE_MESSAGE(c.code == 0, "consume with kin-1 down failed:\n" << c.out);
     }
 
@@ -294,4 +414,81 @@ BOOST_AUTO_TEST_CASE(sdks_against_a_cluster_by_service_name) {
                    },
                    120s),
                "kin-1 never served all 600 records after restarting");
+}
+
+// Task 9: KCL 2.x on the native lease layer, through a kill of every node.
+BOOST_AUTO_TEST_CASE(kcl_workers_keep_one_owner_per_shard_through_node_kills) {
+    const logs_on_failure logs;
+    for (int n : {1, 2, 3}) {
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered ListStreams");
+    }
+    {
+        auto r = boto3({"create", "--endpoint", endpoint(1), "--stream", "kcl", "--shards", "4"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create failed:\n" << r.out);
+        auto p = boto3({"produce", "--endpoint", endpoint(1), "--stream", "kcl", "--count", "200",
+                        "--tag", "k0"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    std::set<std::string> expected;
+    const auto expect = [&expected](const std::string& tag, int count) {
+        for (int i = 0; i < count; ++i) {
+            expected.insert(tag + "-" + std::to_string(i));
+        }
+    };
+    expect("k0", 200);
+    const auto all_seen = [&expected] {
+        const auto seen = kcl_records(kcl_events());
+        return std::includes(seen.begin(), seen.end(), expected.begin(), expected.end());
+    };
+
+    os::checked_exec(os::real_exec,
+                     compose_cmd({"--profile", "kcl", "up", "-d", "kcl-1", "kcl-2", "kcl-3"}));
+    BOOST_REQUIRE_MESSAGE(eventually(all_seen, 180s),
+                          "the KCL workers never processed the first 200 records");
+
+    // Kill each node in turn while the workers renew every few seconds: one
+    // of the three is the lease group's leader. Write through a live node
+    // while it is down, and let the leases fail over before it returns.
+    for (int n : {1, 2, 3}) {
+        os::checked_exec(os::real_exec, compose_cmd({"kill", service(n)}));
+        const int live = (n % 3) + 1;
+        const std::string tag = "k" + std::to_string(n);
+        BOOST_REQUIRE_MESSAGE(
+            eventually(
+                [&] {
+                    return boto3({"produce", "--endpoint", endpoint(live), "--stream", "kcl",
+                                  "--count", "100", "--tag", tag})
+                               .code == 0;
+                },
+                120s),
+            "produce with " << service(n) << " killed never succeeded");
+        expect(tag, 100);
+        std::this_thread::sleep_for(std::chrono::milliseconds(k_failover_ms + 5'000));
+        os::checked_exec(os::real_exec, compose_cmd({"start", service(n)}));
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered after restarting");
+    }
+
+    BOOST_TEST(eventually(all_seen, 240s), "the KCL workers never processed all 500 records");
+    const auto events = kcl_events();
+    const auto seen = kcl_records(events);
+    std::vector<std::string> missing;
+    std::set_difference(expected.begin(), expected.end(), seen.begin(), seen.end(),
+                        std::back_inserter(missing));
+    BOOST_TEST(missing.empty(), missing.size() << " records never processed, first "
+                                               << (missing.empty() ? "" : missing.front()));
+    std::set<std::string> workers;
+    for (const auto& e : events) {
+        if (e._what == "record") {
+            workers.insert(e._worker);
+        }
+    }
+    BOOST_TEST(workers.size() >= 2U, "only " << workers.size() << " worker processed records");
+    for (const auto& b : double_ownership(events)) {
+        BOOST_ERROR("shard processed by two workers past the failover time: " << b);
+    }
 }

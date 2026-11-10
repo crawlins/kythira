@@ -46,6 +46,7 @@
 
 #include <kythira/kinesis/kinesis_catalog.hpp>
 #include <kythira/kinesis/kinesis_hash.hpp>
+#include <kythira/kinesis/kinesis_leases.hpp>
 #include <raft/record_segment_store.hpp>
 #include <raft/shard_types.hpp>
 #include <raft/splittable_state_machine.hpp>
@@ -197,10 +198,71 @@ struct trim_shard_command {
     std::uint64_t _before = 0;
 };
 
+/// What a lease write requires of the lease's current state.
+enum class lease_condition : std::uint8_t {
+    /// Whatever is there (or nothing).
+    any = 0,
+    /// No lease under the key (`If-None-Match: *`).
+    absent = 1,
+    /// The lease exists at exactly `_expected_version` (`If-Match`).
+    version = 2,
+};
+
+enum class lease_op : std::uint8_t {
+    /// Replace the lease's fields, creating it if the condition allows.
+    put = 0,
+    /// Set `_fields` and drop `_removed` on an existing lease.
+    patch = 1,
+    /// Delete the lease.
+    remove = 2,
+};
+
+/// A conditional lease write (task 9), at the catalog group. The new
+/// version is the entry's log index; a refused condition answers
+/// `condition_failed` with the current version (0 when absent) in `_id`.
+struct lease_write_command {
+    std::string _account{};
+    std::string _application{};
+    std::string _key{};
+    lease_op _op = lease_op::put;
+    lease_condition _condition = lease_condition::any;
+    std::uint64_t _expected_version = 0;
+    std::map<std::string, std::string> _fields{};
+    std::vector<std::string> _removed{};
+};
+
+enum class lease_read_kind : std::uint8_t {
+    get = 0,
+    list = 1
+};
+
+/// A linearizable lease read: proposed like a write, so it is answered in
+/// log order by the group's leader, after every write before it. Changes
+/// nothing; the answer is a `lease_page` in `apply_result::_payload`.
+/// For a list, `_key` is the key to start after (empty: from the first) and
+/// only keys starting with `_prefix` are returned, at most `_limit` (0 or
+/// over `k_max_lease_page`: `k_max_lease_page`).
+struct lease_read_command {
+    std::string _account{};
+    std::string _application{};
+    lease_read_kind _kind = lease_read_kind::get;
+    std::string _key{};
+    std::string _prefix{};
+    std::uint32_t _limit = 0;
+};
+
+/// Delete every lease of an application (KCL's `deleteAll`, and deleting
+/// the lease table). `_first_counter` in the result is how many went.
+struct lease_drop_application_command {
+    std::string _account{};
+    std::string _application{};
+};
+
 using stream_command =
     std::variant<create_stream_command, set_stream_status_command, remove_stream_command,
                  open_shard_command, append_records_command, close_shard_command,
-                 drop_shard_command, trim_shard_command, append_batch_command>;
+                 drop_shard_command, trim_shard_command, append_batch_command, lease_write_command,
+                 lease_read_command, lease_drop_application_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -214,6 +276,13 @@ inline constexpr std::uint8_t stream_command_version = 1;
                 return stream_key(v._account, v._name);
             } else if constexpr (std::is_same_v<T, append_batch_command>) {
                 return v._appends.empty() ? std::string() : v._appends.front()._key;
+            } else if constexpr (std::is_same_v<T, lease_write_command>) {
+                return lease_storage_key(v._account, v._application, v._key);
+            } else if constexpr (std::is_same_v<T, lease_read_command> ||
+                                 std::is_same_v<T, lease_drop_application_command>) {
+                // Any key under the catalog prefix routes to the catalog
+                // group; the application's prefix names the range read.
+                return leases_prefix(v._account, v._application);
             } else {
                 return v._key;
             }
@@ -278,6 +347,22 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
                 }
             } else if constexpr (std::is_same_v<T, trim_shard_command>) {
                 w.str(v._key).u64(v._before);
+            } else if constexpr (std::is_same_v<T, lease_write_command>) {
+                w.str(v._account).str(v._application).str(v._key);
+                w.u8(static_cast<std::uint8_t>(v._op)).u8(static_cast<std::uint8_t>(v._condition));
+                w.u64(v._expected_version).u32(static_cast<std::uint32_t>(v._fields.size()));
+                for (const auto& [k, val] : v._fields) {
+                    w.str(k).str(val);
+                }
+                w.u32(static_cast<std::uint32_t>(v._removed.size()));
+                for (const auto& k : v._removed) {
+                    w.str(k);
+                }
+            } else if constexpr (std::is_same_v<T, lease_read_command>) {
+                w.str(v._account).str(v._application).u8(static_cast<std::uint8_t>(v._kind));
+                w.str(v._key).str(v._prefix).u32(v._limit);
+            } else if constexpr (std::is_same_v<T, lease_drop_application_command>) {
+                w.str(v._account).str(v._application);
             } else {
                 w.str(v._key);
             }
@@ -362,6 +447,45 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
             out = std::move(c);
             break;
         }
+        case 9: {
+            lease_write_command c;
+            c._account = r.str();
+            c._application = r.str();
+            c._key = r.str();
+            c._op = r.enumeration<lease_op>(2);
+            c._condition = r.enumeration<lease_condition>(2);
+            c._expected_version = r.u64();
+            const auto n = r.u32();
+            for (std::uint32_t i = 0; i < n; ++i) {
+                auto k = r.str();
+                c._fields[std::move(k)] = r.str();
+            }
+            const auto m = r.u32();
+            c._removed.reserve(std::min<std::size_t>(m, r.remaining() / 4));
+            for (std::uint32_t i = 0; i < m; ++i) {
+                c._removed.push_back(r.str());
+            }
+            out = std::move(c);
+            break;
+        }
+        case 10: {
+            lease_read_command c;
+            c._account = r.str();
+            c._application = r.str();
+            c._kind = r.enumeration<lease_read_kind>(1);
+            c._key = r.str();
+            c._prefix = r.str();
+            c._limit = r.u32();
+            out = std::move(c);
+            break;
+        }
+        case 11: {
+            lease_drop_application_command c;
+            c._account = r.str();
+            c._application = r.str();
+            out = std::move(c);
+            break;
+        }
         default:
             throw kinesis_codec_error("kinesis codec: unknown command kind");
     }
@@ -387,6 +511,8 @@ enum class apply_status : std::uint8_t {
     /// Never from `apply()`: the leader's write buckets refused the append
     /// before proposing it (`kinesis_throttle.hpp`).
     throttled = 6,
+    /// A lease write whose condition does not hold (HTTP 412).
+    condition_failed = 7,
 };
 
 /// One part of an `append_batch_command`'s result: what that shard's
@@ -400,8 +526,9 @@ struct append_part_result {
 };
 
 /// The decoded reply of `apply()`. `_id` is the new stream's id
-/// (`create_stream`); the counters and arrival time describe an append;
-/// `_parts` holds a batch's per-shard results, in order.
+/// (`create_stream`) or a lease's version; the counters and arrival time
+/// describe an append; `_parts` holds a batch's per-shard results, in
+/// order; `_payload` is a lease read's `lease_page`.
 struct apply_result {
     apply_status _status = apply_status::ok;
     std::uint64_t _id = 0;
@@ -409,21 +536,26 @@ struct apply_result {
     std::uint64_t _last_counter = 0;
     std::int64_t _arrival_ms = 0;
     std::vector<append_part_result> _parts{};
+    std::vector<std::byte> _payload{};
     friend auto operator==(const apply_result&, const apply_result&) -> bool = default;
 };
 
-/// Parts are written only when present, so every other result encodes as
-/// it did before batches existed.
+/// Parts and payload are written only when present, so every other result
+/// encodes as it did before batches existed. A payload follows the parts
+/// section (a zero count when there are none).
 [[nodiscard]] inline auto encode_result(const apply_result& r) -> std::vector<std::byte> {
     codec::writer w;
     w.u8(static_cast<std::uint8_t>(r._status)).u64(r._id);
     w.u64(r._first_counter).u64(r._last_counter).i64(r._arrival_ms);
-    if (!r._parts.empty()) {
+    if (!r._parts.empty() || !r._payload.empty()) {
         w.u32(static_cast<std::uint32_t>(r._parts.size()));
         for (const auto& p : r._parts) {
             w.u8(static_cast<std::uint8_t>(p._status));
             w.u64(p._first_counter).u64(p._last_counter).i64(p._arrival_ms);
         }
+    }
+    if (!r._payload.empty()) {
+        w.bytes(r._payload);
     }
     return w.take();
 }
@@ -431,7 +563,7 @@ struct apply_result {
 [[nodiscard]] inline auto decode_result(std::span<const std::byte> bytes) -> apply_result {
     codec::reader r(bytes);
     apply_result out;
-    out._status = r.enumeration<apply_status>(6);
+    out._status = r.enumeration<apply_status>(7);
     out._id = r.u64();
     out._first_counter = r.u64();
     out._last_counter = r.u64();
@@ -441,12 +573,15 @@ struct apply_result {
         out._parts.reserve(std::min<std::size_t>(n, r.remaining() / 25));
         for (std::uint32_t i = 0; i < n; ++i) {
             append_part_result p;
-            p._status = r.enumeration<apply_status>(6);
+            p._status = r.enumeration<apply_status>(7);
             p._first_counter = r.u64();
             p._last_counter = r.u64();
             p._arrival_ms = r.i64();
             out._parts.push_back(p);
         }
+    }
+    if (r.remaining() > 0) {
+        out._payload = r.bytes();
     }
     r.expect_end("apply result");
     return out;
@@ -464,7 +599,7 @@ requires log_index<LogIndex>
 class stream_state_machine {
 public:
     using key_type = std::string;
-    using entry = std::variant<std::uint64_t, stream_record, shard_state>;
+    using entry = std::variant<std::uint64_t, stream_record, shard_state, lease_record>;
     using map_type = std::map<std::string, entry, std::less<>>;
 
     stream_state_machine() = default;
@@ -635,6 +770,12 @@ public:
         return out;
     }
 
+    [[nodiscard]] auto find_lease(std::string_view account, std::string_view application,
+                                  std::string_view key) const -> const lease_record* {
+        auto it = _map.find(lease_storage_key(account, application, key));
+        return it == _map.end() ? nullptr : std::get_if<lease_record>(&it->second);
+    }
+
     [[nodiscard]] auto find_shard(std::string_view key) const -> const shard_state* {
         auto it = _map.find(key);
         return it == _map.end() ? nullptr : std::get_if<shard_state>(&it->second);
@@ -671,6 +812,8 @@ public:
                 w.u64(*v);
             } else if (const auto* s = std::get_if<stream_record>(&e)) {
                 encode(w, *s);
+            } else if (const auto* l = std::get_if<lease_record>(&e)) {
+                encode(w, *l);
             } else {
                 const auto& sh = std::get<shard_state>(e);
                 w.u64(sh._last_counter).i64(sh._last_arrival_ms).u8(sh._open ? 1 : 0);
@@ -726,6 +869,9 @@ public:
                     into.insert_or_assign(std::move(key), entry{std::move(sh)});
                     break;
                 }
+                case 3:
+                    into.insert_or_assign(std::move(key), entry{decode_lease_record(r)});
+                    break;
                 default:
                     throw kinesis_codec_error("kinesis codec: unknown entry kind");
             }
@@ -757,6 +903,9 @@ private:
     [[nodiscard]] static auto weight(const entry& e) noexcept -> std::uint64_t {
         if (const auto* s = std::get_if<shard_state>(&e)) {
             return 64 + s->_retained_bytes;
+        }
+        if (const auto* l = std::get_if<lease_record>(&e)) {
+            return 64 + lease_bytes(l->_fields);
         }
         return 64;
     }
@@ -967,6 +1116,134 @@ private:
         }
         s->_sealed.erase(s->_sealed.begin(), keep);
         return {._last_counter = s->_last_counter};
+    }
+
+    // ---- leases ------------------------------------------------------------
+
+    [[nodiscard]] static auto lease_names_ok(const std::string& account,
+                                             const std::string& application) -> bool {
+        return valid_account(account) && valid_application(application);
+    }
+
+    auto lease_at(const std::string& key) -> lease_record* {
+        auto it = _map.find(key);
+        return it == _map.end() ? nullptr : std::get_if<lease_record>(&it->second);
+    }
+
+    auto apply_one(const lease_write_command& c) -> apply_result {
+        if (!lease_names_ok(c._account, c._application) || !valid_lease_key(c._key) ||
+            (c._op == lease_op::patch && c._condition == lease_condition::absent) ||
+            (c._op == lease_op::remove && c._condition == lease_condition::absent)) {
+            return {._status = apply_status::invalid};
+        }
+        for (const auto& [name, text] : c._fields) {
+            if (name.empty() || text.empty()) {
+                return {._status = apply_status::invalid};
+            }
+        }
+        const auto key = lease_storage_key(c._account, c._application, c._key);
+        auto* current = lease_at(key);
+        const std::uint64_t have = current == nullptr ? 0 : current->_version;
+        if ((c._condition == lease_condition::absent && current != nullptr) ||
+            (c._condition == lease_condition::version &&
+             (current == nullptr || have != c._expected_version))) {
+            return {._status = apply_status::condition_failed, ._id = have};
+        }
+        const auto version = static_cast<std::uint64_t>(_last_applied_index);
+        switch (c._op) {
+            case lease_op::put: {
+                if (lease_bytes(c._fields) > k_max_lease_bytes) {
+                    return {._status = apply_status::invalid, ._id = have};
+                }
+                _map.insert_or_assign(
+                    key, entry{lease_record{._version = version, ._fields = c._fields}});
+                return {._id = version};
+            }
+            case lease_op::patch: {
+                if (current == nullptr) {
+                    return {._status = apply_status::not_found};
+                }
+                auto fields = current->_fields;
+                for (const auto& name : c._removed) {
+                    fields.erase(name);
+                }
+                for (const auto& [name, text] : c._fields) {
+                    fields.insert_or_assign(name, text);
+                }
+                if (lease_bytes(fields) > k_max_lease_bytes) {
+                    return {._status = apply_status::invalid, ._id = have};
+                }
+                current->_fields = std::move(fields);
+                current->_version = version;
+                return {._id = version};
+            }
+            case lease_op::remove:
+                if (current == nullptr) {
+                    return {._status = apply_status::not_found};
+                }
+                _map.erase(key);
+                return {._id = have};
+        }
+        return {._status = apply_status::invalid};
+    }
+
+    auto apply_one(const lease_read_command& c) -> apply_result {
+        if (!lease_names_ok(c._account, c._application)) {
+            return {._status = apply_status::invalid};
+        }
+        lease_page page;
+        if (c._kind == lease_read_kind::get) {
+            if (!valid_lease_key(c._key)) {
+                return {._status = apply_status::invalid};
+            }
+            const auto* l = lease_at(lease_storage_key(c._account, c._application, c._key));
+            if (l == nullptr) {
+                return {._status = apply_status::not_found};
+            }
+            page._leases.push_back({._key = c._key, ._lease = *l});
+            return {._id = l->_version, ._payload = encode_lease_page(page)};
+        }
+        const auto base = leases_prefix(c._account, c._application);
+        const auto limit = c._limit == 0 || c._limit > k_max_lease_page
+                               ? k_max_lease_page
+                               : static_cast<std::size_t>(c._limit);
+        // Keep an answer under the forwarding hop's comfortable size.
+        constexpr std::size_t k_page_bytes = 1024 * 1024;
+        std::size_t bytes = 0;
+        const auto from = base + c._prefix;
+        auto it = c._key.empty() || c._key < c._prefix ? _map.lower_bound(from)
+                                                       : _map.upper_bound(base + c._key);
+        for (; it != _map.end() && it->first.starts_with(from); ++it) {
+            const auto* l = std::get_if<lease_record>(&it->second);
+            if (l == nullptr) {
+                continue;
+            }
+            const auto size = it->first.size() + lease_bytes(l->_fields);
+            if (page._leases.size() == limit ||
+                (!page._leases.empty() && bytes + size > k_page_bytes)) {
+                page._more = true;
+                break;
+            }
+            bytes += size;
+            page._leases.push_back({._key = it->first.substr(base.size()), ._lease = *l});
+        }
+        return {._payload = encode_lease_page(page)};
+    }
+
+    auto apply_one(const lease_drop_application_command& c) -> apply_result {
+        if (!lease_names_ok(c._account, c._application)) {
+            return {._status = apply_status::invalid};
+        }
+        const auto base = leases_prefix(c._account, c._application);
+        auto first = _map.lower_bound(base);
+        auto last = first;
+        std::uint64_t n = 0;
+        while (last != _map.end() && last->first.starts_with(base)) {
+            ++last;
+            ++n;
+        }
+        _map.erase(first, last);
+        return {._first_counter = n};
     }
 
     map_type _map;

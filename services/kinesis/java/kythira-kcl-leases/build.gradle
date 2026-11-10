@@ -1,0 +1,68 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+// KCL 2.x leases on Kythira's Lease API instead of a DynamoDB table
+// (.kiro/specs/kinesis-compatible-streams/ task 9, Requirement 15.1).
+// KCL and the AWS SDK are compileOnly: the application brings its own KCL
+// 2.x, and this library adds nothing to its dependency tree but Jackson.
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = 'io.kythira'
+version = '0.1.0'
+
+repositories {
+    // repo1 is the same Maven Central; the CI proxy rate-limits the other name less.
+    maven { url = 'https://repo1.maven.org/maven2' }
+}
+
+def kclVersion = '2.7.4'
+
+dependencies {
+    compileOnly "software.amazon.kinesis:amazon-kinesis-client:${kclVersion}"
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.20.1'
+
+    testImplementation "software.amazon.kinesis:amazon-kinesis-client:${kclVersion}"
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly 'org.slf4j:slf4j-nop:2.0.17'
+}
+
+java {
+    // KCL 2.x runs on Java 8, but java.net.http needs 11; 17 is the oldest
+    // LTS the module's CI exercises.
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+    // KCL's own API is partly deprecated, and overriding it is the point.
+    options.compilerArgs += ['-Xlint:all,-deprecation,-processing', '-Werror']
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+        }
+    }
+    repositories {
+        // CI publishes to GitHub Packages; a local build publishes to
+        // build/repo for the container scenario.
+        maven {
+            name = 'local'
+            url = layout.buildDirectory.dir('repo')
+        }
+    }
+}

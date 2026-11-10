@@ -41,10 +41,15 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `include/kythira/kinesis/kinesis_gateway.hpp`, `kinesis_peer_client.hpp` | the listener's routes (API, internal propose and segment endpoints, `/healthz`) and the client that calls other gateways | 6 |
 | `include/kythira/kinesis/kinesis_static_keys.hpp` | the `KINESIS_STATIC_KEYS_FILE` format for clusters without IAM | 6 |
 | `include/kythira/kinesis/kinesis_iterators.hpp` | shard iterators: HMAC-SHA256 tokens, the key ring and its rotation, `KINESIS_ITERATOR_KEYS_FILE` | 7 |
+| `include/kythira/kinesis/kinesis_lease_api.hpp` | the Lease API for the KCL lease layer: REST under `/v1/leases/<application>/`, versions as ETags, DynamoDB actions on the application's table ARN | 9 |
+| `include/kythira/kinesis/kinesis_leases.hpp` | lease records in the catalog: keys, versions (log indexes) and the codec | 9 |
 | `docker/kinesis_gateway_node/Dockerfile`, `docker/kinesis_clients/Dockerfile` | the node image (the host-built daemon) and the boto3 client image of the container scenario | 7 |
-| `tests/docker/` | the container scenario: `compose.yml` (three nodes by service name, the AWS CLI v2, boto3), `kinesis_e2e.py`, `kinesis_node_scenario_test.cpp`; run by `cmake --build build --target docker-kinesis-node-tests` under Docker or rootless Podman | 7 |
+| `tests/docker/` | the container scenario: `compose.yml` (three nodes by service name, the AWS CLI v2, boto3, three KCL workers), `kinesis_e2e.py`, `kinesis_node_scenario_test.cpp`; run by `cmake --build build --target docker-kinesis-node-tests` under Docker or rootless Podman | 7 |
 | `include/kythira/kinesis/kinesis_records.hpp` | reading a shard from the segment store on any replica, fetching a missing sealed segment from a peer | 7 |
 | `include/kythira/kinesis/kinesis_throttle.hpp` | per-shard token buckets: the leader's write admission (a prefix of each append, refunded on not-leader) and each node's read limits | 8 |
+| `doc/leases.md` | KCL lease coordination: the Lease API, the Java lease layer, how to install it, and which KCL version each lease backend supports | 9 |
+| `java/kythira-kcl-leases/` | the Java lease layer (Gradle, KCL 2.x): `KythiraLeaseRefresher` and `KythiraLeaseManagementFactory` over the Lease API, signed with SigV4 | 9 |
+| `tests/kcl/sample/`, `docker/kinesis_kcl_sample/Dockerfile` | the KCL 2.x sample consumer and its image, the workers of the container scenario's lease case | 9 |
 
 Core pieces the module builds on live in `include/raft/`, because DynamoDB
 uses them too: `record_segment_store.hpp` (task 3), the CBOR and
