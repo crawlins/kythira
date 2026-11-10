@@ -252,6 +252,24 @@ struct data_key_record {
     friend auto operator==(const data_key_record&, const data_key_record&) -> bool = default;
 };
 
+/// An enhanced fan-out consumer of a stream (task 13). Its ARN is the
+/// stream's with `/consumer/<name>:<creation epoch seconds>`, so a consumer
+/// registered again under the same name gets another ARN.
+struct consumer_record {
+    std::string _name{};
+    std::int64_t _created_ms = 0;
+    std::map<std::string, std::string> _tags{};
+    std::optional<std::string> _policy{};
+
+    [[nodiscard]] auto created_seconds() const -> std::int64_t { return _created_ms / 1000; }
+    friend auto operator==(const consumer_record&, const consumer_record&) -> bool = default;
+};
+
+/// AWS's limit on a stream's registered consumers.
+inline constexpr std::size_t k_max_consumers = 20;
+/// With the `count-limits` switch relaxed.
+inline constexpr std::size_t k_relaxed_max_consumers = 1000;
+
 struct stream_record {
     std::uint64_t _id = 0;
     std::string _account{};
@@ -279,6 +297,17 @@ struct stream_record {
     /// `StartStreamEncryption` adds one; `StopStreamEncryption` keeps them,
     /// since records sealed earlier stay readable.
     std::vector<data_key_record> _data_keys{};
+    /// Registered enhanced fan-out consumers, by name (task 13).
+    std::vector<consumer_record> _consumers{};
+
+    [[nodiscard]] auto find_consumer(std::string_view name) const -> const consumer_record* {
+        for (const auto& c : _consumers) {
+            if (c._name == name) {
+                return &c;
+            }
+        }
+        return nullptr;
+    }
 
     /// The data key new records are sealed under, or null when the stream
     /// is not encrypted.
@@ -519,6 +548,17 @@ inline auto encode(codec::writer& w, const stream_record& s) -> void {
     for (const auto& k : s._data_keys) {
         w.u32(k._generation).str(k._key_id).str(k._wrapped);
     }
+    w.u32(static_cast<std::uint32_t>(s._consumers.size()));
+    for (const auto& c : s._consumers) {
+        w.str(c._name).i64(c._created_ms).u32(static_cast<std::uint32_t>(c._tags.size()));
+        for (const auto& [k, v] : c._tags) {
+            w.str(k).str(v);
+        }
+        w.u8(c._policy ? 1 : 0);
+        if (c._policy) {
+            w.str(*c._policy);
+        }
+    }
 }
 
 inline auto decode_stream_record(codec::reader& r) -> stream_record {
@@ -566,6 +606,21 @@ inline auto decode_stream_record(codec::reader& r) -> stream_record {
         k._key_id = r.str();
         k._wrapped = r.str();
         s._data_keys.push_back(std::move(k));
+    }
+    const auto consumers = r.u32();
+    for (std::uint32_t i = 0; i < consumers; ++i) {
+        consumer_record c;
+        c._name = r.str();
+        c._created_ms = r.i64();
+        const auto tags = r.u32();
+        for (std::uint32_t j = 0; j < tags; ++j) {
+            auto k = r.str();
+            c._tags[std::move(k)] = r.str();
+        }
+        if (r.boolean()) {
+            c._policy = r.str();
+        }
+        s._consumers.push_back(std::move(c));
     }
     return s;
 }

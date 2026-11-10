@@ -141,6 +141,11 @@ kythira_kinesis_test(kinesis_tags_test kinesis_tags_test.cpp)
 # Task 14: encryption at rest (the local key provider, sealed records, the
 # AWS KMS adapter against a fake KMS, Start/StopStreamEncryption).
 kythira_kinesis_test(kinesis_encryption_test kinesis_encryption_test.cpp)
+# Task 13: enhanced fan-out (consumers, SubscribeToShard events pulled
+# directly, over HTTP/1.1 chunked and, with nghttp2, over HTTP/2 through
+# the nghttp2 client in tests/h2_test_client.hpp).
+kythira_kinesis_test(kinesis_fanout_test kinesis_fanout_test.cpp)
+target_link_libraries(kinesis_fanout_test PRIVATE kythira_test_support)
 # Task 6: the gateway's HTTP surface on a real listener (API, internal
 # propose and segment endpoints, health) and the peer client over plain
 # HTTP and verified TLS. certificate_authority issues the test PKI.

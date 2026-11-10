@@ -132,6 +132,27 @@ services:
     <<: *kcl
     command: ["http://kin-3:4567", "kcl", "kcl-app", "worker-3"]
 
+  # KCL 2.x workers in enhanced fan-out mode (task 13): they register a
+  # consumer and subscribe to shards over HTTP/2 (h2c). In the `kcl-efo`
+  # profile. They sign with the admin key: RegisterStreamConsumer is a
+  # control-plane write in AWS's action annotations, so the static-key
+  # read-write role does not include it (doc/fan-out.md).
+  kcl-efo-1: &kcl_efo
+    <<: *kcl
+    profiles: ["kcl-efo"]
+    environment:
+      AWS_ACCESS_KEY_ID: AKIDKINESISADMIN001
+      AWS_SECRET_ACCESS_KEY: kinesis-scenario-admin-secret
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      KCL_FAILOVER_MILLIS: "10000"
+      KCL_RETRIEVAL: fanout
+    command: ["http://kin-1:4567", "efo", "efo-app", "efo-worker-1"]
+
+  kcl-efo-2:
+    <<: *kcl_efo
+    command: ["http://kin-2:4567", "efo", "efo-app", "efo-worker-2"]
+
 networks:
   kinesis_net:
     driver: bridge

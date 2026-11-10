@@ -342,6 +342,34 @@ struct set_encryption_command {
     std::optional<data_key_record> _data_key{};
 };
 
+enum class consumer_op : std::uint8_t {
+    /// Add `_consumer` (created at `_created_ms`, with `_set` as its tags).
+    register_consumer = 0,
+    /// Remove it.
+    deregister = 1,
+    /// Set `_set` and drop `_remove` among its tags.
+    retag = 2,
+    /// Make `_policy` its resource policy (none: delete it).
+    set_policy = 3,
+};
+
+/// The enhanced fan-out consumer calls (task 13), at the catalog group.
+/// A consumer the op names by `_consumer` must exist with
+/// `_created_ms` (its ARN's time) unless registering; registering needs an
+/// ACTIVE stream, a free name and fewer than `_max` consumers.
+struct consumer_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    consumer_op _op = consumer_op::register_consumer;
+    std::string _consumer{};
+    std::int64_t _created_ms = 0;
+    std::map<std::string, std::string> _set{};
+    std::vector<std::string> _remove{};
+    std::optional<std::string> _policy{};
+    std::uint32_t _max = 0;
+};
+
 /// What a lease write requires of the lease's current state.
 enum class lease_condition : std::uint8_t {
     /// Whatever is there (or nothing).
@@ -402,14 +430,13 @@ struct lease_drop_application_command {
     std::string _application{};
 };
 
-using stream_command =
-    std::variant<create_stream_command, set_stream_status_command, remove_stream_command,
-                 open_shard_command, append_records_command, close_shard_command,
-                 drop_shard_command, trim_shard_command, append_batch_command, lease_write_command,
-                 lease_read_command, lease_drop_application_command, set_retention_command,
-                 seal_shard_command, tier_segment_command, reshard_catalog_command,
-                 set_ending_counters_command, set_stream_mode_command, tag_stream_command,
-                 set_policy_command, set_monitoring_command, set_encryption_command>;
+using stream_command = std::variant<
+    create_stream_command, set_stream_status_command, remove_stream_command, open_shard_command,
+    append_records_command, close_shard_command, drop_shard_command, trim_shard_command,
+    append_batch_command, lease_write_command, lease_read_command, lease_drop_application_command,
+    set_retention_command, seal_shard_command, tier_segment_command, reshard_catalog_command,
+    set_ending_counters_command, set_stream_mode_command, tag_stream_command, set_policy_command,
+    set_monitoring_command, set_encryption_command, consumer_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -427,7 +454,8 @@ inline constexpr std::uint8_t stream_command_version = 1;
                           std::is_same_v<T, tag_stream_command> ||
                           std::is_same_v<T, set_policy_command> ||
                           std::is_same_v<T, set_monitoring_command> ||
-                          std::is_same_v<T, set_encryption_command>) {
+                          std::is_same_v<T, set_encryption_command> ||
+                          std::is_same_v<T, consumer_command>) {
                 return stream_key(v._account, v._name);
             } else if constexpr (std::is_same_v<T, append_batch_command>) {
                 return v._appends.empty() ? std::string() : v._appends.front()._key;
@@ -574,6 +602,22 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
                     w.u32(v._data_key->_generation).str(v._data_key->_key_id);
                     w.str(v._data_key->_wrapped);
                 }
+            } else if constexpr (std::is_same_v<T, consumer_command>) {
+                w.str(v._account).str(v._name).u64(v._id).u8(static_cast<std::uint8_t>(v._op));
+                w.str(v._consumer).i64(v._created_ms);
+                w.u32(static_cast<std::uint32_t>(v._set.size()));
+                for (const auto& [k, val] : v._set) {
+                    w.str(k).str(val);
+                }
+                w.u32(static_cast<std::uint32_t>(v._remove.size()));
+                for (const auto& k : v._remove) {
+                    w.str(k);
+                }
+                w.u8(v._policy ? 1 : 0);
+                if (v._policy) {
+                    w.str(*v._policy);
+                }
+                w.u32(v._max);
             } else {
                 w.str(v._key);
             }
@@ -821,6 +865,31 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
                 k._wrapped = r.str();
                 c._data_key = std::move(k);
             }
+            out = std::move(c);
+            break;
+        }
+        case 22: {
+            consumer_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            c._op = r.enumeration<consumer_op>(3);
+            c._consumer = r.str();
+            c._created_ms = r.i64();
+            const auto n = r.u32();
+            for (std::uint32_t i = 0; i < n; ++i) {
+                auto k = r.str();
+                c._set[std::move(k)] = r.str();
+            }
+            const auto m = r.u32();
+            c._remove.reserve(std::min<std::size_t>(m, r.remaining() / 4));
+            for (std::uint32_t i = 0; i < m; ++i) {
+                c._remove.push_back(r.str());
+            }
+            if (r.boolean()) {
+                c._policy = r.str();
+            }
+            c._max = r.u32();
             out = std::move(c);
             break;
         }
@@ -1576,6 +1645,63 @@ private:
         rec->_encryption = encryption_type::kms;
         rec->_key_id = c._key_id;
         return {._id = rec->_id, ._first_counter = k._generation};
+    }
+
+    /// `already_exists` for a name in use, `invalid` past `_max` consumers
+    /// or tags, `not_found` for a consumer that is not there (or was
+    /// registered again since: another creation time).
+    auto apply_one(const consumer_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        auto& list = rec->_consumers;
+        const auto it = std::ranges::find_if(
+            list, [&](const consumer_record& x) { return x._name == c._consumer; });
+        if (c._op == consumer_op::register_consumer) {
+            if (rec->_status != stream_status::active) {
+                return {._status = apply_status::bad_transition};
+            }
+            if (it != list.end()) {
+                return {._status = apply_status::already_exists};
+            }
+            if (list.size() >= c._max || c._set.size() > 50) {
+                return {._status = apply_status::invalid};
+            }
+            list.push_back({._name = c._consumer,
+                            ._created_ms = c._created_ms,
+                            ._tags = c._set,
+                            ._policy = std::nullopt});
+            return {._id = rec->_id};
+        }
+        if (it == list.end() || it->_created_ms != c._created_ms) {
+            return {._status = apply_status::not_found};
+        }
+        switch (c._op) {
+            case consumer_op::deregister:
+                list.erase(it);
+                break;
+            case consumer_op::retag: {
+                auto tags = it->_tags;
+                for (const auto& [k, v] : c._set) {
+                    tags[k] = v;
+                }
+                for (const auto& k : c._remove) {
+                    tags.erase(k);
+                }
+                if (tags.size() > c._max) {
+                    return {._status = apply_status::invalid};
+                }
+                it->_tags = std::move(tags);
+                break;
+            }
+            case consumer_op::set_policy:
+                it->_policy = c._policy;
+                break;
+            case consumer_op::register_consumer:
+                break;
+        }
+        return {._id = rec->_id};
     }
 
     auto apply_one(const reshard_catalog_command& c) -> apply_result {

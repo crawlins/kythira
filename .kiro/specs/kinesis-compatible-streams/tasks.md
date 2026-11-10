@@ -280,12 +280,31 @@ asked.
 
 ### Phase 5: enhanced fan-out
 
-- [ ] 13. Consumers and `SubscribeToShard`
+- [x] 13. Consumers and `SubscribeToShard`
   - Consumer registration calls and status transitions
   - HTTP/2 event-stream subscriptions with per-consumer limits,
     continuation, child-shard events, resubscribe on replica loss
   - Enhanced fan-out consumer (KCL 2.x and SDK) end to end
   - _Requirements: 13.1-13.3, 4.2, 5.1_
+  - Progress: consumers live in the stream's catalog entry (20 at most,
+    one replicated `consumer_command` per change) and are ACTIVE at once;
+    their ARNs take tags and policies, and `DeleteStream` honours
+    `EnforceConsumerDeletion`. A subscription reads the receiving node's
+    replica like `GetRecords`, so a leader change does not touch it; it
+    paces itself with a 2 MiB/s token bucket, sends continuation numbers,
+    ends after 5 minutes, ends a closed shard with its `ChildShards`, and
+    ends with an exception event when the consumer, stream or replica goes.
+    The front end hands a streaming answer back as an `event_source` the
+    transport pulls. HTTP/2 came from nghttp2, not Proxygen, which would
+    have pulled folly into the module's front end: it is a core addition
+    (`include/raft/h2_server_session.hpp`) that the HTTPS server uses for
+    ALPN "h2" and h2c with prior knowledge, beside HTTP/1.1 chunked
+    streaming. Checked by `kinesis_fanout_test` (10 cases),
+    `h2_server_test` (7 cases), a local three-node run with boto3 (HTTP/1.1)
+    and an unmodified KCL 2.x worker in fan-out mode (HTTP/2, all 40
+    records). The container scenario gains a KCL fan-out case through a
+    node kill, which runs in CI. Subscriptions are counted per node, so two nodes could each take
+    one for the same consumer and shard. See `services/kinesis/doc/fan-out.md`.
 
 ### Phase 6: the rest of the surface
 

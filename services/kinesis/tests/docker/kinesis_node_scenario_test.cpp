@@ -25,6 +25,12 @@
 // is processed, and no shard is processed by two workers at once for longer
 // than the failover time.
 //
+// Another (task 13, Requirement 13) runs two KCL 2.x workers in enhanced
+// fan-out mode (the `kcl-efo` profile), which register a consumer and
+// subscribe to shards over HTTP/2 with prior knowledge. One node is killed
+// while they read: every record written before, during and after is
+// processed.
+//
 // A third case (task 11, Requirement 10) reshards a stream three times
 // (UpdateShardCount, SplitShard, MergeShards), each call through one node
 // while another is killed with SIGKILL, and a producer writes straight
@@ -79,10 +85,10 @@ std::string compose_file() {
     return "services/kinesis/tests/docker/compose.yml";
 }
 
-std::vector<std::string> compose_cmd(std::initializer_list<std::string> args) {
+std::vector<std::string> compose_cmd(const std::vector<std::string>& args) {
     auto cmd = os::compose_prefix();
     cmd.insert(cmd.end(), {"-f", compose_file()});
-    cmd.insert(cmd.end(), args);
+    cmd.insert(cmd.end(), args.begin(), args.end());
     return cmd;
 }
 
@@ -191,8 +197,9 @@ struct stack_fixture {
         }
     }
     ~stack_fixture() {
-        os::try_exec(os::real_exec, compose_cmd({"--profile", "clients", "--profile", "kcl", "down",
-                                                 "-v", "--remove-orphans"}));
+        os::try_exec(os::real_exec,
+                     compose_cmd({"--profile", "clients", "--profile", "kcl", "--profile",
+                                  "kcl-efo", "down", "-v", "--remove-orphans"}));
     }
     stack_fixture(const stack_fixture&) = delete;
     stack_fixture& operator=(const stack_fixture&) = delete;
@@ -230,9 +237,10 @@ struct kcl_event {
 /// Every worker's events so far, in time order. Compose prefixes each line
 /// with the service name unless told not to, and not every compose takes
 /// --no-log-prefix, so the event is found by its marker.
-std::vector<kcl_event> kcl_events() {
-    auto r = os::real_exec(
-        compose_cmd({"--profile", "kcl", "logs", "--no-color", "kcl-1", "kcl-2", "kcl-3"}));
+std::vector<kcl_event> kcl_events(const std::vector<std::string>& args = {
+                                      "--profile", "kcl", "logs", "--no-color", "kcl-1", "kcl-2",
+                                      "kcl-3"}) {
+    auto r = os::real_exec(compose_cmd(args));
     std::vector<kcl_event> out;
     std::istringstream lines(r.out);
     std::string line;
@@ -502,6 +510,80 @@ BOOST_AUTO_TEST_CASE(kcl_workers_keep_one_owner_per_shard_through_node_kills) {
     for (const auto& b : double_ownership(events)) {
         BOOST_ERROR("shard processed by two workers past the failover time: " << b);
     }
+}
+
+// Task 13: KCL 2.x in enhanced fan-out mode, subscribing over HTTP/2,
+// through a kill of the node one worker subscribes through.
+BOOST_AUTO_TEST_CASE(kcl_fan_out_workers_read_every_record_through_a_node_kill) {
+    const logs_on_failure logs;
+    for (int n : {1, 2, 3}) {
+        BOOST_REQUIRE_MESSAGE(
+            eventually([&] { return aws_cli(n, {"list-streams"}).code == 0; }, 120s),
+            service(n) << " never answered ListStreams");
+    }
+    {
+        auto r = boto3({"create", "--endpoint", endpoint(1), "--stream", "efo", "--shards", "2"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create failed:\n" << r.out);
+        auto p = boto3({"produce", "--endpoint", endpoint(1), "--stream", "efo", "--count", "100",
+                        "--tag", "e0"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    const std::vector<std::string> logs_args{"--profile",  "kcl-efo",   "logs",
+                                             "--no-color", "kcl-efo-1", "kcl-efo-2"};
+    std::set<std::string> expected;
+    const auto expect = [&expected](const std::string& tag, int count) {
+        for (int i = 0; i < count; ++i) {
+            expected.insert(tag + "-" + std::to_string(i));
+        }
+    };
+    expect("e0", 100);
+    const auto all_seen = [&] {
+        const auto seen = kcl_records(kcl_events(logs_args));
+        return std::includes(seen.begin(), seen.end(), expected.begin(), expected.end());
+    };
+
+    os::checked_exec(os::real_exec,
+                     compose_cmd({"--profile", "kcl-efo", "up", "-d", "kcl-efo-1", "kcl-efo-2"}));
+    BOOST_REQUIRE_MESSAGE(eventually(all_seen, 180s),
+                          "the fan-out workers never processed the first 100 records");
+
+    // kcl-efo-1 subscribes through kin-1: with it killed, that worker's
+    // subscriptions end and its leases fail over to the other worker, which
+    // subscribes through kin-2.
+    os::checked_exec(os::real_exec, compose_cmd({"kill", service(1)}));
+    BOOST_REQUIRE_MESSAGE(eventually(
+                              [&] {
+                                  return boto3({"produce", "--endpoint", endpoint(2), "--stream",
+                                                "efo", "--count", "100", "--tag", "e1"})
+                                             .code == 0;
+                              },
+                              120s),
+                          "produce with kin-1 killed never succeeded");
+    expect("e1", 100);
+    BOOST_TEST(eventually(all_seen, 240s),
+               "the fan-out workers never processed the records written with kin-1 killed");
+    os::checked_exec(os::real_exec, compose_cmd({"start", service(1)}));
+    BOOST_REQUIRE_MESSAGE(eventually([&] { return aws_cli(1, {"list-streams"}).code == 0; }, 120s),
+                          service(1) << " never answered after restarting");
+    {
+        auto p = boto3({"produce", "--endpoint", endpoint(1), "--stream", "efo", "--count", "100",
+                        "--tag", "e2"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    expect("e2", 100);
+    BOOST_TEST(eventually(all_seen, 240s), "the fan-out workers never processed all 300 records");
+
+    const auto seen = kcl_records(kcl_events(logs_args));
+    std::vector<std::string> missing;
+    std::set_difference(expected.begin(), expected.end(), seen.begin(), seen.end(),
+                        std::back_inserter(missing));
+    BOOST_TEST(missing.empty(), missing.size() << " records never processed, first "
+                                               << (missing.empty() ? "" : missing.front()));
+    // The consumer is registered once, under the application's name.
+    const auto consumers = aws_cli(2, {"list-stream-consumers", "--stream-arn",
+                                       "arn:aws:kinesis:us-east-1:111122223333:stream/efo"});
+    BOOST_TEST(consumers.out.find("efo-app") != std::string::npos, consumers.out);
 }
 
 // Task 11: resharding with a node killed in the middle of each reshard.
