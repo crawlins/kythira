@@ -49,10 +49,23 @@ asked.
 
 ### Phase 1: core pieces
 
-- [ ] 2. CBOR and event-stream framing (core)
+- [x] 2. CBOR and event-stream framing (core)
   - CBOR request and response encoding in `aws_json_protocol.hpp`
     (JSON 1.1 framing is already there from DynamoDB task 2)
   - `aws_eventstream.hpp`: prelude, headers, CRCs; AWS's published vectors
+  - Done: `cbor_to_json`/`json_to_cbor` map CBOR to and from the JSON
+    form under the operation's shapes (blobs as byte strings, timestamps
+    as epoch milliseconds under tag 1, indefinite-length containers as
+    Jackson writes them); `codec_options::accept_cbor` turns it on and
+    every response, error or not, goes back in the request's encoding.
+    `include/raft/aws_eventstream.hpp` encodes and stream-decodes
+    messages with aws-c-event-stream's limits and builds event, exception
+    and error messages. Tests `aws_json_cbor_test` (RFC 8949 Appendix A,
+    malformed bodies, shapes, codec and dispatcher) and
+    `aws_eventstream_test` (the published empty-message vector, and
+    vectors botocore's parser accepts). The millisecond timestamp unit is
+    the Java SDK's; task 7's recordings confirm it, and
+    `cbor_timestamps` switches it in one place if they do not.
   - _Requirements: 4.1-4.3_
 
 - [x] 3. Record segment store (core)
