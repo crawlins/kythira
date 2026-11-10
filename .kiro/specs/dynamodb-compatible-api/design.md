@@ -155,6 +155,20 @@ target time and replays change records up to it into a new table id.
 Exports write the AWS export layout (manifest files plus data files) from a
 backup; imports create a table and bulk-ingest by building engine files.
 
+A bulk put (Requirement 22) is an import into an existing table: a catalog
+job reads the input files from the configured store and proposes ordinary
+batched writes, rate-limited by `MaxWriteRequestUnits`, so conditions,
+LSIs, GSIs and the change log see every item; its status and failure
+report live in the catalog beside export and import jobs.
+
+A vector index is a further asynchronous index fed by the change log, like a
+GSI: each item group keeps an approximate nearest-neighbour graph (HNSW) of
+its own items' vectors, and `SearchVectors` asks every group the table
+spans for its `TopK`, merges the results by score and re-reads the winning
+items so that a search never returns a deleted item. The choice of graph
+library, and whether results must match AWS's ranking exactly or only its
+documented distance functions, is open until the task starts.
+
 ### Compatibility profile
 
 `dynamo_compat_profile` is a struct of switches resolved per request from

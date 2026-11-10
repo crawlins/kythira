@@ -58,11 +58,11 @@ test reads the table rows: keep one operation per row, in the
 | DynamoDB | `UpdateGlobalTableSettings` | global tables version 2017.11.29 (legacy); task 22 builds version 2019.11.21 through `UpdateTable`, task 23 decides whether the legacy calls are mapped onto it |
 | DynamoDB | `DescribeTableReplicaAutoScaling` | out of scope: Application Auto Scaling is a separate AWS service (Introduction, "Out of scope") |
 | DynamoDB | `UpdateTableReplicaAutoScaling` | out of scope: Application Auto Scaling is a separate AWS service (Introduction, "Out of scope") |
-| DynamoDB | `StartBulkPutItems` | added to the model after the spec was written; not yet planned (needs a decision) |
-| DynamoDB | `DescribeBulkOperation` | added to the model after the spec was written; not yet planned (needs a decision) |
-| DynamoDB | `ListBulkOperations` | added to the model after the spec was written; not yet planned (needs a decision) |
-| DynamoDB | `CancelBulkOperation` | added to the model after the spec was written; not yet planned (needs a decision) |
-| DynamoDB | `SearchVectors` | added to the model after the spec was written; not yet planned (needs a decision) |
+| DynamoDB | `StartBulkPutItems` | planned, task 20 |
+| DynamoDB | `DescribeBulkOperation` | planned, task 20 |
+| DynamoDB | `ListBulkOperations` | planned, task 20 |
+| DynamoDB | `CancelBulkOperation` | planned, task 20 |
+| DynamoDB | `SearchVectors` | planned, task 26 |
 | DynamoDB Streams | `ListStreams` | planned, task 16 |
 | DynamoDB Streams | `DescribeStream` | planned, task 16 |
 | DynamoDB Streams | `GetShardIterator` | planned, task 16 |

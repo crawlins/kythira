@@ -38,8 +38,9 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     Docker and rootless Podman and runs the test on the fresh recording; the
     module-off build is checked as `iam-module.yml` checks its module. Five
     operations added to the model after the spec was written (the bulk-put
-    family and `SearchVectors`) are listed as unsupported pending a scope
-    decision.
+    family and `SearchVectors`) were listed as unsupported pending a scope
+    decision; Clark chose on November 10, 2026 to plan both (tasks 20 and
+    26, Requirement 22).
 
 ### Phase 1: protocol and auth
 
@@ -308,10 +309,13 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     `DescribeContinuousBackups`, `RestoreTableToPointInTime`
   - _Requirements: 17.2_
 
-- [ ] 20. Export and import
+- [ ] 20. Export, import and bulk put
   - Full and incremental `ExportTableToPointInTime`, `ImportTable`, the
     describe and list calls; AWS file layouts
-  - _Requirements: 17.3_
+  - `StartBulkPutItems`, `DescribeBulkOperation`, `ListBulkOperations`,
+    `CancelBulkOperation`: an import into an existing table through
+    ordinary writes, rate-limited, with its report
+  - _Requirements: 17.3, 22.1_
 
 ### Phase 6: the rest of the surface
 
@@ -319,6 +323,16 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
   - `PutResourcePolicy`, `GetResourcePolicy`, `DeleteResourcePolicy` through
     IAM's evaluator; contributor insights counters and calls
   - _Requirements: 5.3, 19.4_
+
+- [ ] 26. Vector indexes and `SearchVectors` (added after the spec; done
+  in this phase, numbered last so later tasks keep their numbers)
+  - `VectorIndexes` on `CreateTable`, `VectorIndexUpdates` on
+    `UpdateTable`, their descriptions
+  - Per-group approximate nearest-neighbour graphs fed by the change log;
+    `SearchVectors` fan-out, merge by score, re-read of the winners
+  - Recorded against AWS only with Clark's go, as DynamoDB Local may not
+    implement vector search
+  - _Requirements: 22.2-22.4_
 
 - [ ] 22. Global tables, last-writer-wins
   - Peer cluster config, replicator and receiver, replica updates in
