@@ -572,15 +572,25 @@ public:
             auto slot_for_this_call = std::move(held);
             auto outcome = [&]() -> std::variant<Resp, std::exception_ptr> {
                 try {
+                    // The socket's guard is declared first so that it is
+                    // destroyed last: SSL_shutdown() in ssl_conn_guard writes
+                    // a close_notify record to the fd, so the fd must still
+                    // be open, and still this connection's, when it runs.
+                    // The other way round closed the socket first and then
+                    // wrote 24 bytes to whatever file another thread had
+                    // just opened under the same number: it overwrote the
+                    // start of iam_node's Raft log, which lost index 1 and
+                    // stalled apply after a restart.
+                    fd_guard fdg{-1};
                     ssl_conn_guard sslg{raw_ssl};
 
-                    int fd = tcp_detail::connect_to(host, port, timeout);
+                    const int fd = tcp_detail::connect_to(host, port, timeout);
                     if (fd < 0) {
                         return std::make_exception_ptr(network_exception(
                             "tls_tcp_rpc_client: connect failed to " + host + ":" +
                             std::to_string(port) + ": " + std::strerror(errno)));
                     }
-                    fd_guard fdg{fd};
+                    fdg.fd = fd;
 
                     SSL_set_fd(raw_ssl, fd);
                     if (SSL_connect(raw_ssl) != 1) {

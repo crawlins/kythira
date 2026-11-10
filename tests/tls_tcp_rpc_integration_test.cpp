@@ -755,4 +755,89 @@ BOOST_AUTO_TEST_CASE(client_caps_rpcs_in_flight_per_endpoint, *boost::unit_test:
     ::close(listener);
 }
 
+// The client says close_notify before it closes its socket. SSL_shutdown()
+// writes that record to the connection's fd, so the fd has to be closed
+// after it, not before: closed first, the record went to whatever another
+// thread had just opened under the same number. In iam_node that was the
+// Raft log, opened for its fsync at offset 0, and the 24-byte record
+// overwrote the start of index 1, so a restarted node could not read it and
+// stopped applying. A server that sees EOF with no close_notify can tell the
+// two orders apart, so this stub plays the server with raw OpenSSL calls and
+// reports how the connection ended after its reply.
+BOOST_AUTO_TEST_CASE(client_sends_close_notify_before_closing_its_socket,
+                     *boost::unit_test::timeout(30)) {
+    tls_identity id;
+    int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    BOOST_REQUIRE(listener >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    BOOST_REQUIRE(::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    BOOST_REQUIRE(::listen(listener, 1) == 0);
+    socklen_t len = sizeof(addr);
+    BOOST_REQUIRE(::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+
+    // SSL_get_error() for the read after the reply: SSL_ERROR_ZERO_RETURN
+    // means the peer sent close_notify, anything else that it did not.
+    std::promise<int> ending;
+    std::thread server([&] {
+        int result = -1;
+        const int fd = ::accept(listener, nullptr, nullptr);
+        SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+        if (fd >= 0 && ctx != nullptr &&
+            SSL_CTX_use_certificate_chain_file(ctx, id.files.cert_path.c_str()) == 1 &&
+            SSL_CTX_use_PrivateKey_file(ctx, id.files.key_path.c_str(), SSL_FILETYPE_PEM) == 1) {
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                               raft::testing::accept_any_peer_certificate);
+            SSL* ssl = SSL_new(ctx);
+            SSL_set_fd(ssl, fd);
+            if (SSL_accept(ssl) == 1 && kythira::tls_detail::frame_recv(ssl).has_value()) {
+                const kythira::json_rpc_serializer<std::vector<std::byte>> ser;
+                const auto reply = ser.serialize(kythira::request_vote_response<>{7, true});
+                if (kythira::tls_detail::frame_send(ssl,
+                                                    kythira::tcp_detail::bytes_to_str(reply))) {
+                    char byte{};
+                    const int r = SSL_read(ssl, &byte, 1);
+                    result = SSL_get_error(ssl, r);
+                }
+            }
+            SSL_free(ssl);
+        }
+        if (ctx != nullptr) {
+            SSL_CTX_free(ctx);
+        }
+        if (fd >= 0) {
+            ::close(fd);
+        }
+        ending.set_value(result);
+    });
+
+    tls_tcp_rpc_client client(id.config());
+    client.add_peer(1, "127.0.0.1", ntohs(addr.sin_port));
+    bool answered = false;
+    try {
+        answered = client
+                       .send_request_vote(1, kythira::request_vote_request<>{7, 1, 0, 0},
+                                          std::chrono::milliseconds(5000))
+                       .get()
+                       .vote_granted();
+    } catch (const std::exception& e) {
+        BOOST_TEST_MESSAGE("vote failed: " << e.what());
+    }
+    auto ended = ending.get_future();
+    const bool finished = ended.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    if (!finished) {
+        ::shutdown(listener, SHUT_RDWR);
+    }
+    server.join();
+    ::close(listener);
+
+    BOOST_TEST(answered);
+    BOOST_REQUIRE(finished);
+    const int how = ended.get();
+    BOOST_TEST(
+        how == SSL_ERROR_ZERO_RETURN,
+        "the server saw the connection end without close_notify (SSL_get_error " << how << ")");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
