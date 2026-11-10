@@ -55,6 +55,7 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `include/kythira/kinesis/kinesis_disk_guard.hpp` | the disk guard: appends refused below a free-space floor, on the proposing node and the leader | 10 |
 | `doc/resharding.md` | SplitShard, MergeShards and UpdateShardCount: the UPDATING lock, the cross-group transaction, ending sequence numbers and the repair of an abandoned reshard | 11 |
 | `doc/on-demand.md`, `include/kythira/kinesis/kinesis_on_demand.hpp` | on-demand capacity mode: `UpdateStreamMode` and the controller that splits shards that stay hot | 12 |
+| `doc/kinesis.md` | the operator's page: the model, compatibility switches, limits, the clock assumption, lease backends by KCL version, deployment and the unsupported list | 18 |
 | `doc/fan-out.md` | enhanced fan-out: consumers, `SubscribeToShard` event streams over HTTP/1.1 and HTTP/2, pacing and limits | 13 |
 | `doc/encryption.md`, `include/kythira/kinesis/kinesis_kms.hpp`, `include/kythira/kinesis/kinesis_kms_aws.hpp` | encryption at rest: sealed records, data keys in the catalog, the `kms_key_provider` concept with the local and AWS KMS providers (`KINESIS_KMS`) | 14 |
 | `doc/tags-policies-metrics.md`, `include/kythira/kinesis/kinesis_metrics.hpp` | tags in both forms, resource policies handed to the authorizer, enhanced monitoring, the account calls, and the Prometheus metrics on `GET /metrics` (`KINESIS_METRICS`) | 15 |

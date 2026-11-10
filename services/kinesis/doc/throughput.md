@@ -5,7 +5,7 @@ enforced and what one Raft group sustained at the `aws` write limit.
 
 ## Enforcement
 
-The `throughput` switch of the compatibility profile turns enforcement on
+The `throttling` switch of the compatibility profile turns enforcement on
 or off. It is on by default; a stream's tag overrides the cluster setting.
 
 | Limit | Default | Where the bucket lives | Error |
