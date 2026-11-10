@@ -1282,4 +1282,29 @@ BOOST_FIXTURE_TEST_CASE(unlisted_actions_are_not_implemented, fixture) {
     }
 }
 
+// Task 15: every IAM action the Terraform AWS provider was recorded calling
+// against real AWS (terraform_calls.txt, up to its STS section) is
+// dispatched. Without parameters most answer a validation error, which is
+// fine; only NotImplemented fails.
+BOOST_FIXTURE_TEST_CASE(every_recorded_terraform_iam_call_is_implemented, fixture) {
+    std::ifstream in(std::string(KYTHIRA_IAM_CORPUS_DIR) + "/../terraform_calls.txt");
+    BOOST_TEST_REQUIRE(in.good(), "terraform_calls.txt not found");
+    std::string line;
+    std::size_t checked = 0;
+    while (std::getline(in, line)) {
+        if (line == "# STS") {
+            break;
+        }
+        if (line.empty() || line.front() == '#') {
+            continue;
+        }
+        const auto action = line.substr(0, line.find(' '));
+        const auto r = as_root("Action=" + action);
+        BOOST_TEST(code_of(r) != "NotImplemented", action);
+        BOOST_TEST(r.status != 501U, action);
+        ++checked;
+    }
+    BOOST_TEST(checked == 53U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

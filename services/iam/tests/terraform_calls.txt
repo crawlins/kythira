@@ -1,0 +1,96 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The IAM and STS calls the Terraform AWS provider makes, recorded against
+# real AWS (.kiro/specs/iam-compatible-auth/ task 15).
+#
+# Recorded 2026-11-10 with Terraform 1.17.1 and hashicorp/aws 6.72.0
+# (aws-sdk-go-v2 1.47.4, IAM client 1.64.5), IAM only, in a scratch
+# account path, from the Action= of every request body in the debug logs.
+# The configuration covered users (with tags, inline policy, attachment
+# and permissions boundary), an access key, two groups with membership,
+# inline and attached policies, a customer managed policy with a second
+# version, roles with tags, inline policies, attachments and a boundary,
+# an instance profile and an OIDC provider. Phases: apply; an update
+# apply (new policy version, changed role and user tags); plan with
+# -detailed-exitcode; destroy. Every resource was deleted afterwards.
+#
+# Format: <Action> <total calls> <phases>, where the phases are a(pply),
+# u(pdate), p(lan) and d(estroy). Every action here is implemented
+# (doc/iam.md); the conformance job (iam_conformance_test) applies,
+# re-plans and destroys services/iam/tests/docker/conformance/terraform/
+# against Kythira and fails on any NotImplemented.
+#
+# The provider never called: Tag*/List*Tags on create (tags ride in the
+# Create* call and are read back from Get*), Put{User,Role}PermissionsBoundary
+# (the boundary rides in CreateUser/CreateRole), TagPolicy, UpdateRole,
+# UpdateAssumeRolePolicy, or any OIDC provider update. Kythira implements
+# them anyway, for other configurations.
+#
+# Observed provider behaviour worth knowing:
+# - aws_iam_policy_attachment is exclusive: on update it detaches every
+#   other holder of the policy (DetachRolePolicy/DetachUserPolicy), and
+#   its ListEntitiesForPolicy read takes no usage filter, so a user that
+#   holds the policy only as a boundary is pulled into its state. The
+#   conformance config uses the per-entity attachment resources instead.
+# - Deleting that drifted state, AWS answered DetachUserPolicy for an
+#   already-deleted user with 403, not NoSuchEntity; a second destroy
+#   finished.
+
+# IAM
+AddRoleToInstanceProfile 1 a
+AddUserToGroup 2 a
+AttachGroupPolicy 2 a
+AttachRolePolicy 1 a
+AttachUserPolicy 1 a
+CreateAccessKey 1 a
+CreateGroup 2 a
+CreateInstanceProfile 1 a
+CreateOpenIDConnectProvider 1 a
+CreatePolicy 1 a
+CreatePolicyVersion 1 u
+CreateRole 2 a
+CreateUser 1 a
+DeleteAccessKey 1 d
+DeleteGroup 2 d
+DeleteGroupPolicy 1 d
+DeleteInstanceProfile 1 d
+DeleteOpenIDConnectProvider 1 d
+DeletePolicy 1 d
+DeletePolicyVersion 1 d
+DeleteRole 2 d
+DeleteRolePolicy 2 d
+DeleteUser 1 d
+DeleteUserPolicy 1 d
+DetachGroupPolicy 2 d
+DetachRolePolicy 2 ud
+DetachUserPolicy 3 ud
+GetGroup 15 aupd
+GetGroupPolicy 5 aupd
+GetInstanceProfile 8 aupd
+GetOpenIDConnectProvider 4 aupd
+GetPolicy 6 aupd
+GetPolicyVersion 6 aupd
+GetRole 13 aupd
+GetRolePolicy 13 aupd
+GetUser 5 aupd
+GetUserPolicy 5 aupd
+ListAccessKeys 3 upd
+ListAttachedGroupPolicies 4 aupd
+ListAttachedRolePolicies 13 aupd
+ListAttachedUserPolicies 4 aupd
+ListEntitiesForPolicy 6 aupd
+ListGroupsForUser 5 aupd
+ListInstanceProfilesForRole 2 d
+ListPolicyVersions 2 ud
+ListRolePolicies 11 aupd
+PutGroupPolicy 1 a
+PutRolePolicy 2 a
+PutUserPolicy 1 a
+RemoveRoleFromInstanceProfile 1 d
+RemoveUserFromGroup 2 d
+TagRole 1 u
+TagUser 1 u
+
+# STS
+GetCallerIdentity 11 aupd
