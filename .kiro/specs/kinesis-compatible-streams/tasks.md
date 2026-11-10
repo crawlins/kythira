@@ -149,6 +149,23 @@ asked.
   - AWS CLI, boto3, aws-sdk-cpp producer and polling consumer end to end
     (Docker and rootless Podman)
   - _Requirements: 9.1-9.4_
+  - Progress: iterators are HMAC-SHA256 tokens naming the stream (with its
+    catalog id), shard, position and issue time, checked by any node
+    (`kinesis_iterators.hpp`); the key ring rotates with an overlap, read
+    from `KINESIS_ITERATOR_KEYS_FILE` or derived from the forwarding secret.
+    All five iterator types; `AT_TIMESTAMP` resolves in `GetRecords`.
+    `GetRecords` reads the local replica's segments
+    (`kinesis_records.hpp`), fetching a missing sealed segment from a peer
+    and failing with InternalFailure rather than skipping one; a trimmed
+    position starts at the trim horizon; `MillisBehindLatest`; expiry per
+    the `iterator-lifetime` switch (5 minutes, or a day relaxed). The
+    container scenario (`tests/docker/`, `docker-kinesis-node-tests`, the
+    Kinesis Module workflow's container job) runs three nodes by service
+    name with the AWS CLI v2 and a boto3 producer and polling consumer,
+    through a stopped node and its catch-up; it passes under Docker
+    locally. Open: the aws-sdk-cpp producer and consumer, which needs the
+    `kinesis` feature of vcpkg's aws-sdk-cpp; `ChildShards` is in place but
+    untested until resharding (task 11) closes a shard.
 
 - [ ] 8. Throughput limits and the measurement row
   - Leader-side token buckets for writes and reads, throttling errors

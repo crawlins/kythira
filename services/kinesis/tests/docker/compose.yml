@@ -1,0 +1,110 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Three Kinesis gateway nodes and their clients
+# (.kiro/specs/kinesis-compatible-streams/ task 7, Requirement 9), driven
+# by kinesis_node_scenario_test.
+#
+# CLAUDE.md's container rules, as they apply here:
+#
+#   * **No static IPs.** No `ipam`, no `ipv4_address`; rootless Podman drops
+#     them silently. Raft RPC, forwarded writes, segment fetches and every
+#     client address nodes by **service name** (kin-1 .. kin-3).
+#   * **No runtime named anywhere.** The scenario test drives this file
+#     through `container_runtime()` / `compose_prefix()`
+#     (tests/docker_chaos/os_faults.hpp), honouring
+#     $KYTHIRA_CONTAINER_RUNTIME and $KYTHIRA_COMPOSE_COMMAND.
+#   * **No capabilities, no privileged or host networking.**
+#
+# The API and Raft RPC are plaintext inside this private network
+# (KINESIS_ALLOW_PLAINTEXT, KYTHIRA_ALLOW_PLAINTEXT_RAFT): what this
+# scenario checks is the SDKs against a cluster. The gateway's TLS, the
+# peer client's certificate checks and the forwarding HMAC have their own
+# tests (kinesis_gateway_test, kinesis_forward_test). Nothing is published
+# on the host, so two stacks never contend for a port.
+#
+# The clients are in the `clients` profile, so `up` never starts them; the
+# scenario runs each with `compose --profile clients run --rm`. Each node
+# keeps its Raft state and segments in its own named volume, so
+# `stop`/`start` resumes it and `down -v` is a clean slate.
+
+name: kythira-kinesis-scenario
+
+x-node: &node
+  image: kythira-kinesis-node:dev
+  networks:
+    - kinesis_net
+
+x-env: &env
+  KYTHIRA_PEERS: "1=http://kin-1:7100,2=http://kin-2:7100,3=http://kin-3:7100"
+  KYTHIRA_RAFT_BIND: 0.0.0.0
+  KYTHIRA_RAFT_PORT: "7100"
+  KYTHIRA_ALLOW_PLAINTEXT_RAFT: "true"
+  KYTHIRA_ELECTION_TIMEOUT_MIN_MS: "1000"
+  KYTHIRA_ELECTION_TIMEOUT_MAX_MS: "2000"
+  KYTHIRA_LOG_LEVEL: warning
+  KINESIS_LISTEN: 0.0.0.0:4567
+  KINESIS_ALLOW_PLAINTEXT: "true"
+  KINESIS_STATIC_KEYS_FILE: /etc/kinesis/keys
+  KINESIS_DATA_DIR: /var/lib/kinesis
+  # Peer gateways default to each Raft host with this node's listen port:
+  # kin-N:4567.
+  KINESIS_FORWARD_SECRET: kinesis-scenario-forward-secret
+
+services:
+  kin-1:
+    <<: *node
+    environment:
+      <<: *env
+      KYTHIRA_NODE_ID: "1"
+    volumes:
+      - ./keys.txt:/etc/kinesis/keys:ro
+      - kin-1-data:/var/lib/kinesis
+
+  kin-2:
+    <<: *node
+    environment:
+      <<: *env
+      KYTHIRA_NODE_ID: "2"
+    volumes:
+      - ./keys.txt:/etc/kinesis/keys:ro
+      - kin-2-data:/var/lib/kinesis
+
+  kin-3:
+    <<: *node
+    environment:
+      <<: *env
+      KYTHIRA_NODE_ID: "3"
+    volumes:
+      - ./keys.txt:/etc/kinesis/keys:ro
+      - kin-3-data:/var/lib/kinesis
+
+  # The AWS CLI v2, at the version the wire evidence pins
+  # (services/kinesis/tests/evidence/README.md).
+  aws-cli:
+    image: docker.io/amazon/aws-cli:2.31.0
+    profiles: ["clients"]
+    networks:
+      - kinesis_net
+    environment:
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_PAGER: ""
+
+  # boto3 producer and polling consumer (kinesis_e2e.py).
+  boto3:
+    image: kythira-kinesis-clients:dev
+    profiles: ["clients"]
+    networks:
+      - kinesis_net
+    environment:
+      AWS_EC2_METADATA_DISABLED: "true"
+
+networks:
+  kinesis_net:
+    driver: bridge
+
+volumes:
+  kin-1-data:
+  kin-2-data:
+  kin-3-data:

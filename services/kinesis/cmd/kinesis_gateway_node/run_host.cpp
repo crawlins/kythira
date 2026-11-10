@@ -20,6 +20,7 @@
 #include <kythira/kinesis/kinesis_compat_profile.hpp>
 #include <kythira/kinesis/kinesis_front_end.hpp>
 #include <kythira/kinesis/kinesis_gateway.hpp>
+#include <kythira/kinesis/kinesis_iterators.hpp>
 #include <kythira/kinesis/kinesis_peer_client.hpp>
 #include <kythira/kinesis/kinesis_raft_cluster.hpp>
 #include <kythira/kinesis/kinesis_service.hpp>
@@ -312,6 +313,15 @@ auto run(const node_options& opt) -> int {
     kinesis::kinesis_service_config sc;
     sc._cluster_profile = *profile;
     sc._limits = kinesis::kinesis_limits::for_region(opt._region);
+    // Every gateway must sign iterators with the same key, or a client's
+    // next GetRecords on another node fails; a lone node without a
+    // forwarding secret gets the service's random key.
+    if (!opt._iterator_keys_file.empty()) {
+        sc._iterator_keys = kinesis::parse_iterator_keys(
+            read_file(opt._iterator_keys_file, "KINESIS_ITERATOR_KEYS_FILE"));
+    } else if (!opt._forward_secret.empty()) {
+        sc._iterator_keys = kinesis::derived_iterator_key(opt._forward_secret);
+    }
     kinesis::kinesis_service<cluster_type> service(cluster, sc);
     service.register_with(front_end);
     gateway_type gateway(

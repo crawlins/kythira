@@ -62,6 +62,10 @@ struct node_options {
     /// gateways sign forwarded writes and segment fetches with. Required
     /// with more than one voter.
     std::string _forward_secret;
+    /// `KINESIS_ITERATOR_KEYS_FILE` (kinesis_iterators.hpp); empty derives
+    /// the iterator key from the forwarding secret, or, on a lone node
+    /// without one, makes a random key per process.
+    std::string _iterator_keys_file;
     /// Every voter's gateway `host:port`. Defaults to the Raft URL's host
     /// with this node's own listen port.
     std::map<kythira::host_node_id, std::string> _peer_gateways;

@@ -66,6 +66,7 @@ services/redis/docker/txn-chaos/dist/
 services/redis/docker/engine-chaos/dist/
 services/iam/docker/iam_node/dist/
 services/iam/docker/conformance/dist/
+services/kinesis/docker/kinesis_gateway_node/dist/
 docker/mtls_chaos/dist/
 docker/cairn/tool_server/dist/
 
