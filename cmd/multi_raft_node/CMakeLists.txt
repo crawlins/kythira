@@ -216,8 +216,13 @@ if(TARGET Boost::unit_test_framework)
             Boost::unit_test_framework network_simulator boost_json httplib::httplib
             kythira_host_node_id)
         target_compile_features(multi_raft_node_s3_process_test PRIVATE cxx_std_23)
+        # -rdynamic and --catch_system_errors=no: a crash in this process
+        # prints the faulting thread's backtrace (the test's
+        # crash_backtrace fixture) instead of Boost.Test's bare address.
+        target_link_options(multi_raft_node_s3_process_test PRIVATE -rdynamic)
         add_dependencies(multi_raft_node_s3_process_test multi_raft_node)
-        add_test(NAME multi_raft_node_s3_process_test COMMAND multi_raft_node_s3_process_test)
+        add_test(NAME multi_raft_node_s3_process_test
+            COMMAND multi_raft_node_s3_process_test --catch_system_errors=no)
         set_tests_properties(multi_raft_node_s3_process_test PROPERTIES
             TIMEOUT 900
             LABELS "integration;multi-raft;object-store;aws")

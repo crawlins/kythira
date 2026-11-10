@@ -28,11 +28,13 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <csignal>
+#include <execinfo.h>
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -177,11 +179,13 @@ public:
         posix_spawn_file_actions_init(&actions);
         posix_spawn_file_actions_adddup2(&actions, fd, STDOUT_FILENO);
         posix_spawn_file_actions_adddup2(&actions, fd, STDERR_FILENO);
+        pid_t pid = -1;
         const int spawned =
-            ::posix_spawn(&_pid, binary.c_str(), &actions, nullptr, argv.data(), envp.data());
+            ::posix_spawn(&pid, binary.c_str(), &actions, nullptr, argv.data(), envp.data());
         posix_spawn_file_actions_destroy(&actions);
         ::close(fd);
         BOOST_REQUIRE_MESSAGE(spawned == 0, "could not spawn " << binary);
+        _pid = pid;
     }
 
     ~host_process() {
@@ -198,20 +202,25 @@ public:
     auto operator=(host_process&&) -> host_process& = delete;
 
     /// Signals the host and reaps it. Returns the wait status.
+    ///
+    /// Called from the test's own thread while writer threads ask
+    /// `running()`, which is why `_pid` is atomic (ThreadSanitizer flagged
+    /// the plain int in `acknowledged_writes_survive_a_leader_sigkill`).
     auto stop(int signal = SIGTERM) -> int {
-        if (_pid <= 0) {
+        const pid_t pid = _pid.load();
+        if (pid <= 0) {
             return _status;
         }
-        ::kill(_pid, signal);
+        ::kill(pid, signal);
         const auto deadline = std::chrono::steady_clock::now() + 30s;
         while (true) {
-            const pid_t done = ::waitpid(_pid, &_status, WNOHANG);
-            if (done == _pid) {
+            const pid_t done = ::waitpid(pid, &_status, WNOHANG);
+            if (done == pid) {
                 break;
             }
             if (std::chrono::steady_clock::now() > deadline) {
-                ::kill(_pid, SIGKILL);
-                ::waitpid(_pid, &_status, 0);
+                ::kill(pid, SIGKILL);
+                ::waitpid(pid, &_status, 0);
                 break;
             }
             std::this_thread::sleep_for(20ms);
@@ -224,7 +233,8 @@ public:
     auto wait_exit(std::chrono::milliseconds limit) -> std::optional<int> {
         const auto deadline = std::chrono::steady_clock::now() + limit;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (::waitpid(_pid, &_status, WNOHANG) == _pid) {
+            const pid_t pid = _pid.load();
+            if (::waitpid(pid, &_status, WNOHANG) == pid) {
                 _pid = -1;
                 return _status;
             }
@@ -238,7 +248,7 @@ public:
 
 private:
     std::filesystem::path _log;
-    pid_t _pid{-1};
+    std::atomic<pid_t> _pid{-1};
     int _status{0};
 };
 
@@ -644,7 +654,54 @@ auto log_prefix_of(std::uint64_t host, std::uint64_t group) -> std::string {
     return "run/nodes/" + std::to_string(host) + "/groups/" + std::to_string(group) + "/log/";
 }
 
+/// Prints the faulting thread's backtrace on a fatal signal, then dies of it.
+///
+/// `acknowledged_writes_survive_a_leader_sigkill` has crashed this process,
+/// not a host, three times in CI (2026-10-23, 10-31 and 11-06), each time
+/// during the 16-writer load around the kill and each time at a different
+/// wild address (0x6400000, 0x400050000000c, 0x7f57870002), which reads as
+/// memory corruption. Boost.Test reported only the address, and the case
+/// has not failed in 25 local runs under AddressSanitizer. So ctest runs
+/// this binary with `--catch_system_errors=no`, and this handler says where
+/// the next one happens. It uses only async-signal-safe calls:
+/// `backtrace()` is called once at start-up so that it does not have to load
+/// libgcc inside the handler, and `backtrace_symbols_fd()` does not allocate.
+void print_backtrace_and_die(int sig) {
+    std::array<void*, 64> frames{};
+    const int depth = ::backtrace(frames.data(), static_cast<int>(frames.size()));
+    constexpr std::string_view header =
+        "\nmulti_raft_node_s3_process_test: fatal signal; backtrace of the faulting thread:\n";
+    [[maybe_unused]] const ssize_t written = ::write(STDERR_FILENO, header.data(), header.size());
+    ::backtrace_symbols_fd(frames.data(), depth, STDERR_FILENO);
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+}
+
+struct crash_backtrace {
+    crash_backtrace() {
+        std::array<void*, 1> warm{};
+        (void)::backtrace(warm.data(), 1);
+        // A stack of its own for the main thread, so a fault from running
+        // out of stack there can still be reported. (sigaltstack is per
+        // thread; the writer threads report on their own stacks.)
+        static std::array<char, 64 * 1024> alt_stack{};
+        stack_t ss{};
+        ss.ss_sp = alt_stack.data();
+        ss.ss_size = alt_stack.size();
+        ::sigaltstack(&ss, nullptr);
+        struct sigaction sa{};
+        sa.sa_handler = print_backtrace_and_die;
+        sa.sa_flags = SA_ONSTACK;
+        sigemptyset(&sa.sa_mask);
+        for (const int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) {
+            ::sigaction(sig, &sa, nullptr);
+        }
+    }
+};
+
 }  // namespace
+
+BOOST_TEST_GLOBAL_FIXTURE(crash_backtrace);
 
 // ── Requirement 10.3 and 10.4: write, restart, read; refuse a duplicate ─────
 
