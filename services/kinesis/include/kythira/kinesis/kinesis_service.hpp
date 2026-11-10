@@ -41,8 +41,7 @@
 /// after a write on another node may briefly show the old state, as AWS's
 /// describes are eventually consistent too.
 ///
-/// Not here yet: consumers (EnforceConsumerDeletion has nothing to enforce
-/// until task 13), naming a stream by `StreamId` and `DryRun` (refused with
+/// Not here yet: naming a stream by `StreamId` and `DryRun` (refused with
 /// InvalidArgumentException rather than silently ignored), and the
 /// per-stream maximum record size (`MaxRecordSizeInKiB`, AWS's default of
 /// 1 MiB applies).
@@ -77,10 +76,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -140,6 +141,15 @@ struct kinesis_service_config {
     /// `StartStreamEncryption` is refused, and an encrypted stream's
     /// records cannot be written or read on this node.
     key_provider _kms{};
+    /// SubscribeToShard (task 13): AWS's five minutes per subscription,
+    /// 2 MiB/s per consumer and shard, and an event at least every five
+    /// seconds; how often an idle subscription looks for new records and
+    /// checks that its consumer is still registered.
+    std::chrono::milliseconds _subscription_lifetime{300'000};
+    std::uint64_t _subscription_bytes_per_s = std::uint64_t{2} * 1024 * 1024;
+    std::chrono::milliseconds _subscription_heartbeat{5000};
+    std::chrono::milliseconds _subscription_poll{100};
+    std::chrono::milliseconds _subscription_recheck{1000};
 };
 
 /// `shardId-` and the ordinal: twelve digits in the `aws` id format, bare
@@ -342,6 +352,11 @@ public:
         fe.on("UpdateMaxRecordSize", bind(&kinesis_service::update_max_record_size));
         fe.on("StartStreamEncryption", bind(&kinesis_service::start_stream_encryption));
         fe.on("StopStreamEncryption", bind(&kinesis_service::stop_stream_encryption));
+        fe.on("RegisterStreamConsumer", bind(&kinesis_service::register_stream_consumer));
+        fe.on("DeregisterStreamConsumer", bind(&kinesis_service::deregister_stream_consumer));
+        fe.on("DescribeStreamConsumer", bind(&kinesis_service::describe_stream_consumer));
+        fe.on("ListStreamConsumers", bind(&kinesis_service::list_stream_consumers));
+        fe.on("SubscribeToShard", bind(&kinesis_service::subscribe_to_shard));
         if constexpr (transacts<Cluster>) {
             fe.on("SplitShard", bind(&kinesis_service::split_shard));
             fe.on("MergeShards", bind(&kinesis_service::merge_shards));
@@ -350,14 +365,16 @@ public:
     }
 
     /// The operations `register_with` adds, for implemented-operations.txt.
-    static constexpr std::array<std::string_view, 33> k_operations{"AddTagsToStream",
+    static constexpr std::array<std::string_view, 38> k_operations{"AddTagsToStream",
                                                                    "CreateStream",
                                                                    "DecreaseStreamRetentionPeriod",
                                                                    "DeleteResourcePolicy",
                                                                    "DeleteStream",
+                                                                   "DeregisterStreamConsumer",
                                                                    "DescribeAccountSettings",
                                                                    "DescribeLimits",
                                                                    "DescribeStream",
+                                                                   "DescribeStreamConsumer",
                                                                    "DescribeStreamSummary",
                                                                    "DisableEnhancedMonitoring",
                                                                    "EnableEnhancedMonitoring",
@@ -366,6 +383,7 @@ public:
                                                                    "GetShardIterator",
                                                                    "IncreaseStreamRetentionPeriod",
                                                                    "ListShards",
+                                                                   "ListStreamConsumers",
                                                                    "ListStreams",
                                                                    "ListTagsForResource",
                                                                    "ListTagsForStream",
@@ -373,10 +391,12 @@ public:
                                                                    "PutRecord",
                                                                    "PutRecords",
                                                                    "PutResourcePolicy",
+                                                                   "RegisterStreamConsumer",
                                                                    "RemoveTagsFromStream",
                                                                    "SplitShard",
                                                                    "StartStreamEncryption",
                                                                    "StopStreamEncryption",
+                                                                   "SubscribeToShard",
                                                                    "TagResource",
                                                                    "UntagResource",
                                                                    "UpdateAccountSettings",
@@ -501,6 +521,12 @@ public:
             return s.error();
         }
         const auto& rec = *s;
+        if (!rec._consumers.empty() &&
+            !service_detail::bool_member(in, "EnforceConsumerDeletion")) {
+            return service_detail::in_use("Stream " + rec._name + " under account " + rec._account +
+                                          " has registered consumers. Deregister them first, or "
+                                          "set EnforceConsumerDeletion.");
+        }
         if (rec._status != stream_status::deleting) {
             const auto r = propose(set_stream_status_command{rec._account, rec._name, rec._id,
                                                              stream_status::deleting});
@@ -660,6 +686,9 @@ public:
         if (auto e = refuse_unsupported(in)) {
             return *e;
         }
+        if (is_consumer_arn(in)) {
+            return consumer_resource(ctx, in, consumer_resource_op::tag);
+        }
         auto s = find_resource(ctx, in);
         if (!s) {
             return s.error();
@@ -671,6 +700,9 @@ public:
         if (auto e = refuse_unsupported(in)) {
             return *e;
         }
+        if (is_consumer_arn(in)) {
+            return consumer_resource(ctx, in, consumer_resource_op::untag);
+        }
         auto s = find_resource(ctx, in);
         if (!s) {
             return s.error();
@@ -681,6 +713,9 @@ public:
     auto list_tags_for_resource(call_context& ctx, boost::json::object& in) -> result {
         if (auto e = refuse_unsupported(in)) {
             return *e;
+        }
+        if (is_consumer_arn(in)) {
+            return consumer_resource(ctx, in, consumer_resource_op::list_tags);
         }
         auto s = find_resource(ctx, in);
         if (!s) {
@@ -716,6 +751,9 @@ public:
         if (ec || !doc.is_object() || !doc.as_object().contains("Statement")) {
             return invalid_argument("The resource policy is not a valid JSON policy document.");
         }
+        if (is_consumer_arn(in)) {
+            return consumer_resource(ctx, in, consumer_resource_op::put_policy);
+        }
         auto s = find_resource(ctx, in);
         if (!s) {
             return s.error();
@@ -727,6 +765,9 @@ public:
     auto get_resource_policy(call_context& ctx, boost::json::object& in) -> result {
         if (auto e = refuse_unsupported(in)) {
             return *e;
+        }
+        if (is_consumer_arn(in)) {
+            return consumer_resource(ctx, in, consumer_resource_op::get_policy);
         }
         auto s = find_resource(ctx, in);
         if (!s) {
@@ -740,6 +781,9 @@ public:
     auto delete_resource_policy(call_context& ctx, boost::json::object& in) -> result {
         if (auto e = refuse_unsupported(in)) {
             return *e;
+        }
+        if (is_consumer_arn(in)) {
+            return consumer_resource(ctx, in, consumer_resource_op::delete_policy);
         }
         auto s = find_resource(ctx, in);
         if (!s) {
@@ -849,6 +893,194 @@ public:
         return encryption_answer(rec, r);
     }
 
+    // ---- enhanced fan-out consumers (task 13) -------------------------------
+
+    /// `RegisterStreamConsumer`: at most 20 per stream, on an ACTIVE stream.
+    /// The consumer can subscribe at once, so it is ACTIVE from the start
+    /// (AWS shows CREATING for a few seconds; clients wait for ACTIVE).
+    auto register_stream_consumer(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const std::string name(*detail::string_member(in, "ConsumerName"));
+        auto tags = tag_map_of(in);
+        if (tags.size() > k_max_tags) {
+            return invalid_argument("A consumer can have at most " + std::to_string(k_max_tags) +
+                                    " tags.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        if (rec._status != stream_status::active) {
+            return not_active(rec);
+        }
+        const auto now = _cluster.now_ms();
+        const consumer_record c{._name = name, ._created_ms = now, ._tags = tags, ._policy = {}};
+        if (const auto* old = rec.find_consumer(name)) {
+            return consumer_exists(ctx, rec, *old);
+        }
+        const auto max_consumers = max_consumers_of(rec);
+        if (rec._consumers.size() >= max_consumers) {
+            return consumer_limit(rec, max_consumers);
+        }
+        const auto r = propose(consumer_command{._account = rec._account,
+                                                ._name = rec._name,
+                                                ._id = rec._id,
+                                                ._op = consumer_op::register_consumer,
+                                                ._consumer = name,
+                                                ._created_ms = now,
+                                                ._set = std::move(tags),
+                                                ._remove = {},
+                                                ._policy = std::nullopt,
+                                                ._max = static_cast<std::uint32_t>(max_consumers)});
+        if (!r) {
+            return internal_failure();
+        }
+        switch (r->_status) {
+            case apply_status::ok:
+                break;
+            case apply_status::not_found:
+                return service_detail::not_found(rec._name, rec._account);
+            case apply_status::bad_transition:
+                return not_active(rec);
+            case apply_status::already_exists:
+                return consumer_exists(ctx, rec, c);
+            case apply_status::invalid:
+                return consumer_limit(rec, max_consumers);
+            default:
+                return internal_failure();
+        }
+        boost::json::object out;
+        out["Consumer"] = consumer_json(ctx, rec, c, false);
+        return out;
+    }
+
+    /// Ends the consumer's subscriptions too: each notices on its next pass.
+    auto deregister_stream_consumer(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto found = find_consumer(ctx, in);
+        if (!found) {
+            return found.error();
+        }
+        return change_consumer(ctx, *found, consumer_op::deregister, {}, {}, std::nullopt);
+    }
+
+    auto describe_stream_consumer(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto found = find_consumer(ctx, in);
+        if (!found) {
+            return found.error();
+        }
+        boost::json::object out;
+        out["ConsumerDescription"] = consumer_json(ctx, found->_stream, found->_consumer, true);
+        return out;
+    }
+
+    /// By name, `MaxResults` at a time (100 when absent).
+    auto list_stream_consumers(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        if (const auto t = service_detail::number_member(in, "StreamCreationTimestamp");
+            t && static_cast<std::int64_t>(*t) != rec._created_ms / 1000) {
+            return service_detail::not_found(rec._name, rec._account);
+        }
+        const auto limit = static_cast<std::size_t>(std::clamp<std::int64_t>(
+            service_detail::int_member(in, "MaxResults").value_or(100), 1, 10'000));
+        std::string after;
+        if (const auto token = detail::string_member(in, "NextToken")) {
+            const auto decoded = service_detail::base64_decode(*token);
+            const auto prefix = consumers_token_prefix(rec);
+            if (!decoded || !decoded->starts_with(prefix)) {
+                return kinesis_error_style().modeled("ExpiredNextTokenException",
+                                                     "The NextToken is invalid or has expired.");
+            }
+            after = decoded->substr(prefix.size());
+        }
+        std::vector<const consumer_record*> sorted;
+        for (const auto& c : rec._consumers) {
+            if (after.empty() || c._name > after) {
+                sorted.push_back(&c);
+            }
+        }
+        std::ranges::sort(sorted, {}, &consumer_record::_name);
+        boost::json::array list;
+        for (std::size_t i = 0; i < sorted.size() && i < limit; ++i) {
+            list.push_back(consumer_json(ctx, rec, *sorted[i], false));
+        }
+        boost::json::object out;
+        out["Consumers"] = std::move(list);
+        if (sorted.size() > limit) {
+            out["NextToken"] = service_detail::base64_encode(consumers_token_prefix(rec) +
+                                                             sorted[limit - 1]->_name);
+        }
+        return out;
+    }
+
+    /// `SubscribeToShard`: the answer is the initial response, and the
+    /// subscription's events follow it through `ctx._events` (see
+    /// `subscription`). One subscription per consumer and shard on this
+    /// node at a time.
+    auto subscribe_to_shard(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const std::string arn(*detail::string_member(in, "ConsumerARN"));
+        auto found = consumer_by_arn(ctx, arn);
+        if (!found) {
+            return found.error();
+        }
+        const auto& rec = found->_stream;
+        if (rec._status != stream_status::active && rec._status != stream_status::updating) {
+            return not_active(rec);
+        }
+        const std::string shard_text(*detail::string_member(in, "ShardId"));
+        const auto* entry = shard_named(rec, shard_text);
+        if (entry == nullptr) {
+            return shard_not_found(shard_text, rec);
+        }
+        const auto& position = in.at("StartingPosition").as_object();
+        const auto state = read_shard_state(routing_key(rec._id, entry->_ordinal));
+        if (!state || !state->_found) {
+            return internal_failure();
+        }
+        auto start =
+            start_position(rec, *entry, state->_state, *detail::string_member(position, "Type"),
+                           detail::string_member(position, "SequenceNumber"),
+                           service_detail::number_member(position, "Timestamp"), "SequenceNumber",
+                           "SubscribeToShard");
+        if (!start) {
+            return start.error();
+        }
+        const auto key = arn + "|" + std::to_string(entry->_ordinal);
+        std::shared_ptr<subscription> sub;
+        {
+            const std::scoped_lock lock(_subscriptions_mutex);
+            if (const auto it = _subscriptions.find(key);
+                it != _subscriptions.end() && !it->second._sub.expired()) {
+                return service_detail::in_use("Another active subscription exists for consumer " +
+                                              arn + " on shard " + shard_text + ".");
+            }
+            sub = std::make_shared<subscription>(*this, key, ctx._encoding, found->_stream,
+                                                 found->_consumer, entry->_ordinal, start->first,
+                                                 start->second);
+            _subscriptions.insert_or_assign(key, subscription_slot{sub, rec._account, rec._name});
+        }
+        ctx._events = sub;
+        return boost::json::object{};
+    }
+
     /// `StopStreamEncryption`: new records are stored in the clear again.
     /// Records sealed before stay sealed and readable. Stopping a stream
     /// that is not encrypted changes nothing; `KeyId` must name the key the
@@ -890,6 +1122,21 @@ public:
     /// tags and resource policy. Nullopt for anything but an existing
     /// stream (the daemon's `resource_lookup`).
     auto resource_facts_of(std::string_view arn) -> std::optional<resource_facts> {
+        if (arn.find("/consumer/") != std::string_view::npos) {
+            // A consumer's own tags and policy (task 13).
+            call_context any;
+            if (const auto p = parse_kinesis_arn(arn)) {
+                any._partition = std::string(p->_partition);
+                any._region = std::string(p->_region);
+            }
+            auto found = consumer_by_arn(any, arn);
+            if (!found) {
+                return std::nullopt;
+            }
+            return resource_facts{
+                ._tags = {found->_consumer._tags.begin(), found->_consumer._tags.end()},
+                ._policy = found->_consumer._policy};
+        }
         const auto parts = parse_kinesis_arn(arn);
         const auto name = stream_name_of(arn);
         if (!parts || !name) {
@@ -1569,54 +1816,21 @@ public:
             // reshard): a retryable failure, not a missing shard.
             return internal_failure();
         }
-        const auto first = std::max(entry->_starting_counter + 1, state->_state._trim_before);
         shard_iterator it;
         it._account = rec._account;
         it._stream = rec._name;
         it._stream_id = rec._id;
         it._ordinal = entry->_ordinal;
         const std::string type(*detail::string_member(in, "ShardIteratorType"));
-        if (type == "TRIM_HORIZON") {
-            it._counter = first;
-        } else if (type == "LATEST") {
-            it._counter = entry->_ending_counter ? *entry->_ending_counter + 1
-                                                 : state->_state._last_counter + 1;
-        } else if (type == "AT_SEQUENCE_NUMBER" || type == "AFTER_SEQUENCE_NUMBER") {
-            const auto text = detail::string_member(in, "StartingSequenceNumber");
-            if (!text) {
-                return invalid_argument(
-                    "StartingSequenceNumber must be provided for ShardIteratorType "
-                    "AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER.");
-            }
-            auto seq = parse_sequence(*text, sequence_profile::aws);
-            if (!seq) {
-                seq = parse_sequence(*text, sequence_profile::compact);
-            }
-            if (!seq) {
-                return invalid_argument("StartingSequenceNumber " + std::string(*text) +
-                                        " used in GetShardIterator on shard " + shard_text +
-                                        " in stream " + rec._name + " under account " +
-                                        rec._account + " is invalid.");
-            }
-            if (seq->_ordinal != entry->_ordinal) {
-                return invalid_argument("Invalid StartingSequenceNumber. It encodes " +
-                                        format_shard_id(seq->_ordinal, profile._id_format) +
-                                        ", while it was used in a call to a shard with " +
-                                        format_shard_id(entry->_ordinal, profile._id_format));
-            }
-            it._counter = seq->_counter + (type == "AFTER_SEQUENCE_NUMBER" ? 1 : 0);
-        } else if (type == "AT_TIMESTAMP") {
-            const auto ts = service_detail::number_member(in, "Timestamp");
-            if (!ts) {
-                return invalid_argument(
-                    "Timestamp must be provided for ShardIteratorType AT_TIMESTAMP.");
-            }
-            it._counter = first;
-            it._min_timestamp_ms =
-                std::max<std::int64_t>(1, static_cast<std::int64_t>(std::llround(*ts * 1000.0)));
-        } else {
-            return invalid_argument("Invalid ShardIteratorType: " + type + ".");
+        auto start = start_position(rec, *entry, state->_state, type,
+                                    detail::string_member(in, "StartingSequenceNumber"),
+                                    service_detail::number_member(in, "Timestamp"),
+                                    "StartingSequenceNumber", "GetShardIterator");
+        if (!start) {
+            return start.error();
         }
+        it._counter = start->first;
+        it._min_timestamp_ms = start->second;
         it._issued_ms = _cluster.now_ms();
         boost::json::object out;
         out["ShardIterator"] = encode_iterator(it, _config._iterator_keys);
@@ -1693,116 +1907,34 @@ public:
             ._max_bytes = profile._aws_limits ? _config._limits._max_get_records_bytes
                                               : _config._limits._relaxed_get_records_bytes};
 
-        std::optional<shard_read> got;
-        std::int64_t tip_arrival = 0;
-        for (int attempt = 0; attempt < 2 && (!got || got->_missing); ++attempt) {
-            // A segment can go missing between the copy and the read (a trim
-            // or tiering in between): read again with a fresh copy once.
-            const auto state = read_shard_state(key);
-            if (!state || !state->_found || state->_store == nullptr) {
-                // Not found here although the catalog lists it: this
-                // replica is behind (see GetShardIterator). Retryable.
-                return internal_failure();
-            }
-            try {
-                got =
-                    read_shard(*state->_store, state->_fetch, key, state->_state, it._counter,
-                               it._min_timestamp_ms, limits, [&](std::span<const std::byte> bytes) {
-                                   const auto g = sealed_generation(bytes);
-                                   if (!g) {
-                                       throw record_open_error("kinesis: truncated record");
-                                   }
-                                   return open_record(data_key_of(rec, *g), key, bytes);
-                               });
-            } catch (const kms_error& e) {
-                return kms_error_answer(e);
-            } catch (const record_open_error&) {
-                return internal_failure();
-            }
-            tip_arrival = state->_state._last_arrival_ms;
-        }
-        if (!got || got->_missing) {
-            return internal_failure();
+        auto page = read_page(rec, *entry, it._counter, it._min_timestamp_ms, limits, now);
+        if (!page) {
+            return page.error();
         }
         if (profile._throttling) {
-            std::uint64_t bytes = 0;
-            for (const auto& rr : got->_records) {
-                bytes += rr._record._data.size() + rr._record._partition_key.size();
-            }
-            _reads.charge(key, bytes);
-        }
-
-        boost::json::array records;
-        for (const auto& rr : got->_records) {
-            boost::json::object o;
-            o["SequenceNumber"] =
-                format_sequence(sequence_number{._ordinal = it._ordinal, ._counter = rr._counter},
-                                profile._id_format);
-            o["ApproximateArrivalTimestamp"] = service_detail::epoch_seconds(rr._arrival_ms);
-            o["Data"] = service_detail::base64_encode(std::string_view(
-                reinterpret_cast<const char*>(rr._record._data.data()), rr._record._data.size()));
-            o["PartitionKey"] = rr._record._partition_key;
-            if (rr._encrypted) {
-                o["EncryptionType"] = "KMS";
-            }
-            records.push_back(std::move(o));
+            _reads.charge(key, page->_bytes);
         }
         boost::json::object out;
-        std::int64_t behind = 0;
-        if (!got->_caught_up && !got->_records.empty()) {
-            behind = std::max<std::int64_t>(0, now - got->_records.back()._arrival_ms);
-        } else if (!got->_caught_up) {
-            behind = std::max<std::int64_t>(0, now - tip_arrival);
-        }
-        out["MillisBehindLatest"] = behind;
-        const bool exhausted =
-            entry->_ending_counter && got->_next_counter > *entry->_ending_counter;
-        if (exhausted) {
+        out["MillisBehindLatest"] = page->_behind;
+        if (page->_exhausted) {
             // A closed shard read to its end: no next iterator, and the
             // children to move to (Requirement 9.3).
-            out["MillisBehindLatest"] = 0;
-            boost::json::array children;
-            for (const auto& sh : sorted_shards(rec)) {
-                if (sh._parent != it._ordinal && sh._adjacent_parent != it._ordinal) {
-                    continue;
-                }
-                boost::json::array parents;
-                if (sh._parent) {
-                    parents.emplace_back(format_shard_id(*sh._parent, profile._id_format));
-                }
-                if (sh._adjacent_parent) {
-                    parents.emplace_back(format_shard_id(*sh._adjacent_parent, profile._id_format));
-                }
-                boost::json::object c;
-                c["ShardId"] = format_shard_id(sh._ordinal, profile._id_format);
-                c["ParentShards"] = std::move(parents);
-                c["HashKeyRange"] =
-                    boost::json::object{{"StartingHashKey", to_decimal(sh._range._start)},
-                                        {"EndingHashKey", to_decimal(sh._range._end)}};
-                children.push_back(std::move(c));
-            }
-            out["ChildShards"] = std::move(children);
+            out["ChildShards"] = std::move(page->_children);
         } else {
             shard_iterator next = it;
-            next._counter = got->_next_counter;
-            if (!got->_records.empty()) {
+            next._counter = page->_next_counter;
+            if (page->_count > 0) {
                 next._min_timestamp_ms = 0;  // resolved: a plain position now
             }
             next._issued_ms = now;
             out["NextShardIterator"] = encode_iterator(next, _config._iterator_keys);
         }
-        out["Records"] = std::move(records);
-        {
-            std::uint64_t bytes = 0;
-            for (const auto& rr : got->_records) {
-                bytes += rr._record._data.size() + rr._record._partition_key.size();
-            }
-            const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::steady_clock::now() - started)
-                                  .count();
-            _metrics.read({rec._account, rec._name, it._ordinal}, got->_records.size(), bytes,
-                          static_cast<std::uint64_t>(took), exhausted ? 0 : behind);
-        }
+        out["Records"] = std::move(page->_records);
+        const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - started)
+                              .count();
+        _metrics.read({rec._account, rec._name, it._ordinal}, page->_count, page->_bytes,
+                      static_cast<std::uint64_t>(took), page->_behind);
         return out;
     }
 
@@ -1830,6 +1962,7 @@ public:
             v._account = r._account;
             v._stream = r._name;
             v._shard_metrics = {r._shard_metrics.begin(), r._shard_metrics.end()};
+            v._fanout_subscriptions = subscriptions_of(r._account, r._name);
             for (const auto& sh : r._shards) {
                 stream_metric_view::shard row;
                 row._ordinal = sh._ordinal;
@@ -1965,6 +2098,163 @@ private:
         return key;
     }
 
+    /// Where a read of `entry` starts for iterator type `type` (as
+    /// GetShardIterator and SubscribeToShard's StartingPosition take it):
+    /// the counter, and the minimum arrival time for AT_TIMESTAMP (0
+    /// otherwise). `seq_field` and `call` name things in the messages.
+    [[nodiscard]] auto start_position(const stream_record& rec, const shard_entry& entry,
+                                      const shard_state& state, std::string_view type,
+                                      std::optional<std::string_view> seq_text,
+                                      std::optional<double> timestamp, std::string_view seq_field,
+                                      std::string_view call) const
+        -> aws_json::result<std::pair<std::uint64_t, std::int64_t>> {
+        const auto profile = profile_of(rec);
+        const auto shard_text = format_shard_id(entry._ordinal, profile._id_format);
+        const auto first = std::max(entry._starting_counter + 1, state._trim_before);
+        if (type == "TRIM_HORIZON") {
+            return std::pair{first, std::int64_t{0}};
+        }
+        if (type == "LATEST") {
+            return std::pair{
+                entry._ending_counter ? *entry._ending_counter + 1 : state._last_counter + 1,
+                std::int64_t{0}};
+        }
+        if (type == "AT_SEQUENCE_NUMBER" || type == "AFTER_SEQUENCE_NUMBER") {
+            if (!seq_text) {
+                return invalid_argument(std::string(seq_field) +
+                                        " must be provided for ShardIteratorType "
+                                        "AT_SEQUENCE_NUMBER or AFTER_SEQUENCE_NUMBER.");
+            }
+            auto seq = parse_sequence(*seq_text, sequence_profile::aws);
+            if (!seq) {
+                seq = parse_sequence(*seq_text, sequence_profile::compact);
+            }
+            if (!seq) {
+                return invalid_argument(std::string(seq_field) + " " + std::string(*seq_text) +
+                                        " used in " + std::string(call) + " on shard " +
+                                        shard_text + " in stream " + rec._name + " under account " +
+                                        rec._account + " is invalid.");
+            }
+            if (seq->_ordinal != entry._ordinal) {
+                return invalid_argument("Invalid " + std::string(seq_field) + ". It encodes " +
+                                        format_shard_id(seq->_ordinal, profile._id_format) +
+                                        ", while it was used in a call to a shard with " +
+                                        shard_text);
+            }
+            return std::pair{seq->_counter + (type == "AFTER_SEQUENCE_NUMBER" ? 1 : 0),
+                             std::int64_t{0}};
+        }
+        if (type == "AT_TIMESTAMP") {
+            if (!timestamp) {
+                return invalid_argument(
+                    "Timestamp must be provided for ShardIteratorType AT_TIMESTAMP.");
+            }
+            return std::pair{first,
+                             std::max<std::int64_t>(
+                                 1, static_cast<std::int64_t>(std::llround(*timestamp * 1000.0)))};
+        }
+        return invalid_argument("Invalid ShardIteratorType: " + std::string(type) + ".");
+    }
+
+    /// One read of a shard from this replica, as GetRecords and a
+    /// subscription's events carry it.
+    struct page {
+        boost::json::array _records;
+        std::size_t _count = 0;
+        /// The records' partition keys and data.
+        std::uint64_t _bytes = 0;
+        /// Where the next read starts.
+        std::uint64_t _next_counter = 0;
+        std::int64_t _behind = 0;
+        /// A closed shard read to its end; `_children` are its children.
+        bool _exhausted = false;
+        boost::json::array _children;
+    };
+
+    auto read_page(const stream_record& rec, const shard_entry& entry, std::uint64_t counter,
+                   std::int64_t min_timestamp_ms, const segment_read_limits& limits,
+                   std::int64_t now) -> aws_json::result<page> {
+        const auto profile = profile_of(rec);
+        const auto key = routing_key(rec._id, entry._ordinal);
+        std::optional<shard_read> got;
+        std::int64_t tip_arrival = 0;
+        for (int attempt = 0; attempt < 2 && (!got || got->_missing); ++attempt) {
+            // A segment can go missing between the copy and the read (a trim
+            // or tiering in between): read again with a fresh copy once.
+            const auto state = read_shard_state(key);
+            if (!state || !state->_found || state->_store == nullptr) {
+                // Not found here although the catalog lists it: this
+                // replica is behind (see GetShardIterator). Retryable.
+                return internal_failure();
+            }
+            try {
+                got = read_shard(*state->_store, state->_fetch, key, state->_state, counter,
+                                 min_timestamp_ms, limits, [&](std::span<const std::byte> bytes) {
+                                     const auto g = sealed_generation(bytes);
+                                     if (!g) {
+                                         throw record_open_error("kinesis: truncated record");
+                                     }
+                                     return open_record(data_key_of(rec, *g), key, bytes);
+                                 });
+            } catch (const kms_error& e) {
+                return kms_error_answer(e);
+            } catch (const record_open_error&) {
+                return internal_failure();
+            }
+            tip_arrival = state->_state._last_arrival_ms;
+        }
+        if (!got || got->_missing) {
+            return internal_failure();
+        }
+        page out;
+        for (const auto& rr : got->_records) {
+            boost::json::object o;
+            o["SequenceNumber"] = format_sequence(
+                sequence_number{._ordinal = entry._ordinal, ._counter = rr._counter},
+                profile._id_format);
+            o["ApproximateArrivalTimestamp"] = service_detail::epoch_seconds(rr._arrival_ms);
+            o["Data"] = service_detail::base64_encode(std::string_view(
+                reinterpret_cast<const char*>(rr._record._data.data()), rr._record._data.size()));
+            o["PartitionKey"] = rr._record._partition_key;
+            if (rr._encrypted) {
+                o["EncryptionType"] = "KMS";
+            }
+            out._records.push_back(std::move(o));
+            out._bytes += rr._record._data.size() + rr._record._partition_key.size();
+        }
+        out._count = got->_records.size();
+        out._next_counter = got->_next_counter;
+        if (!got->_caught_up && !got->_records.empty()) {
+            out._behind = std::max<std::int64_t>(0, now - got->_records.back()._arrival_ms);
+        } else if (!got->_caught_up) {
+            out._behind = std::max<std::int64_t>(0, now - tip_arrival);
+        }
+        out._exhausted = entry._ending_counter && got->_next_counter > *entry._ending_counter;
+        if (out._exhausted) {
+            out._behind = 0;
+            for (const auto& sh : sorted_shards(rec)) {
+                if (sh._parent != entry._ordinal && sh._adjacent_parent != entry._ordinal) {
+                    continue;
+                }
+                boost::json::array parents;
+                if (sh._parent) {
+                    parents.emplace_back(format_shard_id(*sh._parent, profile._id_format));
+                }
+                if (sh._adjacent_parent) {
+                    parents.emplace_back(format_shard_id(*sh._adjacent_parent, profile._id_format));
+                }
+                boost::json::object c;
+                c["ShardId"] = format_shard_id(sh._ordinal, profile._id_format);
+                c["ParentShards"] = std::move(parents);
+                c["HashKeyRange"] =
+                    boost::json::object{{"StartingHashKey", to_decimal(sh._range._start)},
+                                        {"EndingHashKey", to_decimal(sh._range._end)}};
+                out._children.push_back(std::move(c));
+            }
+        }
+        return out;
+    }
+
     /// A shard's state as this replica has it, copied out of the read so
     /// the store is read without holding the state machine.
     struct shard_snapshot {
@@ -2072,6 +2362,486 @@ private:
     }
 
     // ---- resharding internals ------------------------------------------------
+
+    // ---- SubscribeToShard (task 13) -------------------------------------------
+
+    /// One SubscribeToShard, pulled by the transport. The first message is
+    /// the initial response. Then each pull reads the shard from this
+    /// replica where the last event stopped, within the subscription's
+    /// 2 MiB/s, and answers an event when there are records, when the
+    /// shard ends (with its children and no continuation), or when five
+    /// seconds passed without one. It ends after five minutes, when its
+    /// consumer is deregistered or its stream deleted (with
+    /// ResourceNotFoundException), or when a read fails (with
+    /// InternalFailureException or a KMS exception): the client subscribes
+    /// again from the last ContinuationSequenceNumber, possibly on another
+    /// node. Reads are replica-local, so a leader change of the shard's
+    /// group does not end it.
+    class subscription final : public event_source {
+    public:
+        subscription(kinesis_service& svc, std::string key, aws_json::body_encoding encoding,
+                     stream_record rec, consumer_record consumer, std::uint32_t ordinal,
+                     std::uint64_t counter, std::int64_t min_timestamp_ms)
+            : _svc(svc),
+              _key(std::move(key)),
+              _encoding(encoding),
+              _rec(std::move(rec)),
+              _consumer(std::move(consumer)),
+              _ordinal(ordinal),
+              _counter(counter),
+              _min_timestamp_ms(min_timestamp_ms),
+              _started(std::chrono::steady_clock::now()),
+              _end(_started + svc._config._subscription_lifetime),
+              _next_check(_started + svc._config._subscription_recheck),
+              _last_event(_started),
+              _refilled(_started),
+              _tokens(static_cast<double>(svc._config._subscription_bytes_per_s)) {}
+
+        subscription(const subscription&) = delete;
+        subscription(subscription&&) = delete;
+        auto operator=(const subscription&) -> subscription& = delete;
+        auto operator=(subscription&&) -> subscription& = delete;
+        ~subscription() override { _svc.forget_subscription(_key, this); }
+
+        auto next(std::chrono::milliseconds wait) -> pull override {
+            const auto until = std::chrono::steady_clock::now() + wait;
+            if (_done || _cancelled.load()) {
+                _done = true;
+                return {._message = {}, ._done = true};
+            }
+            if (!_sent_initial) {
+                _sent_initial = true;
+                return {._message = event("initial-response", boost::json::object{}, ""),
+                        ._done = false};
+            }
+            const auto& cfg = _svc._config;
+            for (;;) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= _end || _cancelled.load()) {
+                    _done = true;
+                    return {._message = {}, ._done = true};
+                }
+                if (now >= _next_check) {
+                    _next_check = now + cfg._subscription_recheck;
+                    if (auto gone = refresh()) {
+                        _done = true;
+                        return {._message = std::move(*gone), ._done = false};
+                    }
+                }
+                // With throttling off, a page is limited only by its size.
+                const auto rate = _svc.profile_of(_rec)._throttling
+                                      ? static_cast<double>(cfg._subscription_bytes_per_s)
+                                      : static_cast<double>(std::uint64_t{1} << 30U);
+                _tokens = std::min(
+                    rate, _tokens + rate * std::chrono::duration<double>(now - _refilled).count());
+                _refilled = now;
+                const auto* entry = _rec.find_shard(_ordinal);
+                if (entry == nullptr) {
+                    _done = true;
+                    return {._message = exception("ResourceNotFoundException",
+                                                  "The shard of this subscription is gone."),
+                            ._done = false};
+                }
+                if (_tokens >= 1.0) {
+                    const segment_read_limits limits{
+                        ._max_records = 10'000,
+                        ._max_bytes = std::min<std::uint64_t>(static_cast<std::uint64_t>(_tokens),
+                                                              std::uint64_t{1} << 20U)};
+                    auto page = _svc.read_page(_rec, *entry, _counter, _min_timestamp_ms, limits,
+                                               _svc._cluster.now_ms());
+                    if (!page) {
+                        _done = true;
+                        const auto& e = page.error();
+                        return {._message = exception(e.type == kinesis_error_style().internal_type
+                                                          ? "InternalFailureException"
+                                                          : e.type,
+                                                      e.message.value_or("")),
+                                ._done = false};
+                    }
+                    if (page->_count > 0 || page->_exhausted ||
+                        now - _last_event >= cfg._subscription_heartbeat) {
+                        _tokens -= static_cast<double>(page->_bytes);
+                        _counter = page->_next_counter;
+                        if (page->_count > 0) {
+                            _min_timestamp_ms = 0;
+                        }
+                        _last_event = now;
+                        _svc._metrics.fanned_out({_rec._account, _rec._name, _ordinal},
+                                                 page->_count, page->_bytes, page->_behind);
+                        const auto profile = _svc.profile_of(_rec);
+                        boost::json::object payload;
+                        payload["Records"] = std::move(page->_records);
+                        payload["MillisBehindLatest"] = page->_behind;
+                        if (page->_exhausted) {
+                            payload["ContinuationSequenceNumber"] = nullptr;
+                            payload["ChildShards"] = std::move(page->_children);
+                            _done = true;  // the next pull ends the stream
+                        } else {
+                            payload["ContinuationSequenceNumber"] = format_sequence(
+                                sequence_number{._ordinal = _ordinal, ._counter = _counter - 1},
+                                profile._id_format);
+                        }
+                        return {._message = event("SubscribeToShardEvent", payload,
+                                                  "SubscribeToShardEvent"),
+                                ._done = false};
+                    }
+                }
+                if (std::chrono::steady_clock::now() + cfg._subscription_poll > until) {
+                    return {._message = {}, ._done = false};
+                }
+                std::this_thread::sleep_for(cfg._subscription_poll);
+            }
+        }
+
+        void cancel() override { _cancelled = true; }
+
+    private:
+        kinesis_service& _svc;
+        std::string _key;
+        aws_json::body_encoding _encoding;
+        stream_record _rec;
+        consumer_record _consumer;
+        std::uint32_t _ordinal;
+        std::uint64_t _counter;
+        std::int64_t _min_timestamp_ms;
+        std::chrono::steady_clock::time_point _started;
+        std::chrono::steady_clock::time_point _end;
+        std::chrono::steady_clock::time_point _next_check;
+        std::chrono::steady_clock::time_point _last_event;
+        std::chrono::steady_clock::time_point _refilled;
+        double _tokens;
+        bool _sent_initial = false;
+        bool _done = false;
+        std::atomic<bool> _cancelled{false};
+
+        // A fresh copy of the stream (its shard table and data keys move
+        // on); the exception to end with when it or the consumer is gone.
+        auto refresh() -> std::optional<std::string> {
+            std::optional<stream_record> fresh;
+            if (!_svc.read_catalog([&](const auto& sm) {
+                    if (const auto* s = sm.find_stream(_rec._account, _rec._name);
+                        s != nullptr && s->_id == _rec._id) {
+                        fresh = *s;
+                    }
+                })) {
+                return std::nullopt;  // try again on the next check
+            }
+            const auto* c = fresh ? fresh->find_consumer(_consumer._name) : nullptr;
+            if (c == nullptr || c->_created_ms != _consumer._created_ms ||
+                fresh->_status == stream_status::deleting) {
+                return exception("ResourceNotFoundException",
+                                 "Consumer " + _consumer._name + " of stream " + _rec._name +
+                                     " under account " + _rec._account + " not found.");
+            }
+            _rec = std::move(*fresh);
+            return std::nullopt;
+        }
+
+        [[nodiscard]] auto body_of(const boost::json::object& payload, std::string_view shape) const
+            -> std::string {
+            if (_encoding == aws_json::body_encoding::cbor) {
+                return aws_json::json_to_cbor(
+                    kinesis_model::k_model,
+                    shape.empty() ? aws_json::no_shape : kinesis_model::k_model.find_shape(shape),
+                    boost::json::value(payload), aws_json::cbor_timestamp_unit::milliseconds);
+            }
+            return boost::json::serialize(payload);
+        }
+
+        [[nodiscard]] auto content_type() const -> std::string {
+            return _encoding == aws_json::body_encoding::cbor ? "application/x-amz-cbor-1.1"
+                                                              : "application/json";
+        }
+
+        [[nodiscard]] static auto encoded(const aws_eventstream::message& m) -> std::string {
+            const auto bytes = aws_eventstream::encode(m);
+            return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+        }
+
+        [[nodiscard]] auto event(std::string type, const boost::json::object& payload,
+                                 std::string_view shape) const -> std::string {
+            const auto body = body_of(payload, shape);
+            return encoded(aws_eventstream::make_event(
+                std::move(type), content_type(),
+                {reinterpret_cast<const std::byte*>(body.data()),
+                 reinterpret_cast<const std::byte*>(body.data()) + body.size()}));
+        }
+
+        [[nodiscard]] auto exception(std::string type, const std::string& message) const
+            -> std::string {
+            const auto body = body_of(boost::json::object{{"message", message}}, "");
+            return encoded(aws_eventstream::make_exception(
+                std::move(type), content_type(),
+                {reinterpret_cast<const std::byte*>(body.data()),
+                 reinterpret_cast<const std::byte*>(body.data()) + body.size()}));
+        }
+    };
+
+    struct subscription_slot {
+        std::weak_ptr<subscription> _sub;
+        std::string _account;
+        std::string _stream;
+    };
+
+    std::mutex _subscriptions_mutex;
+    std::map<std::string, subscription_slot> _subscriptions;
+
+    void forget_subscription(const std::string& key, const subscription* sub) {
+        const std::scoped_lock lock(_subscriptions_mutex);
+        if (const auto it = _subscriptions.find(key); it != _subscriptions.end()) {
+            const auto held = it->second._sub.lock();
+            if (held == nullptr || held.get() == sub) {
+                _subscriptions.erase(it);
+            }
+        }
+    }
+
+    [[nodiscard]] auto subscriptions_of(const std::string& account, const std::string& stream)
+        -> std::uint64_t {
+        const std::scoped_lock lock(_subscriptions_mutex);
+        std::uint64_t n = 0;
+        for (const auto& [key, slot] : _subscriptions) {
+            n += slot._account == account && slot._stream == stream && !slot._sub.expired() ? 1 : 0;
+        }
+        return n;
+    }
+
+    // ---- task 13 internals ----------------------------------------------------
+
+    struct consumer_ref {
+        stream_record _stream;
+        consumer_record _consumer;
+    };
+
+    enum class consumer_resource_op : std::uint8_t {
+        tag,
+        untag,
+        list_tags,
+        put_policy,
+        get_policy,
+        delete_policy
+    };
+
+    [[nodiscard]] static auto consumer_arn_of(const call_context& ctx, const stream_record& s,
+                                              const consumer_record& c) -> std::string {
+        return call_context::consumer_arn(arn_of(ctx, s), c._name, c.created_seconds());
+    }
+
+    [[nodiscard]] static auto consumer_json(const call_context& ctx, const stream_record& s,
+                                            const consumer_record& c, bool with_stream)
+        -> boost::json::object {
+        boost::json::object o;
+        o["ConsumerName"] = c._name;
+        o["ConsumerARN"] = consumer_arn_of(ctx, s, c);
+        o["ConsumerStatus"] = "ACTIVE";
+        o["ConsumerCreationTimestamp"] = static_cast<double>(c.created_seconds());
+        if (with_stream) {
+            o["StreamARN"] = arn_of(ctx, s);
+        }
+        return o;
+    }
+
+    [[nodiscard]] static auto consumer_exists(const call_context& ctx, const stream_record& s,
+                                              const consumer_record& c) -> aws_json::error {
+        return service_detail::in_use("Consumer " + consumer_arn_of(ctx, s, c) + " under account " +
+                                      s._account + " already exists.");
+    }
+
+    [[nodiscard]] static auto consumer_limit(const stream_record& s, std::size_t max)
+        -> aws_json::error {
+        return service_detail::limit_exceeded("Stream " + s._name + " under account " + s._account +
+                                              " already has " + std::to_string(max) +
+                                              " registered consumers.");
+    }
+
+    // AWS's 20, or more with the `count-limits` switch relaxed.
+    [[nodiscard]] auto max_consumers_of(const stream_record& s) const -> std::size_t {
+        return profile_of(s)._aws_count_limits ? k_max_consumers : k_relaxed_max_consumers;
+    }
+
+    [[nodiscard]] static auto consumer_not_found(std::string_view arn, std::string_view account)
+        -> aws_json::error {
+        return resource_not_found("Consumer " + std::string(arn) + " under account " +
+                                  std::string(account) + " not found.");
+    }
+
+    [[nodiscard]] static auto consumers_token_prefix(const stream_record& s) -> std::string {
+        return "consumers\n" + s._account + "\n" + s._name + "\n" + std::to_string(s._id) + "\n";
+    }
+
+    /// `stream/<stream>/consumer/<name>:<epoch seconds>`, split.
+    struct consumer_arn_parts {
+        std::string _account;
+        std::string _stream;
+        std::string _consumer;
+        std::int64_t _created_seconds = 0;
+    };
+
+    [[nodiscard]] static auto parse_consumer_arn(const call_context& ctx, std::string_view arn)
+        -> std::optional<consumer_arn_parts> {
+        const auto parts = parse_kinesis_arn(arn);
+        if (!parts || parts->_partition != ctx._partition || parts->_region != ctx._region ||
+            !parts->_resource.starts_with("stream/")) {
+            return std::nullopt;
+        }
+        auto rest = parts->_resource.substr(7);
+        const auto slash = rest.find("/consumer/");
+        if (slash == std::string_view::npos || slash == 0) {
+            return std::nullopt;
+        }
+        const auto stream = rest.substr(0, slash);
+        rest.remove_prefix(slash + 10);
+        const auto colon = rest.rfind(':');
+        if (colon == std::string_view::npos || colon == 0 || colon + 1 == rest.size()) {
+            return std::nullopt;
+        }
+        std::int64_t secs = 0;
+        for (const char ch : rest.substr(colon + 1)) {
+            if (ch < '0' || ch > '9' || secs > INT64_MAX / 10 - 9) {
+                return std::nullopt;
+            }
+            secs = secs * 10 + (ch - '0');
+        }
+        return consumer_arn_parts{std::string(parts->_account), std::string(stream),
+                                  std::string(rest.substr(0, colon)), secs};
+    }
+
+    [[nodiscard]] static auto is_consumer_arn(const boost::json::object& in) -> bool {
+        const auto arn = detail::string_member(in, "ResourceARN");
+        return arn && arn->find("/consumer/") != std::string_view::npos;
+    }
+
+    /// The consumer `arn` names, if it and its stream exist.
+    auto consumer_by_arn(const call_context& ctx, std::string_view arn)
+        -> aws_json::result<consumer_ref> {
+        const auto parts = parse_consumer_arn(ctx, arn);
+        if (!parts) {
+            return invalid_argument("ConsumerARN " + std::string(arn) +
+                                    " is not a consumer ARN in " + ctx._region + ".");
+        }
+        std::optional<consumer_ref> out;
+        if (!read_catalog([&](const auto& sm) {
+                if (const auto* s = sm.find_stream(parts->_account, parts->_stream)) {
+                    if (const auto* c = s->find_consumer(parts->_consumer);
+                        c != nullptr && c->created_seconds() == parts->_created_seconds) {
+                        out = consumer_ref{*s, *c};
+                    }
+                }
+            })) {
+            return internal_failure();
+        }
+        if (!out) {
+            return consumer_not_found(arn, parts->_account);
+        }
+        return std::move(*out);
+    }
+
+    /// By `ConsumerARN`, or by the stream and `ConsumerName`.
+    auto find_consumer(call_context& ctx, const boost::json::object& in)
+        -> aws_json::result<consumer_ref> {
+        const auto arn = detail::string_member(in, "ConsumerARN");
+        const auto name = detail::string_member(in, "ConsumerName");
+        if (arn) {
+            if (name || ctx._stream) {
+                return invalid_argument(
+                    "Specify either ConsumerARN, or StreamARN and ConsumerName, not both.");
+            }
+            return consumer_by_arn(ctx, *arn);
+        }
+        if (!name || !ctx._stream) {
+            return invalid_argument("Specify either ConsumerARN, or StreamARN and ConsumerName.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto* c = s->find_consumer(*name);
+        if (c == nullptr) {
+            return consumer_not_found(ctx._stream->_arn + "/consumer/" + std::string(*name),
+                                      s->_account);
+        }
+        // The front end could not name this resource (its ARN carries the
+        // creation time), so it is authorized here.
+        aws_auth::authz_request r;
+        r.action = "kinesis:" + std::string(ctx._operation);
+        r.resource = consumer_arn_of(ctx, *s, *c);
+        if (auto denied = ctx.authorize(std::move(r))) {
+            return *denied;
+        }
+        return consumer_ref{*s, *c};
+    }
+
+    auto change_consumer(const call_context& ctx, const consumer_ref& ref, consumer_op op,
+                         std::map<std::string, std::string> set, std::vector<std::string> remove,
+                         std::optional<std::string> policy) -> result {
+        const auto r = propose(consumer_command{._account = ref._stream._account,
+                                                ._name = ref._stream._name,
+                                                ._id = ref._stream._id,
+                                                ._op = op,
+                                                ._consumer = ref._consumer._name,
+                                                ._created_ms = ref._consumer._created_ms,
+                                                ._set = std::move(set),
+                                                ._remove = std::move(remove),
+                                                ._policy = std::move(policy),
+                                                ._max = k_max_tags});
+        if (!r) {
+            return internal_failure();
+        }
+        if (r->_status == apply_status::not_found) {
+            return consumer_not_found(consumer_arn_of(ctx, ref._stream, ref._consumer),
+                                      ref._stream._account);
+        }
+        if (r->_status == apply_status::invalid) {
+            return service_detail::limit_exceeded("A consumer can have at most " +
+                                                  std::to_string(k_max_tags) + " tags.");
+        }
+        if (r->_status != apply_status::ok) {
+            return internal_failure();
+        }
+        return boost::json::object{};
+    }
+
+    /// The tag and policy calls on a consumer ARN.
+    auto consumer_resource(call_context& ctx, const boost::json::object& in,
+                           consumer_resource_op op) -> result {
+        const std::string arn(*detail::string_member(in, "ResourceARN"));
+        auto found = consumer_by_arn(ctx, arn);
+        if (!found) {
+            return found.error();
+        }
+        const auto& c = found->_consumer;
+        switch (op) {
+            case consumer_resource_op::tag:
+                return change_consumer(ctx, *found, consumer_op::retag, tag_map_of(in), {},
+                                       std::nullopt);
+            case consumer_resource_op::untag:
+                return change_consumer(ctx, *found, consumer_op::retag, {}, tag_keys_of(in),
+                                       std::nullopt);
+            case consumer_resource_op::list_tags: {
+                boost::json::array tags;
+                for (const auto& [k, v] : c._tags) {
+                    tags.push_back(boost::json::object{{"Key", k}, {"Value", v}});
+                }
+                boost::json::object out;
+                out["Tags"] = std::move(tags);
+                return out;
+            }
+            case consumer_resource_op::put_policy:
+                return change_consumer(ctx, *found, consumer_op::set_policy, {}, {},
+                                       std::string(*detail::string_member(in, "Policy")));
+            case consumer_resource_op::get_policy: {
+                boost::json::object out;
+                out["Policy"] = c._policy.value_or("{}");
+                return out;
+            }
+            case consumer_resource_op::delete_policy:
+                if (!c._policy) {
+                    return resource_not_found("No resource policy found for resource " + arn + ".");
+                }
+                return change_consumer(ctx, *found, consumer_op::set_policy, {}, {}, std::nullopt);
+        }
+        return internal_failure();
+    }
 
     // ---- task 15 internals ----------------------------------------------------
 

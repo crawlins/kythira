@@ -424,6 +424,8 @@ auto run(const node_options& opt) -> int {
     hc.tls_key_path = opt._tls_key_path;
     hc.insecure_plaintext = opt._allow_plaintext;
     hc.max_body_bytes = opt._max_body_bytes;
+    // AWS SDKs subscribe to shards over HTTP/2 (task 13).
+    hc.http2 = true;
     https::server server(
         hc,
         [&gateway](const https::request& req, const https::request_context& ctx) {
@@ -432,6 +434,11 @@ auto run(const node_options& opt) -> int {
         [&logger](bool warning, std::string_view message) {
             logger.log(warning ? kythira::log_level::warning : kythira::log_level::info,
                        "kinesis gateway: " + std::string(message), {});
+        });
+    // SubscribeToShard answers with an event stream (task 13).
+    server.set_stream_handler(
+        [&gateway](const https::request& req, const https::request_context& ctx) {
+            return gateway.stream(req, ctx);
         });
     server.start();
 

@@ -32,6 +32,7 @@ import software.amazon.kinesis.processor.ShardRecordProcessor;
 import software.amazon.kinesis.processor.ShardRecordProcessorFactory;
 import software.amazon.kinesis.processor.SingleStreamTracker;
 import software.amazon.kinesis.retrieval.KinesisClientRecord;
+import software.amazon.kinesis.retrieval.fanout.FanOutConfig;
 import software.amazon.kinesis.retrieval.polling.PollingConfig;
 
 /**
@@ -125,13 +126,15 @@ public final class SampleConsumer {
         Region region = Region.of(System.getenv().getOrDefault("AWS_REGION", "us-east-1"));
         long failover = Long.parseLong(System.getenv().getOrDefault("KCL_FAILOVER_MILLIS", "10000"));
 
-        // HTTP/1.1 polling: no enhanced fan-out in this sample.
+        // Polling over HTTP/1.1 by default; KCL_RETRIEVAL=fanout uses enhanced
+        // fan-out (task 13), which subscribes over HTTP/2.
+        boolean fanOut = "fanout".equals(System.getenv().getOrDefault("KCL_RETRIEVAL", "polling"));
         KinesisAsyncClient kinesis = KinesisAsyncClient.builder()
                 .endpointOverride(endpoint)
                 .region(region)
                 .credentialsProvider(DefaultCredentialsProvider.builder().build())
                 .httpClientBuilder(NettyNioAsyncHttpClient.builder()
-                        .protocol(Protocol.HTTP1_1)
+                        .protocol(fanOut ? Protocol.HTTP2 : Protocol.HTTP1_1)
                         .connectionTimeout(Duration.ofSeconds(5)))
                 .build();
         // KCL insists on these two; neither is ever called.
@@ -164,8 +167,9 @@ public final class SampleConsumer {
                 configs.lifecycleConfig(),
                 configs.metricsConfig().metricsFactory(new NullMetricsFactory()),
                 configs.processorConfig(),
-                configs.retrievalConfig().retrievalSpecificConfig(
-                        new PollingConfig(stream, kinesis).idleTimeBetweenReadsInMillis(250)));
+                configs.retrievalConfig().retrievalSpecificConfig(fanOut
+                        ? new FanOutConfig(kinesis).streamName(stream).applicationName(application)
+                        : new PollingConfig(stream, kinesis).idleTimeBetweenReadsInMillis(250)));
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
                 scheduler.startGracefulShutdown().get();

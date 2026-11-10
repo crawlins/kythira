@@ -53,6 +53,7 @@
 #include <kythira/kinesis/kinesis_errors.hpp>
 #include <kythira/kinesis/model/kinesis_model.hpp>
 
+#include <raft/aws_eventstream.hpp>
 #include <raft/aws_json_protocol.hpp>
 #include <raft/aws_request_authorizer.hpp>
 #include <raft/sigv4_verifier.hpp>
@@ -62,9 +63,11 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -90,6 +93,30 @@ struct front_end_request {
     std::string _body;
     std::string _source_ip;
     bool _secure = true;
+};
+
+/// The events of a streaming answer (`SubscribeToShard`, task 13), pulled
+/// by the transport one at a time. Each is a whole event-stream message.
+class event_source {
+public:
+    struct pull {
+        /// One encoded message; empty when nothing is ready yet.
+        std::string _message;
+        /// No more messages: the stream is over.
+        bool _done = false;
+    };
+
+    event_source() = default;
+    event_source(const event_source&) = delete;
+    event_source(event_source&&) = delete;
+    auto operator=(const event_source&) -> event_source& = delete;
+    auto operator=(event_source&&) -> event_source& = delete;
+    virtual ~event_source() = default;
+
+    /// The next message, waiting at most about `wait` for one.
+    virtual auto next(std::chrono::milliseconds wait) -> pull = 0;
+    /// The client went away: stop early. Idempotent.
+    virtual void cancel() = 0;
 };
 
 /// What authorization needs to know about an existing resource: its tags
@@ -159,6 +186,9 @@ struct call_context {
     aws_json::body_encoding _encoding = aws_json::body_encoding::json;
     /// The stream the request names, resolved and checked (step 4).
     std::optional<stream_ref> _stream;
+    /// Set by a streaming handler: the events that follow its (initial)
+    /// answer.
+    std::shared_ptr<event_source> _events;
     /// The operation writes nothing, so any replica may answer it.
     bool _replica_read_ok = false;
     /// The front end authorized the request's resource; when false, the
@@ -269,7 +299,27 @@ public:
 
     [[nodiscard]] auto codec() const -> const aws_json::codec& { return _codec; }
 
+    /// An answer, and for a streaming operation the events after it.
+    struct reply {
+        reply(aws_json::http_response r)  // NOLINT(google-explicit-constructor)
+            : _response(std::move(r)) {}
+        reply(aws_json::http_response r, std::shared_ptr<event_source> e)
+            : _response(std::move(r)), _events(std::move(e)) {}
+        aws_json::http_response _response;
+        std::shared_ptr<event_source> _events;
+    };
+
+    /// `handle_streaming` for a transport that cannot stream: a streaming
+    /// operation's events are dropped.
     [[nodiscard]] auto handle(const front_end_request& req) -> aws_json::http_response {
+        auto r = handle_streaming(req);
+        if (r._events) {
+            r._events->cancel();
+        }
+        return std::move(r._response);
+    }
+
+    [[nodiscard]] auto handle_streaming(const front_end_request& req) -> reply {
         const auto target = detail::header_value(req, "x-amz-target");
         const auto content_type = detail::header_value(req, "content-type");
         const aws_json::http_request_view view{req._method, req._path, content_type, target,
@@ -344,6 +394,15 @@ public:
                 // A handler bug, not a client fault: never let data out
                 // unauthorized.
                 return _codec.respond(internal_failure(), id, encoding);
+            }
+            if (ctx._events) {
+                // An event stream: the head now, the events (the first is
+                // the initial response) as the transport pulls them.
+                aws_json::http_response head;
+                head.status = 200;
+                head.headers = {{"Content-Type", std::string(aws_eventstream::k_content_type)},
+                                {"x-amzn-RequestId", id}};
+                return reply(std::move(head), std::move(ctx._events));
             }
             return _codec.respond(*out, id, encoding, op);
         } catch (const std::exception&) {

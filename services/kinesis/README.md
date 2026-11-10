@@ -55,6 +55,7 @@ Built when `CONFIG_KINESIS=y` (`services/kinesis/Kconfig`, off by default).
 | `include/kythira/kinesis/kinesis_disk_guard.hpp` | the disk guard: appends refused below a free-space floor, on the proposing node and the leader | 10 |
 | `doc/resharding.md` | SplitShard, MergeShards and UpdateShardCount: the UPDATING lock, the cross-group transaction, ending sequence numbers and the repair of an abandoned reshard | 11 |
 | `doc/on-demand.md`, `include/kythira/kinesis/kinesis_on_demand.hpp` | on-demand capacity mode: `UpdateStreamMode` and the controller that splits shards that stay hot | 12 |
+| `doc/fan-out.md` | enhanced fan-out: consumers, `SubscribeToShard` event streams over HTTP/1.1 and HTTP/2, pacing and limits | 13 |
 | `doc/encryption.md`, `include/kythira/kinesis/kinesis_kms.hpp`, `include/kythira/kinesis/kinesis_kms_aws.hpp` | encryption at rest: sealed records, data keys in the catalog, the `kms_key_provider` concept with the local and AWS KMS providers (`KINESIS_KMS`) | 14 |
 | `doc/tags-policies-metrics.md`, `include/kythira/kinesis/kinesis_metrics.hpp` | tags in both forms, resource policies handed to the authorizer, enhanced monitoring, the account calls, and the Prometheus metrics on `GET /metrics` (`KINESIS_METRICS`) | 15 |
 
@@ -123,12 +124,14 @@ package to export.
 | `kythira_core_headers` | `include/` and `generated/`, through `kythira_kinesis` |
 | `OpenSSL::SSL`, `OpenSSL::Crypto` | SigV4, segment digests, iterator tokens and the peer client's TLS, through `kythira_kinesis` |
 | `network_simulator`, `kythira_host_node_id`, `folly_FOUND`, `KYTHIRA_FUTURE_BACKEND_AVAILABLE`, `ENABLE_COVERAGE` | the daemon: the future backend, node ids, and when it is built |
+| `kythira_nghttp2` | HTTP/2 in the core HTTPS server for `SubscribeToShard`, through `kythira_kinesis`, when nghttp2 is found |
 | `certificate_authority` | the gateway test's PKI |
 | `Python3_EXECUTABLE` | the coverage and generated-header tests |
 | `KYTHIRA_AWS_JSON_SHAPES_GENERATOR` | the model-header freshness test |
 | `boost_json` | the AWS JSON codec, through `kythira_kinesis` |
 | `kythira_test_pch` | the guard the tests are entered under, and what the C++ tests link |
 | `cmake/kythira_test_helpers.cmake` | `kythira_scale_test_timeouts`, `add_raft_completion_test`; for the container scenario `kythira_detect_container_runtime`, `add_docker_chaos_scenario_test` and `KYTHIRA_IMAGE_CONTEXT` |
+| `tests/h2_test_client.hpp` | the fan-out test's HTTP/2 client, through `kythira_test_support` |
 | `tests/docker_chaos/os_faults.hpp`, `httplib_FOUND` | the container scenario's runtime-neutral compose commands |
 
 ## What a split would still need

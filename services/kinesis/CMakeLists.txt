@@ -21,6 +21,10 @@ add_library(kythira_kinesis INTERFACE)
 target_include_directories(kythira_kinesis INTERFACE "${KYTHIRA_KINESIS_INCLUDE_DIR}")
 target_link_libraries(kythira_kinesis INTERFACE kythira_core_headers boost_json OpenSSL::SSL OpenSSL::Crypto)
 target_compile_features(kythira_kinesis INTERFACE cxx_std_23)
+# HTTP/2 for SubscribeToShard (task 13), where nghttp2 is available.
+if(TARGET kythira_nghttp2)
+    target_link_libraries(kythira_kinesis INTERFACE kythira_nghttp2)
+endif()
 
 # kinesis_gateway_node (task 1 placeholder; the daemon is task 6), before
 # the tests, which run it.

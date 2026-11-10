@@ -18,10 +18,13 @@ FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884
 
 # libatomic1: a clang build links network_simulator's consumers against
 # libatomic, which the base image lacks.
+# libnghttp2-14: HTTP/2 for SubscribeToShard (task 13), in case the host
+# build links nghttp2 shared (vcpkg's default triplet links it statically).
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libatomic1 \
+        libnghttp2-14 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY services/kinesis/docker/kinesis_gateway_node/dist/kinesis_gateway_node \

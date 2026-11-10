@@ -93,6 +93,17 @@ public:
         c._get_records_latency_ms += latency_ms;
     }
 
+    /// A SubscribeToShard event (task 13): outgoing records and bytes and
+    /// the iterator age, not a GetRecords call.
+    void fanned_out(const metric_shard_key& k, std::uint64_t records, std::uint64_t bytes,
+                    std::int64_t behind_ms) {
+        const std::scoped_lock lock(_mutex);
+        auto& c = _shards[k];
+        c._outgoing_records += records;
+        c._outgoing_bytes += bytes;
+        c._iterator_age_ms = behind_ms;
+    }
+
     void read_throttled(const metric_shard_key& k) {
         const std::scoped_lock lock(_mutex);
         ++_shards[k]._read_throttled;

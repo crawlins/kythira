@@ -59,6 +59,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -161,6 +162,11 @@ namespace gateway_detail {
         v = v * 10 + static_cast<std::uint64_t>(c - '0');
     }
     return v;
+}
+
+/// The operations whose answers are event streams.
+[[nodiscard]] inline auto is_streaming_target(std::string_view target) -> bool {
+    return target == "Kinesis_20131202.SubscribeToShard";
 }
 
 [[nodiscard]] inline auto to_front_end_request(const https::request& req,
@@ -283,6 +289,46 @@ public:
         res.body() = r.body;
         res.prepare_payload();
         return res;
+    }
+
+    /// The streaming route (`https::server::set_stream_handler`): takes
+    /// `SubscribeToShard` (task 13) and passes everything else on. Its
+    /// events go out as the body, one event-stream message per pull; an
+    /// answer without events (a refusal) goes out whole.
+    [[nodiscard]] auto stream(const https::request& req, const https::request_context& ctx)
+        -> std::optional<https::streaming_response> {
+        namespace http = boost::beast::http;
+        if (req.method() != http::verb::post ||
+            !gateway_detail::is_streaming_target(req["x-amz-target"])) {
+            return std::nullopt;
+        }
+        auto r = _front_end.handle_streaming(gateway_detail::to_front_end_request(req, ctx));
+        https::streaming_response out;
+        out.head = https::response{static_cast<http::status>(r._response.status), req.version()};
+        for (const auto& [k, v] : r._response.headers) {
+            out.head.set(k, v);
+        }
+        if (!r._events) {
+            auto body = std::make_shared<std::string>(std::move(r._response.body));
+            out.next = [body](std::string& chunk) {
+                chunk = std::move(*body);
+                return false;
+            };
+            return out;
+        }
+        // A last message can come with `_done`: send it, then end.
+        out.next = [events = r._events, done = false](std::string& chunk) mutable {
+            if (done) {
+                chunk.clear();
+                return false;
+            }
+            auto p = events->next(std::chrono::milliseconds(500));
+            chunk = std::move(p._message);
+            done = p._done;
+            return !done || !chunk.empty();
+        };
+        out.cancel = [events = r._events] { events->cancel(); };
+        return out;
     }
 
     [[nodiscard]] auto stats() const noexcept -> const gateway_stats& { return _stats; }
