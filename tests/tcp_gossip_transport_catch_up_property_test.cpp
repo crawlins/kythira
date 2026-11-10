@@ -16,6 +16,8 @@
 #include <raft/tcp_gossip_transport.hpp>
 #include <raft/test_state_machine.hpp>
 
+#include "test_ports.hpp"
+
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
@@ -164,9 +166,12 @@ auto make_gossip_config(std::uint64_t self_id, std::uint16_t self_port,
  */
 BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
                      *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port1 = 19711;
-    constexpr std::uint16_t port2 = 19712;
-    constexpr std::uint16_t port3 = 19713;
+    // Ports come from free_port_block, never fixed numbers: a fixed port
+    // that another test (or anything else on the runner) holds fails every
+    // attempt with "bind() on port N", as 19713 did under ctest -j.
+    const std::uint16_t port1 = kythira::testing::free_port_block(3);
+    const auto port2 = static_cast<std::uint16_t>(port1 + 1);
+    const auto port3 = static_cast<std::uint16_t>(port1 + 2);
     std::vector<std::pair<std::uint64_t, std::uint16_t>> all_ports{
         {1, port1}, {2, port2}, {3, port3}};
 
@@ -289,8 +294,8 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
  */
 BOOST_AUTO_TEST_CASE(silent_node_digest_expires_after_freshness_interval,
                      *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port1 = 19721;
-    constexpr std::uint16_t port2 = 19722;
+    const std::uint16_t port1 = kythira::testing::free_port_block(2);
+    const auto port2 = static_cast<std::uint16_t>(port1 + 1);
     std::vector<std::pair<std::uint64_t, std::uint16_t>> all_ports{{1, port1}, {2, port2}};
 
     auto cfg1 = make_gossip_config(1, port1, all_ports);
@@ -340,8 +345,8 @@ BOOST_AUTO_TEST_CASE(silent_node_digest_expires_after_freshness_interval,
  */
 BOOST_AUTO_TEST_CASE(removed_member_immediately_ineligible_despite_lingering_digest,
                      *boost::unit_test::timeout(30)) {
-    constexpr std::uint16_t port1 = 19731;
-    constexpr std::uint16_t port2 = 19732;
+    const std::uint16_t port1 = kythira::testing::free_port_block(2);
+    const auto port2 = static_cast<std::uint16_t>(port1 + 1);
     std::vector<std::pair<std::uint64_t, std::uint16_t>> all_ports{{1, port1}, {2, port2}};
 
     auto cfg1 = make_gossip_config(1, port1, all_ports);
