@@ -141,10 +141,12 @@ BOOST_AUTO_TEST_CASE(sets_are_non_empty_and_duplicate_free) {
 }
 
 BOOST_AUTO_TEST_CASE(nesting_stops_at_32_levels) {
-    BOOST_TEST(item_of(nested("L", 32)).size() == 1U);
-    BOOST_TEST(item_of(nested("M", 32)).size() == 1U);
-    BOOST_TEST(error_of(nested("L", 33)) == "Nesting Levels have exceeded supported limits");
-    BOOST_TEST(error_of(nested("M", 33)) == "Nesting Levels have exceeded supported limits");
+    // The attribute is level 1: 31 containers inside it are 32 levels, as
+    // DynamoDB Local 3.3.2 takes them; 32 containers are refused.
+    BOOST_TEST(item_of(nested("L", 31)).size() == 1U);
+    BOOST_TEST(item_of(nested("M", 31)).size() == 1U);
+    BOOST_TEST(error_of(nested("L", 32)) == "Nesting Levels have exceeded supported limits");
+    BOOST_TEST(error_of(nested("M", 32)) == "Nesting Levels have exceeded supported limits");
 }
 
 BOOST_AUTO_TEST_CASE(sizes_follow_aws_formula) {
@@ -302,7 +304,7 @@ BOOST_AUTO_TEST_CASE(the_storage_form_round_trips) {
     // Deterministic: the same item encodes to the same bytes.
     BOOST_TEST(ddb::encode_item(item_of(k_every_type)) == bytes);
     // Deep nesting round trips up to the limit.
-    const auto deep = item_of(nested("M", 32));
+    const auto deep = item_of(nested("M", 31));
     BOOST_TEST((ddb::decode_item(ddb::encode_item(deep)).value() == deep));
 }
 

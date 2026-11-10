@@ -135,7 +135,9 @@ BOOST_AUTO_TEST_CASE(batch_get_leaves_keys_past_sixteen_megabytes_unprocessed) {
                                  R"(],"ConsistentRead":true}},"ReturnConsumedCapacity":"TOTAL"})");
     const auto got = r.at("Responses").at("bgt").as_array().size();
     const auto& left = r.at("UnprocessedKeys").at("bgt").as_object();
-    BOOST_TEST(got == 43U);  // 43 x 390 KB passes 16 MB
+    // 42 x 390 KB fit in 16 MB and a 43rd would pass it, so it comes back
+    // unprocessed (DynamoDB Local answers the same).
+    BOOST_TEST(got == 42U);
     BOOST_TEST(left.at("Keys").as_array().size() == 50U - got);
     BOOST_TEST(left.at("ConsistentRead").as_bool());
     BOOST_TEST(r.at("ConsumedCapacity").at(0).at("CapacityUnits").as_double() ==
