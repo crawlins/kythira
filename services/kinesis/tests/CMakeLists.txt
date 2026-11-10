@@ -38,16 +38,52 @@ add_test(NAME kinesis_wire_evidence
             "${_kinesis_dir}model/service-2.json"
             "${_kinesis_dir}tests/evidence/data")
 
-# Task 1: kinesis_gateway_node links and runs.
-add_test(NAME kinesis_gateway_node_self_test COMMAND kinesis_gateway_node --self-test)
-
 set_tests_properties(
     kinesis_model_coverage
     kinesis_model_coverage_checker
     kinesis_operations_up_to_date
     kinesis_wire_evidence
-    kinesis_gateway_node_self_test
     PROPERTIES LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
+
+# Task 6: kinesis_gateway_node links, checks its tables, and reads its
+# configuration: a complete one is printed with the secret elided, and the
+# refusals name the variable (cmd/kinesis_gateway_node/config.cpp). The
+# daemon is skipped in coverage builds and without folly, and so are these.
+if(TARGET kinesis_gateway_node)
+    add_test(NAME kinesis_gateway_node_self_test COMMAND kinesis_gateway_node --self-test)
+    set(_kinesis_env
+        KYTHIRA_NODE_ID=1
+        "KYTHIRA_PEERS=1=http://127.0.0.1:7001,2=http://127.0.0.1:7002"
+        KYTHIRA_RAFT_BIND=127.0.0.1
+        KINESIS_ALLOW_PLAINTEXT=true
+        KINESIS_STATIC_KEYS_FILE=/nonexistent/keys
+        KINESIS_DATA_DIR=/nonexistent/data
+        KINESIS_FORWARD_SECRET=0123456789abcdef0123)
+    add_test(NAME kinesis_gateway_node_config
+        COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env}
+                $<TARGET_FILE:kinesis_gateway_node> --check-config)
+    set_tests_properties(kinesis_gateway_node_config PROPERTIES
+        PASS_REGULAR_EXPRESSION "forward_secret=set\npeer_gateway 1=127.0.0.1:4567\npeer_gateway 2=127.0.0.1:4567"
+        FAIL_REGULAR_EXPRESSION "0123456789abcdef0123")
+    # Two voters and no secret: refused, naming the variable.
+    add_test(NAME kinesis_gateway_node_config_needs_secret
+        COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env} KINESIS_FORWARD_SECRET=
+                $<TARGET_FILE:kinesis_gateway_node> --check-config)
+    set_tests_properties(kinesis_gateway_node_config_needs_secret PROPERTIES
+        PASS_REGULAR_EXPRESSION "KINESIS_FORWARD_SECRET")
+    # No TLS and no plaintext opt-in: refused.
+    add_test(NAME kinesis_gateway_node_config_needs_tls
+        COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env} KINESIS_ALLOW_PLAINTEXT=false
+                $<TARGET_FILE:kinesis_gateway_node> --check-config)
+    set_tests_properties(kinesis_gateway_node_config_needs_tls PROPERTIES
+        PASS_REGULAR_EXPRESSION "KINESIS_TLS_CERT and KINESIS_TLS_KEY are required")
+    set_tests_properties(
+        kinesis_gateway_node_self_test
+        kinesis_gateway_node_config
+        kinesis_gateway_node_config_needs_secret
+        kinesis_gateway_node_config_needs_tls
+        PROPERTIES LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
+endif()
 
 # add_raft_completion_test plus the module's headers. Binaries and working
 # directories go to build/tests/, which the coverage job collects test
@@ -75,6 +111,20 @@ kythira_kinesis_test(kinesis_stream_state_machine_test kinesis_stream_state_mach
 kythira_kinesis_test(kinesis_front_end_test kinesis_front_end_test.cpp)
 kythira_kinesis_test(kinesis_actions_test kinesis_actions_test.cpp)
 kythira_kinesis_test(kinesis_compat_profile_test kinesis_compat_profile_test.cpp)
+
+# Task 6: stream lifecycle and writes, through the front end over the
+# in-process cluster.
+kythira_kinesis_test(kinesis_service_test kinesis_service_test.cpp)
+# Task 6: forwarding proposals to the group leader (wire, HMAC) and the
+# multi-raft cluster adapter.
+kythira_kinesis_test(kinesis_forward_test kinesis_forward_test.cpp)
+# Task 6: the gateway's HTTP surface on a real listener (API, internal
+# propose and segment endpoints, health) and the peer client over plain
+# HTTP and verified TLS. certificate_authority issues the test PKI.
+if(TARGET certificate_authority)
+    kythira_kinesis_test(kinesis_gateway_test kinesis_gateway_test.cpp)
+    target_link_libraries(kinesis_gateway_test PRIVATE certificate_authority)
+endif()
 
 # The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
 # (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned model, and the

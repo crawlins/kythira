@@ -6,3 +6,14 @@
 # listed in doc/unsupported.md; tools/check_coverage.py (the ctest
 # kinesis_model_coverage) enforces it. A task that implements an operation
 # moves it from there to here.
+
+# Task 6: stream lifecycle and writes.
+CreateStream
+DeleteStream
+DescribeLimits
+DescribeStream
+DescribeStreamSummary
+ListShards
+ListStreams
+PutRecord
+PutRecords
