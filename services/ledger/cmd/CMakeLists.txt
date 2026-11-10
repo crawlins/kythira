@@ -2,12 +2,38 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The ledger module's composition roots (.kiro/specs/verifiable-ledger/).
-# ledger_node is a placeholder until task 7 makes it the daemon; ledger_ctl
-# is the offline verification tool (task 10). Like the other module daemons they run from the build
+# ledger_node is the daemon (task 7c); ledger_ctl verifies and proves
+# (task 10). Like the other module daemons they run from the build
 # tree and are in no install target.
 
-add_executable(ledger_node ledger_node/main.cpp)
-target_link_libraries(ledger_node PRIVATE kythira_ledger)
+# ledger_node: the daemon (task 7c) where its stack can be built: RocksDB
+# (raft_rocksdb_engine, CONFIG_ENGINE_ROCKSDB) for the groups' state, and
+# certificate_authority for OpenSSL and the future backend (as for
+# iam_node; it carries KYTHIRA_HAS_OPENSSL and network_simulator). Elsewhere
+# it is the self-test only, so the module still links everywhere it builds.
+set(KYTHIRA_LEDGER_NODE_DAEMON OFF PARENT_SCOPE)
+if(TARGET raft_rocksdb_engine AND TARGET certificate_authority)
+    find_package(Threads REQUIRED)
+    add_executable(ledger_node ledger_node/main.cpp ledger_node/config.cpp ledger_node/run.cpp)
+    target_link_libraries(ledger_node PRIVATE
+        kythira_ledger
+        raft_rocksdb_engine     # the engine, and network_simulator (future backend)
+        certificate_authority   # KYTHIRA_HAS_OPENSSL
+        kythira_host_node_id    # KYTHIRA_NODE_ID_KIND
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        Threads::Threads
+    )
+    target_compile_definitions(ledger_node PRIVATE KYTHIRA_LEDGER_NODE_DAEMON=1)
+    set_target_properties(ledger_node PROPERTIES JOB_POOL_COMPILE heavy_tu)
+    set(KYTHIRA_LEDGER_NODE_DAEMON ON PARENT_SCOPE)
+    message(STATUS "ledger_node: the daemon (RocksDB, mutual TLS Raft, HTTPS API)")
+else()
+    add_executable(ledger_node ledger_node/main.cpp)
+    target_link_libraries(ledger_node PRIVATE kythira_ledger)
+    message(STATUS "ledger_node: self-test only (the daemon needs raft_rocksdb_engine and "
+                   "certificate_authority)")
+endif()
 target_compile_features(ledger_node PRIVATE cxx_std_23)
 set_target_properties(ledger_node PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 

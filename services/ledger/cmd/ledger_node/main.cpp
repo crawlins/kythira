@@ -1,29 +1,27 @@
 // Copyright (c) 2026 Clark Rawlins
 // SPDX-License-Identifier: Apache-2.0
 
-// ledger_node: the verifiable ledger daemon (.kiro/specs/verifiable-ledger/).
-//
-// A placeholder until task 7, which brings the HTTP API, the ledger Raft
-// groups and the data directory. Today it only links the module, so the
-// target, its build flags and the module boundary are exercised from task 1
-// on, and it reports what it is when asked.
+// ledger_node: the verifiable ledger daemon (.kiro/specs/verifiable-ledger/
+// task 7c, doc/verifiable_ledger.md). Configuration is read from the
+// environment (config.cpp, `ledger_node --help`); run.cpp holds the stack.
+
+#if defined(KYTHIRA_LEDGER_NODE_DAEMON)
+#include "config.hpp"
+#endif
 
 #include <kythira/ledger/ion_hash.hpp>
 #include <kythira/ledger/merkle.hpp>
 
+#if defined(KYTHIRA_LEDGER_NODE_DAEMON) && !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && \
+    !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+#include <folly/init/Init.h>
+#endif
+
 #include <cstdio>
+#include <exception>
 #include <string_view>
 
 namespace {
-
-constexpr std::string_view usage =
-    "usage: ledger_node [--help | --self-test]\n"
-    "\n"
-    "The Kythira verifiable ledger daemon. Not implemented yet: the server\n"
-    "arrives with .kiro/specs/verifiable-ledger/ task 7.\n"
-    "\n"
-    "  --help       print this text\n"
-    "  --self-test  hash a fixed document and fold a two-leaf proof, then exit\n";
 
 auto self_test() -> int {
     namespace ledger = kythira::ledger;
@@ -52,6 +50,42 @@ auto main(int argc, char** argv) -> int {
     if (argc == 2 && arg == "--self-test") {
         return self_test();
     }
-    std::fputs(usage.data(), argc == 2 && arg == "--help" ? stdout : stderr);
-    return argc == 2 && arg == "--help" ? 0 : 2;
+#if defined(KYTHIRA_LEDGER_NODE_DAEMON)
+    if (argc == 2 && (arg == "--help" || arg == "-h")) {
+        std::fputs(kythira::ledger_node::usage_text().data(), stdout);
+        return 0;
+    }
+    if (argc > 1) {
+        std::fprintf(stderr, "ledger_node: unknown argument %s\n\n%s", argv[1],
+                     kythira::ledger_node::usage_text().data());
+        return 2;
+    }
+#else
+    // Built without RocksDB or the TLS stack (CONFIG_ENGINE_ROCKSDB and a
+    // future backend with OpenSSL): only the self-test.
+    std::fputs(
+        "usage: ledger_node --self-test\n\nThis ledger_node was built without the daemon "
+        "(it needs CONFIG_ENGINE_ROCKSDB, OpenSSL and a future backend).\n",
+        argc == 2 && (arg == "--help" || arg == "-h") ? stdout : stderr);
+    return argc == 2 && (arg == "--help" || arg == "-h") ? 0 : 2;
+#endif
+#if defined(KYTHIRA_LEDGER_NODE_DAEMON)
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+    folly::Init init(&argc, &argv);
+#endif
+    kythira::ledger_node::node_options opt;
+    try {
+        opt = kythira::ledger_node::from_env();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        return 2;
+    }
+    kythira::ledger_node::install_signal_handlers();
+    try {
+        return kythira::ledger_node::run(opt);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "ledger_node: %s\n", e.what());
+        return 1;
+    }
+#endif
 }

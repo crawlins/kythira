@@ -11,10 +11,10 @@ Status: the state machine, transactions, indexes, segments, export,
 offline verification, signed digests, the native API with its HTTPS server
 and the C++ client are built and tested, and so is the node's core over
 multi_raft (ledger placement, routing, background index builds and seals),
-which runs in tests on an in-process network. The `ledger_node` daemon
-waits on the RocksDB engine. A ledger's snapshot carries its segment
-files; catching a lagging follower up through multi_raft waits on log
-compaction for persistent groups.
+which runs in tests on an in-process network, and the `ledger_node`
+daemon (below). A ledger's snapshot carries its segment files. Not yet
+built: the daemon's metrics endpoint and its object-store export runner,
+and the multi_raft catch-up, crash and chaos tests.
 
 ## Model
 
@@ -248,16 +248,57 @@ and a digest you saved earlier.
 `ledger_ctl` exits 0 when verified, 1 when verification fails (including a
 bad signature or an unreadable journal), and 2 on a usage or I/O error.
 
+## Running a node
+
+`ledger_node` is configured entirely from the environment; `ledger_node
+--help` lists every variable and its default. A three-node cluster needs,
+on each node:
+
+```sh
+KYTHIRA_NODE_ID=1
+KYTHIRA_PEERS=1=https://ledger-1:7000,2=https://ledger-2:7000,3=https://ledger-3:7000
+KYTHIRA_LEDGER_DATA_DIR=/var/lib/kythira-ledger
+KYTHIRA_LEDGER_TLS_CERT=/etc/kythira/node.crt   # serves the API and Raft, dials Raft
+KYTHIRA_LEDGER_TLS_KEY=/etc/kythira/node.key
+KYTHIRA_LEDGER_CLIENT_CA=/etc/kythira/clients-ca.crt
+KYTHIRA_LEDGER_ROLES_FILE=/etc/kythira/roles.txt
+# optional
+KYTHIRA_LEDGER_RAFT_CA=/etc/kythira/raft-ca.crt  # keeps API clients off the Raft port
+KYTHIRA_LEDGER_SIGNING_KEY=/etc/kythira/signer.key
+KYTHIRA_LEDGER_SIGNING_CHAIN=/etc/kythira/signer-chain.pem
+```
+
+- **Raft** uses mutual TLS whenever the peer URLs are https://. Peers'
+  certificates must chain to `KYTHIRA_LEDGER_RAFT_CA`, which defaults to
+  the client CA; with the default, any API client certificate can also
+  reach the Raft port, so give Raft its own CA in production. http://
+  peers are refused unless Raft binds to loopback or
+  `KYTHIRA_ALLOW_PLAINTEXT_RAFT=1` is set.
+- **The API** listens on `KYTHIRA_LEDGER_API_LISTEN` (default
+  `0.0.0.0:8443`). A follower redirects to the leader's API URL, taken from
+  `KYTHIRA_LEDGER_API_URLS` (default: each peer's Raft host on the API
+  port).
+- **Roles** are one grant per line, `<subject> <ledger or *>
+  <read|write|admin>`, where the subject is the client certificate's URI
+  SAN; `#` starts a comment.
+- **The data directory** holds `engine/` (the RocksDB database: the catalog
+  and every ledger), `raft/<group>/` (each group's Raft log),
+  `snapshots/` and `segments/<ledger id>/`.
+- The node stops cleanly on SIGINT or SIGTERM. It prints one `ready:` line
+  once Raft and the API are listening.
+
 ## Operations
 
 - **Metrics.** The state machine reports blocks, blocks applied and
   rejections by code (from which commit and conflict rates follow),
   hash-check failures, unsealed, local and offloaded journal bytes,
-  segments, and indexes still backfilling. `ledger_node` will export these.
+  segments, and indexes still backfilling. A metrics endpoint on
+  `ledger_node` is still to come.
 - **Hash mismatch.** If a replica computes a different block hash from
   the leader's for the same entry, the replica stops applying that group
   rather than store a block it disagrees with. The state machine reports
-  the block and both hashes so the node can log them and raise an alert.
+  the block and both hashes, and `ledger_node` logs them at critical
+  level.
 - **Threads and ion-c.** ion-c 1.1.3 keeps a system symbol table per
   thread and does not free it when the thread exits. Code that parses Ion
   should run on long-lived threads; the HTTPS handler hands requests to a

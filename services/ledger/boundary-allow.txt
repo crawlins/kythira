@@ -7,4 +7,6 @@
 # instantiate core templates the way an application would.
 #
 # file                          allowed core *_impl.hpp   why
+cmd/ledger_node/run.cpp         multi_raft_impl.hpp       instantiates the multi-raft host
+cmd/ledger_node/run.cpp         beast_http_transport_impl.hpp  instantiates the Beast transport
 tests/ledger_host_test.cpp      multi_raft_impl.hpp       stands up in-process hosts

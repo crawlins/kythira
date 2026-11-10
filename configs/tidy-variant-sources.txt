@@ -54,6 +54,8 @@ ion tests/ion_serializer_range_property_test.cpp
 ion tests/shard_group_id_ion_wire_property_test.cpp
 ion services/ledger/cmd/ledger_ctl/main.cpp
 ion services/ledger/cmd/ledger_node/main.cpp
+ion services/ledger/cmd/ledger_node/config.cpp
+ion services/ledger/cmd/ledger_node/run.cpp
 ion src/rocksdb_kv_engine.cpp
 ion tests/rocksdb_kv_engine_test.cpp
 ion services/redis/cmd/redis_gateway_node/run_cbor_engine.cpp
@@ -70,5 +72,6 @@ ion services/ledger/tests/ledger_http_test.cpp
 ion services/ledger/tests/ledger_signing_test.cpp
 ion services/ledger/tests/ledger_group_state_machine_test.cpp
 ion services/ledger/tests/ledger_host_test.cpp
+ion services/ledger/tests/ledger_node_cluster_test.cpp
 
 no-cloud tests/multi_raft_node_s3_unavailable_test.cpp

@@ -241,9 +241,24 @@ task is one PR unless noted.
       `commit_unconfirmed`, not retryable, since the entry may still
       commit. A maintenance thread proposes index build steps, seals and
       export finishes on the ledgers the node leads.
-  - Still owed: the `ledger_node` daemon (network transport, config, data
-    directory, metrics export, signer config), which waits on the
-    rocksdb_kv_engine PR (lane 2's #746).
+  - Done so far (7c, the daemon):
+    - `cmd/ledger_node/`: configured from the environment (`config.cpp`,
+      `ledger_node --help` lists every variable); Raft over Beast with
+      mutual TLS by default (plaintext only with http:// peers on
+      loopback or `KYTHIRA_ALLOW_PLAINTEXT_RAFT`); one RocksDB database
+      for every group's state, a binary file Raft log per group; the API
+      on the HTTPS server with client certificates and a roles file;
+      optional digest signing. A replica's hash mismatch is logged at
+      critical with both hashes.
+    - `ledger_node_cluster_test` runs three daemons on loopback: writes
+      through the client, `ledger_ctl verify --api`, writes with each of
+      two members killed in turn, and a whole-cluster restart.
+    - The Boost future backend now pins a Beast connection's executor for
+      as long as a chain via()'d onto it can submit to it (the Folly
+      backend already did, through `KeepAlive`); killing a member crashed
+      the survivors with a use-after-free in the Raft client.
+  - Still owed: metrics export (a `/metrics` endpoint) and the
+    object-store export runner; exports finish as failed until then.
 
 - [x] 8. Segments, offload and export
   - Seal entries, deterministic segment files, object-store offload and

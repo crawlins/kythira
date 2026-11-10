@@ -99,4 +99,23 @@ set_tests_properties(ledger_host_test PROPERTIES LABELS "integration;ledger" TIM
 add_test(NAME ledger_node_self_test COMMAND ledger_node --self-test)
 set_tests_properties(ledger_node_self_test PROPERTIES LABELS "unit;ledger" TIMEOUT 60)
 
+# Task 7c: the ledger_node daemon end to end: three processes on loopback
+# with Raft over mutual TLS, the HTTPS API and RocksDB, written through the
+# C++ client, checked with ledger_ctl verify --api, through member kills and
+# a whole-cluster restart. Only where the daemon itself is built (RocksDB and
+# certificate_authority; services/ledger/cmd/CMakeLists.txt).
+if(KYTHIRA_LEDGER_NODE_DAEMON AND TARGET certificate_authority)
+    kythira_ledger_test(ledger_node_cluster_test ledger_node_cluster_test.cpp)
+    target_link_libraries(ledger_node_cluster_test PRIVATE
+        certificate_authority kythira_test_support OpenSSL::SSL)
+    target_compile_definitions(ledger_node_cluster_test PRIVATE
+        KYTHIRA_LEDGER_NODE="$<TARGET_FILE:ledger_node>"
+        KYTHIRA_LEDGER_CTL="$<TARGET_FILE:ledger_ctl>")
+    add_dependencies(ledger_node_cluster_test ledger_node ledger_ctl)
+    set_tests_properties(ledger_node_cluster_test PROPERTIES
+        LABELS "integration;ledger;https" TIMEOUT 300)
+else()
+    message(STATUS "ledger_node_cluster_test: skipped (requires the ledger_node daemon build)")
+endif()
+
 kythira_scale_test_timeouts()
