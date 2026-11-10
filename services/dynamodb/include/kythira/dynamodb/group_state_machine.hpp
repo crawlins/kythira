@@ -1,0 +1,156 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+
+/// @file group_state_machine.hpp
+/// @brief The state machine every DynamoDB Raft group runs
+///        (`.kiro/specs/dynamodb-compatible-api/` task 7, the Raft-hosted
+///        backend).
+///
+/// A `multi_raft` host runs one state machine type for all its groups, but
+/// DynamoDB has two kinds of group: the catalog group, whose range holds
+/// `\0meta/dynamodb/`, and the item groups over `t/`. This wrapper is
+/// whichever its range says. `open()` on a range that covers the catalog's
+/// opens a `dynamo_catalog_state_machine` on exactly the catalog range (so
+/// the bootstrap may give the catalog group everything below `t/`, which
+/// keeps the shard map tiled without a filler group); any other range
+/// opens a `dynamo_item_state_machine`. Every later call goes to that one.
+///
+/// Only item groups split or merge: the catalog is small and stays one
+/// group, and `can_split_at` refuses every key outside `t/` (a catalog key
+/// is never a partition boundary).
+
+#include <kythira/dynamodb/catalog.hpp>
+#include <kythira/dynamodb/item_state_machine.hpp>
+#include <kythira/dynamodb/key_layout.hpp>
+
+#include <raft/memory_kv_engine.hpp>
+#include <raft/persistent_state_machine.hpp>
+
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace kythira::dynamodb {
+
+template<kythira::kv_engine Engine = kythira::memory_kv_engine, typename LogIndex = std::uint64_t>
+class dynamo_group_state_machine {
+public:
+    using engine_type = Engine;
+    using catalog_type = dynamo_catalog_state_machine<Engine, LogIndex>;
+    using items_type = dynamo_item_state_machine<Engine, LogIndex>;
+
+    /// Whether `range` covers the catalog's.
+    [[nodiscard]] static auto is_catalog(const kythira::key_range& range) -> bool {
+        return range.contains(catalog_range());
+    }
+
+    auto open(engine_type& engine, const kythira::key_range& range) -> void {
+        if (is_catalog(range)) {
+            _catalog.emplace();
+            _items.reset();
+            _catalog->open(engine, catalog_range());
+        } else {
+            _items.emplace();
+            _catalog.reset();
+            _items->open(engine, range);
+        }
+    }
+
+    auto apply(const std::vector<std::byte>& entry, LogIndex index) -> std::vector<std::byte> {
+        return _catalog ? _catalog->apply(entry, index) : items().apply(entry, index);
+    }
+
+    [[nodiscard]] auto applied_index() const -> LogIndex {
+        return _catalog ? _catalog->applied_index() : items().applied_index();
+    }
+
+    [[nodiscard]] auto durable_applied_index() const -> LogIndex {
+        return _catalog ? _catalog->durable_applied_index() : items().durable_applied_index();
+    }
+
+    auto checkpoint(const std::filesystem::path& dir) -> kythira::snapshot_manifest {
+        return _catalog ? _catalog->checkpoint(dir) : items().checkpoint(dir);
+    }
+
+    auto ingest(const std::filesystem::path& dir, const kythira::snapshot_manifest& manifest,
+                LogIndex index) -> void {
+        if (_catalog) {
+            _catalog->ingest(dir, manifest, index);
+        } else {
+            items().ingest(dir, manifest, index);
+        }
+    }
+
+    auto drop() -> void {
+        if (_catalog) {
+            _catalog->drop();
+        } else {
+            items().drop();
+        }
+    }
+
+    auto split_at(const std::vector<std::string>& keys) -> std::vector<kythira::key_range> {
+        if (_catalog) {
+            throw std::invalid_argument("dynamo_group_state_machine: the catalog does not split");
+        }
+        return items().split_at(keys);
+    }
+
+    auto adopt(const kythira::key_range& range) -> void {
+        if (_catalog) {
+            throw std::invalid_argument("dynamo_group_state_machine: the catalog does not merge");
+        }
+        items().adopt(range);
+    }
+
+    [[nodiscard]] auto range() const -> const kythira::key_range& {
+        return _catalog ? catalog_range_ref() : items().range();
+    }
+
+    [[nodiscard]] static auto can_split_at(const std::string& key) -> bool {
+        return items_type::can_split_at(key);
+    }
+
+    /// The catalog, when this is the catalog group (else null).
+    [[nodiscard]] auto catalog() -> catalog_type* { return _catalog ? &*_catalog : nullptr; }
+    [[nodiscard]] auto catalog() const -> const catalog_type* {
+        return _catalog ? &*_catalog : nullptr;
+    }
+
+    /// The items, when this is an item group (else null).
+    [[nodiscard]] auto item_group() -> items_type* { return _items ? &*_items : nullptr; }
+    [[nodiscard]] auto item_group() const -> const items_type* {
+        return _items ? &*_items : nullptr;
+    }
+
+private:
+    [[nodiscard]] auto items() -> items_type& {
+        if (!_items) {
+            throw std::logic_error("dynamo_group_state_machine: not opened");
+        }
+        return *_items;
+    }
+    [[nodiscard]] auto items() const -> const items_type& {
+        if (!_items) {
+            throw std::logic_error("dynamo_group_state_machine: not opened");
+        }
+        return *_items;
+    }
+
+    [[nodiscard]] static auto catalog_range_ref() -> const kythira::key_range& {
+        static const kythira::key_range r = catalog_range();
+        return r;
+    }
+
+    std::optional<catalog_type> _catalog;
+    std::optional<items_type> _items;
+};
+
+static_assert(kythira::persistent_splittable_state_machine<dynamo_group_state_machine<>>);
+
+}  // namespace kythira::dynamodb

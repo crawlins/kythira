@@ -50,6 +50,9 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/gateway.hpp` | `dynamodb_gateway_node`'s settings from the environment, and the front end and handlers served over core's Beast HTTPS host | 7 |
 | `cmd/dynamodb_gateway_node/` | the daemon | 7 |
 | `tests/dynamodb_gateway_test.cpp` | the settings, and the gateway serving signed requests over a socket | 7 |
+| `include/kythira/dynamodb/group_state_machine.hpp` | `dynamo_group_state_machine`: the one state machine a `multi_raft` host runs, the catalog or an item group by its range | 7 |
+| `include/kythira/dynamodb/raft_backend.hpp` | `raft_backend`: the `dynamo_backend` over `multi_raft`, hopping to each group's leader, read barriers, range reads across groups, and the catalog leader's follow-on work | 7 |
+| `tests/dynamodb_raft_backend_test.cpp` | three in-process nodes: requests on any node, a split under range reads, losing an item group's leader, delete jobs | 7 |
 | `include/kythira/dynamodb/api_common.hpp` | helpers the data-plane handlers share: request members, usable tables, simple capacity units | 7, 8 |
 | `include/kythira/dynamodb/query_api.hpp` | `Query` and `Scan`: key-condition ranges, hash-sliced segments, 1 MB pages, cursors | 8 |
 | `include/kythira/dynamodb/batch_api.hpp` | `BatchGetItem` and `BatchWriteItem` | 8 |
@@ -102,6 +105,7 @@ package to export.
 | `KYTHIRA_AWS_JSON_SHAPES_GENERATOR` | the same ctests (core's `scripts/gen_aws_json_shapes.py`) |
 | `kythira_test_pch` | the test precompiled header and its links (Boost.Test, Boost.JSON), through `add_raft_completion_test` |
 | `cmake/kythira_test_helpers.cmake` | `add_raft_completion_test`, `kythira_scale_test_timeouts` |
+| `kythira_test_support` | the in-process `multi_raft` fabric (`tests/multi_raft_test_fabric.hpp`), for `dynamodb_raft_backend_test` |
 | `KYTHIRA_BUILD_DYNAMODB` | set by the top level from `CONFIG_DYNAMODB`, OpenSSL and Boost |
 
 The top level names the module in two places: the `KYTHIRA_BUILD_DYNAMODB`

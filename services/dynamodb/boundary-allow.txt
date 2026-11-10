@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Core *_impl.hpp headers the DynamoDB module may include, one per line, with
+# the reason (services/README.md, "Boundary rules"). Only the composition
+# root (cmd/dynamodb_gateway_node) and tests that stand up an in-process
+# cluster may be listed.
+#
+# file                                   allowed core *_impl.hpp       why
+tests/dynamodb_raft_backend_test.cpp     multi_raft_impl.hpp           stands up in-process hosts
