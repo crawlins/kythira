@@ -246,10 +246,18 @@ Deliberate:
 - **Encoded authorization messages** are produced only by services that ask
   for them; the IAM and STS APIs do not, as on AWS.
 
-Found by testing: the policy simulator comparison (Requirement 15.5) and the
-Terraform call coverage are recorded in the spec's task 24 notes and, for
-each disagreement, as a corpus case in
-`services/iam/tests/corpus/evaluate/aws_simulator.json`.
+Found by testing:
+
+- **AWS's policy simulator is not the reference.** Run on the corpus
+  (Requirement 15.5), `SimulateCustomPolicy` agreed on 71 of 73 cases. On
+  the other two, real requests to S3 showed the simulator wrong and the
+  evaluator right: a Deny `NotPrincipal` listing a user with its account
+  lets that user through, and a same-account grant to the account does not
+  escape a permissions boundary. Kythira follows real AWS; those corpus
+  cases record the simulator's answer in `aws_simulator`.
+- **Terraform's calls.** The AWS provider's IAM calls, recorded against
+  real AWS, are in `services/iam/tests/terraform_calls.txt`; all are
+  implemented.
 
 ## Security notes
 

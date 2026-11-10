@@ -887,15 +887,22 @@ the adapter, so a build without `CONFIG_REDIS_GATEWAY_IAM` has none of them.
   AWS's decision expected. It needs only `iam:SimulateCustomPolicy` on
   `*`, creates nothing and is free; it runs by hand, not in CI.
 - First run, 2026-11-10 (kythira-dev, boto3 1.43): 71 of 73 cases agreed.
-  The two that did not are places where the simulator departs from the
-  enforcement AWS documents: it denies a caller exempted by a Deny
-  `NotPrincipal` listing the user's ARN with its account, and it lets a
-  same-account grant to the account escape a permissions boundary, which
-  the boundaries page reserves for a grant naming the user's ARN. Both
-  corpus cases keep the documented decision and carry the simulator's in
-  `aws_simulator` (Clark, 2026-11-10: follow real enforcement, which the
-  docs describe); the script reports them as
-  known divergences.
+  The two that did not are places where the simulator departs from real
+  enforcement, and Clark chose real AWS's answer. Both were measured with
+  real S3 GetObject calls the same day: a Deny `NotPrincipal` listing the
+  user's ARN with its account lets that user through (simulator: explicit
+  deny), and a same-account bucket policy granting the account does not
+  escape a boundary allowing only `ec2:*` (simulator: allow), while the
+  same grant to the user's own ARN does. Both corpus cases keep their
+  decision and carry the simulator's in `aws_simulator`, with the
+  measurement in `aws_simulator_note`; the script reports them as known
+  divergences.
+- Task 15's call list was recorded the same day against real AWS
+  (Terraform 1.17.1, hashicorp/aws 6.72.0): apply, an update apply, plan
+  and destroy of a configuration like `main.tf`, 53 IAM actions plus STS
+  GetCallerIdentity, in `tests/terraform_calls.txt`. Every one is
+  implemented, which iam_query_api_test's
+  `every_recorded_terraform_iam_call_is_implemented` checks.
 
 ## Configuration
 

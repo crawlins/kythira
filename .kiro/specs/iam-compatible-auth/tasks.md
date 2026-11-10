@@ -712,7 +712,7 @@ because each has a zero-spend fallback.
       `iam_node_test`, and the AWS CLI v2 step in the container scenario.
     - INV-NAME-4's caller is task 15's Put*Policy.
 
-- [ ] 15. Roles, policies, versions, attachments and boundaries
+- [x] 15. Roles, policies, versions, attachments and boundaries
   - Record the Terraform AWS provider's IAM call list for users, groups,
     roles, policies, attachments, boundaries and OIDC providers:
     - preferred: one `apply` and `destroy` against a real AWS account, using
@@ -728,6 +728,10 @@ because each has a zero-spend fallback.
   - Invariants (`invariants.md`): INV-ROLE-1 and INV-ROLE-2 (CreateRole and UpdateRole call `iam_validation.hpp`), INV-POL-1 and INV-POL-6. Each one needs a named
     unit test, and the PR updates its row there.
   - _Requirements: 9.4, 9.5, 9.7, 9.8_
+  - Note: the call list was recorded against real AWS on 2026-11-10
+    (Terraform 1.17.1, hashicorp/aws 6.72.0; apply, update, plan, destroy),
+    after the code merged from the provider's source; all 53 IAM actions on
+    it were already implemented.
 
 - [x] 16. OIDC providers, simulation and account calls
   - The OIDC provider actions, SimulatePrincipalPolicy, SimulateCustomPolicy,
@@ -897,7 +901,7 @@ because each has a zero-spend fallback.
     message and a denied caller; a message from a real denied request is
     decoded in `iam_sts_test` until a service module asks for one.
 
-- [ ] 24. Terraform conformance and simulator comparison
+- [x] 24. Terraform conformance and simulator comparison
   - `terraform apply` and `destroy` of a configuration covering
     Requirement 15.2 against the compose cluster, with the provider pinned.
     Fail on any `NotImplemented`.
@@ -906,6 +910,10 @@ because each has a zero-spend fallback.
     disagreement as a corpus case, with AWS's answer as the expected
     decision.
   - _Requirements: 15.2, 15.5_
+  - Note: AWS's simulator agreed on 71 of 73 cases (2026-11-10). Real S3
+    requests showed the other two were simulator errors, so the corpus keeps
+    real AWS's answer and records the simulator's in `aws_simulator`
+    (Clark's choice: "What does real AWS do? Do that.").
 
 - [ ] 25. Documentation and close-out
   - `doc/iam.md`, `doc/oidc-issuer.md`, and the `doc/redis-gateway.md`
