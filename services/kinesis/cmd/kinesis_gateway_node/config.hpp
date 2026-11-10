@@ -100,9 +100,11 @@ struct node_options {
     /// `KINESIS_MAINTENANCE_INTERVAL_MS`: how often a node runs the
     /// retention and tiering pass.
     std::chrono::milliseconds _maintenance_interval{60000};
-    /// `KINESIS_TIER_AFTER_HOURS`: tier sealed segments whose last record is
-    /// this old; 0 never tiers. Needs the S3 settings below.
-    std::uint32_t _tier_after_hours{0};
+    /// `KINESIS_TIER_AFTER_HOURS`, or `KINESIS_TIER_AFTER_MS` when set
+    /// (seconds-scale tiering for tests and demos): tier sealed segments
+    /// whose last record is this old; 0 never tiers. Needs the S3 settings
+    /// below.
+    std::int64_t _tier_after_ms{0};
     /// `KINESIS_TIER_S3_BUCKET`, `_PREFIX`, `_REGION` (default: the
     /// region above), `_ENDPOINT` (any S3-compatible store; AWS when empty).
     /// Credentials come from the AWS SDK's default chain.

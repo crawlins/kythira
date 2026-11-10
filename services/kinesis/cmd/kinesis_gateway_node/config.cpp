@@ -314,13 +314,27 @@ void read_kinesis_side(const reader& r, node_options& o) {
     if (tier_after > kinesis::k_max_retention_hours) {
         fail("KINESIS_TIER_AFTER_HOURS must be at most 8760");
     }
-    o._tier_after_hours = static_cast<std::uint32_t>(tier_after);
+    constexpr std::uint64_t ms_per_hour = 3600U * 1000U;
+    o._tier_after_ms = static_cast<std::int64_t>(tier_after * ms_per_hour);
+    // Milliseconds win when set, so a test or demo can watch a segment tier
+    // within seconds without a separate build. A second is the floor: below
+    // it a segment would tier while it is still being written.
+    if (r.set("KINESIS_TIER_AFTER_MS")) {
+        const auto ms = r.u64("KINESIS_TIER_AFTER_MS", "0");
+        if (ms != 0 && ms < 1000) {
+            fail("KINESIS_TIER_AFTER_MS must be 0 or at least 1000");
+        }
+        if (ms > std::uint64_t{kinesis::k_max_retention_hours} * ms_per_hour) {
+            fail("KINESIS_TIER_AFTER_MS must be at most 8760 hours");
+        }
+        o._tier_after_ms = static_cast<std::int64_t>(ms);
+    }
     o._tier_bucket = r.opt("KINESIS_TIER_S3_BUCKET", "");
     o._tier_prefix = r.opt("KINESIS_TIER_S3_PREFIX", "");
     o._tier_region = r.opt("KINESIS_TIER_S3_REGION", o._region.c_str());
     o._tier_endpoint = r.opt("KINESIS_TIER_S3_ENDPOINT", "");
-    if (o._tier_after_hours > 0 && o._tier_bucket.empty()) {
-        fail("KINESIS_TIER_AFTER_HOURS needs KINESIS_TIER_S3_BUCKET");
+    if (o._tier_after_ms > 0 && o._tier_bucket.empty()) {
+        fail("KINESIS_TIER_AFTER_HOURS (or _MS) needs KINESIS_TIER_S3_BUCKET");
     }
     if (!o._tier_bucket.empty() && !s3_tier_available()) {
         fail(
@@ -380,9 +394,9 @@ auto describe(const node_options& o) -> std::string {
                                   (o._kms_endpoint.empty() ? "" : " endpoint=" + o._kms_endpoint)
                             : std::string())
         << '\n';
-    if (o._tier_after_hours > 0) {
+    if (o._tier_after_ms > 0) {
         out << "tier=s3://" << o._tier_bucket << '/' << o._tier_prefix << " after "
-            << o._tier_after_hours << "h region=" << o._tier_region
+            << o._tier_after_ms << "ms region=" << o._tier_region
             << (o._tier_endpoint.empty() ? "" : " endpoint=" + o._tier_endpoint) << '\n';
     } else {
         out << "tier=off\n";
@@ -443,6 +457,7 @@ auto usage() -> std::string {
            "                                   0 = off)\n"
            "  KINESIS_MAINTENANCE_INTERVAL_MS  retention and tiering pass interval (60000)\n"
            "  KINESIS_TIER_AFTER_HOURS         tier segments this old to S3 (0 = never)\n"
+           "  KINESIS_TIER_AFTER_MS            the same in milliseconds (>= 1000); wins when set\n"
            "  KINESIS_TIER_S3_BUCKET           bucket for tiered segments\n"
            "  KINESIS_TIER_S3_PREFIX           key prefix in the bucket\n"
            "  KINESIS_TIER_S3_REGION           bucket region (default: KINESIS_REGION)\n"

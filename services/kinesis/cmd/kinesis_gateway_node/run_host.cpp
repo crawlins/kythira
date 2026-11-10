@@ -454,10 +454,8 @@ auto run(const node_options& opt) -> int {
     // seals, trims and tiers it.
     kinesis::stream_maintenance<cluster_type> maintenance(
         cluster, store, tier, fetched,
-        kinesis::maintenance_config{
-            ._tier_after_ms =
-                static_cast<std::int64_t>(opt._tier_after_hours) * kinesis::k_ms_per_hour,
-            ._keep_fetched_ms = std::int64_t{10} * 60 * 1000});
+        kinesis::maintenance_config{._tier_after_ms = opt._tier_after_ms,
+                                    ._keep_fetched_ms = std::int64_t{10} * 60 * 1000});
     // On-demand streams (task 12): each node splits the hot shards it leads.
     kinesis::on_demand_controller<cluster_type> on_demand(cluster, service);
     std::atomic<bool> maintaining{true};

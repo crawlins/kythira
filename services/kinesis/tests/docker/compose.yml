@@ -25,7 +25,8 @@
 #
 # The clients are in the `clients` profile, so `up` never starts them; the
 # scenario runs each with `compose --profile clients run --rm`. The KCL
-# workers are in the `kcl` profile for the same reason. Each node
+# workers are in the `kcl` profile and the S3 mock in `s3` for the same
+# reason. Each node
 # keeps its Raft state and segments in its own named volume, so
 # `stop`/`start` resumes it and `down -v` is a clean slate.
 
@@ -57,6 +58,16 @@ x-env: &env
   # Seconds, not a minute, between maintenance passes: the resharding case
   # waits for the pass to finish a reshard a node kill interrupted.
   KINESIS_MAINTENANCE_INTERVAL_MS: "2000"
+  # Tiering to the S3 mock (task 17's tiering case), off unless the
+  # scenario sets these in its environment and recreates the nodes. The
+  # mock does not check signatures, but the SDK will not sign without some
+  # credentials.
+  KINESIS_TIER_AFTER_MS: "${KINESIS_SCENARIO_TIER_AFTER_MS:-0}"
+  KINESIS_TIER_S3_BUCKET: "${KINESIS_SCENARIO_TIER_BUCKET:-}"
+  KINESIS_TIER_S3_ENDPOINT: "${KINESIS_SCENARIO_TIER_ENDPOINT:-}"
+  AWS_ACCESS_KEY_ID: scenario-s3-key
+  AWS_SECRET_ACCESS_KEY: scenario-s3-secret
+  AWS_EC2_METADATA_DISABLED: "true"
 
 services:
   kin-1:
@@ -85,6 +96,17 @@ services:
     volumes:
       - ./keys.txt:/etc/kinesis/keys:ro
       - kin-3-data:/var/lib/kinesis
+
+  # The in-memory S3 mock (cmd/chaos_s3_mock, staged into the node image)
+  # that the tiering case tiers to, in the `s3` profile: S3 on :9000 and
+  # its fault knobs on :9001, reached by service name. Its objects live in
+  # memory, so the scenario never restarts it.
+  s3mock:
+    image: kythira-kinesis-node:dev
+    profiles: ["s3"]
+    entrypoint: ["/usr/local/bin/chaos_s3_mock"]
+    networks:
+      - kinesis_net
 
   # The AWS CLI v2, at the version the wire evidence pins
   # (services/kinesis/tests/evidence/README.md).
