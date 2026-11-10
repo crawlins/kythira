@@ -25,6 +25,8 @@
 #include <kythira/kinesis/kinesis_front_end.hpp>
 #include <kythira/kinesis/kinesis_gateway.hpp>
 #include <kythira/kinesis/kinesis_iterators.hpp>
+#include <kythira/kinesis/kinesis_kms.hpp>
+#include <kythira/kinesis/kinesis_kms_aws.hpp>
 #include <kythira/kinesis/kinesis_lease_api.hpp>
 #include <kythira/kinesis/kinesis_maintenance.hpp>
 #include <kythira/kinesis/kinesis_on_demand.hpp>
@@ -54,6 +56,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -373,6 +376,24 @@ auto run(const node_options& opt) -> int {
             read_file(opt._iterator_keys_file, "KINESIS_ITERATOR_KEYS_FILE"));
     } else if (!opt._forward_secret.empty()) {
         sc._iterator_keys = kinesis::derived_iterator_key(opt._forward_secret);
+    }
+    // Encryption at rest (task 14).
+    if (opt._kms == "local") {
+        sc._kms = kinesis::key_provider(kinesis::local_kms_provider(opt._kms_passphrase));
+    } else if (opt._kms == "aws") {
+        kinesis::aws_kms_config kc;
+        kc._region = opt._kms_region;
+        kc._endpoint = opt._kms_endpoint;
+        // Read once at startup: nothing in the process changes its
+        // environment.
+        const auto env = [](const char* name) {
+            const char* v = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
+            return v != nullptr ? std::string(v) : std::string();
+        };
+        kc._credentials = [creds = kinesis::aws_kms_credentials{
+                               env("AWS_ACCESS_KEY_ID"), env("AWS_SECRET_ACCESS_KEY"),
+                               env("AWS_SESSION_TOKEN")}] { return creds; };
+        sc._kms = kinesis::key_provider(kinesis::aws_kms_provider(std::move(kc)));
     }
     kinesis::kinesis_service<cluster_type> service(cluster, sc);
     service.register_with(front_end);

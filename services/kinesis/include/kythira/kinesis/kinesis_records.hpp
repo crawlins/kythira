@@ -22,6 +22,7 @@
 /// then single records; arrival times never decrease within a shard, so the
 /// first record at or after it starts the answer.
 
+#include <kythira/kinesis/kinesis_kms.hpp>
 #include <kythira/kinesis/kinesis_stream_state_machine.hpp>
 
 #include <raft/record_segment_store.hpp>
@@ -29,6 +30,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <exception>
+#include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -38,7 +41,13 @@ struct read_record {
     std::uint64_t _counter = 0;
     std::int64_t _arrival_ms = 0;
     stored_record _record;
+    /// Stored sealed (task 14) and opened for this read.
+    bool _encrypted = false;
 };
+
+/// Opens a sealed stored record (task 14): the service's, which knows the
+/// stream's data keys. Throws `kms_error` or `record_open_error`.
+using record_opener = std::function<stored_record(std::span<const std::byte>)>;
 
 struct shard_read {
     std::vector<read_record> _records;
@@ -52,13 +61,16 @@ struct shard_read {
 
 /// Records of shard `key` at or after counter `from` (and, when
 /// `min_timestamp_ms` is positive, arrival time), within `limits`. `state`
-/// is the shard's state as copied from the replica. Throws
-/// `record_segment_error` if a record fails its CRC.
+/// is the shard's state as copied from the replica. Sealed records go
+/// through `open`. Throws `record_segment_error` if a record fails its CRC,
+/// `record_open_error` for a sealed record with no `open`, and whatever
+/// `open` throws.
 [[nodiscard]] inline auto read_shard(const record_segment_store& store,
                                      const segment_fetcher& fetch, const std::string& key,
                                      const shard_state& state, std::uint64_t from,
                                      std::int64_t min_timestamp_ms,
-                                     const segment_read_limits& limits) -> shard_read {
+                                     const segment_read_limits& limits,
+                                     const record_opener& open = {}) -> shard_read {
     shard_read out;
     out._next_counter = std::max({from, state._trim_before, std::uint64_t{1}});
     std::size_t records_left = limits._max_records;
@@ -72,9 +84,15 @@ struct shard_read {
             if (rec._timestamp_ms < min_timestamp_ms) {
                 continue;
             }
-            out._records.push_back({._counter = rec._seq,
-                                    ._arrival_ms = rec._timestamp_ms,
-                                    ._record = decode_stored_record(rec._data)});
+            const bool sealed = is_sealed_record(rec._data);
+            if (sealed && !open) {
+                throw record_open_error("kinesis: a sealed record and no key to open it");
+            }
+            out._records.push_back(
+                {._counter = rec._seq,
+                 ._arrival_ms = rec._timestamp_ms,
+                 ._record = sealed ? open(rec._data) : decode_stored_record(rec._data),
+                 ._encrypted = sealed});
         }
         if (r._records.empty()) {
             out._next_counter = std::max(out._next_counter, r._next_seq);

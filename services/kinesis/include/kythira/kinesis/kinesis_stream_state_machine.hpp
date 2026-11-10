@@ -127,6 +127,21 @@ struct stored_record {
     return out;
 }
 
+/// A sealed stored record (task 14, `kinesis_kms.hpp`) starts with this
+/// u16 where a plaintext one has its partition key's length, which is at
+/// most 256: so the two never mix up. After it: the data key's generation
+/// (u32), a 12-byte nonce, and the AES-256-GCM ciphertext of the plaintext
+/// stored record with its 16-byte tag.
+inline constexpr std::uint16_t k_sealed_record_marker = 0xFFFF;
+
+/// What sealing adds to a record's partition key and data: the marker, the
+/// generation, the nonce, the tag and the plaintext's partition key length.
+inline constexpr std::size_t k_sealed_record_overhead = 2 + 4 + 12 + 16 + 2;
+
+[[nodiscard]] inline auto is_sealed_record(std::span<const std::byte> bytes) -> bool {
+    return bytes.size() >= 2 && bytes[0] == std::byte{0xFF} && bytes[1] == std::byte{0xFF};
+}
+
 // ---- commands -------------------------------------------------------------
 
 /// `CreateStream`, at the catalog group. Allocates the stream id from the
@@ -166,9 +181,20 @@ struct open_shard_command {
     std::uint64_t _starting_counter = 0;
 };
 
+/// One record of an append. A sealed record (an encrypted stream, task 14)
+/// has an empty partition key and the sealed bytes as `_data`, so neither
+/// its partition key nor its data reaches the log in the clear.
 struct append_record {
     std::string _partition_key{};
     std::vector<std::byte> _data{};
+
+    [[nodiscard]] auto sealed() const -> bool { return _partition_key.empty(); }
+    /// What the record costs against a shard's write limits: its partition
+    /// key and data, before sealing.
+    [[nodiscard]] auto billed_bytes() const -> std::size_t {
+        return sealed() ? _data.size() - std::min(_data.size(), k_sealed_record_overhead)
+                        : _data.size() + _partition_key.size();
+    }
 };
 
 /// One shard's records from one `PutRecord`/`PutRecords` (Requirement 7.1:
@@ -301,6 +327,21 @@ struct set_monitoring_command {
     std::vector<std::string> _metrics{};
 };
 
+/// `StartStreamEncryption` (`_encryption` KMS, with the new data key
+/// wrapped by the key provider) or `StopStreamEncryption` (NONE, no key),
+/// task 14. On an ACTIVE stream only. A new data key gets the next
+/// generation; stopping keeps every data key, so records sealed under them
+/// stay readable.
+struct set_encryption_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    encryption_type _encryption = encryption_type::none;
+    /// The key as the caller named it (what DescribeStream shows).
+    std::string _key_id{};
+    std::optional<data_key_record> _data_key{};
+};
+
 /// What a lease write requires of the lease's current state.
 enum class lease_condition : std::uint8_t {
     /// Whatever is there (or nothing).
@@ -368,7 +409,7 @@ using stream_command =
                  lease_read_command, lease_drop_application_command, set_retention_command,
                  seal_shard_command, tier_segment_command, reshard_catalog_command,
                  set_ending_counters_command, set_stream_mode_command, tag_stream_command,
-                 set_policy_command, set_monitoring_command>;
+                 set_policy_command, set_monitoring_command, set_encryption_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -385,7 +426,8 @@ inline constexpr std::uint8_t stream_command_version = 1;
                           std::is_same_v<T, set_stream_mode_command> ||
                           std::is_same_v<T, tag_stream_command> ||
                           std::is_same_v<T, set_policy_command> ||
-                          std::is_same_v<T, set_monitoring_command>) {
+                          std::is_same_v<T, set_monitoring_command> ||
+                          std::is_same_v<T, set_encryption_command>) {
                 return stream_key(v._account, v._name);
             } else if constexpr (std::is_same_v<T, append_batch_command>) {
                 return v._appends.empty() ? std::string() : v._appends.front()._key;
@@ -523,6 +565,14 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
                 w.u32(static_cast<std::uint32_t>(v._metrics.size()));
                 for (const auto& m : v._metrics) {
                     w.str(m);
+                }
+            } else if constexpr (std::is_same_v<T, set_encryption_command>) {
+                w.str(v._account).str(v._name).u64(v._id);
+                w.u8(static_cast<std::uint8_t>(v._encryption)).str(v._key_id);
+                w.u8(v._data_key ? 1 : 0);
+                if (v._data_key) {
+                    w.u32(v._data_key->_generation).str(v._data_key->_key_id);
+                    w.str(v._data_key->_wrapped);
                 }
             } else {
                 w.str(v._key);
@@ -753,6 +803,23 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
             c._metrics.reserve(std::min<std::size_t>(n, r.remaining() / 4));
             for (std::uint32_t i = 0; i < n; ++i) {
                 c._metrics.push_back(r.str());
+            }
+            out = std::move(c);
+            break;
+        }
+        case 21: {
+            set_encryption_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            c._encryption = r.enumeration<encryption_type>(1);
+            c._key_id = r.str();
+            if (r.boolean()) {
+                data_key_record k;
+                k._generation = r.u32();
+                k._key_id = r.str();
+                k._wrapped = r.str();
+                c._data_key = std::move(k);
             }
             out = std::move(c);
             break;
@@ -1317,10 +1384,17 @@ private:
         payloads.reserve(c._records.size());
         std::uint64_t bytes = 0;
         for (const auto& r : c._records) {
-            if (r._partition_key.empty() || r._partition_key.size() > 256) {
+            if (r.sealed()) {
+                // Stored as sealed by the proposer (task 14).
+                if (r._data.size() < k_sealed_record_overhead || !is_sealed_record(r._data)) {
+                    return {._status = apply_status::invalid};
+                }
+                payloads.push_back(r._data);
+            } else if (r._partition_key.size() > 256) {
                 return {._status = apply_status::invalid};
+            } else {
+                payloads.push_back(encode_stored_record(r._partition_key, r._data));
             }
-            payloads.push_back(encode_stored_record(r._partition_key, r._data));
             if (_store != nullptr && payloads.back().size() > _store->options()._max_record_bytes) {
                 return {._status = apply_status::invalid};
             }
@@ -1475,6 +1549,33 @@ private:
         }
         rec->_shard_metrics = c._metrics;
         return {._id = rec->_id};
+    }
+
+    /// The new data key's generation is assigned here, one past the last,
+    /// whatever the proposer guessed: two racing starts each get their own.
+    /// `_first_counter` in the result is the generation.
+    auto apply_one(const set_encryption_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        if (rec->_status != stream_status::active) {
+            return {._status = apply_status::bad_transition};
+        }
+        if (c._encryption == encryption_type::none) {
+            rec->_encryption = encryption_type::none;
+            rec->_key_id.clear();
+            return {._id = rec->_id};
+        }
+        if (!c._data_key || c._key_id.empty() || c._data_key->_wrapped.empty()) {
+            return {._status = apply_status::invalid};
+        }
+        auto k = *c._data_key;
+        k._generation = rec->_data_keys.empty() ? 1 : rec->_data_keys.back()._generation + 1;
+        rec->_data_keys.push_back(k);
+        rec->_encryption = encryption_type::kms;
+        rec->_key_id = c._key_id;
+        return {._id = rec->_id, ._first_counter = k._generation};
     }
 
     auto apply_one(const reshard_catalog_command& c) -> apply_result {

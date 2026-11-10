@@ -3,12 +3,12 @@
 Task 15 of `.kiro/specs/kinesis-compatible-streams/` (Requirements 2.1,
 14.2-14.5 and 16.2). With it, every operation in the pinned model is either
 implemented (`../implemented-operations.txt`) or listed in
-[unsupported.md](unsupported.md) with its reason and error. The ones still
-listed are:
+[unsupported.md](unsupported.md) with its reason and error. Encryption
+(task 14, [encryption.md](encryption.md)) has since been built. The ones
+still listed are:
 
 - the Channel operations, which are not in the spec;
 - enhanced fan-out, which is task 13;
-- encryption, which is task 14;
 - `UpdateStreamWarmThroughput`.
 
 ## Tags

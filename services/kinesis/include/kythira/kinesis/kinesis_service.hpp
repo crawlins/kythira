@@ -62,6 +62,7 @@
 #include <kythira/kinesis/kinesis_front_end.hpp>
 #include <kythira/kinesis/kinesis_hash.hpp>
 #include <kythira/kinesis/kinesis_iterators.hpp>
+#include <kythira/kinesis/kinesis_kms.hpp>
 #include <kythira/kinesis/kinesis_metrics.hpp>
 #include <kythira/kinesis/kinesis_records.hpp>
 #include <kythira/kinesis/kinesis_sequence.hpp>
@@ -135,6 +136,10 @@ struct kinesis_service_config {
     throughput_limits _throughput{};
     /// The clock the read buckets refill by.
     monotonic_ms _monotonic = steady_now_ms;
+    /// Wraps and unwraps encrypted streams' data keys (task 14). Empty:
+    /// `StartStreamEncryption` is refused, and an encrypted stream's
+    /// records cannot be written or read on this node.
+    key_provider _kms{};
 };
 
 /// `shardId-` and the ordinal: twelve digits in the `aws` id format, bare
@@ -335,6 +340,8 @@ public:
         fe.on("DescribeAccountSettings", bind(&kinesis_service::describe_account_settings));
         fe.on("UpdateAccountSettings", bind(&kinesis_service::update_account_settings));
         fe.on("UpdateMaxRecordSize", bind(&kinesis_service::update_max_record_size));
+        fe.on("StartStreamEncryption", bind(&kinesis_service::start_stream_encryption));
+        fe.on("StopStreamEncryption", bind(&kinesis_service::stop_stream_encryption));
         if constexpr (transacts<Cluster>) {
             fe.on("SplitShard", bind(&kinesis_service::split_shard));
             fe.on("MergeShards", bind(&kinesis_service::merge_shards));
@@ -343,7 +350,7 @@ public:
     }
 
     /// The operations `register_with` adds, for implemented-operations.txt.
-    static constexpr std::array<std::string_view, 31> k_operations{"AddTagsToStream",
+    static constexpr std::array<std::string_view, 33> k_operations{"AddTagsToStream",
                                                                    "CreateStream",
                                                                    "DecreaseStreamRetentionPeriod",
                                                                    "DeleteResourcePolicy",
@@ -368,6 +375,8 @@ public:
                                                                    "PutResourcePolicy",
                                                                    "RemoveTagsFromStream",
                                                                    "SplitShard",
+                                                                   "StartStreamEncryption",
+                                                                   "StopStreamEncryption",
                                                                    "TagResource",
                                                                    "UntagResource",
                                                                    "UpdateAccountSettings",
@@ -786,6 +795,95 @@ public:
             return not_active(*s);
         }
         return boost::json::object{};
+    }
+
+    // ---- encryption at rest (task 14) ---------------------------------------
+
+    /// `StartStreamEncryption`: new records are sealed under a fresh data key
+    /// wrapped by `KeyId`. On an ACTIVE stream; the change is one catalog
+    /// entry, so the stream does not pass through UPDATING. Starting again
+    /// with the key the stream already uses changes nothing; another key
+    /// re-keys it (records already written keep their old data key).
+    auto start_stream_encryption(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const auto type = detail::string_member(in, "EncryptionType");
+        const std::string key(detail::string_member(in, "KeyId").value_or(""));
+        if (!type || *type != "KMS") {
+            return invalid_argument("EncryptionType must be KMS.");
+        }
+        if (!_config._kms) {
+            return invalid_argument("Encryption at rest is not configured on this endpoint.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        if (rec._status != stream_status::active) {
+            return not_active(rec);
+        }
+        if (rec._encryption == encryption_type::kms && rec._key_id == key) {
+            return boost::json::object{};
+        }
+        generated_data_key fresh;
+        try {
+            fresh = _config._kms.generate_data_key(key, encryption_context_of(rec));
+        } catch (const kms_error& e) {
+            return kms_error_answer(e);
+        }
+        const auto r = propose(set_encryption_command{
+            ._account = rec._account,
+            ._name = rec._name,
+            ._id = rec._id,
+            ._encryption = encryption_type::kms,
+            ._key_id = key,
+            ._data_key = data_key_record{._key_id = fresh._key_id, ._wrapped = fresh._wrapped}});
+        if (r && r->_status == apply_status::ok) {
+            const std::scoped_lock lock(_data_key_mutex);
+            _data_key_cache.insert_or_assign(
+                {rec._id, static_cast<std::uint32_t>(r->_first_counter)}, fresh._plaintext);
+        }
+        OPENSSL_cleanse(fresh._plaintext.data(), fresh._plaintext.size());
+        return encryption_answer(rec, r);
+    }
+
+    /// `StopStreamEncryption`: new records are stored in the clear again.
+    /// Records sealed before stay sealed and readable. Stopping a stream
+    /// that is not encrypted changes nothing; `KeyId` must name the key the
+    /// stream uses.
+    auto stop_stream_encryption(call_context& ctx, boost::json::object& in) -> result {
+        if (auto e = refuse_unsupported(in)) {
+            return *e;
+        }
+        const auto type = detail::string_member(in, "EncryptionType");
+        const std::string key(detail::string_member(in, "KeyId").value_or(""));
+        if (!type || *type != "KMS") {
+            return invalid_argument("EncryptionType must be KMS.");
+        }
+        auto s = find(ctx);
+        if (!s) {
+            return s.error();
+        }
+        const auto& rec = *s;
+        if (rec._status != stream_status::active) {
+            return not_active(rec);
+        }
+        if (rec._encryption != encryption_type::kms) {
+            return boost::json::object{};
+        }
+        if (rec._key_id != key) {
+            return invalid_argument("KeyId " + key + " is not the key stream " + rec._name +
+                                    " under account " + rec._account + " is encrypted with.");
+        }
+        const auto r = propose(set_encryption_command{._account = rec._account,
+                                                      ._name = rec._name,
+                                                      ._id = rec._id,
+                                                      ._encryption = encryption_type::none,
+                                                      ._key_id = {},
+                                                      ._data_key = std::nullopt});
+        return encryption_answer(rec, r);
     }
 
     /// What the front end's authorization needs about `arn`: the stream's
@@ -1379,7 +1477,7 @@ public:
         boost::json::object out;
         out["ShardId"] = r._shard_id;
         out["SequenceNumber"] = r._sequence;
-        out["EncryptionType"] = "NONE";
+        out["EncryptionType"] = r._encrypted ? "KMS" : "NONE";
         return out;
     }
 
@@ -1412,7 +1510,9 @@ public:
         }
         boost::json::array records;
         std::int64_t failed = 0;
+        bool encrypted = false;
         for (const auto& r : *results) {
+            encrypted = encrypted || r._encrypted;
             boost::json::object entry;
             if (r._throttled) {
                 ++failed;
@@ -1432,7 +1532,7 @@ public:
         boost::json::object out;
         out["FailedRecordCount"] = failed;
         out["Records"] = std::move(records);
-        out["EncryptionType"] = "NONE";
+        out["EncryptionType"] = encrypted ? "KMS" : "NONE";
         return out;
     }
 
@@ -1604,8 +1704,21 @@ public:
                 // replica is behind (see GetShardIterator). Retryable.
                 return internal_failure();
             }
-            got = read_shard(*state->_store, state->_fetch, key, state->_state, it._counter,
-                             it._min_timestamp_ms, limits);
+            try {
+                got =
+                    read_shard(*state->_store, state->_fetch, key, state->_state, it._counter,
+                               it._min_timestamp_ms, limits, [&](std::span<const std::byte> bytes) {
+                                   const auto g = sealed_generation(bytes);
+                                   if (!g) {
+                                       throw record_open_error("kinesis: truncated record");
+                                   }
+                                   return open_record(data_key_of(rec, *g), key, bytes);
+                               });
+            } catch (const kms_error& e) {
+                return kms_error_answer(e);
+            } catch (const record_open_error&) {
+                return internal_failure();
+            }
             tip_arrival = state->_state._last_arrival_ms;
         }
         if (!got || got->_missing) {
@@ -1629,6 +1742,9 @@ public:
             o["Data"] = service_detail::base64_encode(std::string_view(
                 reinterpret_cast<const char*>(rr._record._data.data()), rr._record._data.size()));
             o["PartitionKey"] = rr._record._partition_key;
+            if (rr._encrypted) {
+                o["EncryptionType"] = "KMS";
+            }
             records.push_back(std::move(o));
         }
         boost::json::object out;
@@ -1755,6 +1871,100 @@ private:
                                              std::move(message));
     }
 
+    // ---- data keys (task 14) ------------------------------------------------
+
+    std::mutex _data_key_mutex;
+    /// Unwrapped data keys by (stream id, generation). A stream id is never
+    /// reused, so an entry never names another stream's key.
+    std::map<std::pair<std::uint64_t, std::uint32_t>, data_key_bytes> _data_key_cache;
+
+    /// What a stream's data keys are bound to: its account, name and id.
+    [[nodiscard]] static auto encryption_context_of(const stream_record& rec)
+        -> encryption_context {
+        return {{"kythira:kinesis:stream",
+                 rec._account + "/" + rec._name + "/" + std::to_string(rec._id)}};
+    }
+
+    [[nodiscard]] static auto kms_error_answer(const kms_error& e) -> aws_json::error {
+        const char* type = "KMSInvalidStateException";
+        switch (e.failure()) {
+            case kms_failure::not_found:
+            case kms_failure::unavailable:
+                type = "KMSNotFoundException";
+                break;
+            case kms_failure::access_denied:
+                type = "KMSAccessDeniedException";
+                break;
+            case kms_failure::disabled:
+                type = "KMSDisabledException";
+                break;
+            case kms_failure::invalid_state:
+                type = "KMSInvalidStateException";
+                break;
+            case kms_failure::throttling:
+                type = "KMSThrottlingException";
+                break;
+            case kms_failure::opt_in_required:
+                type = "KMSOptInRequired";
+                break;
+        }
+        return kinesis_error_style().modeled(type, e.what());
+    }
+
+    auto encryption_answer(const stream_record& rec, const std::optional<apply_result>& r)
+        -> result {
+        if (!r) {
+            return internal_failure();
+        }
+        if (r->_status == apply_status::not_found) {
+            return service_detail::not_found(rec._name, rec._account);
+        }
+        if (r->_status == apply_status::bad_transition) {
+            return not_active(rec);
+        }
+        if (r->_status != apply_status::ok) {
+            return internal_failure();
+        }
+        return boost::json::object{};
+    }
+
+    /// The plaintext data key of `rec`'s generation `generation`, from the
+    /// cache or unwrapped by the provider. A generation newer than `rec`
+    /// (started since it was read) is looked up in a fresh catalog read.
+    /// Throws `kms_error` from the provider, `record_open_error` when no
+    /// such generation exists.
+    auto data_key_of(const stream_record& rec, std::uint32_t generation) -> data_key_bytes {
+        {
+            const std::scoped_lock lock(_data_key_mutex);
+            if (const auto it = _data_key_cache.find({rec._id, generation});
+                it != _data_key_cache.end()) {
+                return it->second;
+            }
+        }
+        std::optional<data_key_record> wrapped;
+        if (const auto* k = rec.find_data_key(generation)) {
+            wrapped = *k;
+        } else {
+            (void)read_catalog([&](const auto& sm) {
+                if (const auto* s = sm.find_stream(rec._account, rec._name);
+                    s != nullptr && s->_id == rec._id) {
+                    if (const auto* k = s->find_data_key(generation)) {
+                        wrapped = *k;
+                    }
+                }
+            });
+        }
+        if (!wrapped) {
+            throw record_open_error("kinesis: a sealed record names an unknown data key");
+        }
+        // The provider may be a network call: not under the cache's lock.
+        const auto key = _config._kms.decrypt_data_key(wrapped->_key_id, wrapped->_wrapped,
+                                                       encryption_context_of(rec));
+        const std::scoped_lock lock(_data_key_mutex);
+        _data_key_cache.insert_or_assign({rec._id, generation}, key);
+        return key;
+    }
+
     /// A shard's state as this replica has it, copied out of the read so
     /// the store is read without holding the state machine.
     struct shard_snapshot {
@@ -1814,6 +2024,8 @@ private:
         bool _throttled = false;
         /// The disk guard refused it (with `_error`).
         bool _storage_full = false;
+        /// Stored sealed (an encrypted stream, task 14).
+        bool _encrypted = false;
         std::string _shard_id;
         std::string _sequence;
         std::string _message;
@@ -2500,6 +2712,20 @@ private:
                 }
                 by_shard[sh->_ordinal].push_back(&r);
             }
+            // An encrypted stream's records are sealed here, before they
+            // reach the log (task 14).
+            std::optional<data_key_bytes> key;
+            std::uint32_t generation = 0;
+            if (const auto* dk = rec.current_data_key()) {
+                generation = dk->_generation;
+                try {
+                    key = data_key_of(rec, generation);
+                } catch (const kms_error& e) {
+                    return kms_error_answer(e);
+                } catch (const record_open_error&) {
+                    return internal_failure();
+                }
+            }
             std::vector<service_detail::pending_record> retry;
             std::vector<shard_append> appends;
             appends.reserve(by_shard.size());
@@ -2508,7 +2734,14 @@ private:
                 a._command._key = routing_key(rec._id, ordinal);
                 a._command._arrival_ms = _cluster.now_ms();
                 for (const auto* r : a._records) {
-                    a._command._records.push_back({r->_partition_key, r->_data});
+                    if (key) {
+                        a._command._records.push_back(
+                            {{},
+                             seal_record(*key, generation, a._command._key, r->_partition_key,
+                                         r->_data)});
+                    } else {
+                        a._command._records.push_back({r->_partition_key, r->_data});
+                    }
                 }
                 appends.push_back(std::move(a));
             }
@@ -2545,6 +2778,7 @@ private:
                     auto& result = out[a._records[i]->_index];
                     result._error = !ok || i >= admitted;
                     result._storage_full = full;
+                    result._encrypted = key.has_value();
                     if (throttling && i >= admitted) {
                         result._throttled = true;
                         result._message = shard_rate_exceeded(

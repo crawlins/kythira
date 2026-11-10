@@ -131,7 +131,7 @@ public:
             std::size_t n = 0;
             double bytes = 0;
             for (const auto& r : a->_records) {
-                const auto cost = static_cast<double>(r._data.size() + r._partition_key.size());
+                const auto cost = static_cast<double>(r.billed_bytes());
                 if (b._records.tokens() - static_cast<double>(n) < 1.0 ||
                     b._bytes.tokens() - bytes < cost) {
                     break;

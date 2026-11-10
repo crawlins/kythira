@@ -87,6 +87,16 @@ struct node_options {
     /// `KINESIS_METRICS`: serve per-stream and per-shard metrics on
     /// `GET /metrics` (unauthenticated; it names streams and accounts).
     bool _metrics{false};
+    /// `KINESIS_KMS`: the key provider encrypted streams use (task 14):
+    /// `off` (StartStreamEncryption refused), `local` (data keys wrapped
+    /// under `KINESIS_KMS_PASSPHRASE[_FILE]`, the same on every node) or
+    /// `aws` (AWS KMS in `KINESIS_KMS_REGION`, default the region above, at
+    /// `KINESIS_KMS_ENDPOINT` host:port, default AWS's; credentials from
+    /// `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`).
+    std::string _kms{"off"};
+    std::string _kms_passphrase;
+    std::string _kms_region;
+    std::string _kms_endpoint;
     /// `KINESIS_MAINTENANCE_INTERVAL_MS`: how often a node runs the
     /// retention and tiering pass.
     std::chrono::milliseconds _maintenance_interval{60000};
