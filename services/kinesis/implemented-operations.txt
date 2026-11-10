@@ -25,3 +25,8 @@ GetShardIterator
 # Task 10: retention.
 DecreaseStreamRetentionPeriod
 IncreaseStreamRetentionPeriod
+
+# Task 11: resharding.
+MergeShards
+SplitShard
+UpdateShardCount

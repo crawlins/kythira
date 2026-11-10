@@ -245,6 +245,22 @@ asked.
     readable until retention
   - Chaos: leader kill mid-reshard, no lost or reordered records
   - _Requirements: 10.1, 10.2, 10.4_
+  - Progress: `SplitShard`, `MergeShards` and `UpdateShardCount`
+    (`UNIFORM_SCALING`, one reshard per step) in `kinesis_service.hpp`.
+    The stream goes UPDATING (a compare-and-set, one reshard at a time),
+    the plan comes from a linearizable catalog read, and
+    `reshard_catalog_command`, the parents' close and the children's open
+    commit as one tier-1 transaction (`raft_stream_cluster::transact`, a
+    `transaction_coordinator` over the gateways' new signed
+    `/_kythira/kinesis/v1/txn` endpoint; the daemon wraps its state machine
+    in `transactional_state_machine`). Ending sequence numbers follow in
+    `set_ending_counters_command`; every node's maintenance pass completes
+    a reshard abandoned for a minute (`repair_reshards`). AWS's refusals.
+    `kinesis_reshard_test`, 5 cases on the in-process cluster;
+    `doc/resharding.md`. The container scenario's resharding case
+    (three reshards, a node killed as each starts, catalog and shards in
+    separate groups, a producer writing throughout) passes under Docker
+    locally; tick once the CI Podman leg passes too.
 
 - [ ] 12. On-demand mode
   - `UpdateStreamMode`; leader-side controller that splits hot shards and

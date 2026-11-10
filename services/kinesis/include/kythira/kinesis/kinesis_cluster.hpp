@@ -72,6 +72,30 @@ concept leads_keys = requires(C& c, const std::string& key) {
     { c.leads(key) } -> std::same_as<bool>;
 };
 
+/// One write of a cross-group transaction: an encoded `stream_command` and
+/// the key it routes by.
+struct txn_write {
+    std::string _key;
+    std::vector<std::byte> _command;
+};
+
+enum class transact_outcome : std::uint8_t {
+    committed,
+    /// Nothing applied (another transaction held a key, a prepare failed).
+    aborted,
+    /// The commit point's result was not observed: it may have committed.
+    unknown,
+};
+
+/// For resharding (task 11): `transact(writes)` applies every write or
+/// none, across whatever groups own their keys (a tier-1 transaction on a
+/// raft cluster). Each write's command must be one the front end has
+/// already validated: a transaction applies opaque commands.
+template<typename C>
+concept transacts = requires(C& c, std::vector<txn_write> w) {
+    { c.transact(std::move(w)) } -> std::same_as<transact_outcome>;
+};
+
 /// Every key in one in-process state machine: a one-group cluster with no
 /// replication. Thread-safe; proposals apply in arrival order.
 class local_stream_cluster {
@@ -117,6 +141,19 @@ public:
         _guard = g;
     }
 
+    /// One state machine: the writes apply in order under the lock, so all
+    /// of them or (unavailable) none.
+    auto transact(std::vector<txn_write> writes) -> transact_outcome {
+        const std::scoped_lock lock(_mutex);
+        if (_unavailable) {
+            return transact_outcome::aborted;
+        }
+        for (const auto& w : writes) {
+            (void)_machine.apply(w._command, ++_index);
+        }
+        return transact_outcome::committed;
+    }
+
     /// The one node leads everything.
     [[nodiscard]] auto leads(const std::string& /*key*/) const -> bool { return true; }
 
@@ -158,5 +195,6 @@ private:
 static_assert(stream_cluster<local_stream_cluster>);
 static_assert(groups_keys<local_stream_cluster>);
 static_assert(leads_keys<local_stream_cluster>);
+static_assert(transacts<local_stream_cluster>);
 
 }  // namespace kythira::kinesis

@@ -116,6 +116,7 @@ struct settled {
 struct fake_host {
     using node_id_type = std::string;
     using group_id_type = std::uint64_t;
+    using state_machine_type = kin::stream_state_machine<std::uint64_t>;
 
     struct descriptor {
         group_id_type _group_id;

@@ -237,6 +237,29 @@ struct tier_segment_command {
     segment_sha256 _sha256{};
 };
 
+/// The catalog half of a reshard (task 11), one write of the reshard's
+/// transaction: mark `_closing` shards closing and add `_children` (whose
+/// ordinals must continue `_next_ordinal`). The stream must be UPDATING,
+/// which the front end set first, so no other reshard changes the shard
+/// table between its read and this write.
+struct reshard_catalog_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    std::vector<std::uint32_t> _closing{};
+    std::vector<shard_entry> _children{};
+};
+
+/// After a reshard committed: the counters its closed shards ended at, read
+/// from their groups, recorded in the catalog (`shard_entry::_closing`
+/// cleared). A shard already recorded is left as it is.
+struct set_ending_counters_command {
+    std::string _account{};
+    std::string _name{};
+    std::uint64_t _id = 0;
+    std::vector<std::pair<std::uint32_t, std::uint64_t>> _endings{};
+};
+
 /// What a lease write requires of the lease's current state.
 enum class lease_condition : std::uint8_t {
     /// Whatever is there (or nothing).
@@ -302,7 +325,8 @@ using stream_command =
                  open_shard_command, append_records_command, close_shard_command,
                  drop_shard_command, trim_shard_command, append_batch_command, lease_write_command,
                  lease_read_command, lease_drop_application_command, set_retention_command,
-                 seal_shard_command, tier_segment_command>;
+                 seal_shard_command, tier_segment_command, reshard_catalog_command,
+                 set_ending_counters_command>;
 
 inline constexpr std::uint8_t stream_command_version = 1;
 
@@ -313,7 +337,9 @@ inline constexpr std::uint8_t stream_command_version = 1;
             if constexpr (std::is_same_v<T, create_stream_command> ||
                           std::is_same_v<T, set_stream_status_command> ||
                           std::is_same_v<T, remove_stream_command> ||
-                          std::is_same_v<T, set_retention_command>) {
+                          std::is_same_v<T, set_retention_command> ||
+                          std::is_same_v<T, reshard_catalog_command> ||
+                          std::is_same_v<T, set_ending_counters_command>) {
                 return stream_key(v._account, v._name);
             } else if constexpr (std::is_same_v<T, append_batch_command>) {
                 return v._appends.empty() ? std::string() : v._appends.front()._key;
@@ -411,6 +437,22 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
             } else if constexpr (std::is_same_v<T, tier_segment_command>) {
                 w.str(v._key).u64(v._first_counter);
                 w.raw(std::as_bytes(std::span{v._sha256}));
+            } else if constexpr (std::is_same_v<T, reshard_catalog_command>) {
+                w.str(v._account).str(v._name).u64(v._id);
+                w.u32(static_cast<std::uint32_t>(v._closing.size()));
+                for (const auto o : v._closing) {
+                    w.u32(o);
+                }
+                w.u32(static_cast<std::uint32_t>(v._children.size()));
+                for (const auto& c : v._children) {
+                    encode(w, c);
+                }
+            } else if constexpr (std::is_same_v<T, set_ending_counters_command>) {
+                w.str(v._account).str(v._name).u64(v._id);
+                w.u32(static_cast<std::uint32_t>(v._endings.size()));
+                for (const auto& [o, c] : v._endings) {
+                    w.u32(o).u64(c);
+                }
             } else {
                 w.str(v._key);
             }
@@ -556,6 +598,38 @@ inline auto decode_append(codec::reader& r) -> append_records_command {
             c._first_counter = r.u64();
             const auto sha = r.take(c._sha256.size());
             std::copy(sha.begin(), sha.end(), c._sha256.begin());
+            out = std::move(c);
+            break;
+        }
+        case 15: {
+            reshard_catalog_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            const auto n = r.u32();
+            c._closing.reserve(std::min<std::size_t>(n, r.remaining() / 4));
+            for (std::uint32_t i = 0; i < n; ++i) {
+                c._closing.push_back(r.u32());
+            }
+            const auto m = r.u32();
+            c._children.reserve(std::min<std::size_t>(m, r.remaining() / 40));
+            for (std::uint32_t i = 0; i < m; ++i) {
+                c._children.push_back(decode_shard_entry(r));
+            }
+            out = std::move(c);
+            break;
+        }
+        case 16: {
+            set_ending_counters_command c;
+            c._account = r.str();
+            c._name = r.str();
+            c._id = r.u64();
+            const auto n = r.u32();
+            c._endings.reserve(std::min<std::size_t>(n, r.remaining() / 12));
+            for (std::uint32_t i = 0; i < n; ++i) {
+                const auto o = r.u32();
+                c._endings.emplace_back(o, r.u64());
+            }
             out = std::move(c);
             break;
         }
@@ -1221,6 +1295,54 @@ private:
             return {._status = apply_status::not_found};
         }
         rec->_retention_hours = c._retention_hours;
+        return {._id = rec->_id};
+    }
+
+    auto apply_one(const reshard_catalog_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        if (rec->_status != stream_status::updating) {
+            return {._status = apply_status::bad_transition};
+        }
+        for (const auto o : c._closing) {
+            const auto* sh = rec->find_shard(o);
+            if (sh == nullptr || !sh->open()) {
+                return {._status = apply_status::invalid};
+            }
+        }
+        auto next = rec->_next_ordinal;
+        for (const auto& child : c._children) {
+            if (child._ordinal != next++ || child._range._start > child._range._end) {
+                return {._status = apply_status::invalid};
+            }
+        }
+        for (auto& sh : rec->_shards) {
+            if (std::find(c._closing.begin(), c._closing.end(), sh._ordinal) != c._closing.end()) {
+                sh._closing = true;
+            }
+        }
+        for (const auto& child : c._children) {
+            rec->_shards.push_back(child);
+        }
+        rec->_next_ordinal = next;
+        return {._id = rec->_id};
+    }
+
+    auto apply_one(const set_ending_counters_command& c) -> apply_result {
+        auto* rec = stream_at(c._account, c._name, c._id);
+        if (rec == nullptr) {
+            return {._status = apply_status::not_found};
+        }
+        for (const auto& [ordinal, counter] : c._endings) {
+            for (auto& sh : rec->_shards) {
+                if (sh._ordinal == ordinal && sh._closing) {
+                    sh._ending_counter = counter;
+                    sh._closing = false;
+                }
+            }
+        }
         return {._id = rec->_id};
     }
 

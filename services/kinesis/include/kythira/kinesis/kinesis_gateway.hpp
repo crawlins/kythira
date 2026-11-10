@@ -8,7 +8,7 @@
 ///        (`.kiro/specs/kinesis-compatible-streams/` task 6, design "Front
 ///        end: Beast host, forwarding, replica reads").
 ///
-/// One listener carries five things:
+/// One listener carries six things:
 ///
 /// - `POST /` and everything else: the Kinesis API, handed to the front end
 ///   (`kinesis_front_end.hpp`) as a `front_end_request`.
@@ -22,6 +22,10 @@
 ///   trusted for content). Signed like a forwarded write, over the path and
 ///   query, so a segment cannot be read by anyone without the cluster
 ///   secret.
+/// - `POST /_kythira/kinesis/v1/txn`: a resharding transaction op (task 11)
+///   another gateway's coordinator sends to the leader of the keys' group,
+///   submitted here with `submit_txn` when the composition root sets a
+///   transaction handler. Signed like a forwarded write.
 /// - `GET /healthz`: 200 while the process serves.
 /// - `/v1/leases/…`: the Lease API (`kinesis_lease_api.hpp`), when the
 ///   composition root sets a lease handler; otherwise the front end, which
@@ -225,6 +229,10 @@ template<typename FrontEnd> class gateway {
 public:
     using clock_fn = std::function<std::chrono::system_clock::time_point()>;
     using lease_handler = std::function<aws_json::http_response(const front_end_request&)>;
+    /// Submits a transaction op locally: the encoded `txn_result`, or
+    /// nullopt when this node cannot (not the leader, timed out).
+    using txn_handler = std::function<std::optional<std::vector<std::byte>>(
+        const std::vector<std::string>& keys, const std::vector<std::byte>& envelope)>;
 
     gateway(
         FrontEnd& front_end, local_proposer propose, const record_segment_store* store,
@@ -252,6 +260,9 @@ public:
         if (path == k_segment_path) {
             return segment(req, query);
         }
+        if (path == forward::k_txn_path) {
+            return txn(req);
+        }
         const auto r = _leases && path.starts_with(k_lease_path_prefix)
                            ? _leases(gateway_detail::to_front_end_request(req, ctx))
                            : _front_end.handle(gateway_detail::to_front_end_request(req, ctx));
@@ -271,9 +282,14 @@ public:
     /// listener starts.
     void set_lease_handler(lease_handler h) { _leases = std::move(h); }
 
+    /// Serve transaction ops on `forward::k_txn_path`. Set before the
+    /// listener starts.
+    void set_txn_handler(txn_handler h) { _txn = std::move(h); }
+
 private:
     FrontEnd& _front_end;
     lease_handler _leases;
+    txn_handler _txn;
     local_proposer _propose;
     const record_segment_store* _store;
     std::string _secret;
@@ -314,6 +330,29 @@ private:
             return refuse(req, 503, "not committed here");
         }
         return gateway_detail::reply(req, 200, gateway_detail::to_string(encode_result(*r)),
+                                     "application/octet-stream");
+    }
+
+    auto txn(const https::request& req) -> https::response {
+        if (_secret.empty() || !_txn) {
+            return gateway_detail::reply(req, 404, "not found\n", "text/plain");
+        }
+        if (req.method() != boost::beast::http::verb::post) {
+            return refuse(req, 405, "method not allowed");
+        }
+        if (!signed_by_peer(req, req.body())) {
+            return refuse(req, 403, "bad or stale forwarding signature");
+        }
+        auto op = forward::decode_txn_body(req.body());
+        if (!op) {
+            return refuse(req, 400, "malformed transaction op");
+        }
+        ++_stats._forwarded_in;
+        const auto r = _txn(op->_keys, op->_envelope);
+        if (!r) {
+            return refuse(req, 503, "not submitted here");
+        }
+        return gateway_detail::reply(req, 200, gateway_detail::to_string(*r),
                                      "application/octet-stream");
     }
 
@@ -379,6 +418,41 @@ template<typename NodeId>
         } catch (const std::exception&) {
             return std::nullopt;
         }
+    };
+}
+
+/// The transaction-op forwarder the resharding coordinator uses on a node
+/// that does not lead the keys' group: posts the op to the leader's
+/// gateway, found by `address_of`; the encoded `txn_result`, or nullopt.
+template<typename NodeId>
+[[nodiscard]] auto make_http_txn_forwarder(
+    const peer_client& client, std::string secret,
+    std::function<std::optional<std::string>(const NodeId&)> address_of,
+    std::function<std::chrono::system_clock::time_point()> clock = [] {
+        return std::chrono::system_clock::now();
+    }) {
+    return [&client, secret = std::move(secret), address_of = std::move(address_of),
+            clock = std::move(clock)](
+               const NodeId& leader, const std::vector<std::string>& keys,
+               const std::vector<std::byte>& envelope) -> std::optional<std::vector<std::byte>> {
+        if (secret.empty()) {
+            return std::nullopt;
+        }
+        const auto address = address_of(leader);
+        if (!address) {
+            return std::nullopt;
+        }
+        auto body = forward::encode_txn_body({._keys = keys, ._envelope = envelope});
+        const auto signature = forward::sign(secret, body, clock());
+        const auto res =
+            client.request(*address, boost::beast::http::verb::post, forward::k_txn_path,
+                           {{std::string(forward::k_header), signature},
+                            {"Content-Type", "application/octet-stream"}},
+                           std::move(body));
+        if (!res || res->_status != 200) {
+            return std::nullopt;
+        }
+        return gateway_detail::to_bytes(res->_body);
     };
 }
 
