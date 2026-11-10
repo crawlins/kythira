@@ -98,12 +98,20 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 2: tables and items (KCL 2.x leases work after task 7)
 
-- [ ] 5. Expression language
+- [x] 5. Expression language
   - Parser for condition, update, key condition, filter and projection
     expressions; substitution; nested paths; every function and operator
   - Legacy parameter translation into the same tree
   - Versioned tree serialization; fuzzing; error parity with DynamoDB Local
   - _Requirements: 8.3-8.5, 21.3_
+  - Done: `expr*.hpp` under `services/dynamodb/include/kythira/dynamodb/`;
+    2985 cases recorded against DynamoDB Local 3.3.2
+    (`tools/expr-corpus/record.sh`) all replay identically, apart from 14
+    marked divergences where Kythira keeps AWS's number messages or
+    DynamoDB Local fails internally. With three or more clashing paths,
+    DynamoDB Local's overlap message may name an unrelated "path two";
+    Kythira names the clashing pair, and the test compares only the kind
+    of clash there.
 
 - [ ] 6. Catalog and item state machine
   - Catalog range, descriptors, status transitions, table ids, background

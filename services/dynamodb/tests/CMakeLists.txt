@@ -56,6 +56,19 @@ foreach(_ddb_test IN ITEMS dynamodb_front_end_test dynamodb_actions_test
         LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 endforeach()
 
+# Task 5: the expression language. The corpus test replays every case of
+# tests/data/expression_corpus.jsonl, recorded against DynamoDB Local by
+# tools/expr-corpus/record.sh, and must answer as DynamoDB Local did
+# (Requirement 21.3); the fuzz test runs seeded mutations of the same
+# expressions and of their binary form.
+foreach(_ddb_test IN ITEMS dynamodb_expression_corpus_test dynamodb_expression_fuzz_test)
+    kythira_dynamodb_test(${_ddb_test} ${_ddb_test}.cpp)
+    target_compile_definitions(${_ddb_test} PRIVATE
+        KYTHIRA_EXPRESSION_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/expression_corpus.jsonl")
+    set_tests_properties(${_ddb_test} PROPERTIES
+        LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 300)
+endforeach()
+
 # The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
 # (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned models, so a model
 # upgrade carries its regenerated tables and their diff (Requirement 2.4).
@@ -83,6 +96,14 @@ add_test(NAME dynamodb_actions_header_fresh
         include/kythira/dynamodb/dynamodb_actions.hpp --check
     WORKING_DIRECTORY "${KYTHIRA_DYNAMODB_SOURCE_DIR}")
 set_tests_properties(dynamodb_actions_header_fresh PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
+# The recorded expression corpus is the case list cases.py makes, so an
+# edited case is re-recorded with it.
+add_test(NAME dynamodb_expression_corpus_fresh
+    COMMAND ${Python3_EXECUTABLE} tools/expr-corpus/cases.py --check
+        tests/data/expression_corpus.jsonl
+    WORKING_DIRECTORY "${KYTHIRA_DYNAMODB_SOURCE_DIR}")
+set_tests_properties(dynamodb_expression_corpus_fresh PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 endif()
 
