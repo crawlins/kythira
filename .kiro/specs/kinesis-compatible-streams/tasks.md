@@ -368,7 +368,10 @@ asked.
   - Optional recording run against real AWS Kinesis (**Clark's go**)
   - _Requirements: 17.1-17.4_
 
-- [ ] 18. Documentation
+- [x] 18. Documentation
   - `doc/kinesis.md`: model, profile switches, limits, clock assumption,
     lease backends by KCL version, deployment, unsupported list
   - _Requirements: 8.4, 15.4_
+  - Progress: `services/kinesis/doc/kinesis.md` is the operator's page and
+    links to the per-subject pages. Its lease-backend table marks the
+    DynamoDB backends as planned until task 16 lands; update it then.
