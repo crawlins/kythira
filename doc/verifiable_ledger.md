@@ -14,7 +14,8 @@ multi_raft (ledger placement, routing, background index builds and seals),
 which runs in tests on an in-process network, and the `ledger_node`
 daemon (below). A ledger's snapshot carries its segment files. Not yet
 built: the daemon's metrics endpoint and its object-store export runner,
-and the multi_raft catch-up, crash and chaos tests.
+and the crash and chaos tests. A replica that falls behind its ledger's
+compacted log catches up through a snapshot that carries the segment files.
 
 ## Model
 
@@ -283,7 +284,7 @@ KYTHIRA_LEDGER_SIGNING_CHAIN=/etc/kythira/signer-chain.pem
   SAN; `#` starts a comment.
 - **The data directory** holds `engine/` (the RocksDB database: the catalog
   and every ledger), `raft/<group>/` (each group's Raft log),
-  `snapshots/` and `segments/<ledger id>/`.
+  `snapshots/group-<id>/` and `segments/<ledger id>/`.
 - The node stops cleanly on SIGINT or SIGTERM. It prints one `ready:` line
   once Raft and the API are listening.
 

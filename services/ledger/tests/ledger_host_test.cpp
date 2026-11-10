@@ -163,7 +163,11 @@ struct member {
 
 class cluster {
 public:
-    explicit cluster(std::uint64_t segment_bytes = std::uint64_t{64} << 20U) {
+    /// @param snapshot_threshold  command bytes each replica applies
+    ///     between snapshots (and log compactions); 0 keeps the default.
+    explicit cluster(std::uint64_t segment_bytes = std::uint64_t{64} << 20U,
+                     std::size_t snapshot_threshold = 0)
+        : snapshot_threshold_(snapshot_threshold) {
         std::vector<std::uint64_t> ids;
         std::map<std::uint64_t, std::string> urls;
         for (std::uint64_t id = 1; id <= k_members; ++id) {
@@ -180,7 +184,7 @@ public:
                 o.segment_bytes = segment_bytes;
                 return o;
             });
-            m->raft = std::make_unique<raft_host>(make_config(id, m->ctx));
+            m->raft = std::make_unique<raft_host>(make_config(id, m->ctx, seg_root));
             ledger_host::options opts;
             opts.members = ids;
             opts.api_urls = urls;
@@ -228,6 +232,10 @@ public:
 
     [[nodiscard]] auto at(std::uint64_t id) -> member& { return *members_.at(id - 1); }
     [[nodiscard]] auto fabric() -> message_fabric& { return fabric_; }
+    /// Member `id`'s directory: segments by ledger id, snapshots/.
+    [[nodiscard]] auto root(std::uint64_t id) const -> std::filesystem::path {
+        return dir_.path() / ("node-" + std::to_string(id));
+    }
 
     /// Send a request to member `id`, following not_leader redirects (and
     /// retrying while there is no leader) as the client does.
@@ -294,7 +302,8 @@ public:
     }
 
 private:
-    auto make_config(std::uint64_t id, std::shared_ptr<group_sm::context> ctx) -> raft_config {
+    auto make_config(std::uint64_t id, std::shared_ptr<group_sm::context> ctx,
+                     const std::filesystem::path& root) -> raft_config {
         raft_config cfg{
             .node_id = id,
             .network_client = fabric_client{fabric_, id},
@@ -305,6 +314,13 @@ private:
         cfg.config._election_timeout_min = std::chrono::milliseconds{120};
         cfg.config._election_timeout_max = std::chrono::milliseconds{260};
         cfg.config._heartbeat_interval = std::chrono::milliseconds{25};
+        // multi_raft gives each group its own subdirectory.
+        cfg.config._snapshot_staging_directory = root / "snapshots";
+        cfg.config._snapshot_disk_margin_bytes = 0;
+        if (snapshot_threshold_ != 0) {
+            cfg.config._snapshot_threshold_bytes = snapshot_threshold_;
+            cfg.config._snapshot_chunk_size = std::max<std::size_t>(snapshot_threshold_ / 4, 1024);
+        }
         cfg.hibernation = kythira::hibernation_mode::off;
         cfg.logger = kythira::console_logger(kythira::log_level::error);
         cfg.logger_factory = [](const std::uint64_t&) {
@@ -317,6 +333,7 @@ private:
         return cfg;
     }
 
+    std::size_t snapshot_threshold_;
     temp_dir dir_;
     message_fabric fabric_{8};
     std::vector<std::unique_ptr<member>> members_;
@@ -508,4 +525,84 @@ BOOST_AUTO_TEST_CASE(a_new_leader_keeps_the_ledger_writable_and_splits_stay_veto
             std::ignore = std::move(f).get();
         },
         std::exception);
+}
+
+// Task 9: a replica cut off while its ledger's log compacts past it comes
+// back through a format-1 snapshot, with the sealed segment files the
+// checkpoint carries, and ends up with the leader's journal.
+BOOST_AUTO_TEST_CASE(a_lagging_replica_catches_up_from_a_snapshot_with_its_segments) {
+    cluster c(/*segment_bytes=*/2048, /*snapshot_threshold=*/16 * 1024);
+    BOOST_REQUIRE(c.await([&] { return c.leader_of(catalog_group).has_value(); }));
+    auto r = c.call(1, "POST", "/v1/ledgers", R"({"name": "vault", "deletionProtection": false})");
+    BOOST_REQUIRE_MESSAGE(r.status == 201, r.body);
+    const auto rec = parse(r);
+    const auto ledger_id = text(rec, "ledgerId");
+    const auto group = static_cast<std::uint64_t>(*rec.find("group")->as_int64());
+    std::vector<std::uint64_t> voters;
+    for (const auto& v : rec.find("voters")->items()) {
+        voters.push_back(std::stoull(v.as_text().value_or("0")));
+    }
+    r = c.call(1, "POST", "/v1/ledgers/vault/execute",
+               R"({"statements": [{"op": "create_table", "table": "acct"}]})");
+    BOOST_REQUIRE_MESSAGE(r.status == 200, r.body);
+    BOOST_REQUIRE(c.await([&] { return c.leader_of(group).has_value(); }));
+
+    // Cut off a replica that is not the leader, both ways.
+    const auto leader = *c.leader_of(group);
+    const auto lagger = *std::ranges::find_if(voters, [&](auto v) { return v != leader; });
+    const auto lagger_last = c.at(lagger).raft->group_node(group)->log_bounds().last_log_index;
+    c.fabric().kill(lagger);
+    for (std::uint64_t id = 1; id <= k_members; ++id) {
+        c.fabric().partition(lagger, id);
+    }
+
+    // Write until the leader has compacted past everything the lagger has
+    // (16 KiB of commands per snapshot), sealing segments as the journal
+    // passes 2 KiB each.
+    int written = 0;
+    BOOST_REQUIRE(c.await(
+        [&] {
+            const auto body =
+                std::string(R"({"statements": [{"op": "insert", "table": "acct", "id": ")") +
+                new_id() + R"(", "value": {"n": )" + std::to_string(written) + R"(, "pad": ")" +
+                std::string(400, 'p') + "\"}}]}";
+            r = c.call(leader, "POST", "/v1/ledgers/vault/execute", body);
+            BOOST_REQUIRE_MESSAGE(r.status == 200, r.body);
+            ++written;
+            auto* n = c.at(leader).raft->group_node(group);
+            return n->log_bounds().snapshot_index > lagger_last + 1;
+        },
+        std::chrono::seconds{60}));
+    auto leader_sm = c.at(leader).host->ledger(ledger_id);
+    BOOST_REQUIRE(leader_sm);
+    BOOST_REQUIRE(c.await([&] { return !leader_sm->segments().empty(); }));
+
+    c.fabric().revive(lagger);
+    c.fabric().heal_all();
+
+    // The lagger installs a snapshot (its log now starts past where it
+    // stopped) and holds the leader's journal, digest and segments.
+    BOOST_REQUIRE_MESSAGE(c.await(
+                              [&] {
+                                  auto sm = c.at(lagger).host->ledger(ledger_id);
+                                  return sm && sm->block_count() == leader_sm->block_count() &&
+                                         to_hex(sm->get_digest()->digest) ==
+                                             to_hex(leader_sm->get_digest()->digest);
+                              },
+                              std::chrono::seconds{60}),
+                          "lagger never caught up after " << written << " writes");
+    BOOST_TEST(c.at(lagger).raft->group_node(group)->log_bounds().snapshot_index > lagger_last);
+    auto lagger_sm = c.at(lagger).host->ledger(ledger_id);
+    const auto ours = lagger_sm->segments();
+    const auto theirs = leader_sm->segments();
+    BOOST_REQUIRE(!ours.empty());
+    BOOST_TEST(ours.front().sha256 == theirs.front().sha256);
+    BOOST_TEST(lagger_sm->block_count() == static_cast<std::uint64_t>(written) + 1U);
+    for (const auto& seg : ours) {
+        BOOST_TEST(std::filesystem::exists(c.root(lagger) / ledger_id / seg.file), seg.file);
+    }
+    // The transfer was staged in the ledger group's own directory, apart
+    // from the catalog group's.
+    BOOST_TEST(std::filesystem::is_directory(c.root(lagger) / "snapshots" /
+                                             ("group-" + std::to_string(group))));
 }

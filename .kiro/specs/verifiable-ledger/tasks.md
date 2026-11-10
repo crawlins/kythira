@@ -309,7 +309,7 @@ task is one PR unless noted.
       down-conversion still writes blobs as `{{...}}`, so `ion_value`
       writes containers and lobs itself.
 
-- [ ] 9. Snapshots and catch-up
+- [x] 9. Snapshots and catch-up
   - Checkpoint plus segment list as the snapshot, file-install-snapshot
     catch-up test for a lagging follower
   - _Requirements: 10.1_
@@ -323,10 +323,18 @@ task is one PR unless noted.
     early write never disagrees with any state), then ingests the range
     and removes `seg-*.kyl` files the new state does not list. Tests in
     `ledger_segments_test` stream the checkpoint through
-    `snapshot_stream_reader`/`snapshot_stream_writer` as Raft does. Left:
-    the lagging-follower test over multi_raft, which needs compaction and
-    per-group staging directories for persistent groups
-    (file-install-snapshot task 7).
+    `snapshot_stream_reader`/`snapshot_stream_writer` as Raft does.
+  - `ledger_host_test`'s
+    `a_lagging_replica_catches_up_from_a_snapshot_with_its_segments`: a
+    replica is cut off while its ledger's log compacts past it (16 KiB
+    snapshot threshold, 2 KiB segments), then comes back through a
+    format-1 snapshot with the leader's block count, digest and segment
+    files.
+  - multi_raft now gives each group its own subdirectory of the
+    configured staging directory (`group-<id>`). With one shared
+    directory, a group created at run time (every new ledger) deleted the
+    staging transfers and leader checkpoints of every group already
+    running, since a node clears its staging directory when it starts.
 
 - [ ] 10. `ledger_ctl`, digest signing and observability
   - `verify` and `prove` (API, data directory, export); optional CA-signed
