@@ -169,7 +169,7 @@ RocksDB is linked. Each task is one PR unless noted.
       message needs snapshot transfer (Requirement 10.2), which
       file-install-snapshot brings.
 
-- [ ] 5. RocksDB engine
+- [x] 5. RocksDB engine
   - vcpkg feature and `KYTHIRA_ENGINE_ROCKSDB` Kconfig option (default off),
     `src/rocksdb_kv_engine.cpp`
   - Column families, `WriteBatch`, WAL-synced sequence to durable index,
@@ -209,6 +209,23 @@ RocksDB is linked. Each task is one PR unless noted.
       (`configs/ci_ion_defconfig`, the only image with opt-in ports), which
       builds and runs `rocksdb_kv_engine_test`; clang-tidy covers both new
       files in its `ion` variant.
+    - Build-time delta (Requirement 7.5), measured on PR #746's CI and
+      merged November 10, 2026. With the option off nothing changes: no
+      RocksDB port, header or library is built. With it on:
+      - The vcpkg `rocksdb` port (10.4.2, `[core,zlib]`) took 8.5 minutes
+        on a cold Ion Serializer Build job (run 42758893169, job
+        129639742071), out of a 16-minute job. That is paid once per
+        vcpkg cache key: the job's `actions/cache` entry restores it, and
+        the next run's whole Ion job took 5.6 minutes. vcpkg's S3 binary
+        cache did not take the package from a PR run: the upload is a
+        multipart upload and the PR cache key was refused
+        (`NoSuchBucket` on `CreateMultipartUpload`), so a run on `main`
+        has to be the one that stores it there.
+      - Kythira's own code is two translation units:
+        `src/rocksdb_kv_engine.cpp` (11.9 s, 0.6 GB peak) and
+        `tests/rocksdb_kv_engine_test.cpp` (10.2 s, 0.65 GB) with g++ 13
+        at -O2 on a 4-vCPU VM, about 22 s of compile, plus linking the
+        static RocksDB into the engine's users.
 
 - [x] 6. Transaction state in the engine
   - Persistent storage for `_intents`, `_records`, `_settled` and the
