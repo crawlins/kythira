@@ -3,6 +3,26 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (November 10, 2026)
+
+- **Kythira speaks AWS IAM and STS.** The `iam-compatible-auth` spec is
+  complete. `iam_node` serves the IAM and STS Query APIs, so the AWS SDKs,
+  the AWS CLI and Terraform's AWS provider manage users, roles and
+  policies on Kythira and get temporary credentials from it unchanged.
+  Every request is decided by one policy evaluator, checked against a
+  498-case corpus. The Redis gateway, and later S3, Kinesis and DynamoDB,
+  authorize through a local read replica that refuses everything once it
+  falls behind. The Redis gateway also takes ElastiCache-style IAM auth
+  tokens. See [iam.md](iam.md).
+- **Checked against real AWS, not just its documentation.** The Terraform
+  provider's IAM calls were recorded against a real account: 53 actions,
+  all implemented, and a unit test keeps that list covered. AWS's own
+  policy simulator agreed with the corpus on 71 of 73 cases. On the other
+  two, a Deny `NotPrincipal` naming a user with its account, and a
+  same-account grant to the account under a permissions boundary, real S3
+  requests matched the corpus and contradicted the simulator. Kythira
+  follows real AWS.
+
 ### What Changed (November 9, 2026)
 
 - **Test ports are claimed across processes, not just checked free.**

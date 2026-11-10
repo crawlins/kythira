@@ -915,7 +915,7 @@ because each has a zero-spend fallback.
     real AWS's answer and records the simulator's in `aws_simulator`
     (Clark's choice: "What does real AWS do? Do that.").
 
-- [ ] 25. Documentation and close-out
+- [x] 25. Documentation and close-out
   - `doc/iam.md`, `doc/oidc-issuer.md`, and the `doc/redis-gateway.md`
     additions of Requirement 16.
   - A security pass over the new listeners against the 2026-10-02 audit
@@ -924,3 +924,12 @@ because each has a zero-spend fallback.
   - Record the corpus size, the Terraform call coverage, and any AWS
     differences found.
   - _Requirements: 14.5, 16.1–16.3_
+  - Note (recorded 2026-11-10): the corpus holds 498 cases (170
+    `evaluate`, 146 `condition`, 107 `parse`, 28 `arn_match`, 20
+    `action_match`, 19 `variable`, 8 `resource_match`). Terraform coverage:
+    all 53 IAM actions the AWS provider called against real AWS are
+    implemented (`tests/terraform_calls.txt`). AWS differences: the
+    deliberate ones are listed in `doc/iam.md`; testing found no evaluator
+    disagreement with real AWS, and two places where AWS's own simulator
+    departs from real enforcement (task 24). Requirement 14.3 was amended to
+    AWS's error codes (`security-pass.md`).
