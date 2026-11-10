@@ -453,3 +453,57 @@ BOOST_AUTO_TEST_CASE(base64_round_trips) {
     BOOST_TEST(!kin::service_detail::base64_decode("a=bc").has_value());
     BOOST_TEST(!kin::service_detail::base64_decode("ab!c").has_value());
 }
+
+// AWS's PutRecords takes at most 500 records (the model's bound, enforced
+// whatever the compatibility profile) and at least one.
+BOOST_AUTO_TEST_CASE(put_records_takes_one_to_500_records) {
+    fixture f;
+    (void)f.ok("CreateStream", {{"StreamName", "orders"}, {"ShardCount", 1}});
+    const auto batch = [](int n) {
+        json::array records;
+        for (int i = 0; i < n; ++i) {
+            records.push_back({{"PartitionKey", "pk-" + std::to_string(i)}, {"Data", "aGk="}});
+        }
+        return records;
+    };
+    BOOST_TEST(f.error_type("PutRecords", {{"StreamName", "orders"}, {"Records", batch(501)}}) ==
+               "ValidationException");
+    BOOST_TEST(f.error_type("PutRecords", {{"StreamName", "orders"}, {"Records", batch(0)}}) ==
+               "ValidationException");
+    const auto ok = f.ok("PutRecords", {{"StreamName", "orders"}, {"Records", batch(500)}});
+    BOOST_TEST(ok.at("FailedRecordCount").as_int64() == 0);
+    BOOST_TEST(ok.at("Records").as_array().size() == 500U);
+}
+
+// Requirement 7.2: SequenceNumberForOrdering. A record put with the
+// previous record's sequence number for the same partition key gets a
+// strictly greater one, and the parameter accepts a number this cluster
+// issued in either id format.
+BOOST_AUTO_TEST_CASE(sequence_number_for_ordering_is_honoured) {
+    fixture f;
+    (void)f.ok("CreateStream", {{"StreamName", "orders"}, {"ShardCount", 2}});
+    std::string previous = str(f.put("orders", "user-1").at("SequenceNumber"));
+    for (int i = 0; i < 5; ++i) {
+        const auto r = f.ok("PutRecord", {{"StreamName", "orders"},
+                                          {"PartitionKey", "user-1"},
+                                          {"Data", "aGk="},
+                                          {"SequenceNumberForOrdering", previous}});
+        const auto seq = str(r.at("SequenceNumber"));
+        BOOST_TEST(seq.size() == previous.size());
+        BOOST_TEST(seq > previous);
+        previous = seq;
+    }
+    // Interleaved writes to the other shard do not disturb the order.
+    (void)f.put("orders", "user-2");
+    const auto r = f.ok("PutRecord", {{"StreamName", "orders"},
+                                      {"PartitionKey", "user-1"},
+                                      {"Data", "aGk="},
+                                      {"SequenceNumberForOrdering", previous}});
+    BOOST_TEST(str(r.at("SequenceNumber")) > previous);
+    // The compact form is a sequence number too.
+    BOOST_TEST(f.ok("PutRecord", {{"StreamName", "orders"},
+                                  {"PartitionKey", "user-1"},
+                                  {"Data", "aGk="},
+                                  {"SequenceNumberForOrdering", "7"}})
+                   .contains("SequenceNumber"));
+}

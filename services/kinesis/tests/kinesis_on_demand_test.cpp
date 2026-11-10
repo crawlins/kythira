@@ -29,6 +29,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace kin = kythira::kinesis;
@@ -84,9 +85,9 @@ struct fixture {
     kin::front_end<allow_all> fe{kin::front_end_config{}, auth};
     std::unique_ptr<kin::kinesis_service<kin::local_stream_cluster>> service;
 
-    fixture() {
-        service = std::make_unique<kin::kinesis_service<kin::local_stream_cluster>>(
-            cluster, kin::kinesis_service_config{});
+    explicit fixture(kin::kinesis_service_config cfg = {}) {
+        service = std::make_unique<kin::kinesis_service<kin::local_stream_cluster>>(cluster,
+                                                                                    std::move(cfg));
         service->register_with(fe);
     }
 
@@ -307,4 +308,71 @@ BOOST_AUTO_TEST_CASE(a_stream_back_in_provisioned_mode_is_left_alone) {
         BOOST_TEST(controller.run_once(f.now)._splits == 0U);
     }
     BOOST_TEST(f.open_shards("s") == 1U);
+}
+
+// AWS's on-demand stream limit (50 per account by default) holds both when
+// a stream is created on demand and when one switches to it; the refused
+// switch leaves the stream as it was.
+BOOST_AUTO_TEST_CASE(the_on_demand_stream_limit_holds_at_create_and_at_switch) {
+    {
+        fixture f;
+        BOOST_TEST(
+            f.ok("DescribeLimits", json::object{}).at("OnDemandStreamCountLimit").as_int64() == 50);
+    }
+    kin::kinesis_service_config cfg;
+    cfg._limits._on_demand_stream_limit = 2;
+    fixture f(std::move(cfg));
+    const auto create_on_demand = [&](std::string_view name) {
+        return f.call("CreateStream",
+                      {{"StreamName", name}, {"StreamModeDetails", {{"StreamMode", "ON_DEMAND"}}}});
+    };
+    BOOST_TEST(create_on_demand("a").status == 200U);
+    BOOST_TEST(create_on_demand("b").status == 200U);
+    const auto third = create_on_demand("c");
+    BOOST_TEST(third.status == 400U);
+    BOOST_TEST(type_of(third) == "LimitExceededException");
+    f.create("p", 1);
+    const auto sw = f.set_mode("p", "ON_DEMAND");
+    BOOST_TEST(type_of(sw) == "LimitExceededException");
+    BOOST_TEST(f.mode("p") == "PROVISIONED");
+    const auto limits = f.ok("DescribeLimits", json::object{});
+    BOOST_TEST(limits.at("OnDemandStreamCount").as_int64() == 2);
+    BOOST_TEST(limits.at("OnDemandStreamCountLimit").as_int64() == 2);
+    // Leaving on-demand frees a place.
+    BOOST_TEST(f.set_mode("a", "PROVISIONED").status == 200U);
+    BOOST_TEST(f.set_mode("p", "ON_DEMAND").status == 200U);
+}
+
+// doc/on-demand.md: the controller never splits past its ceiling of open
+// shards and never merges, however long traffic stays quiet.
+BOOST_AUTO_TEST_CASE(the_controller_stops_at_its_ceiling_and_never_merges) {
+    fixture f;
+    kin::on_demand_controller<kin::local_stream_cluster> controller(
+        f.cluster, *f.service,
+        kin::on_demand_config{._window_ms = 10'000, ._sustain_ms = 20'000, ._max_open_shards = 2});
+    (void)f.ok("CreateStream", {{"StreamName", "s"},
+                                {"ShardCount", 1},
+                                {"StreamModeDetails", {{"StreamMode", "ON_DEMAND"}}}});
+    std::uint64_t splits = 0;
+    std::uint64_t hot = 0;
+    (void)controller.run_once(f.now);
+    for (int step = 0; step < 10; ++step) {
+        // 1400 records/s over the key space: hot on one shard or two.
+        f.write("s", 14'000);
+        f.now += 10'000;
+        const auto st = controller.run_once(f.now);
+        splits += st._splits;
+        hot += st._hot;
+    }
+    BOOST_TEST(splits == 1U);
+    BOOST_TEST(hot > 2U);  // still hot after the split, yet no second split
+    BOOST_TEST(f.open_shards("s") == 2U);
+    // A long quiet spell: nothing merges.
+    for (int step = 0; step < 20; ++step) {
+        f.now += 60'000;
+        splits += controller.run_once(f.now)._splits;
+    }
+    BOOST_TEST(splits == 1U);
+    BOOST_TEST(f.open_shards("s") == 2U);
+    BOOST_TEST(f.shards("s").size() == 3U);
 }

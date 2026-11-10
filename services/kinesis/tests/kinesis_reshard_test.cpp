@@ -388,3 +388,76 @@ BOOST_AUTO_TEST_CASE(an_abandoned_reshard_is_completed_by_the_repair) {
     // Nothing more to do.
     BOOST_TEST(f.service->repair_reshards(90'000, 30'000) == 0U);
 }
+
+// Requirement 7.2 across resharding: a partition key's next record lands in
+// a child (or merged) shard whose sequence numbers are all above the
+// parent's, so SequenceNumberForOrdering still yields a greater number,
+// and string order stays integer order.
+BOOST_AUTO_TEST_CASE(sequence_number_for_ordering_holds_across_a_split_and_a_merge) {
+    fixture f;
+    f.create("s", 1);
+    const auto put_after = [&](const std::string& previous) {
+        json::object body{{"StreamName", "s"},
+                          {"PartitionKey", "pk"},
+                          {"Data", "aGk="},
+                          {"ExplicitHashKey", k_low}};
+        if (!previous.empty()) {
+            body["SequenceNumberForOrdering"] = previous;
+        }
+        const auto r = f.ok("PutRecord", body);
+        return std::pair{std::string(r.at("SequenceNumber").as_string()),
+                         std::string(r.at("ShardId").as_string())};
+    };
+    auto [a, a_shard] = put_after("");
+    BOOST_TEST(a_shard == "shardId-000000000000");
+    const auto mid = kin::to_decimal(kin::hash_key{1} << 127U);
+    (void)f.ok("SplitShard", {{"StreamName", "s"},
+                              {"ShardToSplit", "shardId-000000000000"},
+                              {"NewStartingHashKey", mid}});
+    auto [b, b_shard] = put_after(a);
+    BOOST_TEST(b_shard == "shardId-000000000001");
+    BOOST_TEST(b.size() == a.size());
+    BOOST_TEST(b > a);
+    (void)f.ok("MergeShards", {{"StreamName", "s"},
+                               {"ShardToMerge", "shardId-000000000001"},
+                               {"AdjacentShardToMerge", "shardId-000000000002"}});
+    auto [c, c_shard] = put_after(b);
+    BOOST_TEST(c_shard == "shardId-000000000003");
+    BOOST_TEST(c > b);
+    // A child's first number is above its parent's last.
+    const auto shards = f.shards("s");
+    const auto& parent = shards.at("shardId-000000000000").at("SequenceNumberRange").as_object();
+    const auto& child = shards.at("shardId-000000000001").at("SequenceNumberRange").as_object();
+    BOOST_TEST(std::string(child.at("StartingSequenceNumber").as_string()) >
+               std::string(parent.at("EndingSequenceNumber").as_string()));
+}
+
+// AWS's UpdateShardCount bounds: no more than double and no less than half
+// the open shards in one call. A refused call leaves the stream ACTIVE and
+// its shards untouched.
+BOOST_AUTO_TEST_CASE(update_shard_count_stays_within_half_and_double) {
+    fixture f;
+    f.create("s", 4);
+    const auto update = [&](int target) {
+        return f.call("UpdateShardCount", {{"StreamName", "s"},
+                                           {"TargetShardCount", target},
+                                           {"ScalingType", "UNIFORM_SCALING"}});
+    };
+    auto r = update(1);
+    BOOST_TEST(type_of(r) == "InvalidArgumentException");
+    BOOST_TEST(message_of(r) ==
+               "UpdateShardCount cannot scale down below half your current open shard count. "
+               "Current open shard count: 4 Target shard count: 1");
+    r = update(9);
+    BOOST_TEST(type_of(r) == "InvalidArgumentException");
+    BOOST_TEST(f.status("s") == "ACTIVE");
+    BOOST_TEST(f.shards("s").size() == 4U);
+    // The bounds themselves are allowed.
+    BOOST_TEST(update(2).status == 200U);
+    BOOST_TEST(f.status("s") == "ACTIVE");
+    std::size_t open = 0;
+    for (const auto& [id, s] : f.shards("s")) {
+        open += s.at("SequenceNumberRange").as_object().contains("EndingSequenceNumber") ? 0 : 1;
+    }
+    BOOST_TEST(open == 2U);
+}

@@ -568,3 +568,30 @@ BOOST_AUTO_TEST_CASE(encryption_commands_and_data_keys_round_trip) {
     rec._encryption = kin::encryption_type::none;
     BOOST_TEST(rec.current_data_key() == nullptr);
 }
+
+// doc/encryption.md: a plaintext data key is never replicated. Neither the
+// state machine's snapshot nor the segment files hold it; only the wrapped
+// form is in the catalog, and it unwraps to a key that is nowhere on disk.
+BOOST_AUTO_TEST_CASE(a_plaintext_data_key_is_never_replicated) {
+    fixture f;
+    (void)f.gw.ok("CreateStream", {{"StreamName", "s"}, {"ShardCount", 1}});
+    (void)f.gw.ok("StartStreamEncryption",
+                  {{"StreamName", "s"}, {"EncryptionType", "KMS"}, {"KeyId", "alias/aws/kinesis"}});
+    (void)f.gw.ok("PutRecord", {{"StreamName", "s"}, {"PartitionKey", "pk"}, {"Data", b64("x")}});
+    const auto rec = f.record("s");
+    BOOST_REQUIRE(rec._data_keys.size() == 1U);
+    const kin::local_kms_provider provider("correct horse battery");
+    const kin::encryption_context ctx{
+        {"kythira:kinesis:stream", rec._account + "/" + rec._name + "/" + std::to_string(rec._id)}};
+    const auto plaintext =
+        provider.decrypt_data_key(rec._data_keys[0]._key_id, rec._data_keys[0]._wrapped, ctx);
+    const std::string needle(reinterpret_cast<const char*>(plaintext.data()), plaintext.size());
+
+    std::vector<std::byte> snapshot;
+    (void)f.cluster.read("", [&](const auto& sm) { snapshot = sm.get_state(); });
+    const std::string state(reinterpret_cast<const char*>(snapshot.data()), snapshot.size());
+    BOOST_TEST(!state.empty());
+    BOOST_TEST(state.find(rec._data_keys[0]._wrapped) != std::string::npos);
+    BOOST_TEST(state.find(needle) == std::string::npos);
+    BOOST_TEST(!f.on_disk(needle));
+}
