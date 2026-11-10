@@ -313,7 +313,8 @@ BOOST_AUTO_TEST_CASE(an_encrypted_stream_stores_ciphertext_and_reads_back_everyw
         return f.gw.ok("PutRecord",
                        {{"StreamName", "s"}, {"PartitionKey", pk}, {"Data", b64(data)}});
     };
-    BOOST_TEST(put("clear", "plain-before").at("EncryptionType").as_string() == "NONE");
+    // Absent, not "NONE", for an unencrypted stream, as AWS answers.
+    BOOST_TEST(!put("clear", "plain-before").contains("EncryptionType"));
 
     (void)f.gw.ok("StartStreamEncryption",
                   {{"StreamName", "s"}, {"EncryptionType", "KMS"}, {"KeyId", "alias/aws/kinesis"}});
@@ -349,7 +350,7 @@ BOOST_AUTO_TEST_CASE(an_encrypted_stream_stores_ciphertext_and_reads_back_everyw
                    .as_object()
                    .at("EncryptionType")
                    .as_string() == "NONE");
-    BOOST_TEST(put("clear-again", "plain-after").at("EncryptionType").as_string() == "NONE");
+    BOOST_TEST(!put("clear-again", "plain-after").contains("EncryptionType"));
 
     // What reached the disk: plaintext only from the unencrypted stretches.
     BOOST_TEST(f.on_disk("plain-before"));

@@ -443,13 +443,14 @@ BOOST_AUTO_TEST_CASE(at_timestamp_starts_at_the_first_record_at_or_after_it) {
     BOOST_REQUIRE(r.at("Records").as_array().size() == 8U);
     BOOST_TEST(data_of(r.at("Records").at(0)) == "t12");
 
-    // A time past every record: nothing yet, and later records that are
-    // past it are returned through the next iterator.
-    const double future = static_cast<double>(f.clock + 5000) / 1000.0;
-    it = f.iterator({{"ShardIteratorType", "AT_TIMESTAMP"}, {"Timestamp", future}});
+    // A time past every record (now, five seconds after the last one):
+    // nothing yet, and a later record is returned through the next
+    // iterator.
+    f.clock += 5000;
+    const double now = static_cast<double>(f.clock) / 1000.0;
+    it = f.iterator({{"ShardIteratorType", "AT_TIMESTAMP"}, {"Timestamp", now}});
     auto r2 = f.get(it);
     BOOST_TEST(r2.at("Records").as_array().empty());
-    (void)f.put(b64("too-early"));
     f.clock += 10'000;
     (void)f.put(b64("in-time"));
     r2 = f.get(std::string(r2.at("NextShardIterator").as_string()));

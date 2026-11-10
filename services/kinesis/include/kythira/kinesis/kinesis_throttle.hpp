@@ -116,7 +116,12 @@ public:
 
     /// How many leading records of each append the buckets admit, taking
     /// their tokens. A record's cost is its data plus partition key bytes,
-    /// as AWS counts it.
+    /// as AWS counts it. A record is admitted while the byte bucket is
+    /// still positive before it and then charged in full, which can drive
+    /// the bucket negative (the later writes wait it out): otherwise a
+    /// 1 MiB record with its partition key, which AWS accepts on a shard
+    /// that has been written to in the last second (the task 17
+    /// recordings), could never fit a bucket of 1 MiB.
     auto admit(const std::vector<const append_records_command*>& appends, admission_ticket& ticket)
         -> std::vector<std::size_t> {
         std::vector<std::size_t> out;
@@ -133,7 +138,7 @@ public:
             for (const auto& r : a->_records) {
                 const auto cost = static_cast<double>(r.billed_bytes());
                 if (b._records.tokens() - static_cast<double>(n) < 1.0 ||
-                    b._bytes.tokens() - bytes < cost) {
+                    b._bytes.tokens() - bytes <= 0.0) {
                     break;
                 }
                 bytes += cost;

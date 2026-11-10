@@ -36,7 +36,8 @@ so a reshard commits as one tier-1 transaction across them.
    answers the counter the shard ended at. `set_ending_counters_command`
    then writes those counters into the catalog, and the stream returns to
    ACTIVE. `ListShards` and `DescribeStream` show the parents with an
-   `EndingSequenceNumber` from then on.
+   `EndingSequenceNumber` from then on: one past the parent's last record,
+   so no record carries it, as on AWS.
 
 The children are new ordinals, which means new routing keys. Kythira's own
 group splits and moves (`multi_raft`'s elastic policy) work on routing keys

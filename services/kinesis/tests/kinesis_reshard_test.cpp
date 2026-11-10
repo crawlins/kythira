@@ -239,7 +239,10 @@ BOOST_AUTO_TEST_CASE(split_closes_the_parent_and_routes_new_writes_to_children) 
     // The parent keeps its records and, read to its end, names its children.
     const auto [records, last] = f.drain("s", "shardId-000000000000");
     BOOST_TEST(records.size() == 3U);
-    BOOST_TEST(records.back() == std::string(seq.at("EndingSequenceNumber").as_string()));
+    // Its ending number is past its last record and carried by none, as
+    // AWS answers.
+    BOOST_TEST(records.back() < std::string(seq.at("EndingSequenceNumber").as_string()));
+    BOOST_TEST(records.back().size() == seq.at("EndingSequenceNumber").as_string().size());
     BOOST_TEST(!last.contains("NextShardIterator"));
     BOOST_REQUIRE(last.contains("ChildShards"));
     BOOST_TEST(last.at("ChildShards").as_array().size() == 2U);

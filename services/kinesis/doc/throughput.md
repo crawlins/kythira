@@ -20,6 +20,12 @@ Each bucket holds one second of capacity and refills continuously, on a
 monotonic clock. Buckets idle for a minute are dropped.
 
 Writes:
+- A record is admitted while the shard's byte bucket is still positive,
+  and is then charged in full, so it can overdraw the bucket and later
+  writes wait until the debt clears. Otherwise a 1 MiB record with its
+  partition key could never fit a 1 MiB bucket, and AWS accepts one even
+  on a shard written to in the last second (seen in the differential
+  recordings, [differential.md](differential.md)).
 - `PutRecords` admits the longest prefix of each shard's records that fits.
   The rest answer `ProvisionedThroughputExceededException` in place, with
   AWS's message: `Rate exceeded for shard shardId-… in stream S under
