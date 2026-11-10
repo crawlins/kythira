@@ -664,8 +664,11 @@ safely and leak nothing.
 2. Secrets, session tokens, JWTs and signatures SHALL NOT appear in logs,
    metrics, error messages or core dumps where avoidable. Buffers holding
    secrets SHALL be cleared with `OPENSSL_cleanse` after use.
-3. Unknown access keys and bad signatures SHALL take the same code path and
-   comparable time.
+3. Unknown access keys and bad signatures SHALL both be refused, with AWS's
+   error codes (`InvalidClientTokenId` and `SignatureDoesNotMatch`), and a
+   signature or secret SHALL be compared in constant time. (Amended
+   2026-11-10, Clark's choice: AWS's two codes already say which case
+   applies, so equal timing would hide nothing; see `security-pass.md`.)
 4. Any internal error during evaluation SHALL deny.
 5. THE categories from the project's 2026-10-02 vulnerability audit SHALL
    be applied to the new listeners before the spec closes.
