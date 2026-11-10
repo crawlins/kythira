@@ -78,7 +78,7 @@ Not a Kythira bug: M1 (task 11) finding the bug that task 9 seeds on purpose (`K
 | Replay | 1 of 3 replays of the run's log reproduced it |
 | Replay file | `tests/docker_chaos/findings/2026-10-30-election-safety-432.jsonl` |
 | Draft test | `tests/docker_chaos/findings/2026-10-30-election-safety-432_test.cpp`, 6 attempt(s) |
-| Status | draft, awaiting review. Requirement 6.3 not yet checked. Before November 2 its draft carried a Boost timeout of 14,304 s, which wraps in Boost's 32-bit microsecond count to about 1,419 s; the decorator is gone. |
+| Status | draft, awaiting review. Requirement 6.3 confirmed on tikhov on November 9 and 10 (main 784353cf, rootless Podman 5.7). It fails on `seeded-vote-term` (`e0b023e45710`): reproduced on attempt 1 in 2,207 s, breaking `election_safety`, `leader_completeness`, `log_matching` and `state_machine_safety`. It passes on a fresh `:dev` (`7e52de779df7`): 0 of 6 attempts in 12,998 s. The one call that errors in every attempt is the kept violating call, the refused `candidate_term_seed` failpoint. Before November 2 its draft carried a Boost timeout of 14,304 s, which wraps in Boost's 32-bit microsecond count to about 1,419 s; the decorator is gone. |
 
 Not a Kythira bug: M1 (task 11) finding the bug that task 9 seeds on purpose (`KYTHIRA_CHAOS_SEEDED_BUG=vote_term`), which only the `seeded-vote-term` image carries. Run 2 of the second M1 campaign (Qwen3.8-27B through the Pi worker); the uncut log is kept with that campaign's output, outside the repo. The Kythira commit was not recorded because the tool server's image has no git checkout; `scripts/cairn/start-run.sh` now passes it in.
 
@@ -114,7 +114,7 @@ Not a Kythira bug: M1 (task 11) finding the bug that task 9 seeds on purpose (`K
 | Replay | 3 of 3 replays of the run's log reproduced it |
 | Replay file | `tests/docker_chaos/findings/2026-10-30-election-safety-1373.jsonl` |
 | Draft test | `tests/docker_chaos/findings/2026-10-30-election-safety-1373_test.cpp`, 1 attempt(s) |
-| Status | draft, awaiting review. Fails on `seeded-vote-term` (`e0b023e45710`): reproduced 1 of 1 on tikhov on November 2 in 4,305 s. The pass on `:dev` is not yet checked. The run as first committed died at 285 s because its Boost timeout of 4,579 s wrapped to 284 s; the decorator is gone. |
+| Status | draft, awaiting review. Requirement 6.3 confirmed on tikhov. It fails on `seeded-vote-term` (`e0b023e45710`): reproduced 1 of 1 on November 2 in 4,305 s (main 62b23be8). It passes on a fresh `:dev` (`7e52de779df7`): 0 of 1 on November 9 in 4,339 s (main 784353cf). In both runs 28 of the 208 replayed calls returned errors, and the runner does not count them as failures. The run as first committed died at 285 s because its Boost timeout of 4,579 s wrapped to 284 s; the decorator is gone. |
 
 Not a Kythira bug: M1 (task 11) finding the bug that task 9 seeds on purpose (`KYTHIRA_CHAOS_SEEDED_BUG=vote_term`), which only the `seeded-vote-term` image carries. Run 3 of the second M1 campaign (Qwen3.8-27B through the Pi worker); the uncut log is kept with that campaign's output, outside the repo. The Kythira commit was not recorded because the tool server's image has no git checkout; `scripts/cairn/start-run.sh` now passes it in.
 
