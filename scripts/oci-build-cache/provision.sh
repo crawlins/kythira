@@ -376,6 +376,12 @@ echo
 # covers the whole bucket -- sccache/, vcpkg/ and clang-tidy/ -- because those
 # three prefixes are the bucket.
 #
+# Without overwrite a PR key cannot do a multipart upload at all: OCI asks for
+# OBJECT_CREATE and OBJECT_OVERWRITE on CreateMultipartUpload and UploadPart
+# even for a new name. The CI action therefore has the AWS CLI send every
+# vcpkg package as one PutObject (multipart_threshold 5GB in the
+# AWS_CONFIG_FILE it writes) rather than this policy granting overwrite.
+#
 # The one exception is sccache's own probe object. On every server start
 # sccache 0.17 writes `<prefix>.sccache_check` -- a fixed name that main's
 # runs created long ago -- and if that write is refused it marks the whole
