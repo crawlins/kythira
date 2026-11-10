@@ -117,7 +117,15 @@ struct rocksdb_kv_engine::impl {
         return *last + std::string(1, '\0');
     }
 
+    auto refuse_if_secondary(std::string_view what) const -> void {
+        if (!options.secondary_path.empty()) {
+            throw persistent_storage_error("rocksdb_kv_engine: " + std::string(what) + " on " +
+                                           path.string() + ", opened read-only as a secondary");
+        }
+    }
+
     auto write_locked(const write_batch& batch) -> engine_sequence {
+        refuse_if_secondary("write");
         if (batch.empty()) {
             return db->GetLatestSequenceNumber();
         }
@@ -180,8 +188,22 @@ rocksdb_kv_engine::rocksdb_kv_engine(const std::filesystem::path& path,
         descriptors.emplace_back(std::string(name), _impl->cf_options);
     }
     rocksdb::DB* raw = nullptr;
-    check(rocksdb::DB::Open(_impl->db_options, path.string(), descriptors, &_impl->handles, &raw),
-          "open " + path.string());
+    if (!options.secondary_path.empty()) {
+        // A secondary keeps every file it reads open, since the primary may
+        // delete it (RocksDB requires this setting for secondaries).
+        _impl->db_options.create_if_missing = false;
+        _impl->db_options.create_missing_column_families = false;
+        _impl->db_options.max_open_files = -1;
+        std::filesystem::create_directories(options.secondary_path);
+        check(rocksdb::DB::OpenAsSecondary(_impl->db_options, path.string(),
+                                           options.secondary_path.string(), descriptors,
+                                           &_impl->handles, &raw),
+              "open " + path.string() + " as a secondary");
+    } else {
+        check(
+            rocksdb::DB::Open(_impl->db_options, path.string(), descriptors, &_impl->handles, &raw),
+            "open " + path.string());
+    }
     _impl->db.reset(raw);
     // What survived the open is durable by definition.
     _impl->durable = _impl->db->GetLatestSequenceNumber();
@@ -254,6 +276,7 @@ auto rocksdb_kv_engine::durable_sequence() const -> engine_sequence {
 }
 
 auto rocksdb_kv_engine::sync(engine_sequence seq) -> void {
+    _impl->refuse_if_secondary("sync");
     if (seq <= _impl->durable.load()) {
         return;
     }
@@ -325,6 +348,7 @@ auto rocksdb_kv_engine::checkpoint(const key_range& range, const std::filesystem
 
 auto rocksdb_kv_engine::ingest(const key_range& range, const std::filesystem::path& dir,
                                const snapshot_manifest& manifest) -> engine_sequence {
+    _impl->refuse_if_secondary("ingest");
     manifest.validate();
     if (manifest.engine_format != k_format_tag) {
         throw persistent_storage_error("rocksdb_kv_engine: checkpoint format '" +
