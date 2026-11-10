@@ -69,4 +69,32 @@ kythira_kinesis_test(kinesis_catalog_test kinesis_catalog_test.cpp)
 # index, split hook, split/absorb law, snapshot restore).
 kythira_kinesis_test(kinesis_stream_state_machine_test kinesis_stream_state_machine_test.cpp)
 
+# Task 4: the front end (SigV4, JSON and CBOR, authorization, dispatch), the
+# generated action table and static-key roles, and the compatibility
+# profile.
+kythira_kinesis_test(kinesis_front_end_test kinesis_front_end_test.cpp)
+kythira_kinesis_test(kinesis_actions_test kinesis_actions_test.cpp)
+kythira_kinesis_test(kinesis_compat_profile_test kinesis_compat_profile_test.cpp)
+
+# The checked-in shape tables are what core's scripts/gen_aws_json_shapes.py
+# (KYTHIRA_AWS_JSON_SHAPES_GENERATOR) makes of the pinned model, and the
+# action table what tools/gen_kinesis_actions.py makes of the pinned service
+# reference, so an upgrade carries its regenerated headers and their diff
+# (Requirement 2.4).
+add_test(NAME kinesis_model_header_fresh
+    COMMAND "${Python3_EXECUTABLE}" "${KYTHIRA_AWS_JSON_SHAPES_GENERATOR}"
+            model/service-2.json
+            include/kythira/kinesis/model/kinesis_model.hpp
+            --namespace kythira::kinesis::kinesis_model
+            --label services/kinesis/model/service-2.json
+            --check
+    WORKING_DIRECTORY "${KYTHIRA_KINESIS_SOURCE_DIR}")
+add_test(NAME kinesis_actions_header_fresh
+    COMMAND "${Python3_EXECUTABLE}" tools/gen_kinesis_actions.py
+            tools/kinesis-service-reference.json
+            include/kythira/kinesis/kinesis_actions.hpp --check
+    WORKING_DIRECTORY "${KYTHIRA_KINESIS_SOURCE_DIR}")
+set_tests_properties(kinesis_model_header_fresh kinesis_actions_header_fresh PROPERTIES
+    LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
+
 kythira_scale_test_timeouts()
