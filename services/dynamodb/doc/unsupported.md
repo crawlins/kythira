@@ -19,11 +19,6 @@ test reads the table rows: keep one operation per row, in the
 
 | Service | Operation | Why |
 |---|---|---|
-| DynamoDB | `CreateBackup` | planned, task 18 |
-| DynamoDB | `DescribeBackup` | planned, task 18 |
-| DynamoDB | `ListBackups` | planned, task 18 |
-| DynamoDB | `DeleteBackup` | planned, task 18 |
-| DynamoDB | `RestoreTableFromBackup` | planned, task 18 |
 | DynamoDB | `UpdateContinuousBackups` | planned, task 19 |
 | DynamoDB | `DescribeContinuousBackups` | planned, task 19 |
 | DynamoDB | `RestoreTableToPointInTime` | planned, task 19 |

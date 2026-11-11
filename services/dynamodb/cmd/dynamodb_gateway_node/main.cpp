@@ -11,6 +11,7 @@
 // a Raft cluster (run_cluster.hpp) on the memory engine or, in a build with
 // RocksDB, on a database under the data directory.
 
+#include "backup_s3.hpp"
 #include "run_cluster.hpp"
 
 #include <kythira/dynamodb/backend.hpp>
@@ -139,6 +140,15 @@ auto main(int argc, char** argv) -> int {
     }
     auto& cfg = std::get<ddb::gateway_config>(parsed);
 
+    try {
+        if (!cfg.backups) {
+            cfg.backups = dynamodb_gateway::make_s3_backup_store(cfg);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "dynamodb_gateway_node: " << e.what() << "\n";
+        return 2;
+    }
+
     const auto log = [](bool warning, std::string_view m) {
         std::cerr << (warning ? "[warn] " : "[info] ") << "dynamodb_gateway_node: " << m << "\n";
     };
@@ -158,6 +168,11 @@ auto main(int argc, char** argv) -> int {
         const auto change_log = dynamodb_gateway::open_change_log(cfg, scratch);
         ddb::local_backend<> backend(engine, ddb::local_backend<>::system_clock_ms(),
                                      change_log.get());
+        // One node on the memory engine keeps backups in memory too, unless
+        // told where else (backup.hpp).
+        if (!cfg.backups && cfg.backup_dir.empty()) {
+            cfg.backups = std::make_shared<ddb::memory_backup_store>();
+        }
         ddb::gateway<ddb::local_backend<>> gw(cfg, backend, log);
         gw.start();
         std::cerr << "[info] dynamodb_gateway_node: serving "

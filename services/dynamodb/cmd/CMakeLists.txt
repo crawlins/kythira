@@ -16,7 +16,8 @@ if(NOT KYTHIRA_FUTURE_BACKEND_AVAILABLE OR NOT Boost_FOUND)
 endif()
 
 find_package(Threads REQUIRED)
-add_executable(dynamodb_gateway_node dynamodb_gateway_node/main.cpp)
+add_executable(dynamodb_gateway_node dynamodb_gateway_node/main.cpp
+                                     dynamodb_gateway_node/backup_s3.cpp)
 target_link_libraries(dynamodb_gateway_node PRIVATE
     kythira_dynamodb    # <kythira/dynamodb/...>, the core headers, Boost.JSON, OpenSSL
     network_simulator   # the future backend
@@ -29,6 +30,29 @@ target_link_libraries(dynamodb_gateway_node PRIVATE
 if(TARGET raft_rocksdb_engine)
     target_compile_definitions(dynamodb_gateway_node PRIVATE KYTHIRA_DYNAMODB_ROCKSDB)
     target_link_libraries(dynamodb_gateway_node PRIVATE raft_rocksdb_engine)
+endif()
+# Backups can live in S3 through aws_s3_client under the same two
+# conditions ledger_node's export store uses: the SDK found and
+# CONFIG_AWS_S3_PERSISTENCE on. Only backup_s3.cpp parses an SDK header.
+# Without them KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET is refused at start-up;
+# KYTHIRA_DYNAMODB_BACKUP_DIR works everywhere.
+if(AWSSDK_FOUND AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE)
+    find_package(AWSSDK QUIET COMPONENTS core s3)
+endif()
+if(AWSSDK_FOUND AND _KYTHIRA_GATE_AWS_S3_PERSISTENCE)
+    list(FIND AWSSDK_LINK_LIBRARIES aws-cpp-sdk-s3 _KYTHIRA_DYNAMODB_S3_LIB)
+    if(_KYTHIRA_DYNAMODB_S3_LIB EQUAL -1)
+        message(FATAL_ERROR
+            "dynamodb_gateway_node: CONFIG_AWS_S3_PERSISTENCE=y but AWSSDK_LINK_LIBRARIES "
+            "(${AWSSDK_LINK_LIBRARIES}) does not name aws-cpp-sdk-s3")
+    endif()
+    target_link_libraries(dynamodb_gateway_node PRIVATE ${AWSSDK_LINK_LIBRARIES})
+    target_compile_definitions(dynamodb_gateway_node PRIVATE
+        KYTHIRA_HAS_AWS_SDK KYTHIRA_DYNAMODB_NODE_S3=1)
+    message(STATUS "dynamodb_gateway_node: backups in S3 (aws_s3_client)")
+else()
+    message(STATUS "dynamodb_gateway_node: no S3 backup store (needs the AWS SDK and "
+                   "CONFIG_AWS_S3_PERSISTENCE)")
 endif()
 target_compile_features(dynamodb_gateway_node PRIVATE cxx_std_23)
 set_target_properties(dynamodb_gateway_node PROPERTIES

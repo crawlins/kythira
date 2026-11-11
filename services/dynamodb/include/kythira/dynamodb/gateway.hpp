@@ -45,6 +45,13 @@
 /// | `KYTHIRA_DYNAMODB_LOG_LEVEL` | `info` | the Raft groups' log level, `trace` to `critical` |
 /// | `KYTHIRA_DYNAMODB_COMPAT` | AWS's | `switch=value,...`: the cluster's compatibility profile,
 /// e.g. `throttling=off` |
+/// | `KYTHIRA_DYNAMODB_BACKUP_DIR` | | directory backups live in (shared by every node of a
+/// cluster) | | `KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET` | | S3 bucket backups live in (a build with the
+/// AWS SDK) | | `KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX`, `_REGION`, `_ENDPOINT` | | key prefix, region,
+/// and an S3-compatible endpoint |
+///
+/// Without a backup store a single node keeps backups in memory, and a
+/// cluster refuses `CreateBackup` (`backup.hpp`).
 ///
 /// Without `PEERS` the daemon is one node on `local_backend`, with no Raft.
 /// With it, the node joins a Raft cluster on `raft_backend` (one `PEERS`
@@ -57,6 +64,7 @@
 /// unauthenticated requests.
 
 #include <kythira/dynamodb/backend.hpp>
+#include <kythira/dynamodb/backup.hpp>
 #include <kythira/dynamodb/batch_api.hpp>
 #include <kythira/dynamodb/compat_profile.hpp>
 #include <kythira/dynamodb/disk_guard.hpp>
@@ -142,6 +150,16 @@ struct gateway_config {
     /// Where Kinesis streaming destinations publish (task 17); unset is
     /// `kinesis_sink_from_env()`.
     kinesis_sink kinesis{};
+    /// Where backups live (task 18): `backups` when set, else a directory
+    /// store over `backup_dir`, else none. The S3 settings are read here
+    /// and turned into `backups` by the daemon, the one place that links
+    /// the AWS SDK.
+    std::shared_ptr<backup_store> backups;
+    std::string backup_dir;
+    std::string backup_s3_bucket;
+    std::string backup_s3_prefix;
+    std::string backup_s3_region;
+    std::string backup_s3_endpoint;
 };
 
 /// Reads one environment variable; empty optional when unset.
@@ -276,7 +294,13 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_KINESIS_CA           PEM bundle the Kinesis endpoint chains\n"
     "                                        to (system roots); AWS_ACCESS_KEY_ID,\n"
     "                                        AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN\n"
-    "                                        sign the calls\n";
+    "                                        sign the calls\n"
+    "  KYTHIRA_DYNAMODB_BACKUP_DIR           directory backups live in (shared by\n"
+    "                                        every node of a cluster)\n"
+    "  KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET     S3 bucket backups live in\n"
+    "  KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX     key prefix in that bucket\n"
+    "  KYTHIRA_DYNAMODB_BACKUP_S3_REGION     its region (the AWS SDK default chain)\n"
+    "  KYTHIRA_DYNAMODB_BACKUP_S3_ENDPOINT   an S3-compatible endpoint instead\n";
 
 namespace gateway_detail {
 
@@ -505,6 +529,16 @@ namespace gateway_detail {
     if (auto e = gateway_detail::cluster_from_env(env, c)) {
         return *e;
     }
+    c.backup_dir = env("KYTHIRA_DYNAMODB_BACKUP_DIR").value_or("");
+    c.backup_s3_bucket = env("KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET").value_or("");
+    c.backup_s3_prefix = env("KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX").value_or("");
+    c.backup_s3_region = env("KYTHIRA_DYNAMODB_BACKUP_S3_REGION").value_or("");
+    c.backup_s3_endpoint = env("KYTHIRA_DYNAMODB_BACKUP_S3_ENDPOINT").value_or("");
+    if (!c.backup_dir.empty() && !c.backup_s3_bucket.empty()) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_BACKUP_DIR and KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET are both set; "
+            "choose one");
+    }
     return c;
 }
 
@@ -564,8 +598,10 @@ public:
           _partiql(backend, _items, _queries, _transactions),
           _streams(backend),
           _destinations(backend),
+          _backups(backend, nullptr),
           _sweeper(backend),
           _publisher(backend, {}),
+          _backup_worker(backend, nullptr),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -606,6 +642,14 @@ public:
         _partiql.register_with(*_front);
         _streams.register_with(*_front);
         _destinations.register_with(*_front);
+        auto store = _config.backups;
+        if (!store && !_config.backup_dir.empty()) {
+            store = std::make_shared<directory_backup_store>(_config.backup_dir);
+        }
+        _backups.set_store(store);
+        _backups.on_created([this] { _backup_worker.poke(); });
+        _backups.register_with(*_front);
+        _backup_worker.set_store(store);
         _publisher.set_sink(_config.kinesis.configured() ? _config.kinesis
                                                          : kinesis_sink_from_env());
         _publisher.set_region(_config.front.region);
@@ -655,9 +699,11 @@ public:
     }
 
 private:
-    /// The TTL sweeper's and the Kinesis destination publisher's worker
-    /// (`ttl.hpp`, `kinesis_destination.hpp`): a pass of each a second, on
-    /// the node that leads the catalog when the backend has one.
+    /// The worker for the catalog leader's background jobs: the TTL
+    /// sweeper, backups and restores, and the Kinesis destination
+    /// publisher (`ttl.hpp`, `backup.hpp`, `kinesis_destination.hpp`), a
+    /// pass of each a second, on the node that leads the catalog when the
+    /// backend has one. A long backup delays the other two until it ends.
     void sweep_loop() {
         std::unique_lock lock(_sweep_mu);
         while (!_stopping) {
@@ -677,6 +723,15 @@ private:
                         // over.
                         if (_log) {
                             _log(true, std::string("ttl sweeper: ") + e.what());
+                        }
+                    }
+                    try {
+                        // An unfinished backup or restore is taken up again
+                        // on the next pass, here or on a new leader.
+                        (void)_backup_worker.pass();
+                    } catch (const std::exception& e) {
+                        if (_log) {
+                            _log(true, std::string("backups: ") + e.what());
                         }
                     }
                     // Unpublished records stay in the change log; the next
@@ -734,8 +789,10 @@ private:
     partiql_api<Backend> _partiql;
     streams_api<Backend> _streams;
     kinesis_destination_api<Backend> _destinations;
+    backup_api<Backend> _backups;
     ttl_sweeper<Backend> _sweeper;
     kinesis_publisher<Backend> _publisher;
+    backup_worker<Backend> _backup_worker;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

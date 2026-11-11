@@ -854,8 +854,12 @@ public:
                 }
                 for (const auto& name : cat->list_tables("", SIZE_MAX)) {
                     const auto d = cat->describe(name);
-                    if (d && (d->status == table_status::creating ||
-                              d->status == table_status::updating)) {
+                    // A restore's table stays CREATING until its items
+                    // are loaded (task 18).
+                    if (d &&
+                        (d->status == table_status::creating ||
+                         d->status == table_status::updating) &&
+                        !d->restore.in_progress) {
                         out.pending.push_back(*d);
                     } else if (d && backfilling_index(*d) != nullptr) {
                         out.backfills.push_back(*d);

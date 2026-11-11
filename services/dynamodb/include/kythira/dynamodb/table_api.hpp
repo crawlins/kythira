@@ -659,6 +659,14 @@ template<typename TypeOf>
         out["LatestStreamArn"] = stream_arn(ctx, d.name, d.streams.back().label_ms);
         out["LatestStreamLabel"] = stream_label(d.streams.back().label_ms);
     }
+    if (!d.restore.source_backup_arn.empty()) {
+        out["RestoreSummary"] = boost::json::object{
+            {"SourceBackupArn", d.restore.source_backup_arn},
+            {"SourceTableArn", d.restore.source_table_arn},
+            {"RestoreDateTime", millis_to_seconds(d.restore.restore_ms)},
+            {"RestoreInProgress", d.restore.in_progress},
+        };
+    }
     return out;
 }
 
