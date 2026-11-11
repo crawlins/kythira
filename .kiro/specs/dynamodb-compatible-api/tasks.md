@@ -353,7 +353,8 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       none while another is CREATING or DELETING, attribute definitions
       that must agree with the table's, `Nothing to update`, and so on).
       The table stays ACTIVE, as in Local. A new index is CREATING with
-      `Backfilling` false, as Local shows it; writes maintain it at once
+      `Backfilling` true, as AWS shows it (Local shows false: a marked
+      divergence in the corpus); writes maintain it at once
       and reads of it are refused with AWS's "Cannot read from
       backfilling global secondary index" (Local fails them with an
       internal error). The backfill marks every item of the table as a
@@ -376,7 +377,26 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       AttributeDefinitions and ignores the placeholder
       `OnDemandThroughput` of -1 units Local gives an index `UpdateTable`
       created.
-    - Left in this task: the synchronous switch and the KCL 3.x tables.
+    - Synchronous switch: on a table whose `gsi-consistency` is `sync`
+      (the `kythira:compat:gsi-consistency` tag, or the cluster profile
+      given to the APIs with `set_compat_profile`), every write
+      (single-item, batch and transactional) carries its own pending
+      change before it answers: `settle_item` reads the record and the
+      item at the item group's leader and sends the index writes and the
+      ack from the node that took the request, beside the group's own
+      propagator (versions make the race harmless). A read of the index
+      after the write therefore sees it. This differs from the design's
+      wording (a tier-1 transaction over the base key and the old and new
+      index keys): the entries depend on the item the write produced, so
+      a transaction would have to read the item first and could not run
+      condition and update expressions in one step; carrying the change
+      after the base write gives the same read-your-writes for index
+      reads, which are eventual in DynamoDB anyway, without that. The
+      base write and its entries are not atomic to a concurrent reader.
+      The local backend already propagates before answering. Test: in
+      `dynamodb_raft_backend_test`, a synchronous and an asynchronous
+      table with the propagators idle.
+    - Left in this task: the KCL 3.x tables.
 
 - [ ] 12. Capacity, throttling and consumed capacity
   - Consumed-capacity formulas; provisioned and on-demand modes; leader-side

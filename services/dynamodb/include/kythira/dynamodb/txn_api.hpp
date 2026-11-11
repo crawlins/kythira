@@ -128,6 +128,12 @@ public:
     explicit txn_api(Backend& backend, const disk_guard* guard = nullptr)
         : _backend(backend), _guard(guard) {}
 
+    /// The cluster's compatibility switches (Requirement 3); AWS's by
+
+    /// default. A table's tags override them.
+
+    void set_compat_profile(const dynamo_compat_profile& p) { _profile = p; }
+
     template<typename FrontEnd> void register_with(FrontEnd& fe) {
         fe.on("TransactWriteItems",
               [this](call_context& c, boost::json::object& in) { return transact_write(c, in); });
@@ -209,6 +215,11 @@ public:
             }
         }
         if (report.outcome == txn_report::status::committed) {
+            for (const auto& a : actions) {
+                if (a.kind != "ConditionCheck" && api_detail::sync_gsis(_profile, a.table)) {
+                    _backend.settle_item(a.table, a.command.payload);
+                }
+            }
             return write_response(in, actions);
         }
         for (std::size_t i = 0; i < actions.size(); ++i) {
@@ -509,6 +520,7 @@ private:
 
     Backend& _backend;
     const disk_guard* _guard;
+    dynamo_compat_profile _profile{};
 };
 
 }  // namespace kythira::dynamodb

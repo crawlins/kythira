@@ -453,10 +453,10 @@ template<typename TypeOf>
                 {"WriteCapacityUnits", g.write_capacity},
             };
         }
-        // DynamoDB Local's shape: `Backfilling` (false, as Local shows it)
-        // while CREATING, the counts only once ACTIVE.
+        // `Backfilling` while CREATING (true, as AWS shows it; DynamoDB
+        // Local shows false), the counts only once ACTIVE, as in Local.
         if (g.status == index_status::creating) {
-            o["Backfilling"] = false;
+            o["Backfilling"] = true;
         } else if (g.status == index_status::active) {
             o["IndexSizeBytes"] = 0;
             o["ItemCount"] = 0;

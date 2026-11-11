@@ -729,6 +729,26 @@ public:
         return out;
     }
 
+    /// The pending GSI change of the item with key `key`, read with the
+    /// item, or nothing when its indexes are up to date (or the key is not
+    /// in this group).
+    [[nodiscard]] auto gsi_pending_for(std::uint64_t table_id, const key_schema& schema,
+                                       const item& key) const -> std::optional<gsi_work> {
+        const auto pkey = gsi_pending_key(table_id, schema, key);
+        if (!pkey || !_range.contains(*pkey)) {
+            return std::nullopt;
+        }
+        auto record = load_pending_record(*pkey);
+        if (!record) {
+            return std::nullopt;
+        }
+        gsi_work w;
+        w.pending_key = *pkey;
+        w.current = load(record->base_key);
+        w.pending = std::move(*record);
+        return w;
+    }
+
     /// How many items have GSI changes not yet propagated (the lag).
     [[nodiscard]] auto gsi_pending_count() const -> std::size_t { return _pending.size(); }
 

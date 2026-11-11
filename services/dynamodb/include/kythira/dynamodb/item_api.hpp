@@ -67,6 +67,10 @@ public:
     explicit item_api(Backend& backend, const disk_guard* guard = nullptr)
         : _backend(backend), _guard(guard) {}
 
+    /// The cluster's compatibility switches (Requirement 3); AWS's by
+    /// default. A table's tags override them.
+    void set_compat_profile(const dynamo_compat_profile& p) { _profile = p; }
+
     template<typename FrontEnd> void register_with(FrontEnd& fe) {
         fe.on("GetItem",
               [this](call_context& c, boost::json::object& in) { return get_item(c, in); });
@@ -296,6 +300,9 @@ private:
             case item_result::status::ok:
                 break;
         }
+        if (api_detail::sync_gsis(_profile, table)) {
+            _backend.settle_item(table, c.payload);
+        }
         boost::json::object out;
         if (r.attributes) {
             out["Attributes"] = item_to_json(*r.attributes);
@@ -311,6 +318,7 @@ private:
 
     Backend& _backend;
     const disk_guard* _guard;
+    dynamo_compat_profile _profile{};
 };
 
 }  // namespace kythira::dynamodb
