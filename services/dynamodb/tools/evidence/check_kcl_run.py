@@ -14,7 +14,11 @@ Kythira, for each client named, and fails unless:
   * the client created its lease table and wrote a lease;
   * for KCL 3.x, the UpdateTable that adds LeaseOwnerToLeaseKeyIndex was
     accepted, and a Query on that index found the lease this worker took
-    (the GSI is eventually consistent, so not every Query has to).
+    (the GSI is eventually consistent, so not every Query has to);
+  * for the Streams Kinesis Adapter (task 16), which reads a real Kythira
+    stream, every Streams call was answered and GetRecords returned
+    records. The client itself fails unless it saw every item it wrote
+    exactly once.
 
 Usage: check_kcl_run.py DIR CLIENT...
 """
@@ -60,9 +64,7 @@ def check(path, client):
     lease_written = any(
         r["operation"] == "PutItem"
         and r["status"] == 200
-        and str(r["body"].get("Item", {}).get("leaseKey", {}).get("S", "")).startswith(
-            "shardId-"
-        )
+        and "shardId-" in str(r["body"].get("Item", {}).get("leaseKey", {}).get("S", ""))
         for r in records
     )
     if not lease_written:
@@ -95,8 +97,17 @@ def check(path, client):
             problems.append(
                 "%s: no Query on %s found the worker's lease" % (client, LEASE_INDEX)
             )
+    if client == "streams-adapter":
+        read = any(
+            r["operation"] == "GetRecords"
+            and r["status"] == 200
+            and r["response"].get("Records")
+            for r in records
+        )
+        if not read:
+            problems.append("%s: no GetRecords returned records" % client)
     summary = ", ".join("%s %d" % kv for kv in sorted(ops.items()))
-    print("%s: %d DynamoDB requests (%s)" % (client, len(records), summary))
+    print("%s: %d DynamoDB and Streams requests (%s)" % (client, len(records), summary))
     return problems
 
 

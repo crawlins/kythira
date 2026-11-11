@@ -7,7 +7,11 @@
 # clients' KCL workers keep their lease table (and, on KCL 3.x, its
 # LeaseOwnerToLeaseKeyIndex GSI and the coordinator and worker-metrics
 # entries) on Kythira, while the recording stub stands in for the Kinesis
-# stream. check_kcl_run.py then reads what Kythira answered.
+# stream. The Streams Kinesis Adapter (task 16, Requirement 14.5) then
+# consumes a real Kythira stream: its client creates a table with a
+# stream, writes to it before and while its KCL 3.x worker runs, and fails
+# unless the worker sees every item exactly once. check_kcl_run.py then
+# reads what Kythira answered.
 #
 # Usage:
 #   kcl_on_kythira.sh compose OUT_DIR   a three-node cluster and the clients
@@ -34,7 +38,9 @@ if [ ! -x "${gateway}" ]; then
     echo "no dynamodb_gateway_node at ${gateway}; set KYTHIRA_DYNAMODB_GATEWAY" >&2
     exit 2
 fi
-clients=(kcl2 kcl3)
+clients=(kcl2 kcl3 streams-adapter)
+# The table the Streams Kinesis Adapter's client creates and reads.
+source_table=adapter-source
 secret=evidence-secret-not-a-credential
 
 if [ "${mode}" = compose ]; then
@@ -82,7 +88,8 @@ except urllib.error.HTTPError as e:
         exit 1
     fi
     for c in "${clients[@]}"; do
-        "${compose[@]}" run --rm -e ENDPOINT=http://forwarder:8000 java "${c}"
+        "${compose[@]}" run --rm -e ENDPOINT=http://forwarder:8000 \
+            -e SOURCE_TABLE="${source_table}" java "${c}"
     done
 elif [ "${mode}" = native ]; then
     api_port="${KCL_KYTHIRA_PORT:-8766}"
@@ -101,6 +108,7 @@ elif [ "${mode}" = native ]; then
     trap 'kill ${stub} ${node}' EXIT
     sleep 2
     export ENDPOINT="http://127.0.0.1:${stub_port}"
+    export SOURCE_TABLE="${source_table}"
     for c in "${clients[@]}"; do
         sh "${here}/clients/run_java.sh" "${c}"
     done
