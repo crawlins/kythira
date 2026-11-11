@@ -67,6 +67,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_lsi_test.cpp` | LSI entries in the engine, the item collection limit, `ItemCollectionMetrics`, drops and stored forms | 9 |
 | `include/kythira/dynamodb/capacity.hpp` | capacity and throttling: token buckets per table, index and partition, AWS's throttling errors and reasons | 12 |
 | `tests/dynamodb_capacity_test.cpp` | buckets, charges, throttling errors and the `throttling` switch | 12 |
+| `include/kythira/dynamodb/ttl.hpp` | time to live: `UpdateTimeToLive`, `DescribeTimeToLive` and the sweeper that deletes expired items | 13 |
+| `tests/dynamodb_ttl_test.cpp` | the TTL calls with DynamoDB Local's answers, the hourly limit and its switch, and the sweeper | 13 |
 
 The rest follows the plan in the spec's `tasks.md`.
 

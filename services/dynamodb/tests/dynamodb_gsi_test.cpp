@@ -442,12 +442,14 @@ BOOST_AUTO_TEST_CASE(dropping_a_table_and_its_indexes_leaves_no_keys) {
 }
 
 BOOST_AUTO_TEST_CASE(older_forms_still_decode) {
-    // A version 1 descriptor: no GSI list.
+    // A version 1 descriptor: no GSI list (nor the TTL fields version 3
+    // added after the revision).
     auto d = table();
     d.gsis.clear();
     d.revision = 5;
-    const auto v2 = ddb::encode_table_descriptor(d);
-    BOOST_REQUIRE(v2.ends_with(std::string("\0\0\0\x05", 4)));
+    const auto v3 = ddb::encode_table_descriptor(d);
+    BOOST_REQUIRE(v3.ends_with(std::string("\0\0\0\x05\0\0\0", 7)));
+    const auto v2 = '\x02' + v3.substr(1, v3.size() - 4);
     const auto v1 = '\x01' + v2.substr(1, v2.size() - 5) + std::string("\0\0\x05", 3);
     BOOST_TEST((ddb::decode_table_descriptor(v1) == d));
     // And the current form round-trips with GSIs.

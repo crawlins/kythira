@@ -17,6 +17,7 @@
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/query_api.hpp>
 #include <kythira/dynamodb/table_api.hpp>
+#include <kythira/dynamodb/ttl.hpp>
 #include <kythira/dynamodb/txn_api.hpp>
 
 #include <raft/memory_kv_engine.hpp>
@@ -111,6 +112,9 @@ struct fixture {
     ddb::query_api<ddb::local_backend<>> queries{backend};
     ddb::batch_api<ddb::local_backend<>> batches{backend, &guard};
     ddb::txn_api<ddb::local_backend<>> transactions{backend, &guard};
+    ddb::ttl_api<ddb::local_backend<>> ttl{backend};
+    /// Not run on its own: tests call `sweeper.pass()`.
+    ddb::ttl_sweeper<ddb::local_backend<>> sweeper{backend};
 
     fixture() {
         auth.register_service(ddb::dynamodb_static_roles());
@@ -122,6 +126,7 @@ struct fixture {
         queries.register_with(*fe);
         batches.register_with(*fe);
         transactions.register_with(*fe);
+        ttl.register_with(*fe);
     }
 
     /// Turns capacity enforcement off for the whole fixture (Requirement
