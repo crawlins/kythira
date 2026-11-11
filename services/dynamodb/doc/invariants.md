@@ -212,6 +212,9 @@ all fixed with it:
 | With `gsi-consistency=sync`, a GSI read after a write sees it (Kythira switch, Requirement 3) | — | `dynamodb_raft_backend_test` |
 | Reads and writes are charged in 4 KB and 1 KB units (a write the larger of the item before and after, a transaction twice), and over-capacity requests are throttled per table, index and partition with AWS's errors and reasons | Limits | `dynamodb_capacity_test` |
 | With `throttling=off`, per cluster or per table tag, nothing is throttled (Kythira switch, Requirement 3) | — | `dynamodb_capacity_test` |
+| Time to live can be changed at most once an hour (*Local differs*: no limit) | Limits | `dynamodb_ttl_test` |
+| An expired item stays readable until it is deleted, an item rewritten since the sweeper read it is kept, and values that are not numbers or are over five years old never expire | TTL | `dynamodb_ttl_test`, `dynamodb_gateway_cluster_test` |
+| With `ttl-delay=prompt`, per cluster or per table tag, expired items go within about a second and the hourly limit is lifted (Kythira switch, Requirement 3) | — | `dynamodb_ttl_test` |
 
 ## Deferred
 
@@ -220,7 +223,6 @@ with the task that builds it.
 
 | Invariant | Source | Task |
 |---|---|---|
-| Time to live can be changed at most once an hour | Limits | 13 |
 | PartiQL statements follow the same item rules | — | 14 |
 | At most 2 readers share a stream shard | Limits | 16 |
 | Global tables replicate with last writer wins | — | 22 |

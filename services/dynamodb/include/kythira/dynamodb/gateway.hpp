@@ -66,6 +66,7 @@
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/query_api.hpp>
 #include <kythira/dynamodb/table_api.hpp>
+#include <kythira/dynamodb/ttl.hpp>
 #include <kythira/dynamodb/txn_api.hpp>
 
 #include <raft/beast_https_server.hpp>
@@ -80,15 +81,18 @@
 #include <charconv>
 #include <chrono>
 #include <concepts>
+#include <condition_variable>
 #include <cstdint>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -543,6 +547,8 @@ public:
           _queries(backend),
           _batches(backend, _guard.get()),
           _transactions(backend, _guard.get()),
+          _ttl(backend),
+          _sweeper(backend),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -572,15 +578,28 @@ public:
         _queries.set_compat_profile(_config.compat);
         _batches.set_compat_profile(_config.compat);
         _transactions.set_compat_profile(_config.compat);
+        _ttl.set_compat_profile(_config.compat);
+        _sweeper.set_compat_profile(_config.compat);
         _tables.register_with(*_front);
         _items.register_with(*_front);
         _queries.register_with(*_front);
         _batches.register_with(*_front);
         _transactions.register_with(*_front);
+        _ttl.register_with(*_front);
         _ready.store(true);
+        _stopping = false;
+        _sweeper_thread = std::thread([this] { sweep_loop(); });
     }
 
     void stop() {
+        {
+            const std::lock_guard lock(_sweep_mu);
+            _stopping = true;
+        }
+        _sweep_cv.notify_all();
+        if (_sweeper_thread.joinable()) {
+            _sweeper_thread.join();
+        }
         if (_server) {
             _server->stop();
         }
@@ -613,6 +632,33 @@ public:
     }
 
 private:
+    /// The TTL sweeper's worker (`ttl.hpp`): a pass a second, on the node
+    /// that leads the catalog when the backend has one.
+    void sweep_loop() {
+        std::unique_lock lock(_sweep_mu);
+        while (!_stopping) {
+            lock.unlock();
+            try {
+                bool here = true;
+                if constexpr (requires(Backend& b) {
+                                  { b.leads_catalog() } -> std::same_as<bool>;
+                              }) {
+                    here = _backend.leads_catalog();
+                }
+                if (here) {
+                    (void)_sweeper.pass();
+                }
+            } catch (const std::exception& e) {
+                // A lost leader or a timeout: the next pass starts over.
+                if (_log) {
+                    _log(true, std::string("ttl sweeper: ") + e.what());
+                }
+            }
+            lock.lock();
+            _sweep_cv.wait_for(lock, std::chrono::seconds{1}, [this] { return _stopping; });
+        }
+    }
+
     /// A `raft_backend`, which runs ops peers forward to this node.
     static constexpr bool serves_ops = requires(Backend& b, std::string_view op) {
         { b.serve(op) } -> std::same_as<std::string>;
@@ -650,10 +696,16 @@ private:
     query_api<Backend> _queries;
     batch_api<Backend> _batches;
     txn_api<Backend> _transactions;
+    ttl_api<Backend> _ttl;
+    ttl_sweeper<Backend> _sweeper;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;
     std::atomic<bool> _ready{false};
+    std::mutex _sweep_mu;
+    std::condition_variable _sweep_cv;
+    bool _stopping = false;
+    std::thread _sweeper_thread;
 };
 
 }  // namespace kythira::dynamodb

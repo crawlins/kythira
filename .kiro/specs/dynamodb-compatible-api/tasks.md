@@ -459,10 +459,40 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 4: streams, TTL and PartiQL
 
-- [ ] 13. TTL
+- [x] 13. TTL
   - `UpdateTimeToLive`, `DescribeTimeToLive`, TTL index, leader-proposed
     conditional delete batches, delay switch
   - _Requirements: 15.1-15.3_
+  - Notes:
+    - The setting is the descriptor's `time_to_live` (catalog format 3,
+      which still reads 2) and a `set_ttl` catalog command. Its refusals
+      are DynamoDB Local's, word for word ("TimeToLive is already
+      enabled", "... already disabled", "... active on a different
+      AttributeName"), checked in Local's order. AWS's one change an hour
+      ("Time to live has been modified multiple times within a fixed
+      interval"), which Local does not keep, is kept under `ttl-delay=aws`.
+      `DescribeTimeToLive` answers `ENABLED` or `DISABLED` at once, as
+      Local does; AWS's `ENABLING` and `DISABLING` are not shown.
+    - An item expires once its TTL attribute, a number of seconds since the
+      epoch, has passed; a value that is not a number, or is more than five
+      years old, never expires, as AWS documents. Expired items stay
+      readable until deleted.
+    - `ttl_sweeper` (`ttl.hpp`) walks each TTL table a slice at a time
+      (1,000 items read, 100 deleted per pass) and deletes with the
+      condition that the attribute still holds the value it read, so a
+      rewritten item is kept. Deletes go through the backend as ordinary
+      item entries, below the throttler (no capacity used, as on AWS), and
+      take LSI and GSI entries with them. The gateway runs a pass a second
+      on the catalog leader (`raft_backend::leads_catalog()`), or on the
+      one node for `local_backend`.
+    - `ttl-delay=aws` (the default) walks a table again at most every 10
+      minutes; `prompt` walks it every pass and lifts the hourly limit.
+    - Deviation: no TTL index. The sweeper pages through the table, so a
+      walk costs the table's size, but nothing new is kept in the item
+      groups or carried across splits. TTL deletes will reach streams with
+      task 16.
+    - Tests: `dynamodb_ttl_test`; `dynamodb_gateway_cluster_test` sweeps
+      on a three-node cluster.
 
 - [ ] 14. PartiQL
   - Parser and compiler to the JSON API's requests; `ExecuteStatement`,

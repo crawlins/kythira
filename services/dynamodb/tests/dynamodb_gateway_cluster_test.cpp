@@ -81,6 +81,13 @@ struct answer {
         const std::string full(t->as_string());
         return full.substr(full.find('#') + 1);
     }
+    [[nodiscard]] auto message() const -> std::string {
+        const auto* m = body.if_contains("message");
+        if (m == nullptr) {
+            m = body.if_contains("Message");
+        }
+        return m == nullptr ? std::string{} : std::string(m->as_string());
+    }
 };
 
 /// Three run_cluster() nodes on threads, stopped when the fixture goes.
@@ -317,6 +324,88 @@ BOOST_AUTO_TEST_CASE(requests_on_every_node_reach_one_table) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     BOOST_TEST(type == "ResourceNotFoundException");
+
+    for (int i = 0; i < k_nodes; ++i) {
+        BOOST_TEST(!c.failures.at(i), "node " << i + 1 << " stopped early");
+    }
+}
+
+// Time to live on the cluster (task 13): the catalog leader's gateway sweeps,
+// and its conditional deletes reach the item group's leader wherever it is.
+BOOST_AUTO_TEST_CASE(expired_items_are_swept_on_the_cluster) {
+    cluster c;
+    const auto created = c.call_until_served(
+        1, "CreateTable",
+        R"({"TableName":"sessions","BillingMode":"PAY_PER_REQUEST",)"
+        R"("AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"}],)"
+        R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"}],)"
+        R"("Tags":[{"Key":"kythira:compat:ttl-delay","Value":"prompt"}]})");
+    BOOST_REQUIRE_MESSAGE(created.status == 200U || created.type() == "ResourceInUseException",
+                          json::serialize(created.body));
+    // Every node comes to see it ACTIVE before writing through it: a node
+    // whose catalog is behind answers ResourceNotFoundException.
+    for (int i = 0; i < k_nodes; ++i) {
+        const auto active_by = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        std::string status;
+        while (status != "ACTIVE" && std::chrono::steady_clock::now() < active_by) {
+            const auto d = c.call_until_served(i, "DescribeTable", R"({"TableName":"sessions"})");
+            if (d.status == 200U) {
+                status = std::string(d.body.at("Table").at("TableStatus").as_string());
+            }
+            if (status != "ACTIVE") {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+        BOOST_REQUIRE_MESSAGE(status == "ACTIVE", "node " << i + 1 << ": " << status);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    answer ttl;
+    while (ttl.status != 200U && std::chrono::steady_clock::now() < deadline) {
+        ttl = c.call_until_served(
+            1, "UpdateTimeToLive",
+            R"({"TableName":"sessions","TimeToLiveSpecification":{"Enabled":true,)"
+            R"("AttributeName":"exp"}})");
+        if (ttl.status != 200U) {
+            // CREATING, or a retry of a change that did commit.
+            if (ttl.message() == "TimeToLive is already enabled") {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    const auto now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+    for (int i = 0; i < k_nodes; ++i) {
+        const auto put = c.call_until_served(i, "PutItem",
+                                             R"({"TableName":"sessions","Item":{"pk":{"S":"s)" +
+                                                 std::to_string(i) + R"("},"exp":{"N":")" +
+                                                 std::to_string(now_s - 60) + R"("}}})");
+        BOOST_REQUIRE_MESSAGE(put.status == 200U, json::serialize(put.body));
+    }
+    const auto keep =
+        c.call_until_served(0, "PutItem",
+                            R"({"TableName":"sessions","Item":{"pk":{"S":"keep"},"exp":{"N":")" +
+                                std::to_string(now_s + 3600) + R"("}}})");
+    BOOST_REQUIRE_MESSAGE(keep.status == 200U, json::serialize(keep.body));
+
+    int count = -1;
+    const auto swept = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (count != 1 && std::chrono::steady_clock::now() < swept) {
+        const auto s = c.call_until_served(
+            2, "Scan", R"({"TableName":"sessions","ConsistentRead":true,"Select":"COUNT"})");
+        if (s.status == 200U) {
+            count = s.body.at("Count").to_number<int>();
+        }
+        if (count != 1) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
+    BOOST_TEST(count == 1);
+    const auto got = c.call_until_served(
+        2, "GetItem",
+        R"({"TableName":"sessions","ConsistentRead":true,"Key":{"pk":{"S":"keep"}}})");
+    BOOST_TEST(got.body.contains("Item"));
 
     for (int i = 0; i < k_nodes; ++i) {
         BOOST_TEST(!c.failures.at(i), "node " << i + 1 << " stopped early");

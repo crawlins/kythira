@@ -664,6 +664,17 @@ public:
         }
     }
 
+    /// Whether this node leads the catalog group, where the gateway runs
+    /// the TTL sweeper (`ttl.hpp`).
+    [[nodiscard]] auto leads_catalog() -> bool {
+        const auto catalog_desc = _host.resolve(std::string(k_catalog_prefix));
+        if (!catalog_desc) {
+            return false;
+        }
+        auto* n = _host.group_node(catalog_desc->_group_id);
+        return n != nullptr && n->is_leader();
+    }
+
     /// One pass of follow-on work, when this node leads the catalog group.
     /// Returns whether it did anything.
     auto settle_once() -> bool {

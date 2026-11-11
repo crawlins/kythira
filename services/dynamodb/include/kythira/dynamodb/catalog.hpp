@@ -92,8 +92,20 @@ enum class table_class : std::uint8_t {
     standard_infrequent_access = 1,
 };
 
-/// What the catalog knows about a table. Later tasks add indexes, streams,
-/// TTL and replicas; each new field gets a new descriptor format version.
+/// A table's time to live (task 13): which attribute holds each item's
+/// expiry, in seconds since the epoch.
+struct time_to_live {
+    bool enabled = false;
+    /// The attribute while enabled; empty while disabled.
+    std::string attribute;
+    /// When `UpdateTimeToLive` last changed it, from the entry; 0 never.
+    std::uint64_t changed_ms = 0;
+
+    friend auto operator==(const time_to_live&, const time_to_live&) -> bool = default;
+};
+
+/// What the catalog knows about a table. Later tasks add streams and
+/// replicas; each new field gets a new descriptor format version.
 struct table_descriptor {
     std::string name;
     std::uint64_t table_id = 0;
@@ -118,6 +130,8 @@ struct table_descriptor {
     std::vector<std::pair<std::string, std::string>> tags;
     /// Bumped by every entry that changes the descriptor.
     std::uint64_t revision = 0;
+    /// Time to live (task 13).
+    time_to_live ttl;
 
     friend auto operator==(const table_descriptor&, const table_descriptor&) -> bool = default;
 };
@@ -145,6 +159,12 @@ struct catalog_command {
         tag_resource = 6,
         /// `UntagResource`: the keys of `table.tags` are removed.
         untag_resource = 7,
+        /// `UpdateTimeToLive` (task 13): `table.ttl` holds the request's
+        /// `enabled` and `attribute`. Refused as AWS refuses it: enabling
+        /// what is enabled, disabling what is disabled, naming another
+        /// attribute while enabled, or a change less than
+        /// `ttl_min_interval_ms` after the last one.
+        set_ttl = 8,
     };
 
     /// Which settings an `update_table` changes.
@@ -178,6 +198,9 @@ struct catalog_command {
     /// now empty on every group.
     std::uint64_t deleted = 0;
     bool done = false;
+    /// `set_ttl`: the shortest time allowed between two changes (AWS: an
+    /// hour); 0 allows any.
+    std::uint64_t ttl_min_interval_ms = 0;
 
     friend auto operator==(const catalog_command&, const catalog_command&) -> bool = default;
 };
@@ -199,11 +222,12 @@ struct catalog_result {
 namespace catalog_detail {
 
 /// 2 added `gsis` (task 11) to the descriptor and to the commands and
-/// results that carry one; version 1 still decodes.
-inline constexpr std::uint8_t k_descriptor_format_version = 2;
+/// results that carry one; 3 added `ttl` after the revision (task 13), and
+/// the `set_ttl` command with its interval. Older versions still decode.
+inline constexpr std::uint8_t k_descriptor_format_version = 3;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 2;
-inline constexpr std::uint8_t k_result_format_version = 2;
+inline constexpr std::uint8_t k_command_format_version = 3;
+inline constexpr std::uint8_t k_result_format_version = 3;
 
 [[nodiscard]] inline auto table_key(std::string_view name) -> std::string {
     return std::string(k_catalog_prefix) + "table/" + std::string(name);
@@ -261,10 +285,13 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
         detail::put_bytes(out, v);
     }
     detail::put_varint(out, d.revision);
+    out.push_back(d.ttl.enabled ? '\1' : '\0');
+    detail::put_bytes(out, d.ttl.attribute);
+    detail::put_varint(out, d.ttl.changed_ms);
 }
 
 /// `version` is the format of the enclosing form (descriptor, command or
-/// result), all of which gained `gsis` at 2.
+/// result), all of which gained `gsis` at 2 and `ttl` at 3.
 [[nodiscard]] inline auto get_descriptor_body(detail::reader& r, std::uint8_t version)
     -> std::optional<table_descriptor> {
     table_descriptor d;
@@ -302,6 +329,17 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     const auto revision = r.varint();
     if (!revision) {
         return std::nullopt;
+    }
+    if (version >= 3) {
+        const auto enabled = get_flag(r);
+        auto attribute = r.bytes();
+        const auto changed = r.varint();
+        if (!enabled || !attribute || !changed) {
+            return std::nullopt;
+        }
+        d.ttl.enabled = *enabled;
+        d.ttl.attribute = std::move(*attribute);
+        d.ttl.changed_ms = *changed;
     }
     d.name = std::move(*name);
     d.table_id = *id;
@@ -387,6 +425,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     detail::put_varint(out, c.now_ms);
     detail::put_varint(out, c.deleted);
     out.push_back(c.done ? '\1' : '\0');
+    detail::put_varint(out, c.ttl_min_interval_ms);
     return out;
 }
 
@@ -405,7 +444,8 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
         return std::nullopt;
     }
     const auto op = static_cast<std::uint8_t>(bytes[1]);
-    if (version == 0 || op < 1 || op > 7) {
+    // set_ttl came in version 3.
+    if (version == 0 || op < 1 || op > (version >= 3 ? 8 : 7)) {
         return std::nullopt;
     }
     detail::reader r(bytes.substr(2));
@@ -418,10 +458,11 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     const auto now = r.varint();
     const auto deleted = r.varint();
     const auto done = catalog_detail::get_flag(r);
+    const auto interval = version >= 3 ? r.varint() : std::optional<std::uint64_t>{0};
     // update_gsis came with the descriptor's GSI list, in version 2.
     const std::uint8_t known_fields = version >= 2 ? 0x3F : 0x1F;
     if (!table || !fields || *fields > known_fields || !from || *from > 3 || !to || *to > 3 ||
-        !now || !deleted || !done || !r.done()) {
+        !now || !deleted || !done || !interval || !r.done()) {
         return std::nullopt;
     }
     c.table = std::move(*table);
@@ -431,6 +472,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     c.now_ms = *now;
     c.deleted = *deleted;
     c.done = *done;
+    c.ttl_min_interval_ms = *interval;
     return c;
 }
 
@@ -550,6 +592,9 @@ public:
             case catalog_command::kind::tag_resource:
             case catalog_command::kind::untag_resource:
                 result = retag(*c, batch);
+                break;
+            case catalog_command::kind::set_ttl:
+                result = set_ttl(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -987,6 +1032,46 @@ private:
         store(batch, *d);
         catalog_result r;
         r.table = std::move(d);
+        return r;
+    }
+
+    /// `UpdateTimeToLive`, with DynamoDB's refusals in its words. The
+    /// checks run in DynamoDB Local's order: the state first, then the
+    /// interval.
+    auto set_ttl(const catalog_command& c, kythira::write_batch& batch) const -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d) {
+            return not_found(c.table.name);
+        }
+        if (d->status == table_status::deleting) {
+            return in_use(*d);
+        }
+        const auto& want = c.table.ttl;
+        if (d->ttl.enabled && want.attribute != d->ttl.attribute) {
+            return invalid("TimeToLive is active on a different AttributeName");
+        }
+        if (d->ttl.enabled == want.enabled) {
+            return invalid(want.enabled ? "TimeToLive is already enabled"
+                                        : "TimeToLive is already disabled");
+        }
+        if (c.ttl_min_interval_ms != 0 && d->ttl.changed_ms != 0 &&
+            c.now_ms < d->ttl.changed_ms + c.ttl_min_interval_ms) {
+            return invalid("Time to live has been modified multiple times within a fixed interval");
+        }
+        d->ttl.enabled = want.enabled;
+        d->ttl.attribute = want.enabled ? want.attribute : std::string{};
+        d->ttl.changed_ms = c.now_ms;
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    static auto invalid(std::string message) -> catalog_result {
+        catalog_result r;
+        r.error_type = dynamodb_error_style().validation_type;
+        r.error_message = std::move(message);
         return r;
     }
 

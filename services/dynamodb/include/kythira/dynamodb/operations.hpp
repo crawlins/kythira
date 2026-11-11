@@ -36,8 +36,8 @@ inline constexpr std::string_view k_dynamodb_error_namespace = "com.amazonaws.dy
 /// the front end), the control plane (`table_api.hpp`) and single-item
 /// API (`item_api.hpp`) of task 7, and the range reads (`query_api.hpp`)
 /// and batches (`batch_api.hpp`) of task 8, and the transactions
-/// (`txn_api.hpp`) of task 10.
-inline constexpr std::array<std::string_view, 20> k_implemented_dynamodb_operations{
+/// (`txn_api.hpp`) of task 10, and time to live (`ttl.hpp`) of task 13.
+inline constexpr std::array<std::string_view, 22> k_implemented_dynamodb_operations{
     "DescribeEndpoints",
     "CreateTable",
     "DescribeTable",
@@ -57,7 +57,9 @@ inline constexpr std::array<std::string_view, 20> k_implemented_dynamodb_operati
     "BatchGetItem",
     "BatchWriteItem",
     "TransactGetItems",
-    "TransactWriteItems"};
+    "TransactWriteItems",
+    "UpdateTimeToLive",
+    "DescribeTimeToLive"};
 
 /// Implemented DynamoDB Streams operations (task 16).
 inline constexpr std::array<std::string_view, 0> k_implemented_streams_operations{};
