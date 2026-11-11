@@ -45,6 +45,7 @@
 #include <raft/memory_kv_engine.hpp>
 #include <raft/persistent_state_machine.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -153,6 +154,14 @@ struct catalog_command {
         update_class = 1U << 2U,
         update_deletion_protection = 1U << 3U,
         update_warm_throughput = 1U << 4U,
+        /// `GlobalSecondaryIndexUpdates`: `table.gsis` is the list the
+        /// table should have. A name the table lacks is created (CREATING,
+        /// with a new key space), a name the command lacks is deleted
+        /// (DELETING, with a delete job for its key space), an index whose
+        /// command copy is ACTIVE while it is CREATING becomes ACTIVE (the
+        /// backfill finished), and a provisioned index takes the command's
+        /// throughput. One index may be created or deleted at a time.
+        update_gsis = 1U << 5U,
     };
 
     kind op = kind::create_table;
@@ -409,8 +418,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     const auto now = r.varint();
     const auto deleted = r.varint();
     const auto done = catalog_detail::get_flag(r);
-    if (!table || !fields || *fields > 0x1F || !from || *from > 3 || !to || *to > 3 || !now ||
-        !deleted || !done || !r.done()) {
+    // update_gsis came with the descriptor's GSI list, in version 2.
+    const std::uint8_t known_fields = version >= 2 ? 0x3F : 0x1F;
+    if (!table || !fields || *fields > known_fields || !from || *from > 3 || !to || *to > 3 ||
+        !now || !deleted || !done || !r.done()) {
         return std::nullopt;
     }
     c.table = std::move(*table);
@@ -798,6 +809,11 @@ private:
             d->warm_write = c.table.warm_write;
             needs_work = true;
         }
+        if ((c.update_fields & catalog_command::update_gsis) != 0) {
+            if (auto refused = update_gsis(c, *d, batch)) {
+                return *refused;
+            }
+        }
         if ((c.update_fields & catalog_command::update_deletion_protection) != 0) {
             // Takes effect at once and needs no background work, so the
             // table stays ACTIVE.
@@ -815,6 +831,70 @@ private:
         catalog_result r;
         r.table = std::move(d);
         return r;
+    }
+
+    /// `update_gsis` (see `catalog_command::update_field`) applied to `d`.
+    /// Returns the refusal, if any; on success `d` holds the new list.
+    auto update_gsis(const catalog_command& c, table_descriptor& d,
+                     kythira::write_batch& batch) const -> std::optional<catalog_result> {
+        const auto named = [](const std::vector<global_index>& list,
+                              const std::string& name) -> const global_index* {
+            const auto it = std::find_if(list.begin(), list.end(),
+                                         [&](const global_index& g) { return g.name == name; });
+            return it == list.end() ? nullptr : &*it;
+        };
+        std::vector<global_index> added;
+        std::vector<std::string> removed;
+        for (const auto& g : c.table.gsis) {
+            if (named(d.gsis, g.name) == nullptr) {
+                added.push_back(g);
+            }
+        }
+        for (const auto& g : d.gsis) {
+            if (named(c.table.gsis, g.name) == nullptr) {
+                removed.push_back(g.name);
+            }
+        }
+        const bool busy = std::any_of(d.gsis.begin(), d.gsis.end(), [](const global_index& g) {
+            return g.status != index_status::active;
+        });
+        if (added.size() + removed.size() > 1 || (busy && added.size() + removed.size() == 1)) {
+            return failure("LimitExceededException",
+                           "Subscriber limit exceeded: Only 1 online index can be created or "
+                           "deleted simultaneously per table");
+        }
+        if (!added.empty() && d.gsis.size() >= k_max_global_indexes) {
+            return failure("LimitExceededException",
+                           "GlobalSecondaryIndex count exceeds the per-table limit");
+        }
+        for (auto& g : d.gsis) {
+            const auto* want = named(c.table.gsis, g.name);
+            if (want == nullptr) {
+                if (g.status == index_status::active) {
+                    g.status = index_status::deleting;
+                    batch.put(kythira::column_family::data, catalog_detail::job_key(g.index_id),
+                              encode_delete_job(delete_job{g.index_id, d.name, g.schema, 0}));
+                }
+                continue;
+            }
+            if (g.status == index_status::creating && want->status == index_status::active) {
+                g.status = index_status::active;
+            }
+            if (g.has_throughput && want->has_throughput) {
+                g.read_capacity = want->read_capacity;
+                g.write_capacity = want->write_capacity;
+            }
+        }
+        if (!added.empty()) {
+            auto g = added.front();
+            const auto id = next_table_id();
+            g.index_id = id;
+            g.status = index_status::creating;
+            batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
+                      catalog_detail::u64_string(id + 1));
+            d.gsis.push_back(std::move(g));
+        }
+        return std::nullopt;
     }
 
     auto delete_table(const catalog_command& c, kythira::write_batch& batch) const
@@ -864,9 +944,18 @@ private:
         catalog_result r;
         if (c.done) {
             batch.erase(kythira::column_family::data, key);
-            const auto d = describe(job->name);
+            auto d = describe(job->name);
             if (d && d->table_id == job->table_id) {
                 batch.erase(kythira::column_family::data, catalog_detail::table_key(job->name));
+            } else if (d) {
+                // A deleted index's key space is empty: the index goes.
+                const auto n = std::erase_if(d->gsis, [&](const global_index& g) {
+                    return g.index_id == job->table_id && g.status == index_status::deleting;
+                });
+                if (n > 0) {
+                    ++d->revision;
+                    store(batch, *d);
+                }
             }
             return r;
         }

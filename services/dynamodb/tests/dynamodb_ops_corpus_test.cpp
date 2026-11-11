@@ -13,11 +13,14 @@
 // and whether it has a cursor, and the ScanAll and ScanSegments steps, which
 // page to the end, by the multiset of items. BatchGetItem responses are
 // compared per table as multisets. A created or described table is
-// compared by its LocalSecondaryIndexes and GlobalSecondaryIndexes, each as
-// a multiset without the ARNs and counts (timestamps and ARNs differ,
-// DynamoDB Local counts index entries at once, and it lists indexes in its
-// own order). A step marked `divergence` is checked against its `kythira`
-// answer when it has one, and otherwise only run.
+// compared (as is an updated one) by its AttributeDefinitions, and its
+// LocalSecondaryIndexes and GlobalSecondaryIndexes, each as a multiset
+// without the ARNs and counts (timestamps and ARNs differ, DynamoDB Local
+// counts index entries at once, and it lists attributes and indexes in its
+// own order). A WaitIndexes step, where the recording waited for DynamoDB
+// Local to finish creating or deleting an index, has nothing to replay:
+// the local backend finishes both before UpdateTable returns. A step marked `divergence` is checked
+// against its `kythira` answer when it has one, and otherwise only run.
 
 #define BOOST_TEST_MODULE dynamodb_ops_corpus_test
 
@@ -117,8 +120,8 @@ auto compare(std::string_view op, const json::object& step, const json::object& 
     }
     const auto& w = want.at("response").as_object();
     const auto& g = got.at("response").as_object();
-    if (op == "CreateTable" || op == "DescribeTable") {
-        const auto* member = op == "CreateTable" ? "TableDescription" : "Table";
+    if (op == "CreateTable" || op == "DescribeTable" || op == "UpdateTable") {
+        const auto* member = op == "DescribeTable" ? "Table" : "TableDescription";
         const auto indexes = [&](const json::object& r, const char* kind) {
             json::array out;
             if (const auto* l = r.at(member).as_object().if_contains(kind)) {
@@ -129,11 +132,27 @@ auto compare(std::string_view op, const json::object& step, const json::object& 
                     // (and Kythira) about every six hours.
                     o.erase("IndexSizeBytes");
                     o.erase("ItemCount");
+                    // DynamoDB Local gives an index UpdateTable created a
+                    // placeholder OnDemandThroughput of -1 units, which
+                    // AWS never shows; Kythira leaves it out.
+                    const auto* odt = o.if_contains("OnDemandThroughput");
+                    if (odt != nullptr &&
+                        json::serialize(*odt) ==
+                            R"({"MaxReadRequestUnits":-1,"MaxWriteRequestUnits":-1})") {
+                        o.erase("OnDemandThroughput");
+                    }
                     out.push_back(std::move(o));
                 }
             }
             return multiset(out);
         };
+        const auto defs = [&](const json::object& r) {
+            const auto* d = r.at(member).as_object().if_contains("AttributeDefinitions");
+            return d == nullptr ? multiset(json::array{}) : multiset(*d);
+        };
+        if (defs(w) != defs(g)) {
+            return "different AttributeDefinitions";
+        }
         if (indexes(w, "LocalSecondaryIndexes") != indexes(g, "LocalSecondaryIndexes")) {
             return "different LocalSecondaryIndexes";
         }
@@ -211,7 +230,11 @@ BOOST_AUTO_TEST_CASE(every_recorded_step_matches_dynamodb_local) {
                 input["ExclusiveStartKey"] = *lek;
             }
             json::object got;
-            if (op == "ScanAll") {
+            if (op == "WaitIndexes") {
+                // The local backend backfills and drops an index before
+                // UpdateTable returns.
+                got = json::object{{"response", json::object{}}};
+            } else if (op == "ScanAll") {
                 got = scan_all(f, input);
             } else if (op == "ScanSegments") {
                 json::array items;

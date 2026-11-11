@@ -198,6 +198,7 @@ all fixed with it:
 | l02 | A table has at most 20 GSIs | Limits |
 | l03 | A GSI is sparse, its keys need not be unique, and it returns only projected attributes (no fetch from the table) | Indexes |
 | l04 | A GSI key value cannot be empty or of another type | Indexes |
+| l05 | An index added by `UpdateTable` (one at a time) covers the items written before it, and a deleted one can no longer be read | Indexes |
 
 ## Checked elsewhere
 

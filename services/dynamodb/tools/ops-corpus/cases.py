@@ -803,6 +803,73 @@ def gsi_create_scenario():
     return {"name": "gsi_create", "tables": [], "setup": [], "steps": steps}
 
 
+def gsi_update_scenario():
+    """UpdateTable's GlobalSecondaryIndexUpdates: an index created on a table
+    with items (backfilled), its checks, and its deletion. WaitIndexes polls
+    until no index is CREATING or DELETING (Kythira's local backend finishes
+    both before UpdateTable returns)."""
+    t = "ops_gu"
+    table = {"TableName": t, "BillingMode": "PAY_PER_REQUEST",
+             "AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"},
+                                      {"AttributeName": "sk", "AttributeType": "N"}],
+             "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"},
+                           {"AttributeName": "sk", "KeyType": "RANGE"}]}
+    setup = []
+    for i in range(6):
+        it = {"pk": {"S": "p%d" % (i % 3)}, "sk": {"N": str(i)}, "v": {"N": str(i * 10)}}
+        if i != 4:
+            it["g"] = {"S": "red" if i % 2 == 0 else "blue"}
+        setup.append(step("PutItem", TableName=t, Item=it))
+    g_def = [{"AttributeName": "g", "AttributeType": "S"}]
+
+    def upd(updates, ad=None, **more):
+        inp = {"TableName": t, "GlobalSecondaryIndexUpdates": updates, **more}
+        if ad is not None:
+            inp["AttributeDefinitions"] = ad
+        return step("UpdateTable", **inp)
+
+    def create(name, pk, sk=None, proj=None):
+        return {"Create": gsi(name, pk, sk, proj)}
+
+    by_g = lambda: q(t, "g = :g", {":g": {"S": "red"}}, IndexName="by_g")  # noqa: E731
+    steps = [
+        upd([create("by_g", "g", "sk", proj={"ProjectionType": "INCLUDE", "NonKeyAttributes": ["v"]})],
+            ad=g_def + [{"AttributeName": "sk", "AttributeType": "N"}]),
+        step("WaitIndexes", TableName=t),
+        step("DescribeTable", TableName=t),
+        by_g(),
+        q(t, "g = :g", {":g": {"S": "blue"}}, IndexName="by_g"),
+        step("ScanAll", TableName=t, IndexName="by_g"),
+        # Checks against an ACTIVE index.
+        upd([create("by_h", "h"), create("by_i", "i")],
+            ad=[{"AttributeName": "h", "AttributeType": "S"}, {"AttributeName": "i", "AttributeType": "S"}]),
+        upd([create("by_g", "g")], ad=g_def),
+        upd([create("by_z", "z")]),
+        upd([create("by_g2", "g")], ad=[{"AttributeName": "g", "AttributeType": "N"}]),
+        upd([{"Delete": {"IndexName": "nope"}}]),
+        upd([{"Delete": {"IndexName": "by_g"}}, {"Delete": {"IndexName": "by_g"}}]),
+        upd([]),
+        upd([{}]),
+        # Writes after the backfill reach the index.
+        step("PutItem", TableName=t, Item={"pk": {"S": "p9"}, "sk": {"N": "9"}, "g": {"S": "red"},
+                                           "v": {"N": "90"}}),
+        step("PutItem", TableName=t, Item={"pk": {"S": "p0"}, "sk": {"N": "0"}, "g": {"S": "blue"}}),
+        step("PutItem", TableName=t, Item={"pk": {"S": "p1"}, "sk": {"N": "1"}, "g": {"N": "1"}}),
+        by_g(),
+        upd([{"Delete": {"IndexName": "by_g"}}]),
+        step("WaitIndexes", TableName=t),
+        step("DescribeTable", TableName=t),
+        by_g(),
+        # A second index on a key the table did not define before.
+        upd([create("by_n", "v", "sk", {"ProjectionType": "KEYS_ONLY"})],
+            ad=[{"AttributeName": "v", "AttributeType": "N"}, {"AttributeName": "sk", "AttributeType": "N"}]),
+        step("WaitIndexes", TableName=t),
+        q(t, "v = :v", {":v": {"N": "30"}}, IndexName="by_n"),
+        step("DescribeTable", TableName=t),
+    ]
+    return {"name": "gsi_update", "tables": [table], "setup": setup, "steps": steps}
+
+
 MISSING_DIVERGENCE = ("missing table: Kythira gives AWS's data-plane wording, DynamoDB Local says "
                       "\"Cannot do operations on a non-existent table\"")
 MISSING = {"error": {"type": "ResourceNotFoundException", "message": "Requested resource not found"}}
@@ -821,7 +888,7 @@ def all_scenarios():
     return mark_divergences([query_scenario(), strings_scenario(), numbers_scenario(),
                              binary_scenario(), scan_scenario(), batch_scenario(),
                              lsi_scenario(), lsi_create_scenario(), transactions_scenario(),
-                             gsi_scenario(), gsi_create_scenario()])
+                             gsi_scenario(), gsi_create_scenario(), gsi_update_scenario()])
 
 
 if __name__ == "__main__":

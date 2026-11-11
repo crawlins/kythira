@@ -124,6 +124,13 @@ struct raft_backend_options {
     std::size_t gsi_batch = 64;
     /// How long a table looked up by id stays cached for the propagator.
     std::chrono::milliseconds table_cache_ttl{1000};
+    /// How long a new GSI waits in CREATING before its backfill starts:
+    /// longer than a write can be in flight, so no write that read the
+    /// table before the index existed can land after the backfill passed
+    /// its item. The default is the call deadline.
+    std::chrono::milliseconds gsi_backfill_delay{15000};
+    /// Items read and marked per backfill round.
+    std::size_t gsi_backfill_batch = 256;
     /// Each transaction's lock TTL and budget (read committed: DynamoDB's
     /// transactions lock every item they touch).
     kythira::txn_options txn{};
@@ -617,6 +624,7 @@ public:
         }
         struct snapshot {
             std::vector<table_descriptor> pending;
+            std::vector<table_descriptor> backfills;
             std::vector<delete_job> jobs;
         };
         const auto s = _host.with_group_state_machine(
@@ -631,6 +639,8 @@ public:
                     if (d && (d->status == table_status::creating ||
                               d->status == table_status::updating)) {
                         out.pending.push_back(*d);
+                    } else if (d && backfilling_index(*d) != nullptr) {
+                        out.backfills.push_back(*d);
                     }
                 }
                 out.jobs = cat->delete_jobs();
@@ -649,6 +659,9 @@ public:
             c.to = table_status::active;
             (void)catalog(c);
             did = true;
+        }
+        for (const auto& d : s->backfills) {
+            did = run_backfill(d) || did;
         }
         for (const auto& job : s->jobs) {
             run_delete_job(job);
@@ -1208,6 +1221,57 @@ private:
         (void)catalog(c);
     }
 
+    /// Backfills `table`'s new index once it has waited out
+    /// `gsi_backfill_delay` (counted from when this node, as catalog
+    /// leader, first saw it): marks every item of the table, group by
+    /// group, for the propagators, then makes the index ACTIVE. Returns
+    /// whether it ran.
+    auto run_backfill(const table_descriptor& table) -> bool {
+        const auto* g = backfilling_index(table);
+        const auto now = std::chrono::steady_clock::now();
+        const auto seen = _backfill_seen.try_emplace(g->index_id, now).first->second;
+        if (now - seen < _options.gsi_backfill_delay) {
+            return false;
+        }
+        const auto all = table_range(table.table_id);
+        kythira::key_range rest = all;
+        for (;;) {
+            std::vector<std::string> keys;
+            read_range(rest, kythira::scan_direction::forward, true,
+                       [&](std::string_view key, const item&) {
+                           keys.emplace_back(key);
+                           return keys.size() < _options.gsi_backfill_batch;
+                       });
+            if (keys.empty()) {
+                break;
+            }
+            // One mark entry per group the keys fall in; a key a split moved
+            // meanwhile is marked again on its own.
+            std::map<std::uint64_t, std::vector<std::string>> by_group;
+            for (const auto& k : keys) {
+                const auto desc = _host.resolve(k);
+                by_group[desc ? static_cast<std::uint64_t>(desc->_group_id) : 0].push_back(k);
+            }
+            for (auto& [group, batch] : by_group) {
+                if (write(backfill_marks(table, batch)).more) {
+                    for (const auto& k : batch) {
+                        (void)write(backfill_marks(table, {k}));
+                    }
+                }
+            }
+            if (keys.size() < _options.gsi_backfill_batch) {
+                break;
+            }
+            rest.start = raft_backend_detail::just_after(keys.back());
+        }
+        const auto current = describe(table.name);
+        if (current && current->table_id == table.table_id) {
+            (void)catalog(activate_index(*current, g->name));
+        }
+        _backfill_seen.erase(g->index_id);
+        return true;
+    }
+
     [[nodiscard]] static auto same_groups(const std::vector<descriptor_type>& a,
                                           const std::vector<descriptor_type>& b) -> bool {
         return std::equal(a.begin(), a.end(), b.begin(), b.end(),
@@ -1288,6 +1352,8 @@ private:
     /// The propagator's place in each item group's pending changes, so a
     /// change that keeps failing does not starve the rest.
     std::map<std::uint64_t, std::string> _gsi_cursor;
+    /// Catalog leader: when each backfilling index was first seen.
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> _backfill_seen;
     std::map<std::uint64_t, std::optional<table_descriptor>> _tables;
     std::chrono::steady_clock::time_point _tables_read{};
     /// Last, so its send threads are joined before anything they use goes.

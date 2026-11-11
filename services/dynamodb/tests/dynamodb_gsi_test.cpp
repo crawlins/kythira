@@ -124,6 +124,8 @@ struct fixture {
     memory_kv_engine engine;
     item_sm sm;
     std::uint64_t index = 0;
+    /// The table as the catalog describes it now.
+    ddb::table_descriptor desc = table();
 
     fixture() { sm.open(engine, kythira::key_range{}); }
 
@@ -140,7 +142,7 @@ struct fixture {
         c.op = ddb::item_command::kind::put;
         c.table_id = k_table;
         c.schema = schema();
-        c.gsis = indexes();
+        c.gsis = ddb::maintained_indexes(desc.gsis);
         c.payload = json_item(it);
         c.expressions = compile("PutItem", "{}");
         return run(c);
@@ -151,7 +153,7 @@ struct fixture {
         c.op = ddb::item_command::kind::delete_;
         c.table_id = k_table;
         c.schema = schema();
-        c.gsis = indexes();
+        c.gsis = ddb::maintained_indexes(desc.gsis);
         c.payload = json_item(key);
         c.expressions = compile("DeleteItem", "{}");
         return run(c);
@@ -184,7 +186,7 @@ struct fixture {
         std::size_t carried = 0;
         while (sm.gsi_pending_count() > 0) {
             for (const auto& w : sm.gsi_pending_batch(16)) {
-                const auto plan = ddb::plan_propagation(table(), w);
+                const auto plan = ddb::plan_propagation(desc, w);
                 for (const auto& c : plan.index_writes) {
                     (void)run(c);
                 }
@@ -496,4 +498,152 @@ BOOST_AUTO_TEST_CASE(older_forms_still_decode) {
     BOOST_TEST((ddb::decode_gsi_pending(pr) == p));
     BOOST_TEST(!ddb::is_gsi_pending_value(std::string(8, '\xD7')));
     BOOST_TEST(!ddb::decode_gsi_pending(pr + 'x').has_value());
+}
+
+BOOST_AUTO_TEST_CASE(marks_backfill_a_new_index) {
+    fixture f;
+    // The table starts with by_g only.
+    f.desc.gsis.pop_back();
+    std::vector<std::string> keys;
+    for (const char* pk : {"a", "b", "c"}) {
+        const auto text = std::string(R"({"pk":{"S":")") + pk +
+                          R"("},"sk":{"N":"1"},"g":{"S":"x"},"h":{"S":"q"}})";
+        (void)f.put(text.c_str());
+        keys.push_back(*ddb::base_item_key(k_table, schema(), json_item(text.c_str())));
+    }
+    (void)f.propagate();
+    const auto h_of = [](const char* pk) {
+        return entry_key(
+            1,
+            (std::string(R"({"pk":{"S":")") + pk + R"("},"sk":{"N":"1"},"h":{"S":"q"}})").c_str());
+    };
+    BOOST_TEST(!f.entry(h_of("a")).has_value());
+
+    // by_h is created; one item has a write in flight (its own record).
+    f.desc.gsis = indexes();
+    f.desc.gsis[1].status = ddb::index_status::creating;
+    (void)f.put(R"({"pk":{"S":"b"},"sk":{"N":"1"},"g":{"S":"y"},"h":{"S":"q"}})");
+    BOOST_TEST(f.sm.gsi_pending_count() == 1U);
+
+    // The marks: one per item without a record, a missing item skipped, a
+    // key outside the group reported.
+    auto marks = ddb::backfill_marks(f.desc, keys);
+    marks.entries.push_back(
+        *ddb::base_item_key(k_table, schema(), json_item(R"({"pk":{"S":"zz"},"sk":{"N":"1"}})")));
+    auto r = f.run(marks);
+    BOOST_TEST(r.deleted == 2U);
+    BOOST_TEST(!r.more);
+    BOOST_TEST(f.sm.gsi_pending_count() == 3U);
+    BOOST_TEST(f.propagate() == 3U);
+    for (const char* pk : {"a", "b", "c"}) {
+        BOOST_TEST(f.entry(h_of(pk)).has_value(), pk);
+    }
+    // by_g still holds b under its new key only.
+    BOOST_TEST(
+        !f.entry(entry_key(0, R"({"pk":{"S":"b"},"sk":{"N":"1"},"g":{"S":"x"}})")).has_value());
+
+    // Marking again (a retried backfill) changes no entry's version.
+    const auto before = f.sm.entry_version(h_of("a"));
+    (void)f.run(ddb::backfill_marks(f.desc, keys));
+    (void)f.propagate();
+    BOOST_TEST(f.sm.entry_version(h_of("a")) == before);
+
+    // A group that does not hold the keys reports them.
+    item_sm other;
+    memory_kv_engine other_engine;
+    other.open(other_engine, ddb::table_range(k_table + 1));
+    auto stray = ddb::backfill_marks(f.desc, keys);
+    stray.target = ddb::table_prefix(k_table + 1);
+    const auto out = other.apply(bytes_of(ddb::encode_item_command(stray)), 1);
+    const auto sr = ddb::decode_item_result(
+        std::string_view(reinterpret_cast<const char*>(out.data()), out.size()));
+    BOOST_REQUIRE(sr.has_value());
+    BOOST_TEST(sr->more);
+    BOOST_TEST(sr->deleted == 0U);
+
+    // Once by_h is being deleted, writes stop maintaining it and the plan
+    // leaves its entries to the delete job.
+    f.desc.gsis[1].status = ddb::index_status::deleting;
+    (void)f.put(R"({"pk":{"S":"a"},"sk":{"N":"1"},"g":{"S":"x"},"h":{"S":"moved"}})");
+    (void)f.propagate();
+    BOOST_TEST(f.entry(h_of("a")).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(the_catalog_creates_activates_and_deletes_one_index_at_a_time) {
+    memory_kv_engine engine;
+    ddb::dynamo_catalog_state_machine<> catalog;
+    catalog.open(engine, ddb::catalog_range());
+    std::uint64_t index = 0;
+    const auto run = [&](const ddb::catalog_command& c) {
+        const auto out = catalog.apply(bytes_of(ddb::encode_catalog_command(c)), ++index);
+        auto r = ddb::decode_catalog_result(
+            std::string_view(reinterpret_cast<const char*>(out.data()), out.size()));
+        BOOST_REQUIRE(r.has_value());
+        return *r;
+    };
+    ddb::catalog_command create;
+    create.op = ddb::catalog_command::kind::create_table;
+    create.table = table();
+    create.table.gsis.pop_back();
+    auto r = run(create);
+    BOOST_REQUIRE(r.ok());
+    const auto id = r.table->table_id;
+    ddb::catalog_command active;
+    active.op = ddb::catalog_command::kind::set_status;
+    active.table.name = "orders";
+    active.table.table_id = id;
+    BOOST_REQUIRE(run(active).ok());
+
+    const auto update = [&](std::vector<ddb::global_index> gsis) {
+        ddb::catalog_command c;
+        c.op = ddb::catalog_command::kind::update_table;
+        c.table = *catalog.describe("orders");
+        c.table.gsis = std::move(gsis);
+        c.update_fields = ddb::catalog_command::update_gsis;
+        return run(c);
+    };
+    // Add by_h: CREATING, with the next key space id; the table stays
+    // ACTIVE.
+    const auto next = catalog.next_table_id();
+    r = update(indexes());
+    BOOST_REQUIRE(r.ok());
+    BOOST_TEST((r.table->status == ddb::table_status::active));
+    BOOST_REQUIRE(r.table->gsis.size() == 2U);
+    BOOST_TEST((r.table->gsis[1].status == ddb::index_status::creating));
+    BOOST_TEST(r.table->gsis[1].index_id == next);
+    BOOST_TEST(catalog.next_table_id() == next + 1);
+    BOOST_TEST(ddb::backfilling_index(*r.table)->name == "by_h");
+
+    // Nothing else may be created or deleted meanwhile.
+    auto third = indexes();
+    third.push_back(third[0]);
+    third.back().name = "by_x";
+    BOOST_TEST(update(third).error_type.ends_with("LimitExceededException"));
+    BOOST_TEST(update({indexes()[1]}).error_type.ends_with("LimitExceededException"));
+
+    // The backfill ends it.
+    r = run(ddb::activate_index(*catalog.describe("orders"), "by_h"));
+    BOOST_REQUIRE(r.ok());
+    BOOST_TEST((r.table->gsis[1].status == ddb::index_status::active));
+    BOOST_TEST(ddb::backfilling_index(*r.table) == nullptr);
+
+    // Two changes in one entry are refused; one delete is DELETING with a
+    // job for its key space, and the index goes when the job is done.
+    BOOST_TEST(update({}).error_type.ends_with("LimitExceededException"));
+    r = update({indexes()[1]});
+    BOOST_REQUIRE(r.ok());
+    BOOST_TEST((r.table->gsis[0].status == ddb::index_status::deleting));
+    const auto jobs = catalog.delete_jobs();
+    BOOST_REQUIRE(jobs.size() == 1U);
+    BOOST_TEST(jobs[0].table_id == r.table->gsis[0].index_id);
+    ddb::catalog_command done;
+    done.op = ddb::catalog_command::kind::job_progress;
+    done.table.table_id = jobs[0].table_id;
+    done.done = true;
+    BOOST_REQUIRE(run(done).ok());
+    const auto after = catalog.describe("orders");
+    BOOST_REQUIRE(after.has_value());
+    BOOST_REQUIRE(after->gsis.size() == 1U);
+    BOOST_TEST(after->gsis[0].name == "by_h");
+    BOOST_TEST(catalog.delete_jobs().empty());
 }

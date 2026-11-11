@@ -152,11 +152,11 @@ inline constexpr std::size_t k_page_bytes = std::size_t{1024} * 1024;
     return nullptr;
 }
 
-/// The GSI named `name`, or null.
+/// The GSI named `name`, or null (also while it is being deleted).
 [[nodiscard]] inline auto find_global_index(const table_descriptor& table, std::string_view name)
     -> const global_index* {
     for (const auto& g : table.gsis) {
-        if (g.name == name) {
+        if (g.name == name && g.status != index_status::deleting) {
             return &g;
         }
     }
@@ -329,6 +329,11 @@ inline void names_in(const expr_node& n, std::set<std::string>& out) {
                                             const table_descriptor& table, const global_index& g,
                                             const expression_set& compiled, bool query)
     -> std::optional<aws_json::error> {
+    if (g.status == index_status::creating) {
+        // AWS's answer; DynamoDB Local fails such a read with an internal
+        // error.
+        return validation_error("Cannot read from backfilling global secondary index: " + g.name);
+    }
     if (api_detail::flag(in, "ConsistentRead")) {
         return validation_error("Consistent reads are not supported on global secondary indexes");
     }

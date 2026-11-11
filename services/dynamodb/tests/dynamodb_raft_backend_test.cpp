@@ -970,3 +970,91 @@ BOOST_AUTO_TEST_CASE(gsi_entries_reach_other_groups_through_a_leader_loss) {
         BOOST_TEST(cluster::await([&] { return c.item_keys(id) == 0U; }), "node " << id);
     }
 }
+
+BOOST_AUTO_TEST_CASE(an_index_added_later_is_backfilled_across_groups_while_writes_race_it) {
+    auto options = test_options();
+    // Long enough to see the index CREATING, short enough for a test.
+    options.gsi_backfill_delay = std::chrono::milliseconds{1500};
+    options.gsi_backfill_batch = 5;
+    cluster c(options);
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    const std::vector<std::string> pks{"p0", "p1", "p2", "p3"};
+    constexpr int k_per = 4;
+    for (const auto& pk : pks) {
+        for (int sk = 0; sk < k_per; ++sk) {
+            put_g(c.node(1), pk, sk, "red", 1);
+        }
+    }
+    split_apart(c, pks);
+
+    const auto created = c.node(2).ok(
+        "UpdateTable",
+        R"({"TableName":"Music","AttributeDefinitions":[{"AttributeName":"g","AttributeType":"S"}],)"
+        R"("GlobalSecondaryIndexUpdates":[{"Create":{"IndexName":"by_g","KeySchema":)"
+        R"([{"AttributeName":"g","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}}]})");
+    const auto& gsis = created.at("TableDescription").as_object().at("GlobalSecondaryIndexes");
+    BOOST_TEST(gsis.as_array()[0].as_object().at("IndexStatus").as_string() == "CREATING");
+
+    // While it is CREATING: no other index change, and no reads of it.
+    const auto busy = c.node(3).call(
+        "UpdateTable", R"({"TableName":"Music","GlobalSecondaryIndexUpdates":[{"Delete":)"
+                       R"({"IndexName":"by_g"}}]})");
+    BOOST_TEST(busy.type() == "ResourceInUseException");
+    const auto early = c.node(3).call(
+        "Query", R"({"TableName":"Music","IndexName":"by_g","KeyConditionExpression":"g = :g",)"
+                 R"("ExpressionAttributeValues":{":g":{"S":"red"}}})");
+    BOOST_TEST(early.message() == "Cannot read from backfilling global secondary index: by_g");
+
+    // Writes race the backfill: half the items move to blue at version 2.
+    for (const auto& pk : pks) {
+        for (int sk = 0; sk < k_per; sk += 2) {
+            put_g(c.node(3), pk, sk, "blue", 2);
+        }
+    }
+    BOOST_TEST_REQUIRE(cluster::await(
+        [&] {
+            const auto d = c.backend(1).describe("Music");
+            return d && !d->gsis.empty() && d->gsis[0].status == ddb::index_status::active;
+        },
+        std::chrono::milliseconds{30000}));
+    std::set<std::string> red;
+    std::set<std::string> blue;
+    for (const auto& pk : pks) {
+        for (int sk = 0; sk < k_per; ++sk) {
+            (sk % 2 == 0 ? blue : red)
+                .insert(pk + "/" + std::to_string(sk) + "=" + std::to_string(sk % 2 == 0 ? 2 : 1));
+        }
+    }
+    for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+        BOOST_TEST(cluster::await([&] {
+                       return index_items(c.node(id), "red") == red &&
+                              index_items(c.node(id), "blue") == blue;
+                   }),
+                   "node " << id);
+    }
+
+    // Deleting it: DELETING, then gone with its key space emptied, while
+    // the table keeps every item.
+    const auto deleted = c.node(1).ok(
+        "UpdateTable", R"({"TableName":"Music","GlobalSecondaryIndexUpdates":[{"Delete":)"
+                       R"({"IndexName":"by_g"}}]})");
+    BOOST_TEST(deleted.at("TableDescription")
+                   .as_object()
+                   .at("GlobalSecondaryIndexes")
+                   .as_array()[0]
+                   .as_object()
+                   .at("IndexStatus")
+                   .as_string() == "DELETING");
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        const auto d = c.backend(2).describe("Music");
+        return d && d->gsis.empty();
+    }));
+    const auto d = c.backend(1).describe("Music");
+    BOOST_REQUIRE(d.has_value());
+    BOOST_TEST(count_all(c.node(2), true) == pks.size() * k_per);
+    const auto gone = c.node(2).call(
+        "Query", R"({"TableName":"Music","IndexName":"by_g","KeyConditionExpression":"g = :g",)"
+                 R"("ExpressionAttributeValues":{":g":{"S":"red"}}})");
+    BOOST_TEST(gone.message() == "The table does not have the specified index: by_g");
+}
