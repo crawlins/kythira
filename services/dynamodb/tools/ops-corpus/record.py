@@ -46,8 +46,10 @@ def call(endpoint, op, body):
 
 
 def error_of(r):
-    return {"error": {"type": r.get("__type", "").split("#")[-1],
-                      "message": r.get("message", r.get("Message"))}}
+    err = {"type": r.get("__type", "").split("#")[-1], "message": r.get("message", r.get("Message"))}
+    if "CancellationReasons" in r:
+        err["reasons"] = r["CancellationReasons"]
+    return {"error": err}
 
 
 def scan_all(endpoint, inp):

@@ -8,7 +8,8 @@
 ///        `multi_raft` groups (`.kiro/specs/dynamodb-compatible-api/` task 7).
 ///
 /// Every node runs a `multi_raft` host whose groups run
-/// `dynamo_group_state_machine`: one catalog group, whose range holds
+/// `dynamo_txn_group_state_machine` (`dynamo_group_state_machine` inside
+/// core's transaction wrapper): one catalog group, whose range holds
 /// `\0meta/dynamodb/`, and item groups over `t/`. `bootstrap_descriptors`
 /// gives the first layout: the catalog group over everything below `t/`, and
 /// one item group over `t/` and above.
@@ -31,6 +32,16 @@
 /// | page | part of a range read inside one group | as for read |
 /// | describe, list | read the catalog | the catalog leader |
 /// | drop | one `drop_table_step` on a named group | that group's leader |
+/// | txn | one transaction envelope on the group owning its keys | that group's leader |
+///
+/// Transactions (task 10) run on core's tier-1 coordinator. Its client here
+/// (`txn_client`) sends each envelope as a txn op, so a prepare reaches its
+/// group's leader by the same hops as a write; envelopes are idempotent by
+/// transaction id, so a retried op is safe. A routing refusal (the keys no
+/// longer share a group) comes back as its own answer, and the coordinator
+/// re-partitions. The host's resolver reaches primaries led elsewhere the
+/// same way. A plain write to an item a transaction holds is refused by the
+/// wrapper and answered as `TransactionConflictException`.
 ///
 /// A consistent read takes a read barrier on the leader (`read_state`), then
 /// reads the leader's committed state. A range read walks the groups its
@@ -59,8 +70,12 @@
 #include <kythira/dynamodb/key_layout.hpp>
 
 #include <raft/composite_node_id.hpp>
+#include <raft/future_default.hpp>
 #include <raft/persistent_state_machine.hpp>
 #include <raft/shard_exceptions.hpp>
+#include <raft/txn_coordinator.hpp>
+#include <raft/txn_envelope.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -69,7 +84,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <functional>
+#include <list>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -97,6 +115,16 @@ struct raft_backend_options {
     std::size_t max_hops = 4;
     /// Items deleted per drop step.
     std::uint32_t drop_step_keys = 1000;
+    /// Each transaction's lock TTL and budget (read committed: DynamoDB's
+    /// transactions lock every item they touch).
+    kythira::txn_options txn{};
+};
+
+/// A transaction op's keys no longer share one group; the coordinator
+/// re-partitions and sends again.
+class txn_stale_route : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
 };
 
 namespace raft_backend_detail {
@@ -110,6 +138,7 @@ enum class op_tag : std::uint8_t {
     describe = 5,
     list = 6,
     drop = 7,
+    txn = 8,
 };
 
 /// The answer tags.
@@ -119,6 +148,8 @@ enum class answer_tag : std::uint8_t {
     not_leader = 1,
     /// Failed; the text says why.
     error = 2,
+    /// A txn op's keys span groups now (a split or merge): re-partition.
+    stale_route = 3,
 };
 
 inline void put_range(std::string& out, const kythira::key_range& r) {
@@ -222,6 +253,9 @@ struct page {
 /// The backend over a `multi_raft` host whose state machine is a
 /// `dynamo_group_state_machine`.
 template<typename Host> class raft_backend {
+    static_assert(kythira::is_transactional_state_machine_v<typename Host::state_machine_type>,
+                  "raft_backend: the host's groups must run dynamo_txn_group_state_machine");
+
 public:
     using host_type = Host;
     using node_id_type = typename Host::node_id_type;
@@ -235,9 +269,21 @@ public:
 
     raft_backend(Host& host, forwarder forward, raft_backend_options options = {},
                  clock_fn clock = local_backend<>::system_clock_ms())
-        : _host(host), _forward(std::move(forward)), _options(options), _clock(std::move(clock)) {}
+        : _host(host),
+          _forward(std::move(forward)),
+          _options(options),
+          _clock(std::move(clock)),
+          _txn(*this) {
+        // The resolver's way to a primary this node does not lead.
+        _host.set_txn_forwarder(
+            [this](const std::vector<std::string>& keys, const std::vector<std::byte>& envelope,
+                   std::chrono::milliseconds) { return send_txn(keys, envelope); });
+    }
 
-    ~raft_backend() { stop(); }
+    ~raft_backend() {
+        _host.set_txn_forwarder({});
+        stop();
+    }
 
     raft_backend(const raft_backend&) = delete;
     auto operator=(const raft_backend&) -> raft_backend& = delete;
@@ -397,6 +443,78 @@ public:
 
     auto now_ms() -> std::uint64_t { return _clock(); }
 
+    auto transact(const std::vector<item_command>& actions) -> txn_report {
+        kythira::transaction_coordinator<txn_client, std::string> coordinator(_txn, _options.txn);
+        std::vector<std::string> keys;
+        keys.reserve(actions.size());
+        coordinator.begin();
+        for (const auto& a : actions) {
+            auto key = base_item_key(a.table_id, a.schema, a.payload);
+            if (!key) {
+                throw std::invalid_argument("raft_backend: a transaction action without a key");
+            }
+            coordinator.put(*key, raft_backend_detail::to_bytes(encode_item_command(a)));
+            keys.push_back(std::move(*key));
+        }
+        const auto out = coordinator.commit();
+        txn_report r;
+        r.results.resize(actions.size());
+        r.conflicts.assign(actions.size(), false);
+        const auto index_of = [&](const std::string& key) -> std::optional<std::size_t> {
+            const auto it = std::find(keys.begin(), keys.end(), key);
+            if (it == keys.end()) {
+                return std::nullopt;
+            }
+            return static_cast<std::size_t>(it - keys.begin());
+        };
+        for (const auto& v : out._validations) {
+            const auto i = index_of(v._key);
+            if (!i || v._detail.empty()) {
+                continue;
+            }
+            auto decoded = decode_item_result(raft_backend_detail::view(v._detail));
+            if (!decoded) {
+                throw std::runtime_error("raft_backend: unreadable validation detail");
+            }
+            r.results[*i] = std::move(*decoded);
+        }
+        switch (out._kind) {
+            case kythira::txn_outcome_kind::committed:
+                for (std::size_t i = 0; i < actions.size(); ++i) {
+                    // A one-phase commit retried after a timeout is answered
+                    // from memory, without the reads: never pass that off as
+                    // items that are not there.
+                    if (actions[i].op == item_command::kind::read_lock && !r.results[i]) {
+                        throw std::runtime_error(
+                            "raft_backend: a transaction read lost its result");
+                    }
+                }
+                return r;
+            case kythira::txn_outcome_kind::unknown:
+                throw std::runtime_error("raft_backend: transaction outcome unknown: " +
+                                         out._detail);
+            case kythira::txn_outcome_kind::aborted:
+                break;
+        }
+        switch (out._reason) {
+            case kythira::txn_abort_reason::validation_failed:
+                r.outcome = txn_report::status::cancelled;
+                return r;
+            case kythira::txn_abort_reason::write_conflict:
+                r.outcome = txn_report::status::cancelled;
+                if (out._conflict_key) {
+                    if (const auto i = index_of(*out._conflict_key)) {
+                        r.conflicts[*i] = true;
+                    }
+                }
+                return r;
+            default:
+                throw std::runtime_error("raft_backend: transaction aborted (" +
+                                         std::to_string(static_cast<int>(out._reason)) + ") " +
+                                         out._detail);
+        }
+    }
+
     // -- Serving ops ----------------------------------------------------------
 
     /// Runs one op on this node and returns its answer. The forward endpoint
@@ -423,6 +541,8 @@ public:
                     return serve_catalog_read(tag, body);
                 case op_tag::drop:
                     return serve_drop(body);
+                case op_tag::txn:
+                    return serve_txn(body);
             }
             return error_answer("unknown op");
         } catch (const kythira::shard_not_leader_exception<group_id_type, node_id_type>& e) {
@@ -483,7 +603,7 @@ public:
         const auto s = _host.with_group_state_machine(
             catalog_desc->_group_id, [](auto& sm, const descriptor_type&) {
                 snapshot out;
-                const auto* cat = sm.catalog();
+                const auto* cat = sm.inner().catalog();
                 if (cat == nullptr) {
                     return out;
                 }
@@ -519,6 +639,116 @@ public:
     }
 
 private:
+    // -- Transactions ---------------------------------------------------------
+
+    /// The coordinator's way to the groups: every envelope is a txn op.
+    class txn_client {
+    public:
+        using group_id_type = typename Host::group_id_type;
+        using send_future = kythira::future_default<std::vector<std::byte>>;
+
+        explicit txn_client(raft_backend& backend) : _backend(backend) {}
+        txn_client(const txn_client&) = delete;
+        auto operator=(const txn_client&) -> txn_client& = delete;
+        txn_client(txn_client&&) = delete;
+        auto operator=(txn_client&&) -> txn_client& = delete;
+
+        ~txn_client() {
+            const std::lock_guard lock(_mu);
+            for (auto& s : _senders) {
+                s.thread.join();
+            }
+        }
+
+        [[nodiscard]] auto resolve(const std::string& key) -> std::optional<group_id_type> {
+            const auto desc = _backend._host.resolve(key);
+            if (!desc) {
+                return std::nullopt;
+            }
+            return desc->_group_id;
+        }
+
+        /// Each send runs on a thread of its own, so the coordinator's
+        /// prepares to several groups are in flight together.
+        [[nodiscard]] auto send(const std::vector<std::string>& keys,
+                                const std::vector<std::byte>& envelope, std::chrono::milliseconds)
+            -> send_future {
+            kythira::promise_default<std::vector<std::byte>> promise;
+            auto result = promise.getFuture();
+            const std::lock_guard lock(_mu);
+            reap();
+            auto& s = _senders.emplace_back();
+            s.done = std::make_shared<std::atomic<bool>>(false);
+            s.thread = std::thread(
+                [this, keys, envelope, promise = std::move(promise), done = s.done]() mutable {
+                    try {
+                        promise.setValue(_backend.send_txn(keys, envelope));
+                    } catch (...) {
+                        promise.setException(std::current_exception());
+                    }
+                    done->store(true);
+                });
+            return result;
+        }
+
+        [[nodiscard]] auto refresh(std::exception_ptr error) -> bool {
+            try {
+                std::rethrow_exception(std::move(error));
+            } catch (const txn_stale_route&) {
+                // This node's routing map catches up as its replicas apply
+                // the split or merge.
+                std::this_thread::sleep_for(_backend._options.retry_backoff);
+                return true;
+            } catch (...) {
+                return false;
+            }
+        }
+
+        /// Transactions here read through `validate` (a `read_lock`), never
+        /// through the coordinator's `get`.
+        [[nodiscard]] auto read(const std::string&, std::chrono::milliseconds)
+            -> kythira::txn_read_result<std::string> {
+            throw std::logic_error("raft_backend: transaction reads go through read_lock");
+        }
+
+        [[nodiscard]] auto now_ms() const -> std::uint64_t { return _backend._host.txn_now_ms(); }
+
+    private:
+        struct sender {
+            std::thread thread;
+            std::shared_ptr<std::atomic<bool>> done;
+        };
+
+        auto reap() -> void {
+            for (auto it = _senders.begin(); it != _senders.end();) {
+                if (it->done->load()) {
+                    it->thread.join();
+                    it = _senders.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        raft_backend& _backend;
+        std::mutex _mu;
+        std::list<sender> _senders;
+    };
+    static_assert(kythira::txn_participant_client<txn_client, std::string>);
+
+    /// Runs one envelope on the group owning `keys` and returns the encoded
+    /// `txn_result`. Throws `txn_stale_route` when the keys span groups now.
+    auto send_txn(const std::vector<std::string>& keys, const std::vector<std::byte>& envelope)
+        -> std::vector<std::byte> {
+        std::string op(1, static_cast<char>(raft_backend_detail::op_tag::txn));
+        detail::put_varint(op, keys.size());
+        for (const auto& k : keys) {
+            detail::put_bytes(op, k);
+        }
+        detail::put_bytes(op, raft_backend_detail::view(envelope));
+        return raft_backend_detail::to_bytes(run(op, std::nullopt));
+    }
+
     // -- Calls ----------------------------------------------------------------
 
     /// Runs `op` here, then wherever the answers point, until it is served.
@@ -549,6 +779,9 @@ private:
                 }
                 if (tag == answer_tag::error) {
                     throw std::runtime_error("raft_backend: " + answer->substr(1));
+                }
+                if (tag == answer_tag::stale_route) {
+                    throw txn_stale_route("raft_backend: the transaction's keys moved");
                 }
                 hint = decode_hint(std::string_view(*answer).substr(1));
             }
@@ -651,9 +884,46 @@ private:
         if (!key) {
             return error_answer("item command without a key");
         }
-        const auto out = await(_host.submit_command(*key, raft_backend_detail::to_bytes(body),
+        try {
+            const auto out = await(_host.submit_command(*key, raft_backend_detail::to_bytes(body),
+                                                        _options.attempt_timeout));
+            return ok_answer(raft_backend_detail::view(out));
+        } catch (const kythira::key_locked_exception<std::string>&) {
+            // Requirement 12.3: a plain write meeting a transaction's lock.
+            item_result r;
+            r.outcome = item_result::status::error;
+            r.error_type = dynamodb_error_style().service_prefix + "TransactionConflictException";
+            r.error_message = "Transaction is ongoing for the item";
+            return ok_answer(encode_item_result(r));
+        }
+    }
+
+    auto serve_txn(std::string_view body) -> std::string {
+        detail::reader in(body);
+        const auto n = in.count();
+        if (!n) {
+            return error_answer("unreadable txn op");
+        }
+        std::vector<std::string> keys;
+        for (std::size_t i = 0; i < *n; ++i) {
+            auto k = in.bytes();
+            if (!k) {
+                return error_answer("unreadable txn op");
+            }
+            keys.push_back(std::move(*k));
+        }
+        auto envelope = in.bytes();
+        if (!envelope || !in.done() || keys.empty()) {
+            return error_answer("unreadable txn op");
+        }
+        try {
+            const auto out = await(_host.submit_txn(keys, raft_backend_detail::to_bytes(*envelope),
                                                     _options.attempt_timeout));
-        return ok_answer(raft_backend_detail::view(out));
+            return ok_answer(raft_backend_detail::view(out));
+        } catch (const kythira::shard_epoch_mismatch_exception<group_id_type, std::string,
+                                                               node_id_type>&) {
+            return std::string(1, static_cast<char>(raft_backend_detail::answer_tag::stale_route));
+        }
     }
 
     auto serve_drop(std::string_view body) -> std::string {
@@ -704,7 +974,7 @@ private:
         const auto r = _host.with_group_state_machine(
             desc->_group_id,
             [&](auto& sm, const descriptor_type& d) -> std::optional<std::optional<item>> {
-                const auto* items = sm.item_group();
+                const auto* items = sm.inner().item_group();
                 if (items == nullptr || !d._range.contains(*key)) {
                     return std::nullopt;
                 }
@@ -741,7 +1011,7 @@ private:
         const std::size_t cap = _options.page_bytes;
         const auto p = _host.with_group_state_machine(
             g, [&](auto& sm, const descriptor_type& d) -> std::optional<raft_backend_detail::page> {
-                const auto* items = sm.item_group();
+                const auto* items = sm.inner().item_group();
                 if (items == nullptr) {
                     return std::nullopt;
                 }
@@ -789,7 +1059,7 @@ private:
         }
         const auto out = _host.with_group_state_machine(
             desc->_group_id, [&](auto& sm, const descriptor_type&) -> std::optional<std::string> {
-                const auto* cat = sm.catalog();
+                const auto* cat = sm.inner().catalog();
                 if (cat == nullptr) {
                     return std::nullopt;
                 }
@@ -892,6 +1162,8 @@ private:
     std::condition_variable _worker_cv;
     bool _stopping = false;
     std::thread _worker;
+    /// Last, so its send threads are joined before anything they use goes.
+    txn_client _txn;
 };
 
 }  // namespace kythira::dynamodb

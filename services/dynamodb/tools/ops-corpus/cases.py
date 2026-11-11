@@ -511,6 +511,104 @@ def lsi_create_scenario():
     return {"name": "lsi_create", "tables": [], "setup": [], "steps": steps}
 
 
+TXN_KEY_DIVERGENCE = ("transaction key type: DynamoDB Local cancels the transaction with a "
+                      "ValidationError reason; Kythira refuses the request as the single-item "
+                      "call does, before anything runs")
+TXN_KEY_UPDATE_DIVERGENCE = ("update of a key attribute in a transaction: DynamoDB Local cancels "
+                             "with a ValidationError reason; Kythira refuses it when the "
+                             "expression compiles, as UpdateItem does")
+
+
+def transactions_scenario():
+    t = "ops_tx"
+    u = "ops_tu"
+    setup = [put(t, {"pk": S("a"), "sk": N(1), "v": N(1)}),
+             put(t, {"pk": S("a"), "sk": N(2), "v": N(2)}),
+             put(t, {"pk": S("s"), "sk": N(1), "w": S("text")}),
+             put(t, {"pk": S("e"), "sk": N(1), "v": N(3)}),
+             put(u, {"id": S("x"), "n": N(10)})]
+    k = lambda pk, sk: {"pk": S(pk), "sk": N(sk)}  # noqa: E731
+    tok = {"TransactItems": [{"Put": {"TableName": u, "Item": {"id": S("tok"), "n": N(1)}}}],
+           "ClientRequestToken": "token-one"}
+    tok_changed = json.loads(json.dumps(tok))
+    tok_changed["TransactItems"][0]["Put"]["Item"]["n"] = N(2)
+    failing = {"TransactItems": [{"ConditionCheck": {"TableName": u, "Key": {"id": S("absent")},
+                                                     "ConditionExpression": "attribute_exists(id)"}}],
+               "ClientRequestToken": "token-two"}
+    steps = [
+        # Every action kind across two tables, all applied.
+        step("TransactWriteItems", TransactItems=[
+            {"Put": {"TableName": t, "Item": {"pk": S("b"), "sk": N(1), "v": N(5)}}},
+            {"Update": {"TableName": t, "Key": k("a", 1), "UpdateExpression": "SET v = v + :one",
+                        "ExpressionAttributeValues": {":one": N(1)}}},
+            {"Delete": {"TableName": t, "Key": k("a", 2)}},
+            {"ConditionCheck": {"TableName": u, "Key": {"id": S("x")}, "ConditionExpression": "n > :z",
+                                "ExpressionAttributeValues": {":z": N(0)}}}]),
+        step("ScanAll", TableName=t),
+        # One failing condition of each kind: nothing applies, and each
+        # action has its reason, with the item where ALL_OLD asked for it.
+        step("TransactWriteItems", TransactItems=[
+            {"Put": {"TableName": t, "Item": {"pk": S("c"), "sk": N(1)}}},
+            {"ConditionCheck": {"TableName": u, "Key": {"id": S("x")}, "ConditionExpression": "n = :nine",
+                                "ExpressionAttributeValues": {":nine": N(9)},
+                                "ReturnValuesOnConditionCheckFailure": "ALL_OLD"}},
+            {"Delete": {"TableName": t, "Key": k("b", 1), "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Put": {"TableName": t, "Item": {"pk": S("a"), "sk": N(1)},
+                     "ConditionExpression": "attribute_not_exists(pk)",
+                     "ReturnValuesOnConditionCheckFailure": "ALL_OLD"}},
+            {"Update": {"TableName": t, "Key": k("e", 1), "UpdateExpression": "SET v = :z",
+                        "ConditionExpression": "v < :z", "ExpressionAttributeValues": {":z": N(0)}}}]),
+        step("ScanAll", TableName=t),
+        # An update that cannot apply to the stored item.
+        step("TransactWriteItems", TransactItems=[
+            {"Update": {"TableName": t, "Key": k("s", 1), "UpdateExpression": "SET w = w + :one",
+                        "ExpressionAttributeValues": {":one": N(1)}}},
+            {"Put": {"TableName": t, "Item": {"pk": S("d"), "sk": N(1)}}}]),
+        step("ScanAll", TableName=t),
+        # Request checks.
+        step("TransactWriteItems", TransactItems=[{"Put": {"TableName": t, "Item": k("a", 1)}},
+                                                  {"Delete": {"TableName": t, "Key": k("a", 1)}}]),
+        step("TransactWriteItems", TransactItems=[{"Put": {"TableName": t, "Item": k("a", 1)},
+                                                   "Delete": {"TableName": t, "Key": k("a", 1)}}]),
+        step("TransactWriteItems", TransactItems=[{}]),
+        step("TransactWriteItems", TransactItems=[{"Put": {"TableName": "ops_missing", "Item": k("a", 1)}}]),
+        step("TransactWriteItems", TransactItems=[{"Put": {"TableName": t, "Item": {"pk": S("q")}}}],
+             divergence=ITEM_DIVERGENCE, kythira=invalid("Missing the key sk in the item")),
+        step("TransactWriteItems", TransactItems=[{"Delete": {"TableName": t, "Key": {"pk": N(1), "sk": N(1)}}}],
+             divergence=TXN_KEY_DIVERGENCE, kythira=KEY_MISMATCH),
+        step("TransactWriteItems", TransactItems=[
+            {"Update": {"TableName": t, "Key": k("a", 1), "UpdateExpression": "SET pk = :o",
+                        "ExpressionAttributeValues": {":o": S("z")}}}],
+             divergence=TXN_KEY_UPDATE_DIVERGENCE,
+             kythira=invalid("Cannot update attribute pk. This attribute is part of the key")),
+        step("TransactWriteItems", TransactItems=[
+            {"Put": {"TableName": t, "Item": k("q", 1), "ConditionExpression": "attribute_not_exists(("}}]),
+        step("TransactWriteItems", TransactItems=[
+            {"Put": {"TableName": t, "Item": k("q", 1), "ExpressionAttributeValues": {":x": N(1)}}}]),
+        # ClientRequestToken: a retry of a committed request answers success
+        # and changes nothing; a changed request with the token is refused;
+        # a cancelled request runs again.
+        step("TransactWriteItems", **tok),
+        step("PutItem", TableName=u, Item={"id": S("tok"), "n": N(7)}),
+        step("TransactWriteItems", **tok),
+        step("GetItem", TableName=u, Key={"id": S("tok")}),
+        step("TransactWriteItems", **tok_changed),
+        step("TransactWriteItems", **failing),
+        step("TransactWriteItems", **failing),
+        # TransactGetItems: found, missing and projected, then the checks.
+        step("TransactGetItems", TransactItems=[
+            {"Get": {"TableName": t, "Key": k("a", 1)}},
+            {"Get": {"TableName": t, "Key": k("zz", 1)}},
+            {"Get": {"TableName": u, "Key": {"id": S("x")}, "ProjectionExpression": "#n",
+                     "ExpressionAttributeNames": {"#n": "n"}}}]),
+        step("TransactGetItems", TransactItems=[{"Get": {"TableName": t, "Key": k("a", 1)}},
+                                                {"Get": {"TableName": t, "Key": k("a", 1)}}]),
+        step("TransactGetItems", TransactItems=[{"Get": {"TableName": "ops_missing", "Key": k("a", 1)}}]),
+    ]
+    return {"name": "transactions", "tables": [table(t, "pk", "S", "sk", "N"), table(u, "id", "S")],
+            "setup": setup, "steps": steps}
+
+
 MISSING_DIVERGENCE = ("missing table: Kythira gives AWS's data-plane wording, DynamoDB Local says "
                       "\"Cannot do operations on a non-existent table\"")
 MISSING = {"error": {"type": "ResourceNotFoundException", "message": "Requested resource not found"}}
@@ -528,7 +626,7 @@ def mark_divergences(scenarios):
 def all_scenarios():
     return mark_divergences([query_scenario(), strings_scenario(), numbers_scenario(),
                              binary_scenario(), scan_scenario(), batch_scenario(),
-                             lsi_scenario(), lsi_create_scenario()])
+                             lsi_scenario(), lsi_create_scenario(), transactions_scenario()])
 
 
 if __name__ == "__main__":

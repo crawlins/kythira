@@ -87,7 +87,7 @@ template<typename Storage> struct host_types {
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-    using state_machine_type = ddb::dynamo_group_state_machine<typename Storage::engine_type>;
+    using state_machine_type = ddb::dynamo_txn_group_state_machine<typename Storage::engine_type>;
 
     using configuration_type = kythira::raft_configuration;
 

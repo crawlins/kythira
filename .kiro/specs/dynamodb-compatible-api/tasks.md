@@ -246,13 +246,58 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       other keys; a cheaper walk would need a per-index prefix, which
       would separate entries from their collection.
 
-- [ ] 10. Transactions
+- [x] 10. Transactions
   - `validate` hook in `transactional_state_machine` (multi-raft-transactions
     change, reviewed with that spec's owner)
   - `TransactWriteItems`, `ConditionCheck`, cancellation reasons, token
     idempotency; lock-based `TransactGetItems`
   - Chaos: leader killed mid-transaction
   - _Requirements: 12.1-12.5_
+  - Done (November 11, 2026):
+    - Core: an inner state machine may offer `validate(key, write)`
+      (`txn_validating_state_machine`). `prepare` and `one_phase` call it
+      for every write after the lock checks, so a condition is judged
+      under the lock against the committed item. A refusal installs
+      nothing and answers `validation_failed`; a verdict with detail
+      answers `validated`. The coordinator aborts with
+      `txn_abort_reason::validation_failed` and returns every shard's
+      verdicts in `txn_outcome::_validations`. Inner machines without the
+      hook behave as before.
+    - Every group runs `dynamo_txn_group_state_machine`, the item and
+      catalog machines under the wrapper, partitioned by base key. The
+      item machine stages a write into an overlay and commits it in one
+      batch, so `apply()`, `commit` and a plain write share one path. A
+      `ConditionCheck` is a write that writes nothing, and a
+      `TransactGetItems` read is a `read_lock` write whose verdict carries
+      the item, so reads see no half-applied transaction.
+    - `txn_api.hpp`: `TransactWriteItems` checks the request as DynamoDB
+      Local does (at most 100 actions and 4 MB, one item once), authorizes
+      each action, and answers `TransactionCanceledException` with one
+      reason per action in Local's wording, the item where `ALL_OLD`
+      asked for it. A plain write to a locked item answers
+      `TransactionConflictException`. `ClientRequestToken` is a record in
+      reserved table 0 keyed by a hash of the caller and the token,
+      written by the transaction itself: a retry within 10 minutes answers
+      success and changes nothing, a changed request is
+      `IdempotentParameterMismatchException`, and a cancelled one runs
+      again. Capacity is twice the single-item figures.
+    - The Raft backend runs transactions through core's coordinator from
+      the node that took the request, forwarding to each group's leader
+      and retrying a stale route. Tests: `dynamodb_txn_test`; the
+      corpus's transactions scenario (9 scenarios, 243 steps, 28 marked
+      divergences; of the scenario's five, three are the known message
+      kinds and two are DynamoDB Local cancelling with a `ValidationError`
+      reason where Kythira answers `ValidationException`, for a key of the
+      wrong type and for an update of a key attribute);
+      in `dynamodb_raft_backend_test`, transactions across groups, a lock
+      refusing plain writes, a leader lost before a transaction, and the
+      chaos case: leaders killed and revived while transactions run back
+      to back, after which both items always agree.
+    - Left as documented limits: two writes to one item collection that
+      each fit can together pass 10 GB; expired token records stay until
+      TTL (task 13) removes them; no `ItemCollectionMetrics` on
+      transactions. The chaos case runs in process; the Docker harness
+      comes with the daemon's chaos suite.
 
 - [ ] 11. Global secondary indexes
   - GSI key spaces, leader-side propagator from the change log (needs task

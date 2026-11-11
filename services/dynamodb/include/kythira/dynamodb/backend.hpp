@@ -22,6 +22,13 @@
 /// - `describe` and `list_tables` read the catalog.
 /// - `now_ms()` is the clock that stamps entries. Replicas never read their
 ///   own clocks.
+/// - `transact(actions)` runs one transaction (task 10): each action is an
+///   item command on its own item (`put`, `update`, `delete_`,
+///   `condition_check` or `read_lock`), every item is locked, every action
+///   is judged against its committed item while locked, and either all
+///   apply or none do. It returns each action's verdict; an outcome it
+///   could not learn (a timeout after the commit point was proposed) is an
+///   exception, so the client sees a 500 and retries, as against AWS.
 ///
 /// `local_backend` applies the commands directly to the two state machines
 /// on one engine, with no Raft. Handler tests use it, and so does a
@@ -55,12 +62,30 @@ namespace kythira::dynamodb {
 /// Gets each item of a range read with its base key; returns false to stop.
 using range_visitor = std::function<bool(std::string_view base_key, const item&)>;
 
+/// How a transaction a backend ran ended (`transact`).
+struct txn_report {
+    enum class status : std::uint8_t {
+        committed,
+        /// Nothing applied: an action was refused (`results`) or its item was
+        /// held by another transaction (`conflicts`).
+        cancelled,
+    };
+    status outcome = status::committed;
+    /// One per action, in the request's order: the result the action's
+    /// group reported for it, which is a refusal's result
+    /// (`condition_failed` or `error`), or a `read_lock`'s item in
+    /// `attributes`; empty for an action that passed with nothing to say.
+    std::vector<std::optional<item_result>> results;
+    /// One per action: another transaction held the action's item.
+    std::vector<bool> conflicts;
+};
+
 template<typename B>
 concept dynamo_backend =
     requires(B& b, const catalog_command& cc, const item_command& ic, std::string_view name,
              std::size_t limit, std::uint64_t table_id, const key_schema& schema, const item& key,
              bool consistent, const kythira::key_range& range, kythira::scan_direction direction,
-             const range_visitor& visit) {
+             const range_visitor& visit, const std::vector<item_command>& actions) {
         { b.catalog(cc) } -> std::same_as<catalog_result>;
         { b.write(ic) } -> std::same_as<item_result>;
         { b.read(table_id, schema, key, consistent) } -> std::same_as<std::optional<item>>;
@@ -68,6 +93,7 @@ concept dynamo_backend =
         { b.describe(name) } -> std::same_as<std::optional<table_descriptor>>;
         { b.list_tables(name, limit) } -> std::same_as<std::vector<std::string>>;
         { b.now_ms() } -> std::same_as<std::uint64_t>;
+        { b.transact(actions) } -> std::same_as<txn_report>;
     };
 
 /// Both state machines on one engine, applied in-process.
@@ -137,6 +163,41 @@ public:
     }
 
     auto now_ms() -> std::uint64_t { return _clock(); }
+
+    /// Under the one lock: every action is judged (as each group's
+    /// `validate` judges it under the transaction's locks), and if all pass,
+    /// all apply.
+    auto transact(const std::vector<item_command>& actions) -> txn_report {
+        const std::lock_guard lock(_mu);
+        txn_report r;
+        r.results.resize(actions.size());
+        r.conflicts.assign(actions.size(), false);
+        bool refused = false;
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            const auto& a = actions[i];
+            const auto key = base_item_key(a.table_id, a.schema, a.payload);
+            if (!key) {
+                throw std::invalid_argument("local_backend: a transaction action without a key");
+            }
+            const auto v = _items.validate(*key, to_bytes(encode_item_command(a)));
+            if (!v._detail.empty()) {
+                auto decoded = decode_item_result(view(v._detail));
+                if (!decoded) {
+                    throw std::logic_error("local_backend: unreadable validation detail");
+                }
+                r.results[i] = std::move(*decoded);
+            }
+            refused = refused || !v._ok;
+        }
+        if (refused) {
+            r.outcome = txn_report::status::cancelled;
+            return r;
+        }
+        for (const auto& a : actions) {
+            (void)apply_item_locked(a);
+        }
+        return r;
+    }
 
     /// The item collection limit of tables with LSIs (tests lower it).
     auto set_collection_limit(std::uint64_t bytes) -> void {

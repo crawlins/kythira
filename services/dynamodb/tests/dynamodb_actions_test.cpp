@@ -54,7 +54,10 @@ BOOST_AUTO_TEST_CASE(every_implemented_operation_has_an_action_or_a_mapping) {
     const auto a = actions();
     for (const auto op : ddb::k_implemented_dynamodb_operations) {
         BOOST_TEST_INFO(op);
-        BOOST_TEST(a.contains(std::string(op)));
+        const bool mapped =
+            std::any_of(ddb::k_operation_actions.begin(), ddb::k_operation_actions.end(),
+                        [&](const auto& o) { return o.operation == op; });
+        BOOST_TEST((a.contains(std::string(op)) || mapped));
     }
     // Operations without a same-named action map to element actions.
     const auto* tw =

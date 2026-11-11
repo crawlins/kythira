@@ -473,20 +473,33 @@ public:
         if (index <= _applied) {
             return {};
         }
+        kythira::write_batch batch;
+        auto out = stage(entry, batch);
+        commit_staged(batch, index);
+        return out;
+    }
+
+    // -- persistent_staged_state_machine --------------------------------------
+    //
+    // The catalog takes part in no transaction, but its group runs the same
+    // `transactional_state_machine` wrapper as the item groups (a host runs
+    // one state machine type), which drives it through these.
+
+    /// Stages one command's effects into `batch` and returns its result.
+    auto stage(const std::vector<std::byte>& entry, kythira::write_batch& batch)
+        -> std::vector<std::byte> {
         bool newer = false;
         const auto c = decode_catalog_command(
             std::string_view(reinterpret_cast<const char*>(entry.data()), entry.size()),  // NOLINT
             newer);
         if (!c) {
             if (newer) {
-                throw std::runtime_error("dynamo_catalog_state_machine: entry " +
-                                         std::to_string(index) +
-                                         " uses a newer catalog format; upgrade this node");
+                throw std::runtime_error(
+                    "dynamo_catalog_state_machine: an entry uses a newer catalog format; upgrade "
+                    "this node");
             }
-            throw std::invalid_argument("dynamo_catalog_state_machine: malformed entry " +
-                                        std::to_string(index));
+            throw std::invalid_argument("dynamo_catalog_state_machine: malformed entry");
         }
-        kythira::write_batch batch;
         catalog_result result;
         switch (c->op) {
             case catalog_command::kind::create_table:
@@ -509,16 +522,28 @@ public:
                 result = retag(*c, batch);
                 break;
         }
+        const auto out = encode_catalog_result(result);
+        std::vector<std::byte> bytes(out.size());
+        std::memcpy(bytes.data(), out.data(), out.size());
+        return bytes;
+    }
+
+    /// Writes `batch` with the applied index `index`.
+    auto commit_staged(kythira::write_batch& batch, LogIndex index) -> void {
         batch.put(kythira::column_family::meta, applied_key(),
                   catalog_detail::u64_string(static_cast<std::uint64_t>(index)));
         const auto seq = engine().write(batch);
         _applied = index;
         _ring.emplace_back(index, seq);
         trim_ring();
-        const auto out = encode_catalog_result(result);
-        std::vector<std::byte> bytes(out.size());
-        std::memcpy(bytes.data(), out.data(), out.size());
-        return bytes;
+    }
+
+    /// Nothing is kept between `stage` and `commit_staged`.
+    auto discard_staged() -> void {}
+
+    [[nodiscard]] auto key_prefix() const -> const std::string& {
+        static const std::string none;
+        return none;
     }
 
     [[nodiscard]] auto applied_index() const -> LogIndex { return _applied; }

@@ -75,8 +75,13 @@ auto multiset(const json::value& items) -> std::vector<std::string> {
     return out;
 }
 
+/// A refusal's type and message, and a cancelled transaction's reasons.
 auto error_of(const reply& r) -> json::object {
-    return json::object{{"error", json::object{{"type", r.type()}, {"message", r.message()}}}};
+    json::object e{{"type", r.type()}, {"message", r.message()}};
+    if (const auto* reasons = r.body.if_contains("CancellationReasons")) {
+        e["reasons"] = *reasons;
+    }
+    return json::object{{"error", std::move(e)}};
 }
 
 /// Scan with `input` to the end.

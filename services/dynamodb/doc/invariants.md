@@ -197,6 +197,7 @@ all fixed with it:
 | A strongly consistent read reflects every write that succeeded before it, from any node | Reads | `dynamodb_raft_backend_test` |
 | A successful write survives the loss of a group's leader | Reads | `dynamodb_raft_backend_test` |
 | Error types, messages and status codes match DynamoDB Local's for the recorded operations | — | `dynamodb_ops_corpus_test` |
+| A transaction has at most 100 items and 4 MB, never names one item twice, and is all or nothing, across groups and through leader loss | Limits | `dynamodb_txn_test`, `dynamodb_ops_corpus_test`, `dynamodb_raft_backend_test` |
 
 ## Deferred
 
@@ -205,7 +206,6 @@ with the task that builds it.
 
 | Invariant | Source | Task |
 |---|---|---|
-| A transaction has at most 100 items and 4 MB, never names one item twice, and is all or nothing | Limits | 10 |
 | A global secondary index is read eventually: `ConsistentRead` true on one is a `ValidationException` | Indexes | 11 |
 | A table has at most 20 GSIs | Limits | 11 |
 | Reads and writes are charged in 4 KB and 1 KB units, and over-capacity requests are throttled | Limits | 12 |
