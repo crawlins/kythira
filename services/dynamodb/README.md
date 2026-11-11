@@ -78,6 +78,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/kinesis_destination.hpp` | Kinesis streaming destinations: the four actions, the publisher that puts change records to AWS or Kythira Kinesis in AWS's record format, and its SigV4 HTTP sink | 17 |
 | `include/kythira/dynamodb/backup.hpp` | On-demand backups: the five actions, the record and data objects on any object store (or a directory, or memory), and the worker that takes backups and loads restores | 18 |
 | `tests/dynamodb_backup_test.cpp` | Backup and restore with indexes and overrides, refusals, listing, deletes, a damaged object, and the stores | 18 |
+| `include/kythira/dynamodb/pitr.hpp` | Point-in-time recovery: the three actions, the change-record archive and bases in the backup store, pruning to the recovery period, and point-in-time restores | 19 |
+| `tests/dynamodb_pitr_test.cpp` | Restores to chosen times across puts, updates and deletes, the restorable window, re-enables, pruning, refusals, and the stored forms | 19 |
 | `tests/dynamodb_kinesis_destination_test.cpp` | Destination lifecycle and refusals, record format, per-item order, partial failures, resuming from stored cursors, and the signed calls | 17 |
 
 The rest follows the plan in the spec's `tasks.md`.

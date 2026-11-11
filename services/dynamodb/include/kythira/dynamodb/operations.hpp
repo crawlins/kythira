@@ -38,9 +38,9 @@ inline constexpr std::string_view k_dynamodb_error_namespace = "com.amazonaws.dy
 /// and batches (`batch_api.hpp`) of task 8, and the transactions
 /// (`txn_api.hpp`) of task 10, time to live (`ttl.hpp`) of task 13, PartiQL
 /// (`partiql.hpp`) of task 14, and Kinesis streaming destinations
-/// (`kinesis_destination.hpp`) of task 17, and backups (`backup.hpp`) of
-/// task 18.
-inline constexpr std::array<std::string_view, 34> k_implemented_dynamodb_operations{
+/// (`kinesis_destination.hpp`) of task 17, backups (`backup.hpp`) of task
+/// 18, and point-in-time recovery (`pitr.hpp`) of task 19.
+inline constexpr std::array<std::string_view, 37> k_implemented_dynamodb_operations{
     "DescribeEndpoints",
     "CreateTable",
     "DescribeTable",
@@ -74,7 +74,10 @@ inline constexpr std::array<std::string_view, 34> k_implemented_dynamodb_operati
     "DescribeBackup",
     "ListBackups",
     "DeleteBackup",
-    "RestoreTableFromBackup"};
+    "RestoreTableFromBackup",
+    "UpdateContinuousBackups",
+    "DescribeContinuousBackups",
+    "RestoreTableToPointInTime"};
 
 /// Implemented DynamoDB Streams operations (task 16).
 inline constexpr std::array<std::string_view, 4> k_implemented_streams_operations{

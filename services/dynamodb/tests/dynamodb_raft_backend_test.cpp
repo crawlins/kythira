@@ -18,6 +18,7 @@
 
 #include <kythira/dynamodb/backup.hpp>
 #include <kythira/dynamodb/group_state_machine.hpp>
+#include <kythira/dynamodb/pitr.hpp>
 #include <kythira/dynamodb/raft_backend.hpp>
 
 #include <raft/console_logger.hpp>
@@ -38,6 +39,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -1420,4 +1422,85 @@ BOOST_AUTO_TEST_CASE(a_backup_spans_a_split_and_restores_on_another_node) {
                    .ok("GetItem", R"({"TableName":"Copy","Key":{"pk":{"S":"new"},"sk":{"N":"1"}},)"
                                   R"("ConsistentRead":true})")
                    .contains("Item"));
+}
+
+BOOST_AUTO_TEST_CASE(point_in_time_restores_follow_a_split) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    const auto d = c.backend(1).describe("Music");
+    BOOST_TEST_REQUIRE(d.has_value());
+    auto store = std::make_shared<ddb::memory_backup_store>();
+    ddb::pitr_api<backend_type> api1{c.backend(1), store};
+    ddb::pitr_api<backend_type> api3{c.backend(3), store};
+    api1.register_with(*c.node(1).fe);
+    api3.register_with(*c.node(3).fe);
+    ddb::pitr_worker_options options;
+    options.latest_lag_ms = 0;
+    ddb::pitr_worker<backend_type> worker{c.backend(2), store, options};
+    c.node(1).ok("UpdateContinuousBackups",
+                 R"({"TableName":"Music","PointInTimeRecoverySpecification":)"
+                 R"({"PointInTimeRecoveryEnabled":true}})");
+    const auto put_v = [&](const std::string& pk, const std::string& v) {
+        c.node(1).ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":")" + pk +
+                                    R"("},"sk":{"N":"1"},"v":{"S":")" + v + R"("}}})");
+    };
+    const auto latest = [&] {
+        return c.backend(1).describe("Music").value_or(ddb::table_descriptor{}).pitr.latest_ms;
+    };
+    // Waits for a pass that caught up after `since`.
+    const auto archived_past = [&](std::uint64_t since) {
+        return cluster::await([&] {
+            (void)worker.pass();
+            return latest() > since;
+        });
+    };
+    BOOST_TEST_REQUIRE(archived_past(0));
+    for (const char* pk : {"a", "m", "z"}) {
+        put_v(pk, "1");
+    }
+    // Every item written again on each side of a split: each one's
+    // records sit partly in the parent stream and partly in a child.
+    const auto cut = ddb::partition_prefix(d->table_id, ddb::attribute_value::string("m"));
+    const auto l = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(l != 0U);
+    auto f = c.host(l).split_shard(k_item_group, {cut}, std::chrono::milliseconds{5000});
+    BOOST_TEST_REQUIRE(f.wait(std::chrono::milliseconds{8000}));
+    std::ignore = std::move(f).get();
+    for (const char* pk : {"a", "m", "z"}) {
+        put_v(pk, "2");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    const auto mid = c.backend(1).now_ms();
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    put_v("a", "3");
+    c.node(1).ok("DeleteItem", R"({"TableName":"Music","Key":{"pk":{"S":"z"},"sk":{"N":"1"}}})");
+    const auto end = c.backend(1).now_ms();
+    BOOST_TEST_REQUIRE(archived_past(end));
+
+    const auto restore = [&](const std::string& target, const std::string& when) {
+        const auto r = c.node(3).call(
+            "RestoreTableToPointInTime",
+            R"({"SourceTableName":"Music","TargetTableName":")" + target + R"(",)" + when + "}");
+        BOOST_TEST_REQUIRE(r.status == 200U, r.type() << ": " << r.message());
+        BOOST_TEST_REQUIRE(cluster::await([&] {
+            (void)worker.pass();
+            return status_of(c.node(1), target) == "ACTIVE";
+        }));
+        std::map<std::string, std::string> out;
+        const auto scanned =
+            c.node(2).ok("Scan", R"({"TableName":")" + target + R"(","ConsistentRead":true})");
+        for (const auto& item : scanned.at("Items").as_array()) {
+            const auto& o = item.as_object();
+            out[std::string(o.at("pk").as_object().at("S").as_string())] =
+                std::string(o.at("v").as_object().at("S").as_string());
+        }
+        return out;
+    };
+    using items = std::map<std::string, std::string>;
+    BOOST_TEST((restore("AtMid", R"("RestoreDateTime":)" +
+                                     std::to_string(static_cast<double>(mid) / 1000.0)) ==
+                items{{"a", "2"}, {"m", "2"}, {"z", "2"}}));
+    BOOST_TEST(
+        (restore("AtEnd", R"("UseLatestRestorableTime":true)") == items{{"a", "3"}, {"m", "2"}}));
 }

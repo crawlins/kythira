@@ -173,17 +173,47 @@ struct kinesis_destination {
         -> bool = default;
 };
 
-/// Where a restored table came from (task 18): `RestoreSummary`.
+/// Where a restored table came from (tasks 18 and 19): `RestoreSummary`.
 struct table_restore {
-    /// Empty for a table that was not restored.
+    /// The backup restored from; empty for a point-in-time restore.
     std::string source_backup_arn;
+    /// Empty for a table that was not restored.
     std::string source_table_arn;
     /// When the restore was asked for (ms since the epoch, from the entry).
     std::uint64_t restore_ms = 0;
     /// The items are still being loaded: the table stays CREATING.
     bool in_progress = false;
+    /// A point-in-time restore (task 19): the source table's id and the
+    /// time restored to (ms since the epoch); both 0 for a backup's.
+    std::uint64_t source_table_id = 0;
+    std::uint64_t point_ms = 0;
+
+    [[nodiscard]] auto restored() const -> bool { return !source_table_arn.empty(); }
 
     friend auto operator==(const table_restore&, const table_restore&) -> bool = default;
+};
+
+/// Point-in-time recovery (task 19): `UpdateContinuousBackups`, and the
+/// archiver's progress. Each enable starts a new archive under
+/// `pitr/<table id>/<enabled_ms>/` in the backup store.
+struct continuous_backups {
+    bool enabled = false;
+    /// `RecoveryPeriodInDays`, 1 to 35.
+    std::uint32_t recovery_days = 35;
+    /// When it was enabled (ms since the epoch, from the entry); names the
+    /// archive.
+    std::uint64_t enabled_ms = 0;
+    /// The end of the oldest base the archive keeps (0 until the first is
+    /// taken): no restore can go earlier.
+    std::uint64_t earliest_ms = 0;
+    /// The archive holds every change record written up to here.
+    std::uint64_t latest_ms = 0;
+    /// The number the next archive object takes.
+    std::uint64_t next_object = 0;
+    /// The archiver's position in each store stream of the change log.
+    std::vector<std::pair<std::string, std::uint64_t>> cursors;
+
+    friend auto operator==(const continuous_backups&, const continuous_backups&) -> bool = default;
 };
 
 /// What the catalog knows about a table. Later tasks add replicas; each
@@ -219,8 +249,11 @@ struct table_descriptor {
     std::vector<table_stream> streams;
     /// Kinesis streaming destinations (task 17), at most one streaming.
     std::vector<kinesis_destination> destinations;
-    /// Set on a table restored from a backup (task 18).
+    /// Set on a table restored from a backup or a point in time (tasks 18
+    /// and 19).
     table_restore restore;
+    /// Point-in-time recovery (task 19).
+    continuous_backups pitr;
 
     /// The enabled stream, or null.
     [[nodiscard]] auto enabled_stream() const -> const table_stream* {
@@ -229,10 +262,10 @@ struct table_descriptor {
 
     /// Whether writes to the table append change records (task 15,
     /// `change_log.hpp`): while a DynamoDB stream is enabled or a Kinesis
-    /// destination is streaming (task 17). Point-in-time recovery (19) and
-    /// global tables (22) will turn it on too.
+    /// destination is streaming (task 17), or point-in-time recovery is
+    /// enabled (task 19). Global tables (22) will turn it on too.
     [[nodiscard]] auto logs_changes() const -> bool {
-        return enabled_stream() != nullptr || streaming_destination() != nullptr;
+        return enabled_stream() != nullptr || streaming_destination() != nullptr || pitr.enabled;
     }
 
     /// The Kinesis destination being streamed to, or null.
@@ -294,6 +327,16 @@ struct catalog_command {
         /// A restore (task 18) finished loading `table` (by name and
         /// `table_id`): the table may become ACTIVE.
         restore_done = 11,
+        /// `UpdateContinuousBackups` (task 19): `table.pitr` holds the
+        /// request's `enabled` and `recovery_days`. An enable while enabled
+        /// changes only the period; a fresh enable starts a new archive.
+        set_pitr = 12,
+        /// The archiver's progress (task 19): `table.pitr` with the
+        /// `enabled_ms` of the archive it wrote, its cursors (never moved
+        /// back), `next_object`, `latest_ms` and `earliest_ms` (each only
+        /// moving forward). Progress for an archive since replaced is
+        /// ignored.
+        pitr_progress = 13,
     };
 
     /// Which settings an `update_table` changes.
@@ -364,14 +407,19 @@ namespace catalog_detail {
 /// commands (task 17); a form without destinations keeps its older
 /// version the same way. 6 added `restore` after `destinations`, with the
 /// `restore_done` command (task 18), likewise only for a restored table.
-inline constexpr std::uint8_t k_descriptor_format_version = 6;
+/// 7 added `pitr` after `restore`, with `set_pitr` and `pitr_progress`
+/// (task 19), only for a table that ever had point-in-time recovery.
+inline constexpr std::uint8_t k_descriptor_format_version = 7;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 6;
-inline constexpr std::uint8_t k_result_format_version = 6;
+inline constexpr std::uint8_t k_command_format_version = 7;
+inline constexpr std::uint8_t k_result_format_version = 7;
 
 /// The version a form carrying `d` is written as.
 [[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
-    if (!d.restore.source_backup_arn.empty()) {
+    if (d.pitr != continuous_backups{}) {
+        return 7;
+    }
+    if (d.restore.restored()) {
         return 6;
     }
     if (!d.destinations.empty()) {
@@ -467,6 +515,21 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         detail::put_bytes(out, d.restore.source_table_arn);
         detail::put_varint(out, d.restore.restore_ms);
         out.push_back(d.restore.in_progress ? '\1' : '\0');
+        detail::put_varint(out, d.restore.source_table_id);
+        detail::put_varint(out, d.restore.point_ms);
+    }
+    if (version >= 7) {
+        out.push_back(d.pitr.enabled ? '\1' : '\0');
+        detail::put_varint(out, d.pitr.recovery_days);
+        detail::put_varint(out, d.pitr.enabled_ms);
+        detail::put_varint(out, d.pitr.earliest_ms);
+        detail::put_varint(out, d.pitr.latest_ms);
+        detail::put_varint(out, d.pitr.next_object);
+        detail::put_varint(out, d.pitr.cursors.size());
+        for (const auto& [key, seq] : d.pitr.cursors) {
+            detail::put_bytes(out, key);
+            detail::put_varint(out, seq);
+        }
     }
 }
 
@@ -575,10 +638,40 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         auto table = r.bytes();
         const auto at = r.varint();
         const auto loading = get_flag(r);
-        if (!backup || !table || !at || !loading) {
+        const auto source_id = r.varint();
+        const auto point = r.varint();
+        if (!backup || !table || !at || !loading || !source_id || !point) {
             return std::nullopt;
         }
-        d.restore = table_restore{std::move(*backup), std::move(*table), *at, *loading};
+        d.restore =
+            table_restore{std::move(*backup), std::move(*table), *at, *loading, *source_id, *point};
+    }
+    if (version >= 7) {
+        const auto enabled = get_flag(r);
+        const auto days = r.varint();
+        const auto since = r.varint();
+        const auto earliest = r.varint();
+        const auto latest = r.varint();
+        const auto next = r.varint();
+        const auto cursors = r.count();
+        if (!enabled || !days || *days > 35 || !since || !earliest || !latest || !next ||
+            !cursors) {
+            return std::nullopt;
+        }
+        for (std::size_t j = 0; j < *cursors; ++j) {
+            auto key = r.bytes();
+            const auto seq = r.varint();
+            if (!key || !seq) {
+                return std::nullopt;
+            }
+            d.pitr.cursors.emplace_back(std::move(*key), *seq);
+        }
+        d.pitr.enabled = *enabled;
+        d.pitr.recovery_days = static_cast<std::uint32_t>(*days);
+        d.pitr.enabled_ms = *since;
+        d.pitr.earliest_ms = *earliest;
+        d.pitr.latest_ms = *latest;
+        d.pitr.next_object = *next;
     }
     d.name = std::move(*name);
     d.table_id = *id;
@@ -659,6 +752,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // At least the version that brought the command's kind.
     auto version = catalog_detail::version_for(c.table);
     switch (c.op) {
+        case catalog_command::kind::set_pitr:
+        case catalog_command::kind::pitr_progress:
+            version = std::max<std::uint8_t>(version, 7);
+            break;
         case catalog_command::kind::restore_done:
             version = std::max<std::uint8_t>(version, 6);
             break;
@@ -697,8 +794,13 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         return std::nullopt;
     }
     const auto op = static_cast<std::uint8_t>(bytes[1]);
-    // set_ttl came in version 3, the destination commands in 5.
-    const std::uint8_t last_op = version >= 6 ? 11 : version >= 5 ? 10 : version >= 3 ? 8 : 7;
+    // set_ttl came in version 3, the destination commands in 5,
+    // restore_done in 6, the point-in-time recovery commands in 7.
+    const std::uint8_t last_op = version >= 7   ? 13
+                                 : version >= 6 ? 11
+                                 : version >= 5 ? 10
+                                 : version >= 3 ? 8
+                                                : 7;
     if (version == 0 || op < 1 || op > last_op) {
         return std::nullopt;
     }
@@ -860,6 +962,12 @@ public:
                 break;
             case catalog_command::kind::restore_done:
                 result = restore_done(*c, batch);
+                break;
+            case catalog_command::kind::set_pitr:
+                result = set_pitr(*c, batch);
+                break;
+            case catalog_command::kind::pitr_progress:
+                result = pitr_progress(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -1067,10 +1175,12 @@ private:
             d.streams = {table_stream{c.now_ms, d.streams.front().view, 0}};
         }
         // A restore's table loads its items before it becomes ACTIVE.
-        d.restore.in_progress = !d.restore.source_backup_arn.empty();
+        d.restore.in_progress = d.restore.restored();
         if (d.restore.in_progress) {
             d.restore.restore_ms = c.now_ms;
         }
+        // Point-in-time recovery is a setting of the source, never copied.
+        d.pitr = {};
         batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
                   catalog_detail::u64_string(next));
         store(batch, d);
@@ -1525,6 +1635,70 @@ private:
             store(batch, *d);
         }
         catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `set_pitr` (task 19). A fresh enable starts a new archive named by
+    /// the entry's time; a disable drops the archive's state (the worker
+    /// removes its objects).
+    auto set_pitr(const catalog_command& c, kythira::write_batch& batch) const -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d) {
+            return not_found(c.table.name);
+        }
+        const auto& got = c.table.pitr;
+        if (got.recovery_days < 1 || got.recovery_days > 35) {
+            return invalid("RecoveryPeriodInDays must be between 1 and 35");
+        }
+        if (got.enabled && d->pitr.enabled) {
+            d->pitr.recovery_days = got.recovery_days;
+        } else if (got.enabled) {
+            d->pitr = continuous_backups{};
+            d->pitr.enabled = true;
+            d->pitr.recovery_days = got.recovery_days;
+            d->pitr.enabled_ms = c.now_ms;
+        } else {
+            d->pitr = continuous_backups{};
+        }
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `pitr_progress` (task 19): see the command.
+    auto pitr_progress(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d) {
+            return not_found(c.table.name);
+        }
+        const auto& got = c.table.pitr;
+        catalog_result r;
+        if (!d->pitr.enabled || d->pitr.enabled_ms != got.enabled_ms) {
+            r.table = std::move(d);
+            return r;
+        }
+        auto& p = d->pitr;
+        std::vector<std::pair<std::string, std::uint64_t>> merged;
+        merged.reserve(got.cursors.size());
+        for (const auto& [key, seq] : got.cursors) {
+            auto next = seq;
+            for (const auto& [old_key, old_seq] : p.cursors) {
+                if (old_key == key) {
+                    next = std::max(next, old_seq);
+                }
+            }
+            merged.emplace_back(key, next);
+        }
+        p.cursors = std::move(merged);
+        p.next_object = std::max(p.next_object, got.next_object);
+        p.latest_ms = std::max(p.latest_ms, got.latest_ms);
+        p.earliest_ms = std::max(p.earliest_ms, got.earliest_ms);
+        ++d->revision;
+        store(batch, *d);
         r.table = std::move(d);
         return r;
     }

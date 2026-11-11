@@ -45,13 +45,14 @@
 /// | `KYTHIRA_DYNAMODB_LOG_LEVEL` | `info` | the Raft groups' log level, `trace` to `critical` |
 /// | `KYTHIRA_DYNAMODB_COMPAT` | AWS's | `switch=value,...`: the cluster's compatibility profile,
 /// e.g. `throttling=off` |
-/// | `KYTHIRA_DYNAMODB_BACKUP_DIR` | | directory backups live in (shared by every node of a
-/// cluster) | | `KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET` | | S3 bucket backups live in (a build with the
-/// AWS SDK) | | `KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX`, `_REGION`, `_ENDPOINT` | | key prefix, region,
-/// and an S3-compatible endpoint |
+/// | `KYTHIRA_DYNAMODB_BACKUP_DIR` | | directory backups live in (shared by a cluster's nodes) |
+/// | `KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET` | | S3 bucket backups live in (builds with the AWS SDK) |
+/// | `KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX`, `_REGION`, `_ENDPOINT` | | key prefix, region, endpoint |
 ///
 /// Without a backup store a single node keeps backups in memory, and a
-/// cluster refuses `CreateBackup` (`backup.hpp`).
+/// cluster refuses `CreateBackup` (`backup.hpp`) and
+/// `UpdateContinuousBackups` (`pitr.hpp`). Point-in-time recovery archives
+/// to the same store.
 ///
 /// Without `PEERS` the daemon is one node on `local_backend`, with no Raft.
 /// With it, the node joins a Raft cluster on `raft_backend` (one `PEERS`
@@ -65,6 +66,7 @@
 
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/backup.hpp>
+#include <kythira/dynamodb/pitr.hpp>
 #include <kythira/dynamodb/batch_api.hpp>
 #include <kythira/dynamodb/compat_profile.hpp>
 #include <kythira/dynamodb/disk_guard.hpp>
@@ -602,6 +604,8 @@ public:
           _sweeper(backend),
           _publisher(backend, {}),
           _backup_worker(backend, nullptr),
+          _pitr(backend, nullptr),
+          _pitr_worker(backend, nullptr),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -650,6 +654,10 @@ public:
         _backups.on_created([this] { _backup_worker.poke(); });
         _backups.register_with(*_front);
         _backup_worker.set_store(store);
+        _pitr.set_store(store);
+        _pitr.on_changed([this] { _pitr_worker.poke(); });
+        _pitr.register_with(*_front);
+        _pitr_worker.set_store(store);
         _publisher.set_sink(_config.kinesis.configured() ? _config.kinesis
                                                          : kinesis_sink_from_env());
         _publisher.set_region(_config.front.region);
@@ -734,6 +742,15 @@ private:
                             _log(true, std::string("backups: ") + e.what());
                         }
                     }
+                    try {
+                        // The archive resumes from the stored cursors; a
+                        // restore is loaded again from the start.
+                        (void)_pitr_worker.pass();
+                    } catch (const std::exception& e) {
+                        if (_log) {
+                            _log(true, std::string("point-in-time recovery: ") + e.what());
+                        }
+                    }
                     // Unpublished records stay in the change log; the next
                     // pass resumes from the stored cursors.
                     (void)_publisher.pass();
@@ -793,6 +810,8 @@ private:
     ttl_sweeper<Backend> _sweeper;
     kinesis_publisher<Backend> _publisher;
     backup_worker<Backend> _backup_worker;
+    pitr_api<Backend> _pitr;
+    pitr_worker<Backend> _pitr_worker;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

@@ -179,6 +179,11 @@ kythira_dynamodb_test(dynamodb_backup_test dynamodb_backup_test.cpp)
 target_link_libraries(dynamodb_backup_test PRIVATE kythira_test_support)
 set_tests_properties(dynamodb_backup_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Point-in-time recovery (task 19): the three actions, the archive, bases,
+# the window, and restores to chosen times.
+kythira_dynamodb_test(dynamodb_pitr_test dynamodb_pitr_test.cpp)
+set_tests_properties(dynamodb_pitr_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 # Kinesis streaming destinations (task 17): the four actions, the
 # publisher's record format, order and resends, and the SigV4 sink.
 kythira_dynamodb_test(dynamodb_kinesis_destination_test dynamodb_kinesis_destination_test.cpp)

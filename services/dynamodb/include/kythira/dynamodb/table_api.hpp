@@ -659,13 +659,18 @@ template<typename TypeOf>
         out["LatestStreamArn"] = stream_arn(ctx, d.name, d.streams.back().label_ms);
         out["LatestStreamLabel"] = stream_label(d.streams.back().label_ms);
     }
-    if (!d.restore.source_backup_arn.empty()) {
-        out["RestoreSummary"] = boost::json::object{
-            {"SourceBackupArn", d.restore.source_backup_arn},
+    if (d.restore.restored()) {
+        // A point-in-time restore names the time restored to, as AWS does.
+        boost::json::object summary{
             {"SourceTableArn", d.restore.source_table_arn},
-            {"RestoreDateTime", millis_to_seconds(d.restore.restore_ms)},
+            {"RestoreDateTime", millis_to_seconds(d.restore.point_ms != 0 ? d.restore.point_ms
+                                                                          : d.restore.restore_ms)},
             {"RestoreInProgress", d.restore.in_progress},
         };
+        if (!d.restore.source_backup_arn.empty()) {
+            summary["SourceBackupArn"] = d.restore.source_backup_arn;
+        }
+        out["RestoreSummary"] = std::move(summary);
     }
     return out;
 }
