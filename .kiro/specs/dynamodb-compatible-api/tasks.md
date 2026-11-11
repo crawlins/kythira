@@ -559,10 +559,10 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     - Tests: `dynamodb_change_log_test`; replicas, a split and a peer
       fetch on three nodes in `dynamodb_raft_backend_test`.
 
-- [ ] 16. DynamoDB Streams
+- [x] 16. DynamoDB Streams
   - [x] Stream shards over the change log, lineage across splits, merge veto,
     24-hour retention per stream shard, iterators, the four actions
-  - [ ] Streams Kinesis Adapter conformance with KCL
+  - [x] Streams Kinesis Adapter conformance with KCL
   - _Requirements: 14.2-14.5_
   - Notes:
     - `StreamSpecification` on `CreateTable` and `UpdateTable` keeps a list
@@ -611,6 +611,15 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       types, streams that never see each other's records, TTL identity,
       retention, expiry, stored forms); a split and the merge veto on
       three nodes in `dynamodb_raft_backend_test`.
+    - Adapter conformance: `tools/evidence/kcl_on_kythira.sh` now runs a
+      third client, `streams-adapter` (DynamoDB Streams Kinesis Adapter
+      over KCL), against a Kythira node. It creates `adapter-source` with
+      a `NEW_IMAGE` stream, writes half its items, starts the worker,
+      writes the rest, and fails unless every item is seen exactly once;
+      `check_kcl_run.py` also requires `GetRecords` answers with records.
+      Native run 11-11: 60 of 60 items, none twice, with KCL 2.x and 3.x
+      still passing. Not covered: a split during the run (there is no
+      external split API yet); the three-node split test covers lineage.
 
 - [ ] 17. Kinesis streaming destinations
   - Publisher to Kythira Kinesis or AWS Kinesis; the four actions

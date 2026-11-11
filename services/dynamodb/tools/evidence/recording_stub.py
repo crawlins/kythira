@@ -29,13 +29,14 @@ encoding, the SigV4 form with the signature and dates masked, the SDK's
 retry headers). The user agent is kept, since it names the SDK and its
 version.
 
-With `--dynamodb-upstream HOST:PORT` the stub keeps serving Kinesis and
-Streams itself but passes every DynamoDB request, bytes and signed headers
-unchanged, to that server (a Kythira gateway node or DynamoDB Local) and
-relays its answer; each exchange is also written to
+With `--dynamodb-upstream HOST:PORT` the stub keeps serving Kinesis itself
+but passes every DynamoDB and DynamoDB Streams request, bytes and signed
+headers unchanged, to that server (a Kythira gateway node or DynamoDB
+Local) and relays its answer; each exchange is also written to
 `<client>.upstream.jsonl` with the upstream's status and body. That is how
-the KCL clients run on Kythira's DynamoDB API with a stand-in stream
-(kcl_on_kythira.sh, task 11).
+the KCL clients run on Kythira's DynamoDB API with a stand-in Kinesis
+stream (kcl_on_kythira.sh, task 11), and the Streams Kinesis Adapter reads
+a real Kythira stream (task 16).
 
 Usage:
     recording_stub.py --port 8000 --out DIR [--dynamodb-upstream HOST:PORT]
@@ -779,7 +780,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def forward(self, client, op, raw, body):
-        """Passes one DynamoDB request to the upstream as it came and relays
+        """Passes one DynamoDB or Streams request to the upstream as it came and relays
         the answer, writing the exchange to <client>.upstream.jsonl."""
         host, _, port = self.upstream.rpartition(":")
         conn = http.client.HTTPConnection(host, int(port), timeout=60)
@@ -842,7 +843,7 @@ class Handler(BaseHTTPRequestHandler):
                 "body": record_body(body),
             },
         )
-        if service == DDB and self.upstream:
+        if service in (DDB, STREAMS) and self.upstream:
             self.forward(client, op, raw, body)
             return
         try:

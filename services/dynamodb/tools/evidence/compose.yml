@@ -76,7 +76,7 @@ services:
       KYTHIRA_DYNAMODB_LOG_LEVEL: warning
       # The keys the evidence clients sign with (EVIDENCE-<client>).
       KYTHIRA_DYNAMODB_STATIC_KEYS: >-
-        EVIDENCE-kcl2:evidence-secret-not-a-credential:000000000000:kcl2:admin,EVIDENCE-kcl3:evidence-secret-not-a-credential:000000000000:kcl3:admin
+        EVIDENCE-kcl2:evidence-secret-not-a-credential:000000000000:kcl2:admin,EVIDENCE-kcl3:evidence-secret-not-a-credential:000000000000:kcl3:admin,EVIDENCE-streams-adapter:evidence-secret-not-a-credential:000000000000:streams-adapter:admin
 
   ddb-2:
     <<: *ddb
