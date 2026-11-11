@@ -376,7 +376,7 @@ BOOST_AUTO_TEST_CASE(forms_round_trip_and_bad_entries_stop_the_group) {
 
     fixture f;
     auto future = cb;
-    future[0] = static_cast<char>(2);
+    future[0] = static_cast<char>(ddb::catalog_detail::k_command_format_version + 1);
     BOOST_TEST(!ddb::decode_catalog_command(future, newer).has_value());
     BOOST_TEST(newer);
     BOOST_CHECK_THROW((void)f.catalog.apply(bytes_of(future), 1), std::runtime_error);

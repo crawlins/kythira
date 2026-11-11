@@ -130,6 +130,9 @@ public:
         if (auto e = validate_index_keys(*parsed, table->lsis)) {
             return *e;
         }
+        if (auto e = validate_global_index_keys(*parsed, table->gsis)) {
+            return *e;
+        }
         item_command c = command(item_command::kind::put, *table, std::move(*parsed), in);
         c.expressions = std::move(*compiled);
         c.returns = *returns;
@@ -245,6 +248,7 @@ private:
         c.schema = table.schema;
         c.payload = std::move(payload);
         c.lsis = table.lsis;
+        c.gsis = table.gsis;
         c.old_on_condition_failure = text(in, "ReturnValuesOnConditionCheckFailure") == "ALL_OLD";
         return c;
     }

@@ -32,9 +32,14 @@
 /// a write that would grow a collection past it fails with
 /// `ItemCollectionSizeLimitExceededException`, while a write that shrinks
 /// one always applies.
+///
+/// A write to a table with GSIs also leaves a pending change beside the
+/// item, and an index group applies versioned index writes
+/// (`global_index.hpp`, task 11).
 
 #include <kythira/dynamodb/expr.hpp>
 #include <kythira/dynamodb/expr_eval.hpp>
+#include <kythira/dynamodb/global_index.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
 #include <kythira/dynamodb/local_index.hpp>
@@ -52,6 +57,8 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <ranges>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -87,6 +94,17 @@ struct item_command {
         /// with every other item of the read, `validate` reports what it
         /// holds, and nothing is written.
         read_lock = 6,
+        /// Writes one GSI entry (`target`, holding `payload`) at the item's
+        /// `version`, unless the entry already has that version or newer
+        /// (task 11).
+        index_put = 7,
+        /// Deletes one GSI entry at `version`, keeping the version.
+        index_delete = 8,
+        /// The propagator has written the GSI entries of the pending change
+        /// at `target` up to `version`: the record goes, unless a newer
+        /// write came, in which case `entries` (the entries now written)
+        /// become the ones to remove.
+        index_ack = 9,
     };
 
     kind op = kind::put;
@@ -102,9 +120,33 @@ struct item_command {
     std::uint32_t max_keys = 0;
     /// The table's local secondary indexes, maintained by every write.
     std::vector<local_index> lsis;
+    /// The table's global secondary indexes: every write records a pending
+    /// change for them.
+    std::vector<global_index> gsis;
+    /// `index_*`: the engine key written (an entry, or a pending change).
+    std::string target;
+    /// `index_*`: the item version the write carries.
+    std::uint64_t version = 0;
+    /// `index_ack`: the entry keys the propagator wrote.
+    std::vector<std::string> entries;
 
     friend auto operator==(const item_command&, const item_command&) -> bool = default;
 };
+
+/// Whether `op` is one of the index maintenance kinds.
+[[nodiscard]] inline auto is_index_op(item_command::kind op) -> bool {
+    return op == item_command::kind::index_put || op == item_command::kind::index_delete ||
+           op == item_command::kind::index_ack;
+}
+
+/// The engine key a command is routed by: the item's base key, or an
+/// index command's target. Nothing when a key attribute is missing.
+[[nodiscard]] inline auto command_key(const item_command& c) -> std::optional<std::string> {
+    if (is_index_op(c.op)) {
+        return c.target;
+    }
+    return base_item_key(c.table_id, c.schema, c.payload);
+}
 
 /// What `apply()` returns for an `item_command`.
 struct item_result {
@@ -137,7 +179,8 @@ struct item_result {
 
 namespace item_sm_detail {
 
-inline constexpr std::uint8_t k_command_format_version = 1;
+/// 2 added the GSI fields (task 11); version 1 entries still decode.
+inline constexpr std::uint8_t k_command_format_version = 2;
 inline constexpr std::uint8_t k_result_format_version = 1;
 
 inline void put_u64(std::string& out, std::uint64_t v) {
@@ -214,6 +257,13 @@ inline void put_schema(std::string& out, const key_schema& s) {
     out.push_back(c.old_on_condition_failure ? '\1' : '\0');
     detail::put_varint(out, c.max_keys);
     put_local_indexes(out, c.lsis);
+    put_global_indexes(out, c.gsis);
+    detail::put_bytes(out, c.target);
+    detail::put_varint(out, c.version);
+    detail::put_varint(out, c.entries.size());
+    for (const auto& e : c.entries) {
+        detail::put_bytes(out, e);
+    }
     return out;
 }
 
@@ -243,7 +293,7 @@ enum class item_command_status : std::uint8_t {
     if (op == 0) {
         return item_command_status::malformed;
     }
-    if (op > static_cast<std::uint8_t>(item_command::kind::read_lock)) {
+    if (op > static_cast<std::uint8_t>(item_command::kind::index_ack)) {
         // A kind a later release added: upgrade rather than guess.
         return item_command_status::unknown_version;
     }
@@ -264,8 +314,32 @@ enum class item_command_status : std::uint8_t {
     const auto max_keys = r.varint();
     auto lsis = get_local_indexes(r);
     if (!schema || !payload_bytes || !expr_bytes || !returns || !old_flag || !max_keys || !lsis ||
-        !r.done() || *returns > static_cast<std::uint8_t>(return_values::updated_new) ||
-        *old_flag > 1 || *max_keys > UINT32_MAX) {
+        *returns > static_cast<std::uint8_t>(return_values::updated_new) || *old_flag > 1 ||
+        *max_keys > UINT32_MAX) {
+        return item_command_status::malformed;
+    }
+    if (version >= 2) {
+        auto gsis = get_global_indexes(r);
+        auto target = r.bytes();
+        const auto v = r.varint();
+        const auto n = r.count();
+        if (!gsis || !target || !v || !n) {
+            return item_command_status::malformed;
+        }
+        for (std::size_t i = 0; i < *n; ++i) {
+            auto e = r.bytes();
+            if (!e) {
+                return item_command_status::malformed;
+            }
+            c.entries.push_back(std::move(*e));
+        }
+        c.gsis = std::move(*gsis);
+        c.target = std::move(*target);
+        c.version = *v;
+    } else if (is_index_op(c.op)) {
+        return item_command_status::malformed;
+    }
+    if (!r.done()) {
         return item_command_status::malformed;
     }
     auto payload = decode_item(*payload_bytes);
@@ -365,6 +439,14 @@ enum class item_command_status : std::uint8_t {
     return out;
 }
 
+/// A pending GSI change with the item as it is now (nothing when it was
+/// deleted), for the propagator (`gsi_propagator.hpp`).
+struct gsi_work {
+    std::string pending_key;
+    gsi_pending pending;
+    std::optional<item> current;
+};
+
 /// The state machine of one group of items. `Engine` is any `kv_engine`:
 /// unit tests use `memory_kv_engine`, production RocksDB.
 template<kythira::kv_engine Engine = kythira::memory_kv_engine, typename LogIndex = std::uint64_t>
@@ -386,6 +468,7 @@ public:
             }
         }
         _durable_floor = _applied;
+        load_pending();
     }
 
     auto apply(const std::vector<std::byte>& entry, LogIndex index) -> std::vector<std::byte> {
@@ -412,6 +495,7 @@ public:
         const auto c = decode_entry(entry);
         const auto first = batch.size();
         const auto result = c.op == item_command::kind::drop_table_step ? drop_table_step(c, batch)
+                            : is_index_op(c.op)                         ? index_write(c, batch)
                                                                         : write_item(c, batch);
         note_staged(batch, first);
         return to_bytes(encode_item_result(result));
@@ -421,6 +505,7 @@ public:
     auto commit_staged(kythira::write_batch& batch, LogIndex index) -> void {
         put_applied(batch, index);
         const auto seq = engine().write(batch);
+        note_pending(batch);
         _staged.clear();
         _applied = index;
         _ring.emplace_back(index, seq);
@@ -454,8 +539,9 @@ public:
     [[nodiscard]] auto validate(const std::string& key, const std::vector<std::byte>& entry) const
         -> kythira::txn_validation {
         const auto c = decode_entry(entry);
-        if (c.op == item_command::kind::drop_table_step) {
-            throw std::invalid_argument("dynamo_item_state_machine: a drop step in a transaction");
+        if (c.op == item_command::kind::drop_table_step || is_index_op(c.op)) {
+            throw std::invalid_argument(
+                "dynamo_item_state_machine: a drop step or index write in a transaction");
         }
         if (base_item_key(c.table_id, c.schema, c.payload) != key) {
             throw std::invalid_argument(
@@ -496,9 +582,13 @@ public:
         _applied = index;
         _durable_floor = index;
         _ring.clear();
+        load_pending();
     }
 
-    auto drop() -> void { engine().drop(_range); }
+    auto drop() -> void {
+        engine().drop(_range);
+        _pending.clear();
+    }
 
     // -- persistent_splittable_state_machine --------------------------------
 
@@ -534,6 +624,7 @@ public:
         }
         engine().write(batch);
         _range.end = cuts.front();
+        std::erase_if(_pending, [&](const std::string& k) { return !_range.contains(k); });
         return children;
     }
 
@@ -556,6 +647,7 @@ public:
         }
         put_applied(batch, _applied);
         engine().write(batch);
+        load_pending();
     }
 
     [[nodiscard]] auto range() const -> const kythira::key_range& { return _range; }
@@ -590,7 +682,9 @@ public:
         return load(*k);
     }
 
-    /// The item's version (0 when it has never been written or is deleted).
+    /// The item's version: 0 when it has never been written, or when it was
+    /// deleted from a table without GSIs (a table with GSIs keeps a deleted
+    /// item's version, so its next write is newer than its index entries).
     [[nodiscard]] auto item_version(std::uint64_t table_id, const key_schema& schema,
                                     const item& key) const -> std::uint64_t {
         const auto k = base_item_key(table_id, schema, key);
@@ -598,6 +692,44 @@ public:
             return 0;
         }
         return load_version(*k);
+    }
+
+    /// Up to `limit` pending GSI changes, in key order, from the first one
+    /// at or after `from` (wrapping round to the start), read together with
+    /// their items so each item matches its record's version.
+    [[nodiscard]] auto gsi_pending_batch(std::size_t limit, const std::string& from = {}) const
+        -> std::vector<gsi_work> {
+        std::vector<gsi_work> out;
+        auto it = _pending.lower_bound(from);
+        for (std::size_t seen = 0; seen < _pending.size() && out.size() < limit; ++seen) {
+            if (it == _pending.end()) {
+                it = _pending.begin();
+            }
+            const auto v = engine().get(kythira::column_family::meta, *it);
+            auto p = v ? decode_gsi_pending(*v) : std::nullopt;
+            if (!p) {
+                throw kythira::persistent_storage_error(
+                    "dynamo_item_state_machine: corrupt pending index change");
+            }
+            gsi_work w;
+            w.pending_key = *it;
+            w.current = load(p->base_key);
+            w.pending = std::move(*p);
+            out.push_back(std::move(w));
+            ++it;
+        }
+        return out;
+    }
+
+    /// How many items have GSI changes not yet propagated (the lag).
+    [[nodiscard]] auto gsi_pending_count() const -> std::size_t { return _pending.size(); }
+
+    /// The version an index entry holds (kept after a delete), 0 for none.
+    [[nodiscard]] auto entry_version(const std::string& entry_key) const -> std::uint64_t {
+        if (!_range.contains(entry_key)) {
+            return 0;
+        }
+        return load_version(entry_key);
     }
 
     /// Visits the committed items whose keys fall in `r` and in this
@@ -810,12 +942,19 @@ private:
             case item_command::kind::drop_table_step:
             case item_command::kind::condition_check:
             case item_command::kind::read_lock:
+            // GSI commands never reach write_item; apply routes them first.
+            case item_command::kind::index_put:
+            case item_command::kind::index_delete:
+            case item_command::kind::index_ack:
                 break;
         }
 
         item_result r;
         if (next) {
             if (auto e = validate_index_keys(*next, c.lsis)) {
+                return error_result(*e);
+            }
+            if (auto e = validate_global_index_keys(*next, c.gsis)) {
                 return error_result(*e);
             }
         }
@@ -826,6 +965,10 @@ private:
             }
             r.collection_bytes = size;
         }
+        // A table with GSIs keeps a deleted item's version, so the item's
+        // versions only grow and an index never takes an older write for a
+        // newer one (`global_index.hpp`).
+        const bool keep_versions = !c.gsis.empty();
         if (next) {
             r.version = load_version(*key) + 1;
             std::string v;
@@ -834,7 +977,16 @@ private:
             batch.put(kythira::column_family::meta, *key, std::move(v));
         } else if (old) {
             batch.erase(kythira::column_family::data, *key);
-            batch.erase(kythira::column_family::meta, *key);
+            if (keep_versions) {
+                std::string v;
+                item_sm_detail::put_u64(v, load_version(*key) + 1);
+                batch.put(kythira::column_family::meta, *key, std::move(v));
+            } else {
+                batch.erase(kythira::column_family::meta, *key);
+            }
+        }
+        if (keep_versions && (next || old)) {
+            record_pending(c, *key, old, next, load_version_staged(batch, *key), batch);
         }
 
         switch (c.returns) {
@@ -862,6 +1014,136 @@ private:
             r.attributes.reset();
         }
         return r;
+    }
+
+    /// The version `batch` gives `key` (it has just been written there).
+    [[nodiscard]] static auto load_version_staged(const kythira::write_batch& batch,
+                                                  const std::string& key) -> std::uint64_t {
+        for (const auto& op : std::views::reverse(batch.operations())) {
+            if (const auto* put = std::get_if<kythira::write_batch::put_op>(&op);
+                put != nullptr && put->cf == kythira::column_family::meta && put->key == key) {
+                std::string_view in(put->value);
+                return item_sm_detail::get_u64(in).value_or(0);
+            }
+        }
+        return 0;
+    }
+
+    [[nodiscard]] auto load_pending_record(const std::string& key) const
+        -> std::optional<gsi_pending> {
+        const auto v = read_value(kythira::column_family::meta, key);
+        if (!v) {
+            return std::nullopt;
+        }
+        auto p = decode_gsi_pending(*v);
+        if (!p) {
+            throw kythira::persistent_storage_error(
+                "dynamo_item_state_machine: corrupt pending index change");
+        }
+        return p;
+    }
+
+    /// Records that `c`'s write (from `old` to `next`, now at `version`)
+    /// has not reached the table's GSIs. A first record names the entries
+    /// the indexes hold now, to be removed; a later write before
+    /// propagation keeps them and raises the version. A write that changes
+    /// no entry and finds no record leaves none.
+    auto record_pending(const item_command& c, const std::string& key,
+                        const std::optional<item>& old, const std::optional<item>& next,
+                        std::uint64_t version, kythira::write_batch& batch) const -> void {
+        const auto pkey = gsi_pending_key(c.table_id, c.schema, c.payload);
+        if (!pkey) {
+            throw std::invalid_argument("dynamo_item_state_machine: command without its key");
+        }
+        auto record = load_pending_record(*pkey);
+        if (!record) {
+            bool changed = false;
+            std::vector<std::string> old_entries;
+            for (const auto& g : c.gsis) {
+                const auto before = old ? gsi_entry_key(c.schema, g, *old) : std::nullopt;
+                const auto after = next ? gsi_entry_key(c.schema, g, *next) : std::nullopt;
+                if (before) {
+                    old_entries.push_back(*before);
+                }
+                // A moved entry, or one whose projection changed.
+                if (before != after ||
+                    (before && gsi_entry(c.schema, g, *old) != gsi_entry(c.schema, g, *next))) {
+                    changed = true;
+                }
+            }
+            if (!changed) {
+                return;
+            }
+            record = gsi_pending{c.table_id, key, version, std::move(old_entries)};
+        } else {
+            record->version = version;
+        }
+        batch.put(kythira::column_family::meta, *pkey, encode_gsi_pending(*record));
+    }
+
+    /// `index_put`, `index_delete` and `index_ack` (see `item_command`).
+    auto index_write(const item_command& c, kythira::write_batch& batch) const -> item_result {
+        if (!_range.contains(c.target)) {
+            throw std::logic_error("dynamo_item_state_machine: key outside the group's range");
+        }
+        item_result r;
+        if (c.op == item_command::kind::index_ack) {
+            auto record = load_pending_record(c.target);
+            if (!record) {
+                return r;
+            }
+            if (record->version <= c.version) {
+                batch.erase(kythira::column_family::meta, c.target);
+            } else {
+                record->old_entries = c.entries;
+                batch.put(kythira::column_family::meta, c.target, encode_gsi_pending(*record));
+            }
+            return r;
+        }
+        if (c.version <= load_version(c.target)) {
+            // Replayed, retried, or overtaken by a newer write.
+            return r;
+        }
+        std::string v;
+        item_sm_detail::put_u64(v, c.version);
+        batch.put(kythira::column_family::meta, c.target, std::move(v));
+        if (c.op == item_command::kind::index_put) {
+            batch.put(kythira::column_family::data, c.target, encode_item(c.payload));
+        } else {
+            batch.erase(kythira::column_family::data, c.target);
+        }
+        r.version = c.version;
+        return r;
+    }
+
+    /// Reads the keys of the pending GSI changes in this group's range.
+    auto load_pending() -> void {
+        _pending.clear();
+        if (_engine == nullptr) {
+            return;
+        }
+        engine().scan(kythira::column_family::meta, _range, kythira::scan_direction::forward,
+                      [&](std::string_view k, std::string_view v) {
+                          if (is_gsi_pending_value(v)) {
+                              _pending.emplace(k);
+                          }
+                          return true;
+                      });
+    }
+
+    /// Follows the pending changes a written batch added or removed.
+    auto note_pending(const kythira::write_batch& batch) -> void {
+        for (const auto& op : batch.operations()) {
+            if (const auto* put = std::get_if<kythira::write_batch::put_op>(&op)) {
+                if (put->cf == kythira::column_family::meta && is_gsi_pending_value(put->value)) {
+                    _pending.insert(put->key);
+                }
+            } else if (const auto* erase = std::get_if<kythira::write_batch::erase_op>(&op)) {
+                if (erase->cf == kythira::column_family::meta) {
+                    _pending.erase(erase->key);
+                }
+            }
+        }
     }
 
     /// Moves `c`'s table's LSI entries from `old` to `next` and updates
@@ -958,12 +1240,15 @@ private:
         if (r.more) {
             return r;
         }
-        // Then the keys with no item beside them: collection sizes. Item
-        // versions went with their items; the group's applied index (at
-        // the range start) stays.
+        // Then the keys with no item beside them: collection sizes, pending
+        // GSI changes, and the versions deleted items and index entries
+        // keep. Versions of items that were there went with them; the
+        // group's applied index (at the range start) stays.
         engine().scan(kythira::column_family::meta, mine, kythira::scan_direction::forward,
                       [&](std::string_view k, std::string_view) {
-                          if (k == _range.start || classify_item_key(k, c.schema.partition_type)) {
+                          if (k == _range.start ||
+                              (classify_item_key(k, c.schema.partition_type) &&
+                               engine().get(kythira::column_family::data, std::string(k)))) {
                               return true;
                           }
                           if (erased == limit) {
@@ -994,6 +1279,8 @@ private:
     LogIndex _applied{};
     LogIndex _durable_floor{};
     std::deque<std::pair<LogIndex, kythira::engine_sequence>> _ring;
+    /// The meta keys of this group's pending GSI changes.
+    std::set<std::string> _pending;
     /// Data and meta writes staged into the open batch (see `stage`).
     std::map<std::pair<kythira::column_family, std::string>, std::optional<std::string>> _staged;
 };

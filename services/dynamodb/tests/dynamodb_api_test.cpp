@@ -109,7 +109,7 @@ BOOST_AUTO_TEST_CASE(create_table_checks_in_aws_order_and_wording) {
         {try_create(ad1, "[" + hash + "]",
                     pt + R"(,"GlobalSecondaryIndexes":[{"IndexName":"gsi","KeySchema":[)" + hash +
                         R"(],"Projection":{"ProjectionType":"ALL"}}])"),
-         "Kythira does not support GlobalSecondaryIndexes yet"},
+         "No provisioned throughput specified for the global secondary index"},
         // Vector indexes come with task 26.
         {try_create(ad1, "[" + hash + "]",
                     pt + R"(,"VectorIndexes":[{"IndexName":"vec","VectorAttribute":)"

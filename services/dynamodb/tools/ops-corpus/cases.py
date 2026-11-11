@@ -609,6 +609,200 @@ def transactions_scenario():
             "setup": setup, "steps": steps}
 
 
+def gsi(name, pk, sk=None, proj=None, throughput=None):
+    ks = [{"AttributeName": pk, "KeyType": "HASH"}] + ([{"AttributeName": sk, "KeyType": "RANGE"}] if sk else [])
+    g = {"IndexName": name, "KeySchema": ks, "Projection": proj or {"ProjectionType": "ALL"}}
+    if throughput:
+        g["ProvisionedThroughput"] = throughput
+    return g
+
+
+GSI_TABLE = {
+    "TableName": "ops_gsi", "BillingMode": "PAY_PER_REQUEST",
+    "AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"},
+                             {"AttributeName": "sk", "AttributeType": "N"},
+                             {"AttributeName": "g", "AttributeType": "S"},
+                             {"AttributeName": "gs", "AttributeType": "N"},
+                             {"AttributeName": "n", "AttributeType": "N"}],
+    "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+    "GlobalSecondaryIndexes": [
+        gsi("by_g", "g", "gs", {"ProjectionType": "KEYS_ONLY"}),
+        gsi("by_gi", "g", proj={"ProjectionType": "INCLUDE", "NonKeyAttributes": ["a"]}),
+        gsi("all_n", "n"),
+    ],
+}
+
+GSI_TXN_DIVERGENCE = ("index key type in a transaction: DynamoDB Local cancels the transaction with a "
+                      "ValidationError reason; Kythira refuses the request as the single-item call "
+                      "does, before anything runs")
+
+
+def gsi_scenario():
+    """Reads of global secondary indexes, and writes moving their entries.
+    A Query that returns several items reads an index with a sort key and
+    no two of its entries tie, since DynamoDB orders ties as it likes."""
+    t = "ops_gsi"
+    setup = []
+    for i in range(1, 9):
+        it = {"pk": S("p"), "sk": N(i), "a": N(i), "b": N(i * 2), "n": N(100 + i)}
+        if i != 3:
+            it["g"] = S("x")
+            it["gs"] = N(20 - i)
+        if i == 4:
+            del it["gs"]
+        setup.append(put(t, it))
+    for i in range(1, 4):
+        setup.append(put(t, {"pk": S("q%d" % i), "sk": N(1), "g": S("y%d" % i), "gs": N(i), "n": N(i)}))
+    x = {":g": S("x")}
+    ix = lambda name, **more: q(t, "g = :g", x, IndexName=name, **more)  # noqa: E731
+    steps = [
+        ix("by_g"),
+        ix("by_g", ScanIndexForward=False),
+        q(t, "g = :g", {":g": S("y2")}, IndexName="by_gi"),
+        ix("by_g", Select="COUNT"),
+        ix("by_g", Select="ALL_PROJECTED_ATTRIBUTES"),
+        q(t, "g = :g AND gs = :v", {**x, ":v": N(15)}, IndexName="by_g"),
+        q(t, "g = :g AND gs < :v", {**x, ":v": N(15)}, IndexName="by_g"),
+        q(t, "g = :g AND gs <= :v", {**x, ":v": N(15)}, IndexName="by_g"),
+        q(t, "g = :g AND gs > :v", {**x, ":v": N(15)}, IndexName="by_g"),
+        q(t, "g = :g AND gs >= :v", {**x, ":v": N(15)}, IndexName="by_g"),
+        q(t, "g = :g AND gs BETWEEN :lo AND :hi", {**x, ":lo": N(13), ":hi": N(16)}, IndexName="by_g"),
+        q(t, "n = :v", {":v": N(105)}, IndexName="all_n"),
+        q(t, "n = :v", {":v": N(2)}, IndexName="all_n"),
+        q(t, "n = :v", {":v": N(999)}, IndexName="all_n"),
+        q(t, "g = :g", {":g": S("y2")}, IndexName="by_g"),
+        # Paging on an index.
+        ix("by_g", Limit=3),
+        {**ix("by_g", Limit=3), "continue": True},
+        {**ix("by_g", Limit=3), "continue": True},
+        # What an index does not project, and consistency, are refused.
+        ix("by_g", ConsistentRead=True),
+        ix("by_g", Select="ALL_ATTRIBUTES"),
+        ix("by_gi", ProjectionExpression="a, b"),
+        q(t, "g = :g", {":g": S("y3")}, IndexName="by_gi", ProjectionExpression="a, sk"),
+        ix("by_gi", Select="COUNT"),
+        q(t, "g = :g", {**x, ":v": N(4)}, IndexName="by_gi", FilterExpression="a > :v", Select="COUNT"),
+        q(t, "g = :g", {**x, ":v": N(4)}, IndexName="by_gi", FilterExpression="b > :v"),
+        q(t, "g = :g", {**x, ":v": N(4)}, IndexName="all_n", FilterExpression="b > :v"),
+        q(t, "n = :v", {":v": N(104)}, IndexName="all_n", Select="ALL_ATTRIBUTES"),
+        # Errors.
+        q(t, "g = :g AND sk > :v", {**x, ":v": N(2)}, IndexName="by_g"),
+        q(t, "g = :g AND gs = :v", {**x, ":v": S("1")}, IndexName="by_g"),
+        q(t, "pk = :g", {":g": S("p")}, IndexName="by_g"),
+        ix("nope"),
+        ix("by_g", ExclusiveStartKey={"pk": S("p"), "sk": N(1)}),
+        ix("by_g", ExclusiveStartKey={"pk": S("p"), "sk": N(5), "g": S("x"), "gs": N(15)}),
+        ix("by_g", ExclusiveStartKey={"pk": S("p"), "sk": N(5), "g": S("x"), "zz": N(15)}),
+        # Scans of an index.
+        step("ScanAll", TableName=t, IndexName="by_g"),
+        step("ScanAll", TableName=t, IndexName="by_gi"),
+        step("ScanAll", TableName=t, IndexName="all_n"),
+        step("ScanAll", TableName=t, IndexName="all_n", Limit=2),
+        step("ScanAll", TableName=t, IndexName="by_gi", FilterExpression="a = :v",
+             ExpressionAttributeValues={":v": N(4)}),
+        step("ScanSegments", TableName=t, IndexName="by_g", segments=3),
+        step("Scan", TableName=t, IndexName="by_g", Limit=2),
+        step("Scan", TableName=t, IndexName="by_g", ConsistentRead=True),
+        step("Scan", TableName=t, IndexName="by_g", Select="ALL_ATTRIBUTES"),
+        step("Scan", TableName=t, IndexName="nope"),
+        step("ScanAll", TableName=t),
+        # Writes move entries.
+        step("UpdateItem", TableName=t, Key={"pk": S("p"), "sk": N(2)}, UpdateExpression="SET gs = :v",
+             ExpressionAttributeValues={":v": N(30)}),
+        step("UpdateItem", TableName=t, Key={"pk": S("p"), "sk": N(5)}, UpdateExpression="REMOVE gs"),
+        step("UpdateItem", TableName=t, Key={"pk": S("p"), "sk": N(3)}, UpdateExpression="SET g = :g, gs = :v",
+             ExpressionAttributeValues={":g": S("x"), ":v": N(1)}),
+        step("UpdateItem", TableName=t, Key={"pk": S("p"), "sk": N(6)}, UpdateExpression="SET a = :v",
+             ExpressionAttributeValues={":v": N(66)}),
+        step("DeleteItem", TableName=t, Key={"pk": S("p"), "sk": N(7)}),
+        put(t, {"pk": S("p"), "sk": N(8), "a": N(80)}),
+        ix("by_g"),
+        ix("by_gi", Select="COUNT"),
+        q(t, "n = :v", {":v": N(106)}, IndexName="all_n"),
+        q(t, "n = :v", {":v": N(107)}, IndexName="all_n"),
+        step("BatchWriteItem", RequestItems={t: [
+            {"PutRequest": {"Item": {"pk": S("p"), "sk": N(9), "g": S("x"), "gs": N(9), "a": N(9)}}},
+            {"DeleteRequest": {"Key": {"pk": S("p"), "sk": N(1)}}}]}),
+        step("TransactWriteItems", TransactItems=[
+            {"Put": {"TableName": t, "Item": {"pk": S("p"), "sk": N(10), "g": S("x"), "gs": N(10), "n": N(110)}}},
+            {"Update": {"TableName": t, "Key": {"pk": S("q1"), "sk": N(1)}, "UpdateExpression": "SET g = :g",
+                        "ExpressionAttributeValues": {":g": S("y9")}}}]),
+        ix("by_g"),
+        q(t, "g = :g", {":g": S("y9")}, IndexName="by_g"),
+        q(t, "g = :g", {":g": S("y1")}, IndexName="by_g"),
+        step("ScanAll", TableName=t, IndexName="by_g"),
+        step("ScanAll", TableName=t, IndexName="all_n"),
+        # Index keys are checked on write.
+        put(t, {"pk": S("p"), "sk": N(21), "g": N(1)}),
+        put(t, {"pk": S("p"), "sk": N(21), "g": S("")}),
+        put(t, {"pk": S("p"), "sk": N(21), "n": S("1")}),
+        step("UpdateItem", TableName=t, Key={"pk": S("p"), "sk": N(2)}, UpdateExpression="SET gs = :v",
+             ExpressionAttributeValues={":v": S("q")}),
+        step("BatchWriteItem", RequestItems={t: [{"PutRequest": {"Item": {"pk": S("p"), "sk": N(22), "g": N(1)}}}]}),
+        step("TransactWriteItems", TransactItems=[{"Put": {"TableName": t, "Item": {"pk": S("p"), "sk": N(23), "g": N(1)}}}],
+             divergence=GSI_TXN_DIVERGENCE, kythira=invalid("Type mismatch for Index Key")),
+        q(t, "n = :v", {":v": N(110)}, IndexName="all_n"),
+    ]
+    return {"name": "gsi", "tables": [GSI_TABLE], "setup": setup, "steps": steps}
+
+
+def gsi_create_scenario():
+    """CreateTable's checks of GlobalSecondaryIndexes; a created table is
+    compared by its GlobalSecondaryIndexes."""
+    n = [0]
+    defs = [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "N"},
+            {"AttributeName": "g", "AttributeType": "S"}, {"AttributeName": "gs", "AttributeType": "N"}]
+    keys = [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}]
+    pt = {"ReadCapacityUnits": 3, "WriteCapacityUnits": 4}
+
+    def ct(gsis, ad=None, provisioned=False, lsis=None):
+        n[0] += 1
+        inp = {"TableName": "ops_gc%d" % n[0], "AttributeDefinitions": defs if ad is None else ad,
+               "KeySchema": keys, "GlobalSecondaryIndexes": gsis}
+        if provisioned:
+            inp["ProvisionedThroughput"] = {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5}
+        else:
+            inp["BillingMode"] = "PAY_PER_REQUEST"
+        if lsis:
+            inp["LocalSecondaryIndexes"] = lsis
+        return step("CreateTable", **inp)
+
+    include = lambda names: {"ProjectionType": "INCLUDE", "NonKeyAttributes": names}  # noqa: E731
+    steps = [
+        ct([gsi("ix1", "g", "gs")]),
+        step("DescribeTable", TableName="ops_gc1"),
+        ct([gsi("ix1", "g", proj={"ProjectionType": "KEYS_ONLY"}), gsi("ix2", "gs", "g", proj=include(["b", "a"])),
+            gsi("ix3", "sk", "pk")]),
+        ct([gsi("ix1", "g", "gs", throughput=pt)]),
+        ct([gsi("ix1", "g", throughput=pt), gsi("ix2", "gs", "g", proj=include(["b"]), throughput=pt)],
+           provisioned=True),
+        ct([gsi("ix1", "g", "gs", proj=include(["g"]))]),
+        ct([gsi("ix1", "pk", "sk")], ad=defs[:2]),
+        ct([gsi("ix1", "g", "gs")], provisioned=True),
+        ct([]),
+        ct([gsi("ix1", "nope")]),
+        ct([gsi("ix1", "g", "gs"), gsi("ix1", "gs")]),
+        ct([gsi("ix1", "g", "g")], ad=defs[:3]),
+        ct([gsi("ix1", "g")]),
+        ct([gsi("ix1", "g", "gs", proj={"ProjectionType": "INCLUDE"})]),
+        ct([gsi("ix1", "g", "gs", proj={"ProjectionType": "KEYS_ONLY", "NonKeyAttributes": ["a"]})]),
+        ct([gsi("ix1", "g", "gs", proj=include(["a", "a"]))]),
+        ct([gsi("ix1", "g", "gs", proj={})]),
+        ct([gsi("ix%d" % i, "g", "gs") for i in range(21)]),
+        ct([gsi("ix1", "g")], ad=defs[:3],
+           lsis=[{"IndexName": "ix1", "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"},
+                                                    {"AttributeName": "g", "KeyType": "RANGE"}],
+                  "Projection": {"ProjectionType": "ALL"}}]),
+        ct([{"IndexName": "ix1", "KeySchema": [{"AttributeName": "gs", "KeyType": "RANGE"},
+                                               {"AttributeName": "g", "KeyType": "HASH"}],
+             "Projection": {"ProjectionType": "ALL"}}]),
+        {**ct([gsi("ab", "g", "gs")]), "divergence": MODEL_DIVERGENCE,
+         "kythira": model_error("Value 'ab' at 'globalSecondaryIndexes.1.member.indexName' failed to satisfy "
+                                "constraint: Member must have length greater than or equal to 3")},
+    ]
+    return {"name": "gsi_create", "tables": [], "setup": [], "steps": steps}
+
+
 MISSING_DIVERGENCE = ("missing table: Kythira gives AWS's data-plane wording, DynamoDB Local says "
                       "\"Cannot do operations on a non-existent table\"")
 MISSING = {"error": {"type": "ResourceNotFoundException", "message": "Requested resource not found"}}
@@ -626,7 +820,8 @@ def mark_divergences(scenarios):
 def all_scenarios():
     return mark_divergences([query_scenario(), strings_scenario(), numbers_scenario(),
                              binary_scenario(), scan_scenario(), batch_scenario(),
-                             lsi_scenario(), lsi_create_scenario(), transactions_scenario()])
+                             lsi_scenario(), lsi_create_scenario(), transactions_scenario(),
+                             gsi_scenario(), gsi_create_scenario()])
 
 
 if __name__ == "__main__":

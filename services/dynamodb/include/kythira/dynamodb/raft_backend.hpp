@@ -64,6 +64,7 @@
 
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/catalog.hpp>
+#include <kythira/dynamodb/gsi_propagator.hpp>
 #include <kythira/dynamodb/group_state_machine.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/item_state_machine.hpp>
@@ -87,6 +88,7 @@
 #include <exception>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -115,6 +117,13 @@ struct raft_backend_options {
     std::size_t max_hops = 4;
     /// Items deleted per drop step.
     std::uint32_t drop_step_keys = 1000;
+    /// How often an item group's leader looks for GSI changes to carry when
+    /// the last pass found none, and how many it takes from one group per
+    /// pass (task 11).
+    std::chrono::milliseconds gsi_interval{20};
+    std::size_t gsi_batch = 64;
+    /// How long a table looked up by id stays cached for the propagator.
+    std::chrono::milliseconds table_cache_ttl{1000};
     /// Each transaction's lock TTL and budget (read committed: DynamoDB's
     /// transactions lock every item they touch).
     kythira::txn_options txn{};
@@ -236,6 +245,12 @@ struct page {
     p.more = *more == 1;
     p.covered = std::move(*covered);
     return p;
+}
+
+/// The smallest key after `key`.
+[[nodiscard]] inline auto just_after(std::string key) -> std::string {
+    key.push_back('\0');
+    return key;
 }
 
 [[nodiscard]] inline auto to_bytes(std::string_view s) -> std::vector<std::byte> {
@@ -572,6 +587,7 @@ public:
         }
         _stopping = false;
         _worker = std::thread([this] { worker_loop(); });
+        _propagator = std::thread([this] { propagator_loop(); });
     }
 
     auto stop() -> void {
@@ -582,6 +598,9 @@ public:
         _worker_cv.notify_all();
         if (_worker.joinable()) {
             _worker.join();
+        }
+        if (_propagator.joinable()) {
+            _propagator.join();
         }
     }
 
@@ -636,6 +655,65 @@ public:
             did = true;
         }
         return did;
+    }
+
+    /// One pass of GSI propagation over the item groups this node leads
+    /// (`gsi_propagator.hpp`). Returns whether it carried anything.
+    auto propagate_once() -> bool {
+        kythira::shard_range<std::string> items;
+        items._start = std::string("t/");
+        items._end = prefix_end("t/");
+        bool did = false;
+        for (const auto& desc : _host.shard_map_snapshot().range_scan(items)) {
+            auto* n = _host.group_node(desc._group_id);
+            if (n == nullptr || !n->is_leader()) {
+                continue;
+            }
+            auto& cursor = _gsi_cursor[static_cast<std::uint64_t>(desc._group_id)];
+            const auto batch = _host.with_group_state_machine(
+                desc._group_id, [&](auto& sm, const descriptor_type&) {
+                    const auto* group = sm.inner().item_group();
+                    return group == nullptr ? std::vector<gsi_work>{}
+                                            : group->gsi_pending_batch(_options.gsi_batch, cursor);
+                });
+            if (!batch) {
+                continue;
+            }
+            for (const auto& work : *batch) {
+                const auto plan = plan_propagation(table_by_id(work.pending.table_id), work);
+                for (const auto& w : plan.index_writes) {
+                    (void)write(w);
+                }
+                (void)write(plan.ack);
+                cursor = raft_backend_detail::just_after(work.pending_key);
+                did = true;
+            }
+        }
+        return did;
+    }
+
+    /// Items with GSI changes not yet carried, in the item groups this
+    /// node leads: the propagation lag, in items.
+    [[nodiscard]] auto gsi_lag() const -> std::size_t {
+        kythira::shard_range<std::string> items;
+        items._start = std::string("t/");
+        items._end = prefix_end("t/");
+        std::size_t total = 0;
+        for (const auto& desc : _host.shard_map_snapshot().range_scan(items)) {
+            auto* n = _host.group_node(desc._group_id);
+            if (n == nullptr || !n->is_leader()) {
+                continue;
+            }
+            total += _host
+                         .with_group_state_machine(desc._group_id,
+                                                   [](auto& sm, const descriptor_type&) {
+                                                       const auto* g = sm.inner().item_group();
+                                                       return g == nullptr ? std::size_t{0}
+                                                                           : g->gsi_pending_count();
+                                                   })
+                         .value_or(0);
+        }
+        return total;
     }
 
 private:
@@ -880,7 +958,7 @@ private:
         if (decode_item_command(body, c) != item_command_status::ok) {
             return error_answer("unreadable item command");
         }
-        const auto key = base_item_key(c.table_id, c.schema, c.payload);
+        const auto key = command_key(c);
         if (!key) {
             return error_answer("item command without a key");
         }
@@ -1138,6 +1216,50 @@ private:
                           });
     }
 
+    /// The table with id `id`, from a short-lived cache in front of the
+    /// catalog (a describe op per miss).
+    auto table_by_id(std::uint64_t id) -> std::optional<table_descriptor> {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - _tables_read > _options.table_cache_ttl) {
+            _tables.clear();
+            _tables_read = now;
+        }
+        if (const auto it = _tables.find(id); it != _tables.end()) {
+            return it->second;
+        }
+        std::optional<table_descriptor> found;
+        for (const auto& name : list_tables("", SIZE_MAX)) {
+            auto d = describe(name);
+            if (d) {
+                if (d->table_id == id) {
+                    found = d;
+                }
+                _tables[d->table_id] = std::move(d);
+            }
+        }
+        _tables.try_emplace(id, found);
+        return found;
+    }
+
+    auto propagator_loop() -> void {
+        std::unique_lock lock(_worker_mu);
+        while (!_stopping) {
+            lock.unlock();
+            bool did = false;
+            try {
+                did = propagate_once();
+            } catch (const std::exception&) {
+                // Leadership moved or a group is electing; the change stays
+                // recorded and the next pass (here or on the new leader)
+                // carries it.
+            }
+            lock.lock();
+            if (!did) {
+                _worker_cv.wait_for(lock, _options.gsi_interval, [this] { return _stopping; });
+            }
+        }
+    }
+
     auto worker_loop() -> void {
         std::unique_lock lock(_worker_mu);
         while (!_stopping) {
@@ -1162,6 +1284,12 @@ private:
     std::condition_variable _worker_cv;
     bool _stopping = false;
     std::thread _worker;
+    std::thread _propagator;
+    /// The propagator's place in each item group's pending changes, so a
+    /// change that keeps failing does not starve the rest.
+    std::map<std::uint64_t, std::string> _gsi_cursor;
+    std::map<std::uint64_t, std::optional<table_descriptor>> _tables;
+    std::chrono::steady_clock::time_point _tables_read{};
     /// Last, so its send threads are joined before anything they use goes.
     txn_client _txn;
 };

@@ -38,6 +38,7 @@
 /// does the same work from the catalog leader.
 
 #include <kythira/dynamodb/catalog.hpp>
+#include <kythira/dynamodb/gsi_propagator.hpp>
 #include <kythira/dynamodb/item_state_machine.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
 
@@ -113,6 +114,7 @@ public:
         // table).
         const std::lock_guard lock(_mu);
         settle_locked();
+        propagate_locked();
     }
 
     [[nodiscard]] static auto system_clock_ms() -> clock_fn {
@@ -128,12 +130,15 @@ public:
         const std::lock_guard lock(_mu);
         auto r = apply_catalog_locked(c);
         settle_locked();
+        propagate_locked();
         return r;
     }
 
     auto write(const item_command& c) -> item_result {
         const std::lock_guard lock(_mu);
-        return apply_item_locked(c);
+        auto r = apply_item_locked(c);
+        propagate_locked();
+        return r;
     }
 
     auto read(std::uint64_t table_id, const key_schema& schema, const item& key,
@@ -196,6 +201,7 @@ public:
         for (const auto& a : actions) {
             (void)apply_item_locked(a);
         }
+        propagate_locked();
         return r;
     }
 
@@ -237,6 +243,21 @@ private:
             throw std::logic_error("local_backend: unreadable item result");
         }
         return *r;
+    }
+
+    /// Carries every pending GSI change to the indexes, at once
+    /// (`gsi_propagator.hpp`).
+    auto propagate_locked() -> void {
+        while (_items.gsi_pending_count() > 0) {
+            for (const auto& work : _items.gsi_pending_batch(64)) {
+                const auto plan =
+                    plan_propagation(_catalog.describe_id(work.pending.table_id), work);
+                for (const auto& w : plan.index_writes) {
+                    (void)apply_item_locked(w);
+                }
+                (void)apply_item_locked(plan.ack);
+            }
+        }
     }
 
     // The catalog leader's follow-on work, done at once.

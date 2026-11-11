@@ -306,6 +306,155 @@ template<typename TypeOf>
     return out;
 }
 
+/// `CreateTable`'s `GlobalSecondaryIndexes`, checked in DynamoDB Local's
+/// order and words (ids are the catalog's to give). `type_of` gives an
+/// attribute's definition.
+template<typename TypeOf>
+[[nodiscard]] auto global_indexes_from(const boost::json::array& list, const TypeOf& type_of)
+    -> aws_json::result<std::vector<global_index>> {
+    if (list.empty()) {
+        return validation_error("GSI list is empty/invalid");
+    }
+    if (list.size() > k_max_global_indexes) {
+        return validation_error("GlobalSecondaryIndex count exceeds the per-table limit");
+    }
+    std::vector<global_index> out;
+    for (const auto& entry : list) {
+        const auto& o = entry.as_object();
+        global_index g;
+        g.name = std::string(o.at("IndexName").as_string());
+        if (!table_api_detail::valid_table_name(g.name)) {
+            return table_api_detail::bad_table_name();
+        }
+        const auto& ks = o.at("KeySchema").as_array();
+        std::vector<std::string> hash;
+        std::vector<std::string> range;
+        for (const auto& k : ks) {
+            const auto& ko = k.as_object();
+            (ko.at("KeyType").as_string() == "HASH" ? hash : range)
+                .emplace_back(ko.at("AttributeName").as_string());
+        }
+        if (hash.empty()) {
+            return validation_error(
+                "No Hash Key specified in schema.  All Dynamo DB tables must have exactly one "
+                "hash key");
+        }
+        if (hash.size() > 1) {
+            return validation_error(
+                "Too many hash keys specified.  All Dynamo DB tables must have exactly one hash "
+                "key");
+        }
+        if (ks[0].as_object().at("KeyType").as_string() != "HASH") {
+            return validation_error(
+                "Invalid key order. Hash Key must be specified first in key schema, Range Key "
+                "must be specifed second");
+        }
+        if (!range.empty() && range[0] == hash[0]) {
+            return validation_error("Two keys can not have the same name");
+        }
+        for (const auto* name : {&hash[0], range.empty() ? nullptr : &range[0]}) {
+            if (name != nullptr && !type_of(*name)) {
+                return validation_error("Attribute " + *name +
+                                        " is not defined in AttributeDefinitions");
+            }
+        }
+        g.schema.partition_name = hash[0];
+        g.schema.partition_type = *type_of(hash[0]);
+        if (!range.empty()) {
+            g.schema.sort_name = range[0];
+            g.schema.sort_type = *type_of(range[0]);
+        }
+        const auto* proj = o.if_contains("Projection");
+        if (proj == nullptr) {
+            return validation_error("Indexes must have a projection specified");
+        }
+        // A projection without a type projects everything, as DynamoDB
+        // Local takes it (an LSI's is refused).
+        const auto* pt = proj->as_object().if_contains("ProjectionType");
+        const auto* nk = proj->as_object().if_contains("NonKeyAttributes");
+        const std::string_view kind = pt == nullptr ? std::string_view("ALL") : pt->as_string();
+        if (kind != "INCLUDE" && nk != nullptr) {
+            return validation_error(
+                "No attributes should be specified to be projected unless projection type is "
+                "INCLUDE");
+        }
+        if (kind == "INCLUDE") {
+            if (nk == nullptr || nk->as_array().empty()) {
+                return validation_error(
+                    "If Projection type INCLUDE is specified, some non-key attributes to include "
+                    "in the projection must be specified as well");
+            }
+            for (const auto& a : nk->as_array()) {
+                std::string name(a.as_string());
+                if (std::find(g.non_key.begin(), g.non_key.end(), name) != g.non_key.end()) {
+                    return validation_error("Cannot have two attributes with the same name");
+                }
+                g.non_key.push_back(std::move(name));
+            }
+        }
+        g.projection = kind == "ALL"       ? projection_kind::all
+                       : kind == "INCLUDE" ? projection_kind::include
+                                           : projection_kind::keys_only;
+        if (const auto* t = o.if_contains("ProvisionedThroughput")) {
+            const auto& to = t->as_object();
+            g.has_throughput = true;
+            g.read_capacity =
+                static_cast<std::uint64_t>(to.at("ReadCapacityUnits").to_number<std::int64_t>());
+            g.write_capacity =
+                static_cast<std::uint64_t>(to.at("WriteCapacityUnits").to_number<std::int64_t>());
+        }
+        out.push_back(std::move(g));
+    }
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        for (std::size_t j = i + 1; j < out.size(); ++j) {
+            if (out[i].name == out[j].name) {
+                return validation_error("Two global secondary indices have the same name");
+            }
+        }
+    }
+    return out;
+}
+
+/// `GlobalSecondaryIndexes` in a table description, in DynamoDB Local's
+/// shape (`ProvisionedThroughput` only when one was given).
+[[nodiscard]] inline auto global_index_descriptions(const table_descriptor& d,
+                                                    const call_context& ctx) -> boost::json::array {
+    boost::json::array out;
+    for (const auto& g : d.gsis) {
+        boost::json::object projection{{"ProjectionType", projection_name(g.projection)}};
+        if (g.projection == projection_kind::include) {
+            boost::json::array names;
+            for (const auto& n : g.non_key) {
+                names.emplace_back(n);
+            }
+            projection["NonKeyAttributes"] = std::move(names);
+        }
+        boost::json::array keys{
+            boost::json::object{{"AttributeName", g.schema.partition_name}, {"KeyType", "HASH"}}};
+        if (g.schema.sort_name) {
+            keys.push_back(
+                boost::json::object{{"AttributeName", *g.schema.sort_name}, {"KeyType", "RANGE"}});
+        }
+        boost::json::object o{
+            {"IndexName", g.name},
+            {"KeySchema", std::move(keys)},
+            {"Projection", std::move(projection)},
+            {"IndexStatus", index_status_name(g.status)},
+        };
+        if (g.has_throughput) {
+            o["ProvisionedThroughput"] = boost::json::object{
+                {"ReadCapacityUnits", g.read_capacity},
+                {"WriteCapacityUnits", g.write_capacity},
+            };
+        }
+        o["IndexSizeBytes"] = 0;
+        o["ItemCount"] = 0;
+        o["IndexArn"] = ctx.table_arn(d.name) + "/index/" + g.name;
+        out.push_back(std::move(o));
+    }
+    return out;
+}
+
 /// `LocalSecondaryIndexes` in a table description.
 [[nodiscard]] inline auto local_index_descriptions(const table_descriptor& d,
                                                    const call_context& ctx) -> boost::json::array {
@@ -361,6 +510,25 @@ template<typename TypeOf>
                                                {"AttributeType", type_letter(lsi.sort_type)}});
         }
     }
+    const auto defined = [&](const std::string& name) {
+        for (const auto& def : defs) {
+            if (def.as_object().at("AttributeName").as_string() == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const auto& g : d.gsis) {
+        if (!defined(g.schema.partition_name)) {
+            defs.push_back(
+                boost::json::object{{"AttributeName", g.schema.partition_name},
+                                    {"AttributeType", type_letter(g.schema.partition_type)}});
+        }
+        if (g.schema.sort_name && !defined(*g.schema.sort_name)) {
+            defs.push_back(boost::json::object{{"AttributeName", *g.schema.sort_name},
+                                               {"AttributeType", type_letter(g.schema.sort_type)}});
+        }
+    }
     boost::json::object out;
     out["AttributeDefinitions"] = std::move(defs);
     out["TableName"] = d.name;
@@ -386,6 +554,9 @@ template<typename TypeOf>
     out["DeletionProtectionEnabled"] = d.deletion_protection;
     if (!d.lsis.empty()) {
         out["LocalSecondaryIndexes"] = local_index_descriptions(d, ctx);
+    }
+    if (!d.gsis.empty()) {
+        out["GlobalSecondaryIndexes"] = global_index_descriptions(d, ctx);
     }
     out["WarmThroughput"] = boost::json::object{
         {"ReadUnitsPerSecond", warm_read_of(d)},
@@ -432,8 +603,8 @@ public:
         }
         // VectorIndexes come with task 26; refusing them beats creating a
         // table without the index the caller asked for.
-        for (const char* member : {"GlobalSecondaryIndexes", "SSESpecification", "ResourcePolicy",
-                                   "OnDemandThroughput", "VectorIndexes"}) {
+        for (const char* member :
+             {"SSESpecification", "ResourcePolicy", "OnDemandThroughput", "VectorIndexes"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
@@ -530,8 +701,33 @@ public:
                 }
             }
         }
+        std::vector<global_index> gsis;
+        const auto* gsi_list = in.if_contains("GlobalSecondaryIndexes");
+        if (gsi_list != nullptr) {
+            auto parsed = global_indexes_from(gsi_list->as_array(), type_of);
+            if (!parsed) {
+                return parsed.error();
+            }
+            gsis = std::move(*parsed);
+            for (const auto& g : gsis) {
+                for (const auto& l : lsis) {
+                    if (l.name == g.name) {
+                        return validation_error(
+                            "Local Secondary Indices AND Global Secondary Indices must have "
+                            "different names");
+                    }
+                }
+                for (const auto* n : {&g.schema.partition_name,
+                                      g.schema.sort_name ? &*g.schema.sort_name : nullptr}) {
+                    if (n != nullptr &&
+                        std::find(key_names.begin(), key_names.end(), *n) == key_names.end()) {
+                        key_names.push_back(*n);
+                    }
+                }
+            }
+        }
         if (defs.size() != key_names.size()) {
-            if (lsi_list != nullptr) {
+            if (lsi_list != nullptr || gsi_list != nullptr) {
                 return validation_error(
                     "The number of attributes in key schema must match the number of attributes "
                     "defined in attribute definitions.");
@@ -550,8 +746,17 @@ public:
             d.schema.sort_type = *type_of(range[0]);
         }
         d.lsis = std::move(lsis);
+        d.gsis = std::move(gsis);
         if (auto e = billing_from(in, d, /*creating=*/true)) {
             return *e;
+        }
+        if (d.billing == billing_mode::provisioned) {
+            for (const auto& g : d.gsis) {
+                if (!g.has_throughput) {
+                    return validation_error(
+                        "No provisioned throughput specified for the global secondary index");
+                }
+            }
         }
         if (const auto* cls = in.if_contains("TableClass")) {
             d.storage_class = cls->as_string() == "STANDARD_INFREQUENT_ACCESS"
