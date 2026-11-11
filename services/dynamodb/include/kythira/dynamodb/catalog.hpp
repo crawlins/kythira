@@ -130,6 +130,49 @@ struct table_stream {
 /// can be read.
 inline constexpr std::uint64_t k_stream_retention_ms = std::uint64_t{24} * 60 * 60 * 1000;
 
+/// A Kinesis streaming destination's state (`DestinationStatus`).
+enum class destination_status : std::uint8_t {
+    enabling = 1,
+    active = 2,
+    disabling = 3,
+    disabled = 4,
+    enable_failed = 5,
+    updating = 6,
+};
+
+/// The precision of `ApproximateCreationDateTime` in the records a
+/// destination receives.
+enum class time_precision : std::uint8_t {
+    millisecond = 1,
+    microsecond = 2,
+};
+
+/// One of a table's Kinesis streaming destinations (task 17). AWS lets a
+/// table stream to one Kinesis data stream at a time; disabled and failed
+/// ones stay listed, one entry per stream ARN.
+struct kinesis_destination {
+    std::string stream_arn;
+    destination_status status = destination_status::enabling;
+    time_precision precision = time_precision::millisecond;
+    /// Why it failed to enable; empty otherwise.
+    std::string status_description;
+    /// When it was enabled (ms since the epoch, from the entry): records
+    /// written from then on are published.
+    std::uint64_t enabled_ms = 0;
+    /// How far the publisher got in each change log stream: the next
+    /// sequence number to publish, by store stream key. Cleared on disable.
+    std::vector<std::pair<std::string, std::uint64_t>> cursors;
+
+    /// Whether the table's writes must be logged for it.
+    [[nodiscard]] auto streaming() const -> bool {
+        return status == destination_status::enabling || status == destination_status::active ||
+               status == destination_status::updating;
+    }
+
+    friend auto operator==(const kinesis_destination&, const kinesis_destination&)
+        -> bool = default;
+};
+
 /// What the catalog knows about a table. Later tasks add replicas; each
 /// new field gets a new descriptor format version.
 struct table_descriptor {
@@ -161,6 +204,8 @@ struct table_descriptor {
     /// DynamoDB streams, oldest first (task 16): the last is the table's
     /// latest, enabled unless it has `disabled_ms`.
     std::vector<table_stream> streams;
+    /// Kinesis streaming destinations (task 17), at most one streaming.
+    std::vector<kinesis_destination> destinations;
 
     /// The enabled stream, or null.
     [[nodiscard]] auto enabled_stream() const -> const table_stream* {
@@ -168,9 +213,19 @@ struct table_descriptor {
     }
 
     /// Whether writes to the table append change records (task 15,
-    /// `change_log.hpp`): while a DynamoDB stream is enabled. Point-in-time
-    /// recovery (19) and global tables (22) will turn it on too.
-    [[nodiscard]] auto logs_changes() const -> bool { return enabled_stream() != nullptr; }
+    /// `change_log.hpp`): while a DynamoDB stream is enabled or a Kinesis
+    /// destination is streaming (task 17). Point-in-time recovery (19) and
+    /// global tables (22) will turn it on too.
+    [[nodiscard]] auto logs_changes() const -> bool {
+        return enabled_stream() != nullptr || streaming_destination() != nullptr;
+    }
+
+    /// The Kinesis destination being streamed to, or null.
+    [[nodiscard]] auto streaming_destination() const -> const kinesis_destination* {
+        const auto it = std::find_if(destinations.begin(), destinations.end(),
+                                     [](const kinesis_destination& k) { return k.streaming(); });
+        return it == destinations.end() ? nullptr : &*it;
+    }
 
     /// The label a logged write carries: the enabled stream's, else 0.
     [[nodiscard]] auto stream_label() const -> std::uint64_t {
@@ -210,6 +265,17 @@ struct catalog_command {
         /// attribute while enabled, or a change less than
         /// `ttl_min_interval_ms` after the last one.
         set_ttl = 8,
+        /// `EnableKinesisStreamingDestination` and its siblings (task 17):
+        /// `table.destinations` holds one entry whose `status` names the
+        /// request: `enabling` to enable its stream ARN with its precision,
+        /// `disabling` to disable it, `updating` to change its precision.
+        set_destination = 9,
+        /// The publisher's progress (task 17): `table.destinations` holds
+        /// one entry, by stream ARN, with the status to move to (`active`
+        /// or `enable_failed` from `enabling`, `active` from `updating`,
+        /// `disabled` from `disabling`, or the current one) and its
+        /// cursors, which replace the stored ones, never moving one back.
+        destination_progress = 10,
     };
 
     /// Which settings an `update_table` changes.
@@ -275,14 +341,20 @@ namespace catalog_detail {
 /// the `set_ttl` command with its interval; 4 added `streams` after `ttl`,
 /// and `update_stream` (task 16). Older versions still decode. A form whose
 /// table has no stream is still written as 3, so a replica not yet
-/// upgraded keeps applying everything but streams.
-inline constexpr std::uint8_t k_descriptor_format_version = 4;
+/// upgraded keeps applying everything but streams. 5 added `destinations`
+/// after `streams`, with the `set_destination` and `destination_progress`
+/// commands (task 17); a form without destinations keeps its older
+/// version the same way.
+inline constexpr std::uint8_t k_descriptor_format_version = 5;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 4;
-inline constexpr std::uint8_t k_result_format_version = 4;
+inline constexpr std::uint8_t k_command_format_version = 5;
+inline constexpr std::uint8_t k_result_format_version = 5;
 
 /// The version a form carrying `d` is written as.
 [[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
+    if (!d.destinations.empty()) {
+        return 5;
+    }
     return d.streams.empty() ? 3 : 4;
 }
 
@@ -353,6 +425,21 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
             detail::put_varint(out, s.disabled_ms);
         }
     }
+    if (version >= 5) {
+        detail::put_varint(out, d.destinations.size());
+        for (const auto& k : d.destinations) {
+            detail::put_bytes(out, k.stream_arn);
+            out.push_back(static_cast<char>(k.status));
+            out.push_back(static_cast<char>(k.precision));
+            detail::put_bytes(out, k.status_description);
+            detail::put_varint(out, k.enabled_ms);
+            detail::put_varint(out, k.cursors.size());
+            for (const auto& [key, seq] : k.cursors) {
+                detail::put_bytes(out, key);
+                detail::put_varint(out, seq);
+            }
+        }
+    }
 }
 
 /// `version` is the format of the enclosing form (descriptor, command or
@@ -420,6 +507,39 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
             }
             d.streams.push_back(
                 table_stream{*label, static_cast<stream_view_type>(*view), *disabled});
+        }
+    }
+    if (version >= 5) {
+        const auto n = r.count();
+        if (!n) {
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < *n; ++i) {
+            kinesis_destination k;
+            auto arn = r.bytes();
+            const auto status = r.byte();
+            const auto precision = r.byte();
+            auto description = r.bytes();
+            const auto enabled = r.varint();
+            const auto cursors = enabled ? r.count() : std::nullopt;
+            if (!arn || !status || *status < 1 || *status > 6 || !precision || *precision < 1 ||
+                *precision > 2 || !description || !cursors) {
+                return std::nullopt;
+            }
+            for (std::size_t j = 0; j < *cursors; ++j) {
+                auto key = r.bytes();
+                const auto seq = r.varint();
+                if (!key || !seq) {
+                    return std::nullopt;
+                }
+                k.cursors.emplace_back(std::move(*key), *seq);
+            }
+            k.stream_arn = std::move(*arn);
+            k.status = static_cast<destination_status>(*status);
+            k.precision = static_cast<time_precision>(*precision);
+            k.status_description = std::move(*description);
+            k.enabled_ms = *enabled;
+            d.destinations.push_back(std::move(k));
         }
     }
     d.name = std::move(*name);
@@ -527,8 +647,9 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         return std::nullopt;
     }
     const auto op = static_cast<std::uint8_t>(bytes[1]);
-    // set_ttl came in version 3.
-    if (version == 0 || op < 1 || op > (version >= 3 ? 8 : 7)) {
+    // set_ttl came in version 3, the destination commands in 5.
+    const std::uint8_t last_op = version >= 5 ? 10 : version >= 3 ? 8 : 7;
+    if (version == 0 || op < 1 || op > last_op) {
         return std::nullopt;
     }
     detail::reader r(bytes.substr(2));
@@ -680,6 +801,12 @@ public:
                 break;
             case catalog_command::kind::set_ttl:
                 result = set_ttl(*c, batch);
+                break;
+            case catalog_command::kind::set_destination:
+                result = set_destination(*c, batch);
+                break;
+            case catalog_command::kind::destination_progress:
+                result = destination_progress(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -1189,6 +1316,139 @@ private:
         ++d->revision;
         store(batch, *d);
         catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `set_destination` (task 17). AWS's refusals are matched in kind
+    /// (`ValidationException`, `ResourceInUseException`); their wording
+    /// is not recorded from AWS (DynamoDB Local has no Kinesis
+    /// destinations), so it is Kythira's.
+    auto set_destination(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d) {
+            return not_found(c.table.name);
+        }
+        if (c.table.destinations.size() != 1) {
+            return invalid("One Kinesis streaming destination is required");
+        }
+        if (d->status != table_status::active) {
+            return in_use(*d);
+        }
+        const auto& want = c.table.destinations.front();
+        const auto it = std::find_if(
+            d->destinations.begin(), d->destinations.end(),
+            [&](const kinesis_destination& k) { return k.stream_arn == want.stream_arn; });
+        switch (want.status) {
+            case destination_status::enabling: {
+                if (const auto* on = d->streaming_destination()) {
+                    return invalid(on->stream_arn == want.stream_arn
+                                       ? "Table is already streaming to this Kinesis data stream"
+                                       : "Table can stream to only one Kinesis data stream");
+                }
+                kinesis_destination k;
+                k.stream_arn = want.stream_arn;
+                k.status = destination_status::enabling;
+                k.precision = want.precision;
+                k.enabled_ms = c.now_ms;
+                if (it != d->destinations.end()) {
+                    *it = std::move(k);
+                } else {
+                    d->destinations.push_back(std::move(k));
+                }
+                break;
+            }
+            case destination_status::disabling:
+                if (it == d->destinations.end() || !it->streaming()) {
+                    return invalid("Table is not streaming to the Kinesis data stream " +
+                                   want.stream_arn);
+                }
+                it->status = destination_status::disabling;
+                break;
+            case destination_status::updating:
+                if (it == d->destinations.end() || !it->streaming()) {
+                    return invalid("Table is not streaming to the Kinesis data stream " +
+                                   want.stream_arn);
+                }
+                if (it->status != destination_status::active) {
+                    return failure("ResourceInUseException",
+                                   "The Kinesis streaming destination is " +
+                                       std::string(it->status == destination_status::enabling
+                                                       ? "being enabled"
+                                                       : "being updated"));
+                }
+                if (it->precision == want.precision) {
+                    return invalid("ApproximateCreationDateTimePrecision is already " +
+                                   std::string(want.precision == time_precision::millisecond
+                                                   ? "MILLISECOND"
+                                                   : "MICROSECOND"));
+                }
+                it->status = destination_status::updating;
+                it->precision = want.precision;
+                break;
+            default:
+                return invalid("Not a Kinesis streaming destination request");
+        }
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `destination_progress` (task 17): the publisher's status moves and
+    /// cursors. A move the destination has left behind (a disable that
+    /// came first, say) is ignored, not refused, as is progress for a
+    /// destination that stopped streaming.
+    auto destination_progress(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || c.table.destinations.size() != 1) {
+            return d ? invalid("One Kinesis streaming destination is required")
+                     : not_found(c.table.name);
+        }
+        const auto& got = c.table.destinations.front();
+        const auto it = std::find_if(
+            d->destinations.begin(), d->destinations.end(),
+            [&](const kinesis_destination& k) { return k.stream_arn == got.stream_arn; });
+        catalog_result r;
+        if (it == d->destinations.end() || it->enabled_ms != got.enabled_ms) {
+            r.table = std::move(d);
+            return r;
+        }
+        using ds = destination_status;
+        const auto from = it->status;
+        const bool moves = (from == ds::enabling &&
+                            (got.status == ds::active || got.status == ds::enable_failed)) ||
+                           (from == ds::updating && got.status == ds::active) ||
+                           (from == ds::disabling && got.status == ds::disabled);
+        if (!moves && got.status != from) {
+            r.table = std::move(d);
+            return r;
+        }
+        it->status = got.status;
+        if (got.status == ds::enable_failed) {
+            it->status_description = got.status_description;
+        }
+        if (!it->streaming()) {
+            it->cursors.clear();
+        } else {
+            std::vector<std::pair<std::string, std::uint64_t>> merged;
+            merged.reserve(got.cursors.size());
+            for (const auto& [key, seq] : got.cursors) {
+                auto next = seq;
+                for (const auto& [old_key, old_seq] : it->cursors) {
+                    if (old_key == key) {
+                        next = std::max(next, old_seq);
+                    }
+                }
+                merged.emplace_back(key, next);
+            }
+            it->cursors = std::move(merged);
+        }
+        ++d->revision;
+        store(batch, *d);
         r.table = std::move(d);
         return r;
     }

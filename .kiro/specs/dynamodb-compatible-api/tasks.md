@@ -621,9 +621,49 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       still passing. Not covered: a split during the run (there is no
       external split API yet); the three-node split test covers lineage.
 
-- [ ] 17. Kinesis streaming destinations
+- [x] 17. Kinesis streaming destinations
   - Publisher to Kythira Kinesis or AWS Kinesis; the four actions
   - _Requirements: 16.1, 16.2_
+  - Notes:
+    - `kinesis_destination.hpp`. A table's destinations live in its
+      descriptor (format 5, still written as 3 or 4 for a table that never
+      had one): stream ARN, status, precision, enable time, failure text
+      and the publisher's cursors. One streams at a time, as on AWS; an
+      enable answers `ENABLING`, a disable `DISABLING`, an update
+      `UPDATING`, and the publisher completes each with a
+      `destination_progress` entry. The stream ARN must be a Kinesis
+      stream in the table's region. Refusal kinds follow AWS; their
+      wording is Kythira's, since DynamoDB Local has no destinations to
+      record and no AWS run was made.
+    - A streaming destination turns the change log on (`logs_changes()`),
+      and the publisher reads it through `change_feed_backend`, like
+      DynamoDB Streams, keeping records of its table written since the
+      enable. Records are AWS's documents (both images,
+      `ApproximateCreationDateTime` in ms or µs, the µs ending in 000
+      because the log keeps ms; a TTL delete's `userIdentity` in the
+      lower-case form Lambda-style records use, unverified against AWS).
+      The partition key is a hash of the item's key, so an item stays in
+      one Kinesis shard; AWS does not document its own choice.
+    - At least once, in order per item: a store stream continued by a
+      split waits for its parent to drain; one `PutRecords` call holds at
+      most one record per item; the cursor stops at the first failed
+      record, and the records after it are resent. Cursors go to the
+      catalog after each pass that moved them, so a new catalog leader
+      resends at most one pass. Passes are bounded (20,000 records per
+      destination).
+    - The gateway runs a pass a second beside the TTL sweeper (on the
+      catalog leader for `raft_backend`). `kinesis_http_sink` signs JSON
+      1.1 calls with SigV4 (`DescribeStreamSummary` to enable,
+      `PutRecords`), to AWS's endpoint for the stream's region or
+      `KYTHIRA_DYNAMODB_KINESIS_ENDPOINT`.
+    - Tests: `dynamodb_kinesis_destination_test` (13 cases). Also run once
+      in the sandbox, not checked in because it would join the DynamoDB
+      and Kinesis modules in one test: the publisher against an
+      in-process Kythira Kinesis gateway with static-key SigV4 checks,
+      50 of 50 records over two Kinesis shards, in per-item order, and an
+      enable refused with Kinesis's own "not found" text before the stream
+      existed. Not run against AWS Kinesis (real-cloud spend needs
+      approval).
 
 ### Phase 5: data protection
 

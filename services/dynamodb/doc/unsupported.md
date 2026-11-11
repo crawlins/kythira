@@ -19,10 +19,6 @@ test reads the table rows: keep one operation per row, in the
 
 | Service | Operation | Why |
 |---|---|---|
-| DynamoDB | `EnableKinesisStreamingDestination` | planned, task 17 |
-| DynamoDB | `DisableKinesisStreamingDestination` | planned, task 17 |
-| DynamoDB | `DescribeKinesisStreamingDestination` | planned, task 17 |
-| DynamoDB | `UpdateKinesisStreamingDestination` | planned, task 17 |
 | DynamoDB | `CreateBackup` | planned, task 18 |
 | DynamoDB | `DescribeBackup` | planned, task 18 |
 | DynamoDB | `ListBackups` | planned, task 18 |

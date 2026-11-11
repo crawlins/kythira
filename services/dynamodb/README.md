@@ -75,6 +75,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_change_log_test.cpp` | records per write, timestamps, restart, split and merge lineage, and the active segment fetched on a snapshot install | 15 |
 | `include/kythira/dynamodb/streams.hpp` | DynamoDB Streams: `ListStreams`, `DescribeStream`, `GetShardIterator` and `GetRecords` over the change log, shards and their lineage, sequence numbers, iterators | 16 |
 | `tests/dynamodb_streams_test.cpp` | `StreamSpecification` and the four Streams calls with DynamoDB Local's answers, view types, retention and iterator expiry | 16 |
+| `include/kythira/dynamodb/kinesis_destination.hpp` | Kinesis streaming destinations: the four actions, the publisher that puts change records to AWS or Kythira Kinesis in AWS's record format, and its SigV4 HTTP sink | 17 |
+| `tests/dynamodb_kinesis_destination_test.cpp` | Destination lifecycle and refusals, record format, per-item order, partial failures, resuming from stored cursors, and the signed calls | 17 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
@@ -106,6 +108,12 @@ Tables are throttled as on AWS, provisioned ones at their capacity and
 on-demand ones at AWS's default limits. `KYTHIRA_DYNAMODB_COMPAT=throttling=off`
 turns that off for the cluster, and the tag `kythira:compat:throttling`
 sets it per table.
+
+Kinesis streaming destinations publish to AWS Kinesis, signed with the
+standard `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+`AWS_SESSION_TOKEN`, unless `KYTHIRA_DYNAMODB_KINESIS_ENDPOINT` names
+another endpoint, such as a Kythira `kinesis_gateway_node`
+(`KYTHIRA_DYNAMODB_KINESIS_TLS=0` for a plain-HTTP one).
 
 ## Core targets and variables used
 
