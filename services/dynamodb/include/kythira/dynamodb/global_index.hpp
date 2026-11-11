@@ -112,6 +112,19 @@ struct global_index {
     friend auto operator==(const global_index&, const global_index&) -> bool = default;
 };
 
+/// The indexes writes maintain: all but those being deleted (whose key
+/// spaces their delete jobs are emptying).
+[[nodiscard]] inline auto maintained_indexes(const std::vector<global_index>& all)
+    -> std::vector<global_index> {
+    std::vector<global_index> out;
+    for (const auto& g : all) {
+        if (g.status != index_status::deleting) {
+            out.push_back(g);
+        }
+    }
+    return out;
+}
+
 /// AWS's default limit on GSIs per table.
 inline constexpr std::size_t k_max_global_indexes = 20;
 

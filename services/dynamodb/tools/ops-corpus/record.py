@@ -23,6 +23,7 @@ import copy
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -65,6 +66,20 @@ def scan_all(endpoint, inp):
         body["ExclusiveStartKey"] = r["LastEvaluatedKey"]
 
 
+def wait_indexes(endpoint, inp, budget=60.0):
+    """Polls DescribeTable until no GSI of the table is CREATING or DELETING."""
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline:
+        code, r = call(endpoint, "DescribeTable", inp)
+        if code != 200:
+            return error_of(r)
+        gsis = r["Table"].get("GlobalSecondaryIndexes", [])
+        if all(g["IndexStatus"] == "ACTIVE" for g in gsis):
+            return {"response": {}}
+        time.sleep(0.2)
+    raise SystemExit("indexes of %s did not settle" % inp["TableName"])
+
+
 def run_scenario(endpoint, sc):
     for t in sc["tables"]:
         call(endpoint, "DeleteTable", {"TableName": t["TableName"]})
@@ -83,7 +98,9 @@ def run_scenario(endpoint, sc):
             if lek is None:
                 raise SystemExit("continue step without a previous LastEvaluatedKey in " + sc["name"])
             inp["ExclusiveStartKey"] = lek
-        if st["op"] == "ScanAll":
+        if st["op"] == "WaitIndexes":
+            st["expect"] = wait_indexes(endpoint, inp)
+        elif st["op"] == "ScanAll":
             st["expect"] = scan_all(endpoint, inp)
         elif st["op"] == "ScanSegments":
             items = []

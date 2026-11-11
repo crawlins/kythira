@@ -105,6 +105,13 @@ struct item_command {
         /// write came, in which case `entries` (the entries now written)
         /// become the ones to remove.
         index_ack = 9,
+        /// Backfill of a new GSI: each item of `entries` (base keys, all
+        /// expected in the group of `target`, the first of them) that has
+        /// no pending change gets one at its current version with no
+        /// entries to remove, so the propagator writes its entries in
+        /// every index of the table. Keys outside the group are skipped
+        /// and reported with `more`.
+        index_mark = 10,
     };
 
     kind op = kind::put;
@@ -127,7 +134,8 @@ struct item_command {
     std::string target;
     /// `index_*`: the item version the write carries.
     std::uint64_t version = 0;
-    /// `index_ack`: the entry keys the propagator wrote.
+    /// `index_ack`: the entry keys the propagator wrote; `index_mark`: the
+    /// base keys to mark.
     std::vector<std::string> entries;
 
     friend auto operator==(const item_command&, const item_command&) -> bool = default;
@@ -136,7 +144,7 @@ struct item_command {
 /// Whether `op` is one of the index maintenance kinds.
 [[nodiscard]] inline auto is_index_op(item_command::kind op) -> bool {
     return op == item_command::kind::index_put || op == item_command::kind::index_delete ||
-           op == item_command::kind::index_ack;
+           op == item_command::kind::index_ack || op == item_command::kind::index_mark;
 }
 
 /// The engine key a command is routed by: the item's base key, or an
@@ -293,7 +301,7 @@ enum class item_command_status : std::uint8_t {
     if (op == 0) {
         return item_command_status::malformed;
     }
-    if (op > static_cast<std::uint8_t>(item_command::kind::index_ack)) {
+    if (op > static_cast<std::uint8_t>(item_command::kind::index_mark)) {
         // A kind a later release added: upgrade rather than guess.
         return item_command_status::unknown_version;
     }
@@ -946,6 +954,7 @@ private:
             case item_command::kind::index_put:
             case item_command::kind::index_delete:
             case item_command::kind::index_ack:
+            case item_command::kind::index_mark:
                 break;
         }
 
@@ -1087,6 +1096,26 @@ private:
             throw std::logic_error("dynamo_item_state_machine: key outside the group's range");
         }
         item_result r;
+        if (c.op == item_command::kind::index_mark) {
+            for (const auto& key : c.entries) {
+                if (!_range.contains(key)) {
+                    r.more = true;
+                    continue;
+                }
+                const auto current = load(key);
+                if (!current) {
+                    continue;
+                }
+                const auto pkey = gsi_pending_key(c.table_id, c.schema, *current);
+                if (!pkey || load_pending_record(*pkey)) {
+                    continue;
+                }
+                batch.put(kythira::column_family::meta, *pkey,
+                          encode_gsi_pending(gsi_pending{c.table_id, key, load_version(key), {}}));
+                ++r.deleted;
+            }
+            return r;
+        }
         if (c.op == item_command::kind::index_ack) {
             auto record = load_pending_record(c.target);
             if (!record) {

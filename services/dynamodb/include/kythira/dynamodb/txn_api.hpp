@@ -331,7 +331,7 @@ private:
         c.schema = table.schema;
         c.payload = std::move(payload);
         c.lsis = table.lsis;
-        c.gsis = table.gsis;
+        c.gsis = maintained_indexes(table.gsis);
         return c;
     }
 
@@ -377,7 +377,7 @@ private:
             if (auto e = validate_index_keys(*parsed, table->lsis)) {
                 return *e;
             }
-            if (auto e = validate_global_index_keys(*parsed, table->gsis)) {
+            if (auto e = validate_global_index_keys(*parsed, maintained_indexes(table->gsis))) {
                 return *e;
             }
             a.command = command(item_command::kind::put, *table, std::move(*parsed));

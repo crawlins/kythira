@@ -66,6 +66,12 @@ namespace table_api_detail {
     return e;
 }
 
+/// `ResourceInUseException` about an index, in DynamoDB Local's words.
+[[nodiscard]] inline auto in_use_message(std::string_view what) -> aws_json::error {
+    return modeled("ResourceInUseException",
+                   "Attempt to change a resource which is still in use: " + std::string(what));
+}
+
 [[nodiscard]] inline auto invalid(std::string what) -> aws_json::error {
     return validation_error(std::string(k_invalid_parameters) + std::move(what));
 }
@@ -447,8 +453,14 @@ template<typename TypeOf>
                 {"WriteCapacityUnits", g.write_capacity},
             };
         }
-        o["IndexSizeBytes"] = 0;
-        o["ItemCount"] = 0;
+        // DynamoDB Local's shape: `Backfilling` (false, as Local shows it)
+        // while CREATING, the counts only once ACTIVE.
+        if (g.status == index_status::creating) {
+            o["Backfilling"] = false;
+        } else if (g.status == index_status::active) {
+            o["IndexSizeBytes"] = 0;
+            o["ItemCount"] = 0;
+        }
         o["IndexArn"] = ctx.table_arn(d.name) + "/index/" + g.name;
         out.push_back(std::move(o));
     }
@@ -518,7 +530,9 @@ template<typename TypeOf>
         }
         return false;
     };
-    for (const auto& g : d.gsis) {
+    // An index being deleted no longer defines its keys, as in DynamoDB
+    // Local.
+    for (const auto& g : maintained_indexes(d.gsis)) {
         if (!defined(g.schema.partition_name)) {
             defs.push_back(
                 boost::json::object{{"AttributeName", g.schema.partition_name},
@@ -826,16 +840,15 @@ public:
         using namespace table_api_detail;
         const auto name = table_name_of(in.at("TableName").as_string());
         for (const char* member :
-             {"AttributeDefinitions", "GlobalSecondaryIndexUpdates", "StreamSpecification",
-              "SSESpecification", "ReplicaUpdates", "OnDemandThroughput", "MultiRegionConsistency",
-              "GlobalTableWitnessUpdates", "VectorIndexUpdates"}) {
+             {"StreamSpecification", "SSESpecification", "ReplicaUpdates", "OnDemandThroughput",
+              "MultiRegionConsistency", "GlobalTableWitnessUpdates", "VectorIndexUpdates"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
         }
         if (!in.contains("BillingMode") && !in.contains("ProvisionedThroughput") &&
             !in.contains("TableClass") && !in.contains("DeletionProtectionEnabled") &&
-            !in.contains("WarmThroughput")) {
+            !in.contains("WarmThroughput") && !in.contains("GlobalSecondaryIndexUpdates")) {
             return validation_error(
                 "At least one of ProvisionedThroughput, BillingMode, UpdateStreamEnabled, "
                 "GlobalSecondaryIndexUpdates or SSESpecification or ReplicaUpdates is required");
@@ -890,12 +903,221 @@ public:
             c.table.warm_write = before.warm_write;
             c.update_fields |= catalog_command::update_warm_throughput;
         }
+        if (const auto* updates = in.if_contains("GlobalSecondaryIndexUpdates")) {
+            auto list = global_index_updates(in, updates->as_array(), c.table);
+            if (!list) {
+                return list.error();
+            }
+            c.table.gsis = std::move(*list);
+            c.update_fields |= catalog_command::update_gsis;
+        }
         c.now_ms = _backend.now_ms();
         const auto r = _backend.catalog(c);
         if (!r.ok()) {
             return error_of(r);
         }
         return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
+    /// `UpdateTable`'s `GlobalSecondaryIndexUpdates` against `table` (with
+    /// any billing change of the same request applied): the index list the
+    /// table should have, checked in DynamoDB Local's order and words. One
+    /// index can be created or deleted at a time, and none while another
+    /// is still being created or deleted.
+    static auto global_index_updates(const boost::json::object& in,
+                                     const boost::json::array& updates,
+                                     const table_descriptor& table)
+        -> aws_json::result<std::vector<global_index>> {
+        using table_api_detail::in_use_message;
+        if (updates.empty()) {
+            return validation_error("Nothing to update");
+        }
+        std::vector<std::string> named;
+        std::size_t creates_or_deletes = 0;
+        for (const auto& u : updates) {
+            const auto& o = u.as_object();
+            const char* action = o.contains("Create")   ? "Create"
+                                 : o.contains("Delete") ? "Delete"
+                                 : o.contains("Update") ? "Update"
+                                                        : nullptr;
+            if (action == nullptr) {
+                return validation_error("Update global secondary index action is null");
+            }
+            std::string name(o.at(action).as_object().at("IndexName").as_string());
+            if (std::find(named.begin(), named.end(), name) != named.end()) {
+                return validation_error(
+                    "Only one global secondary index update per index is allowed "
+                    "simultaneously.");
+            }
+            named.push_back(std::move(name));
+            creates_or_deletes += std::string_view(action) == "Update" ? 0 : 1;
+        }
+        const auto limit = [] {
+            return table_api_detail::modeled(
+                "LimitExceededException",
+                "Subscriber limit exceeded: Only 1 online index can be created or deleted "
+                "simultaneously per table");
+        };
+        if (creates_or_deletes > 1) {
+            return limit();
+        }
+        const auto find = [&](const std::string& name) -> const global_index* {
+            for (const auto& g : table.gsis) {
+                if (g.name == name) {
+                    return &g;
+                }
+            }
+            return nullptr;
+        };
+        const global_index* busy = nullptr;
+        for (const auto& g : table.gsis) {
+            if (g.status != index_status::active) {
+                busy = &g;
+            }
+        }
+        // Every attribute the table defines now, for a new index's keys.
+        const auto defined = [&](const std::string& attr) -> std::optional<attribute_type> {
+            if (attr == table.schema.partition_name) {
+                return table.schema.partition_type;
+            }
+            if (table.schema.sort_name && attr == *table.schema.sort_name) {
+                return table.schema.sort_type;
+            }
+            for (const auto& l : table.lsis) {
+                if (l.sort_name == attr) {
+                    return l.sort_type;
+                }
+            }
+            for (const auto& g : maintained_indexes(table.gsis)) {
+                if (g.schema.partition_name == attr) {
+                    return g.schema.partition_type;
+                }
+                if (g.schema.sort_name && *g.schema.sort_name == attr) {
+                    return g.schema.sort_type;
+                }
+            }
+            return std::nullopt;
+        };
+        std::vector<std::pair<std::string, attribute_type>> request_defs;
+        if (const auto* defs = in.if_contains("AttributeDefinitions")) {
+            for (const auto& a : defs->as_array()) {
+                const auto& o = a.as_object();
+                const auto t = o.at("AttributeType").as_string();
+                request_defs.emplace_back(std::string(o.at("AttributeName").as_string()),
+                                          t == "N"   ? attribute_type::N
+                                          : t == "B" ? attribute_type::B
+                                                     : attribute_type::S);
+            }
+        }
+        std::vector<global_index> out = table.gsis;
+        for (const auto& u : updates) {
+            const auto& o = u.as_object();
+            if (const auto* create = o.if_contains("Create")) {
+                const auto& co = create->as_object();
+                const std::string name(co.at("IndexName").as_string());
+                if (busy != nullptr) {
+                    if (busy->name == name) {
+                        return in_use_message(busy->status == index_status::creating
+                                                  ? "Index is being created."
+                                                  : "Index is being deleted.");
+                    }
+                    return limit();
+                }
+                if (find(name) != nullptr) {
+                    return validation_error("Attempting to create an index which already exists");
+                }
+                for (const auto& l : table.lsis) {
+                    if (l.name == name) {
+                        return validation_error(
+                            "Local Secondary Indices AND Global Secondary Indices must have "
+                            "different names");
+                    }
+                }
+                // Each key of the new index: from the request's definitions,
+                // which must agree with the table's own.
+                std::optional<std::string> undefined;
+                for (const auto& k : co.at("KeySchema").as_array()) {
+                    const std::string attr(k.as_object().at("AttributeName").as_string());
+                    const auto it = std::find_if(request_defs.begin(), request_defs.end(),
+                                                 [&](const auto& d) { return d.first == attr; });
+                    const auto known = defined(attr);
+                    if (it != request_defs.end() && known && *known != it->second) {
+                        return validation_error(
+                            "invalid attribute, SchemaElement redefined should be of same type "
+                            "as previously defined");
+                    }
+                    if (it == request_defs.end() && !known) {
+                        undefined = attr;
+                    }
+                }
+                if (undefined) {
+                    return validation_error("No Attribute Schema Defined");
+                }
+                const auto type_of = [&](const std::string& attr) -> std::optional<attribute_type> {
+                    for (const auto& [n, t] : request_defs) {
+                        if (n == attr) {
+                            return t;
+                        }
+                    }
+                    return defined(attr);
+                };
+                auto parsed = global_indexes_from(boost::json::array{co}, type_of);
+                if (!parsed) {
+                    return parsed.error();
+                }
+                if (table.billing == billing_mode::provisioned && !parsed->front().has_throughput) {
+                    return validation_error(
+                        "No provisioned throughput specified for the global secondary index");
+                }
+                if (maintained_indexes(table.gsis).size() >= k_max_global_indexes) {
+                    return validation_error(
+                        "GlobalSecondaryIndex count exceeds the per-table limit");
+                }
+                parsed->front().status = index_status::creating;
+                out.push_back(std::move(parsed->front()));
+                continue;
+            }
+            const bool deleting = o.contains("Delete");
+            const auto& body = o.at(deleting ? "Delete" : "Update").as_object();
+            const std::string name(body.at("IndexName").as_string());
+            if (busy != nullptr) {
+                if (busy->name == name) {
+                    if (busy->status == index_status::deleting) {
+                        return in_use_message("Index is being deleted.");
+                    }
+                    return in_use_message(deleting ? "Index is being created."
+                                                   : "Index is being created but not "
+                                                     "backfilling.");
+                }
+                if (deleting) {
+                    return limit();
+                }
+            }
+            const auto* g = find(name);
+            if (g == nullptr) {
+                return table_api_detail::modeled("ResourceNotFoundException",
+                                                 "Requested resource not found");
+            }
+            const auto at = std::find_if(out.begin(), out.end(),
+                                         [&](const global_index& x) { return x.name == name; });
+            if (deleting) {
+                out.erase(at);
+                continue;
+            }
+            // Update: the index's provisioned throughput.
+            const auto* t = body.if_contains("ProvisionedThroughput");
+            if (t == nullptr || table.billing != billing_mode::provisioned) {
+                return validation_error(
+                    "One or more parameter values were invalid: ProvisionedThroughput can only "
+                    "be updated on an index of a table in PROVISIONED billing mode");
+            }
+            at->has_throughput = true;
+            at->read_capacity = static_cast<std::uint64_t>(
+                t->as_object().at("ReadCapacityUnits").to_number<std::int64_t>());
+            at->write_capacity = static_cast<std::uint64_t>(
+                t->as_object().at("WriteCapacityUnits").to_number<std::int64_t>());
+        }
+        return out;
     }
 
     auto delete_table(call_context& ctx, boost::json::object& in) -> result {

@@ -347,8 +347,36 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       are never reclaimed; the Raft propagator sends an item's writes one
       at a time; `IndexSizeBytes` and `ItemCount` show 0, as the table's
       `ItemCount` does (the corpus does not compare them).
-    - Left in this task: `UpdateTable` index creation (with backfill) and
-      removal, the synchronous switch, and the KCL 3.x tables.
+    - `UpdateTable` (November 11, 2026): `GlobalSecondaryIndexUpdates`
+      creates, deletes or re-provisions an index, with DynamoDB Local's
+      checks and messages (one index created or deleted at a time and
+      none while another is CREATING or DELETING, attribute definitions
+      that must agree with the table's, `Nothing to update`, and so on).
+      The table stays ACTIVE, as in Local. A new index is CREATING with
+      `Backfilling` false, as Local shows it; writes maintain it at once
+      and reads of it are refused with AWS's "Cannot read from
+      backfilling global secondary index" (Local fails them with an
+      internal error). The backfill marks every item of the table as a
+      pending change (`index_mark`, one entry per group, a key a split
+      moved marked again on its own) and the propagators carry the marks
+      like any write; versions make marks that race writes harmless. The
+      local backend backfills before `UpdateTable` returns. The Raft
+      backend's catalog leader waits `gsi_backfill_delay` (by default the
+      call deadline) first, so no write that read the table before the
+      index existed can land after the backfill passed its item, then
+      makes the index ACTIVE once every item is marked; the entries
+      follow within the propagation lag. A deleted index is DELETING
+      (its keys leave the AttributeDefinitions at once, as in Local)
+      until its key space's delete job ends, then it goes.
+    - Tests: in `dynamodb_gsi_test`, marks and the catalog's index
+      transitions; invariant l05; in `dynamodb_raft_backend_test`, an
+      index added to a split table while writes race the backfill, then
+      deleted; a 26-step `UpdateTable` scenario in the ops corpus (12
+      scenarios, 359 steps). The corpus test now also compares
+      AttributeDefinitions and ignores the placeholder
+      `OnDemandThroughput` of -1 units Local gives an index `UpdateTable`
+      created.
+    - Left in this task: the synchronous switch and the KCL 3.x tables.
 
 - [ ] 12. Capacity, throttling and consumed capacity
   - Consumed-capacity formulas; provisioned and on-demand modes; leader-side

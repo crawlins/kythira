@@ -216,6 +216,8 @@ public:
 
     /// Items deleted per drop step.
     static constexpr std::uint32_t k_drop_step_keys = 1000;
+    /// Items marked per backfill entry.
+    static constexpr std::size_t k_backfill_batch = 256;
 
 private:
     static auto to_bytes(const std::string& s) -> std::vector<std::byte> {
@@ -273,6 +275,29 @@ private:
                 c.to = table_status::active;
                 (void)apply_catalog_locked(c);
             }
+        }
+        // A new index: mark every item, carry the marks, then activate.
+        for (const auto& name : _catalog.list_tables("", SIZE_MAX)) {
+            const auto d = _catalog.describe(name);
+            const auto* g =
+                d && d->status == table_status::active ? backfilling_index(*d) : nullptr;
+            if (g == nullptr) {
+                continue;
+            }
+            std::vector<std::string> keys;
+            _items.scan_items(table_range(d->table_id), kythira::scan_direction::forward,
+                              [&](std::string_view key, const item&) {
+                                  keys.emplace_back(key);
+                                  return true;
+                              });
+            for (std::size_t at = 0; at < keys.size(); at += k_backfill_batch) {
+                const auto end = std::min(keys.size(), at + k_backfill_batch);
+                (void)apply_item_locked(backfill_marks(
+                    *d, std::vector<std::string>(keys.begin() + static_cast<std::ptrdiff_t>(at),
+                                                 keys.begin() + static_cast<std::ptrdiff_t>(end))));
+            }
+            propagate_locked();
+            (void)apply_catalog_locked(activate_index(*d, g->name));
         }
         for (const auto& job : _catalog.delete_jobs()) {
             for (;;) {

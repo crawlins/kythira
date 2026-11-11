@@ -26,10 +26,12 @@
 #include <boost/beast/http.hpp>
 #include <boost/json.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace dynamodb_test;
@@ -1511,6 +1513,24 @@ auto gsi_query(const std::string& table, const std::string& value, const std::st
            value + R"("}})" + rest + "}";
 }
 
+/// Waits (DynamoDB Local takes about a second) until no GSI of `table` is
+/// CREATING or DELETING.
+auto indexes_settled(tables& t, const std::string& table) -> bool {
+    for (int i = 0; i < 100; ++i) {
+        const auto d = t.ok("DescribeTable", R"({"TableName":")" + table + R"("})");
+        const auto* g = d.at("Table").as_object().if_contains("GlobalSecondaryIndexes");
+        bool settled = true;
+        for (const auto& x : g == nullptr ? json::array{} : g->as_array()) {
+            settled = settled && x.as_object().at("IndexStatus").as_string() == "ACTIVE";
+        }
+        if (settled) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+    return false;
+}
+
 }  // namespace
 
 BOOST_FIXTURE_TEST_CASE(l01_a_gsi_is_read_eventually, tables) {
@@ -1569,4 +1589,28 @@ BOOST_FIXTURE_TEST_CASE(l04_gsi_index_keys_cannot_be_empty_or_mistyped, tables) 
           "ValidationException");
     fails("PutItem", R"({"TableName":"gsi","Item":{"pk":{"S":"p"},"sk":{"N":"1"},"x":{"N":"1"}}})",
           "ValidationException");
+}
+
+BOOST_FIXTURE_TEST_CASE(l05_an_index_added_later_covers_existing_items, tables) {
+    // UpdateTable adds one index at a time; once ACTIVE it holds the items
+    // written before it, and a deleted index can no longer be read.
+    for (const char* item : {R"({"pk":{"S":"p1"},"x":{"S":"a"}})",
+                             R"({"pk":{"S":"p2"},"x":{"S":"a"}})", R"({"pk":{"S":"p3"}})"}) {
+        ok("PutItem", R"({"TableName":"hsh","Item":)" + std::string(item) + "}");
+    }
+    const std::string add =
+        R"({"TableName":"hsh","AttributeDefinitions":[{"AttributeName":"x","AttributeType":"S"},)"
+        R"({"AttributeName":"y","AttributeType":"S"}],"GlobalSecondaryIndexUpdates":[)";
+    fails("UpdateTable",
+          add + R"({"Create":)" + gsi("idx", "x", R"({"ProjectionType":"ALL"})") +
+              R"(},{"Create":)" + gsi("idy", "y", R"({"ProjectionType":"ALL"})") + "}]}",
+          "LimitExceededException");
+    ok("UpdateTable",
+       add + R"({"Create":)" + gsi("idx", "x", R"({"ProjectionType":"ALL"})") + "}]}");
+    BOOST_TEST_REQUIRE(indexes_settled(*this, "hsh"));
+    BOOST_TEST(ok("Query", gsi_query("hsh", "a")).at("Count").to_number<int>() == 2);
+    ok("UpdateTable",
+       R"({"TableName":"hsh","GlobalSecondaryIndexUpdates":[{"Delete":{"IndexName":"idx"}}]})");
+    BOOST_TEST_REQUIRE(indexes_settled(*this, "hsh"));
+    fails("Query", gsi_query("hsh", "a"), "ValidationException");
 }

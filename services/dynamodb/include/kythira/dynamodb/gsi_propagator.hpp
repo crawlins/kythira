@@ -10,7 +10,9 @@
 ///
 /// `plan_propagation` turns a pending change (`global_index.hpp`), read with
 /// the item it belongs to, into the index writes it needs and the
-/// `index_ack` that ends it. Both backends run the same plan:
+/// `index_ack` that ends it. A new index's backfill marks every item of the
+/// table as pending (`backfill_marks`) and lets the same plan carry them.
+/// Both backends run the same plan:
 ///
 /// - `local_backend` runs it under its lock after every write, so its
 ///   indexes are never behind (one process, one copy).
@@ -58,8 +60,9 @@ struct gsi_plan {
     if (!table || table->table_id != work.pending.table_id) {
         return plan;
     }
+    const auto live_indexes = maintained_indexes(table->gsis);
     std::vector<std::string> now;
-    for (const auto& g : table->gsis) {
+    for (const auto& g : live_indexes) {
         if (!work.current) {
             continue;
         }
@@ -79,11 +82,11 @@ struct gsi_plan {
         if (std::find(now.begin(), now.end(), old) != now.end()) {
             continue;
         }
-        // An entry of an index that has since been removed goes with that
-        // index's key space.
+        // An entry of an index that has since been removed, or is being
+        // removed, goes with that index's key space.
         const auto space = key_space_of(old);
         const bool live =
-            space && std::any_of(table->gsis.begin(), table->gsis.end(),
+            space && std::any_of(live_indexes.begin(), live_indexes.end(),
                                  [&](const global_index& g) { return g.index_id == *space; });
         if (!live) {
             continue;
@@ -96,6 +99,47 @@ struct gsi_plan {
     }
     plan.ack.entries = std::move(now);
     return plan;
+}
+
+/// The index of `table` still being backfilled, if any (one at a time).
+[[nodiscard]] inline auto backfilling_index(const table_descriptor& table) -> const global_index* {
+    for (const auto& g : table.gsis) {
+        if (g.status == index_status::creating) {
+            return &g;
+        }
+    }
+    return nullptr;
+}
+
+/// Marks the items under `keys` (base keys of `table`, sharing one group)
+/// for propagation, so a new index receives their entries: the backfill.
+/// Writes that raced the backfill made their own records, and versions
+/// sort out the rest.
+[[nodiscard]] inline auto backfill_marks(const table_descriptor& table,
+                                         std::vector<std::string> keys) -> item_command {
+    item_command c;
+    c.op = item_command::kind::index_mark;
+    c.table_id = table.table_id;
+    c.schema = table.schema;
+    c.target = keys.empty() ? std::string{} : keys.front();
+    c.entries = std::move(keys);
+    return c;
+}
+
+/// The catalog entry that ends `index`'s backfill on `table` (as just
+/// described): the index becomes ACTIVE, nothing else changes.
+[[nodiscard]] inline auto activate_index(const table_descriptor& table, const std::string& index)
+    -> catalog_command {
+    catalog_command c;
+    c.op = catalog_command::kind::update_table;
+    c.table = table;
+    for (auto& g : c.table.gsis) {
+        if (g.name == index && g.status == index_status::creating) {
+            g.status = index_status::active;
+        }
+    }
+    c.update_fields = catalog_command::update_gsis;
+    return c;
 }
 
 }  // namespace kythira::dynamodb
