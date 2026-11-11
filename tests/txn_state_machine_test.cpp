@@ -18,18 +18,46 @@
 #define BOOST_TEST_MODULE txn_state_machine_test
 #include <boost/test/unit_test.hpp>
 
+#include <raft/future_default.hpp>
 #include <raft/test_state_machine.hpp>
+#include <raft/txn_coordinator.hpp>
 #include <raft/txn_state_machine.hpp>
 
 #include "multi_raft_kv_workload.hpp"
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+#include <folly/init/Init.h>
+#endif
+
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <exception>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+namespace {
+struct folly_init_fixture {
+    folly_init_fixture() {
+        int argc = 1;
+        char* argv_data[] = {const_cast<char*>("txn_state_machine_test"), nullptr};
+        char** argv = argv_data;
+        _init = std::make_unique<folly::Init>(&argc, &argv);
+    }
+    std::unique_ptr<folly::Init> _init;
+};
+}  // namespace
+BOOST_GLOBAL_FIXTURE(folly_init_fixture);
+#endif
+
 BOOST_TEST_DONT_PRINT_LOG_VALUE(kythira::txn_result_status)
+BOOST_TEST_DONT_PRINT_LOG_VALUE(kythira::txn_outcome_kind)
+BOOST_TEST_DONT_PRINT_LOG_VALUE(kythira::txn_abort_reason)
 BOOST_TEST_DONT_PRINT_LOG_VALUE(kythira::txn_record_status)
 BOOST_TEST_DONT_PRINT_LOG_VALUE(kythira::txn_id)
 BOOST_TEST_DONT_PRINT_LOG_VALUE(std::optional<std::string>)
@@ -133,6 +161,109 @@ struct harness {
         return sm.inner().get_value(k);
     }
 };
+
+/// The key/value machine with a `validate` hook, keyed on names so each
+/// case reads plainly: a key starting with "x" is always refused, a key
+/// whose committed value is "frozen" is refused, and an accepted key
+/// starting with "r" reports its committed value (as a lock-based read
+/// would).
+struct validating_kv_sm : kv_sm {
+    [[nodiscard]] auto validate(const std::string& key, const std::vector<std::byte>&) const
+        -> kythira::txn_validation {
+        const auto current = get_value(key);
+        if (key.starts_with("x")) {
+            return {false, bytes("no x")};
+        }
+        if (current == std::optional<std::string>("frozen")) {
+            return {false, bytes("frozen")};
+        }
+        if (key.starts_with("r")) {
+            return {true, bytes(current.value_or("<none>"))};
+        }
+        return {};
+    }
+
+    static auto bytes(std::string_view s) -> std::vector<std::byte> {
+        std::vector<std::byte> out;
+        for (const char c : s) {
+            out.push_back(static_cast<std::byte>(c));
+        }
+        return out;
+    }
+};
+
+using validating_txn_sm =
+    kythira::transactional_state_machine<validating_kv_sm, std::string, kv_partitioner>;
+static_assert(kythira::txn_validating_state_machine<validating_kv_sm, std::string>);
+static_assert(!kythira::txn_validating_state_machine<kv_sm, std::string>);
+
+struct validating_harness {
+    validating_txn_sm sm;
+    std::uint64_t index{0};
+
+    auto run(const env& e) -> result {
+        return kythira::decode_txn_result<std::string>(
+            sm.apply(kythira::encode_txn_envelope<std::string>(e), ++index));
+    }
+
+    [[nodiscard]] auto value(const std::string& k) const -> std::optional<std::string> {
+        return sm.inner().get_value(k);
+    }
+};
+
+auto text(const std::vector<std::byte>& b) -> std::string {
+    return {reinterpret_cast<const char*>(b.data()), b.size()};  // NOLINT
+}
+
+/// Two in-memory shards split at "m", answering envelopes at once, for the
+/// coordinator's handling of validation verdicts.
+struct two_shard_client {
+    using group_id_type = int;
+    using send_future = kythira::future_default<std::vector<std::byte>>;
+
+    std::map<int, validating_harness> shards;
+
+    [[nodiscard]] static auto group_of(const std::string& k) -> int { return k < "m" ? 0 : 1; }
+
+    [[nodiscard]] auto resolve(const std::string& k) -> std::optional<int> { return group_of(k); }
+
+    [[nodiscard]] auto send(const std::vector<std::string>& keys,
+                            const std::vector<std::byte>& envelope, std::chrono::milliseconds)
+        -> send_future {
+        kythira::promise_default<std::vector<std::byte>> p;
+        auto f = p.getFuture();
+        p.setValue(shards[group_of(keys.front())].sm.apply(envelope, ++index));
+        return f;
+    }
+
+    [[nodiscard]] auto refresh(const std::exception_ptr&) -> bool { return false; }
+
+    [[nodiscard]] auto read(const std::string& k, std::chrono::milliseconds)
+        -> kythira::txn_read_result<std::string> {
+        auto& shard = shards[group_of(k)];
+        kythira::txn_read_result<std::string> out;
+        if (auto v = shard.value(k)) {
+            out._value = validating_kv_sm::bytes(*v);
+        }
+        out._intent = shard.sm.intent_on(k);
+        return out;
+    }
+
+    [[nodiscard]] auto now_ms() const -> std::uint64_t { return 100; }
+
+    std::uint64_t index{0};
+};
+static_assert(kythira::txn_participant_client<two_shard_client, std::string>);
+
+auto verdict_of(const std::vector<kythira::txn_validation_entry<std::string>>& v,
+                const std::string& key)
+    -> std::optional<kythira::txn_validation_entry<std::string>> {
+    const auto it = std::find_if(v.begin(), v.end(), [&](const auto& e) { return e._key == key; });
+    if (it == v.end()) {
+        return std::nullopt;
+    }
+    return *it;
+}
 
 auto is_record(const result& r, txn_record_status s) -> bool {
     return r._status == txn_result_status::record && r._record == s;
@@ -529,4 +660,139 @@ BOOST_AUTO_TEST_CASE(split_moves_locks_with_their_keys) {
 
     left.absorb(parts[1], kythira::shard_range<std::string>{std::string("k"), std::nullopt});
     BOOST_TEST(left.get_state() == h.sm.get_state());
+}
+
+// ── validate hook (dynamodb-compatible-api Requirement 12.1) ────────────────
+
+BOOST_AUTO_TEST_CASE(one_phase_refused_by_validate_applies_nothing_and_names_each_write) {
+    validating_harness h;
+    const auto r =
+        h.run(kythira::txn_one_phase<std::string>{t1, {w("b", "2"), w("x1", "1")}, 0, 5});
+    BOOST_TEST(r._status == txn_result_status::validation_failed);
+    BOOST_REQUIRE(r._validations.size() == 2U);
+    // Key order, whatever order the writes came in.
+    BOOST_TEST(r._validations[0]._key == "b");
+    BOOST_TEST(r._validations[0]._ok);
+    BOOST_TEST(r._validations[1]._key == "x1");
+    BOOST_TEST(!r._validations[1]._ok);
+    BOOST_TEST(text(r._validations[1]._detail) == "no x");
+    BOOST_TEST(!h.value("b").has_value());
+    BOOST_TEST(h.sm.intent_count() == 0U);
+    // Nothing was settled either: the same transaction id may try again
+    // with writes that pass.
+    BOOST_TEST(h.run(kythira::txn_one_phase<std::string>{t1, {w("b", "2")}, 0, 5})._status ==
+               txn_result_status::ok);
+    BOOST_TEST(h.value("b") == std::optional<std::string>("2"));
+}
+
+BOOST_AUTO_TEST_CASE(prepare_refused_by_validate_installs_no_intent_or_record) {
+    validating_harness h;
+    const auto r = h.run(
+        kythira::txn_prepare<std::string>{t1, "a", {w("a", "1"), w("x", "2")}, {}, 0, 1000, true});
+    BOOST_TEST(r._status == txn_result_status::validation_failed);
+    BOOST_TEST(h.sm.intent_count() == 0U);
+    BOOST_TEST(!h.sm.record_of("a", t1).has_value());
+    // The key is free for a plain write.
+    BOOST_TEST(h.run(kythira::txn_plain{put("a", "plain")})._status == txn_result_status::ok);
+}
+
+BOOST_AUTO_TEST_CASE(validate_sees_the_committed_state) {
+    validating_harness h;
+    BOOST_TEST(h.run(kythira::txn_plain{put("k", "frozen")})._status == txn_result_status::ok);
+    const auto r = h.run(kythira::txn_one_phase<std::string>{t1, {w("k", "thawed")}, 0, 5});
+    BOOST_TEST(r._status == txn_result_status::validation_failed);
+    BOOST_TEST(text(r._validations.at(0)._detail) == "frozen");
+    BOOST_TEST(h.value("k") == std::optional<std::string>("frozen"));
+    // Plain writes are not validated.
+    BOOST_TEST(h.run(kythira::txn_plain{put("k", "thawed")})._status == txn_result_status::ok);
+}
+
+BOOST_AUTO_TEST_CASE(accepted_writes_with_details_report_validated) {
+    validating_harness h;
+    BOOST_TEST(h.run(kythira::txn_plain{put("r1", "seen")})._status == txn_result_status::ok);
+    const auto r = h.run(kythira::txn_prepare<std::string>{
+        t1, "a", {w("a", "1"), w("r1", "new")}, {}, 0, 1000, true});
+    BOOST_TEST(r._status == txn_result_status::validated);
+    BOOST_REQUIRE(r._validations.size() == 2U);
+    BOOST_TEST(r._validations[0]._detail.empty());
+    BOOST_TEST(text(r._validations[1]._detail) == "seen");
+    // Installed as an ordinary prepare.
+    BOOST_TEST(h.sm.intent_count() == 2U);
+    BOOST_TEST(h.run(kythira::txn_commit_primary<std::string>{t1, "a", 7})._status ==
+               txn_result_status::ok);
+    BOOST_TEST(h.value("r1") == std::optional<std::string>("new"));
+    // Without details the result stays a plain ok with no list.
+    const auto plain = h.run(kythira::txn_one_phase<std::string>{t2, {w("c", "1")}, 0, 5});
+    BOOST_TEST(plain._status == txn_result_status::ok);
+    BOOST_TEST(plain._validations.empty());
+}
+
+BOOST_AUTO_TEST_CASE(a_lock_conflict_is_reported_before_validation) {
+    validating_harness h;
+    BOOST_TEST(h.run(kythira::txn_prepare<std::string>{t1, "x9", {w("x9", "1")}, {}, 0, 1000, true})
+                   ._status == txn_result_status::validation_failed);
+    BOOST_TEST(h.run(kythira::txn_prepare<std::string>{t1, "b", {w("b", "1")}, {}, 0, 1000, true})
+                   ._status == txn_result_status::ok);
+    const auto r = h.run(kythira::txn_one_phase<std::string>{t2, {w("b", "2"), w("x", "2")}, 0, 5});
+    BOOST_TEST(r._status == txn_result_status::write_conflict);
+    BOOST_TEST(r._key == "b");
+}
+
+BOOST_AUTO_TEST_CASE(validation_results_round_trip_through_the_codec) {
+    result r;
+    r._status = txn_result_status::validation_failed;
+    r._validations = {{"a", true, {}}, {"b", false, validating_kv_sm::bytes("why")}};
+    BOOST_TEST(
+        (kythira::decode_txn_result<std::string>(kythira::encode_txn_result<std::string>(r)) == r));
+    r._status = txn_result_status::validated;
+    BOOST_TEST(
+        (kythira::decode_txn_result<std::string>(kythira::encode_txn_result<std::string>(r)) == r));
+}
+
+BOOST_AUTO_TEST_CASE(coordinator_aborts_on_a_refusal_and_reports_every_shards_verdicts) {
+    two_shard_client client;
+    kythira::transaction_coordinator<two_shard_client, std::string> coordinator(client);
+    coordinator.begin();
+    coordinator.put("a", put("a", "1"));
+    coordinator.put("r", put("r", "2"));
+    coordinator.put("x", put("x", "3"));
+    const auto out = coordinator.commit();
+    BOOST_TEST(out._kind == kythira::txn_outcome_kind::aborted);
+    BOOST_TEST(out._reason == kythira::txn_abort_reason::validation_failed);
+    // Shard 0 accepted "a" with nothing to say, so it sent no list; a
+    // missing verdict means accepted.
+    BOOST_TEST(out._validations.size() == 2U);
+    BOOST_TEST(!verdict_of(out._validations, "a").has_value());
+    BOOST_TEST(text(verdict_of(out._validations, "r")->_detail) == "<none>");
+    BOOST_TEST(!verdict_of(out._validations, "x")->_ok);
+    // The shard that accepted was rolled back.
+    BOOST_TEST(client.shards[0].sm.intent_count() == 0U);
+    BOOST_TEST(client.shards[1].sm.intent_count() == 0U);
+    BOOST_TEST(!client.shards[0].value("a").has_value());
+    BOOST_TEST(!client.shards[1].value("r").has_value());
+}
+
+BOOST_AUTO_TEST_CASE(coordinator_returns_details_with_a_commit) {
+    two_shard_client client;
+    kythira::transaction_coordinator<two_shard_client, std::string> coordinator(client);
+    coordinator.begin();
+    coordinator.put("a", put("a", "1"));
+    coordinator.put("r", put("r", "2"));
+    auto out = coordinator.commit();
+    BOOST_TEST(out._kind == kythira::txn_outcome_kind::committed);
+    BOOST_TEST(text(verdict_of(out._validations, "r")->_detail) == "<none>");
+    BOOST_TEST(client.shards[1].value("r") == std::optional<std::string>("2"));
+
+    // One shard: the one-phase path carries them too.
+    coordinator.begin();
+    coordinator.put("r", put("r", "3"));
+    coordinator.put("s", put("s", "4"));
+    out = coordinator.commit();
+    BOOST_TEST(out._kind == kythira::txn_outcome_kind::committed);
+    BOOST_TEST(text(verdict_of(out._validations, "r")->_detail) == "2");
+    coordinator.begin();
+    coordinator.put("x", put("x", "1"));
+    out = coordinator.commit();
+    BOOST_TEST(out._reason == kythira::txn_abort_reason::validation_failed);
+    BOOST_TEST(!out._validations.at(0)._ok);
 }

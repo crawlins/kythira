@@ -3706,7 +3706,8 @@ auto multi_raft<Types, Key, GroupId>::submit_plain_enveloped(group_node_type& no
                             id, key, {txn_write<Key>{key, command}}, {}, 0, ttl_deadline, true}}),
                         left())
                     .get());
-            if (prepared._status != txn_result_status::ok) {
+            if (prepared._status != txn_result_status::ok &&
+                prepared._status != txn_result_status::validated) {
                 throw std::logic_error("multi_raft: a plain write's prepare returned status " +
                                        std::to_string(static_cast<int>(prepared._status)));
             }
@@ -4276,13 +4277,15 @@ auto multi_raft<Types, Key, GroupId>::note_txn_result(std::uint8_t op_code,
                                                                "cleanup",
                                                                "gc",
                                                                "oracle_reserve"};
-    static constexpr std::array<std::string_view, 7> status_names{"ok",
+    static constexpr std::array<std::string_view, 9> status_names{"ok",
                                                                   "write_conflict",
                                                                   "key_locked",
                                                                   "record",
                                                                   "read_conflict",
                                                                   "snapshot_too_old",
-                                                                  "already_aborted"};
+                                                                  "already_aborted",
+                                                                  "validation_failed",
+                                                                  "validated"};
     const auto op = op_code < op_names.size() ? op_names[op_code] : op_names[0];
     const auto status_index = static_cast<std::size_t>(res._status);
     const auto status = status_index < status_names.size() ? status_names[status_index]
@@ -4311,7 +4314,17 @@ auto multi_raft<Types, Key, GroupId>::note_txn_result(std::uint8_t op_code,
         }
         return;
     }
-    if (one_phase && res._status == txn_result_status::ok) {
+    if (res._status == txn_result_status::validation_failed) {
+        // The application refused a write: not a conflict, but the
+        // transaction ends here.
+        if (one_phase) {
+            emit_txn_metric("kythira.multiraft.txn.outcome",
+                            {{"outcome", "aborted"}, {"path", "one_phase"}}, 1);
+        }
+        return;
+    }
+    if (one_phase &&
+        (res._status == txn_result_status::ok || res._status == txn_result_status::validated)) {
         emit_txn_metric("kythira.multiraft.txn.outcome",
                         {{"outcome", "committed"}, {"path", "one_phase"}}, 1);
     } else if (op == "commit_primary") {

@@ -285,6 +285,26 @@ enum class txn_result_status : std::uint8_t {
     snapshot_too_old = 5,
     /// A primary prepare found the rollback marker (Requirement 4.4).
     already_aborted = 6,
+    /// A prepare or 1PC whose wrapped state machine validates its writes
+    /// (`txn_validating_state_machine`) refused one or more of them. No
+    /// intent was installed and nothing applied; `_validations` lists every
+    /// write's verdict.
+    validation_failed = 7,
+    /// As `ok`, for a prepare or 1PC whose validations had something to say
+    /// (a non-empty detail, such as the item a lock-based read saw):
+    /// `_validations` lists every write's verdict.
+    validated = 8,
+};
+
+/// @brief One write's verdict from a validating state machine.
+template<shard_key Key> struct txn_validation_entry {
+    Key _key{};
+    bool _ok{true};
+    /// The state machine's own bytes: why it refused the write, or what an
+    /// accepted one observed. Opaque to the wrapper and the coordinator.
+    std::vector<std::byte> _detail{};
+
+    [[nodiscard]] auto operator==(const txn_validation_entry&) const -> bool = default;
 };
 
 /// @brief Who holds a key, for the conflict statuses.
@@ -310,6 +330,9 @@ template<shard_key Key> struct txn_result {
     std::uint64_t _commit_ts{0};
     /// `snapshot_too_old`: the safe point the start timestamp fell below.
     std::uint64_t _safe_point{0};
+    /// `validation_failed` and `validated`: each write's verdict, in key
+    /// order.
+    std::vector<txn_validation_entry<Key>> _validations{};
 
     [[nodiscard]] auto operator==(const txn_result&) const -> bool = default;
 };
@@ -557,6 +580,8 @@ inline auto read_txn_id(reader& r) -> txn_id {
 // The smallest a list element can be on the wire, for reader::count.
 inline constexpr std::size_t k_min_key_bytes = sizeof(std::uint64_t);
 inline constexpr std::size_t k_min_write_bytes = 2 * sizeof(std::uint64_t);
+/// A key length, the ok byte and a detail length.
+inline constexpr std::size_t k_min_validation_bytes = 2 * sizeof(std::uint64_t) + 1;
 inline constexpr std::size_t k_min_cleanup_item_bytes = 3 * sizeof(std::uint64_t);
 
 template<shard_key Key, typename KeyCodec>
@@ -847,6 +872,15 @@ template<shard_key Key, shard_key_codec<Key> KeyCodec = default_shard_key_codec<
             break;
         case txn_result_status::already_aborted:
             break;
+        case txn_result_status::validation_failed:
+        case txn_result_status::validated:
+            write_count(out, res._validations.size(), "validations");
+            for (const auto& v : res._validations) {
+                write_key(out, v._key, codec);
+                write_bool(out, v._ok);
+                write_blob(out, v._detail, k_txn_max_command_bytes, "validation detail");
+            }
+            break;
     }
     return out;
 }
@@ -864,7 +898,7 @@ template<shard_key Key, shard_key_codec<Key> KeyCodec = default_shard_key_codec<
 
     txn_result<Key> res;
     const auto status = r.u8();
-    if (status > static_cast<std::uint8_t>(txn_result_status::already_aborted)) {
+    if (status > static_cast<std::uint8_t>(txn_result_status::validated)) {
         r.fail("unknown result status " + std::to_string(status));
     }
     res._status = static_cast<txn_result_status>(status);
@@ -897,6 +931,19 @@ template<shard_key Key, shard_key_codec<Key> KeyCodec = default_shard_key_codec<
             break;
         case txn_result_status::already_aborted:
             break;
+        case txn_result_status::validation_failed:
+        case txn_result_status::validated: {
+            const auto n = r.count(k_min_validation_bytes, "validations");
+            res._validations.reserve(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                txn_validation_entry<Key> v;
+                v._key = read_key<Key>(r, codec);
+                v._ok = r.boolean();
+                v._detail = r.blob(k_txn_max_command_bytes, "validation detail");
+                res._validations.push_back(std::move(v));
+            }
+            break;
+        }
     }
     r.finish();
     return res;

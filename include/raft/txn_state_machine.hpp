@@ -55,7 +55,10 @@
 /// replica (a command that throws, throws everywhere), so replicas do not
 /// diverge, but the transaction is no longer all-or-nothing. The coordinator
 /// therefore only buffers commands the application has already validated; the
-/// wrapper cannot pre-check an opaque command.
+/// wrapper cannot pre-check an opaque command. A wrapped state machine that
+/// can check its own commands supplies `validate`
+/// (`txn_validating_state_machine`), which `prepare` and `one_phase` call
+/// under the lock before installing or applying anything.
 ///
 /// ### Persistent hosts
 ///
@@ -161,6 +164,37 @@ template<shard_key Key> struct txn_open_view {
 
     [[nodiscard]] auto operator==(const txn_open_view&) const -> bool = default;
 };
+
+/// @brief One write's verdict from `validate` (see
+///        `txn_validating_state_machine`).
+struct txn_validation {
+    bool _ok{true};
+    /// Why the write is refused, or what an accepted one observed (a
+    /// lock-based read's value, say). Opaque to the wrapper: it reaches the
+    /// coordinator's outcome as `txn_validation_entry::_detail`.
+    std::vector<std::byte> _detail{};
+};
+
+/// @brief A wrapped state machine that checks each transactional write while
+///        its intent is installed (dynamodb-compatible-api Requirement 12.1).
+///
+/// The wrapper cannot pre-check an opaque command (see "Atomicity and the
+/// wrapped state machine" above), so an application whose writes carry
+/// conditions supplies this hook. `prepare` and `one_phase` call it for every
+/// write after the lock checks and before installing anything, against the
+/// committed state: the key is not locked by anyone else at that point, so
+/// what `validate` sees is what the write will apply to. A refusal of any
+/// write installs nothing and applies nothing, and the result lists every
+/// write's verdict, so the caller can say which actions failed.
+///
+/// `validate` must be deterministic in the command and the committed state,
+/// as `apply` is. Plain writes are not validated: they apply their own
+/// checks.
+template<typename SM, typename Key>
+concept txn_validating_state_machine =
+    requires(const SM& sm, const Key& key, const std::vector<std::byte>& command) {
+        { sm.validate(key, command) } -> std::same_as<txn_validation>;
+    };
 
 namespace txn_detail {
 /// The wrapped machine's engine, or a placeholder for a byte-buffer one, so
@@ -657,12 +691,16 @@ private:
                 return *newer;
             }
         }
+        auto verdicts = validate_writes(op._writes);
+        if (verdicts._status == txn_result_status::validation_failed) {
+            return verdicts;
+        }
         for (const auto& w : sorted_by_key(op._writes)) {
             std::ignore = apply_inner(w._command, op._commit_ts, index);
             _settled[w._key][op._txn] = txn_record_status::committed;
             touch(w._key);
         }
-        return {};
+        return verdicts;
     }
 
     auto apply_op(const txn_prepare<Key>& op, log_index_type) -> result_type {
@@ -733,6 +771,10 @@ private:
                 return *newer;
             }
         }
+        auto verdicts = validate_writes(op._writes);
+        if (verdicts._status == txn_result_status::validation_failed) {
+            return verdicts;
+        }
         for (const auto& w : op._writes) {
             _intents.insert_or_assign(w._key, intent{op._txn, op._primary, w._command,
                                                      op._ttl_deadline_ms, op._start_ts});
@@ -753,7 +795,7 @@ private:
             rec._deadline_ms = std::max(rec._deadline_ms, op._ttl_deadline_ms);
             touch(op._primary);
         }
-        return {};
+        return verdicts;
     }
 
     auto apply_op(const txn_commit_primary<Key>& op, log_index_type index) -> result_type {
@@ -900,6 +942,34 @@ private:
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// Every write's verdict from the wrapped state machine's `validate`,
+    /// in key order: `validation_failed` if any write is refused,
+    /// `validated` if all pass and some had something to say, else a plain
+    /// `ok` with no list (also when `SM` does not validate).
+    [[nodiscard]] auto validate_writes(const std::vector<txn_write<Key>>& writes) const
+        -> result_type {
+        result_type res;
+        if constexpr (txn_validating_state_machine<SM, Key>) {
+            bool failed = false;
+            bool detail = false;
+            for (const auto& w : sorted_by_key(writes)) {
+                auto v = _inner.validate(w._key, w._command);
+                failed = failed || !v._ok;
+                detail = detail || !v._detail.empty();
+                res._validations.push_back(
+                    txn_validation_entry<Key>{w._key, v._ok, std::move(v._detail)});
+            }
+            if (failed) {
+                res._status = txn_result_status::validation_failed;
+            } else if (detail) {
+                res._status = txn_result_status::validated;
+            } else {
+                res._validations.clear();
+            }
+        }
+        return res;
+    }
 
     static auto status_only(txn_result_status s) -> result_type {
         result_type res;
