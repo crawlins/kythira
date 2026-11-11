@@ -49,6 +49,7 @@ import http.client
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -783,19 +784,31 @@ class Handler(BaseHTTPRequestHandler):
         """Passes one DynamoDB or Streams request to the upstream as it came and relays
         the answer, writing the exchange to <client>.upstream.jsonl."""
         host, _, port = self.upstream.rpartition(":")
-        conn = http.client.HTTPConnection(host, int(port), timeout=60)
         headers = {
             k: v for k, v in self.headers.items() if k.lower() not in ("connection", "expect")
         }
-        try:
-            conn.request("POST", self.path, body=raw, headers=headers)
-            resp = conn.getresponse()
-            status, out, out_headers = resp.status, resp.read(), resp.getheaders()
-        except OSError as e:
-            status, out_headers = 502, []
-            out = json.dumps({"__type": "UpstreamUnreachable", "message": repr(e)}).encode()
-        finally:
-            conn.close()
+        # A container runtime's DNS can lag the first requests after the
+        # services start (seen once under rootless Podman). A failed lookup
+        # sent nothing upstream, so it is safe to try again; any other
+        # error is relayed at once.
+        for attempt in range(20):
+            conn = http.client.HTTPConnection(host, int(port), timeout=60)
+            try:
+                conn.request("POST", self.path, body=raw, headers=headers)
+                resp = conn.getresponse()
+                status, out, out_headers = resp.status, resp.read(), resp.getheaders()
+                break
+            except socket.gaierror as e:
+                status, out_headers = 502, []
+                out = json.dumps({"__type": "UpstreamUnreachable", "message": repr(e)}).encode()
+                if attempt < 19:
+                    time.sleep(0.5)
+            except OSError as e:
+                status, out_headers = 502, []
+                out = json.dumps({"__type": "UpstreamUnreachable", "message": repr(e)}).encode()
+                break
+            finally:
+                conn.close()
         try:
             parsed = json.loads(out) if out else {}
         except ValueError:
