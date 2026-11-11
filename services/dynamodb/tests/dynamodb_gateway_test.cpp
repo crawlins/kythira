@@ -147,6 +147,12 @@ BOOST_AUTO_TEST_CASE(bad_settings_are_refused_with_the_variable_named) {
                "KYTHIRA_DYNAMODB_ENGINE: unknown engine 'leveldb' (memory or rocksdb)");
 
     vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_LOG_LEVEL"] = "verbose";
+    BOOST_TEST(config_error(vars) ==
+               "KYTHIRA_DYNAMODB_LOG_LEVEL: unknown level 'verbose' "
+               "(trace, debug, info, warning, error or critical)");
+
+    vars = minimal_env();
     vars.erase("KYTHIRA_DYNAMODB_STATIC_KEYS");
     BOOST_TEST(config_error(vars) ==
                "no access keys: set KYTHIRA_DYNAMODB_STATIC_KEYS_FILE or "
@@ -346,9 +352,15 @@ BOOST_AUTO_TEST_CASE(cluster_settings_are_read) {
     vars["KYTHIRA_DYNAMODB_ENGINE"] = "rocksdb";
     vars["KYTHIRA_DYNAMODB_DATA_DIR"] = "/var/lib/kythira";
     BOOST_REQUIRE_EQUAL(config_error(vars), "ok");
+    vars["KYTHIRA_DYNAMODB_LOG_LEVEL"] = " warning ";
+    BOOST_TEST(
+        (std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars))).log_level ==
+         kythira::log_level::warning));
+    vars.erase("KYTHIRA_DYNAMODB_LOG_LEVEL");
     auto r = ddb::gateway_config_from_env(env_of(vars));
     const auto& c = std::get<ddb::gateway_config>(r);
     BOOST_TEST(c.engine == "rocksdb");
+    BOOST_TEST((c.log_level == kythira::log_level::info));
     BOOST_TEST(c.cluster.enabled());
     BOOST_TEST(c.cluster.node_id == "1");
     BOOST_TEST(c.cluster.peers.size() == 3U);

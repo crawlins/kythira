@@ -29,13 +29,22 @@ encoding, the SigV4 form with the signature and dates masked, the SDK's
 retry headers). The user agent is kept, since it names the SDK and its
 version.
 
+With `--dynamodb-upstream HOST:PORT` the stub keeps serving Kinesis and
+Streams itself but passes every DynamoDB request, bytes and signed headers
+unchanged, to that server (a Kythira gateway node or DynamoDB Local) and
+relays its answer; each exchange is also written to
+`<client>.upstream.jsonl` with the upstream's status and body. That is how
+the KCL clients run on Kythira's DynamoDB API with a stand-in stream
+(kcl_on_kythira.sh, task 11).
+
 Usage:
-    recording_stub.py --port 8000 --out DIR
+    recording_stub.py --port 8000 --out DIR [--dynamodb-upstream HOST:PORT]
 """
 
 import argparse
 import base64
 import copy
+import http.client
 import json
 import os
 import re
@@ -739,6 +748,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     store = None
     out_dir = None
+    upstream = ""
     files = {}
     files_lock = threading.Lock()
     seq = {}
@@ -767,6 +777,39 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("x-amz-crc32", str(zlib.crc32(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def forward(self, client, op, raw, body):
+        """Passes one DynamoDB request to the upstream as it came and relays
+        the answer, writing the exchange to <client>.upstream.jsonl."""
+        host, _, port = self.upstream.rpartition(":")
+        conn = http.client.HTTPConnection(host, int(port), timeout=60)
+        headers = {
+            k: v for k, v in self.headers.items() if k.lower() not in ("connection", "expect")
+        }
+        try:
+            conn.request("POST", self.path, body=raw, headers=headers)
+            resp = conn.getresponse()
+            status, out, out_headers = resp.status, resp.read(), resp.getheaders()
+        except OSError as e:
+            status, out_headers = 502, []
+            out = json.dumps({"__type": "UpstreamUnreachable", "message": repr(e)}).encode()
+        finally:
+            conn.close()
+        try:
+            parsed = json.loads(out) if out else {}
+        except ValueError:
+            parsed = {"<unparsed>": base64.b64encode(out).decode()}
+        self.write_record(
+            client + ".upstream",
+            {"operation": op, "body": record_body(body), "status": status, "response": parsed},
+        )
+        self.send_response(status)
+        for k, v in out_headers:
+            if k.lower() not in ("connection", "content-length", "transfer-encoding"):
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
 
     def do_GET(self):
         body = b"healthy: recording stub"
@@ -799,6 +842,9 @@ class Handler(BaseHTTPRequestHandler):
                 "body": record_body(body),
             },
         )
+        if service == DDB and self.upstream:
+            self.forward(client, op, raw, body)
+            return
         try:
             with self.store.lock:
                 if service == DDB:
@@ -826,10 +872,17 @@ def main(argv):
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--bind", default="0.0.0.0")
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--dynamodb-upstream",
+        default="",
+        metavar="HOST:PORT",
+        help="pass DynamoDB requests, unchanged, to this plain-HTTP server",
+    )
     args = ap.parse_args(argv)
     os.makedirs(args.out, exist_ok=True)
     Handler.store = Store()
     Handler.out_dir = args.out
+    Handler.upstream = args.dynamodb_upstream
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     print("recording stub on %s:%d, writing %s" % (args.bind, args.port, args.out), flush=True)
     try:

@@ -42,6 +42,7 @@
 /// | `KYTHIRA_DYNAMODB_PEER_GATEWAYS` | | `id=host:port,...`: every other voter's gateway |
 /// | `KYTHIRA_DYNAMODB_FORWARD_SECRET` | | the secret gateways forward with (16+ chars) |
 /// | `KYTHIRA_DYNAMODB_FORWARD_CA` | system roots | PEM bundle peers' certificates chain to |
+/// | `KYTHIRA_DYNAMODB_LOG_LEVEL` | `info` | the Raft groups' log level, `trace` to `critical` |
 ///
 /// Without `PEERS` the daemon is one node on `local_backend`, with no Raft.
 /// With it, the node joins a Raft cluster on `raft_backend` (one `PEERS`
@@ -65,10 +66,13 @@
 #include <kythira/dynamodb/txn_api.hpp>
 
 #include <raft/beast_https_server.hpp>
+#include <raft/logger.hpp>
 #include <raft/static_key_authorizer.hpp>
 
 #include <boost/beast/http.hpp>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -119,6 +123,8 @@ struct gateway_config {
     /// `memory`, or `rocksdb` (a Raft cluster's database under the data
     /// directory).
     std::string engine = "memory";
+    /// The Raft groups' log level on a cluster.
+    kythira::log_level log_level = kythira::log_level::info;
     cluster_config cluster;
 };
 
@@ -242,7 +248,9 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_FORWARD_SECRET       shared secret between gateways\n"
     "                                        (16 or more characters)\n"
     "  KYTHIRA_DYNAMODB_FORWARD_CA           PEM bundle peers' certificates chain\n"
-    "                                        to (system roots)\n";
+    "                                        to (system roots)\n"
+    "  KYTHIRA_DYNAMODB_LOG_LEVEL            Raft log level: trace, debug, info,\n"
+    "                                        warning, error or critical (info)\n";
 
 namespace gateway_detail {
 
@@ -430,6 +438,23 @@ namespace gateway_detail {
     c.engine = env("KYTHIRA_DYNAMODB_ENGINE").value_or("memory");
     if (c.engine != "memory" && c.engine != "rocksdb") {
         return "KYTHIRA_DYNAMODB_ENGINE: unknown engine '" + c.engine + "' (memory or rocksdb)";
+    }
+    if (auto v = env("KYTHIRA_DYNAMODB_LOG_LEVEL")) {
+        static constexpr std::array<std::pair<std::string_view, kythira::log_level>, 6> k_levels{{
+            {"trace", kythira::log_level::trace},
+            {"debug", kythira::log_level::debug},
+            {"info", kythira::log_level::info},
+            {"warning", kythira::log_level::warning},
+            {"error", kythira::log_level::error},
+            {"critical", kythira::log_level::critical},
+        }};
+        const auto* it = std::ranges::find(k_levels, gateway_detail::trim(*v),
+                                           &std::pair<std::string_view, kythira::log_level>::first);
+        if (it == k_levels.end()) {
+            return "KYTHIRA_DYNAMODB_LOG_LEVEL: unknown level '" + *v +
+                   "' (trace, debug, info, warning, error or critical)";
+        }
+        c.log_level = it->second;
     }
     if (auto e = gateway_detail::cluster_from_env(env, c)) {
         return *e;

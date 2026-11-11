@@ -10,6 +10,14 @@
 # client in turn.
 #
 # EVIDENCE_OUT is the host directory the stub writes <client>.jsonl into.
+#
+# The `kythira` profile is the KCL run on Kythira (task 11,
+# kcl_on_kythira.sh): three dynamodb_gateway_node containers (ddb-1 ..
+# ddb-3, a Raft cluster wired by service name) and `forwarder`, the stub
+# with --dynamodb-upstream, which serves the KCL clients' Kinesis calls
+# itself and passes their DynamoDB calls to ddb-2. The API, Raft and the
+# gateways' forwarding are plaintext inside this private network; nothing
+# is published on the host. `up` without the profile never starts them.
 
 name: kythira-dynamodb-evidence
 
@@ -55,6 +63,47 @@ services:
       - m2:/root/.m2
     depends_on:
       - stub
+
+  ddb-1: &ddb
+    image: kythira-dynamodb-node:dev
+    profiles: ["kythira"]
+    environment: &ddb_env
+      KYTHIRA_DYNAMODB_NODE_ID: "1"
+      KYTHIRA_DYNAMODB_PEERS: "1=http://ddb-1:7000,2=http://ddb-2:7000,3=http://ddb-3:7000"
+      KYTHIRA_DYNAMODB_PEER_GATEWAYS: "2=ddb-2:8000,3=ddb-3:8000"
+      KYTHIRA_DYNAMODB_FORWARD_SECRET: kcl-on-kythira-forward-secret
+      KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT: "1"
+      KYTHIRA_DYNAMODB_LOG_LEVEL: warning
+      # The keys the evidence clients sign with (EVIDENCE-<client>).
+      KYTHIRA_DYNAMODB_STATIC_KEYS: >-
+        EVIDENCE-kcl2:evidence-secret-not-a-credential:000000000000:kcl2:admin,EVIDENCE-kcl3:evidence-secret-not-a-credential:000000000000:kcl3:admin
+
+  ddb-2:
+    <<: *ddb
+    environment:
+      <<: *ddb_env
+      KYTHIRA_DYNAMODB_NODE_ID: "2"
+      KYTHIRA_DYNAMODB_PEER_GATEWAYS: "1=ddb-1:8000,3=ddb-3:8000"
+
+  ddb-3:
+    <<: *ddb
+    environment:
+      <<: *ddb_env
+      KYTHIRA_DYNAMODB_NODE_ID: "3"
+      KYTHIRA_DYNAMODB_PEER_GATEWAYS: "1=ddb-1:8000,2=ddb-2:8000"
+
+  forwarder:
+    image: docker.io/library/python:3.13.9-slim
+    profiles: ["kythira"]
+    command: ["python3", "/tools/recording_stub.py", "--port", "8000", "--out", "/out",
+              "--dynamodb-upstream", "ddb-2:8000"]
+    volumes:
+      - ./:/tools:ro
+      - ${EVIDENCE_OUT:?set EVIDENCE_OUT}:/out
+    depends_on:
+      - ddb-1
+      - ddb-2
+      - ddb-3
 
 volumes:
   m2:
