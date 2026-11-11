@@ -104,7 +104,9 @@ public final class Main {
         Thread t = new Thread(scheduler, "kcl-scheduler");
         t.setDaemon(true);
         t.start();
-        boolean got = PROCESSED.await(90, TimeUnit.SECONDS);
+        // As long as the KCL 3.x client waits: a slow runtime, such as
+        // rootless Podman, can take most of 90 s to the first record.
+        boolean got = PROCESSED.await(180, TimeUnit.SECONDS);
         // One more renewal round before shutting down, so it is recorded.
         Thread.sleep(12_000L);
         scheduler.startGracefulShutdown().get(60, TimeUnit.SECONDS);

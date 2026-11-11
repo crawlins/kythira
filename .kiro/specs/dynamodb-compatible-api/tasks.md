@@ -167,7 +167,8 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       process (`dynamodb_gateway_cluster_test`); boto3 against three
       processes ran create, puts through every node, consistent gets,
       Query, Scan and delete.
-    - Left: warm throughput; the KCL sample.
+    - Left: warm throughput. The KCL sample is the KCL 2.x run in
+      `kcl_on_kythira.sh` (task 11).
 
 - [x] 8. Query, Scan and batch operations
   - Range reads with every `Query` option; cross-shard `Scan` cursors;
@@ -299,7 +300,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       transactions. The chaos case runs in process; the Docker harness
       comes with the daemon's chaos suite.
 
-- [ ] 11. Global secondary indexes
+- [x] 11. Global secondary indexes
   - GSI key spaces, leader-side propagator from the change log (needs task
     15's change log; until then the propagator reads a temporary in-engine
     queue with the same interface), versioned idempotent writes, lag metric
@@ -396,7 +397,25 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       The local backend already propagates before answering. Test: in
       `dynamodb_raft_backend_test`, a synchronous and an asynchronous
       table with the propagators idle.
-    - Left in this task: the KCL 3.x tables.
+    - KCL 3.x tables: the KCL 3.5.4 evidence client runs end to end with
+      its lease table on Kythira (and KCL 2.x with its own), the recording
+      stub standing in for the stream: `tools/evidence/kcl_on_kythira.sh`
+      starts the stub with `--dynamodb-upstream`, which passes every
+      DynamoDB request unchanged to Kythira and records the answer, and
+      `check_kcl_run.py` requires every refusal to be one the KCL expects
+      (`ResourceNotFoundException` on `DescribeTable`, a failed condition),
+      the lease table and a lease written, the `UpdateTable` adding
+      `LeaseOwnerToLeaseKeyIndex` accepted and a `Query` on it finding the
+      worker's lease. The `build` job of `dynamodb-module.yml` runs it on
+      a three-node cluster of the daemon it built, in containers, under
+      Docker and rootless Podman. KCL 3.5.4 asks for the
+      `<app>-CoordinatorState` and `<app>-WorkerMetricStats` tables, finds
+      none and keeps the coordinator, leader and worker-metrics entries in
+      the lease table (`entityType` `CLIENT_VERSION_MIGRATION`, `LEADER`,
+      `WORKER_METRIC_STATS`); DynamoDB Local 3.3.2 got the same
+      conversation, request for request, in a run with the same client.
+      The daemon gained `KYTHIRA_DYNAMODB_LOG_LEVEL` (default `info`): its
+      Raft groups logged at `trace`.
 
 - [ ] 12. Capacity, throttling and consumed capacity
   - Consumed-capacity formulas; provisioned and on-demand modes; leader-side

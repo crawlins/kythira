@@ -212,6 +212,10 @@ auto run_cluster(
         .on_group_destroyed = {},
     };
     hc.state_engine = std::move(engine);
+    hc.logger = kythira::console_logger{cfg.log_level};
+    hc.logger_factory = [level = cfg.log_level](const std::uint64_t&) {
+        return kythira::console_logger{level};
+    };
     hc.automatic_split_merge_enabled = false;
     hc.split_merge_interval = std::chrono::hours{1};
     auto host = std::make_unique<host_type>(std::move(hc));
