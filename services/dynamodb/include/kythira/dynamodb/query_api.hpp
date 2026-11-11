@@ -406,12 +406,16 @@ public:
 
     explicit query_api(Backend& backend) : _backend(backend) {}
 
+    /// The cluster's compatibility switches (Requirement 3); AWS's by
+    /// default. A table's tags override them.
+    void set_compat_profile(const dynamo_compat_profile& p) { _profile = p; }
+
     template<typename FrontEnd> void register_with(FrontEnd& fe) {
         fe.on("Query", [this](call_context& c, boost::json::object& in) { return query(c, in); });
         fe.on("Scan", [this](call_context& c, boost::json::object& in) { return scan(c, in); });
     }
 
-    auto query(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto query(call_context& ctx, boost::json::object& in) -> result {
         using namespace query_detail;
         auto table = api_detail::usable_table(_backend, in.at("TableName").as_string());
         if (!table) {
@@ -477,11 +481,11 @@ public:
             narrow(range, start->second, forward);
         }
         return read_page(
-            in, *table, lsi, gsi, *compiled, range,
+            ctx, in, *table, lsi, gsi, *compiled, range,
             forward ? kythira::scan_direction::forward : kythira::scan_direction::reverse, &k);
     }
 
-    auto scan(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto scan(call_context& ctx, boost::json::object& in) -> result {
         using namespace query_detail;
         auto table = api_detail::usable_table(_backend, in.at("TableName").as_string());
         if (!table) {
@@ -554,8 +558,8 @@ public:
             }
             narrow(range, key, true);
         }
-        return read_page(in, *table, lsi, gsi, *compiled, range, kythira::scan_direction::forward,
-                         nullptr);
+        return read_page(ctx, in, *table, lsi, gsi, *compiled, range,
+                         kythira::scan_direction::forward, nullptr);
     }
 
 private:
@@ -609,11 +613,20 @@ private:
         return !query_detail::unprojected(table.schema, *lsi, names).empty();
     }
 
-    auto read_page(const boost::json::object& in, const table_descriptor& table,
-                   const local_index* lsi, const global_index* gsi, const expression_set& compiled,
-                   const kythira::key_range& range, kythira::scan_direction direction,
-                   const key_condition* key) -> result {
+    auto read_page(const call_context& ctx, const boost::json::object& in,
+                   const table_descriptor& table, const local_index* lsi, const global_index* gsi,
+                   const expression_set& compiled, const kythira::key_range& range,
+                   kythira::scan_direction direction, const key_condition* key) -> result {
         const bool consistent = api_detail::flag(in, "ConsistentRead");
+        // A GSI read draws on the index's capacity; a table or LSI read on
+        // the table's. A Query also draws on its partition key's bucket.
+        capacity_target target{gsi != nullptr ? gsi->name : std::string{}, capacity_kind::read, {}};
+        if (key != nullptr) {
+            target.partition = encode_item(item{{key->partition_name, key->partition_value}});
+        }
+        if (auto e = api_detail::admit(_backend, _profile, ctx, table, {target})) {
+            return *e;
+        }
         const bool count_only = api_detail::text(in, "Select") == "COUNT";
         // A Scan of a table (or an LSI) reads the whole slice: keep only
         // what it asked for. A GSI's key space holds only its entries.
@@ -692,14 +705,16 @@ private:
             out["LastEvaluatedKey"] =
                 item_to_json(query_detail::key_of(read.back(), table.schema, lsi, gsi));
         }
+        const double units = api_detail::read_units(bytes, consistent);
+        api_detail::charge(_backend, _profile, table, target, units);
         if (api_detail::wants_capacity(in)) {
-            out["ConsumedCapacity"] =
-                api_detail::capacity(in, table.name, api_detail::read_units(bytes, consistent));
+            out["ConsumedCapacity"] = api_detail::capacity(in, table.name, units);
         }
         return out;
     }
 
     Backend& _backend;
+    dynamo_compat_profile _profile{};
 };
 
 }  // namespace kythira::dynamodb

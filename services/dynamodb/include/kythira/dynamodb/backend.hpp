@@ -37,6 +37,7 @@
 /// delete runs its bounded drop steps to the end. The Raft-hosted backend
 /// does the same work from the catalog leader.
 
+#include <kythira/dynamodb/capacity.hpp>
 #include <kythira/dynamodb/catalog.hpp>
 #include <kythira/dynamodb/gsi_propagator.hpp>
 #include <kythira/dynamodb/item_state_machine.hpp>
@@ -97,6 +98,7 @@ concept dynamo_backend =
         { b.now_ms() } -> std::same_as<std::uint64_t>;
         { b.transact(actions) } -> std::same_as<txn_report>;
         { b.settle_item(table, key) } -> std::same_as<void>;
+        { b.throttler() } -> std::same_as<capacity_throttler&>;
     };
 
 /// Both state machines on one engine, applied in-process.
@@ -175,6 +177,9 @@ public:
     }
 
     auto now_ms() -> std::uint64_t { return _clock(); }
+
+    /// The capacity buckets (task 12): one process, so exact.
+    auto throttler() -> capacity_throttler& { return _throttler; }
 
     /// Under the one lock: every action is judged (as each group's
     /// `validate` judges it under the transaction's locks), and if all pass,
@@ -323,6 +328,7 @@ private:
     }
 
     clock_fn _clock;
+    capacity_throttler _throttler;
     std::mutex _mu;
     dynamo_catalog_state_machine<Engine> _catalog;
     dynamo_item_state_machine<Engine> _items;

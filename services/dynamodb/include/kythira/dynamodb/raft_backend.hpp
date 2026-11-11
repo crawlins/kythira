@@ -134,6 +134,10 @@ struct raft_backend_options {
     /// Each transaction's lock TTL and budget (read committed: DynamoDB's
     /// transactions lock every item they touch).
     kythira::txn_options txn{};
+    /// This node's part of every capacity limit (task 12, `capacity.hpp`):
+    /// 1 enforces each limit whole on every node; `dynamodb_gateway_node`
+    /// gives each of N voters 1/N.
+    double capacity_share = 1.0;
 };
 
 /// A transaction op's keys no longer share one group; the coordinator
@@ -297,6 +301,7 @@ public:
           _forward(std::move(forward)),
           _options(options),
           _clock(std::move(clock)),
+          _throttler(options.capacity_share),
           _txn(*this) {
         // The resolver's way to a primary this node does not lead.
         _host.set_txn_forwarder(
@@ -507,6 +512,9 @@ public:
     }
 
     auto now_ms() -> std::uint64_t { return _clock(); }
+
+    /// This node's capacity buckets, holding `capacity_share` of each limit.
+    auto throttler() -> capacity_throttler& { return _throttler; }
 
     auto transact(const std::vector<item_command>& actions) -> txn_report {
         kythira::transaction_coordinator<txn_client, std::string> coordinator(_txn, _options.txn);
@@ -1430,6 +1438,7 @@ private:
     forwarder _forward;
     raft_backend_options _options;
     clock_fn _clock;
+    capacity_throttler _throttler;
 
     std::mutex _worker_mu;
     std::condition_variable _worker_cv;

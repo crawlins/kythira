@@ -82,7 +82,7 @@ public:
               [this](call_context& c, boost::json::object& in) { return delete_item(c, in); });
     }
 
-    auto get_item(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto get_item(call_context& ctx, boost::json::object& in) -> result {
         auto table = usable_table(in);
         if (!table) {
             return table.error();
@@ -96,19 +96,26 @@ public:
             return key.error();
         }
         const bool consistent = flag(in, "ConsistentRead");
+        const capacity_target target{"", capacity_kind::read,
+                                     api_detail::partition_of(table->schema, *key)};
+        if (auto e = api_detail::admit(_backend, _profile, ctx, *table, {target})) {
+            return *e;
+        }
         const auto found = _backend.read(table->table_id, table->schema, *key, consistent);
+        const auto units = read_units(found, consistent);
+        api_detail::charge(_backend, _profile, *table, target, units);
         boost::json::object out;
         if (found) {
             out["Item"] = item_to_json(
                 compiled->projection ? project_item(*compiled->projection, *found) : *found);
         }
-        if (const auto units = read_units(found, consistent); wants_capacity(in)) {
+        if (wants_capacity(in)) {
             out["ConsumedCapacity"] = capacity(in, table->name, units);
         }
         return out;
     }
 
-    auto put_item(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto put_item(call_context& ctx, boost::json::object& in) -> result {
         auto table = usable_table(in);
         if (!table) {
             return table.error();
@@ -140,11 +147,10 @@ public:
         item_command c = command(item_command::kind::put, *table, std::move(*parsed), in);
         c.expressions = std::move(*compiled);
         c.returns = *returns;
-        const double units = write_units(c.payload);
-        return finish(in, *table, c, units);
+        return finish(ctx, in, *table, c);
     }
 
-    auto update_item(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto update_item(call_context& ctx, boost::json::object& in) -> result {
         auto table = usable_table(in);
         if (!table) {
             return table.error();
@@ -164,10 +170,10 @@ public:
         item_command c = command(item_command::kind::update, *table, std::move(*key), in);
         c.expressions = std::move(*compiled);
         c.returns = *returns;
-        return finish(in, *table, c, 1.0);
+        return finish(ctx, in, *table, c);
     }
 
-    auto delete_item(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto delete_item(call_context& ctx, boost::json::object& in) -> result {
         auto table = usable_table(in);
         if (!table) {
             return table.error();
@@ -187,7 +193,7 @@ public:
         item_command c = command(item_command::kind::delete_, *table, std::move(*key), in);
         c.expressions = std::move(*compiled);
         c.returns = *returns;
-        return finish(in, *table, c, 1.0);
+        return finish(ctx, in, *table, c);
     }
 
 private:
@@ -270,18 +276,24 @@ private:
         return api_detail::read_units(found ? item_size(*found) : 0, consistent);
     }
 
-    static auto write_units(const item& it) -> double {
-        return api_detail::write_units(item_size(it));
-    }
-
-    auto finish(const boost::json::object& in, const table_descriptor& table, const item_command& c,
-                double units) -> result {
+    auto finish(const call_context& ctx, const boost::json::object& in,
+                const table_descriptor& table, const item_command& c) -> result {
         if (_guard != nullptr) {
             if (auto e = _guard->check_write()) {
                 return *e;
             }
         }
+        const auto targets = api_detail::write_targets(table, c.payload, c.op);
+        if (auto e = api_detail::admit(_backend, _profile, ctx, table, targets)) {
+            return *e;
+        }
         const auto r = _backend.write(c);
+        // AWS charges the larger of the item before and after, and charges a
+        // write whose condition failed too.
+        const double units = api_detail::write_units(r.charged_bytes);
+        if (r.outcome != item_result::status::error) {
+            api_detail::charge_all(_backend, _profile, table, targets, units);
+        }
         switch (r.outcome) {
             case item_result::status::condition_failed: {
                 auto e = table_api_detail::modeled("ConditionalCheckFailedException",

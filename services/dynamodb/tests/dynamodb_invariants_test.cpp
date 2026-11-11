@@ -1035,7 +1035,9 @@ BOOST_FIXTURE_TEST_CASE(f06_a_page_reads_at_most_1_mb_before_filtering, tables) 
         return;  // DynamoDB Local does not cap a page at 1 MB
     }
     // 30 items of about 100 KB: a page stops after about 1 MB, whatever
-    // the filter keeps.
+    // the filter keeps. 3 MB under one partition key in one instant is a
+    // hot key, so capacity is off for this one.
+    without_throttling();
     const std::string big(100 * 1024, 'x');
     for (int i = 0; i < 30; ++i) {
         put_t("p", std::to_string(i), R"(,"v":{"S":")" + big + R"("})");
@@ -1301,6 +1303,9 @@ BOOST_FIXTURE_TEST_CASE(h07_batch_get_omits_missing_items, tables) {
 }
 
 BOOST_FIXTURE_TEST_CASE(h08_batch_get_returns_at_most_16_mb_and_the_rest_unprocessed, tables) {
+    // 19 MB under one partition key in one instant is a hot key: capacity
+    // is off for this one.
+    without_throttling();
     const std::string big(390 * 1024, 'x');
     std::string keys;
     for (int i = 0; i < 50; ++i) {

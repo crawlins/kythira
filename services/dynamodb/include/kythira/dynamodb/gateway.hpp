@@ -43,6 +43,8 @@
 /// | `KYTHIRA_DYNAMODB_FORWARD_SECRET` | | the secret gateways forward with (16+ chars) |
 /// | `KYTHIRA_DYNAMODB_FORWARD_CA` | system roots | PEM bundle peers' certificates chain to |
 /// | `KYTHIRA_DYNAMODB_LOG_LEVEL` | `info` | the Raft groups' log level, `trace` to `critical` |
+/// | `KYTHIRA_DYNAMODB_COMPAT` | AWS's | `switch=value,...`: the cluster's compatibility profile,
+/// e.g. `throttling=off` |
 ///
 /// Without `PEERS` the daemon is one node on `local_backend`, with no Raft.
 /// With it, the node joins a Raft cluster on `raft_backend` (one `PEERS`
@@ -56,6 +58,7 @@
 
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/batch_api.hpp>
+#include <kythira/dynamodb/compat_profile.hpp>
 #include <kythira/dynamodb/disk_guard.hpp>
 #include <kythira/dynamodb/dynamodb_actions.hpp>
 #include <kythira/dynamodb/forward_link.hpp>
@@ -125,6 +128,9 @@ struct gateway_config {
     std::string engine = "memory";
     /// The Raft groups' log level on a cluster.
     kythira::log_level log_level = kythira::log_level::info;
+    /// The cluster's compatibility switches (Requirement 3); tables' tags
+    /// override them.
+    dynamo_compat_profile compat{};
     cluster_config cluster;
 };
 
@@ -250,7 +256,10 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_FORWARD_CA           PEM bundle peers' certificates chain\n"
     "                                        to (system roots)\n"
     "  KYTHIRA_DYNAMODB_LOG_LEVEL            Raft log level: trace, debug, info,\n"
-    "                                        warning, error or critical (info)\n";
+    "                                        warning, error or critical (info)\n"
+    "  KYTHIRA_DYNAMODB_COMPAT               switch=value,... the cluster's\n"
+    "                                        compatibility profile, e.g.\n"
+    "                                        throttling=off (AWS's behaviour)\n";
 
 namespace gateway_detail {
 
@@ -456,6 +465,26 @@ namespace gateway_detail {
         }
         c.log_level = it->second;
     }
+    if (auto v = env("KYTHIRA_DYNAMODB_COMPAT")) {
+        std::vector<std::pair<std::string, std::string>> settings;
+        for (const auto part : gateway_detail::split(*v, ',')) {
+            const auto entry = gateway_detail::trim(part);
+            if (entry.empty()) {
+                continue;
+            }
+            const auto eq = entry.find('=');
+            if (eq == std::string_view::npos) {
+                return "KYTHIRA_DYNAMODB_COMPAT: '" + std::string(entry) + "' is not switch=value";
+            }
+            settings.emplace_back(std::string(gateway_detail::trim(entry.substr(0, eq))),
+                                  std::string(gateway_detail::trim(entry.substr(eq + 1))));
+        }
+        auto profile = cluster_profile(settings);
+        if (!profile) {
+            return "KYTHIRA_DYNAMODB_COMPAT: " + profile.error().message.value_or("invalid");
+        }
+        c.compat = *profile;
+    }
     if (auto e = gateway_detail::cluster_from_env(env, c)) {
         return *e;
     }
@@ -539,6 +568,10 @@ public:
             front.advertised_endpoint = "localhost:" + std::to_string(_server->port());
         }
         _front = std::make_unique<front_end<authorizer>>(std::move(front), _auth);
+        _items.set_compat_profile(_config.compat);
+        _queries.set_compat_profile(_config.compat);
+        _batches.set_compat_profile(_config.compat);
+        _transactions.set_compat_profile(_config.compat);
         _tables.register_with(*_front);
         _items.register_with(*_front);
         _queries.register_with(*_front);

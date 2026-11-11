@@ -200,6 +200,9 @@ public:
                 return *e;
             }
         }
+        if (auto e = admit_all(ctx, actions)) {
+            return *e;
+        }
         const auto report = _backend.transact(commands);
 
         if (request_hash) {
@@ -214,13 +217,14 @@ public:
                 return table_api_detail::modeled("IdempotentParameterMismatchException", "");
             }
         }
+        charge_all(actions, report);
         if (report.outcome == txn_report::status::committed) {
             for (const auto& a : actions) {
                 if (a.kind != "ConditionCheck" && api_detail::sync_gsis(_profile, a.table)) {
                     _backend.settle_item(a.table, a.command.payload);
                 }
             }
-            return write_response(in, actions);
+            return write_response(in, actions, &report);
         }
         for (std::size_t i = 0; i < actions.size(); ++i) {
             const auto& r = report.results[i];
@@ -276,7 +280,11 @@ public:
         for (const auto& a : actions) {
             commands.push_back(a.command);
         }
+        if (auto e = admit_all(ctx, actions)) {
+            return *e;
+        }
         const auto report = _backend.transact(commands);
+        charge_all(actions, report);
         if (report.outcome == txn_report::status::cancelled) {
             return cancelled(actions, report);
         }
@@ -286,14 +294,12 @@ public:
             const auto& a = actions[i];
             const auto& r = report.results[i];
             boost::json::object entry;
-            std::size_t size = 0;
             if (r && r->attributes) {
-                size = item_size(*r->attributes);
                 entry["Item"] = item_to_json(
                     a.projection ? project_item(*a.projection, *r->attributes) : *r->attributes);
             }
             responses.push_back(std::move(entry));
-            add_units(units, a.table.name, 2.0 * api_detail::read_units(size, true));
+            add_units(units, a.table.name, action_units(a, r));
         }
         boost::json::object out{{"Responses", std::move(responses)}};
         if (api_detail::wants_capacity(in)) {
@@ -464,16 +470,85 @@ private:
         return out;
     }
 
-    static auto write_response(const boost::json::object& in, const std::vector<action>& actions)
-        -> boost::json::object {
+    /// What one action of a transaction costs: twice the plain read or
+    /// write, sized from what the item group reported when it did.
+    static auto action_units(const action& a, const std::optional<item_result>& r) -> double {
+        if (a.kind == "Get") {
+            return 2.0 *
+                   api_detail::read_units(r && r->attributes ? item_size(*r->attributes) : 0, true);
+        }
+        if (r && r->charged_bytes != 0) {
+            return 2.0 * api_detail::write_units(r->charged_bytes);
+        }
+        return 2.0 * (a.command.op == item_command::kind::put
+                          ? api_detail::write_units(item_size(a.command.payload))
+                          : 1.0);
+    }
+
+    static auto targets_of(const action& a) -> std::vector<capacity_target> {
+        if (a.kind == "Get") {
+            return {{"", capacity_kind::read,
+                     api_detail::partition_of(a.table.schema, a.command.payload)}};
+        }
+        return api_detail::write_targets(a.table, a.command.payload, a.command.op);
+    }
+
+    /// Admits every action, or cancels the transaction naming the throttled
+    /// ones with `ThrottlingError`, as AWS does.
+    auto admit_all(const call_context& ctx, const std::vector<action>& actions)
+        -> std::optional<aws_json::error> {
+        std::vector<std::optional<aws_json::error>> refused(actions.size());
+        bool any = false;
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            refused[i] = api_detail::admit(_backend, _profile, ctx, actions[i].table,
+                                           targets_of(actions[i]));
+            any = any || refused[i].has_value();
+        }
+        if (!any) {
+            return std::nullopt;
+        }
+        boost::json::array reasons;
+        std::string codes;
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            boost::json::object reason;
+            if (refused[i]) {
+                reason["Code"] = "ThrottlingError";
+                reason["Message"] = std::string(capacity_detail::k_hot_message);
+            } else {
+                reason["Code"] = "None";
+            }
+            codes += (i == 0 ? "" : ", ") + std::string(reason.at("Code").as_string());
+            reasons.push_back(std::move(reason));
+        }
+        auto e = table_api_detail::modeled(
+            "TransactionCanceledException",
+            "Transaction cancelled, please refer cancellation reasons for specific reasons [" +
+                codes + "]");
+        e.extra["CancellationReasons"] = std::move(reasons);
+        return e;
+    }
+
+    /// Charges every action that ran, committed or not.
+    auto charge_all(const std::vector<action>& actions, const txn_report& report) -> void {
+        for (std::size_t i = 0; i < actions.size(); ++i) {
+            const auto& r =
+                i < report.results.size() ? report.results[i] : std::optional<item_result>{};
+            api_detail::charge_all(_backend, _profile, actions[i].table, targets_of(actions[i]),
+                                   action_units(actions[i], r));
+        }
+    }
+
+    static auto write_response(const boost::json::object& in, const std::vector<action>& actions,
+                               const txn_report* report = nullptr) -> boost::json::object {
         boost::json::object out;
         if (api_detail::wants_capacity(in)) {
             std::vector<std::pair<std::string, double>> units;
-            for (const auto& a : actions) {
-                const double one = a.command.op == item_command::kind::put
-                                       ? api_detail::write_units(item_size(a.command.payload))
-                                       : 1.0;
-                add_units(units, a.table.name, 2.0 * one);
+            for (std::size_t i = 0; i < actions.size(); ++i) {
+                const auto& a = actions[i];
+                const auto r = report != nullptr && i < report->results.size()
+                                   ? report->results[i]
+                                   : std::optional<item_result>{};
+                add_units(units, a.table.name, action_units(a, r));
             }
             out["ConsumedCapacity"] = capacity_list(in, units);
         }

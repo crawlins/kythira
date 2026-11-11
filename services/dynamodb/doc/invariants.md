@@ -210,6 +210,8 @@ all fixed with it:
 | A transaction has at most 100 items and 4 MB, never names one item twice, and is all or nothing, across groups and through leader loss | Limits | `dynamodb_txn_test`, `dynamodb_ops_corpus_test`, `dynamodb_raft_backend_test` |
 | A GSI reflects every write once propagated, wherever its entries live, and a lost leader's changes are carried by the next one | Indexes | `dynamodb_gsi_test`, `dynamodb_raft_backend_test` |
 | With `gsi-consistency=sync`, a GSI read after a write sees it (Kythira switch, Requirement 3) | — | `dynamodb_raft_backend_test` |
+| Reads and writes are charged in 4 KB and 1 KB units (a write the larger of the item before and after, a transaction twice), and over-capacity requests are throttled per table, index and partition with AWS's errors and reasons | Limits | `dynamodb_capacity_test` |
+| With `throttling=off`, per cluster or per table tag, nothing is throttled (Kythira switch, Requirement 3) | — | `dynamodb_capacity_test` |
 
 ## Deferred
 
@@ -218,7 +220,6 @@ with the task that builds it.
 
 | Invariant | Source | Task |
 |---|---|---|
-| Reads and writes are charged in 4 KB and 1 KB units, and over-capacity requests are throttled | Limits | 12 |
 | Time to live can be changed at most once an hour | Limits | 13 |
 | PartiQL statements follow the same item rules | — | 14 |
 | At most 2 readers share a stream shard | Limits | 16 |

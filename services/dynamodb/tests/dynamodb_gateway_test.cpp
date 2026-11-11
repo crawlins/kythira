@@ -147,6 +147,14 @@ BOOST_AUTO_TEST_CASE(bad_settings_are_refused_with_the_variable_named) {
                "KYTHIRA_DYNAMODB_ENGINE: unknown engine 'leveldb' (memory or rocksdb)");
 
     vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_COMPAT"] = "throttling";
+    BOOST_TEST(config_error(vars) == "KYTHIRA_DYNAMODB_COMPAT: 'throttling' is not switch=value");
+    vars["KYTHIRA_DYNAMODB_COMPAT"] = "throttling=maybe";
+    BOOST_TEST(config_error(vars) ==
+               "KYTHIRA_DYNAMODB_COMPAT: One or more parameter values were invalid: Unknown "
+               "Kythira compatibility setting throttling=maybe");
+
+    vars = minimal_env();
     vars["KYTHIRA_DYNAMODB_LOG_LEVEL"] = "verbose";
     BOOST_TEST(config_error(vars) ==
                "KYTHIRA_DYNAMODB_LOG_LEVEL: unknown level 'verbose' "
@@ -352,6 +360,16 @@ BOOST_AUTO_TEST_CASE(cluster_settings_are_read) {
     vars["KYTHIRA_DYNAMODB_ENGINE"] = "rocksdb";
     vars["KYTHIRA_DYNAMODB_DATA_DIR"] = "/var/lib/kythira";
     BOOST_REQUIRE_EQUAL(config_error(vars), "ok");
+    BOOST_TEST(std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars)))
+                   .compat.throttling);
+    vars["KYTHIRA_DYNAMODB_COMPAT"] = " throttling = off , gsi-consistency=sync,";
+    {
+        const auto compat =
+            std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars))).compat;
+        BOOST_TEST(!compat.throttling);
+        BOOST_TEST(!compat.async_gsi);
+    }
+    vars.erase("KYTHIRA_DYNAMODB_COMPAT");
     vars["KYTHIRA_DYNAMODB_LOG_LEVEL"] = " warning ";
     BOOST_TEST(
         (std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars))).log_level ==
