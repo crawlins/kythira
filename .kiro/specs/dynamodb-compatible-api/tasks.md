@@ -417,12 +417,45 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       The daemon gained `KYTHIRA_DYNAMODB_LOG_LEVEL` (default `info`): its
       Raft groups logged at `trace`.
 
-- [ ] 12. Capacity, throttling and consumed capacity
+- [x] 12. Capacity, throttling and consumed capacity
   - Consumed-capacity formulas; provisioned and on-demand modes; leader-side
     token buckets per table, index and partition; throttling errors
   - Throttling on by default; the capacity switch turns it off per cluster
     or per table, with a test for each setting
   - _Requirements: 3.5, 19.1-19.3_
+  - Notes:
+    - Formulas: a read is 4 KB units (half for an eventual read), a write
+      1 KB units of the larger of the item before and after it (the stored
+      item on a failed condition, which the state machine now reports as
+      `item_result::charged_bytes`), a transaction twice that. A write's
+      GSI share goes to each index it touches: a put to the indexes whose
+      partition key the item carries, an update or delete to all of them.
+    - Buckets (`capacity.hpp`): a provisioned table or index fills at its
+      units a second and holds 300 seconds of them, as AWS's burst
+      capacity; an on-demand one at 40,000 units a second, AWS's default
+      account table limit; each partition at 3,000 read and 1,000 write
+      units a second. A request is admitted while its buckets are not in
+      debt and charged afterwards, so one large item can borrow; this is
+      how AWS answers too.
+    - Errors: `ProvisionedThroughputExceededException` with
+      `ThrottlingReasons` for provisioned tables, `ThrottlingException`
+      with `throttlingReasons` on demand, each reason
+      `<Table|Index><Read|Write><ProvisionedThroughputExceeded|
+      AccountLimitExceeded|KeyRangeThroughputExceeded>` with the table or
+      index ARN. A throttled transaction is cancelled with
+      `ThrottlingError`; a batch returns throttled entries unprocessed and
+      fails only when all of them are.
+    - Deviation: the buckets are per gateway node, each holding
+      1/(voters) of the table's rate (`raft_backend_options::
+      capacity_share`), not on the group leader. Every node admits
+      without a hop, and a client spread over the nodes sees the table's
+      rate; one pinned to a single node sees its share. Load-based splits
+      for hot partitions (19.3) wait for the split policy (task 7).
+    - The switch is `throttling` (`KYTHIRA_DYNAMODB_COMPAT=throttling=off`
+      for the cluster, tag `kythira:compat:throttling` per table);
+      `ConsumedCapacity` is reported either way. Tests:
+      `dynamodb_capacity_test`; tests that probe the size limits turn
+      throttling off.
 
 ### Phase 4: streams, TTL and PartiQL
 

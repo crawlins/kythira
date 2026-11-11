@@ -239,9 +239,16 @@ auto run_cluster(
     };
 
     try {
-        backend_type backend(*host, [&forward](const node_id& to, const std::string& op) {
-            return forward.send(traits::to_text(to), op);
-        });
+        // Each voter enforces its share of every capacity limit: a client
+        // spreading requests over the nodes gets the table's whole limit.
+        ddb::raft_backend_options options;
+        options.capacity_share = 1.0 / static_cast<double>(voters.size());
+        backend_type backend(
+            *host,
+            [&forward](const node_id& to, const std::string& op) {
+                return forward.send(traits::to_text(to), op);
+            },
+            options);
         ddb::gateway<backend_type> gw(cfg, backend, log);
         gw.start();
         backend.start();

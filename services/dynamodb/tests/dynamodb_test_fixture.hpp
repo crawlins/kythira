@@ -10,6 +10,7 @@
 // after <boost/test/unit_test.hpp>.
 
 #include <kythira/dynamodb/backend.hpp>
+#include <kythira/dynamodb/compat_profile.hpp>
 #include <kythira/dynamodb/batch_api.hpp>
 #include <kythira/dynamodb/disk_guard.hpp>
 #include <kythira/dynamodb/front_end.hpp>
@@ -121,6 +122,17 @@ struct fixture {
         queries.register_with(*fe);
         batches.register_with(*fe);
         transactions.register_with(*fe);
+    }
+
+    /// Turns capacity enforcement off for the whole fixture (Requirement
+    /// 3.5's cluster switch), for tests about something else that move more
+    /// data at one instant of the fixed clock than any bucket admits.
+    void without_throttling() {
+        const auto off = ddb::cluster_profile({{"throttling", "off"}}).value();
+        items.set_compat_profile(off);
+        queries.set_compat_profile(off);
+        batches.set_compat_profile(off);
+        transactions.set_compat_profile(off);
     }
 
     /// When set, requests go here instead of the front end: a test can run

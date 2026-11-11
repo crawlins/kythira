@@ -65,6 +65,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_test_fixture.hpp`, `tests/dynamodb_query_test.cpp` | the shared handler fixture; Query, Scan and batches at their limits | 8 |
 | `include/kythira/dynamodb/local_index.hpp` | local secondary indexes: definitions, where their entries and each item collection's size live, projections, index key checks | 9 |
 | `tests/dynamodb_lsi_test.cpp` | LSI entries in the engine, the item collection limit, `ItemCollectionMetrics`, drops and stored forms | 9 |
+| `include/kythira/dynamodb/capacity.hpp` | capacity and throttling: token buckets per table, index and partition, AWS's throttling errors and reasons | 12 |
+| `tests/dynamodb_capacity_test.cpp` | buckets, charges, throttling errors and the `throttling` switch | 12 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
@@ -91,6 +93,11 @@ AWS_ACCESS_KEY_ID=AKIDLOCAL AWS_SECRET_ACCESS_KEY=localsecret \
 Outside tests, serve TLS (`KYTHIRA_DYNAMODB_TLS_CERT`,
 `KYTHIRA_DYNAMODB_TLS_KEY`) and keep the keys in a file
 (`KYTHIRA_DYNAMODB_STATIC_KEYS_FILE`), not in the environment.
+
+Tables are throttled as on AWS, provisioned ones at their capacity and
+on-demand ones at AWS's default limits. `KYTHIRA_DYNAMODB_COMPAT=throttling=off`
+turns that off for the cluster, and the tag `kythira:compat:throttling`
+sets it per table.
 
 ## Core targets and variables used
 

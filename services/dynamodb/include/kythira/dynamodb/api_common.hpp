@@ -6,13 +6,15 @@
 /// @file api_common.hpp
 /// @brief Helpers the item, query and batch handlers share
 ///        (`.kiro/specs/dynamodb-compatible-api/` tasks 7 and 8): reading
-///        request members, finding a usable table, and the simple
-///        `ConsumedCapacity` counts task 12 replaces with AWS's formula.
+///        request members, finding a usable table, `ConsumedCapacity`
+///        with AWS's formulas, and capacity admission (task 12).
 
 #include <kythira/dynamodb/backend.hpp>
+#include <kythira/dynamodb/capacity.hpp>
 #include <kythira/dynamodb/catalog.hpp>
 #include <kythira/dynamodb/compat_profile.hpp>
 #include <kythira/dynamodb/errors.hpp>
+#include <kythira/dynamodb/front_end.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/table_api.hpp>
 
@@ -27,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace kythira::dynamodb::api_detail {
 
@@ -119,6 +122,89 @@ template<dynamo_backend Backend>
     constexpr std::size_t k_write_unit_bytes = 1024;
     return static_cast<double>(
         std::max<std::size_t>(1, (bytes + k_write_unit_bytes - 1) / k_write_unit_bytes));
+}
+
+/// Whether capacity is enforced on `table`: the `throttling` switch, from
+/// the cluster's profile and the table's `kythira:compat:throttling` tag.
+[[nodiscard]] inline auto throttles(const dynamo_compat_profile& cluster,
+                                    const table_descriptor& table) -> bool {
+    return resolve_profile(cluster, table.tags).throttling;
+}
+
+/// The bytes a partition key's bucket is keyed by: the key attribute of
+/// `schema` in `it`; empty when `it` lacks it.
+[[nodiscard]] inline auto partition_of(const key_schema& schema, const item& it) -> std::string {
+    const auto* pk = find_attribute(it, schema.partition_name);
+    return pk == nullptr ? std::string{} : encode_item(item{{schema.partition_name, *pk}});
+}
+
+/// AWS's answer to a throttle: the exception with its `ThrottlingReasons`
+/// (spelled `throttlingReasons` on `ThrottlingException`, as the model has
+/// it), the resource being the table's or the index's ARN.
+[[nodiscard]] inline auto throttle_error(const throttle& t, const std::string& table_arn)
+    -> aws_json::error {
+    auto e = table_api_detail::modeled(t.exception, t.message);
+    const auto resource = t.index.empty() ? table_arn : table_arn + "/index/" + t.index;
+    e.extra[t.exception == "ThrottlingException" ? "throttlingReasons" : "ThrottlingReasons"] =
+        boost::json::array{boost::json::object{{"reason", t.reason}, {"resource", resource}}};
+    return e;
+}
+
+/// Admits every target, or answers the first throttle; nothing when the
+/// switch is off.
+template<dynamo_backend Backend>
+[[nodiscard]] auto admit(Backend& backend, const dynamo_compat_profile& cluster,
+                         const call_context& ctx, const table_descriptor& table,
+                         const std::vector<capacity_target>& targets)
+    -> std::optional<aws_json::error> {
+    if (!throttles(cluster, table)) {
+        return std::nullopt;
+    }
+    const auto now = backend.now_ms();
+    for (const auto& t : targets) {
+        if (auto th = backend.throttler().admit(table, t, now)) {
+            return throttle_error(*th, ctx.table_arn(table.name));
+        }
+    }
+    return std::nullopt;
+}
+
+/// Charges `units` to `target`, when the switch is on.
+template<dynamo_backend Backend>
+auto charge(Backend& backend, const dynamo_compat_profile& cluster, const table_descriptor& table,
+            const capacity_target& target, double units) -> void {
+    if (throttles(cluster, table)) {
+        backend.throttler().charge(table, target, units, backend.now_ms());
+    }
+}
+
+/// The targets a write to `table` of `payload` draws on: the table, by the
+/// item's partition key, and each GSI writes maintain that the write can
+/// touch: for a put, the indexes whose partition key the item carries (by
+/// that key); for an update or delete, every index, since only the item
+/// group sees what the write changes. That over-counts an update that
+/// leaves an index alone, and never under-counts.
+[[nodiscard]] inline auto write_targets(const table_descriptor& table, const item& payload,
+                                        item_command::kind op) -> std::vector<capacity_target> {
+    std::vector<capacity_target> out{
+        {"", capacity_kind::write, partition_of(table.schema, payload)}};
+    for (const auto& g : maintained_indexes(table.gsis)) {
+        auto partition = partition_of(g.schema, payload);
+        if (op != item_command::kind::put || !partition.empty()) {
+            out.push_back({g.name, capacity_kind::write, std::move(partition)});
+        }
+    }
+    return out;
+}
+
+/// Charges a write's `units` to every bucket it drew on.
+template<dynamo_backend Backend>
+auto charge_all(Backend& backend, const dynamo_compat_profile& cluster,
+                const table_descriptor& table, const std::vector<capacity_target>& targets,
+                double units) -> void {
+    for (const auto& t : targets) {
+        charge(backend, cluster, table, t, units);
+    }
 }
 
 }  // namespace kythira::dynamodb::api_detail

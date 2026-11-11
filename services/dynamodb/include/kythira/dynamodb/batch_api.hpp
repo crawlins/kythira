@@ -85,7 +85,7 @@ public:
               [this](call_context& c, boost::json::object& in) { return batch_write(c, in); });
     }
 
-    auto batch_get(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto batch_get(call_context& ctx, boost::json::object& in) -> result {
         using namespace batch_detail;
         // The codec has checked the model's limits: at least one table, and
         // 1 to 100 keys per table. The total is the handler's to check.
@@ -151,6 +151,10 @@ public:
         // key after it come back unprocessed: the response never exceeds
         // 16 MB (DynamoDB Local answers the same way).
         bool full = false;
+        // A throttled key comes back unprocessed; only when every key was
+        // throttled does the call fail with the throttle (as AWS answers).
+        std::optional<aws_json::error> throttled;
+        bool any_read = false;
         for (auto& g : gets) {
             boost::json::array found;
             boost::json::array left;
@@ -160,13 +164,24 @@ public:
                     left.push_back(item_to_json(key));
                     continue;
                 }
+                const capacity_target target{"", capacity_kind::read,
+                                             api_detail::partition_of(g.table.schema, key)};
+                if (auto e = api_detail::admit(_backend, _profile, ctx, g.table, {target})) {
+                    throttled = std::move(*e);
+                    left.push_back(item_to_json(key));
+                    continue;
+                }
+                any_read = true;
                 const auto it = _backend.read(g.table.table_id, g.table.schema, key, g.consistent);
                 if (it && response_bytes + item_size(*it) > k_max_response_bytes) {
                     full = true;
                     left.push_back(item_to_json(key));
                     continue;
                 }
-                units += api_detail::read_units(it ? item_size(*it) : 0, g.consistent);
+                const double key_units =
+                    api_detail::read_units(it ? item_size(*it) : 0, g.consistent);
+                api_detail::charge(_backend, _profile, g.table, target, key_units);
+                units += key_units;
                 if (it) {
                     response_bytes += item_size(*it);
                     found.push_back(item_to_json(
@@ -185,6 +200,9 @@ public:
                 consumed.push_back(api_detail::capacity(in, g.table.name, units));
             }
         }
+        if (throttled && !any_read) {
+            return std::move(*throttled);
+        }
         boost::json::object out{{"Responses", std::move(responses)},
                                 {"UnprocessedKeys", std::move(unprocessed)}};
         if (api_detail::wants_capacity(in)) {
@@ -193,7 +211,7 @@ public:
         return out;
     }
 
-    auto batch_write(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto batch_write(call_context& ctx, boost::json::object& in) -> result {
         using namespace batch_detail;
         // As for BatchGetItem, the codec has checked 1 to 25 writes per
         // table; the total across tables is checked here.
@@ -207,9 +225,11 @@ public:
         }
 
         struct table_writes {
+            std::string name;
             table_descriptor table;
             std::vector<item_command> commands;
-            double units = 0;
+            /// Each command's request entry, for `UnprocessedItems`.
+            std::vector<const boost::json::value*> entries;
         };
         std::vector<table_writes> writes;
         for (const auto& [name, list] : requests) {
@@ -217,7 +237,7 @@ public:
             if (!table) {
                 return table.error();
             }
-            table_writes w{std::move(*table), {}, 0};
+            table_writes w{std::string(name), std::move(*table), {}, {}};
             std::set<std::string> seen;
             for (const auto& entry : list.as_array()) {
                 const auto& e = entry.as_object();
@@ -252,7 +272,6 @@ public:
                         return *err;
                     }
                     c.op = item_command::kind::put;
-                    w.units += api_detail::write_units(item_size(*it));
                     c.payload = std::move(*it);
                 } else {
                     auto key = item_from_json(del->as_object().at("Key").as_object());
@@ -263,13 +282,13 @@ public:
                         return *err;
                     }
                     c.op = item_command::kind::delete_;
-                    w.units += 1.0;
                     c.payload = std::move(*key);
                 }
                 if (!seen.insert(*base_item_key(c.table_id, c.schema, c.payload)).second) {
                     return duplicates();
                 }
                 w.commands.push_back(std::move(c));
+                w.entries.push_back(&entry);
             }
             writes.push_back(std::move(w));
         }
@@ -281,10 +300,23 @@ public:
         }
         boost::json::array consumed;
         boost::json::object metrics;
+        boost::json::object unprocessed;
+        std::optional<aws_json::error> throttled;
+        bool any_written = false;
         for (const auto& w : writes) {
             // Each collection's metrics after the batch's last write to it.
             std::map<std::string, boost::json::object> collections;
-            for (const auto& c : w.commands) {
+            double units = 0;
+            boost::json::array left;
+            for (std::size_t i = 0; i < w.commands.size(); ++i) {
+                const auto& c = w.commands[i];
+                const auto targets = api_detail::write_targets(w.table, c.payload, c.op);
+                if (auto e = api_detail::admit(_backend, _profile, ctx, w.table, targets)) {
+                    throttled = std::move(*e);
+                    left.push_back(*w.entries[i]);
+                    continue;
+                }
+                any_written = true;
                 const auto r = _backend.write(c);
                 if (r.outcome == item_result::status::error) {
                     aws_json::error e;
@@ -292,6 +324,9 @@ public:
                     e.message = r.error_message;
                     return e;
                 }
+                const double write_units = api_detail::write_units(r.charged_bytes);
+                units += write_units;
+                api_detail::charge_all(_backend, _profile, w.table, targets, write_units);
                 if (api_detail::sync_gsis(_profile, w.table)) {
                     _backend.settle_item(w.table, c.payload);
                 }
@@ -308,11 +343,17 @@ public:
                 }
                 metrics[w.table.name] = std::move(list);
             }
+            if (!left.empty()) {
+                unprocessed[w.name] = std::move(left);
+            }
             if (api_detail::wants_capacity(in)) {
-                consumed.push_back(api_detail::capacity(in, w.table.name, w.units));
+                consumed.push_back(api_detail::capacity(in, w.table.name, units));
             }
         }
-        boost::json::object out{{"UnprocessedItems", boost::json::object{}}};
+        if (throttled && !any_written) {
+            return std::move(*throttled);
+        }
+        boost::json::object out{{"UnprocessedItems", std::move(unprocessed)}};
         if (api_detail::wants_capacity(in)) {
             out["ConsumedCapacity"] = std::move(consumed);
         }

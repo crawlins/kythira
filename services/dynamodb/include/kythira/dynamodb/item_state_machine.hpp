@@ -181,6 +181,10 @@ struct item_result {
     /// The item collection's size after a write that applied, for a table
     /// with LSIs (`ItemCollectionMetrics`).
     std::optional<std::uint64_t> collection_bytes;
+    /// The size a write is charged for (task 12): the larger of the item
+    /// before and after it, the stored item for a failed condition; 0 when
+    /// not known (an error, or an answer from a node without the field).
+    std::uint64_t charged_bytes = 0;
 
     friend auto operator==(const item_result&, const item_result&) -> bool = default;
 };
@@ -392,6 +396,10 @@ enum class item_command_status : std::uint8_t {
     if (r.collection_bytes) {
         detail::put_varint(out, *r.collection_bytes);
     }
+    // Trailing and optional, so a node without it still reads the rest.
+    if (r.charged_bytes != 0) {
+        detail::put_varint(out, r.charged_bytes);
+    }
     return out;
 }
 
@@ -440,7 +448,11 @@ enum class item_command_status : std::uint8_t {
         }
     }
     if (!r.done()) {
-        return std::nullopt;
+        const auto charged = r.varint();
+        if (!charged || !r.done()) {
+            return std::nullopt;
+        }
+        out.charged_bytes = *charged;
     }
     out.error_type = std::move(*type);
     out.error_message = std::move(*message);
@@ -911,9 +923,11 @@ private:
         const item empty;
         const item& current = old ? *old : empty;
 
+        const std::uint64_t old_bytes = old ? item_size(*old) : 0;
         if (c.expressions.condition && !evaluate_condition(*c.expressions.condition, current)) {
             item_result r;
             r.outcome = item_result::status::condition_failed;
+            r.charged_bytes = old_bytes;
             if (c.old_on_condition_failure && old) {
                 r.attributes = *old;
             }
@@ -923,6 +937,7 @@ private:
         if (c.op == item_command::kind::condition_check || c.op == item_command::kind::read_lock) {
             // Nothing to write. A read reports the item it found.
             item_result r;
+            r.charged_bytes = old_bytes;
             if (c.op == item_command::kind::read_lock) {
                 r.attributes = old;
             }
@@ -979,6 +994,7 @@ private:
         }
 
         item_result r;
+        r.charged_bytes = std::max<std::uint64_t>(old_bytes, next ? item_size(*next) : 0);
         if (next) {
             if (auto e = validate_index_keys(*next, c.lsis)) {
                 return error_result(*e);

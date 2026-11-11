@@ -44,6 +44,7 @@ auto create(fixture& f, const std::string& name) -> void {
 
 BOOST_AUTO_TEST_CASE(a_page_stops_before_one_megabyte) {
     fixture f;
+    f.without_throttling();
     create(f, "big");
     for (int i = 0; i < 5; ++i) {
         put_big(f, "big", "p", i, 300 * 1024);
@@ -123,6 +124,7 @@ BOOST_AUTO_TEST_CASE(segments_cover_the_table_exactly_once) {
 
 BOOST_AUTO_TEST_CASE(batch_get_leaves_keys_past_sixteen_megabytes_unprocessed) {
     fixture f;
+    f.without_throttling();
     create(f, "bgt");
     std::string keys;
     for (int i = 0; i < 50; ++i) {
