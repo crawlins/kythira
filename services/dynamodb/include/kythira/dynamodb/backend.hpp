@@ -64,6 +64,16 @@ namespace kythira::dynamodb {
 /// Gets each item of a range read with its base key; returns false to stop.
 using range_visitor = std::function<bool(std::string_view base_key, const item&)>;
 
+/// `c` with its change record timestamp set from the backend's clock, when
+/// its table logs changes and nothing set one (task 15). Replicas take the
+/// time from the entry, never from their own clocks.
+[[nodiscard]] inline auto stamp_written(item_command c, std::uint64_t now_ms) -> item_command {
+    if (c.log_changes && c.written_ms == 0) {
+        c.written_ms = now_ms;
+    }
+    return c;
+}
+
 /// How a transaction a backend ran ended (`transact`).
 struct txn_report {
     enum class status : std::uint8_t {
@@ -140,7 +150,7 @@ public:
 
     auto write(const item_command& c) -> item_result {
         const std::lock_guard lock(_mu);
-        auto r = apply_item_locked(c);
+        auto r = apply_item_locked(stamp_written(c, now_ms()));
         propagate_locked();
         return r;
     }
@@ -211,7 +221,7 @@ public:
             return r;
         }
         for (const auto& a : actions) {
-            (void)apply_item_locked(a);
+            (void)apply_item_locked(stamp_written(a, now_ms()));
         }
         propagate_locked();
         return r;

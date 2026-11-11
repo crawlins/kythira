@@ -162,6 +162,11 @@ set_tests_properties(dynamodb_ttl_test PROPERTIES
 kythira_dynamodb_test(dynamodb_partiql_test dynamodb_partiql_test.cpp)
 set_tests_properties(dynamodb_partiql_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# The change log (task 15): records, stream lineage across splits and
+# merges, restart, and a snapshot install that fetches the active segment.
+kythira_dynamodb_test(dynamodb_change_log_test dynamodb_change_log_test.cpp)
+set_tests_properties(dynamodb_change_log_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")

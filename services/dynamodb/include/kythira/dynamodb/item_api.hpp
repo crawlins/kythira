@@ -259,6 +259,7 @@ private:
         c.payload = std::move(payload);
         c.lsis = table.lsis;
         c.gsis = maintained_indexes(table.gsis);
+        c.log_changes = table.logs_changes();
         c.old_on_condition_failure = text(in, "ReturnValuesOnConditionCheckFailure") == "ALL_OLD";
         return c;
     }

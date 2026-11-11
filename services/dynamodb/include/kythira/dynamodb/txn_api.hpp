@@ -349,6 +349,7 @@ private:
         c.payload = std::move(payload);
         c.lsis = table.lsis;
         c.gsis = maintained_indexes(table.gsis);
+        c.log_changes = table.logs_changes();
         return c;
     }
 

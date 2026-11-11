@@ -71,6 +71,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_ttl_test.cpp` | the TTL calls with DynamoDB Local's answers, the hourly limit and its switch, and the sweeper | 13 |
 | `include/kythira/dynamodb/partiql.hpp` | PartiQL: the parser and its compiler to the JSON API's requests, `ExecuteStatement`, `BatchExecuteStatement` and `ExecuteTransaction` | 14 |
 | `tests/dynamodb_partiql_test.cpp` | the three PartiQL calls with DynamoDB Local's answers | 14 |
+| `include/kythira/dynamodb/change_log.hpp` | the change log: change records, a group's streams and their lineage across splits and merges, the state a group keeps about them | 15 |
+| `tests/dynamodb_change_log_test.cpp` | records per write, timestamps, restart, split and merge lineage, and the active segment fetched on a snapshot install | 15 |
 
 The rest follows the plan in the spec's `tasks.md`.
 

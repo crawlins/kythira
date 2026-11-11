@@ -37,6 +37,7 @@
 /// item, and an index group applies versioned index writes
 /// (`global_index.hpp`, task 11).
 
+#include <kythira/dynamodb/change_log.hpp>
 #include <kythira/dynamodb/expr.hpp>
 #include <kythira/dynamodb/expr_eval.hpp>
 #include <kythira/dynamodb/global_index.hpp>
@@ -55,6 +56,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <ranges>
@@ -137,6 +139,14 @@ struct item_command {
     /// `index_ack`: the entry keys the propagator wrote; `index_mark`: the
     /// base keys to mark.
     std::vector<std::string> entries;
+    /// The table's changes are logged (task 15): a write that changes the
+    /// item appends a change record (`change_log.hpp`).
+    bool log_changes = false;
+    /// A TTL delete: its record carries the service's identity.
+    bool ttl_delete = false;
+    /// When the proposer built the write (ms since the epoch), the record's
+    /// timestamp.
+    std::uint64_t written_ms = 0;
 
     friend auto operator==(const item_command&, const item_command&) -> bool = default;
 };
@@ -191,8 +201,10 @@ struct item_result {
 
 namespace item_sm_detail {
 
-/// 2 added the GSI fields (task 11); version 1 entries still decode.
-inline constexpr std::uint8_t k_command_format_version = 2;
+/// 2 added the GSI fields (task 11), 3 the change log fields (task 15).
+/// A command without change log fields is still written as 2, so replicas
+/// not yet upgraded keep applying writes to tables that log nothing.
+inline constexpr std::uint8_t k_command_format_version = 3;
 inline constexpr std::uint8_t k_result_format_version = 1;
 
 inline void put_u64(std::string& out, std::uint64_t v) {
@@ -259,7 +271,8 @@ inline void put_schema(std::string& out, const key_schema& s) {
 [[nodiscard]] inline auto encode_item_command(const item_command& c) -> std::string {
     using namespace item_sm_detail;
     std::string out;
-    out.push_back(static_cast<char>(k_command_format_version));
+    const bool logged = c.log_changes || c.ttl_delete || c.written_ms != 0;
+    out.push_back(static_cast<char>(logged ? k_command_format_version : 2));
     out.push_back(static_cast<char>(c.op));
     put_u64(out, c.table_id);
     put_schema(out, c.schema);
@@ -275,6 +288,10 @@ inline void put_schema(std::string& out, const key_schema& s) {
     detail::put_varint(out, c.entries.size());
     for (const auto& e : c.entries) {
         detail::put_bytes(out, e);
+    }
+    if (logged) {
+        out.push_back(static_cast<char>((c.log_changes ? 1U : 0U) | (c.ttl_delete ? 2U : 0U)));
+        detail::put_varint(out, c.written_ms);
     }
     return out;
 }
@@ -350,6 +367,16 @@ enum class item_command_status : std::uint8_t {
         c.version = *v;
     } else if (is_index_op(c.op)) {
         return item_command_status::malformed;
+    }
+    if (version >= 3) {
+        const auto flags = r.byte();
+        const auto written = r.varint();
+        if (!flags || *flags > 3 || !written) {
+            return item_command_status::malformed;
+        }
+        c.log_changes = (*flags & 1U) != 0;
+        c.ttl_delete = (*flags & 2U) != 0;
+        c.written_ms = *written;
     }
     if (!r.done()) {
         return item_command_status::malformed;
@@ -473,6 +500,20 @@ template<kythira::kv_engine Engine = kythira::memory_kv_engine, typename LogInde
 class dynamo_item_state_machine {
 public:
     using engine_type = Engine;
+    /// Fetches and installs a segment of the change log this node lacks
+    /// (from the group's peers), or throws. `ingest` calls it for the open
+    /// stream's active segment, without which appends cannot continue.
+    using change_log_fetcher = std::function<void(const kythira::record_segment_descriptor&)>;
+
+    /// The node's store for change records (task 15), shared by every group
+    /// on the node, and how to fetch a segment from a peer. Without a store
+    /// the group still keeps its change log state, so replicas agree, but
+    /// keeps no records (unit tests that need none).
+    auto set_change_log(kythira::record_segment_store* store, change_log_fetcher fetch = {})
+        -> void {
+        _log = store;
+        _fetch = std::move(fetch);
+    }
 
     // -- persistent_state_machine ------------------------------------------
 
@@ -489,6 +530,7 @@ public:
         }
         _durable_floor = _applied;
         load_pending();
+        load_change_log(false);
     }
 
     auto apply(const std::vector<std::byte>& entry, LogIndex index) -> std::vector<std::byte> {
@@ -514,15 +556,23 @@ public:
         -> std::vector<std::byte> {
         const auto c = decode_entry(entry);
         const auto first = batch.size();
-        const auto result = c.op == item_command::kind::drop_table_step ? drop_table_step(c, batch)
-                            : is_index_op(c.op)                         ? index_write(c, batch)
-                                                                        : write_item(c, batch);
+        item_result result;
+        if (c.op == item_command::kind::drop_table_step) {
+            result = drop_table_step(c, batch);
+        } else if (is_index_op(c.op)) {
+            result = index_write(c, batch);
+        } else {
+            result = write_item(c, batch, &_staged_changes);
+        }
         note_staged(batch, first);
         return to_bytes(encode_item_result(result));
     }
 
     /// Writes `batch` with the applied index `index`.
     auto commit_staged(kythira::write_batch& batch, LogIndex index) -> void {
+        if (!_staged_changes.empty()) {
+            append_changes(batch);
+        }
         put_applied(batch, index);
         const auto seq = engine().write(batch);
         note_pending(batch);
@@ -533,7 +583,10 @@ public:
     }
 
     /// Forgets what was staged; nothing reached the engine.
-    auto discard_staged() -> void { _staged.clear(); }
+    auto discard_staged() -> void {
+        _staged.clear();
+        _staged_changes.clear();
+    }
 
     /// Transaction state is kept at the item's own engine key, in the
     /// engine's `txn` column family: the keys are engine keys already.
@@ -592,22 +645,58 @@ public:
         return best;
     }
 
+    /// The engine's checkpoint of the range, plus (when the group logs
+    /// changes) a file describing the open stream's active segment as it
+    /// stands, so a replica installing the snapshot can fetch exactly that
+    /// prefix from a peer and check it.
     auto checkpoint(const std::filesystem::path& dir) -> kythira::snapshot_manifest {
-        return engine().checkpoint(_range, dir);
+        auto m = engine().checkpoint(_range, dir);
+        if (const auto active = active_descriptor()) {
+            std::string body;
+            change_log_detail::put_descriptor(body, *active);
+            const auto path = dir / std::string(k_active_segment_file);
+            {
+                std::ofstream out(path, std::ios::binary | std::ios::trunc);
+                out.write(body.data(), static_cast<std::streamsize>(body.size()));
+                out.flush();
+                if (!out) {
+                    throw kythira::persistent_storage_error(
+                        "dynamo_item_state_machine: cannot write " + path.string());
+                }
+            }
+            const auto [digest, size] = kythira::sha256_of_file(path);
+            m.files.push_back(
+                kythira::checkpoint_file{std::string(k_active_segment_file), size, digest});
+        }
+        return m;
     }
 
     auto ingest(const std::filesystem::path& dir, const kythira::snapshot_manifest& manifest,
                 LogIndex index) -> void {
-        engine().ingest(_range, dir, manifest);
+        auto engine_manifest = manifest;
+        std::optional<kythira::record_segment_descriptor> active;
+        for (auto it = engine_manifest.files.begin(); it != engine_manifest.files.end(); ++it) {
+            if (it->name == k_active_segment_file) {
+                active = read_active_file(dir / it->name, *it);
+                engine_manifest.files.erase(it);
+                break;
+            }
+        }
+        engine().ingest(_range, dir, engine_manifest);
         _applied = index;
         _durable_floor = index;
         _ring.clear();
         load_pending();
+        load_change_log(true, active);
     }
 
+    /// Leaves the change log's segments in the store: closed streams may
+    /// still be read through the groups that continue them, and task 16's
+    /// retention removes what no group names.
     auto drop() -> void {
         engine().drop(_range);
         _pending.clear();
+        _log_state.reset();
     }
 
     // -- persistent_splittable_state_machine --------------------------------
@@ -642,6 +731,21 @@ public:
                 i + 1 < cuts.size() ? std::optional<std::string>(cuts[i + 1]) : _range.end});
             put_applied_at(batch, cuts[i], _applied);
         }
+        if (_log_state) {
+            // Every resulting group, this one included, continues the
+            // closed stream in a new one (the lineage Streams shows).
+            auto next = successor_state({close_current()}, _log_state->epoch + 1,
+                                        _log_state->last_ms, _log_state->closed);
+            for (const auto& cut : cuts) {
+                next.current.key = change_stream_key(cut, next.epoch);
+                batch.put(kythira::column_family::meta, change_log_state_key(cut),
+                          encode_change_log_state(next));
+            }
+            next.current.key = change_stream_key(_range.start, next.epoch);
+            batch.put(kythira::column_family::meta, change_log_state_key(_range.start),
+                      encode_change_log_state(next));
+            _log_state = std::move(next);
+        }
         engine().write(batch);
         _range.end = cuts.front();
         std::erase_if(_pending, [&](const std::string& k) { return !_range.contains(k); });
@@ -654,6 +758,16 @@ public:
             return;
         }
         kythira::write_batch batch;
+        const auto old_start = _range.start;
+        std::optional<change_log_state> other;
+        if (const auto v =
+                engine().get(kythira::column_family::meta, change_log_state_key(range.start))) {
+            other = decode_change_log_state(*v);
+            if (!other) {
+                throw kythira::persistent_storage_error(
+                    "dynamo_item_state_machine: corrupt change log state");
+            }
+        }
         if (_range.end.has_value() && range.start == *_range.end) {
             batch.erase(kythira::column_family::meta, range.start);
             _range.end = range.end;
@@ -664,6 +778,31 @@ public:
             throw std::invalid_argument(
                 "dynamo_item_state_machine: adopt of a range that is not "
                 "adjacent");
+        }
+        if (_log_state || other) {
+            // Both streams close; the merged group continues them in one.
+            std::vector<log_stream> parents;
+            std::vector<log_stream> closed;
+            std::uint64_t epoch = 0;
+            std::uint64_t last_ms = 0;
+            for (auto* st : {&_log_state, &other}) {
+                if (!*st) {
+                    continue;
+                }
+                parents.push_back(close_stream((*st)->current));
+                closed.insert(closed.end(), (*st)->closed.begin(), (*st)->closed.end());
+                epoch = std::max(epoch, (*st)->epoch);
+                last_ms = std::max(last_ms, (*st)->last_ms);
+            }
+            std::ranges::sort(closed, {}, &log_stream::key);
+            closed.erase(std::ranges::unique(closed, {}, &log_stream::key).begin(), closed.end());
+            auto next = successor_state(parents, epoch + 1, last_ms, closed);
+            next.current.key = change_stream_key(_range.start, next.epoch);
+            batch.erase(kythira::column_family::meta, change_log_state_key(old_start));
+            batch.erase(kythira::column_family::meta, change_log_state_key(range.start));
+            batch.put(kythira::column_family::meta, change_log_state_key(_range.start),
+                      encode_change_log_state(next));
+            _log_state = std::move(next);
         }
         put_applied(batch, _applied);
         engine().write(batch);
@@ -687,6 +826,35 @@ public:
     [[nodiscard]] auto collection_size(std::uint64_t table_id, const attribute_value& pk) const
         -> std::uint64_t {
         return load_counter(collection_size_key(table_id, pk));
+    }
+
+    // -- Change log (task 15) -------------------------------------------------
+
+    /// The group's change log state: nothing until its first logged write.
+    [[nodiscard]] auto change_log() const -> const std::optional<change_log_state>& {
+        return _log_state;
+    }
+
+    /// Up to `limits` records of the open stream from `from_seq` on, from
+    /// the local store (none without one), with their sequence numbers.
+    [[nodiscard]] auto read_changes(std::uint64_t from_seq,
+                                    const kythira::segment_read_limits& limits = {}) const
+        -> std::vector<std::pair<std::uint64_t, change_record>> {
+        std::vector<std::pair<std::uint64_t, change_record>> out;
+        if (_log == nullptr || !_log_state) {
+            return out;
+        }
+        const auto got = _log->read(_log_state->current.key, from_seq, limits);
+        for (const auto& r : got._records) {
+            auto rec = decode_change_record(
+                {reinterpret_cast<const char*>(r._data.data()), r._data.size()});  // NOLINT
+            if (!rec) {
+                throw kythira::persistent_storage_error(
+                    "dynamo_item_state_machine: corrupt change record");
+            }
+            out.emplace_back(r._seq, std::move(*rec));
+        }
+        return out;
     }
 
     // -- Reads ----------------------------------------------------------------
@@ -909,7 +1077,10 @@ private:
         return r;
     }
 
-    auto write_item(const item_command& c, kythira::write_batch& batch) const -> item_result {
+    /// Stages one item write. With `changes`, a write of a logged table that
+    /// changed the item adds its change record there.
+    auto write_item(const item_command& c, kythira::write_batch& batch,
+                    std::vector<change_record>* changes = nullptr) const -> item_result {
         const auto key = base_item_key(c.table_id, c.schema, c.payload);
         if (!key) {
             throw std::invalid_argument("dynamo_item_state_machine: command without its key");
@@ -1032,6 +1203,13 @@ private:
         }
         if (keep_versions && (next || old)) {
             record_pending(c, *key, old, next, load_version_staged(batch, *key), batch);
+        }
+        if (changes != nullptr && c.log_changes) {
+            if (auto rec = make_change_record(c.table_id, c.schema, old, next)) {
+                rec->ttl_delete = c.ttl_delete;
+                rec->written_ms = c.written_ms;
+                changes->push_back(std::move(*rec));
+            }
         }
 
         switch (c.returns) {
@@ -1311,7 +1489,7 @@ private:
         // group's applied index (at the range start) stays.
         engine().scan(kythira::column_family::meta, mine, kythira::scan_direction::forward,
                       [&](std::string_view k, std::string_view) {
-                          if (k == _range.start ||
+                          if (k == _range.start || k == change_log_state_key(_range.start) ||
                               (classify_item_key(k, c.schema.partition_type) &&
                                engine().get(kythira::column_family::data, std::string(k)))) {
                               return true;
@@ -1325,6 +1503,151 @@ private:
                           return true;
                       });
         return r;
+    }
+
+    /// The checkpoint file naming the open stream's active segment.
+    static constexpr std::string_view k_active_segment_file = "ddb-change-log-active";
+
+    /// Reads the group's change log state; after an install, also drops a
+    /// local tail past it and fetches the active segment the snapshot
+    /// named when this node lacks it. On open, a tail past the state is a
+    /// write whose entry the engine never made durable: the Raft log
+    /// replays it.
+    auto load_change_log(bool installed,
+                         const std::optional<kythira::record_segment_descriptor>& active = {})
+        -> void {
+        _log_state.reset();
+        _staged_changes.clear();
+        if (const auto v =
+                engine().get(kythira::column_family::meta, change_log_state_key(_range.start))) {
+            _log_state = decode_change_log_state(*v);
+            if (!_log_state) {
+                throw kythira::persistent_storage_error(
+                    "dynamo_item_state_machine: corrupt change log state");
+            }
+        }
+        if (_log == nullptr || !_log_state) {
+            return;
+        }
+        const auto& cur = _log_state->current;
+        _log->truncate_after(cur.key, cur.last_seq >= cur.first_seq
+                                          ? std::optional<std::uint64_t>(cur.last_seq)
+                                          : std::nullopt);
+        if (installed && active && active->_stream == cur.key &&
+            active->_last_seq == cur.last_seq && !_log->has_segment(*active)) {
+            if (!_fetch) {
+                throw kythira::record_segment_error(
+                    "dynamo_item_state_machine: the snapshot names an active segment of " +
+                    cur.key + " this node lacks, and no fetcher is set");
+            }
+            _fetch(*active);
+        }
+    }
+
+    [[nodiscard]] static auto read_active_file(const std::filesystem::path& path,
+                                               const kythira::checkpoint_file& file)
+        -> kythira::record_segment_descriptor {
+        const auto [digest, size] = kythira::sha256_of_file(path);
+        if (size != file.size || digest != file.sha256) {
+            throw kythira::persistent_storage_error(
+                "dynamo_item_state_machine: the active segment file does not match its manifest");
+        }
+        std::ifstream in(path, std::ios::binary);
+        const std::string body((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        change_log_detail::cursor c(body);
+        auto d = change_log_detail::read_descriptor(c);
+        if (!d || !c.done()) {
+            throw kythira::persistent_storage_error(
+                "dynamo_item_state_machine: corrupt active segment file");
+        }
+        return *d;
+    }
+
+    /// The open stream's active segment as the local store has it.
+    [[nodiscard]] auto active_descriptor() const
+        -> std::optional<kythira::record_segment_descriptor> {
+        if (_log == nullptr || !_log_state) {
+            return std::nullopt;
+        }
+        const auto& cur = _log_state->current;
+        const auto first = cur.sealed.empty() ? cur.first_seq : cur.sealed.back()._last_seq + 1;
+        if (cur.last_seq < first) {
+            return std::nullopt;
+        }
+        return _log->describe(cur.key, first);
+    }
+
+    /// `s` closed: its active segment sealed in the local store (every
+    /// replica seals at the same entry, so at the same record).
+    [[nodiscard]] auto close_stream(log_stream s) const -> log_stream {
+        s.active.reset();
+        const auto first = s.sealed.empty() ? s.first_seq : s.sealed.back()._last_seq + 1;
+        if (_log != nullptr && s.last_seq >= first) {
+            if (auto d = _log->seal(s.key)) {
+                s.sealed.push_back(std::move(*d));
+            }
+        }
+        return s;
+    }
+
+    [[nodiscard]] auto close_current() const -> log_stream {
+        return close_stream(_log_state->current);
+    }
+
+    /// The state of a group that continues `parents` (now closed) in a new
+    /// stream; the caller names the stream.
+    [[nodiscard]] static auto successor_state(const std::vector<log_stream>& parents,
+                                              std::uint64_t epoch, std::uint64_t last_ms,
+                                              std::vector<log_stream> closed) -> change_log_state {
+        change_log_state next;
+        next.epoch = epoch;
+        next.last_ms = last_ms;
+        next.closed = std::move(closed);
+        for (const auto& p : parents) {
+            next.current.parents.push_back(p.key);
+            next.closed.push_back(p);
+        }
+        return next;
+    }
+
+    /// Appends the records the staged entry made to the open stream (the
+    /// group's first logged write opens epoch 0), fsyncs them, and stages
+    /// the new state. The records reach disk before the engine batch, so
+    /// the engine never holds a state whose records were lost; a record
+    /// the engine missed is truncated on open and replayed.
+    auto append_changes(kythira::write_batch& batch) -> void {
+        if (!_log_state) {
+            _log_state.emplace();
+            _log_state->current.key = change_stream_key(_range.start, 0);
+        }
+        auto& st = *_log_state;
+        std::vector<std::string> bodies;
+        std::vector<kythira::segment_record_view> views;
+        bodies.reserve(_staged_changes.size());
+        views.reserve(_staged_changes.size());
+        for (auto& rec : _staged_changes) {
+            rec.written_ms = std::max(rec.written_ms, st.last_ms);
+            st.last_ms = rec.written_ms;
+            bodies.push_back(encode_change_record(rec));
+        }
+        const auto first = st.current.last_seq + 1;
+        for (std::size_t i = 0; i < bodies.size(); ++i) {
+            views.push_back(kythira::segment_record_view{
+                first + i, static_cast<std::int64_t>(_staged_changes[i].written_ms),
+                std::span<const std::byte>(reinterpret_cast<const std::byte*>(bodies[i].data()),
+                                           bodies[i].size())});  // NOLINT
+        }
+        st.current.last_seq += bodies.size();
+        st.current.active.reset();
+        if (_log != nullptr) {
+            const auto r = _log->append(st.current.key, views);
+            st.current.sealed.insert(st.current.sealed.end(), r._sealed.begin(), r._sealed.end());
+            _log->barrier();
+        }
+        batch.put(kythira::column_family::meta, change_log_state_key(_range.start),
+                  encode_change_log_state(st));
+        _staged_changes.clear();
     }
 
     // Keeps the newest entry at or below the durable sequence as the floor
@@ -1348,6 +1671,12 @@ private:
     std::set<std::string> _pending;
     /// Data and meta writes staged into the open batch (see `stage`).
     std::map<std::pair<kythira::column_family, std::string>, std::optional<std::string>> _staged;
+    /// The node's change record store (task 15), or none.
+    kythira::record_segment_store* _log = nullptr;
+    change_log_fetcher _fetch;
+    std::optional<change_log_state> _log_state;
+    /// The change records of the open batch, appended at commit.
+    std::vector<change_record> _staged_changes;
 };
 
 static_assert(kythira::persistent_staged_state_machine<dynamo_item_state_machine<>>);
