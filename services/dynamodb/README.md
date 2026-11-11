@@ -69,6 +69,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_capacity_test.cpp` | buckets, charges, throttling errors and the `throttling` switch | 12 |
 | `include/kythira/dynamodb/ttl.hpp` | time to live: `UpdateTimeToLive`, `DescribeTimeToLive` and the sweeper that deletes expired items | 13 |
 | `tests/dynamodb_ttl_test.cpp` | the TTL calls with DynamoDB Local's answers, the hourly limit and its switch, and the sweeper | 13 |
+| `include/kythira/dynamodb/partiql.hpp` | PartiQL: the parser and its compiler to the JSON API's requests, `ExecuteStatement`, `BatchExecuteStatement` and `ExecuteTransaction` | 14 |
+| `tests/dynamodb_partiql_test.cpp` | the three PartiQL calls with DynamoDB Local's answers | 14 |
 
 The rest follows the plan in the spec's `tasks.md`.
 

@@ -64,6 +64,7 @@
 #include <kythira/dynamodb/forward_link.hpp>
 #include <kythira/dynamodb/front_end.hpp>
 #include <kythira/dynamodb/item_api.hpp>
+#include <kythira/dynamodb/partiql.hpp>
 #include <kythira/dynamodb/query_api.hpp>
 #include <kythira/dynamodb/table_api.hpp>
 #include <kythira/dynamodb/ttl.hpp>
@@ -548,6 +549,7 @@ public:
           _batches(backend, _guard.get()),
           _transactions(backend, _guard.get()),
           _ttl(backend),
+          _partiql(backend, _items, _queries, _transactions),
           _sweeper(backend),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
@@ -586,6 +588,7 @@ public:
         _batches.register_with(*_front);
         _transactions.register_with(*_front);
         _ttl.register_with(*_front);
+        _partiql.register_with(*_front);
         _ready.store(true);
         _stopping = false;
         _sweeper_thread = std::thread([this] { sweep_loop(); });
@@ -697,6 +700,7 @@ private:
     batch_api<Backend> _batches;
     txn_api<Backend> _transactions;
     ttl_api<Backend> _ttl;
+    partiql_api<Backend> _partiql;
     ttl_sweeper<Backend> _sweeper;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;

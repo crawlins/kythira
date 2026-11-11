@@ -215,6 +215,7 @@ all fixed with it:
 | Time to live can be changed at most once an hour (*Local differs*: no limit) | Limits | `dynamodb_ttl_test` |
 | An expired item stays readable until it is deleted, an item rewritten since the sweeper read it is kept, and values that are not numbers or are over five years old never expire | TTL | `dynamodb_ttl_test`, `dynamodb_gateway_cluster_test` |
 | With `ttl-delay=prompt`, per cluster or per table tag, expired items go within about a second and the hourly limit is lifted (Kythira switch, Requirement 3) | — | `dynamodb_ttl_test` |
+| PartiQL statements compile to the JSON API's requests, so they follow the same item rules, conditions and transaction limits; each is authorized by its `PartiQLSelect`, `PartiQLInsert`, `PartiQLUpdate` or `PartiQLDelete` action | PartiQL | `dynamodb_partiql_test`, `dynamodb_gateway_test` |
 
 ## Deferred
 
@@ -223,7 +224,6 @@ with the task that builds it.
 
 | Invariant | Source | Task |
 |---|---|---|
-| PartiQL statements follow the same item rules | — | 14 |
 | At most 2 readers share a stream shard | Limits | 16 |
 | Global tables replicate with last writer wins | — | 22 |
 | Resource policies are at most 20 KB | Limits | 21 |

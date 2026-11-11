@@ -15,6 +15,7 @@
 #include <kythira/dynamodb/disk_guard.hpp>
 #include <kythira/dynamodb/front_end.hpp>
 #include <kythira/dynamodb/item_api.hpp>
+#include <kythira/dynamodb/partiql.hpp>
 #include <kythira/dynamodb/query_api.hpp>
 #include <kythira/dynamodb/table_api.hpp>
 #include <kythira/dynamodb/ttl.hpp>
@@ -113,6 +114,7 @@ struct fixture {
     ddb::batch_api<ddb::local_backend<>> batches{backend, &guard};
     ddb::txn_api<ddb::local_backend<>> transactions{backend, &guard};
     ddb::ttl_api<ddb::local_backend<>> ttl{backend};
+    ddb::partiql_api<ddb::local_backend<>> partiql{backend, items, queries, transactions};
     /// Not run on its own: tests call `sweeper.pass()`.
     ddb::ttl_sweeper<ddb::local_backend<>> sweeper{backend};
 
@@ -127,6 +129,7 @@ struct fixture {
         batches.register_with(*fe);
         transactions.register_with(*fe);
         ttl.register_with(*fe);
+        partiql.register_with(*fe);
     }
 
     /// Turns capacity enforcement off for the whole fixture (Requirement

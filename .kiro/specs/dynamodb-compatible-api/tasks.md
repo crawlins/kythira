@@ -494,10 +494,33 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     - Tests: `dynamodb_ttl_test`; `dynamodb_gateway_cluster_test` sweeps
       on a three-node cluster.
 
-- [ ] 14. PartiQL
+- [x] 14. PartiQL
   - Parser and compiler to the JSON API's requests; `ExecuteStatement`,
     `BatchExecuteStatement`, `ExecuteTransaction`
   - _Requirements: 13.1, 13.2_
+  - Notes:
+    - `partiql.hpp` parses a statement and compiles it into the JSON API
+      request it stands for (paths into `ExpressionAttributeNames`,
+      literals and `?` parameters into `ExpressionAttributeValues`), which
+      the JSON API's handler then runs. Limits, conditions, capacity and
+      transaction rules are therefore the JSON API's.
+    - A `SELECT` with an equality (or `IN` list) on the partition key runs
+      as `Query`, with a sort-key term as the key condition and the rest as
+      a filter; any other `SELECT` is a `Scan`. `Limit`, `NextToken` (the
+      last evaluated key, base64 JSON) and `ORDER BY <sk> DESC` work.
+      `INSERT` is a `PutItem` with `attribute_not_exists`, `UPDATE` an
+      `UpdateItem` with `attribute_exists`, `DELETE` a `DeleteItem`, and
+      `EXISTS` a transaction `ConditionCheck`.
+    - Answers and errors are DynamoDB Local 3.3's, statement for statement
+      (`DuplicateItemException` for a duplicate `INSERT`, a duplicate in a
+      transaction as a `ValidationError` reason, writes answering
+      `{"Items":[]}`, nested projections named by their last name).
+    - Each statement is authorized by its PartiQL action (`PartiQLSelect`,
+      `PartiQLInsert`, `PartiQLUpdate`, `PartiQLDelete`) on its table or
+      index, as AWS does; the JSON handlers then run without a second
+      check.
+    - Tests: `dynamodb_partiql_test`; authorization in
+      `dynamodb_gateway_test`.
 
 - [ ] 15. Change log
   - Change records appended in `apply()` to the group's

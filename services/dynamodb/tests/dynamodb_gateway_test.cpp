@@ -331,6 +331,36 @@ BOOST_AUTO_TEST_CASE(roles_and_signatures_are_enforced) {
                "Request is missing Authentication Token");
 }
 
+BOOST_AUTO_TEST_CASE(partiql_statements_are_authorized_by_their_partiql_action) {
+    served s;
+    auto r = s.call("CreateTable",
+                    R"({"TableName":"orders","BillingMode":"PAY_PER_REQUEST",)"
+                    R"("AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"}],)"
+                    R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"}]})");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+    r = s.call("ExecuteStatement", R"j({"Statement":"INSERT INTO orders VALUE {'pk':'a'}"})j");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+
+    // The read-only key may select (PartiQLSelect) but not insert
+    // (PartiQLInsert), whether alone or inside a transaction.
+    r = s.call("ExecuteStatement", R"j({"Statement":"SELECT * FROM orders WHERE pk = 'a'"})j",
+               "AKIDREAD");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+    BOOST_TEST(body_of(r).at("Items").as_array().size() == 1U);
+    r = s.call("ExecuteStatement", R"j({"Statement":"INSERT INTO orders VALUE {'pk':'b'}"})j",
+               "AKIDREAD");
+    BOOST_TEST(r.result_int() == 400U);
+    BOOST_TEST(type_of(r) == "AccessDeniedException");
+    BOOST_TEST(std::string(body_of(r).at("message").as_string()).find("dynamodb:PartiQLInsert") !=
+               std::string::npos);
+    r = s.call("ExecuteTransaction",
+               R"j({"TransactStatements":[{"Statement":"DELETE FROM orders WHERE pk = 'a'"}]})j",
+               "AKIDREAD");
+    BOOST_TEST(type_of(r) == "AccessDeniedException");
+    r = s.call("ExecuteStatement", R"j({"Statement":"SELECT * FROM orders WHERE pk = 'a'"})j");
+    BOOST_TEST(body_of(r).at("Items").as_array().size() == 1U);
+}
+
 // ---------------------------------------------------------------------------
 // A cluster node: its settings, and the forward endpoint peers send ops to.
 // ---------------------------------------------------------------------------
