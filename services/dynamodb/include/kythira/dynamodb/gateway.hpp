@@ -66,6 +66,7 @@
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/partiql.hpp>
 #include <kythira/dynamodb/query_api.hpp>
+#include <kythira/dynamodb/kinesis_destination.hpp>
 #include <kythira/dynamodb/streams.hpp>
 #include <kythira/dynamodb/table_api.hpp>
 #include <kythira/dynamodb/ttl.hpp>
@@ -138,6 +139,9 @@ struct gateway_config {
     /// override them.
     dynamo_compat_profile compat{};
     cluster_config cluster;
+    /// Where Kinesis streaming destinations publish (task 17); unset is
+    /// `kinesis_sink_from_env()`.
+    kinesis_sink kinesis{};
 };
 
 /// Reads one environment variable; empty optional when unset.
@@ -265,7 +269,14 @@ inline constexpr std::string_view k_gateway_env_help =
     "                                        warning, error or critical (info)\n"
     "  KYTHIRA_DYNAMODB_COMPAT               switch=value,... the cluster's\n"
     "                                        compatibility profile, e.g.\n"
-    "                                        throttling=off (AWS's behaviour)\n";
+    "                                        throttling=off (AWS's behaviour)\n"
+    "  KYTHIRA_DYNAMODB_KINESIS_ENDPOINT     host:port Kinesis streaming destinations\n"
+    "                                        publish to (AWS's for the stream)\n"
+    "  KYTHIRA_DYNAMODB_KINESIS_TLS          0 publishes over plain HTTP (1)\n"
+    "  KYTHIRA_DYNAMODB_KINESIS_CA           PEM bundle the Kinesis endpoint chains\n"
+    "                                        to (system roots); AWS_ACCESS_KEY_ID,\n"
+    "                                        AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN\n"
+    "                                        sign the calls\n";
 
 namespace gateway_detail {
 
@@ -552,7 +563,9 @@ public:
           _ttl(backend),
           _partiql(backend, _items, _queries, _transactions),
           _streams(backend),
+          _destinations(backend),
           _sweeper(backend),
+          _publisher(backend, {}),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -592,6 +605,10 @@ public:
         _ttl.register_with(*_front);
         _partiql.register_with(*_front);
         _streams.register_with(*_front);
+        _destinations.register_with(*_front);
+        _publisher.set_sink(_config.kinesis.configured() ? _config.kinesis
+                                                         : kinesis_sink_from_env());
+        _publisher.set_region(_config.front.region);
         _ready.store(true);
         _stopping = false;
         _sweeper_thread = std::thread([this] { sweep_loop(); });
@@ -638,8 +655,9 @@ public:
     }
 
 private:
-    /// The TTL sweeper's worker (`ttl.hpp`): a pass a second, on the node
-    /// that leads the catalog when the backend has one.
+    /// The TTL sweeper's and the Kinesis destination publisher's worker
+    /// (`ttl.hpp`, `kinesis_destination.hpp`): a pass of each a second, on
+    /// the node that leads the catalog when the backend has one.
     void sweep_loop() {
         std::unique_lock lock(_sweep_mu);
         while (!_stopping) {
@@ -652,12 +670,22 @@ private:
                     here = _backend.leads_catalog();
                 }
                 if (here) {
-                    (void)_sweeper.pass();
+                    try {
+                        (void)_sweeper.pass();
+                    } catch (const std::exception& e) {
+                        // A lost leader or a timeout: the next pass starts
+                        // over.
+                        if (_log) {
+                            _log(true, std::string("ttl sweeper: ") + e.what());
+                        }
+                    }
+                    // Unpublished records stay in the change log; the next
+                    // pass resumes from the stored cursors.
+                    (void)_publisher.pass();
                 }
             } catch (const std::exception& e) {
-                // A lost leader or a timeout: the next pass starts over.
                 if (_log) {
-                    _log(true, std::string("ttl sweeper: ") + e.what());
+                    _log(true, std::string("kinesis destinations: ") + e.what());
                 }
             }
             lock.lock();
@@ -705,7 +733,9 @@ private:
     ttl_api<Backend> _ttl;
     partiql_api<Backend> _partiql;
     streams_api<Backend> _streams;
+    kinesis_destination_api<Backend> _destinations;
     ttl_sweeper<Backend> _sweeper;
+    kinesis_publisher<Backend> _publisher;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;
