@@ -114,6 +114,11 @@ struct item_command {
         /// every index of the table. Keys outside the group are skipped
         /// and reported with `more`.
         index_mark = 10,
+        /// Change log retention (task 16): every sealed segment whose last
+        /// record is older than `written_ms` goes, and every closed stream
+        /// left with no records. Leader-proposed, so every replica trims
+        /// at the same entry.
+        trim_change_log = 11,
     };
 
     kind op = kind::put;
@@ -145,8 +150,11 @@ struct item_command {
     /// A TTL delete: its record carries the service's identity.
     bool ttl_delete = false;
     /// When the proposer built the write (ms since the epoch), the record's
-    /// timestamp.
+    /// timestamp; `trim_change_log`: the retention cutoff.
     std::uint64_t written_ms = 0;
+    /// The label of the table's enabled DynamoDB stream (task 16), copied
+    /// into the record; 0 when none.
+    std::uint64_t stream_ms = 0;
 
     friend auto operator==(const item_command&, const item_command&) -> bool = default;
 };
@@ -271,7 +279,8 @@ inline void put_schema(std::string& out, const key_schema& s) {
 [[nodiscard]] inline auto encode_item_command(const item_command& c) -> std::string {
     using namespace item_sm_detail;
     std::string out;
-    const bool logged = c.log_changes || c.ttl_delete || c.written_ms != 0;
+    const bool logged = c.log_changes || c.ttl_delete || c.written_ms != 0 || c.stream_ms != 0 ||
+                        c.op == item_command::kind::trim_change_log;
     out.push_back(static_cast<char>(logged ? k_command_format_version : 2));
     out.push_back(static_cast<char>(c.op));
     put_u64(out, c.table_id);
@@ -292,6 +301,7 @@ inline void put_schema(std::string& out, const key_schema& s) {
     if (logged) {
         out.push_back(static_cast<char>((c.log_changes ? 1U : 0U) | (c.ttl_delete ? 2U : 0U)));
         detail::put_varint(out, c.written_ms);
+        detail::put_varint(out, c.stream_ms);
     }
     return out;
 }
@@ -322,7 +332,9 @@ enum class item_command_status : std::uint8_t {
     if (op == 0) {
         return item_command_status::malformed;
     }
-    if (op > static_cast<std::uint8_t>(item_command::kind::index_mark)) {
+    // trim_change_log came in version 3.
+    if (op > static_cast<std::uint8_t>(version >= 3 ? item_command::kind::trim_change_log
+                                                    : item_command::kind::index_mark)) {
         // A kind a later release added: upgrade rather than guess.
         return item_command_status::unknown_version;
     }
@@ -371,12 +383,14 @@ enum class item_command_status : std::uint8_t {
     if (version >= 3) {
         const auto flags = r.byte();
         const auto written = r.varint();
-        if (!flags || *flags > 3 || !written) {
+        const auto stream = r.varint();
+        if (!flags || *flags > 3 || !written || !stream) {
             return item_command_status::malformed;
         }
         c.log_changes = (*flags & 1U) != 0;
         c.ttl_delete = (*flags & 2U) != 0;
         c.written_ms = *written;
+        c.stream_ms = *stream;
     }
     if (!r.done()) {
         return item_command_status::malformed;
@@ -559,6 +573,8 @@ public:
         item_result result;
         if (c.op == item_command::kind::drop_table_step) {
             result = drop_table_step(c, batch);
+        } else if (c.op == item_command::kind::trim_change_log) {
+            _staged_trim = std::max(_staged_trim, c.written_ms);
         } else if (is_index_op(c.op)) {
             result = index_write(c, batch);
         } else {
@@ -573,8 +589,20 @@ public:
         if (!_staged_changes.empty()) {
             append_changes(batch);
         }
+        std::vector<std::pair<std::string, std::uint64_t>> trims;
+        if (_staged_trim != 0) {
+            trims = trim_change_log(_staged_trim, batch);
+            _staged_trim = 0;
+        }
         put_applied(batch, index);
         const auto seq = engine().write(batch);
+        // The segments go once no state names them; a crash before this
+        // leaves files nothing reads.
+        if (_log != nullptr) {
+            for (const auto& [key, first] : trims) {
+                (void)_log->trim_before(key, first);
+            }
+        }
         note_pending(batch);
         _staged.clear();
         _applied = index;
@@ -586,6 +614,7 @@ public:
     auto discard_staged() -> void {
         _staged.clear();
         _staged_changes.clear();
+        _staged_trim = 0;
     }
 
     /// Transaction state is kept at the item's own engine key, in the
@@ -612,7 +641,8 @@ public:
     [[nodiscard]] auto validate(const std::string& key, const std::vector<std::byte>& entry) const
         -> kythira::txn_validation {
         const auto c = decode_entry(entry);
-        if (c.op == item_command::kind::drop_table_step || is_index_op(c.op)) {
+        if (c.op == item_command::kind::drop_table_step ||
+            c.op == item_command::kind::trim_change_log || is_index_op(c.op)) {
             throw std::invalid_argument(
                 "dynamo_item_state_machine: a drop step or index write in a transaction");
         }
@@ -691,8 +721,8 @@ public:
     }
 
     /// Leaves the change log's segments in the store: closed streams may
-    /// still be read through the groups that continue them, and task 16's
-    /// retention removes what no group names.
+    /// still be read through the groups that continue them. Their
+    /// retention (`trim_change_log`) ages out what remains.
     auto drop() -> void {
         engine().drop(_range);
         _pending.clear();
@@ -835,16 +865,125 @@ public:
         return _log_state;
     }
 
+    /// Whether a `trim_change_log` at `cutoff_ms` would drop anything.
+    [[nodiscard]] auto change_log_trim_due(std::uint64_t cutoff_ms) const -> bool {
+        if (!_log_state) {
+            return false;
+        }
+        const auto due = [&](const log_stream& s) {
+            return !s.sealed.empty() &&
+                   static_cast<std::uint64_t>(s.sealed.front()._last_timestamp_ms) < cutoff_ms;
+        };
+        return due(_log_state->current) ||
+               std::ranges::any_of(_log_state->closed, [&](const log_stream& c) {
+                   return due(c) || c.first_seq > c.last_seq;
+               });
+    }
+
+    /// The stream `key` as this group's state names it (open or closed).
+    [[nodiscard]] auto find_change_stream(std::string_view key) const -> const log_stream* {
+        if (!_log_state) {
+            return nullptr;
+        }
+        if (_log_state->current.key == key) {
+            return &_log_state->current;
+        }
+        const auto it = std::ranges::find(_log_state->closed, key, &log_stream::key);
+        return it == _log_state->closed.end() ? nullptr : &*it;
+    }
+
+    /// The group's store streams as shards (task 16): the closed ones it
+    /// still keeps, then the open one. A group with no logged write yet
+    /// shows the stream its first one will open, so a stream enabled on
+    /// an empty table has a shard to wait on.
+    [[nodiscard]] auto change_shards() const -> std::vector<change_shard> {
+        std::vector<change_shard> out;
+        if (!_log_state) {
+            log_stream s;
+            s.key = change_stream_key(_range.start, 0);
+            out.push_back(change_shard{std::move(s), true});
+            return out;
+        }
+        for (const auto& c : _log_state->closed) {
+            out.push_back(change_shard{c, false});
+        }
+        out.push_back(change_shard{_log_state->current, true});
+        return out;
+    }
+
+    /// The sealed segments of stream `key` holding records at or after
+    /// `from_seq` that the local store lacks, written at or after
+    /// `since_ms` (older ones are past retention, and may be gone because
+    /// another group on this node trimmed a closed stream they share).
+    [[nodiscard]] auto missing_change_segments(const std::string& key, std::uint64_t from_seq,
+                                               std::uint64_t since_ms) const
+        -> std::vector<kythira::record_segment_descriptor> {
+        std::vector<kythira::record_segment_descriptor> out;
+        const auto* s = find_change_stream(key);
+        if (s == nullptr || _log == nullptr) {
+            return out;
+        }
+        for (const auto& d : s->sealed) {
+            if (d._last_seq >= from_seq &&
+                static_cast<std::uint64_t>(d._last_timestamp_ms) >= since_ms &&
+                !_log->has_segment(d)) {
+                out.push_back(d);
+            }
+        }
+        return out;
+    }
+
+    /// Up to `max_records` records of stream `key` from `from_seq` on
+    /// (task 16), with where the stream starts and ends.
+    [[nodiscard]] auto change_page_of(const std::string& key, std::uint64_t from_seq,
+                                      std::size_t max_records) const -> change_page {
+        change_page p;
+        const auto* s = find_change_stream(key);
+        if (s == nullptr) {
+            if (!_log_state && key == change_stream_key(_range.start, 0)) {
+                p.known = true;
+                p.open = true;
+            }
+            return p;
+        }
+        p.known = true;
+        p.open = s == &_log_state->current;
+        p.first_seq = s->first_seq;
+        p.last_seq = s->last_seq;
+        if (max_records == 0 || from_seq > s->last_seq) {
+            return p;
+        }
+        kythira::segment_read_limits limits;
+        limits._max_records = max_records;
+        p.records = read_change_stream(key, std::max(from_seq, s->first_seq), limits);
+        // A record past the state is one whose entry the engine has not
+        // taken yet.
+        std::erase_if(p.records, [&](const auto& r) { return r.first > s->last_seq; });
+        return p;
+    }
+
     /// Up to `limits` records of the open stream from `from_seq` on, from
     /// the local store (none without one), with their sequence numbers.
     [[nodiscard]] auto read_changes(std::uint64_t from_seq,
                                     const kythira::segment_read_limits& limits = {}) const
         -> std::vector<std::pair<std::uint64_t, change_record>> {
+        if (!_log_state) {
+            return {};
+        }
+        return read_change_stream(_log_state->current.key, from_seq, limits);
+    }
+
+    /// Up to `limits` records of stream `key` from `from_seq` on, from the
+    /// segments the local store holds (none without one); a segment it
+    /// lacks is skipped.
+    [[nodiscard]] auto read_change_stream(const std::string& key, std::uint64_t from_seq,
+                                          const kythira::segment_read_limits& limits = {}) const
+        -> std::vector<std::pair<std::uint64_t, change_record>> {
         std::vector<std::pair<std::uint64_t, change_record>> out;
-        if (_log == nullptr || !_log_state) {
+        if (_log == nullptr) {
             return out;
         }
-        const auto got = _log->read(_log_state->current.key, from_seq, limits);
+        const auto got = _log->read(key, from_seq, limits);
         for (const auto& r : got._records) {
             auto rec = decode_change_record(
                 {reinterpret_cast<const char*>(r._data.data()), r._data.size()});  // NOLINT
@@ -1161,6 +1300,7 @@ private:
             case item_command::kind::index_delete:
             case item_command::kind::index_ack:
             case item_command::kind::index_mark:
+            case item_command::kind::trim_change_log:
                 break;
         }
 
@@ -1208,6 +1348,7 @@ private:
             if (auto rec = make_change_record(c.table_id, c.schema, old, next)) {
                 rec->ttl_delete = c.ttl_delete;
                 rec->written_ms = c.written_ms;
+                rec->stream_ms = c.stream_ms;
                 changes->push_back(std::move(*rec));
             }
         }
@@ -1630,6 +1771,11 @@ private:
             rec.written_ms = std::max(rec.written_ms, st.last_ms);
             st.last_ms = rec.written_ms;
             bodies.push_back(encode_change_record(rec));
+            auto& tables = st.current.tables;
+            if (const auto at = std::ranges::lower_bound(tables, rec.table_id);
+                at == tables.end() || *at != rec.table_id) {
+                tables.insert(at, rec.table_id);
+            }
         }
         const auto first = st.current.last_seq + 1;
         for (std::size_t i = 0; i < bodies.size(); ++i) {
@@ -1648,6 +1794,41 @@ private:
         batch.put(kythira::column_family::meta, change_log_state_key(_range.start),
                   encode_change_log_state(st));
         _staged_changes.clear();
+    }
+
+    /// Drops from the state every sealed segment whose last record is
+    /// older than `cutoff_ms`, and every closed stream left with no
+    /// records, and stages the new state. Returns, per stream, the first
+    /// sequence still kept, for the store to trim after the batch is
+    /// written.
+    auto trim_change_log(std::uint64_t cutoff_ms, kythira::write_batch& batch)
+        -> std::vector<std::pair<std::string, std::uint64_t>> {
+        std::vector<std::pair<std::string, std::uint64_t>> out;
+        if (!_log_state) {
+            return out;
+        }
+        const auto trim = [&](log_stream& s) {
+            std::size_t n = 0;
+            while (n < s.sealed.size() &&
+                   static_cast<std::uint64_t>(s.sealed[n]._last_timestamp_ms) < cutoff_ms) {
+                ++n;
+            }
+            if (n == 0) {
+                return;
+            }
+            s.first_seq = s.sealed[n - 1]._last_seq + 1;
+            s.sealed.erase(s.sealed.begin(), s.sealed.begin() + static_cast<std::ptrdiff_t>(n));
+            out.emplace_back(s.key, s.first_seq);
+        };
+        auto& st = *_log_state;
+        trim(st.current);
+        for (auto& c : st.closed) {
+            trim(c);
+        }
+        std::erase_if(st.closed, [](const log_stream& c) { return c.first_seq > c.last_seq; });
+        batch.put(kythira::column_family::meta, change_log_state_key(_range.start),
+                  encode_change_log_state(st));
+        return out;
     }
 
     // Keeps the newest entry at or below the durable sequence as the floor
@@ -1677,6 +1858,8 @@ private:
     std::optional<change_log_state> _log_state;
     /// The change records of the open batch, appended at commit.
     std::vector<change_record> _staged_changes;
+    /// The open batch's retention cutoff (0: none).
+    std::uint64_t _staged_trim = 0;
 };
 
 static_assert(kythira::persistent_staged_state_machine<dynamo_item_state_machine<>>);

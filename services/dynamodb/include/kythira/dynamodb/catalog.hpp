@@ -104,8 +104,34 @@ struct time_to_live {
     friend auto operator==(const time_to_live&, const time_to_live&) -> bool = default;
 };
 
-/// What the catalog knows about a table. Later tasks add streams and
-/// replicas; each new field gets a new descriptor format version.
+/// What a DynamoDB stream's records carry (`StreamViewType`).
+enum class stream_view_type : std::uint8_t {
+    keys_only = 1,
+    new_image = 2,
+    old_image = 3,
+    new_and_old_images = 4,
+};
+
+/// One of a table's DynamoDB streams (task 16): enabled, or disabled and
+/// still listed while its records may be read.
+struct table_stream {
+    /// When it was enabled (ms since the epoch, from the entry): its
+    /// `StreamLabel`, unique per table.
+    std::uint64_t label_ms = 0;
+    stream_view_type view = stream_view_type::keys_only;
+    /// When it was disabled; 0 while enabled. In a command, nonzero asks
+    /// for the table's stream to be disabled.
+    std::uint64_t disabled_ms = 0;
+
+    friend auto operator==(const table_stream&, const table_stream&) -> bool = default;
+};
+
+/// How long a disabled stream stays listed: as long as its last records
+/// can be read.
+inline constexpr std::uint64_t k_stream_retention_ms = std::uint64_t{24} * 60 * 60 * 1000;
+
+/// What the catalog knows about a table. Later tasks add replicas; each
+/// new field gets a new descriptor format version.
 struct table_descriptor {
     std::string name;
     std::uint64_t table_id = 0;
@@ -132,12 +158,25 @@ struct table_descriptor {
     std::uint64_t revision = 0;
     /// Time to live (task 13).
     time_to_live ttl;
+    /// DynamoDB streams, oldest first (task 16): the last is the table's
+    /// latest, enabled unless it has `disabled_ms`.
+    std::vector<table_stream> streams;
+
+    /// The enabled stream, or null.
+    [[nodiscard]] auto enabled_stream() const -> const table_stream* {
+        return !streams.empty() && streams.back().disabled_ms == 0 ? &streams.back() : nullptr;
+    }
 
     /// Whether writes to the table append change records (task 15,
-    /// `change_log.hpp`). Nothing reads the log yet: DynamoDB Streams (task
-    /// 16), point-in-time recovery (19) and global tables (22) each turn it
-    /// on for the tables that use them.
-    [[nodiscard]] auto logs_changes() const -> bool { return false; }
+    /// `change_log.hpp`): while a DynamoDB stream is enabled. Point-in-time
+    /// recovery (19) and global tables (22) will turn it on too.
+    [[nodiscard]] auto logs_changes() const -> bool { return enabled_stream() != nullptr; }
+
+    /// The label a logged write carries: the enabled stream's, else 0.
+    [[nodiscard]] auto stream_label() const -> std::uint64_t {
+        const auto* s = enabled_stream();
+        return s == nullptr ? 0 : s->label_ms;
+    }
 
     friend auto operator==(const table_descriptor&, const table_descriptor&) -> bool = default;
 };
@@ -188,6 +227,10 @@ struct catalog_command {
         /// backfill finished), and a provisioned index takes the command's
         /// throughput. One index may be created or deleted at a time.
         update_gsis = 1U << 5U,
+        /// `StreamSpecification` (task 16): `table.streams` holds one entry,
+        /// enabling a stream of its view type, or with `disabled_ms` set,
+        /// disabling the table's.
+        update_stream = 1U << 6U,
     };
 
     kind op = kind::create_table;
@@ -229,11 +272,19 @@ namespace catalog_detail {
 
 /// 2 added `gsis` (task 11) to the descriptor and to the commands and
 /// results that carry one; 3 added `ttl` after the revision (task 13), and
-/// the `set_ttl` command with its interval. Older versions still decode.
-inline constexpr std::uint8_t k_descriptor_format_version = 3;
+/// the `set_ttl` command with its interval; 4 added `streams` after `ttl`,
+/// and `update_stream` (task 16). Older versions still decode. A form whose
+/// table has no stream is still written as 3, so a replica not yet
+/// upgraded keeps applying everything but streams.
+inline constexpr std::uint8_t k_descriptor_format_version = 4;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 3;
-inline constexpr std::uint8_t k_result_format_version = 3;
+inline constexpr std::uint8_t k_command_format_version = 4;
+inline constexpr std::uint8_t k_result_format_version = 4;
+
+/// The version a form carrying `d` is written as.
+[[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
+    return d.streams.empty() ? 3 : 4;
+}
 
 [[nodiscard]] inline auto table_key(std::string_view name) -> std::string {
     return std::string(k_catalog_prefix) + "table/" + std::string(name);
@@ -270,7 +321,7 @@ inline constexpr std::uint8_t k_result_format_version = 3;
     return *b == 1;
 }
 
-inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
+inline void put_descriptor_body(std::string& out, const table_descriptor& d, std::uint8_t version) {
     detail::put_bytes(out, d.name);
     detail::put_varint(out, d.table_id);
     item_sm_detail::put_schema(out, d.schema);
@@ -294,6 +345,14 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     out.push_back(d.ttl.enabled ? '\1' : '\0');
     detail::put_bytes(out, d.ttl.attribute);
     detail::put_varint(out, d.ttl.changed_ms);
+    if (version >= 4) {
+        detail::put_varint(out, d.streams.size());
+        for (const auto& s : d.streams) {
+            detail::put_varint(out, s.label_ms);
+            out.push_back(static_cast<char>(s.view));
+            detail::put_varint(out, s.disabled_ms);
+        }
+    }
 }
 
 /// `version` is the format of the enclosing form (descriptor, command or
@@ -347,6 +406,22 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
         d.ttl.attribute = std::move(*attribute);
         d.ttl.changed_ms = *changed;
     }
+    if (version >= 4) {
+        const auto n = r.count();
+        if (!n) {
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < *n; ++i) {
+            const auto label = r.varint();
+            const auto view = r.byte();
+            const auto disabled = r.varint();
+            if (!label || !view || *view < 1 || *view > 4 || !disabled) {
+                return std::nullopt;
+            }
+            d.streams.push_back(
+                table_stream{*label, static_cast<stream_view_type>(*view), *disabled});
+        }
+    }
     d.name = std::move(*name);
     d.table_id = *id;
     d.schema = std::move(*schema);
@@ -370,8 +445,9 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
 /// A descriptor's stored form: a format version, then its fields.
 [[nodiscard]] inline auto encode_table_descriptor(const table_descriptor& d) -> std::string {
     std::string out;
-    out.push_back(static_cast<char>(catalog_detail::k_descriptor_format_version));
-    catalog_detail::put_descriptor_body(out, d);
+    const auto version = catalog_detail::version_for(d);
+    out.push_back(static_cast<char>(version));
+    catalog_detail::put_descriptor_body(out, d, version);
     return out;
 }
 
@@ -422,9 +498,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
 
 [[nodiscard]] inline auto encode_catalog_command(const catalog_command& c) -> std::string {
     std::string out;
-    out.push_back(static_cast<char>(catalog_detail::k_command_format_version));
+    const auto version = catalog_detail::version_for(c.table);
+    out.push_back(static_cast<char>(version));
     out.push_back(static_cast<char>(c.op));
-    catalog_detail::put_descriptor_body(out, c.table);
+    catalog_detail::put_descriptor_body(out, c.table, version);
     out.push_back(static_cast<char>(c.update_fields));
     out.push_back(static_cast<char>(c.from));
     out.push_back(static_cast<char>(c.to));
@@ -465,8 +542,9 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     const auto deleted = r.varint();
     const auto done = catalog_detail::get_flag(r);
     const auto interval = version >= 3 ? r.varint() : std::optional<std::uint64_t>{0};
-    // update_gsis came with the descriptor's GSI list, in version 2.
-    const std::uint8_t known_fields = version >= 2 ? 0x3F : 0x1F;
+    // update_gsis came with the descriptor's GSI list, in version 2, and
+    // update_stream with its streams, in 4.
+    const std::uint8_t known_fields = version >= 4 ? 0x7F : version >= 2 ? 0x3F : 0x1F;
     if (!table || !fields || *fields > known_fields || !from || *from > 3 || !to || *to > 3 ||
         !now || !deleted || !done || !interval || !r.done()) {
         return std::nullopt;
@@ -484,12 +562,13 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
 
 [[nodiscard]] inline auto encode_catalog_result(const catalog_result& r) -> std::string {
     std::string out;
-    out.push_back(static_cast<char>(catalog_detail::k_result_format_version));
+    const auto version = r.table ? catalog_detail::version_for(*r.table) : std::uint8_t{3};
+    out.push_back(static_cast<char>(version));
     detail::put_bytes(out, r.error_type);
     detail::put_bytes(out, r.error_message);
     out.push_back(r.table ? '\1' : '\0');
     if (r.table) {
-        catalog_detail::put_descriptor_body(out, *r.table);
+        catalog_detail::put_descriptor_body(out, *r.table, version);
     }
     return out;
 }
@@ -802,6 +881,11 @@ private:
         d.status = table_status::creating;
         d.created_ms = c.now_ms;
         d.revision = 1;
+        // A stream asked for at creation is enabled with the table.
+        std::erase_if(d.streams, [](const table_stream& s) { return s.disabled_ms != 0; });
+        if (!d.streams.empty()) {
+            d.streams = {table_stream{c.now_ms, d.streams.front().view, 0}};
+        }
         batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
                   catalog_detail::u64_string(next));
         store(batch, d);
@@ -865,6 +949,11 @@ private:
                 return *refused;
             }
         }
+        if ((c.update_fields & catalog_command::update_stream) != 0) {
+            if (auto refused = update_stream(c, *d)) {
+                return *refused;
+            }
+        }
         if ((c.update_fields & catalog_command::update_deletion_protection) != 0) {
             // Takes effect at once and needs no background work, so the
             // table stays ACTIVE.
@@ -882,6 +971,36 @@ private:
         catalog_result r;
         r.table = std::move(d);
         return r;
+    }
+
+    /// `update_stream` (see `catalog_command::update_field`) applied to
+    /// `d`, refused in DynamoDB's words. Takes effect at once, as on AWS: a
+    /// stream needs no background work, so the table stays ACTIVE.
+    /// Disabled streams whose records have all expired stop being listed.
+    static auto update_stream(const catalog_command& c, table_descriptor& d)
+        -> std::optional<catalog_result> {
+        if (c.table.streams.size() != 1) {
+            return invalid("Stream StreamEnabled was null");
+        }
+        const auto& want = c.table.streams.front();
+        if (want.disabled_ms == 0) {
+            if (d.enabled_stream() != nullptr) {
+                return invalid("Table already has an enabled stream");
+            }
+            // Labels are unique per table, even for two enables in one ms.
+            const auto label =
+                std::max(c.now_ms, d.streams.empty() ? 0 : d.streams.back().label_ms + 1);
+            d.streams.push_back(table_stream{label, want.view, 0});
+        } else {
+            if (d.enabled_stream() == nullptr) {
+                return invalid("Table has no stream to disable");
+            }
+            d.streams.back().disabled_ms = std::max<std::uint64_t>(c.now_ms, 1);
+        }
+        std::erase_if(d.streams, [&](const table_stream& s) {
+            return s.disabled_ms != 0 && s.disabled_ms + k_stream_retention_ms < c.now_ms;
+        });
+        return std::nullopt;
     }
 
     /// `update_gsis` (see `catalog_command::update_field`) applied to `d`.

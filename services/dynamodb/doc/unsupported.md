@@ -56,7 +56,3 @@ test reads the table rows: keep one operation per row, in the
 | DynamoDB | `ListBulkOperations` | planned, task 20 |
 | DynamoDB | `CancelBulkOperation` | planned, task 20 |
 | DynamoDB | `SearchVectors` | planned, task 26 |
-| DynamoDB Streams | `ListStreams` | planned, task 16 |
-| DynamoDB Streams | `DescribeStream` | planned, task 16 |
-| DynamoDB Streams | `GetShardIterator` | planned, task 16 |
-| DynamoDB Streams | `GetRecords` | planned, task 16 |

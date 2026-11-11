@@ -154,7 +154,10 @@ auto main(int argc, char** argv) -> int {
 
     try {
         kythira::memory_kv_engine engine;
-        ddb::local_backend<> backend(engine);
+        std::optional<dynamodb_gateway::scratch_dir> scratch;
+        const auto change_log = dynamodb_gateway::open_change_log(cfg, scratch);
+        ddb::local_backend<> backend(engine, ddb::local_backend<>::system_clock_ms(),
+                                     change_log.get());
         ddb::gateway<ddb::local_backend<>> gw(cfg, backend, log);
         gw.start();
         std::cerr << "[info] dynamodb_gateway_node: serving "

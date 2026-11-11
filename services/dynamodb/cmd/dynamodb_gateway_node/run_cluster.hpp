@@ -38,14 +38,17 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -112,6 +115,48 @@ template<typename Storage> struct host_types {
 };
 
 /// A peer id from the environment's text.
+/// A directory for the life of the process: the memory engine's change
+/// log (task 16), which outlives nothing the items do not.
+class scratch_dir {
+public:
+    explicit scratch_dir(const std::string& stem) {
+        auto pattern = (std::filesystem::temp_directory_path() / (stem + "-XXXXXX")).string();
+        if (::mkdtemp(pattern.data()) == nullptr) {
+            throw std::runtime_error("dynamodb_gateway_node: cannot make a scratch directory");
+        }
+        _path = pattern;
+    }
+    scratch_dir(const scratch_dir&) = delete;
+    auto operator=(const scratch_dir&) -> scratch_dir& = delete;
+    scratch_dir(scratch_dir&&) = delete;
+    auto operator=(scratch_dir&&) -> scratch_dir& = delete;
+    ~scratch_dir() {
+        std::error_code ec;
+        std::filesystem::remove_all(_path, ec);
+    }
+    [[nodiscard]] auto path() const -> const std::filesystem::path& { return _path; }
+
+private:
+    std::filesystem::path _path;
+};
+
+/// The node's change log store: beside the engine, or for the memory
+/// engine (or no data directory) in `scratch`, made on first use.
+inline auto open_change_log(const ddb::gateway_config& cfg, std::optional<scratch_dir>& scratch)
+    -> std::unique_ptr<kythira::record_segment_store> {
+    kythira::record_segment_store_options o;
+    if (cfg.engine != "memory" && !cfg.data_dir.empty()) {
+        o._data_dir = std::filesystem::path(cfg.data_dir) / "change-log";
+    } else {
+        scratch.emplace("kythira-ddb-change-log");
+        o._data_dir = scratch->path();
+        // Nothing here outlives the process, so nothing needs to reach
+        // the disk.
+        o._barriers_enabled = false;
+    }
+    return std::make_unique<kythira::record_segment_store>(o);
+}
+
 inline auto peer_id(const std::string& text) -> node_id {
     auto id = kythira::parse_host_peer_node_id(text);
     if (!id) {
@@ -203,15 +248,11 @@ auto run_cluster(
                                    .timeout = std::chrono::milliseconds{20000}},
         std::move(gateways));
 
-    // The change log's segments (task 15) live beside the engine. The
-    // memory engine keeps none: its items do not outlive the process
-    // either. The store outlives the host, whose groups append to it.
-    std::unique_ptr<kythira::record_segment_store> change_log;
-    if (cfg.engine != "memory" && !cfg.data_dir.empty()) {
-        kythira::record_segment_store_options o;
-        o._data_dir = std::filesystem::path(cfg.data_dir) / "change-log";
-        change_log = std::make_unique<kythira::record_segment_store>(o);
-    }
+    // The change log's segments (task 15) live beside the engine; the
+    // memory engine's in a scratch directory, gone with the process as its
+    // items are. The store outlives the host, whose groups append to it.
+    std::optional<scratch_dir> scratch;
+    const auto change_log = open_change_log(cfg, scratch);
     // A group installing a snapshot fetches the active change log segment
     // it names from the group's peers, through the backend once it runs.
     std::atomic<backend_type*> fetch_via{nullptr};

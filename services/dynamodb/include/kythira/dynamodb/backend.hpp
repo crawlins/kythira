@@ -111,15 +111,29 @@ concept dynamo_backend =
         { b.throttler() } -> std::same_as<capacity_throttler&>;
     };
 
+/// A backend DynamoDB Streams reads (task 16): the change log's store
+/// streams over a key range, and pages of one stream's records.
+template<typename B>
+concept change_feed_backend =
+    requires(B& b, const kythira::key_range& range, const std::string& key, std::uint64_t seq,
+             std::size_t limit) {
+        { b.change_shards(range) } -> std::same_as<std::vector<change_shard>>;
+        { b.read_changes(key, seq, limit) } -> std::same_as<change_page>;
+    };
+
 /// Both state machines on one engine, applied in-process.
 template<kythira::kv_engine Engine = kythira::memory_kv_engine> class local_backend {
 public:
     using clock_fn = std::function<std::uint64_t()>;
 
-    /// Items of every table live in one group over `t/`.
-    explicit local_backend(Engine& engine, clock_fn clock = system_clock_ms())
+    /// Items of every table live in one group over `t/`. Its change
+    /// records go to `change_log` (task 15); without one, DynamoDB Streams
+    /// list shards that never hold a record.
+    explicit local_backend(Engine& engine, clock_fn clock = system_clock_ms(),
+                           kythira::record_segment_store* change_log = nullptr)
         : _clock(std::move(clock)) {
         _catalog.open(engine, catalog_range());
+        _items.set_change_log(change_log, {});
         _items.open(engine, prefix_range("t/"));
         // The index can only be read once both machines are open.
         // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
@@ -152,7 +166,30 @@ public:
         const std::lock_guard lock(_mu);
         auto r = apply_item_locked(stamp_written(c, now_ms()));
         propagate_locked();
+        trim_changes_locked();
         return r;
+    }
+
+    /// The change log's store streams overlapping `range`, as DynamoDB
+    /// Streams shards (task 16). One group holds every table here.
+    auto change_shards(const kythira::key_range& /*range*/) -> std::vector<change_shard> {
+        const std::lock_guard lock(_mu);
+        return _items.change_shards();
+    }
+
+    /// Up to `max_records` records of store stream `key` from `from_seq`.
+    auto read_changes(const std::string& key, std::uint64_t from_seq, std::size_t max_records)
+        -> change_page {
+        const std::lock_guard lock(_mu);
+        return _items.change_page_of(key, from_seq, max_records);
+    }
+
+    /// Drops change records past retention now (tests; writes do it at
+    /// most once a minute).
+    auto trim_changes() -> void {
+        const std::lock_guard lock(_mu);
+        _last_trim_ms = 0;
+        trim_changes_locked();
     }
 
     /// Carries the item's pending GSI change before returning, for tables
@@ -269,6 +306,25 @@ private:
         return *r;
     }
 
+    /// Change log retention, at most once a minute of the clock.
+    auto trim_changes_locked() -> void {
+        const auto now = now_ms();
+        if (_last_trim_ms != 0 && now < _last_trim_ms + 60'000) {
+            return;
+        }
+        _last_trim_ms = std::max<std::uint64_t>(now, 1);
+        if (now <= k_stream_retention_ms) {
+            return;
+        }
+        const auto cutoff = now - k_stream_retention_ms;
+        if (_items.change_log_trim_due(cutoff)) {
+            item_command c;
+            c.op = item_command::kind::trim_change_log;
+            c.written_ms = cutoff;
+            (void)apply_item_locked(c);
+        }
+    }
+
     /// Carries every pending GSI change to the indexes, at once
     /// (`gsi_propagator.hpp`).
     auto propagate_locked() -> void {
@@ -343,8 +399,10 @@ private:
     dynamo_catalog_state_machine<Engine> _catalog;
     dynamo_item_state_machine<Engine> _items;
     std::uint64_t _index = 0;
+    std::uint64_t _last_trim_ms = 0;
 };
 
 static_assert(dynamo_backend<local_backend<>>);
+static_assert(change_feed_backend<local_backend<>>);
 
 }  // namespace kythira::dynamodb

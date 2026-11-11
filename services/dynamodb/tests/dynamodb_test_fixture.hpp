@@ -17,11 +17,13 @@
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/partiql.hpp>
 #include <kythira/dynamodb/query_api.hpp>
+#include <kythira/dynamodb/streams.hpp>
 #include <kythira/dynamodb/table_api.hpp>
 #include <kythira/dynamodb/ttl.hpp>
 #include <kythira/dynamodb/txn_api.hpp>
 
 #include <raft/memory_kv_engine.hpp>
+#include <raft/record_segment_store.hpp>
 #include <raft/static_key_authorizer.hpp>
 
 #include <boost/json.hpp>
@@ -32,8 +34,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace dynamodb_test {
@@ -56,7 +60,10 @@ inline auto signed_request(std::string_view op, const std::string& body) -> ddb:
     r.headers = {{"Host", "localhost:8000"},
                  {"Content-Type", "application/x-amz-json-1.0"},
                  {"X-Amz-Date", "20261110T120000Z"},
-                 {"X-Amz-Target", "DynamoDB_20120810." + std::string(op)}};
+                 {"X-Amz-Target",
+                  std::string(ddb::is_streams_operation(op) ? ddb::k_streams_target_prefix
+                                                            : ddb::k_dynamodb_target_prefix) +
+                      "." + std::string(op)}};
     sv4::service_rules rules;
     rules.service = "dynamodb";
     rules.protocol = sv4::error_protocol::json;
@@ -96,11 +103,37 @@ struct reply {
     }
 };
 
+/// A directory removed with the fixture.
+struct scratch_dir {
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                 ("kythira-ddb-fixture-" + std::to_string(std::random_device{}()));
+    scratch_dir() = default;
+    scratch_dir(const scratch_dir&) = delete;
+    auto operator=(const scratch_dir&) -> scratch_dir& = delete;
+    scratch_dir(scratch_dir&&) = delete;
+    auto operator=(scratch_dir&&) -> scratch_dir& = delete;
+    ~scratch_dir() {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
+[[nodiscard]] inline auto change_log_options(const std::filesystem::path& dir)
+    -> kythira::record_segment_store_options {
+    kythira::record_segment_store_options o;
+    o._data_dir = dir;
+    o._barriers_enabled = false;
+    return o;
+}
+
 struct fixture {
     kythira::memory_kv_engine engine;
     std::uint64_t clock_ms = 1794300000123ULL;
     std::optional<std::uintmax_t> free_bytes = std::uintmax_t{1} << 40U;
-    ddb::local_backend<> backend{engine, [this] { return clock_ms; }};
+    /// The change log DynamoDB Streams reads (task 16).
+    scratch_dir log_dir;
+    kythira::record_segment_store change_log{change_log_options(log_dir.path)};
+    ddb::local_backend<> backend{engine, [this] { return clock_ms; }, &change_log};
     ddb::disk_guard guard{"/data", 1024,
                           [this](const std::filesystem::path&) { return free_bytes; }};
     az::static_key_authorizer auth{
@@ -115,6 +148,7 @@ struct fixture {
     ddb::txn_api<ddb::local_backend<>> transactions{backend, &guard};
     ddb::ttl_api<ddb::local_backend<>> ttl{backend};
     ddb::partiql_api<ddb::local_backend<>> partiql{backend, items, queries, transactions};
+    ddb::streams_api<ddb::local_backend<>> streams{backend};
     /// Not run on its own: tests call `sweeper.pass()`.
     ddb::ttl_sweeper<ddb::local_backend<>> sweeper{backend};
 
@@ -130,6 +164,7 @@ struct fixture {
         transactions.register_with(*fe);
         ttl.register_with(*fe);
         partiql.register_with(*fe);
+        streams.register_with(*fe);
     }
 
     /// Turns capacity enforcement off for the whole fixture (Requirement

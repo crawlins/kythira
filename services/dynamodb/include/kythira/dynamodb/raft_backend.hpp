@@ -139,6 +139,9 @@ struct raft_backend_options {
     /// 1 enforces each limit whole on every node; `dynamodb_gateway_node`
     /// gives each of N voters 1/N.
     double capacity_share = 1.0;
+    /// How often each item group's leader checks its change log for
+    /// records past retention (task 16).
+    std::chrono::milliseconds change_log_trim_interval{60000};
 };
 
 /// A transaction op's keys no longer share one group; the coordinator
@@ -165,6 +168,11 @@ enum class op_tag : std::uint8_t {
     /// The bytes of a change log segment this node holds (task 15), for a
     /// peer that installed a snapshot naming it.
     segment = 10,
+    /// An item group's change log streams, as DynamoDB Streams shards
+    /// (task 16).
+    shards = 11,
+    /// A page of one change log stream's records (task 16).
+    changes = 12,
 };
 
 /// The answer tags.
@@ -565,6 +573,93 @@ public:
         }
     }
 
+    /// The change log streams of every item group overlapping `range`, as
+    /// DynamoDB Streams shards (task 16), each once: the closed streams a
+    /// split left are named by every child.
+    auto change_shards(const kythira::key_range& range) -> std::vector<change_shard> {
+        kythira::shard_range<std::string> sr;
+        sr._start = range.start;
+        sr._end = range.end;
+        std::map<std::string, change_shard> by_key;
+        for (const auto& desc : _host.shard_map_snapshot().range_scan(sr)) {
+            std::string op(1, static_cast<char>(raft_backend_detail::op_tag::shards));
+            detail::put_varint(op, static_cast<std::uint64_t>(desc._group_id));
+            auto got = decode_change_shards(run(op, desc));
+            if (!got) {
+                throw std::runtime_error("raft_backend: unreadable change shards");
+            }
+            for (auto& s : *got) {
+                auto [it, fresh] = by_key.try_emplace(s.stream.key, s);
+                // Two children may have trimmed a shared parent unevenly:
+                // keep the copy that still names the most.
+                if (!fresh && !it->second.open && !s.open &&
+                    s.stream.first_seq < it->second.stream.first_seq) {
+                    it->second = std::move(s);
+                }
+            }
+        }
+        std::vector<change_shard> out;
+        out.reserve(by_key.size());
+        for (auto& [key, s] : by_key) {
+            out.push_back(std::move(s));
+        }
+        return out;
+    }
+
+    /// Up to `max_records` records of change log stream `key` from
+    /// `from_seq`, from the group that continues it (the one holding its
+    /// range start), at that group's leader.
+    auto read_changes(const std::string& key, std::uint64_t from_seq, std::size_t max_records)
+        -> change_page {
+        const auto parsed = parse_change_stream_key(key);
+        if (!parsed) {
+            return {};
+        }
+        const auto desc = _host.resolve(parsed->first);
+        std::string op(1, static_cast<char>(raft_backend_detail::op_tag::changes));
+        detail::put_bytes(op, key);
+        detail::put_varint(op, from_seq);
+        detail::put_varint(op, max_records);
+        auto p = decode_change_page(run(op, desc));
+        if (!p) {
+            throw std::runtime_error("raft_backend: unreadable change page");
+        }
+        return std::move(*p);
+    }
+
+    /// Whether merging the groups over `a` and `b` would join a stream
+    /// shard to two parents (Requirement 14.3): either range overlaps a
+    /// table with a DynamoDB stream, enabled or disabled but still listed.
+    [[nodiscard]] auto merge_vetoed(const kythira::key_range& a, const kythira::key_range& b)
+        -> bool {
+        for (const auto& name : list_tables("", SIZE_MAX)) {
+            const auto d = describe(name);
+            if (!d || d->streams.empty()) {
+                continue;
+            }
+            const auto t = table_range(d->table_id);
+            if (!raft_backend_detail::intersect(t, a).empty() ||
+                !raft_backend_detail::intersect(t, b).empty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Merges group `source` into `target` unless `merge_vetoed`; the
+    /// DynamoDB entry point for a merge (the node runs no automatic ones).
+    /// Returns whether the merge was proposed and committed.
+    auto merge_groups(group_id_type source, group_id_type target) -> bool {
+        const auto map = _host.shard_map_snapshot();
+        const auto s = map.find(source);
+        const auto t = map.find(target);
+        if (!s || !t || merge_vetoed(engine_range(s->_range), engine_range(t->_range))) {
+            return false;
+        }
+        (void)await(_host.merge_shards(source, target, _options.attempt_timeout));
+        return true;
+    }
+
     /// This node's capacity buckets, holding `capacity_share` of each limit.
     auto throttler() -> capacity_throttler& { return _throttler; }
 
@@ -673,6 +768,10 @@ public:
                     return serve_pending(body);
                 case op_tag::segment:
                     return serve_segment(body);
+                case op_tag::shards:
+                    return serve_shards(body);
+                case op_tag::changes:
+                    return serve_changes(body);
             }
             return error_answer("unknown op");
         } catch (const kythira::shard_not_leader_exception<group_id_type, node_id_type>& e) {
@@ -1216,6 +1315,91 @@ private:
         return ok_answer({reinterpret_cast<const char*>(bytes->data()), bytes->size()});  // NOLINT
     }
 
+    /// An item group's change log streams, at its leader after a read
+    /// barrier.
+    auto serve_shards(std::string_view body) -> std::string {
+        detail::reader in(body);
+        const auto group = in.varint();
+        if (!group || !in.done()) {
+            return error_answer("unreadable shards op");
+        }
+        const auto g = static_cast<group_id_type>(*group);
+        const auto desc = _host.shard_map_snapshot().find(g);
+        if (!desc || _host.group_node(g) == nullptr) {
+            return not_leader_answer(desc ? desc->_leader_hint : std::nullopt);
+        }
+        barrier(engine_range(desc->_range).start, true);
+        const auto shards = _host.with_group_state_machine(
+            g, [&](auto& sm, const descriptor_type&) -> std::optional<std::vector<change_shard>> {
+                const auto* items = sm.inner().item_group();
+                if (items == nullptr) {
+                    return std::nullopt;
+                }
+                return items->change_shards();
+            });
+        if (!shards || !*shards) {
+            return not_leader_answer(std::nullopt);
+        }
+        return ok_answer(encode_change_shards(**shards));
+    }
+
+    /// A page of a change log stream, at the leader of the group holding
+    /// its range start, after a read barrier. Segments the group still
+    /// names but this node lacks are fetched from its voters first.
+    auto serve_changes(std::string_view body) -> std::string {
+        detail::reader in(body);
+        auto key = in.bytes();
+        const auto from = in.varint();
+        const auto max = in.varint();
+        if (!key || !from || !max || !in.done()) {
+            return error_answer("unreadable changes op");
+        }
+        const auto parsed = parse_change_stream_key(*key);
+        if (!parsed) {
+            return error_answer("not a change log stream");
+        }
+        barrier(parsed->first, true);
+        const auto desc = _host.resolve(parsed->first);
+        if (!desc) {
+            return not_leader_answer(std::nullopt);
+        }
+        const auto now = _clock();
+        const auto since = now > k_stream_retention_ms ? now - k_stream_retention_ms : 0;
+        const auto missing = _host.with_group_state_machine(
+            desc->_group_id,
+            [&](auto& sm, const descriptor_type&)
+                -> std::optional<std::vector<kythira::record_segment_descriptor>> {
+                const auto* items = sm.inner().item_group();
+                if (items == nullptr) {
+                    return std::nullopt;
+                }
+                return items->missing_change_segments(*key, *from, since);
+            });
+        if (!missing || !*missing) {
+            return not_leader_answer(std::nullopt);
+        }
+        for (const auto& d : **missing) {
+            fetch_change_segment(desc->_group_id, d);
+        }
+        const auto p = _host.with_group_state_machine(
+            desc->_group_id, [&](auto& sm, const descriptor_type&) -> std::optional<change_page> {
+                const auto* items = sm.inner().item_group();
+                if (items == nullptr) {
+                    return std::nullopt;
+                }
+                return items->change_page_of(
+                    *key, *from,
+                    static_cast<std::size_t>(std::min<std::uint64_t>(*max, k_max_change_page)));
+            });
+        if (!p || !*p) {
+            return not_leader_answer(std::nullopt);
+        }
+        return ok_answer(encode_change_page(**p));
+    }
+
+    /// The most records one `changes` op returns.
+    static constexpr std::uint64_t k_max_change_page = 10000;
+
     auto serve_pending(std::string_view body) -> std::string {
         item_command c;
         if (decode_item_command(body, c) != item_command_status::ok) {
@@ -1484,13 +1668,57 @@ private:
         return found;
     }
 
+    /// Proposes a retention trim to every item group this node leads whose
+    /// change log holds records past retention (task 16). Returns how many
+    /// it trimmed.
+    auto trim_change_logs_once() -> std::size_t {
+        const auto now = _clock();
+        if (now <= k_stream_retention_ms) {
+            return 0;
+        }
+        const auto cutoff = now - k_stream_retention_ms;
+        kythira::shard_range<std::string> items;
+        items._start = std::string("t/");
+        items._end = prefix_end("t/");
+        std::size_t trimmed = 0;
+        for (const auto& desc : _host.shard_map_snapshot().range_scan(items)) {
+            auto* n = _host.group_node(desc._group_id);
+            if (n == nullptr || !n->is_leader()) {
+                continue;
+            }
+            const auto due = _host.with_group_state_machine(
+                desc._group_id, [&](auto& sm, const descriptor_type&) {
+                    const auto* group = sm.inner().item_group();
+                    return group != nullptr && group->change_log_trim_due(cutoff);
+                });
+            if (!due || !*due) {
+                continue;
+            }
+            item_command c;
+            c.op = item_command::kind::trim_change_log;
+            c.written_ms = cutoff;
+            std::string op(1, static_cast<char>(raft_backend_detail::op_tag::drop));
+            detail::put_varint(op, static_cast<std::uint64_t>(desc._group_id));
+            detail::put_bytes(op, encode_item_command(c));
+            (void)run(op, desc);
+            ++trimmed;
+        }
+        return trimmed;
+    }
+
     auto propagator_loop() -> void {
         std::unique_lock lock(_worker_mu);
+        auto next_trim = std::chrono::steady_clock::now();
         while (!_stopping) {
             lock.unlock();
             bool did = false;
             try {
                 did = propagate_once();
+                if (std::chrono::steady_clock::now() >= next_trim) {
+                    next_trim =
+                        std::chrono::steady_clock::now() + _options.change_log_trim_interval;
+                    (void)trim_change_logs_once();
+                }
             } catch (const std::exception&) {
                 // Leadership moved or a group is electing; the change stays
                 // recorded and the next pass (here or on the new leader)

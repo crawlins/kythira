@@ -130,7 +130,8 @@ struct stack {
           items(backend, &guard),
           queries(backend),
           batches(backend, &guard),
-          transactions(backend, &guard) {
+          transactions(backend, &guard),
+          streams(backend) {
         auth.register_service(ddb::dynamodb_static_roles());
         ddb::front_end_config cfg;
         cfg.advertised_endpoint = "localhost:8000";
@@ -140,6 +141,7 @@ struct stack {
         queries.register_with(*fe);
         batches.register_with(*fe);
         transactions.register_with(*fe);
+        streams.register_with(*fe);
     }
 
     auto call(std::string_view op, const std::string& body) -> reply {
@@ -165,6 +167,7 @@ struct stack {
     ddb::query_api<backend_type> queries;
     ddb::batch_api<backend_type> batches;
     ddb::txn_api<backend_type> transactions;
+    ddb::streams_api<backend_type> streams;
 };
 
 auto test_options(std::size_t page_bytes = std::size_t{1} << 20U) -> ddb::raft_backend_options {
@@ -1222,4 +1225,118 @@ BOOST_AUTO_TEST_CASE(change_logs_agree_across_replicas_and_a_split) {
     BOOST_TEST(!c.change_log(3).has_segment(sealed));
     c.backend(3).fetch_change_segment(k_item_group, sealed);
     BOOST_TEST(c.change_log(3).has_segment(sealed));
+}
+
+BOOST_AUTO_TEST_CASE(a_stream_follows_a_split_and_vetoes_merges) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create.substr(0, k_create.size() - 1) +
+                                    R"(,"StreamSpecification":{"StreamEnabled":true,)"
+                                    R"("StreamViewType":"NEW_AND_OLD_IMAGES"}})");
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    const auto d = c.backend(1).describe("Music");
+    BOOST_TEST_REQUIRE(d.has_value());
+    BOOST_TEST_REQUIRE(d->logs_changes());
+    const auto put = [&](const std::string& pk) {
+        c.node(1).ok("PutItem",
+                     R"({"TableName":"Music","Item":{"pk":{"S":")" + pk + R"("},"sk":{"N":"1"}}})");
+    };
+    for (const char* pk : {"a", "m", "z"}) {
+        put(pk);
+    }
+    const auto arn = std::string(c.node(1)
+                                     .ok("DescribeTable", R"({"TableName":"Music"})")
+                                     .at("Table")
+                                     .as_object()
+                                     .at("LatestStreamArn")
+                                     .as_string());
+    const auto shards = [&](std::uint64_t node) {
+        return c.node(node)
+            .ok("DescribeStream", R"({"StreamArn":")" + arn + R"("})")
+            .at("StreamDescription")
+            .as_object()
+            .at("Shards")
+            .as_array();
+    };
+    // Reads every record of a shard from its start, on `node`; also
+    // whether the shard ended.
+    const auto read = [&](std::uint64_t node, const std::string& shard) {
+        auto it = std::string(
+            c.node(node)
+                .ok("GetShardIterator", R"({"StreamArn":")" + arn + R"(","ShardId":")" + shard +
+                                            R"(","ShardIteratorType":"TRIM_HORIZON"})")
+                .at("ShardIterator")
+                .as_string());
+        std::vector<std::string> keys;
+        for (int page = 0; page < 10; ++page) {
+            const auto r = c.node(node).ok("GetRecords", R"({"ShardIterator":")" + it + R"("})");
+            for (const auto& rec : r.at("Records").as_array()) {
+                keys.emplace_back(rec.as_object()
+                                      .at("dynamodb")
+                                      .as_object()
+                                      .at("Keys")
+                                      .as_object()
+                                      .at("pk")
+                                      .as_object()
+                                      .at("S")
+                                      .as_string());
+            }
+            if (!r.contains("NextShardIterator")) {
+                return std::pair{keys, true};
+            }
+            if (r.at("Records").as_array().empty()) {
+                break;
+            }
+            it = std::string(r.at("NextShardIterator").as_string());
+        }
+        return std::pair{keys, false};
+    };
+    const auto before = shards(2);
+    BOOST_TEST_REQUIRE(before.size() == 1U);
+    const std::string parent(before[0].as_object().at("ShardId").as_string());
+    // Any node answers: the read goes to the group's leader.
+    for (std::uint64_t node = 1; node <= k_nodes; ++node) {
+        BOOST_TEST((read(node, parent).first == std::vector<std::string>{"a", "m", "z"}));
+    }
+
+    // A split closes the shard and opens one per child, each naming it.
+    const auto cut = ddb::partition_prefix(d->table_id, ddb::attribute_value::string("m"));
+    const auto l = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(l != 0U);
+    auto f = c.host(l).split_shard(k_item_group, {cut}, std::chrono::milliseconds{5000});
+    BOOST_TEST_REQUIRE(f.wait(std::chrono::milliseconds{8000}));
+    std::ignore = std::move(f).get();
+    BOOST_TEST_REQUIRE(cluster::await([&] { return shards(1).size() == 3U; }));
+    put("b");
+    put("n");
+    const auto after = shards(1);
+    BOOST_TEST(after[0].as_object().at("ShardId").as_string() == parent);
+    BOOST_TEST(after[0]
+                   .as_object()
+                   .at("SequenceNumberRange")
+                   .as_object()
+                   .contains("EndingSequenceNumber"));
+    std::vector<std::string> child_keys;
+    for (std::size_t i = 1; i < after.size(); ++i) {
+        const auto& s = after[i].as_object();
+        BOOST_TEST(s.at("ParentShardId").as_string() == parent);
+        BOOST_TEST(!s.at("SequenceNumberRange").as_object().contains("EndingSequenceNumber"));
+        const auto [keys, ended] = read(3, std::string(s.at("ShardId").as_string()));
+        BOOST_TEST(!ended);
+        BOOST_TEST(keys.size() == 1U);
+        child_keys.insert(child_keys.end(), keys.begin(), keys.end());
+    }
+    std::ranges::sort(child_keys);
+    BOOST_TEST((child_keys == std::vector<std::string>{"b", "n"}));
+    // The closed parent still holds its records, and ends.
+    const auto [parent_keys, parent_ended] = read(2, parent);
+    BOOST_TEST((parent_keys == std::vector<std::string>{"a", "m", "z"}));
+    BOOST_TEST(parent_ended);
+
+    // A merge of the two children would give a shard two parents.
+    kythira::shard_range<std::string> items;
+    items._start = std::string("t/");
+    items._end = ddb::prefix_end("t/");
+    const auto groups = c.host(1).shard_map_snapshot().range_scan(items);
+    BOOST_TEST_REQUIRE(groups.size() == 2U);
+    BOOST_TEST(!c.backend(1).merge_groups(groups[1]._group_id, groups[0]._group_id));
 }

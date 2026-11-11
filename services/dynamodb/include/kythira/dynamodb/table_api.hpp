@@ -44,6 +44,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -78,6 +79,78 @@ namespace table_api_detail {
 
 [[nodiscard]] inline auto unsupported(std::string_view what) -> aws_json::error {
     return validation_error("Kythira does not support " + std::string(what) + " yet");
+}
+
+[[nodiscard]] inline auto view_type_name(stream_view_type v) -> std::string_view {
+    switch (v) {
+        case stream_view_type::keys_only:
+            return "KEYS_ONLY";
+        case stream_view_type::new_image:
+            return "NEW_IMAGE";
+        case stream_view_type::old_image:
+            return "OLD_IMAGE";
+        case stream_view_type::new_and_old_images:
+            return "NEW_AND_OLD_IMAGES";
+    }
+    return "KEYS_ONLY";
+}
+
+[[nodiscard]] inline auto view_type_of(std::string_view name) -> std::optional<stream_view_type> {
+    for (const auto v : {stream_view_type::keys_only, stream_view_type::new_image,
+                         stream_view_type::old_image, stream_view_type::new_and_old_images}) {
+        if (view_type_name(v) == name) {
+            return v;
+        }
+    }
+    return std::nullopt;
+}
+
+/// A stream's `StreamLabel`: its enable time, UTC, to the millisecond.
+[[nodiscard]] inline auto stream_label(std::uint64_t ms) -> std::string {
+    const auto secs = static_cast<std::time_t>(ms / 1000);
+    std::tm tm{};
+    gmtime_r(&secs, &tm);
+    std::array<char, 32> buf{};
+    const auto n = std::snprintf(buf.data(), buf.size(), "%04d-%02d-%02dT%02d:%02d:%02d.%03u",
+                                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                                 tm.tm_min, tm.tm_sec, static_cast<unsigned>(ms % 1000));
+    return {buf.data(), static_cast<std::size_t>(n)};
+}
+
+/// `arn:...:table/<name>/stream/<label>`.
+[[nodiscard]] inline auto stream_arn(const call_context& ctx, std::string_view table,
+                                     std::uint64_t label_ms) -> std::string {
+    return ctx.table_arn(table) + "/stream/" + stream_label(label_ms);
+}
+
+/// A `StreamSpecification`, checked in DynamoDB's words: the stream to
+/// enable, or one with `disabled_ms` set to disable the table's.
+[[nodiscard]] inline auto stream_spec_from(const boost::json::object& spec)
+    -> aws_json::result<table_stream> {
+    const auto* enabled = spec.if_contains("StreamEnabled");
+    if (enabled == nullptr || !enabled->is_bool()) {
+        return validation_error("Stream StreamEnabled was null");
+    }
+    const auto* view = spec.if_contains("StreamViewType");
+    const bool has_view = view != nullptr && view->is_string() && !view->as_string().empty();
+    if (enabled->as_bool()) {
+        if (!has_view) {
+            return validation_error(
+                "Invalid StreamViewType: Stream ViewType must not be null or empty when enabling "
+                "streams.");
+        }
+        const auto v = view_type_of(view->as_string());
+        if (!v) {
+            return validation_error("Invalid StreamViewType: " + std::string(view->as_string()));
+        }
+        return table_stream{0, *v, 0};
+    }
+    if (has_view) {
+        return validation_error(
+            "Invalid StreamViewType: Stream StreamEnabled was false but a StreamViewType was "
+            "present.");
+    }
+    return table_stream{0, stream_view_type::keys_only, 1};
 }
 
 /// The error a catalog result carries.
@@ -577,6 +650,15 @@ template<typename TypeOf>
         {"WriteUnitsPerSecond", warm_write_of(d)},
         {"Status", status_name(d.status)},
     };
+    // A disabled stream drops the specification but stays the latest.
+    if (const auto* s = d.enabled_stream()) {
+        out["StreamSpecification"] = boost::json::object{
+            {"StreamEnabled", true}, {"StreamViewType", view_type_name(s->view)}};
+    }
+    if (!d.streams.empty()) {
+        out["LatestStreamArn"] = stream_arn(ctx, d.name, d.streams.back().label_ms);
+        out["LatestStreamLabel"] = stream_label(d.streams.back().label_ms);
+    }
     return out;
 }
 
@@ -623,10 +705,14 @@ public:
                 return unsupported(member);
             }
         }
+        std::optional<table_stream> stream;
         if (const auto* s = in.if_contains("StreamSpecification")) {
-            if (const auto* e = s->as_object().if_contains("StreamEnabled");
-                e != nullptr && e->is_bool() && e->as_bool()) {
-                return unsupported("StreamSpecification");
+            auto spec = stream_spec_from(s->as_object());
+            if (!spec) {
+                return spec.error();
+            }
+            if (spec->disabled_ms == 0) {
+                stream = *spec;
             }
         }
 
@@ -792,6 +878,9 @@ public:
 
         catalog_command c;
         c.op = catalog_command::kind::create_table;
+        if (stream) {
+            d.streams = {*stream};
+        }
         c.table = std::move(d);
         c.now_ms = _backend.now_ms();
         const auto r = _backend.catalog(c);
@@ -840,18 +929,30 @@ public:
         using namespace table_api_detail;
         const auto name = table_name_of(in.at("TableName").as_string());
         for (const char* member :
-             {"StreamSpecification", "SSESpecification", "ReplicaUpdates", "OnDemandThroughput",
-              "MultiRegionConsistency", "GlobalTableWitnessUpdates", "VectorIndexUpdates"}) {
+             {"SSESpecification", "ReplicaUpdates", "OnDemandThroughput", "MultiRegionConsistency",
+              "GlobalTableWitnessUpdates", "VectorIndexUpdates"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
         }
         if (!in.contains("BillingMode") && !in.contains("ProvisionedThroughput") &&
             !in.contains("TableClass") && !in.contains("DeletionProtectionEnabled") &&
-            !in.contains("WarmThroughput") && !in.contains("GlobalSecondaryIndexUpdates")) {
+            !in.contains("WarmThroughput") && !in.contains("GlobalSecondaryIndexUpdates") &&
+            !in.contains("StreamSpecification")) {
             return validation_error(
                 "At least one of ProvisionedThroughput, BillingMode, UpdateStreamEnabled, "
                 "GlobalSecondaryIndexUpdates or SSESpecification or ReplicaUpdates is required");
+        }
+        std::optional<table_stream> stream;
+        if (const auto* s = in.if_contains("StreamSpecification")) {
+            auto spec = stream_spec_from(s->as_object());
+            if (!spec) {
+                return spec.error();
+            }
+            if (in.contains("BillingMode") || in.contains("ProvisionedThroughput")) {
+                return validation_error("Cannot change IOPS and Streams at the same time.");
+            }
+            stream = *spec;
         }
         const auto current = _backend.describe(name);
         if (!current) {
@@ -860,6 +961,10 @@ public:
         catalog_command c;
         c.op = catalog_command::kind::update_table;
         c.table = *current;
+        if (stream) {
+            c.table.streams = {*stream};
+            c.update_fields |= catalog_command::update_stream;
+        }
         if (in.contains("BillingMode") || in.contains("ProvisionedThroughput")) {
             if (auto e = billing_from(in, c.table, /*creating=*/false)) {
                 return *e;
