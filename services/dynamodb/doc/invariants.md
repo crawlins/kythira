@@ -190,6 +190,15 @@ all fixed with it:
 | k06 | An item collection with LSIs is bounded (10 GB), and a write past it fails | Limits |
 | k07 | An LSI key value cannot be empty or of another type | Indexes |
 
+## L. Global secondary indexes
+
+| Id | Invariant | Source |
+|---|---|---|
+| l01 | A global secondary index is read eventually: `ConsistentRead` true on one is a `ValidationException` | Indexes |
+| l02 | A table has at most 20 GSIs | Limits |
+| l03 | A GSI is sparse, its keys need not be unique, and it returns only projected attributes (no fetch from the table) | Indexes |
+| l04 | A GSI key value cannot be empty or of another type | Indexes |
+
 ## Checked elsewhere
 
 | Invariant | Source | Test |
@@ -198,6 +207,7 @@ all fixed with it:
 | A successful write survives the loss of a group's leader | Reads | `dynamodb_raft_backend_test` |
 | Error types, messages and status codes match DynamoDB Local's for the recorded operations | — | `dynamodb_ops_corpus_test` |
 | A transaction has at most 100 items and 4 MB, never names one item twice, and is all or nothing, across groups and through leader loss | Limits | `dynamodb_txn_test`, `dynamodb_ops_corpus_test`, `dynamodb_raft_backend_test` |
+| A GSI reflects every write once propagated, wherever its entries live, and a lost leader's changes are carried by the next one | Indexes | `dynamodb_gsi_test`, `dynamodb_raft_backend_test` |
 
 ## Deferred
 
@@ -206,8 +216,6 @@ with the task that builds it.
 
 | Invariant | Source | Task |
 |---|---|---|
-| A global secondary index is read eventually: `ConsistentRead` true on one is a `ValidationException` | Indexes | 11 |
-| A table has at most 20 GSIs | Limits | 11 |
 | Reads and writes are charged in 4 KB and 1 KB units, and over-capacity requests are throttled | Limits | 12 |
 | Time to live can be changed at most once an hour | Limits | 13 |
 | PartiQL statements follow the same item rules | — | 14 |

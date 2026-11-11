@@ -141,6 +141,11 @@ set_tests_properties(dynamodb_invariants_test PROPERTIES
 kythira_dynamodb_test(dynamodb_txn_test dynamodb_txn_test.cpp)
 set_tests_properties(dynamodb_txn_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Global secondary indexes in the item machine (task 11): entry versions,
+# pending changes and their acks, and the propagation plan.
+kythira_dynamodb_test(dynamodb_gsi_test dynamodb_gsi_test.cpp)
+set_tests_properties(dynamodb_gsi_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")

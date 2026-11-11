@@ -226,6 +226,7 @@ public:
                 c.table_id = w.table.table_id;
                 c.schema = w.table.schema;
                 c.lsis = w.table.lsis;
+                c.gsis = w.table.gsis;
                 if (put != nullptr) {
                     auto it = item_from_json(put->as_object().at("Item").as_object());
                     if (!it) {
@@ -238,6 +239,9 @@ public:
                         return *err;
                     }
                     if (auto err = validate_index_keys(*it, w.table.lsis)) {
+                        return *err;
+                    }
+                    if (auto err = validate_global_index_keys(*it, w.table.gsis)) {
                         return *err;
                     }
                     c.op = item_command::kind::put;

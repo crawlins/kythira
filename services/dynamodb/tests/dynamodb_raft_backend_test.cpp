@@ -854,3 +854,119 @@ BOOST_AUTO_TEST_CASE(leaders_killed_mid_transaction_never_split_one) {
     BOOST_TEST(a == z);
     BOOST_TEST(std::stoi(a) >= last_ok.load());
 }
+
+namespace {
+
+const std::string k_create_with_gsi =
+    R"({"TableName":"Music","AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"},)"
+    R"({"AttributeName":"sk","AttributeType":"N"},{"AttributeName":"g","AttributeType":"S"}],)"
+    R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"},)"
+    R"({"AttributeName":"sk","KeyType":"RANGE"}],"BillingMode":"PAY_PER_REQUEST",)"
+    R"("GlobalSecondaryIndexes":[{"IndexName":"by_g","KeySchema":)"
+    R"([{"AttributeName":"g","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]})";
+
+/// `pk/sk=v` of every entry of `by_g` with partition `g`, through `s`.
+auto index_items(stack& s, const std::string& g) -> std::set<std::string> {
+    std::set<std::string> out;
+    std::string start;
+    for (;;) {
+        std::string body = R"({"TableName":"Music","IndexName":"by_g","Limit":5,)"
+                           R"("KeyConditionExpression":"g = :g",)"
+                           R"("ExpressionAttributeValues":{":g":{"S":")" +
+                           g + R"("}})";
+        if (!start.empty()) {
+            body += R"(,"ExclusiveStartKey":)" + start;
+        }
+        body += "}";
+        const auto r = s.ok("Query", body);
+        for (const auto& it : r.at("Items").as_array()) {
+            const auto& o = it.as_object();
+            out.insert(std::string(o.at("pk").as_object().at("S").as_string()) + "/" +
+                       std::string(o.at("sk").as_object().at("N").as_string()) + "=" +
+                       std::string(o.at("v").as_object().at("N").as_string()));
+        }
+        const auto* last = r.if_contains("LastEvaluatedKey");
+        if (last == nullptr) {
+            return out;
+        }
+        start = json::serialize(*last);
+    }
+}
+
+auto put_g(stack& s, const std::string& pk, int sk, const std::string& g, int v) -> void {
+    put(s, pk, sk, R"(,"g":{"S":")" + g + R"("},"v":{"N":")" + std::to_string(v) + R"("})");
+}
+
+auto expected(const std::vector<std::string>& pks, int per, int v) -> std::set<std::string> {
+    std::set<std::string> out;
+    for (const auto& pk : pks) {
+        for (int sk = 0; sk < per; ++sk) {
+            out.insert(pk + "/" + std::to_string(sk) + "=" + std::to_string(v));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(gsi_entries_reach_other_groups_through_a_leader_loss) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create_with_gsi);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    const std::vector<std::string> pks{"p0", "p1", "p2", "p3"};
+    constexpr int k_per = 3;
+    for (const auto& pk : pks) {
+        for (int sk = 0; sk < k_per; ++sk) {
+            put_g(c.node(2), pk, sk, "red", 1);
+        }
+    }
+    // Each partition in a group of its own; the index's key space follows
+    // the table's, so most entries live in another group than their items.
+    split_apart(c, pks);
+    for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+        BOOST_TEST(cluster::await(
+                       [&] { return index_items(c.node(id), "red") == expected(pks, k_per, 1); }),
+                   "node " << id);
+    }
+
+    // Move every item to another index partition while the leader of the
+    // lowest group is cut off: its changes are carried by the new leader.
+    const auto old = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(old != 0U);
+    c.fabric().kill(old);
+    const auto live = old == 1 ? 2U : 1U;
+    for (const auto& pk : pks) {
+        for (int sk = 0; sk < k_per; ++sk) {
+            put_g(c.node(live), pk, sk, "blue", 2);
+        }
+    }
+    BOOST_TEST(cluster::await([&] {
+        return index_items(c.node(live), "blue") == expected(pks, k_per, 2) &&
+               index_items(c.node(live), "red").empty();
+    }));
+    c.fabric().revive(old);
+
+    // Deleted items leave the index; the revived node catches up and every
+    // leader reports no lag.
+    for (int sk = 0; sk < k_per; ++sk) {
+        c.node(old).ok("DeleteItem", R"({"TableName":"Music","Key":)" + key_json("p1", sk) + "}");
+    }
+    auto rest = expected({"p0", "p2", "p3"}, k_per, 2);
+    for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+        BOOST_TEST(cluster::await([&] { return index_items(c.node(id), "blue") == rest; }),
+                   "node " << id);
+    }
+    BOOST_TEST(cluster::await([&] {
+        std::size_t lag = 0;
+        for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+            lag += c.backend(id).gsi_lag();
+        }
+        return lag == 0U;
+    }));
+
+    // DeleteTable removes the table's and the index's keys everywhere.
+    c.node(3).ok("DeleteTable", R"({"TableName":"Music"})");
+    for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+        BOOST_TEST(cluster::await([&] { return c.item_keys(id) == 0U; }), "node " << id);
+    }
+}

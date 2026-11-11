@@ -434,7 +434,7 @@ BOOST_AUTO_TEST_CASE(entries_round_trip_and_bad_ones_stop_the_group) {
 
     fixture f;
     auto newer = bytes;
-    newer[0] = static_cast<char>(2);
+    newer[0] = static_cast<char>(ddb::item_sm_detail::k_command_format_version + 1);
     BOOST_CHECK_THROW((void)f.sm.apply(bytes_of(newer), 1), std::runtime_error);
     BOOST_CHECK_THROW((void)f.sm.apply(bytes_of("\x01"), 1), std::invalid_argument);
     BOOST_TEST(f.sm.applied_index() == 0U);

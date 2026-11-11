@@ -38,7 +38,13 @@
 /// `Query` filter may only name projected attributes, while a `Scan` filter
 /// may name any, as DynamoDB Local allows. An index's `LastEvaluatedKey`
 /// and `ExclusiveStartKey` carry the table keys and the index sort key.
-/// Global secondary indexes arrive with task 11.
+///
+/// A global secondary index (task 11) has a key space of its own
+/// (`global_index.hpp`): a `Query` reads one index collection, a `Scan` its
+/// hash slices, and each entry is already the index's projection. As on
+/// AWS, a GSI is read eventually (`ConsistentRead` is refused), and asking
+/// for attributes it does not project is an error rather than a read of
+/// the table. Its `LastEvaluatedKey` carries the table and index keys.
 
 #include <kythira/dynamodb/api_common.hpp>
 #include <kythira/dynamodb/backend.hpp>
@@ -46,6 +52,7 @@
 #include <kythira/dynamodb/expr_eval.hpp>
 #include <kythira/dynamodb/expr_request.hpp>
 #include <kythira/dynamodb/front_end.hpp>
+#include <kythira/dynamodb/global_index.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
 #include <kythira/dynamodb/local_index.hpp>
@@ -145,6 +152,23 @@ inline constexpr std::size_t k_page_bytes = std::size_t{1024} * 1024;
     return nullptr;
 }
 
+/// The GSI named `name`, or null.
+[[nodiscard]] inline auto find_global_index(const table_descriptor& table, std::string_view name)
+    -> const global_index* {
+    for (const auto& g : table.gsis) {
+        if (g.name == name) {
+            return &g;
+        }
+    }
+    return nullptr;
+}
+
+/// The entry range a key condition can match in GSI `g`.
+[[nodiscard]] inline auto global_query_range(const global_index& g, const key_condition& k)
+    -> kythira::key_range {
+    return range_under(gsi_collection_prefix(g, k.partition_value), k);
+}
+
 /// The top-level attribute names `n` reads.
 inline void names_in(const expr_node& n, std::set<std::string>& out) {
     if (n.op == expr_op::path) {
@@ -191,11 +215,13 @@ inline void names_in(const expr_node& n, std::set<std::string>& out) {
 /// The key attributes of `it`, as `LastEvaluatedKey`: the table's, and
 /// the index's sort key when reading an index.
 [[nodiscard]] inline auto key_of(const item& it, const key_schema& schema,
-                                 const local_index* lsi = nullptr) -> item {
+                                 const local_index* lsi = nullptr,
+                                 const global_index* gsi = nullptr) -> item {
     item out;
     for (const auto& [name, value] : it) {
         if (name == schema.partition_name || (schema.sort_name && name == *schema.sort_name) ||
-            (lsi != nullptr && name == lsi->sort_name)) {
+            (lsi != nullptr && name == lsi->sort_name) ||
+            (gsi != nullptr && is_key_of(schema, *gsi, name))) {
             out.emplace_back(name, value);
         }
     }
@@ -261,6 +287,90 @@ inline void names_in(const expr_node& n, std::set<std::string>& out) {
     return std::pair{std::move(*key), std::move(*entry)};
 }
 
+/// Checks a GSI's `ExclusiveStartKey` (the table keys and the index
+/// keys), with DynamoDB Local's wording, and returns the entry key it
+/// names.
+[[nodiscard]] inline auto global_start_key(const boost::json::value& v,
+                                           const table_descriptor& table, const global_index& g)
+    -> aws_json::result<std::pair<item, std::string>> {
+    auto key = item_from_json(v.as_object());
+    if (!key) {
+        return key.error();
+    }
+    std::set<std::string> names{table.schema.partition_name, g.schema.partition_name};
+    if (table.schema.sort_name) {
+        names.insert(*table.schema.sort_name);
+    }
+    if (g.schema.sort_name) {
+        names.insert(*g.schema.sort_name);
+    }
+    if (key->size() != names.size()) {
+        return validation_error("The provided starting key is invalid");
+    }
+    for (const auto& n : names) {
+        if (find_attribute(*key, n) == nullptr) {
+            return validation_error("The provided starting key is invalid");
+        }
+    }
+    if (auto e = validate_key(key_of(*key, table.schema), table.schema)) {
+        return validation_error("The provided starting key is invalid: " + e->message.value_or(""));
+    }
+    auto entry = gsi_entry_key(table.schema, g, *key);
+    if (!entry) {
+        return validation_error("The provided starting key is invalid");
+    }
+    return std::pair{std::move(*key), std::move(*entry)};
+}
+
+/// The checks a read of GSI `g` must pass first, in DynamoDB Local's
+/// words: no `ConsistentRead`, and nothing asked for that it does not
+/// project.
+[[nodiscard]] inline auto global_read_error(const boost::json::object& in,
+                                            const table_descriptor& table, const global_index& g,
+                                            const expression_set& compiled, bool query)
+    -> std::optional<aws_json::error> {
+    if (api_detail::flag(in, "ConsistentRead")) {
+        return validation_error("Consistent reads are not supported on global secondary indexes");
+    }
+    if (g.projection == projection_kind::all) {
+        return std::nullopt;
+    }
+    if (api_detail::text(in, "Select") == "ALL_ATTRIBUTES") {
+        return validation_error(std::string(k_invalid_parameters) + "Select type ALL_ATTRIBUTES " +
+                                "is not supported for global secondary index " + g.name +
+                                " because its projection type is not ALL");
+    }
+    const auto list_of = [&](const std::set<std::string>& names) {
+        std::string list;
+        for (const auto& n : names) {
+            if (!projects(table.schema, g, n)) {
+                list += (list.empty() ? "" : ", ") + n;
+            }
+        }
+        return list;
+    };
+    if (compiled.projection) {
+        std::set<std::string> names;
+        for (const auto& p : compiled.projection->paths) {
+            names.insert(p.front().name);
+        }
+        if (const auto list = list_of(names); !list.empty()) {
+            return validation_error(std::string(k_invalid_parameters) + "Global secondary index " +
+                                    g.name + " does not project [" + list + "]");
+        }
+    }
+    if (query && compiled.filter) {
+        std::set<std::string> names;
+        names_in(*compiled.filter, names);
+        if (const auto list = list_of(names); !list.empty()) {
+            return validation_error(std::string(k_invalid_parameters) + "Secondary index " +
+                                    g.name + " does not project one or more filter attributes: [" +
+                                    list + "]");
+        }
+    }
+    return std::nullopt;
+}
+
 /// Checks `ExclusiveStartKey`'s shape against the schema and returns its
 /// base key.
 [[nodiscard]] inline auto start_key(const boost::json::value& v, std::uint64_t table_id,
@@ -303,9 +413,11 @@ public:
             return table.error();
         }
         const local_index* lsi = nullptr;
+        const global_index* gsi = nullptr;
         if (const auto index = api_detail::text(in, "IndexName"); !index.empty()) {
             lsi = find_index(*table, index);
-            if (lsi == nullptr) {
+            gsi = lsi == nullptr ? find_global_index(*table, index) : nullptr;
+            if (lsi == nullptr && gsi == nullptr) {
                 return no_such_index(index);
             }
         }
@@ -313,13 +425,21 @@ public:
         keys.table = table->schema;
         if (lsi != nullptr) {
             keys.index = index_schema(table->schema, *lsi);
+        } else if (gsi != nullptr) {
+            keys.index = index_schema(*gsi);
         }
         auto compiled = compile_request("Query", in, keys);
         if (!compiled) {
             return compiled.error();
         }
-        if (auto e = select_error(in, compiled->projection.has_value(), lsi != nullptr)) {
+        if (auto e = select_error(in, compiled->projection.has_value(),
+                                  lsi != nullptr || gsi != nullptr)) {
             return *e;
+        }
+        if (gsi != nullptr) {
+            if (auto e = global_read_error(in, *table, *gsi, *compiled, true)) {
+                return *e;
+            }
         }
         if (lsi != nullptr && compiled->filter) {
             std::set<std::string> names;
@@ -335,12 +455,13 @@ public:
             }
         }
         const auto& k = *compiled->key;
-        auto range = lsi != nullptr ? index_query_range(table->table_id, *lsi, k)
-                                    : query_range(table->table_id, k);
+        auto range = lsi != nullptr   ? index_query_range(table->table_id, *lsi, k)
+                     : gsi != nullptr ? global_query_range(*gsi, k)
+                                      : query_range(table->table_id, k);
         const bool forward =
             !in.contains("ScanIndexForward") || api_detail::flag(in, "ScanIndexForward");
         if (const auto* esk = in.if_contains("ExclusiveStartKey")) {
-            auto start = resume_key(*esk, *table, lsi);
+            auto start = resume_key(*esk, *table, lsi, gsi);
             if (!start) {
                 return start.error();
             }
@@ -351,7 +472,7 @@ public:
             narrow(range, start->second, forward);
         }
         return read_page(
-            in, *table, lsi, *compiled, range,
+            in, *table, lsi, gsi, *compiled, range,
             forward ? kythira::scan_direction::forward : kythira::scan_direction::reverse, &k);
     }
 
@@ -362,9 +483,11 @@ public:
             return table.error();
         }
         const local_index* lsi = nullptr;
+        const global_index* gsi = nullptr;
         if (const auto index = api_detail::text(in, "IndexName"); !index.empty()) {
             lsi = find_index(*table, index);
-            if (lsi == nullptr) {
+            gsi = lsi == nullptr ? find_global_index(*table, index) : nullptr;
+            if (lsi == nullptr && gsi == nullptr) {
                 return no_such_index(index);
             }
         }
@@ -397,17 +520,26 @@ public:
         keys.table = table->schema;
         if (lsi != nullptr) {
             keys.index = index_schema(table->schema, *lsi);
+        } else if (gsi != nullptr) {
+            keys.index = index_schema(*gsi);
         }
         auto compiled = compile_request("Scan", in, keys);
         if (!compiled) {
             return compiled.error();
         }
-        if (auto e = select_error(in, compiled->projection.has_value(), lsi != nullptr)) {
+        if (auto e = select_error(in, compiled->projection.has_value(),
+                                  lsi != nullptr || gsi != nullptr)) {
             return *e;
         }
-        auto range = segment_range(table->table_id, segment, segments);
+        if (gsi != nullptr) {
+            if (auto e = global_read_error(in, *table, *gsi, *compiled, false)) {
+                return *e;
+            }
+        }
+        auto range =
+            segment_range(gsi != nullptr ? gsi->index_id : table->table_id, segment, segments);
         if (const auto* esk = in.if_contains("ExclusiveStartKey")) {
-            auto start = resume_key(*esk, *table, lsi);
+            auto start = resume_key(*esk, *table, lsi, gsi);
             if (!start) {
                 return start.error();
             }
@@ -417,7 +549,7 @@ public:
             }
             narrow(range, key, true);
         }
-        return read_page(in, *table, lsi, *compiled, range, kythira::scan_direction::forward,
+        return read_page(in, *table, lsi, gsi, *compiled, range, kythira::scan_direction::forward,
                          nullptr);
     }
 
@@ -425,10 +557,13 @@ private:
     /// `ExclusiveStartKey` checked for the table or the index, with the
     /// key it names in the engine.
     static auto resume_key(const boost::json::value& esk, const table_descriptor& table,
-                           const local_index* lsi)
+                           const local_index* lsi, const global_index* gsi)
         -> aws_json::result<std::pair<item, std::string>> {
         if (lsi != nullptr) {
             return query_detail::index_start_key(esk, table, *lsi);
+        }
+        if (gsi != nullptr) {
+            return query_detail::global_start_key(esk, table, *gsi);
         }
         auto start = query_detail::start_key(esk, table.table_id, table.schema);
         if (!start) {
@@ -470,13 +605,14 @@ private:
     }
 
     auto read_page(const boost::json::object& in, const table_descriptor& table,
-                   const local_index* lsi, const expression_set& compiled,
+                   const local_index* lsi, const global_index* gsi, const expression_set& compiled,
                    const kythira::key_range& range, kythira::scan_direction direction,
                    const key_condition* key) -> result {
         const bool consistent = api_detail::flag(in, "ConsistentRead");
         const bool count_only = api_detail::text(in, "Select") == "COUNT";
-        // A Scan reads the whole slice: keep only what it asked for.
-        const bool sift = key == nullptr && !table.lsis.empty();
+        // A Scan of a table (or an LSI) reads the whole slice: keep only
+        // what it asked for. A GSI's key space holds only its entries.
+        const bool sift = key == nullptr && !table.lsis.empty() && gsi == nullptr;
         std::size_t limit = SIZE_MAX;
         if (const auto* l = in.if_contains("Limit")) {
             limit = static_cast<std::size_t>(l->to_number<std::int64_t>());
@@ -537,7 +673,8 @@ private:
             if (compiled.projection) {
                 items.push_back(item_to_json(project_item(*compiled.projection, source)));
             } else {
-                items.push_back(item_to_json(all_attributes || lsi == nullptr ? source : entry));
+                items.push_back(item_to_json(
+                    all_attributes || (lsi == nullptr && gsi == nullptr) ? source : entry));
             }
         }
         boost::json::object out;
@@ -548,7 +685,7 @@ private:
         out["ScannedCount"] = read.size();
         if (stopped && !read.empty()) {
             out["LastEvaluatedKey"] =
-                item_to_json(query_detail::key_of(read.back(), table.schema, lsi));
+                item_to_json(query_detail::key_of(read.back(), table.schema, lsi, gsi));
         }
         if (api_detail::wants_capacity(in)) {
             out["ConsumedCapacity"] =

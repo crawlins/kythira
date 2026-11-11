@@ -30,8 +30,14 @@
 /// A follow-on entry names the table id it acts on and does nothing when
 /// the stored table has another id, so a stale entry from a former leader
 /// cannot touch a recreated table.
+///
+/// Global secondary indexes (task 11) take their ids from the same counter
+/// as tables, so an index key space is never reused either. Deleting a
+/// table records one delete job per index beside the table's own; an
+/// index's job drops its key space and never touches the descriptor.
 
 #include <kythira/dynamodb/errors.hpp>
+#include <kythira/dynamodb/global_index.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/item_state_machine.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
@@ -106,6 +112,8 @@ struct table_descriptor {
     std::uint64_t warm_write = 0;
     /// Local secondary indexes, fixed at creation (task 9).
     std::vector<local_index> lsis;
+    /// Global secondary indexes (task 11).
+    std::vector<global_index> gsis;
     std::vector<std::pair<std::string, std::string>> tags;
     /// Bumped by every entry that changes the descriptor.
     std::uint64_t revision = 0;
@@ -181,10 +189,12 @@ struct catalog_result {
 
 namespace catalog_detail {
 
-inline constexpr std::uint8_t k_descriptor_format_version = 1;
+/// 2 added `gsis` (task 11) to the descriptor and to the commands and
+/// results that carry one; version 1 still decodes.
+inline constexpr std::uint8_t k_descriptor_format_version = 2;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 1;
-inline constexpr std::uint8_t k_result_format_version = 1;
+inline constexpr std::uint8_t k_command_format_version = 2;
+inline constexpr std::uint8_t k_result_format_version = 2;
 
 [[nodiscard]] inline auto table_key(std::string_view name) -> std::string {
     return std::string(k_catalog_prefix) + "table/" + std::string(name);
@@ -235,6 +245,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     detail::put_varint(out, d.warm_read);
     detail::put_varint(out, d.warm_write);
     put_local_indexes(out, d.lsis);
+    put_global_indexes(out, d.gsis);
     detail::put_varint(out, d.tags.size());
     for (const auto& [k, v] : d.tags) {
         detail::put_bytes(out, k);
@@ -243,7 +254,9 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     detail::put_varint(out, d.revision);
 }
 
-[[nodiscard]] inline auto get_descriptor_body(detail::reader& r)
+/// `version` is the format of the enclosing form (descriptor, command or
+/// result), all of which gained `gsis` at 2.
+[[nodiscard]] inline auto get_descriptor_body(detail::reader& r, std::uint8_t version)
     -> std::optional<table_descriptor> {
     table_descriptor d;
     auto name = r.bytes();
@@ -259,7 +272,11 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     const auto warm_read = r.varint();
     const auto warm_write = r.varint();
     auto lsis = get_local_indexes(r);
-    const auto tag_count = lsis ? r.count() : std::nullopt;
+    std::optional<std::vector<global_index>> gsis;
+    if (lsis) {
+        gsis = version >= 2 ? get_global_indexes(r) : std::vector<global_index>{};
+    }
+    const auto tag_count = gsis ? r.count() : std::nullopt;
     if (!name || !id || !schema || !status || *status > 3 || !created || !billing || *billing > 1 ||
         !rcu || !wcu || !cls || *cls > 1 || !protection || !warm_read || !warm_write || !lsis ||
         !tag_count) {
@@ -290,6 +307,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     d.warm_read = *warm_read;
     d.warm_write = *warm_write;
     d.lsis = std::move(*lsis);
+    d.gsis = std::move(*gsis);
     d.revision = *revision;
     return d;
 }
@@ -306,12 +324,12 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
 
 [[nodiscard]] inline auto decode_table_descriptor(std::string_view bytes)
     -> std::optional<table_descriptor> {
-    if (bytes.empty() ||
-        static_cast<std::uint8_t>(bytes[0]) != catalog_detail::k_descriptor_format_version) {
+    if (bytes.empty() || static_cast<std::uint8_t>(bytes[0]) == 0 ||
+        static_cast<std::uint8_t>(bytes[0]) > catalog_detail::k_descriptor_format_version) {
         return std::nullopt;
     }
     detail::reader r(bytes.substr(1));
-    auto d = catalog_detail::get_descriptor_body(r);
+    auto d = catalog_detail::get_descriptor_body(r, static_cast<std::uint8_t>(bytes[0]));
     if (!d || !r.done()) {
         return std::nullopt;
     }
@@ -384,7 +402,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
     detail::reader r(bytes.substr(2));
     catalog_command c;
     c.op = static_cast<catalog_command::kind>(op);
-    auto table = catalog_detail::get_descriptor_body(r);
+    auto table = catalog_detail::get_descriptor_body(r, version);
     const auto fields = r.byte();
     const auto from = r.byte();
     const auto to = r.byte();
@@ -419,10 +437,11 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
 
 [[nodiscard]] inline auto decode_catalog_result(std::string_view bytes)
     -> std::optional<catalog_result> {
-    if (bytes.empty() ||
-        static_cast<std::uint8_t>(bytes[0]) != catalog_detail::k_result_format_version) {
+    if (bytes.empty() || static_cast<std::uint8_t>(bytes[0]) == 0 ||
+        static_cast<std::uint8_t>(bytes[0]) > catalog_detail::k_result_format_version) {
         return std::nullopt;
     }
+    const auto version = static_cast<std::uint8_t>(bytes[0]);
     detail::reader r(bytes.substr(1));
     catalog_result out;
     auto type = r.bytes();
@@ -432,7 +451,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d) {
         return std::nullopt;
     }
     if (*has_table) {
-        out.table = catalog_detail::get_descriptor_body(r);
+        out.table = catalog_detail::get_descriptor_body(r, version);
         if (!out.table) {
             return std::nullopt;
         }
@@ -588,6 +607,27 @@ public:
         return d;
     }
 
+    /// The table with id `table_id`, or nothing. Reads every descriptor;
+    /// callers cache the answer.
+    [[nodiscard]] auto describe_id(std::uint64_t table_id) const
+        -> std::optional<table_descriptor> {
+        std::optional<table_descriptor> out;
+        engine().scan(kythira::column_family::data, catalog_detail::tables_range(),
+                      kythira::scan_direction::forward, [&](std::string_view, std::string_view v) {
+                          auto d = decode_table_descriptor(v);
+                          if (!d) {
+                              throw kythira::persistent_storage_error(
+                                  "dynamo_catalog_state_machine: corrupt table");
+                          }
+                          if (d->table_id == table_id) {
+                              out = std::move(d);
+                              return false;
+                          }
+                          return true;
+                      });
+        return out;
+    }
+
     /// Table names in order, after `exclusive_start` (`ListTables`),
     /// at most `limit` of them.
     [[nodiscard]] auto list_tables(std::string_view exclusive_start, std::size_t limit) const
@@ -692,11 +732,16 @@ private:
         const std::map<std::string, std::string> tags(d.tags.begin(), d.tags.end());
         d.tags.assign(tags.begin(), tags.end());
         d.table_id = next_table_id();
+        std::uint64_t next = d.table_id + 1;
+        for (auto& g : d.gsis) {
+            g.index_id = next++;
+            g.status = index_status::active;
+        }
         d.status = table_status::creating;
         d.created_ms = c.now_ms;
         d.revision = 1;
         batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
-                  catalog_detail::u64_string(d.table_id + 1));
+                  catalog_detail::u64_string(next));
         store(batch, d);
         catalog_result r;
         r.table = std::move(d);
@@ -794,6 +839,10 @@ private:
         store(batch, *d);
         batch.put(kythira::column_family::data, catalog_detail::job_key(d->table_id),
                   encode_delete_job(delete_job{d->table_id, d->name, d->schema, 0}));
+        for (const auto& g : d->gsis) {
+            batch.put(kythira::column_family::data, catalog_detail::job_key(g.index_id),
+                      encode_delete_job(delete_job{g.index_id, d->name, g.schema, 0}));
+        }
         catalog_result r;
         r.table = std::move(d);
         return r;

@@ -1481,3 +1481,92 @@ BOOST_FIXTURE_TEST_CASE(k07_lsi_index_keys_cannot_be_empty_or_mistyped, tables) 
     fails("PutItem", R"({"TableName":"lsi","Item":{"pk":{"S":"p"},"sk":{"N":"1"},"x":{"N":"1"}}})",
           "ValidationException");
 }
+
+// ---------------------------------------------------------------------------
+// L. Global secondary indexes
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A table pk (S) HASH, sk (N) RANGE with GSIs `indexes`, defining each of
+/// `keys` as an S attribute.
+auto gsi_table(const std::string& name, const std::string& indexes,
+               const std::vector<std::string>& keys = {"x"}) -> std::string {
+    auto body = lsi_table(name, indexes, keys);
+    body.replace(body.find("LocalSecondaryIndexes"), 21, "GlobalSecondaryIndexes");
+    return body;
+}
+
+auto gsi(const std::string& name, const std::string& hash, const std::string& projection)
+    -> std::string {
+    return R"({"IndexName":")" + name + R"(","KeySchema":[{"AttributeName":")" + hash +
+           R"(","KeyType":"HASH"}],"Projection":)" + projection + "}";
+}
+
+auto gsi_query(const std::string& table, const std::string& value, const std::string& rest = "")
+    -> std::string {
+    return R"({"TableName":")" + table +
+           R"(","IndexName":"idx","KeyConditionExpression":"x = :x",)"
+           R"("ExpressionAttributeValues":{":x":{"S":")" +
+           value + R"("}})" + rest + "}";
+}
+
+}  // namespace
+
+BOOST_FIXTURE_TEST_CASE(l01_a_gsi_is_read_eventually, tables) {
+    ok("CreateTable", gsi_table("gsi", "[" + gsi("idx", "x", R"({"ProjectionType":"ALL"})") + "]"));
+    ok("Query", gsi_query("gsi", "a"));
+    fails("Query", gsi_query("gsi", "a", R"(,"ConsistentRead":true)"), "ValidationException",
+          "Consistent reads are not supported on global secondary indexes");
+    fails("Scan", R"({"TableName":"gsi","IndexName":"idx","ConsistentRead":true})",
+          "ValidationException", "Consistent reads are not supported on global secondary indexes");
+}
+
+BOOST_FIXTURE_TEST_CASE(l02_a_table_has_at_most_20_gsis, tables) {
+    const auto list = [](int n) {
+        std::string out;
+        for (int i = 0; i < n; ++i) {
+            out += (i == 0 ? "" : ",") +
+                   gsi("idx" + std::to_string(i), "x", R"({"ProjectionType":"KEYS_ONLY"})");
+        }
+        return "[" + out + "]";
+    };
+    ok("CreateTable", gsi_table("g20", list(20)));
+    fails("CreateTable", gsi_table("g21", list(21)), "ValidationException");
+}
+
+BOOST_FIXTURE_TEST_CASE(l03_gsis_are_sparse_with_repeated_keys_and_keep_projected_attributes,
+                        tables) {
+    ok("CreateTable",
+       gsi_table("gsi", "[" + gsi("idx", "x", R"({"ProjectionType":"KEYS_ONLY"})") + "]"));
+    // GSI keys need not be unique; an item without the key has no entry.
+    for (int sk = 1; sk <= 2; ++sk) {
+        ok("PutItem", R"({"TableName":"gsi","Item":{"pk":{"S":"p"},"sk":{"N":")" +
+                          std::to_string(sk) + R"("},"x":{"S":"a"},"extra":{"S":"e"}}})");
+    }
+    ok("PutItem", R"({"TableName":"gsi","Item":{"pk":{"S":"p"},"sk":{"N":"3"}}})");
+    const auto r = ok("Query", gsi_query("gsi", "a"));
+    BOOST_TEST_REQUIRE(r.at("Count").to_number<int>() == 2);
+    for (const auto& it : r.at("Items").as_array()) {
+        // KEYS_ONLY: the table's and the index's keys, nothing else.
+        BOOST_TEST(it.as_object().size() == 3U);
+        BOOST_TEST(!it.as_object().contains("extra"));
+    }
+    const auto scanned = ok("Scan", R"({"TableName":"gsi","IndexName":"idx"})");
+    BOOST_TEST(scanned.at("Count").to_number<int>() == 2);
+    // Unlike an LSI, a GSI cannot fetch the rest from the table.
+    fails("Query", gsi_query("gsi", "a", R"(,"Select":"ALL_ATTRIBUTES")"), "ValidationException");
+    // A changed or removed key moves or drops the entry.
+    ok("PutItem", R"({"TableName":"gsi","Item":{"pk":{"S":"p"},"sk":{"N":"1"},"x":{"S":"b"}}})");
+    ok("DeleteItem", R"({"TableName":"gsi","Key":{"pk":{"S":"p"},"sk":{"N":"2"}}})");
+    BOOST_TEST(ok("Query", gsi_query("gsi", "a")).at("Count").to_number<int>() == 0);
+    BOOST_TEST(ok("Query", gsi_query("gsi", "b")).at("Count").to_number<int>() == 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(l04_gsi_index_keys_cannot_be_empty_or_mistyped, tables) {
+    ok("CreateTable", gsi_table("gsi", "[" + gsi("idx", "x", R"({"ProjectionType":"ALL"})") + "]"));
+    fails("PutItem", R"({"TableName":"gsi","Item":{"pk":{"S":"p"},"sk":{"N":"1"},"x":{"S":""}}})",
+          "ValidationException");
+    fails("PutItem", R"({"TableName":"gsi","Item":{"pk":{"S":"p"},"sk":{"N":"1"},"x":{"N":"1"}}})",
+          "ValidationException");
+}

@@ -211,7 +211,7 @@ struct dynamo_partitioner {
         if (c.op == item_command::kind::drop_table_step) {
             return table_prefix(c.table_id);
         }
-        auto key = base_item_key(c.table_id, c.schema, c.payload);
+        auto key = command_key(c);
         return key ? std::move(*key) : table_prefix(c.table_id);
     }
 };

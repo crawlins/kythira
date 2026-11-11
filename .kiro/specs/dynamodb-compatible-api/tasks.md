@@ -306,6 +306,49 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
   - Backfill on `UpdateTable`, removal, projections, the synchronous switch
   - KCL 3.x lease, coordinator and worker-metrics tables on Kythira
   - _Requirements: 11.2-11.6_
+  - Done so far (November 11, 2026): GSIs fixed at `CreateTable`.
+    - Layout: a GSI's key space takes an id from the catalog's
+      never-reused table id counter. An entry lives at
+      `t/<index id>/<hash><index partition key>\0[index sort key]<table
+      key>` in the data family, holding the projected item; its version
+      stays in the meta family after a delete, so a late write cannot
+      bring an entry back. On a table with GSIs every write bumps the
+      item's version (deletes too, and a deleted item keeps it), so each
+      change is newer than everything the indexes hold for the item.
+    - Pending changes: a write that changes an item's entries records,
+      in the same batch and in the item's own collection (so always in
+      its group), the item's version and the entries the indexes held.
+      Index writes (`index_put`, `index_delete`) route by entry key and
+      apply only when newer than the entry; `index_ack` ends the record
+      when nothing newer arrived, else keeps it with what the indexes
+      now hold. `plan_propagation` (`gsi_propagator.hpp`) turns a record
+      and the item into those writes. The local backend runs it under its
+      lock after every write; the Raft backend runs it on each item
+      group's leader from a worker thread, through the routed write path,
+      so entries reach other groups. A new leader finds the record still
+      there and carries it again. `raft_backend::gsi_lag()` is the lag
+      (pending items on the groups this node leads). Until task 15 the
+      records stand in for the change log: the set of pending keys is
+      rebuilt by a meta scan on open.
+    - API: `CreateTable` takes `GlobalSecondaryIndexes` with DynamoDB
+      Local's checks and messages; `DescribeTable` shows them; `Query`
+      and `Scan` take a GSI's `IndexName` (eventual only, projected
+      attributes only, Local's messages for `ConsistentRead`, `Select`,
+      projections and filters). Writes refuse a GSI key of the wrong type
+      or empty. `DeleteTable` deletes each index's key space with a job
+      of its own. Descriptor, catalog and item entry forms are now
+      version 2; version 1 still decodes.
+    - Tests: `dynamodb_gsi_test`; invariants l01-l04 (also against
+      DynamoDB Local); in `dynamodb_raft_backend_test`, entries reaching
+      other groups after a split and through an item leader's loss; two
+      scenarios in the ops corpus (11 scenarios, 333 steps, 30 marked
+      divergences), recorded against DynamoDB Local 3.3.2.
+    - Known limits: entry and item versions of deleted items (tombstones)
+      are never reclaimed; the Raft propagator sends an item's writes one
+      at a time; `IndexSizeBytes` and `ItemCount` show 0, as the table's
+      `ItemCount` does (the corpus does not compare them).
+    - Left in this task: `UpdateTable` index creation (with backfill) and
+      removal, the synchronous switch, and the KCL 3.x tables.
 
 - [ ] 12. Capacity, throttling and consumed capacity
   - Consumed-capacity formulas; provisioned and on-demand modes; leader-side

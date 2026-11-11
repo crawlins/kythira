@@ -13,9 +13,10 @@
 // and whether it has a cursor, and the ScanAll and ScanSegments steps, which
 // page to the end, by the multiset of items. BatchGetItem responses are
 // compared per table as multisets. A created or described table is
-// compared by its LocalSecondaryIndexes, as a multiset without the ARNs
-// (timestamps and ARNs differ, and DynamoDB Local lists indexes in its own
-// order). A step marked `divergence` is checked against its `kythira`
+// compared by its LocalSecondaryIndexes and GlobalSecondaryIndexes, each as
+// a multiset without the ARNs and counts (timestamps and ARNs differ,
+// DynamoDB Local counts index entries at once, and it lists indexes in its
+// own order). A step marked `divergence` is checked against its `kythira`
 // answer when it has one, and otherwise only run.
 
 #define BOOST_TEST_MODULE dynamodb_ops_corpus_test
@@ -118,18 +119,27 @@ auto compare(std::string_view op, const json::object& step, const json::object& 
     const auto& g = got.at("response").as_object();
     if (op == "CreateTable" || op == "DescribeTable") {
         const auto* member = op == "CreateTable" ? "TableDescription" : "Table";
-        const auto indexes = [&](const json::object& r) {
+        const auto indexes = [&](const json::object& r, const char* kind) {
             json::array out;
-            if (const auto* l = r.at(member).as_object().if_contains("LocalSecondaryIndexes")) {
+            if (const auto* l = r.at(member).as_object().if_contains(kind)) {
                 for (const auto& x : l->as_array()) {
                     auto o = x.as_object();
                     o.erase("IndexArn");
+                    // DynamoDB Local counts a GSI's entries at once; AWS
+                    // (and Kythira) about every six hours.
+                    o.erase("IndexSizeBytes");
+                    o.erase("ItemCount");
                     out.push_back(std::move(o));
                 }
             }
             return multiset(out);
         };
-        return indexes(w) == indexes(g) ? "" : "different LocalSecondaryIndexes";
+        if (indexes(w, "LocalSecondaryIndexes") != indexes(g, "LocalSecondaryIndexes")) {
+            return "different LocalSecondaryIndexes";
+        }
+        return indexes(w, "GlobalSecondaryIndexes") == indexes(g, "GlobalSecondaryIndexes")
+                   ? ""
+                   : "different GlobalSecondaryIndexes";
     }
     if (op == "Scan") {
         const bool paged = step.at("input").as_object().contains("Limit");
