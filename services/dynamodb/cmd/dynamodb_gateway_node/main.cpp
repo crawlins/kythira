@@ -21,6 +21,12 @@
 #include <raft/rocksdb_kv_engine.hpp>
 #endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+// The Folly backend (the default, which defines no macro of its own) needs
+// folly::Init before the first future: its timekeeper is a Folly singleton.
+#include <folly/init/Init.h>
+#endif
+
 #include <filesystem>
 #include <memory>
 
@@ -115,6 +121,10 @@ auto main(int argc, char** argv) -> int {
     sigaddset(&set, SIGINT);
     sigaddset(&set, SIGTERM);
     pthread_sigmask(SIG_BLOCK, &set, nullptr);
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+    // After the mask, so any thread Folly starts leaves SIGTERM to sigwait().
+    const folly::Init folly_init(&argc, &argv);
+#endif
 
     auto parsed =
         ddb::gateway_config_from_env([](std::string_view name) -> std::optional<std::string> {
