@@ -216,6 +216,7 @@ all fixed with it:
 | An expired item stays readable until it is deleted, an item rewritten since the sweeper read it is kept, and values that are not numbers or are over five years old never expire | TTL | `dynamodb_ttl_test`, `dynamodb_gateway_cluster_test` |
 | With `ttl-delay=prompt`, per cluster or per table tag, expired items go within about a second and the hourly limit is lifted (Kythira switch, Requirement 3) | — | `dynamodb_ttl_test` |
 | PartiQL statements compile to the JSON API's requests, so they follow the same item rules, conditions and transaction limits; each is authorized by its `PartiQLSelect`, `PartiQLInsert`, `PartiQLUpdate` or `PartiQLDelete` action | PartiQL | `dynamodb_partiql_test`, `dynamodb_gateway_test` |
+| Every write that changes an item appends exactly one change record, in order and byte for byte the same on every replica; a write that changes nothing appends none, and a split or merge closes a stream at the same record everywhere | Streams | `dynamodb_change_log_test`, `dynamodb_raft_backend_test` |
 
 ## Deferred
 

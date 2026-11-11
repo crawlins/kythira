@@ -522,10 +522,42 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     - Tests: `dynamodb_partiql_test`; authorization in
       `dynamodb_gateway_test`.
 
-- [ ] 15. Change log
+- [x] 15. Change log
   - Change records appended in `apply()` to the group's
     `record_segment_store`; the GSI propagator switched onto it
   - _Requirements: 14.1_
+  - Notes:
+    - `change_log.hpp`. A write to a logged table that changes its item
+      appends one record (`INSERT`, `MODIFY`, `REMOVE`, both images, the
+      TTL flag, the proposer's timestamp clamped never to go back) to the
+      node's `record_segment_store` in the same apply, fsynced before the
+      engine batch. A failed condition, a delete of a missing item and a
+      write that leaves the item as it was append nothing, as Streams
+      documents. Commands carry the fields in format 3, written only when
+      set, so other writes stay format 2.
+    - One store stream per group *epoch* (`ddb/<hex range start>/<epoch>`):
+      a split or merge seals the open stream on every replica at the same
+      entry and opens one per resulting group naming its parents, the
+      lineage task 16 shows as shards. The group's `change_log_state`
+      (epoch, sequence, segments, closed streams) sits at its range start
+      plus byte 5 in the meta family, so it moves with snapshots, splits
+      and merges. Opening truncates records past it (an entry the engine
+      never made durable, replayed by Raft).
+    - A checkpoint adds a file naming the open stream's active segment;
+      `ingest` fetches that segment from the group's voters when this node
+      lacks it (`raft_backend::fetch_change_segment` over the new `segment`
+      op) and refuses without it, as Kinesis does. Sealed segments a node
+      lacks are fetched by readers in task 16.
+    - `table_descriptor::logs_changes()` is false until Streams (16),
+      point-in-time recovery (19) and global tables (22) turn it on, so
+      no table pays for the log before something reads it.
+    - Deviation: GSIs stay on the pending records of task 11. Those live
+      beside each item and move with it through splits; a per-group log
+      would make every split child carry its parent's cursor and fetch
+      the parent's segments, for no behaviour a client can see. Closed
+      streams are kept until task 16's 24-hour retention trims them.
+    - Tests: `dynamodb_change_log_test`; replicas, a split and a peer
+      fetch on three nodes in `dynamodb_raft_backend_test`.
 
 - [ ] 16. DynamoDB Streams
   - Stream shards over the change log, lineage across splits, merge veto,

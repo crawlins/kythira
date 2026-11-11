@@ -253,6 +253,7 @@ public:
                 c.schema = w.table.schema;
                 c.lsis = w.table.lsis;
                 c.gsis = maintained_indexes(w.table.gsis);
+                c.log_changes = w.table.logs_changes();
                 if (put != nullptr) {
                     auto it = item_from_json(put->as_object().at("Item").as_object());
                     if (!it) {

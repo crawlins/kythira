@@ -56,6 +56,17 @@ public:
         return range.contains(catalog_range());
     }
 
+    /// The node's change record store and segment fetcher, handed to the
+    /// item group this opens (task 15, `change_log.hpp`).
+    auto set_change_log(kythira::record_segment_store* store,
+                        typename items_type::change_log_fetcher fetch = {}) -> void {
+        _log = store;
+        _fetch = std::move(fetch);
+        if (_items) {
+            _items->set_change_log(_log, _fetch);
+        }
+    }
+
     auto open(engine_type& engine, const kythira::key_range& range) -> void {
         if (is_catalog(range)) {
             _catalog.emplace();
@@ -64,6 +75,7 @@ public:
         } else {
             _items.emplace();
             _catalog.reset();
+            _items->set_change_log(_log, _fetch);
             _items->open(engine, range);
         }
     }
@@ -192,6 +204,8 @@ private:
 
     std::optional<catalog_type> _catalog;
     std::optional<items_type> _items;
+    kythira::record_segment_store* _log = nullptr;
+    typename items_type::change_log_fetcher _fetch;
 };
 
 static_assert(kythira::persistent_staged_state_machine<dynamo_group_state_machine<>>);

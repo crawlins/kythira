@@ -24,6 +24,7 @@
 #include <raft/metrics.hpp>
 #include <raft/multi_raft_impl.hpp>
 #include <raft/persistence.hpp>
+#include <raft/record_segment_store.hpp>
 #include <raft/txn_envelope.hpp>
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
@@ -34,9 +35,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <set>
 #include <string>
 #include <thread>
@@ -180,6 +183,10 @@ public:
     explicit cluster(ddb::raft_backend_options options = test_options()) {
         for (std::uint64_t id = 1; id <= k_nodes; ++id) {
             _engines.push_back(std::make_shared<kythira::memory_kv_engine>());
+            kythira::record_segment_store_options o;
+            o._data_dir = _log_root.path / std::to_string(id);
+            o._barriers_enabled = false;
+            _logs.push_back(std::make_unique<kythira::record_segment_store>(o));
             _hosts.push_back(std::make_unique<host_type>(make_config(id)));
         }
         const auto layout =
@@ -205,6 +212,7 @@ public:
                 [this, id](const std::uint64_t& to, const std::string& op)
                     -> std::optional<std::string> { return forward(id, to, op); },
                 options));
+            _backends.back()->set_change_log(_logs[id - 1].get());
         }
         for (auto& b : _backends) {
             _stacks.push_back(std::make_unique<stack>(*b));
@@ -236,6 +244,9 @@ public:
         return *_engines.at(id - 1);
     }
     [[nodiscard]] auto fabric() -> message_fabric& { return _fabric; }
+    [[nodiscard]] auto change_log(std::uint64_t id) -> kythira::record_segment_store& {
+        return *_logs.at(id - 1);
+    }
 
     /// The live node leading `group`, or 0.
     [[nodiscard]] auto leader(std::uint64_t group) -> std::uint64_t {
@@ -296,6 +307,16 @@ private:
         cfg.config._heartbeat_interval = std::chrono::milliseconds{25};
         cfg.hibernation = kythira::hibernation_mode::off;
         cfg.state_engine = _engines.back();
+        // Each node's groups log to its own store and fetch segments they
+        // lack from the group's peers through that node's backend.
+        cfg.state_machine_factory = [this, id](const std::uint64_t& group) {
+            ddb::dynamo_group_state_machine<> inner;
+            inner.set_change_log(_logs[id - 1].get(),
+                                 [this, id, group](const kythira::record_segment_descriptor& d) {
+                                     _backends.at(id - 1)->fetch_change_segment(group, d);
+                                 });
+            return host_types::state_machine_type(std::move(inner));
+        };
         cfg.executor_stripes = 2;
         cfg.allocate_group_ids = [this](std::size_t n) {
             const std::lock_guard lock(_ids_mu);
@@ -324,6 +345,23 @@ private:
     std::mutex _ids_mu;
     std::uint64_t _next_id = 100;
     std::vector<std::shared_ptr<kythira::memory_kv_engine>> _engines;
+    /// Removed after the stores below are closed.
+    struct temp_root {
+        std::filesystem::path path =
+            std::filesystem::temp_directory_path() /
+            ("kythira-ddb-raft-log-" + std::to_string(std::random_device{}()));
+        temp_root() = default;
+        temp_root(const temp_root&) = delete;
+        auto operator=(const temp_root&) -> temp_root& = delete;
+        temp_root(temp_root&&) = delete;
+        auto operator=(temp_root&&) -> temp_root& = delete;
+        ~temp_root() {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    } _log_root;
+    // Declared before the hosts, whose groups append to them.
+    std::vector<std::unique_ptr<kythira::record_segment_store>> _logs;
     std::vector<std::unique_ptr<host_type>> _hosts;
     std::vector<std::unique_ptr<backend_type>> _backends;
     std::vector<std::unique_ptr<stack>> _stacks;
@@ -1105,4 +1143,83 @@ BOOST_AUTO_TEST_CASE(synchronous_gsis_are_read_your_writes) {
                      R"(,"UpdateExpression":"SET g = :b","ExpressionAttributeValues":)"
                      R"({":b":{"S":"blue"}}}}]})");
     BOOST_TEST(query(c.leader(k_item_group), "Sync") == 0);
+}
+
+BOOST_AUTO_TEST_CASE(change_logs_agree_across_replicas_and_a_split) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    const auto d = c.backend(1).describe("Music");
+    BOOST_TEST_REQUIRE(d.has_value());
+    // Logged writes (no table logs its changes until Streams, so the
+    // commands ask for it themselves).
+    const auto write = [&](std::uint64_t node, const std::string& pk) {
+        ddb::item_command cmd;
+        cmd.op = ddb::item_command::kind::put;
+        cmd.table_id = d->table_id;
+        cmd.schema = d->schema;
+        cmd.payload = *ddb::item_from_json(
+            json::parse(R"({"pk":{"S":")" + pk + R"("},"sk":{"N":"1"}})").as_object());
+        cmd.log_changes = true;
+        const auto r = c.backend(node).write(cmd);
+        BOOST_REQUIRE((r.outcome == ddb::item_result::status::ok));
+    };
+    for (const char* pk : {"a", "m", "z"}) {
+        write(1, pk);
+    }
+    const auto state = [&](std::uint64_t id, std::uint64_t group) {
+        return c.host(id)
+            .with_group_state_machine(
+                group,
+                [](auto& sm, const auto&) {
+                    const auto* g = sm.inner().item_group();
+                    return g == nullptr ? std::optional<ddb::change_log_state>{} : g->change_log();
+                })
+            .value_or(std::nullopt);
+    };
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+            const auto st = state(id, k_item_group);
+            if (!st || st->current.last_seq != 3U) {
+                return false;
+            }
+        }
+        return true;
+    }));
+    const auto key = state(1, k_item_group)->current.key;
+    for (std::uint64_t id = 2; id <= k_nodes; ++id) {
+        BOOST_TEST((state(id, k_item_group) == state(1, k_item_group)));
+        BOOST_TEST((c.change_log(id).describe(key, 1) == c.change_log(1).describe(key, 1)));
+    }
+
+    // A split closes the stream on every replica, at the same record.
+    const auto cut = ddb::partition_prefix(d->table_id, ddb::attribute_value::string("m"));
+    const auto l = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(l != 0U);
+    auto f = c.host(l).split_shard(k_item_group, {cut}, std::chrono::milliseconds{5000});
+    BOOST_TEST_REQUIRE(f.wait(std::chrono::milliseconds{8000}));
+    std::ignore = std::move(f).get();
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+            const auto st = state(id, k_item_group);
+            if (!st || st->epoch != 1U) {
+                return false;
+            }
+        }
+        return true;
+    }));
+    const auto parent = state(1, k_item_group);
+    BOOST_TEST(parent->current.parents == std::vector<std::string>{key});
+    BOOST_TEST_REQUIRE(parent->closed.size() == 1U);
+    BOOST_TEST_REQUIRE(parent->closed[0].sealed.size() == 1U);
+    const auto sealed = parent->closed[0].sealed[0];
+    for (std::uint64_t id = 2; id <= k_nodes; ++id) {
+        BOOST_TEST((state(id, k_item_group) == parent));
+    }
+
+    // A node that lost a segment fetches it from the group's peers.
+    BOOST_TEST_REQUIRE(c.change_log(3).remove_segment(sealed._stream, sealed._first_seq));
+    BOOST_TEST(!c.change_log(3).has_segment(sealed));
+    c.backend(3).fetch_change_segment(k_item_group, sealed);
+    BOOST_TEST(c.change_log(3).has_segment(sealed));
 }

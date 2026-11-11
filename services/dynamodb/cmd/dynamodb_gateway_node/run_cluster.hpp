@@ -30,6 +30,7 @@
 #include <raft/multi_raft_impl.hpp>
 #include <raft/multi_raft_transport_handles.hpp>
 #include <raft/persistence.hpp>
+#include <raft/record_segment_store.hpp>
 
 #include <boost/asio.hpp>
 
@@ -202,6 +203,19 @@ auto run_cluster(
                                    .timeout = std::chrono::milliseconds{20000}},
         std::move(gateways));
 
+    // The change log's segments (task 15) live beside the engine. The
+    // memory engine keeps none: its items do not outlive the process
+    // either. The store outlives the host, whose groups append to it.
+    std::unique_ptr<kythira::record_segment_store> change_log;
+    if (cfg.engine != "memory" && !cfg.data_dir.empty()) {
+        kythira::record_segment_store_options o;
+        o._data_dir = std::filesystem::path(cfg.data_dir) / "change-log";
+        change_log = std::make_unique<kythira::record_segment_store>(o);
+    }
+    // A group installing a snapshot fetches the active change log segment
+    // it names from the group's peers, through the backend once it runs.
+    std::atomic<backend_type*> fetch_via{nullptr};
+
     beast_stack stack(c, urls);
     config_type hc{
         .node_id = *self,
@@ -215,6 +229,19 @@ auto run_cluster(
     hc.logger = kythira::console_logger{cfg.log_level};
     hc.logger_factory = [level = cfg.log_level](const std::uint64_t&) {
         return kythira::console_logger{level};
+    };
+    hc.state_machine_factory = [&change_log, &fetch_via](const std::uint64_t& group) {
+        ddb::dynamo_group_state_machine<typename Storage::engine_type> inner;
+        inner.set_change_log(
+            change_log.get(), [&fetch_via, group](const kythira::record_segment_descriptor& d) {
+                auto* b = fetch_via.load(std::memory_order_acquire);
+                if (b == nullptr) {
+                    throw kythira::record_segment_error(
+                        "dynamodb_gateway_node: cannot fetch a change log segment before serving");
+                }
+                b->fetch_change_segment(group, d);
+            });
+        return typename types::state_machine_type(std::move(inner));
     };
     hc.automatic_split_merge_enabled = false;
     hc.split_merge_interval = std::chrono::hours{1};
@@ -249,6 +276,13 @@ auto run_cluster(
                 return forward.send(traits::to_text(to), op);
             },
             options);
+        backend.set_change_log(change_log.get());
+        fetch_via.store(&backend, std::memory_order_release);
+        // No fetch through the backend once it is gone.
+        const std::unique_ptr<std::atomic<backend_type*>, void (*)(std::atomic<backend_type*>*)>
+            clear_fetch(&fetch_via, [](std::atomic<backend_type*>* slot) {
+                slot->store(nullptr, std::memory_order_release);
+            });
         ddb::gateway<backend_type> gw(cfg, backend, log);
         gw.start();
         backend.start();

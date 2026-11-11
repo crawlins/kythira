@@ -33,6 +33,7 @@
 /// | describe, list | read the catalog | the catalog leader |
 /// | drop | one `drop_table_step` on a named group | that group's leader |
 /// | txn | one transaction envelope on the group owning its keys | that group's leader |
+/// | segment | a change log segment's bytes (task 15) | any node holding it |
 ///
 /// Transactions (task 10) run on core's tier-1 coordinator. Its client here
 /// (`txn_client`) sends each envelope as a txn op, so a prepare reaches its
@@ -161,6 +162,9 @@ enum class op_tag : std::uint8_t {
     txn = 8,
     /// An item's pending GSI change, read with the item (task 11).
     pending = 9,
+    /// The bytes of a change log segment this node holds (task 15), for a
+    /// peer that installed a snapshot naming it.
+    segment = 10,
 };
 
 /// The answer tags.
@@ -354,7 +358,7 @@ public:
 
     auto write(const item_command& c) -> item_result {
         std::string op(1, static_cast<char>(raft_backend_detail::op_tag::write));
-        op += encode_item_command(c);
+        op += encode_item_command(stamp_written(c, _clock()));
         return item_answer(run(op, std::nullopt));
     }
 
@@ -513,6 +517,54 @@ public:
 
     auto now_ms() -> std::uint64_t { return _clock(); }
 
+    /// The node's change record store (task 15), whose segments this node
+    /// serves to peers (the `segment` op). Set before `start()`.
+    auto set_change_log(kythira::record_segment_store* store) -> void { _change_log = store; }
+
+    /// Fetches and installs a change log segment of `group` from the
+    /// group's other voters: the item state machine's fetcher, for the
+    /// active segment a snapshot it installed names. Throws when no voter
+    /// has it.
+    auto fetch_change_segment(group_id_type group, const kythira::record_segment_descriptor& d)
+        -> void {
+        if (_change_log == nullptr) {
+            throw kythira::record_segment_error("raft_backend: no change log store");
+        }
+        std::vector<std::string> peers;
+        std::map<std::string, node_id_type> ids;
+        if (const auto desc = _host.shard_map_snapshot().find(group)) {
+            for (const auto& v : desc->_voters) {
+                if (v == _host.node_id()) {
+                    continue;
+                }
+                const auto text = kythira::node_id_traits<node_id_type>::to_text(v);
+                peers.push_back(text);
+                ids.emplace(text, v);
+            }
+        }
+        const auto transport = [&](const std::string& peer, const std::string& stream,
+                                   std::uint64_t first,
+                                   std::uint64_t length) -> std::optional<std::vector<std::byte>> {
+            std::string op(1, static_cast<char>(raft_backend_detail::op_tag::segment));
+            detail::put_bytes(op, stream);
+            detail::put_varint(op, first);
+            detail::put_varint(op, length);
+            const auto out = _forward(ids.at(peer), op);
+            if (!out || out->empty() ||
+                (*out)[0] != static_cast<char>(raft_backend_detail::answer_tag::ok)) {
+                return std::nullopt;
+            }
+            std::vector<std::byte> bytes(out->size() - 1);
+            std::memcpy(bytes.data(), out->data() + 1, bytes.size());
+            return bytes;
+        };
+        if (!_change_log->fetch_segment(d, peers, transport)) {
+            throw kythira::record_segment_error("raft_backend: no voter of the group has " +
+                                                d._stream + " from " +
+                                                std::to_string(d._first_seq));
+        }
+    }
+
     /// This node's capacity buckets, holding `capacity_share` of each limit.
     auto throttler() -> capacity_throttler& { return _throttler; }
 
@@ -526,7 +578,8 @@ public:
             if (!key) {
                 throw std::invalid_argument("raft_backend: a transaction action without a key");
             }
-            coordinator.put(*key, raft_backend_detail::to_bytes(encode_item_command(a)));
+            coordinator.put(*key, raft_backend_detail::to_bytes(
+                                      encode_item_command(stamp_written(a, _clock()))));
             keys.push_back(std::move(*key));
         }
         const auto out = coordinator.commit();
@@ -618,6 +671,8 @@ public:
                     return serve_txn(body);
                 case op_tag::pending:
                     return serve_pending(body);
+                case op_tag::segment:
+                    return serve_segment(body);
             }
             return error_answer("unknown op");
         } catch (const kythira::shard_not_leader_exception<group_id_type, node_id_type>& e) {
@@ -1143,6 +1198,24 @@ private:
 
     /// The item's pending GSI change, at the item group's leader after a
     /// read barrier, as `pending key, record, [item]`; empty when none.
+    auto serve_segment(std::string_view body) -> std::string {
+        detail::reader in(body);
+        auto stream = in.bytes();
+        const auto first = in.varint();
+        const auto length = in.varint();
+        if (!stream || !first || !length || !in.done()) {
+            return error_answer("unreadable segment op");
+        }
+        if (_change_log == nullptr) {
+            return error_answer("no change log here");
+        }
+        const auto bytes = _change_log->read_segment_bytes(*stream, *first, *length);
+        if (!bytes) {
+            return error_answer("no such segment here");
+        }
+        return ok_answer({reinterpret_cast<const char*>(bytes->data()), bytes->size()});  // NOLINT
+    }
+
     auto serve_pending(std::string_view body) -> std::string {
         item_command c;
         if (decode_item_command(body, c) != item_command_status::ok) {
@@ -1447,6 +1520,8 @@ private:
 
     Host& _host;
     forwarder _forward;
+    /// The node's change record store (task 15), or none.
+    kythira::record_segment_store* _change_log = nullptr;
     raft_backend_options _options;
     clock_fn _clock;
     capacity_throttler _throttler;

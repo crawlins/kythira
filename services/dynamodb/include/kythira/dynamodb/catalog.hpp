@@ -133,6 +133,12 @@ struct table_descriptor {
     /// Time to live (task 13).
     time_to_live ttl;
 
+    /// Whether writes to the table append change records (task 15,
+    /// `change_log.hpp`). Nothing reads the log yet: DynamoDB Streams (task
+    /// 16), point-in-time recovery (19) and global tables (22) each turn it
+    /// on for the tables that use them.
+    [[nodiscard]] auto logs_changes() const -> bool { return false; }
+
     friend auto operator==(const table_descriptor&, const table_descriptor&) -> bool = default;
 };
 

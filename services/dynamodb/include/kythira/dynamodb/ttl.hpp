@@ -239,6 +239,9 @@ private:
         c.payload = key;
         c.lsis = d.lsis;
         c.gsis = maintained_indexes(d.gsis);
+        c.log_changes = d.logs_changes();
+        // Its change record carries the TTL service's identity (14.1).
+        c.ttl_delete = c.log_changes;
         c.expressions = std::move(*compiled);
         return c;
     }
