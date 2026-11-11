@@ -167,6 +167,11 @@ set_tests_properties(dynamodb_partiql_test PROPERTIES
 kythira_dynamodb_test(dynamodb_change_log_test dynamodb_change_log_test.cpp)
 set_tests_properties(dynamodb_change_log_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# DynamoDB Streams (task 16): StreamSpecification, the four Streams
+# actions with DynamoDB Local's answers, view types, retention.
+kythira_dynamodb_test(dynamodb_streams_test dynamodb_streams_test.cpp)
+set_tests_properties(dynamodb_streams_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")

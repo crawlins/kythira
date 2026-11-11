@@ -217,6 +217,8 @@ all fixed with it:
 | With `ttl-delay=prompt`, per cluster or per table tag, expired items go within about a second and the hourly limit is lifted (Kythira switch, Requirement 3) | — | `dynamodb_ttl_test` |
 | PartiQL statements compile to the JSON API's requests, so they follow the same item rules, conditions and transaction limits; each is authorized by its `PartiQLSelect`, `PartiQLInsert`, `PartiQLUpdate` or `PartiQLDelete` action | PartiQL | `dynamodb_partiql_test`, `dynamodb_gateway_test` |
 | Every write that changes an item appends exactly one change record, in order and byte for byte the same on every replica; a write that changes nothing appends none, and a split or merge closes a stream at the same record everywhere | Streams | `dynamodb_change_log_test`, `dynamodb_raft_backend_test` |
+| A stream shows only its table's records written while it was enabled, with the images its view type names, in write order within a shard; a disabled stream stays listed, its shards ended, while its records can be read | Streams | `dynamodb_streams_test` |
+| A split closes a stream shard and opens one per child naming it, records stay readable for 24 hours from closed parents too, and a merge is refused while a table has a stream (a shard has one parent) | Streams | `dynamodb_streams_test`, `dynamodb_raft_backend_test` |
 
 ## Deferred
 

@@ -254,6 +254,7 @@ public:
                 c.lsis = w.table.lsis;
                 c.gsis = maintained_indexes(w.table.gsis);
                 c.log_changes = w.table.logs_changes();
+                c.stream_ms = w.table.stream_label();
                 if (put != nullptr) {
                     auto it = item_from_json(put->as_object().at("Item").as_object());
                     if (!it) {

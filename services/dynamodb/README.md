@@ -73,6 +73,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_partiql_test.cpp` | the three PartiQL calls with DynamoDB Local's answers | 14 |
 | `include/kythira/dynamodb/change_log.hpp` | the change log: change records, a group's streams and their lineage across splits and merges, the state a group keeps about them | 15 |
 | `tests/dynamodb_change_log_test.cpp` | records per write, timestamps, restart, split and merge lineage, and the active segment fetched on a snapshot install | 15 |
+| `include/kythira/dynamodb/streams.hpp` | DynamoDB Streams: `ListStreams`, `DescribeStream`, `GetShardIterator` and `GetRecords` over the change log, shards and their lineage, sequence numbers, iterators | 16 |
+| `tests/dynamodb_streams_test.cpp` | `StreamSpecification` and the four Streams calls with DynamoDB Local's answers, view types, retention and iterator expiry | 16 |
 
 The rest follows the plan in the spec's `tasks.md`.
 

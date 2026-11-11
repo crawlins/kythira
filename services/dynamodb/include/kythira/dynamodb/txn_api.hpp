@@ -350,6 +350,7 @@ private:
         c.lsis = table.lsis;
         c.gsis = maintained_indexes(table.gsis);
         c.log_changes = table.logs_changes();
+        c.stream_ms = table.stream_label();
         return c;
     }
 

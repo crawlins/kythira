@@ -65,6 +65,13 @@ inline constexpr std::array<std::string_view, 25> k_implemented_dynamodb_operati
     "ExecuteTransaction"};
 
 /// Implemented DynamoDB Streams operations (task 16).
-inline constexpr std::array<std::string_view, 0> k_implemented_streams_operations{};
+inline constexpr std::array<std::string_view, 4> k_implemented_streams_operations{
+    "ListStreams", "DescribeStream", "GetShardIterator", "GetRecords"};
+
+/// Whether `op` is a DynamoDB Streams operation (sent with
+/// `k_streams_target_prefix`).
+[[nodiscard]] inline auto is_streams_operation(std::string_view op) -> bool {
+    return dynamodbstreams_model::k_model.find_operation(op) != nullptr;
+}
 
 }  // namespace kythira::dynamodb

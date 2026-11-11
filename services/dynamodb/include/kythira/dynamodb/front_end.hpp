@@ -290,6 +290,10 @@ private:
                 return std::string(*v);
             }
         }
+        // A shard iterator opens with its stream's ARN (`streams.hpp`).
+        if (auto it = detail::string_member(in, "ShardIterator")) {
+            return std::string(it->substr(0, it->find('|')));
+        }
         if (auto table = detail::string_member(in, "TableName")) {
             // A table name may also be given as a table ARN.
             if (table->starts_with("arn:")) {

@@ -560,10 +560,57 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       fetch on three nodes in `dynamodb_raft_backend_test`.
 
 - [ ] 16. DynamoDB Streams
-  - Stream shards over the change log, lineage across splits, merge veto,
+  - [x] Stream shards over the change log, lineage across splits, merge veto,
     24-hour retention per stream shard, iterators, the four actions
-  - Streams Kinesis Adapter conformance with KCL
+  - [ ] Streams Kinesis Adapter conformance with KCL
   - _Requirements: 14.2-14.5_
+  - Notes:
+    - `StreamSpecification` on `CreateTable` and `UpdateTable` keeps a list
+      of the table's streams in the descriptor (format 4, still written
+      as 3 for a table that never had one): label (the enable time, from
+      the entry, unique per table), view type, disable time. A disabled
+      stream stays listed for 24 hours, while its records can be read;
+      `DescribeTable` drops the specification but keeps `LatestStreamArn`
+      and `LatestStreamLabel`, as DynamoDB Local does. Enabling or
+      disabling takes effect at once and the table stays ACTIVE.
+    - A table with an enabled stream logs its changes, and every logged
+      write carries the stream's label into its record (`stream_ms`), so a
+      stream shows only its own table's records written while it was
+      enabled, whatever the writer's and the catalog's clocks say. The
+      store keeps both images; the view type picks what `GetRecords`
+      shows.
+    - `streams.hpp`. A shard is one store stream: one group in one epoch.
+      A stream lists the open store stream of every group its table
+      overlaps (a group with no logged write yet shows the one its first
+      will open) and each closed one holding a record of the table
+      written since the stream was enabled; each store stream records the
+      tables it holds (`log_stream::tables`). `ParentShardId` names the
+      closed stream a split continued. Sequence numbers are the epoch then
+      the record's place, 21 digits; iterators carry the ARN, the store
+      stream and the next position, and expire after 15 minutes.
+    - `raft_backend` serves `shards` (an item group's streams, at its
+      leader after a read barrier) and `changes` (a page of one store
+      stream, at the leader of the group holding its range start, which
+      every successor of a split does); a segment the group names but the
+      node lacks is fetched from its voters first.
+    - Retention: each item group's leader proposes `trim_change_log`
+      (cutoff now minus 24 hours) when a sealed segment's last record is
+      older, every minute; the state drops those segments and closed
+      streams left empty, and the store removes the files after the
+      engine batch. Segments roll hourly, so records live 24 to 25 hours.
+      `local_backend` trims on writes, at most once a minute.
+    - Merge veto (14.3): `raft_backend::merge_groups` refuses when either
+      range overlaps a table with a stream, enabled or still listed; the
+      node runs no automatic merges.
+    - The memory engine's change log goes to a scratch directory removed
+      at exit, so Streams work there too (items do not outlive the
+      process either).
+    - Not built: the two-readers-per-shard limit (deferred in
+      `invariants.md`).
+    - Tests: `dynamodb_streams_test` (DynamoDB Local's answers, view
+      types, streams that never see each other's records, TTL identity,
+      retention, expiry, stored forms); a split and the merge veto on
+      three nodes in `dynamodb_raft_backend_test`.
 
 - [ ] 17. Kinesis streaming destinations
   - Publisher to Kythira Kinesis or AWS Kinesis; the four actions
