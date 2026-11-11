@@ -157,6 +157,11 @@ set_tests_properties(dynamodb_capacity_test PROPERTIES
 kythira_dynamodb_test(dynamodb_ttl_test dynamodb_ttl_test.cpp)
 set_tests_properties(dynamodb_ttl_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# PartiQL (task 14): ExecuteStatement, BatchExecuteStatement and
+# ExecuteTransaction with DynamoDB Local's answers.
+kythira_dynamodb_test(dynamodb_partiql_test dynamodb_partiql_test.cpp)
+set_tests_properties(dynamodb_partiql_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")
