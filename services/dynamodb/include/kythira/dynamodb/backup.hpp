@@ -425,23 +425,197 @@ inline constexpr std::size_t k_object_bytes = std::size_t{16} << 20U;
 }
 
 /// The source table's settings a restore keeps, with `name` and nothing a
-/// restore drops (streams, TTL, tags, destinations, deletion protection).
-[[nodiscard]] inline auto restored_descriptor(const backup_record& r, const std::string& name)
-    -> table_descriptor {
+/// restore drops (streams, TTL, tags, destinations, deletion protection,
+/// point-in-time recovery).
+[[nodiscard]] inline auto restored_descriptor(const table_descriptor& source,
+                                              const std::string& name) -> table_descriptor {
     table_descriptor d;
     d.name = name;
-    d.schema = r.source.schema;
-    d.billing = r.source.billing;
-    d.read_capacity = r.source.read_capacity;
-    d.write_capacity = r.source.write_capacity;
-    d.storage_class = r.source.storage_class;
-    d.warm_read = r.source.warm_read;
-    d.warm_write = r.source.warm_write;
-    d.lsis = r.source.lsis;
-    for (const auto& g : maintained_indexes(r.source.gsis)) {
+    d.schema = source.schema;
+    d.billing = source.billing;
+    d.read_capacity = source.read_capacity;
+    d.write_capacity = source.write_capacity;
+    d.storage_class = source.storage_class;
+    d.warm_read = source.warm_read;
+    d.warm_write = source.warm_write;
+    d.lsis = source.lsis;
+    for (const auto& g : maintained_indexes(source.gsis)) {
         d.gsis.push_back(g);
     }
     return d;
+}
+
+[[nodiscard]] inline auto text(const boost::json::object& in, std::string_view key) -> std::string {
+    const auto* v = in.if_contains(key);
+    return v != nullptr && v->is_string() ? std::string(v->as_string()) : std::string{};
+}
+
+/// `BillingModeOverride`, `ProvisionedThroughputOverride`, and index
+/// overrides naming which of the backup's indexes to keep.
+inline auto apply_overrides(const boost::json::object& in, table_descriptor& d)
+    -> std::optional<aws_json::error> {
+    const auto billing = text(in, "BillingModeOverride");
+    if (billing == "PAY_PER_REQUEST") {
+        d.billing = billing_mode::pay_per_request;
+        d.read_capacity = 0;
+        d.write_capacity = 0;
+        for (auto& g : d.gsis) {
+            g.read_capacity = 0;
+            g.write_capacity = 0;
+        }
+    } else if (billing == "PROVISIONED") {
+        d.billing = billing_mode::provisioned;
+    }
+    if (const auto* p = in.if_contains("ProvisionedThroughputOverride");
+        p != nullptr && p->is_object()) {
+        if (d.billing == billing_mode::pay_per_request) {
+            return validation_error(
+                "ProvisionedThroughput cannot be specified when BillingMode is "
+                "PAY_PER_REQUEST");
+        }
+        d.read_capacity = p->as_object().at("ReadCapacityUnits").to_number<std::uint64_t>();
+        d.write_capacity = p->as_object().at("WriteCapacityUnits").to_number<std::uint64_t>();
+    }
+    if (d.billing == billing_mode::provisioned && (d.read_capacity == 0 || d.write_capacity == 0)) {
+        return validation_error(
+            "ProvisionedThroughputOverride is required when restoring an on-demand table "
+            "as PROVISIONED");
+    }
+    const auto names = [&](std::string_view key) -> std::optional<std::vector<std::string>> {
+        const auto* v = in.if_contains(key);
+        if (v == nullptr || !v->is_array()) {
+            return std::nullopt;
+        }
+        std::vector<std::string> out;
+        for (const auto& e : v->as_array()) {
+            out.emplace_back(e.as_object().at("IndexName").as_string());
+        }
+        return out;
+    };
+    if (const auto keep = names("GlobalSecondaryIndexOverride")) {
+        for (const auto& n : *keep) {
+            if (std::ranges::none_of(d.gsis, [&](const global_index& g) { return g.name == n; })) {
+                return validation_error("GlobalSecondaryIndexOverride names " + n +
+                                        ", which the source does not have");
+            }
+        }
+        std::erase_if(d.gsis, [&](const global_index& g) {
+            return std::ranges::find(*keep, g.name) == keep->end();
+        });
+    }
+    if (const auto keep = names("LocalSecondaryIndexOverride")) {
+        for (const auto& n : *keep) {
+            if (std::ranges::none_of(d.lsis, [&](const local_index& l) { return l.name == n; })) {
+                return validation_error("LocalSecondaryIndexOverride names " + n +
+                                        ", which the source does not have");
+            }
+        }
+        std::erase_if(d.lsis, [&](const local_index& l) {
+            return std::ranges::find(*keep, l.name) == keep->end();
+        });
+    }
+    return std::nullopt;
+}
+
+/// What `write_items` wrote.
+struct written_items {
+    std::vector<backup_object> objects;
+    std::uint64_t items = 0;
+    /// The items' DynamoDB sizes, summed.
+    std::uint64_t size_bytes = 0;
+};
+
+/// Writes every item of `table_id` to `store` as DynamoDB JSON lines, with
+/// a consistent read of the table's whole range, in objects named by
+/// `key_of(n)`. Objects left from an earlier, longer attempt under
+/// `prefix` are removed.
+template<typename Backend, typename KeyOf>
+auto write_items(Backend& backend, backup_store& store, std::uint64_t table_id,
+                 const std::string& prefix, KeyOf key_of) -> written_items {
+    written_items out;
+    std::string chunk;
+    std::uint64_t chunk_items = 0;
+    const auto flush = [&] {
+        if (chunk_items == 0) {
+            return;
+        }
+        backup_object o;
+        o.key = key_of(out.objects.size());
+        o.items = chunk_items;
+        o.bytes = chunk.size();
+        o.sha256 = sigv4::detail::sha256_hex(chunk);
+        store.put(o.key, chunk);
+        out.objects.push_back(std::move(o));
+        chunk.clear();
+        chunk_items = 0;
+    };
+    backend.read_range(
+        table_range(table_id), kythira::scan_direction::forward, true,
+        [&](std::string_view, const item& it) {
+            chunk += boost::json::serialize(boost::json::object{{"Item", item_to_json(it)}});
+            chunk += '\n';
+            ++chunk_items;
+            ++out.items;
+            out.size_bytes += item_size(it);
+            if (chunk_items >= k_object_items || chunk.size() >= k_object_bytes) {
+                flush();
+            }
+            return true;
+        });
+    flush();
+    for (const auto& key : store.list(prefix)) {
+        if (std::ranges::none_of(out.objects,
+                                 [&](const backup_object& o) { return o.key == key; })) {
+            store.remove(key);
+        }
+    }
+    return out;
+}
+
+/// Calls `fn` with each line of the object, after checking its sha256.
+template<typename Fn> void read_object(backup_store& store, const backup_object& o, Fn fn) {
+    const auto body = store.get(o.key);
+    if (!body || sigv4::detail::sha256_hex(*body) != o.sha256) {
+        throw std::runtime_error("backup object " + o.key + " is missing or damaged");
+    }
+    std::string_view rest(*body);
+    while (!rest.empty()) {
+        const auto nl = rest.find('\n');
+        const auto line = rest.substr(0, nl);
+        rest = nl == std::string_view::npos ? std::string_view{} : rest.substr(nl + 1);
+        if (!line.empty()) {
+            fn(line);
+        }
+    }
+}
+
+/// Puts `it` into the restoring table `d` through the ordinary write path,
+/// so its indexes are built. A put the group refuses stops the load; the
+/// next pass reloads, and the puts already made are rewritten to the same
+/// values.
+template<typename Backend> void restore_put(Backend& backend, const table_descriptor& d, item it) {
+    item_command c;
+    c.op = item_command::kind::put;
+    c.table_id = d.table_id;
+    c.schema = d.schema;
+    c.payload = std::move(it);
+    c.lsis = d.lsis;
+    c.gsis = maintained_indexes(d.gsis);
+    c.log_changes = d.logs_changes();
+    c.stream_ms = d.stream_label();
+    if (backend.write(c).outcome != item_result::status::ok) {
+        throw std::runtime_error("a restored item was refused by its group");
+    }
+}
+
+/// Tells the catalog the restoring table `d` is loaded.
+template<typename Backend> void finish_restore(Backend& backend, const table_descriptor& d) {
+    catalog_command c;
+    c.op = catalog_command::kind::restore_done;
+    c.table.name = d.name;
+    c.table.table_id = d.table_id;
+    c.now_ms = backend.now_ms();
+    (void)backend.catalog(c);
 }
 
 }  // namespace backup_detail
@@ -617,8 +791,8 @@ public:
         if (_backend.describe(target)) {
             return bd::modeled("TableAlreadyExistsException", "Table already exists: " + target);
         }
-        auto d = bd::restored_descriptor(*r, target);
-        if (auto e = overrides(in, d)) {
+        auto d = bd::restored_descriptor(r->source, target);
+        if (auto e = bd::apply_overrides(in, d)) {
             return *e;
         }
         d.restore.source_backup_arn = r->arn;
@@ -643,8 +817,7 @@ public:
 
 private:
     static auto text(const boost::json::object& in, std::string_view key) -> std::string {
-        const auto* v = in.if_contains(key);
-        return v != nullptr && v->is_string() ? std::string(v->as_string()) : std::string{};
+        return backup_detail::text(in, key);
     }
 
     [[nodiscard]] auto find(const std::string& arn) -> std::optional<backup_record> {
@@ -727,76 +900,6 @@ private:
                                    {"SourceTableFeatureDetails", std::move(features)}};
     }
 
-    /// `BillingModeOverride`, `ProvisionedThroughputOverride`, and index
-    /// overrides naming which of the backup's indexes to keep.
-    static auto overrides(const boost::json::object& in, table_descriptor& d)
-        -> std::optional<aws_json::error> {
-        const auto billing = text(in, "BillingModeOverride");
-        if (billing == "PAY_PER_REQUEST") {
-            d.billing = billing_mode::pay_per_request;
-            d.read_capacity = 0;
-            d.write_capacity = 0;
-            for (auto& g : d.gsis) {
-                g.read_capacity = 0;
-                g.write_capacity = 0;
-            }
-        } else if (billing == "PROVISIONED") {
-            d.billing = billing_mode::provisioned;
-        }
-        if (const auto* p = in.if_contains("ProvisionedThroughputOverride");
-            p != nullptr && p->is_object()) {
-            if (d.billing == billing_mode::pay_per_request) {
-                return validation_error(
-                    "ProvisionedThroughput cannot be specified when BillingMode is "
-                    "PAY_PER_REQUEST");
-            }
-            d.read_capacity = p->as_object().at("ReadCapacityUnits").to_number<std::uint64_t>();
-            d.write_capacity = p->as_object().at("WriteCapacityUnits").to_number<std::uint64_t>();
-        }
-        if (d.billing == billing_mode::provisioned &&
-            (d.read_capacity == 0 || d.write_capacity == 0)) {
-            return validation_error(
-                "ProvisionedThroughputOverride is required when restoring an on-demand table "
-                "as PROVISIONED");
-        }
-        const auto names = [&](std::string_view key) -> std::optional<std::vector<std::string>> {
-            const auto* v = in.if_contains(key);
-            if (v == nullptr || !v->is_array()) {
-                return std::nullopt;
-            }
-            std::vector<std::string> out;
-            for (const auto& e : v->as_array()) {
-                out.emplace_back(e.as_object().at("IndexName").as_string());
-            }
-            return out;
-        };
-        if (const auto keep = names("GlobalSecondaryIndexOverride")) {
-            for (const auto& n : *keep) {
-                if (std::ranges::none_of(d.gsis,
-                                         [&](const global_index& g) { return g.name == n; })) {
-                    return validation_error("GlobalSecondaryIndexOverride names " + n +
-                                            ", which the backup does not have");
-                }
-            }
-            std::erase_if(d.gsis, [&](const global_index& g) {
-                return std::ranges::find(*keep, g.name) == keep->end();
-            });
-        }
-        if (const auto keep = names("LocalSecondaryIndexOverride")) {
-            for (const auto& n : *keep) {
-                if (std::ranges::none_of(d.lsis,
-                                         [&](const local_index& l) { return l.name == n; })) {
-                    return validation_error("LocalSecondaryIndexOverride names " + n +
-                                            ", which the backup does not have");
-                }
-            }
-            std::erase_if(d.lsis, [&](const local_index& l) {
-                return std::ranges::find(*keep, l.name) == keep->end();
-            });
-        }
-        return std::nullopt;
-    }
-
     Backend& _backend;
     std::shared_ptr<backup_store> _store;
     std::function<void()> _created;
@@ -840,7 +943,9 @@ public:
         }
         for (const auto& name : _backend.list_tables("", SIZE_MAX)) {
             const auto d = _backend.describe(name);
-            if (d && d->status == table_status::creating && d->restore.in_progress) {
+            // A point-in-time restore is the archiver's (`pitr.hpp`).
+            if (d && d->status == table_status::creating && d->restore.in_progress &&
+                !d->restore.source_backup_arn.empty()) {
                 load(*d);
                 ++done;
             }
@@ -860,46 +965,12 @@ private:
             }
             return;
         }
-        r.objects.clear();
-        r.size_bytes = 0;
-        r.item_count = 0;
-        std::string chunk;
-        std::uint64_t chunk_items = 0;
-        const auto flush = [&] {
-            if (chunk_items == 0) {
-                return;
-            }
-            backup_object o;
-            o.key = bd::data_key(r.id, r.objects.size());
-            o.items = chunk_items;
-            o.bytes = chunk.size();
-            o.sha256 = sigv4::detail::sha256_hex(chunk);
-            _store->put(o.key, chunk);
-            r.objects.push_back(std::move(o));
-            chunk.clear();
-            chunk_items = 0;
-        };
-        _backend.read_range(
-            table_range(r.source.table_id), kythira::scan_direction::forward, true,
-            [&](std::string_view, const item& it) {
-                chunk += boost::json::serialize(boost::json::object{{"Item", item_to_json(it)}});
-                chunk += '\n';
-                ++chunk_items;
-                ++r.item_count;
-                r.size_bytes += item_size(it);
-                if (chunk_items >= bd::k_object_items || chunk.size() >= bd::k_object_bytes) {
-                    flush();
-                }
-                return true;
-            });
-        flush();
-        // A rerun after a smaller retry may leave extra objects behind.
-        for (const auto& key : _store->list(std::string(bd::k_backups_prefix) + r.id + "/data/")) {
-            if (std::ranges::none_of(r.objects,
-                                     [&](const backup_object& o) { return o.key == key; })) {
-                _store->remove(key);
-            }
-        }
+        auto got = bd::write_items(_backend, *_store, r.source.table_id,
+                                   std::string(bd::k_backups_prefix) + r.id + "/data/",
+                                   [&](std::size_t n) { return bd::data_key(r.id, n); });
+        r.objects = std::move(got.objects);
+        r.size_bytes = got.size_bytes;
+        r.item_count = got.items;
         r.status = "AVAILABLE";
         _store->put(bd::record_key(r.id), bd::encode_record(r));
     }
@@ -917,50 +988,18 @@ private:
         }
         if (r) {
             for (const auto& o : r->objects) {
-                const auto body = _store->get(o.key);
-                if (!body || sigv4::detail::sha256_hex(*body) != o.sha256) {
-                    throw std::runtime_error("backup object " + o.key + " is missing or damaged");
-                }
-                std::string_view rest(*body);
-                while (!rest.empty()) {
-                    const auto nl = rest.find('\n');
-                    const auto line = rest.substr(0, nl);
-                    rest = nl == std::string_view::npos ? std::string_view{} : rest.substr(nl + 1);
-                    if (line.empty()) {
-                        continue;
+                bd::read_object(*_store, o, [&](std::string_view line) {
+                    auto parsed =
+                        item_from_json(boost::json::parse(line).as_object().at("Item").as_object());
+                    if (!parsed) {
+                        throw std::runtime_error("backup holds an unreadable item");
                     }
-                    put(d, boost::json::parse(line).as_object().at("Item").as_object());
-                }
+                    bd::restore_put(_backend, d, std::move(*parsed));
+                });
             }
         }
         // A backup deleted under a restore leaves the table as loaded.
-        catalog_command c;
-        c.op = catalog_command::kind::restore_done;
-        c.table.name = d.name;
-        c.table.table_id = d.table_id;
-        c.now_ms = _backend.now_ms();
-        (void)_backend.catalog(c);
-    }
-
-    void put(const table_descriptor& d, const boost::json::object& json) {
-        auto parsed = item_from_json(json);
-        if (!parsed) {
-            throw std::runtime_error("backup holds an unreadable item");
-        }
-        item_command c;
-        c.op = item_command::kind::put;
-        c.table_id = d.table_id;
-        c.schema = d.schema;
-        c.payload = std::move(*parsed);
-        c.lsis = d.lsis;
-        c.gsis = maintained_indexes(d.gsis);
-        c.log_changes = d.logs_changes();
-        c.stream_ms = d.stream_label();
-        // A put the group refuses stops the load; the next pass reloads,
-        // and the puts already made are rewritten to the same values.
-        if (_backend.write(c).outcome != item_result::status::ok) {
-            throw std::runtime_error("a restored item was refused by its group");
-        }
+        bd::finish_restore(_backend, d);
     }
 
     Backend& _backend;

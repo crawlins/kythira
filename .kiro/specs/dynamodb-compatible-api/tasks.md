@@ -717,10 +717,55 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       `dynamodb_raft_backend_test`, a backup of a table split over two
       groups taken by a worker on one node and restored through another.
 
-- [ ] 19. Point-in-time recovery
+- [x] 19. Point-in-time recovery
   - Change-log archive, `UpdateContinuousBackups`,
     `DescribeContinuousBackups`, `RestoreTableToPointInTime`
   - _Requirements: 17.2_
+  - Notes:
+    - `pitr.hpp`. The descriptor's `pitr` (catalog format 7, still
+      written as 6 or older for a table that never had it) holds the
+      setting (enabled, `RecoveryPeriodInDays` 1 to 35, enable time) and
+      the archiver's progress (cursors per store stream, next object
+      number, earliest and latest restorable times), moved by
+      `pitr_progress` entries that never go back. Enabled recovery turns
+      the change log on. A fresh enable starts a new archive under
+      `pitr/<table id>/<enable time>/` in the task 18 backup store;
+      changing only the period keeps it; a disable ends it.
+    - The archiver runs in the gateway's background loop after the backup
+      worker. Each pass copies the table's new change records into one
+      log object of DynamoDB JSON lines (write time, key, new image or
+      none for a delete), parents before split children as the Kinesis
+      publisher does, so each item's records stay in order. A pass that
+      caught up with every store stream sets `LatestRestorableDateTime`
+      to its start (AWS's is about five minutes behind). A base (every
+      item, read consistently, task 18's layout, with its start and end
+      times and the first log object after its start) is taken at enable
+      and each day.
+    - A restore to T loads the newest base that ended by T and replays the
+      archived records from its first log object on with write times up
+      to T. A record the base already holds is replayed harmlessly, since
+      replay keeps each item's order and ends at its last write by T.
+      The table is created `CREATING` with a `RestoreSummary` naming the
+      source and T, and becomes `ACTIVE` with `restore_done`.
+    - `EarliestRestorableDateTime` is the later of the oldest kept base's
+      end and the window's start. Bases that ended before the window go,
+      bar the newest of them, with the log objects only they needed.
+      Archives no enabled recovery owns (a disabled or re-enabled one's,
+      a deleted table's) are swept every minute.
+    - Deviations: a deleted table's recovery ends with it (AWS keeps a
+      system backup for 35 days); the archive can only keep up while the
+      change log still holds the records (24 hours, task 16), so a
+      catalog leader stalled longer leaves a gap; restore times assume
+      the nodes' clocks agree to well under a second (records carry the
+      writer's time, bases and the latest time the catalog leader's);
+      log objects carry no checksum (bases do). Refusal wording is
+      Kythira's (DynamoDB Local has no point-in-time recovery, and no
+      AWS run was made). Without a backup store,
+      `UpdateContinuousBackups` answers
+      `ContinuousBackupsUnavailableException`.
+    - Tests: `dynamodb_pitr_test` (8 cases) and, in
+      `dynamodb_raft_backend_test`, restores to times on both sides of a
+      split with the archiver on another node.
 
 - [ ] 20. Export, import and bulk put
   - Full and incremental `ExportTableToPointInTime`, `ImportTable`, the
