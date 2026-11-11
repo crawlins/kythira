@@ -209,6 +209,7 @@ all fixed with it:
 | Error types, messages and status codes match DynamoDB Local's for the recorded operations | — | `dynamodb_ops_corpus_test` |
 | A transaction has at most 100 items and 4 MB, never names one item twice, and is all or nothing, across groups and through leader loss | Limits | `dynamodb_txn_test`, `dynamodb_ops_corpus_test`, `dynamodb_raft_backend_test` |
 | A GSI reflects every write once propagated, wherever its entries live, and a lost leader's changes are carried by the next one | Indexes | `dynamodb_gsi_test`, `dynamodb_raft_backend_test` |
+| With `gsi-consistency=sync`, a GSI read after a write sees it (Kythira switch, Requirement 3) | — | `dynamodb_raft_backend_test` |
 
 ## Deferred
 

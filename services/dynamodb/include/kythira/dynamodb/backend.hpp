@@ -86,7 +86,8 @@ concept dynamo_backend =
     requires(B& b, const catalog_command& cc, const item_command& ic, std::string_view name,
              std::size_t limit, std::uint64_t table_id, const key_schema& schema, const item& key,
              bool consistent, const kythira::key_range& range, kythira::scan_direction direction,
-             const range_visitor& visit, const std::vector<item_command>& actions) {
+             const range_visitor& visit, const std::vector<item_command>& actions,
+             const table_descriptor& table) {
         { b.catalog(cc) } -> std::same_as<catalog_result>;
         { b.write(ic) } -> std::same_as<item_result>;
         { b.read(table_id, schema, key, consistent) } -> std::same_as<std::optional<item>>;
@@ -95,6 +96,7 @@ concept dynamo_backend =
         { b.list_tables(name, limit) } -> std::same_as<std::vector<std::string>>;
         { b.now_ms() } -> std::same_as<std::uint64_t>;
         { b.transact(actions) } -> std::same_as<txn_report>;
+        { b.settle_item(table, key) } -> std::same_as<void>;
     };
 
 /// Both state machines on one engine, applied in-process.
@@ -140,6 +142,11 @@ public:
         propagate_locked();
         return r;
     }
+
+    /// Carries the item's pending GSI change before returning, for tables
+    /// with synchronous GSIs (`gsi-consistency=sync`). Every write here
+    /// already propagates before it returns.
+    auto settle_item(const table_descriptor& /*table*/, const item& /*key*/) -> void {}
 
     auto read(std::uint64_t table_id, const key_schema& schema, const item& key,
               bool /*consistent*/) -> std::optional<item> {

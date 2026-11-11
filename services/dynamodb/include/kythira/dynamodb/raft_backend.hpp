@@ -155,6 +155,8 @@ enum class op_tag : std::uint8_t {
     list = 6,
     drop = 7,
     txn = 8,
+    /// An item's pending GSI change, read with the item (task 11).
+    pending = 9,
 };
 
 /// The answer tags.
@@ -374,6 +376,47 @@ public:
         return it;
     }
 
+    /// Carries the item's pending GSI change from this node before
+    /// returning, for tables with synchronous GSIs (`gsi-consistency=sync`):
+    /// a read of an index after the write sees it. The item group's
+    /// propagator may carry the same change at the same time, which the
+    /// entry versions make harmless.
+    auto settle_item(const table_descriptor& table, const item& key) -> void {
+        item_command c;
+        c.table_id = table.table_id;
+        c.schema = table.schema;
+        c.payload = key;
+        std::string op(1, static_cast<char>(raft_backend_detail::op_tag::pending));
+        op += encode_item_command(c);
+        const auto out = run(op, std::nullopt);
+        if (out.empty()) {
+            return;
+        }
+        detail::reader in(out);
+        auto pkey = in.bytes();
+        auto record = in.bytes();
+        const auto has_item = in.byte();
+        auto pending = record ? decode_gsi_pending(*record) : std::nullopt;
+        if (!pkey || !pending || !has_item) {
+            throw std::runtime_error("raft_backend: unreadable pending change");
+        }
+        gsi_work w;
+        w.pending_key = std::move(*pkey);
+        w.pending = std::move(*pending);
+        if (*has_item == 1) {
+            const auto bytes = in.bytes();
+            w.current = bytes ? decode_item(*bytes) : std::nullopt;
+            if (!w.current) {
+                throw std::runtime_error("raft_backend: unreadable pending change");
+            }
+        }
+        const auto plan = plan_propagation(table, w);
+        for (const auto& write_cmd : plan.index_writes) {
+            (void)write(write_cmd);
+        }
+        (void)write(plan.ack);
+    }
+
     auto read_range(const kythira::key_range& range, kythira::scan_direction direction,
                     bool consistent, const range_visitor& visit) -> void {
         using raft_backend_detail::op_tag;
@@ -565,6 +608,8 @@ public:
                     return serve_drop(body);
                 case op_tag::txn:
                     return serve_txn(body);
+                case op_tag::pending:
+                    return serve_pending(body);
             }
             return error_answer("unknown op");
         } catch (const kythira::shard_not_leader_exception<group_id_type, node_id_type>& e) {
@@ -1075,6 +1120,48 @@ private:
             return not_leader_answer(consistent ? std::nullopt : desc->_leader_hint);
         }
         return ok_answer(**r ? encode_item(***r) : std::string{});
+    }
+
+    /// The item's pending GSI change, at the item group's leader after a
+    /// read barrier, as `pending key, record, [item]`; empty when none.
+    auto serve_pending(std::string_view body) -> std::string {
+        item_command c;
+        if (decode_item_command(body, c) != item_command_status::ok) {
+            return error_answer("unreadable pending op");
+        }
+        const auto key = base_item_key(c.table_id, c.schema, c.payload);
+        if (!key) {
+            return ok_answer("");
+        }
+        barrier(*key, true);
+        const auto desc = _host.resolve(*key);
+        if (!desc) {
+            return not_leader_answer(std::nullopt);
+        }
+        const auto r = _host.with_group_state_machine(
+            desc->_group_id,
+            [&](auto& sm, const descriptor_type& d) -> std::optional<std::optional<gsi_work>> {
+                const auto* items = sm.inner().item_group();
+                if (items == nullptr || !d._range.contains(*key)) {
+                    return std::nullopt;
+                }
+                return items->gsi_pending_for(c.table_id, c.schema, c.payload);
+            });
+        if (!r || !*r) {
+            return not_leader_answer(std::nullopt);
+        }
+        const auto& w = **r;
+        if (!w) {
+            return ok_answer("");
+        }
+        std::string out;
+        detail::put_bytes(out, w->pending_key);
+        detail::put_bytes(out, encode_gsi_pending(w->pending));
+        out.push_back(w->current ? '\1' : '\0');
+        if (w->current) {
+            detail::put_bytes(out, encode_item(*w->current));
+        }
+        return ok_answer(out);
     }
 
     auto serve_page(std::string_view body) -> std::string {

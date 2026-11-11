@@ -995,6 +995,7 @@ BOOST_AUTO_TEST_CASE(an_index_added_later_is_backfilled_across_groups_while_writ
         R"([{"AttributeName":"g","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}}]})");
     const auto& gsis = created.at("TableDescription").as_object().at("GlobalSecondaryIndexes");
     BOOST_TEST(gsis.as_array()[0].as_object().at("IndexStatus").as_string() == "CREATING");
+    BOOST_TEST(gsis.as_array()[0].as_object().at("Backfilling").as_bool());
 
     // While it is CREATING: no other index change, and no reads of it.
     const auto busy = c.node(3).call(
@@ -1057,4 +1058,51 @@ BOOST_AUTO_TEST_CASE(an_index_added_later_is_backfilled_across_groups_while_writ
         "Query", R"({"TableName":"Music","IndexName":"by_g","KeyConditionExpression":"g = :g",)"
                  R"("ExpressionAttributeValues":{":g":{"S":"red"}}})");
     BOOST_TEST(gone.message() == "The table does not have the specified index: by_g");
+}
+
+BOOST_AUTO_TEST_CASE(synchronous_gsis_are_read_your_writes) {
+    auto options = test_options();
+    // The item leaders' propagators sleep through the test, so only a
+    // synchronous table's own writes can reach its index.
+    options.gsi_interval = std::chrono::milliseconds{120000};
+    cluster c(options);
+    const auto with_tag = [](const std::string& name, const std::string& tags) {
+        auto body = k_create_with_gsi;
+        body.replace(body.find("\"Music\""), 7, "\"" + name + "\"");
+        body.insert(body.size() - 1, tags);
+        return body;
+    };
+    c.node(1).ok(
+        "CreateTable",
+        with_tag("Sync", R"(,"Tags":[{"Key":"kythira:compat:gsi-consistency","Value":"sync"}])"));
+    c.node(1).ok("CreateTable", with_tag("Async", ""));
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        return status_of(c.node(1), "Sync") == "ACTIVE" &&
+               status_of(c.node(1), "Async") == "ACTIVE";
+    }));
+    const auto query = [&](std::uint64_t node, const std::string& table) {
+        const auto r = c.node(node).ok(
+            "Query", R"({"TableName":")" + table +
+                         R"(","IndexName":"by_g","KeyConditionExpression":"g = :g",)"
+                         R"("ExpressionAttributeValues":{":g":{"S":"red"}}})");
+        return r.at("Count").to_number<int>();
+    };
+    for (const char* table : {"Sync", "Async"}) {
+        c.node(2).ok("PutItem", R"({"TableName":")" + std::string(table) +
+                                    R"(","Item":{"pk":{"S":"a"},"sk":{"N":"1"},"g":{"S":"red"},)"
+                                    R"("v":{"N":"1"}}})");
+    }
+    // The synchronous table's entry is there when PutItem answers, on
+    // every node; the asynchronous one waits for a propagator.
+    for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+        BOOST_TEST(cluster::await([&] { return query(id, "Sync") == 1; }), "node " << id);
+    }
+    BOOST_TEST(query(c.leader(k_item_group), "Sync") == 1);
+    BOOST_TEST(query(c.leader(k_item_group), "Async") == 0);
+    // Moving and deleting the item, through a transaction too.
+    c.node(3).ok("TransactWriteItems",
+                 R"({"TransactItems":[{"Update":{"TableName":"Sync","Key":)" + key_json("a", 1) +
+                     R"(,"UpdateExpression":"SET g = :b","ExpressionAttributeValues":)"
+                     R"({":b":{"S":"blue"}}}}]})");
+    BOOST_TEST(query(c.leader(k_item_group), "Sync") == 0);
 }

@@ -803,6 +803,10 @@ def gsi_create_scenario():
     return {"name": "gsi_create", "tables": [], "setup": [], "steps": steps}
 
 
+BACKFILL_DIVERGENCE = ("Backfilling: AWS (and Kythira) show true while a new index is CREATING and "
+                       "being backfilled; DynamoDB Local shows false")
+
+
 def gsi_update_scenario():
     """UpdateTable's GlobalSecondaryIndexUpdates: an index created on a table
     with items (backfilled), its checks, and its deletion. WaitIndexes polls
@@ -833,8 +837,9 @@ def gsi_update_scenario():
 
     by_g = lambda: q(t, "g = :g", {":g": {"S": "red"}}, IndexName="by_g")  # noqa: E731
     steps = [
-        upd([create("by_g", "g", "sk", proj={"ProjectionType": "INCLUDE", "NonKeyAttributes": ["v"]})],
-            ad=g_def + [{"AttributeName": "sk", "AttributeType": "N"}]),
+        {**upd([create("by_g", "g", "sk", proj={"ProjectionType": "INCLUDE", "NonKeyAttributes": ["v"]})],
+               ad=g_def + [{"AttributeName": "sk", "AttributeType": "N"}]),
+         "divergence": BACKFILL_DIVERGENCE},
         step("WaitIndexes", TableName=t),
         step("DescribeTable", TableName=t),
         by_g(),
@@ -861,8 +866,9 @@ def gsi_update_scenario():
         step("DescribeTable", TableName=t),
         by_g(),
         # A second index on a key the table did not define before.
-        upd([create("by_n", "v", "sk", {"ProjectionType": "KEYS_ONLY"})],
-            ad=[{"AttributeName": "v", "AttributeType": "N"}, {"AttributeName": "sk", "AttributeType": "N"}]),
+        {**upd([create("by_n", "v", "sk", {"ProjectionType": "KEYS_ONLY"})],
+               ad=[{"AttributeName": "v", "AttributeType": "N"}, {"AttributeName": "sk", "AttributeType": "N"}]),
+         "divergence": BACKFILL_DIVERGENCE},
         step("WaitIndexes", TableName=t),
         q(t, "v = :v", {":v": {"N": "30"}}, IndexName="by_n"),
         step("DescribeTable", TableName=t),

@@ -72,6 +72,12 @@ public:
     explicit batch_api(Backend& backend, const disk_guard* guard = nullptr)
         : _backend(backend), _guard(guard) {}
 
+    /// The cluster's compatibility switches (Requirement 3); AWS's by
+
+    /// default. A table's tags override them.
+
+    void set_compat_profile(const dynamo_compat_profile& p) { _profile = p; }
+
     template<typename FrontEnd> void register_with(FrontEnd& fe) {
         fe.on("BatchGetItem",
               [this](call_context& c, boost::json::object& in) { return batch_get(c, in); });
@@ -286,6 +292,9 @@ public:
                     e.message = r.error_message;
                     return e;
                 }
+                if (api_detail::sync_gsis(_profile, w.table)) {
+                    _backend.settle_item(w.table, c.payload);
+                }
                 if (auto m = api_detail::collection_metrics(in, w.table, c.payload, r)) {
                     collections[partition_prefix(
                         c.table_id, *find_attribute(c.payload, c.schema.partition_name))] =
@@ -316,6 +325,7 @@ public:
 private:
     Backend& _backend;
     const disk_guard* _guard;
+    dynamo_compat_profile _profile{};
 };
 
 }  // namespace kythira::dynamodb

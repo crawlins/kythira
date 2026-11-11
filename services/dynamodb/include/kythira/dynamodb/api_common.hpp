@@ -11,6 +11,7 @@
 
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/catalog.hpp>
+#include <kythira/dynamodb/compat_profile.hpp>
 #include <kythira/dynamodb/errors.hpp>
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/table_api.hpp>
@@ -28,6 +29,15 @@
 #include <utility>
 
 namespace kythira::dynamodb::api_detail {
+
+/// Whether a write to `table` carries its GSI changes before it answers:
+/// the table has indexes and `gsi-consistency` is `sync` for it (the
+/// cluster's setting, or the table's `kythira:compat:gsi-consistency` tag).
+[[nodiscard]] inline auto sync_gsis(const dynamo_compat_profile& cluster,
+                                    const table_descriptor& table) -> bool {
+    return !maintained_indexes(table.gsis).empty() &&
+           !resolve_profile(cluster, table.tags).async_gsi;
+}
 
 /// What a missing, CREATING or DELETING table answers on the data plane.
 [[nodiscard]] inline auto not_found() -> aws_json::error {
