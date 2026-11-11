@@ -173,6 +173,19 @@ struct kinesis_destination {
         -> bool = default;
 };
 
+/// Where a restored table came from (task 18): `RestoreSummary`.
+struct table_restore {
+    /// Empty for a table that was not restored.
+    std::string source_backup_arn;
+    std::string source_table_arn;
+    /// When the restore was asked for (ms since the epoch, from the entry).
+    std::uint64_t restore_ms = 0;
+    /// The items are still being loaded: the table stays CREATING.
+    bool in_progress = false;
+
+    friend auto operator==(const table_restore&, const table_restore&) -> bool = default;
+};
+
 /// What the catalog knows about a table. Later tasks add replicas; each
 /// new field gets a new descriptor format version.
 struct table_descriptor {
@@ -206,6 +219,8 @@ struct table_descriptor {
     std::vector<table_stream> streams;
     /// Kinesis streaming destinations (task 17), at most one streaming.
     std::vector<kinesis_destination> destinations;
+    /// Set on a table restored from a backup (task 18).
+    table_restore restore;
 
     /// The enabled stream, or null.
     [[nodiscard]] auto enabled_stream() const -> const table_stream* {
@@ -276,6 +291,9 @@ struct catalog_command {
         /// `disabled` from `disabling`, or the current one) and its
         /// cursors, which replace the stored ones, never moving one back.
         destination_progress = 10,
+        /// A restore (task 18) finished loading `table` (by name and
+        /// `table_id`): the table may become ACTIVE.
+        restore_done = 11,
     };
 
     /// Which settings an `update_table` changes.
@@ -344,14 +362,18 @@ namespace catalog_detail {
 /// upgraded keeps applying everything but streams. 5 added `destinations`
 /// after `streams`, with the `set_destination` and `destination_progress`
 /// commands (task 17); a form without destinations keeps its older
-/// version the same way.
-inline constexpr std::uint8_t k_descriptor_format_version = 5;
+/// version the same way. 6 added `restore` after `destinations`, with the
+/// `restore_done` command (task 18), likewise only for a restored table.
+inline constexpr std::uint8_t k_descriptor_format_version = 6;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 5;
-inline constexpr std::uint8_t k_result_format_version = 5;
+inline constexpr std::uint8_t k_command_format_version = 6;
+inline constexpr std::uint8_t k_result_format_version = 6;
 
 /// The version a form carrying `d` is written as.
 [[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
+    if (!d.restore.source_backup_arn.empty()) {
+        return 6;
+    }
     if (!d.destinations.empty()) {
         return 5;
     }
@@ -439,6 +461,12 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
                 detail::put_varint(out, seq);
             }
         }
+    }
+    if (version >= 6) {
+        detail::put_bytes(out, d.restore.source_backup_arn);
+        detail::put_bytes(out, d.restore.source_table_arn);
+        detail::put_varint(out, d.restore.restore_ms);
+        out.push_back(d.restore.in_progress ? '\1' : '\0');
     }
 }
 
@@ -542,6 +570,16 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
             d.destinations.push_back(std::move(k));
         }
     }
+    if (version >= 6) {
+        auto backup = r.bytes();
+        auto table = r.bytes();
+        const auto at = r.varint();
+        const auto loading = get_flag(r);
+        if (!backup || !table || !at || !loading) {
+            return std::nullopt;
+        }
+        d.restore = table_restore{std::move(*backup), std::move(*table), *at, *loading};
+    }
     d.name = std::move(*name);
     d.table_id = *id;
     d.schema = std::move(*schema);
@@ -618,7 +656,19 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
 
 [[nodiscard]] inline auto encode_catalog_command(const catalog_command& c) -> std::string {
     std::string out;
-    const auto version = catalog_detail::version_for(c.table);
+    // At least the version that brought the command's kind.
+    auto version = catalog_detail::version_for(c.table);
+    switch (c.op) {
+        case catalog_command::kind::restore_done:
+            version = std::max<std::uint8_t>(version, 6);
+            break;
+        case catalog_command::kind::set_destination:
+        case catalog_command::kind::destination_progress:
+            version = std::max<std::uint8_t>(version, 5);
+            break;
+        default:
+            break;
+    }
     out.push_back(static_cast<char>(version));
     out.push_back(static_cast<char>(c.op));
     catalog_detail::put_descriptor_body(out, c.table, version);
@@ -648,7 +698,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     }
     const auto op = static_cast<std::uint8_t>(bytes[1]);
     // set_ttl came in version 3, the destination commands in 5.
-    const std::uint8_t last_op = version >= 5 ? 10 : version >= 3 ? 8 : 7;
+    const std::uint8_t last_op = version >= 6 ? 11 : version >= 5 ? 10 : version >= 3 ? 8 : 7;
     if (version == 0 || op < 1 || op > last_op) {
         return std::nullopt;
     }
@@ -807,6 +857,9 @@ public:
                 break;
             case catalog_command::kind::destination_progress:
                 result = destination_progress(*c, batch);
+                break;
+            case catalog_command::kind::restore_done:
+                result = restore_done(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -1012,6 +1065,11 @@ private:
         std::erase_if(d.streams, [](const table_stream& s) { return s.disabled_ms != 0; });
         if (!d.streams.empty()) {
             d.streams = {table_stream{c.now_ms, d.streams.front().view, 0}};
+        }
+        // A restore's table loads its items before it becomes ACTIVE.
+        d.restore.in_progress = !d.restore.source_backup_arn.empty();
+        if (d.restore.in_progress) {
+            d.restore.restore_ms = c.now_ms;
         }
         batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
                   catalog_detail::u64_string(next));
@@ -1449,6 +1507,24 @@ private:
         }
         ++d->revision;
         store(batch, *d);
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `restore_done` (task 18): the restored table's items are loaded. A
+    /// repeat, or an entry for a table since replaced, changes nothing.
+    auto restore_done(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->table_id != c.table.table_id) {
+            return not_found(c.table.name);
+        }
+        if (d->restore.in_progress) {
+            d->restore.in_progress = false;
+            ++d->revision;
+            store(batch, *d);
+        }
+        catalog_result r;
         r.table = std::move(d);
         return r;
     }

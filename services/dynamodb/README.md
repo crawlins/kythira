@@ -76,6 +76,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/streams.hpp` | DynamoDB Streams: `ListStreams`, `DescribeStream`, `GetShardIterator` and `GetRecords` over the change log, shards and their lineage, sequence numbers, iterators | 16 |
 | `tests/dynamodb_streams_test.cpp` | `StreamSpecification` and the four Streams calls with DynamoDB Local's answers, view types, retention and iterator expiry | 16 |
 | `include/kythira/dynamodb/kinesis_destination.hpp` | Kinesis streaming destinations: the four actions, the publisher that puts change records to AWS or Kythira Kinesis in AWS's record format, and its SigV4 HTTP sink | 17 |
+| `include/kythira/dynamodb/backup.hpp` | On-demand backups: the five actions, the record and data objects on any object store (or a directory, or memory), and the worker that takes backups and loads restores | 18 |
+| `tests/dynamodb_backup_test.cpp` | Backup and restore with indexes and overrides, refusals, listing, deletes, a damaged object, and the stores | 18 |
 | `tests/dynamodb_kinesis_destination_test.cpp` | Destination lifecycle and refusals, record format, per-item order, partial failures, resuming from stored cursors, and the signed calls | 17 |
 
 The rest follows the plan in the spec's `tasks.md`.
@@ -114,6 +116,12 @@ standard `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
 `AWS_SESSION_TOKEN`, unless `KYTHIRA_DYNAMODB_KINESIS_ENDPOINT` names
 another endpoint, such as a Kythira `kinesis_gateway_node`
 (`KYTHIRA_DYNAMODB_KINESIS_TLS=0` for a plain-HTTP one).
+
+Backups live in `KYTHIRA_DYNAMODB_BACKUP_DIR` (a directory every node of a
+cluster shares) or, in a build with the AWS SDK, an S3 bucket
+(`KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET`, with `_PREFIX`, `_REGION` and
+`_ENDPOINT`). Without either, a single node keeps them in memory and a
+cluster refuses `CreateBackup`.
 
 ## Core targets and variables used
 

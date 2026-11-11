@@ -344,7 +344,9 @@ private:
     auto settle_locked() -> void {
         for (const auto& name : _catalog.list_tables("", SIZE_MAX)) {
             const auto d = _catalog.describe(name);
-            if (d && (d->status == table_status::creating || d->status == table_status::updating)) {
+            // A restore's table stays CREATING until its items are loaded.
+            if (d && (d->status == table_status::creating || d->status == table_status::updating) &&
+                !d->restore.in_progress) {
                 catalog_command c;
                 c.op = catalog_command::kind::set_status;
                 c.table.name = d->name;

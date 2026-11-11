@@ -667,11 +667,55 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 5: data protection
 
-- [ ] 18. Backups and restore
+- [x] 18. Backups and restore
   - Consistent multi-range checkpoints, manifests on the object stores,
     `CreateBackup`, `ListBackups`, `DescribeBackup`, `DeleteBackup`,
     `RestoreTableFromBackup`
   - _Requirements: 17.1_
+  - Notes:
+    - `backup.hpp`. A backup is a record (`backups/<id>/backup.json`:
+      name, status, size, item count, the source descriptor and one entry
+      per data object with its sha256) and data objects of DynamoDB JSON
+      lines (`backups/<id>/data/000000.json`, at most 10,000 items or
+      16 MiB each). Stores: a directory (`KYTHIRA_DYNAMODB_BACKUP_DIR`,
+      written by rename), any Kythira object store through
+      `key_object_store` (`KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET` and friends
+      in the gateway daemon, when built with the AWS SDK), or memory (a
+      single node with neither). DIR and BUCKET together are refused at
+      start. A cluster with no store refuses `CreateBackup` with a
+      `ValidationException` naming the settings.
+    - Deviation from the design: no checkpoint at one catalog-chosen
+      applied index per group. The worker reads the table's whole range
+      with linearizable reads made after the request, group by group, so
+      every write acknowledged before `CreateBackup` is in the backup and
+      a write racing it may or may not be (AWS documents the same for
+      on-demand backups). Engine checkpoints would need a per-group
+      snapshot export the engines do not offer yet; PITR (task 19) can
+      revisit it.
+    - Only the base table's items are stored. A restore creates a new
+      table (new id, `RestoreSummary`, `CREATING` with
+      `RestoreInProgress` true, writes refused) with the backup's
+      indexes, or the subset named by the index overrides, and the
+      billing and throughput overrides; the worker verifies each object's
+      sha256, puts every item through the ordinary write path (so indexes
+      are rebuilt, not copied) and sends `restore_done` (catalog format
+      6), which makes the table `ACTIVE`; the status settler that turns new
+      tables `ACTIVE` leaves a restoring one alone. A damaged or missing object stops
+      the load; it is retried each pass and logged.
+    - The worker runs in the gateway's background loop beside the TTL
+      sweeper and the Kinesis publisher (on the catalog leader for
+      `raft_backend`), so a long backup delays those passes. It lists the
+      store when poked by `CreateBackup` or every 10 s; an unfinished
+      backup or restore is taken up again by the next pass, here or on a
+      new leader. A backup whose table was deleted before it was taken is
+      dropped. `DeleteBackup` refuses a `CREATING` backup
+      (`BackupInUseException`).
+    - Refusal kinds follow AWS; the wording is Kythira's (DynamoDB Local
+      has no backups, and no AWS run was made). Backup ARNs use AWS's
+      form, `<table arn>/backup/<14 digits>-<8 hex>`.
+    - Tests: `dynamodb_backup_test` (10 cases) and, in
+      `dynamodb_raft_backend_test`, a backup of a table split over two
+      groups taken by a worker on one node and restored through another.
 
 - [ ] 19. Point-in-time recovery
   - Change-log archive, `UpdateContinuousBackups`,

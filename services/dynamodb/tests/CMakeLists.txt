@@ -172,6 +172,13 @@ set_tests_properties(dynamodb_change_log_test PROPERTIES
 kythira_dynamodb_test(dynamodb_streams_test dynamodb_streams_test.cpp)
 set_tests_properties(dynamodb_streams_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Backups and restore (task 18): the five actions, the worker, the object
+# layout and the stores.
+kythira_dynamodb_test(dynamodb_backup_test dynamodb_backup_test.cpp)
+# kythira_test_support: tests/mock_object_store.hpp.
+target_link_libraries(dynamodb_backup_test PRIVATE kythira_test_support)
+set_tests_properties(dynamodb_backup_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 # Kinesis streaming destinations (task 17): the four actions, the
 # publisher's record format, order and resends, and the SigV4 sink.
 kythira_dynamodb_test(dynamodb_kinesis_destination_test dynamodb_kinesis_destination_test.cpp)

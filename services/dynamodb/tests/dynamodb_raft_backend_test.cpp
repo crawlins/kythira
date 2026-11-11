@@ -16,6 +16,7 @@
 #include "dynamodb_test_fixture.hpp"
 #include "multi_raft_test_fabric.hpp"
 
+#include <kythira/dynamodb/backup.hpp>
 #include <kythira/dynamodb/group_state_machine.hpp>
 #include <kythira/dynamodb/raft_backend.hpp>
 
@@ -1339,4 +1340,84 @@ BOOST_AUTO_TEST_CASE(a_stream_follows_a_split_and_vetoes_merges) {
     const auto groups = c.host(1).shard_map_snapshot().range_scan(items);
     BOOST_TEST_REQUIRE(groups.size() == 2U);
     BOOST_TEST(!c.backend(1).merge_groups(groups[1]._group_id, groups[0]._group_id));
+}
+
+BOOST_AUTO_TEST_CASE(a_backup_spans_a_split_and_restores_on_another_node) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    const auto d = c.backend(1).describe("Music");
+    BOOST_TEST_REQUIRE(d.has_value());
+    const auto put_pk = [&](const std::string& pk) {
+        c.node(1).ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":")" + pk +
+                                    R"("},"sk":{"N":"1"},"v":{"S":")" + pk + R"("}}})");
+    };
+    std::vector<std::string> pks;
+    for (char ch = 'a'; ch <= 'z'; ++ch) {
+        pks.emplace_back(1, ch);
+        put_pk(pks.back());
+    }
+    // The table spans two groups before the backup is asked for.
+    const auto cut = ddb::partition_prefix(d->table_id, ddb::attribute_value::string("m"));
+    const auto l = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(l != 0U);
+    auto f = c.host(l).split_shard(k_item_group, {cut}, std::chrono::milliseconds{5000});
+    BOOST_TEST_REQUIRE(f.wait(std::chrono::milliseconds{8000}));
+    std::ignore = std::move(f).get();
+
+    // The API on nodes 1 and 3, the worker on node 2, one shared store.
+    auto store = std::make_shared<ddb::memory_backup_store>();
+    ddb::backup_api<backend_type> api1{c.backend(1), store};
+    ddb::backup_api<backend_type> api3{c.backend(3), store};
+    api1.register_with(*c.node(1).fe);
+    api3.register_with(*c.node(3).fe);
+    ddb::backup_worker<backend_type> worker{c.backend(2), store};
+
+    const auto arn =
+        std::string(c.node(1)
+                        .ok("CreateBackup", R"({"TableName":"Music","BackupName":"nightly"})")
+                        .at("BackupDetails")
+                        .as_object()
+                        .at("BackupArn")
+                        .as_string());
+    const auto backup_status = [&] {
+        return std::string(c.node(3)
+                               .ok("DescribeBackup", R"({"BackupArn":")" + arn + R"("})")
+                               .at("BackupDescription")
+                               .as_object()
+                               .at("BackupDetails")
+                               .as_object()
+                               .at("BackupStatus")
+                               .as_string());
+    };
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        worker.poke();
+        (void)worker.pass();
+        return backup_status() == "AVAILABLE";
+    }));
+    // Written after the backup was taken: not in it.
+    put_pk("late");
+
+    const auto r = c.node(3).call("RestoreTableFromBackup",
+                                  R"({"TargetTableName":"Copy","BackupArn":")" + arn + R"("})");
+    BOOST_TEST_REQUIRE(r.status == 200U);
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        worker.poke();
+        (void)worker.pass();
+        return status_of(c.node(1), "Copy") == "ACTIVE";
+    }));
+    const auto scanned = c.node(1).ok("Scan", R"({"TableName":"Copy","ConsistentRead":true})");
+    BOOST_TEST(scanned.at("Count").to_number<std::int64_t>() == 26);
+    std::vector<std::string> got;
+    for (const auto& item : scanned.at("Items").as_array()) {
+        got.emplace_back(item.as_object().at("v").as_object().at("S").as_string());
+    }
+    std::ranges::sort(got);
+    BOOST_TEST((got == pks));
+    // The copy takes writes once loaded, on any node.
+    c.node(2).ok("PutItem", R"({"TableName":"Copy","Item":{"pk":{"S":"new"},"sk":{"N":"1"}}})");
+    BOOST_TEST(c.node(3)
+                   .ok("GetItem", R"({"TableName":"Copy","Key":{"pk":{"S":"new"},"sk":{"N":"1"}},)"
+                                  R"("ConsistentRead":true})")
+                   .contains("Item"));
 }
