@@ -20,6 +20,12 @@
 /// Only item groups split or merge: the catalog is small and stays one
 /// group, and `can_split_at` refuses every key outside `t/` (a catalog key
 /// is never a partition boundary).
+///
+/// Every group runs inside core's `transactional_state_machine`
+/// (`dynamo_txn_group_state_machine`), so `TransactWriteItems` and
+/// `TransactGetItems` lock items across groups through the tier-1
+/// coordinator (task 10, Requirement 12). Plain writes pass through it as
+/// `txn_plain` entries and are refused while a transaction holds their item.
 
 #include <kythira/dynamodb/catalog.hpp>
 #include <kythira/dynamodb/item_state_machine.hpp>
@@ -27,6 +33,7 @@
 
 #include <raft/memory_kv_engine.hpp>
 #include <raft/persistent_state_machine.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <cstdint>
 #include <filesystem>
@@ -63,6 +70,42 @@ public:
 
     auto apply(const std::vector<std::byte>& entry, LogIndex index) -> std::vector<std::byte> {
         return _catalog ? _catalog->apply(entry, index) : items().apply(entry, index);
+    }
+
+    auto stage(const std::vector<std::byte>& entry, kythira::write_batch& batch)
+        -> std::vector<std::byte> {
+        return _catalog ? _catalog->stage(entry, batch) : items().stage(entry, batch);
+    }
+
+    auto commit_staged(kythira::write_batch& batch, LogIndex index) -> void {
+        if (_catalog) {
+            _catalog->commit_staged(batch, index);
+        } else {
+            items().commit_staged(batch, index);
+        }
+    }
+
+    auto discard_staged() -> void {
+        if (_catalog) {
+            _catalog->discard_staged();
+        } else {
+            items().discard_staged();
+        }
+    }
+
+    [[nodiscard]] auto key_prefix() const -> const std::string& {
+        static const std::string none;
+        return none;
+    }
+
+    /// Items validate their transaction writes; the catalog takes part in
+    /// no transaction, so a write there is a gateway bug.
+    [[nodiscard]] auto validate(const std::string& key, const std::vector<std::byte>& entry) const
+        -> kythira::txn_validation {
+        if (_catalog) {
+            throw std::invalid_argument("dynamo_group_state_machine: a transaction in the catalog");
+        }
+        return items().validate(key, entry);
     }
 
     [[nodiscard]] auto applied_index() const -> LogIndex {
@@ -151,6 +194,34 @@ private:
     std::optional<items_type> _items;
 };
 
-static_assert(kythira::persistent_splittable_state_machine<dynamo_group_state_machine<>>);
+static_assert(kythira::persistent_staged_state_machine<dynamo_group_state_machine<>>);
+
+/// The key a plain command writes, for the transaction wrapper's lock
+/// check: an item command's base key (a drop step's table prefix), and for
+/// anything else, which is a catalog command, the catalog prefix. No
+/// transaction ever locks a catalog key, so that one never conflicts.
+struct dynamo_partitioner {
+    [[nodiscard]] auto key_of(const std::vector<std::byte>& command) const -> std::string {
+        item_command c;
+        const std::string_view bytes(reinterpret_cast<const char*>(command.data()),  // NOLINT
+                                     command.size());
+        if (decode_item_command(bytes, c) != item_command_status::ok) {
+            return std::string(k_catalog_prefix);
+        }
+        if (c.op == item_command::kind::drop_table_step) {
+            return table_prefix(c.table_id);
+        }
+        auto key = base_item_key(c.table_id, c.schema, c.payload);
+        return key ? std::move(*key) : table_prefix(c.table_id);
+    }
+};
+
+/// What a DynamoDB `multi_raft` host runs in every group.
+template<kythira::kv_engine Engine = kythira::memory_kv_engine>
+using dynamo_txn_group_state_machine =
+    kythira::transactional_state_machine<dynamo_group_state_machine<Engine>, std::string,
+                                         dynamo_partitioner>;
+
+static_assert(kythira::persistent_splittable_state_machine<dynamo_txn_group_state_machine<>>);
 
 }  // namespace kythira::dynamodb

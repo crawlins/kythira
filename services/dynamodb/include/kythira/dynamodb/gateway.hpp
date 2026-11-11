@@ -62,6 +62,7 @@
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/query_api.hpp>
 #include <kythira/dynamodb/table_api.hpp>
+#include <kythira/dynamodb/txn_api.hpp>
 
 #include <raft/beast_https_server.hpp>
 #include <raft/static_key_authorizer.hpp>
@@ -487,6 +488,7 @@ public:
           _items(backend, _guard.get()),
           _queries(backend),
           _batches(backend, _guard.get()),
+          _transactions(backend, _guard.get()),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -516,6 +518,7 @@ public:
         _items.register_with(*_front);
         _queries.register_with(*_front);
         _batches.register_with(*_front);
+        _transactions.register_with(*_front);
         _ready.store(true);
     }
 
@@ -588,6 +591,7 @@ private:
     item_api<Backend> _items;
     query_api<Backend> _queries;
     batch_api<Backend> _batches;
+    txn_api<Backend> _transactions;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

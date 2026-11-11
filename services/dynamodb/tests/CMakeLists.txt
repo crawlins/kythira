@@ -136,6 +136,11 @@ set_tests_properties(dynamodb_raft_backend_test PROPERTIES
 kythira_dynamodb_test(dynamodb_invariants_test dynamodb_invariants_test.cpp)
 set_tests_properties(dynamodb_invariants_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Transactions below the API (task 10): the validate hook, one entry's
+# writes staged into one batch, and a group under core's transaction wrapper.
+kythira_dynamodb_test(dynamodb_txn_test dynamodb_txn_test.cpp)
+set_tests_properties(dynamodb_txn_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 kythira_dynamodb_test(dynamodb_ops_corpus_test dynamodb_ops_corpus_test.cpp)
 target_compile_definitions(dynamodb_ops_corpus_test PRIVATE
     KYTHIRA_OPS_CORPUS="${KYTHIRA_DYNAMODB_SOURCE_DIR}/tests/data/ops_corpus.jsonl")

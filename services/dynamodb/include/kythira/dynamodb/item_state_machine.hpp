@@ -41,6 +41,7 @@
 
 #include <raft/memory_kv_engine.hpp>
 #include <raft/persistent_state_machine.hpp>
+#include <raft/txn_state_machine.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -49,11 +50,13 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace kythira::dynamodb {
@@ -76,6 +79,14 @@ struct item_command {
         /// Deletes up to `max_keys` items of a deleted table from this
         /// group (Requirement 7.3: background delete, bounded per entry).
         drop_table_step = 4,
+        /// A transaction's `ConditionCheck` (Requirement 12.2): the
+        /// condition is checked while the item is locked, and nothing is
+        /// written.
+        condition_check = 5,
+        /// A `TransactGetItems` read (Requirement 12.5): the item is locked
+        /// with every other item of the read, `validate` reports what it
+        /// holds, and nothing is written.
+        read_lock = 6,
     };
 
     kind op = kind::put;
@@ -229,8 +240,12 @@ enum class item_command_status : std::uint8_t {
         return item_command_status::malformed;
     }
     const auto op = static_cast<std::uint8_t>(bytes[1]);
-    if (op < 1 || op > 4) {
+    if (op == 0) {
         return item_command_status::malformed;
+    }
+    if (op > static_cast<std::uint8_t>(item_command::kind::read_lock)) {
+        // A kind a later release added: upgrade rather than guess.
+        return item_command_status::unknown_version;
     }
     bytes.remove_prefix(2);
     item_command c;
@@ -377,34 +392,84 @@ public:
         if (index <= _applied) {
             return {};
         }
-        item_command c;
-        const std::string_view bytes(reinterpret_cast<const char*>(entry.data()),  // NOLINT
-                                     entry.size());
-        switch (decode_item_command(bytes, c)) {
-            case item_command_status::ok:
-                break;
-            case item_command_status::unknown_version:
-                // Design "Error handling": stop the group rather than guess,
-                // so a rolling upgrade finishes before new syntax is used.
-                throw std::runtime_error(
-                    "dynamo_item_state_machine: entry " + std::to_string(index) +
-                    " uses a newer item or expression format; upgrade this node");
-            case item_command_status::malformed:
-                throw std::invalid_argument("dynamo_item_state_machine: malformed entry " +
-                                            std::to_string(index));
-        }
         kythira::write_batch batch;
+        auto out = stage(entry, batch);
+        commit_staged(batch, index);
+        return out;
+    }
+
+    // -- persistent_staged_state_machine --------------------------------------
+    //
+    // How `transactional_state_machine` drives this machine: every write of
+    // one entry (a one-phase commit's, or the intents a commit rolls
+    // forward) is staged into one batch, then committed once with the
+    // applied index. A later write of the batch reads what an earlier one
+    // staged, so two writes to one item collection keep its size right.
+
+    /// Stages one command's effects into `batch` and returns its result.
+    auto stage(const std::vector<std::byte>& entry, kythira::write_batch& batch)
+        -> std::vector<std::byte> {
+        const auto c = decode_entry(entry);
+        const auto first = batch.size();
         const auto result = c.op == item_command::kind::drop_table_step ? drop_table_step(c, batch)
                                                                         : write_item(c, batch);
+        note_staged(batch, first);
+        return to_bytes(encode_item_result(result));
+    }
+
+    /// Writes `batch` with the applied index `index`.
+    auto commit_staged(kythira::write_batch& batch, LogIndex index) -> void {
         put_applied(batch, index);
         const auto seq = engine().write(batch);
+        _staged.clear();
         _applied = index;
         _ring.emplace_back(index, seq);
         trim_ring();
-        const auto out = encode_item_result(result);
-        std::vector<std::byte> bytes_out(out.size());
-        std::memcpy(bytes_out.data(), out.data(), out.size());
-        return bytes_out;
+    }
+
+    /// Forgets what was staged; nothing reached the engine.
+    auto discard_staged() -> void { _staged.clear(); }
+
+    /// Transaction state is kept at the item's own engine key, in the
+    /// engine's `txn` column family: the keys are engine keys already.
+    [[nodiscard]] auto key_prefix() const -> const std::string& {
+        static const std::string none;
+        return none;
+    }
+
+    // -- txn_validating_state_machine (Requirement 12.1) ----------------------
+
+    /// Whether a transaction's write of `key` may proceed, judged against
+    /// the committed item: its condition holds, an update can apply, and
+    /// the result keeps every limit. A refusal's detail is the encoded
+    /// `item_result` the write would have returned (with the stored item
+    /// when `ReturnValuesOnConditionCheckFailure=ALL_OLD`). A `read_lock`
+    /// always passes, and its detail is the encoded result carrying the
+    /// stored item, which is how `TransactGetItems` reads under its locks.
+    ///
+    /// Each write is judged alone. Two writes of one transaction to one item
+    /// collection that each fit under its size limit, but not together, both
+    /// pass, and the second then fails when it applies; the limit is 10 GB,
+    /// so this is noted rather than handled.
+    [[nodiscard]] auto validate(const std::string& key, const std::vector<std::byte>& entry) const
+        -> kythira::txn_validation {
+        const auto c = decode_entry(entry);
+        if (c.op == item_command::kind::drop_table_step) {
+            throw std::invalid_argument("dynamo_item_state_machine: a drop step in a transaction");
+        }
+        if (base_item_key(c.table_id, c.schema, c.payload) != key) {
+            throw std::invalid_argument(
+                "dynamo_item_state_machine: a transaction write filed under another key");
+        }
+        kythira::write_batch scratch;
+        const auto r = write_item(c, scratch);
+        if (c.op == item_command::kind::read_lock) {
+            return {true, to_bytes(encode_item_result(r))};
+        }
+        if (r.outcome == item_result::status::ok) {
+            return {};
+        }
+        return {false, to_bytes(encode_item_result(r))};
     }
 
     [[nodiscard]] auto applied_index() const -> LogIndex { return _applied; }
@@ -567,8 +632,55 @@ private:
         return *_engine;
     }
 
+    /// The committed value at `key`, or what this entry already staged there.
+    [[nodiscard]] auto read_value(kythira::column_family cf, const std::string& key) const
+        -> std::optional<std::string> {
+        if (const auto it = _staged.find({cf, key}); it != _staged.end()) {
+            return it->second;
+        }
+        return engine().get(cf, key);
+    }
+
+    /// Remembers the data and meta writes `batch` gained from operation
+    /// `first` on, so later writes of the same entry read them.
+    auto note_staged(const kythira::write_batch& batch, std::size_t first) -> void {
+        const auto& ops = batch.operations();
+        for (std::size_t i = first; i < ops.size(); ++i) {
+            if (const auto* put = std::get_if<kythira::write_batch::put_op>(&ops[i])) {
+                _staged[{put->cf, put->key}] = put->value;
+            } else if (const auto* erase = std::get_if<kythira::write_batch::erase_op>(&ops[i])) {
+                _staged[{erase->cf, erase->key}] = std::nullopt;
+            }
+        }
+    }
+
+    [[nodiscard]] auto decode_entry(const std::vector<std::byte>& entry) const -> item_command {
+        item_command c;
+        const std::string_view bytes(reinterpret_cast<const char*>(entry.data()),  // NOLINT
+                                     entry.size());
+        switch (decode_item_command(bytes, c)) {
+            case item_command_status::ok:
+                break;
+            case item_command_status::unknown_version:
+                // Design "Error handling": stop the group rather than guess,
+                // so a rolling upgrade finishes before new syntax is used.
+                throw std::runtime_error(
+                    "dynamo_item_state_machine: an entry uses a newer item or expression "
+                    "format; upgrade this node");
+            case item_command_status::malformed:
+                throw std::invalid_argument("dynamo_item_state_machine: malformed entry");
+        }
+        return c;
+    }
+
+    static auto to_bytes(const std::string& s) -> std::vector<std::byte> {
+        std::vector<std::byte> out(s.size());
+        std::memcpy(out.data(), s.data(), s.size());
+        return out;
+    }
+
     [[nodiscard]] auto load(const std::string& key) const -> std::optional<item> {
-        const auto v = engine().get(kythira::column_family::data, key);
+        const auto v = read_value(kythira::column_family::data, key);
         if (!v) {
             return std::nullopt;
         }
@@ -580,7 +692,7 @@ private:
     }
 
     [[nodiscard]] auto load_counter(const std::string& key) const -> std::uint64_t {
-        const auto v = engine().get(kythira::column_family::meta, key);
+        const auto v = read_value(kythira::column_family::meta, key);
         if (!v) {
             return 0;
         }
@@ -648,6 +760,15 @@ private:
             return r;
         }
 
+        if (c.op == item_command::kind::condition_check || c.op == item_command::kind::read_lock) {
+            // Nothing to write. A read reports the item it found.
+            item_result r;
+            if (c.op == item_command::kind::read_lock) {
+                r.attributes = old;
+            }
+            return r;
+        }
+
         std::optional<item> next;
         switch (c.op) {
             case item_command::kind::put:
@@ -687,6 +808,8 @@ private:
             }
             case item_command::kind::delete_:
             case item_command::kind::drop_table_step:
+            case item_command::kind::condition_check:
+            case item_command::kind::read_lock:
                 break;
         }
 
@@ -871,8 +994,11 @@ private:
     LogIndex _applied{};
     LogIndex _durable_floor{};
     std::deque<std::pair<LogIndex, kythira::engine_sequence>> _ring;
+    /// Data and meta writes staged into the open batch (see `stage`).
+    std::map<std::pair<kythira::column_family, std::string>, std::optional<std::string>> _staged;
 };
 
-static_assert(kythira::persistent_splittable_state_machine<dynamo_item_state_machine<>>);
+static_assert(kythira::persistent_staged_state_machine<dynamo_item_state_machine<>>);
+static_assert(kythira::txn_validating_state_machine<dynamo_item_state_machine<>, std::string>);
 
 }  // namespace kythira::dynamodb

@@ -24,11 +24,13 @@
 #include <raft/metrics.hpp>
 #include <raft/multi_raft_impl.hpp>
 #include <raft/persistence.hpp>
+#include <raft/txn_envelope.hpp>
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -83,7 +85,7 @@ struct host_types {
     using logger_type = kythira::console_logger;
     using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-    using state_machine_type = ddb::dynamo_group_state_machine<kythira::memory_kv_engine>;
+    using state_machine_type = ddb::dynamo_txn_group_state_machine<kythira::memory_kv_engine>;
 
     using configuration_type = kythira::raft_configuration;
 
@@ -124,7 +126,8 @@ struct stack {
           tables(backend),
           items(backend, &guard),
           queries(backend),
-          batches(backend, &guard) {
+          batches(backend, &guard),
+          transactions(backend, &guard) {
         auth.register_service(ddb::dynamodb_static_roles());
         ddb::front_end_config cfg;
         cfg.advertised_endpoint = "localhost:8000";
@@ -133,6 +136,7 @@ struct stack {
         items.register_with(*fe);
         queries.register_with(*fe);
         batches.register_with(*fe);
+        transactions.register_with(*fe);
     }
 
     auto call(std::string_view op, const std::string& body) -> reply {
@@ -157,6 +161,7 @@ struct stack {
     ddb::item_api<backend_type> items;
     ddb::query_api<backend_type> queries;
     ddb::batch_api<backend_type> batches;
+    ddb::txn_api<backend_type> transactions;
 };
 
 auto test_options(std::size_t page_bytes = std::size_t{1} << 20U) -> ddb::raft_backend_options {
@@ -301,6 +306,8 @@ private:
             return out;
         };
         cfg.split_merge_interval = std::chrono::milliseconds{0};
+        // Expired transaction locks resolve within a few passes.
+        cfg.resolver_interval = std::chrono::milliseconds{100};
         return cfg;
     }
 
@@ -535,4 +542,315 @@ BOOST_AUTO_TEST_CASE(item_leader_loss) {
     const auto r2 = c.node(old == 3 ? 2U : 3U).ok("GetItem", get_body(true, "after", 2));
     BOOST_TEST(r2.contains("Item"));
     c.fabric().revive(old);
+}
+
+namespace {
+
+/// Splits the item group so each partition of `pks` lies in a group of its
+/// own (partitions sort by their hash, so the cuts are the partitions
+/// themselves, all but the lowest), and waits until every node routes by
+/// the new layout.
+auto split_apart(cluster& c, const std::vector<std::string>& pks) -> void {
+    const auto d = c.backend(1).describe("Music");
+    BOOST_TEST_REQUIRE(d.has_value());
+    std::vector<std::string> cuts;
+    for (const auto& pk : pks) {
+        cuts.push_back(ddb::partition_prefix(d->table_id, ddb::attribute_value::string(pk)));
+    }
+    std::sort(cuts.begin(), cuts.end());
+    cuts.erase(cuts.begin());
+    const auto l = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(l != 0U);
+    auto f = c.host(l).split_shard(k_item_group, cuts, std::chrono::milliseconds{5000});
+    BOOST_TEST_REQUIRE(f.wait(std::chrono::milliseconds{8000}));
+    std::ignore = std::move(f).get();
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+            kythira::shard_range<std::string> all;
+            all._start = std::string("t/");
+            if (c.host(id).shard_map_snapshot().range_scan(all).size() != pks.size()) {
+                return false;
+            }
+        }
+        return true;
+    }));
+}
+
+auto value_of(stack& s, const std::string& pk, int sk) -> std::string {
+    const auto r = s.ok("GetItem", get_body(true, pk, sk));
+    if (!r.contains("Item")) {
+        return "<none>";
+    }
+    const auto& it = r.at("Item").as_object();
+    return it.contains("v") ? std::string(it.at("v").as_object().at("N").as_string()) : "<no v>";
+}
+
+auto put_action(const std::string& pk, int sk, int v) -> std::string {
+    return R"({"Put":{"TableName":"Music","Item":{"pk":{"S":")" + pk + R"("},"sk":{"N":")" +
+           std::to_string(sk) + R"("},"v":{"N":")" + std::to_string(v) + R"("}}}})";
+}
+
+auto key_json(const std::string& pk, int sk) -> std::string {
+    return R"({"pk":{"S":")" + pk + R"("},"sk":{"N":")" + std::to_string(sk) + R"("}})";
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(transactions_span_groups_all_or_nothing) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    for (const char* pk : {"p1", "p5", "p9"}) {
+        put(c.node(1), pk, 1, R"(,"v":{"N":"1"})");
+    }
+    // p1, p5 and p9 in three different groups.
+    split_apart(c, {"p1", "p5", "p9"});
+
+    // Through a node that leads none of the item groups it touches, if any.
+    const auto via = c.follower(k_item_group);
+    c.node(via).ok(
+        "TransactWriteItems",
+        R"({"TransactItems":[)" + put_action("p1", 1, 10) + "," + put_action("p5", 1, 50) + "," +
+            R"({"Update":{"TableName":"Music","Key":)" + key_json("p9", 1) +
+            R"(,"UpdateExpression":"SET v = v + :n","ExpressionAttributeValues":{":n":{"N":"89"}}}}]})");
+    for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+        BOOST_TEST(value_of(c.node(id), "p1", 1) == "10");
+        BOOST_TEST(value_of(c.node(id), "p5", 1) == "50");
+        BOOST_TEST(value_of(c.node(id), "p9", 1) == "90");
+    }
+
+    // One failing condition in the third group cancels the writes in the
+    // other two.
+    const auto refused = c.node(3).call(
+        "TransactWriteItems",
+        R"({"TransactItems":[)" + put_action("p1", 1, 11) + "," + put_action("p5", 1, 51) + "," +
+            R"({"ConditionCheck":{"TableName":"Music","Key":)" + key_json("p9", 1) +
+            R"(,"ConditionExpression":"v = :x","ExpressionAttributeValues":{":x":{"N":"0"}},)"
+            R"("ReturnValuesOnConditionCheckFailure":"ALL_OLD"}}]})");
+    BOOST_TEST(refused.status == 400U);
+    BOOST_TEST(refused.type() == "TransactionCanceledException");
+    const auto& reasons = refused.body.at("CancellationReasons").as_array();
+    BOOST_TEST_REQUIRE(reasons.size() == 3U);
+    BOOST_TEST(reasons[0].as_object().at("Code").as_string() == "None");
+    BOOST_TEST(reasons[1].as_object().at("Code").as_string() == "None");
+    BOOST_TEST(reasons[2].as_object().at("Code").as_string() == "ConditionalCheckFailed");
+    BOOST_TEST(
+        reasons[2].as_object().at("Item").as_object().at("v").as_object().at("N").as_string() ==
+        "90");
+    for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+        BOOST_TEST(value_of(c.node(id), "p1", 1) == "10");
+        BOOST_TEST(value_of(c.node(id), "p5", 1) == "50");
+    }
+
+    // A read of all three, and of one that is not there.
+    const auto got = c.node(2).ok(
+        "TransactGetItems", R"({"TransactItems":[{"Get":{"TableName":"Music","Key":)" +
+                                key_json("p1", 1) + R"(}},{"Get":{"TableName":"Music","Key":)" +
+                                key_json("p5", 1) + R"(}},{"Get":{"TableName":"Music","Key":)" +
+                                key_json("p9", 1) + R"(}},{"Get":{"TableName":"Music","Key":)" +
+                                key_json("p4", 1) + R"(}}]})");
+    const auto& responses = got.at("Responses").as_array();
+    BOOST_TEST_REQUIRE(responses.size() == 4U);
+    BOOST_TEST(responses[2].as_object().at("Item").as_object().at("v").as_object().at("N") == "90");
+    BOOST_TEST(responses[3].as_object().empty());
+
+    // No lock is left behind on any replica once the secondaries land.
+    BOOST_TEST(cluster::await([&] {
+        for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+            kythira::shard_range<std::string> all;
+            all._start = std::string("t/");
+            for (const auto& d : c.host(id).shard_map_snapshot().range_scan(all)) {
+                const auto locks = c.host(id).with_group_state_machine(
+                    d._group_id, [](auto& sm, const auto&) { return sm.intent_count(); });
+                if (locks && *locks != 0U) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }));
+}
+
+BOOST_AUTO_TEST_CASE(a_held_lock_refuses_plain_writes_until_it_resolves) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    put(c.node(1), "held", 1, R"(,"v":{"N":"1"})");
+
+    // A coordinator that prepared and died: an intent with a short TTL and
+    // nobody to commit it.
+    const auto d = c.backend(1).describe("Music");
+    BOOST_TEST_REQUIRE(d.has_value());
+    ddb::item_command cmd;
+    cmd.op = ddb::item_command::kind::put;
+    cmd.table_id = d->table_id;
+    cmd.schema = d->schema;
+    cmd.payload =
+        ddb::item{{"pk", ddb::attribute_value::string("held")},
+                  {"sk", ddb::attribute_value::number(*ddb::dynamo_decimal::from_string("1"))}};
+    const auto key = *ddb::base_item_key(d->table_id, d->schema, cmd.payload);
+    const auto bytes = ddb::encode_item_command(cmd);
+    const std::vector<std::byte> command(
+        reinterpret_cast<const std::byte*>(bytes.data()),
+        reinterpret_cast<const std::byte*>(bytes.data()) + bytes.size());
+    const auto l = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(l != 0U);
+    const auto deadline = c.host(l).txn_now_ms() + 1500;
+    const auto envelope = kythira::encode_txn_envelope<std::string>(
+        kythira::txn_prepare<std::string>{kythira::txn_id{7, 7},
+                                          key,
+                                          {kythira::txn_write<std::string>{key, command}},
+                                          {},
+                                          0,
+                                          deadline,
+                                          true});
+    auto f = c.host(l).submit_txn({key}, envelope, std::chrono::milliseconds{3000});
+    BOOST_TEST_REQUIRE(f.wait(std::chrono::milliseconds{4000}));
+    const auto prepared = kythira::decode_txn_result<std::string>(std::move(f).get());
+    BOOST_TEST((prepared._status == kythira::txn_result_status::ok));
+
+    // While it stands: a plain write conflicts, and a transaction is
+    // cancelled with the item's reason.
+    const auto plain =
+        c.node(c.follower(k_item_group))
+            .call("PutItem", R"({"TableName":"Music","Item":)" + key_json("held", 1) + "}");
+    BOOST_TEST(plain.status == 400U);
+    BOOST_TEST(plain.type() == "TransactionConflictException");
+    const auto txn =
+        c.node(2).call("TransactWriteItems", R"({"TransactItems":[)" + put_action("free", 1, 1) +
+                                                 "," + put_action("held", 1, 2) + "]}");
+    BOOST_TEST(txn.type() == "TransactionCanceledException");
+    const auto& reasons = txn.body.at("CancellationReasons").as_array();
+    BOOST_TEST_REQUIRE(reasons.size() == 2U);
+    BOOST_TEST(reasons[1].as_object().at("Code").as_string() == "TransactionConflict");
+    BOOST_TEST(value_of(c.node(1), "free", 1) == "<none>");
+
+    // Past its TTL the resolver aborts it, and writes go through.
+    BOOST_TEST(cluster::await(
+        [&] {
+            return c.node(3)
+                       .call("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"held"},)"
+                                        R"("sk":{"N":"1"},"v":{"N":"3"}}})")
+                       .status == 200U;
+        },
+        std::chrono::milliseconds{10000}));
+    BOOST_TEST(value_of(c.node(1), "held", 1) == "3");
+}
+
+BOOST_AUTO_TEST_CASE(transactions_survive_an_item_leader_loss) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    put(c.node(1), "a", 1, R"(,"v":{"N":"1"})");
+    split_apart(c, {"a", "z"});
+
+    const auto old = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(old != 0U);
+    c.fabric().kill(old);
+    const auto live = old == 1 ? 2U : 1U;
+    c.node(live).ok("TransactWriteItems", R"({"TransactItems":[)" + put_action("a", 1, 2) + "," +
+                                              put_action("z", 1, 3) + "]}");
+    BOOST_TEST(value_of(c.node(live), "a", 1) == "2");
+    BOOST_TEST(value_of(c.node(live), "z", 1) == "3");
+    const auto got =
+        c.node(old == 3 ? 2U : 3U)
+            .ok("TransactGetItems",
+                R"({"TransactItems":[{"Get":{"TableName":"Music","Key":)" + key_json("a", 1) +
+                    R"(}},{"Get":{"TableName":"Music","Key":)" + key_json("z", 1) + R"(}}]})");
+    BOOST_TEST(got.at("Responses").as_array().size() == 2U);
+    c.fabric().revive(old);
+}
+
+// Leaders killed mid-transaction (task 10's chaos case, in process): one node
+// runs transactions over two groups back to back while another kills and
+// revives the leader of one of them. Any single transaction may fail or time
+// out, but none may land on one item only, so once the cluster settles a
+// transactional read sees both items equal, at the value of a transaction
+// that ran.
+BOOST_AUTO_TEST_CASE(leaders_killed_mid_transaction_never_split_one) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    put(c.node(1), "a", 1, R"(,"v":{"N":"0"})");
+    put(c.node(1), "z", 1, R"(,"v":{"N":"0"})");
+    split_apart(c, {"a", "z"});
+
+    // The driving node is never killed; the others take turns leading.
+    const std::uint64_t driver = 1;
+    std::atomic<bool> stop{false};
+    std::atomic<int> committed{0};
+    std::atomic<int> last_ok{0};
+    std::thread load([&] {
+        for (int i = 1; !stop.load(); ++i) {
+            const auto r = c.node(driver).call(
+                "TransactWriteItems", R"({"TransactItems":[)" + put_action("a", 1, i) + "," +
+                                          put_action("z", 1, i) + "]}");
+            if (r.status == 200U) {
+                committed.fetch_add(1);
+                last_ok.store(i);
+            }
+        }
+    });
+
+    int leaders_killed = 0;
+    for (int round = 0; round < 3; ++round) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{300});
+        std::uint64_t victim = 0;
+        BOOST_TEST_REQUIRE(cluster::await([&] {
+            victim = c.leader(k_item_group);
+            return victim != 0U;
+        }));
+        if (victim == driver) {
+            // The driver's own coordinator must survive to be checked, so
+            // kill a follower instead; the other group may be led there.
+            victim = 2;
+        } else {
+            ++leaders_killed;
+        }
+        c.fabric().kill(victim);
+        std::this_thread::sleep_for(std::chrono::milliseconds{700});
+        c.fabric().revive(victim);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    stop.store(true);
+    load.join();
+    BOOST_TEST_MESSAGE("committed " << committed.load() << " of " << last_ok.load() << ", "
+                                    << leaders_killed << " leader kills");
+    BOOST_TEST(committed.load() > 0);
+
+    // Locks a dead coordinator or primary left behind are resolved by the
+    // resolvers, after which a transactional read gets both items.
+    std::string a;
+    std::string z;
+    BOOST_TEST_REQUIRE(cluster::await(
+        [&] {
+            const auto r = c.node(driver).call(
+                "TransactGetItems",
+                R"({"TransactItems":[{"Get":{"TableName":"Music","Key":)" + key_json("a", 1) +
+                    R"(}},{"Get":{"TableName":"Music","Key":)" + key_json("z", 1) + R"(}}]})");
+            if (r.status != 200U) {
+                return false;
+            }
+            const auto& got = r.body.at("Responses").as_array();
+            a = got.at(0)
+                    .as_object()
+                    .at("Item")
+                    .as_object()
+                    .at("v")
+                    .as_object()
+                    .at("N")
+                    .as_string();
+            z = got.at(1)
+                    .as_object()
+                    .at("Item")
+                    .as_object()
+                    .at("v")
+                    .as_object()
+                    .at("N")
+                    .as_string();
+            return true;
+        },
+        std::chrono::milliseconds{30000}));
+    BOOST_TEST(a == z);
+    BOOST_TEST(std::stoi(a) >= last_ok.load());
 }

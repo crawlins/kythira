@@ -16,6 +16,7 @@
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/query_api.hpp>
 #include <kythira/dynamodb/table_api.hpp>
+#include <kythira/dynamodb/txn_api.hpp>
 
 #include <raft/memory_kv_engine.hpp>
 #include <raft/static_key_authorizer.hpp>
@@ -108,6 +109,7 @@ struct fixture {
     ddb::item_api<ddb::local_backend<>> items{backend, &guard};
     ddb::query_api<ddb::local_backend<>> queries{backend};
     ddb::batch_api<ddb::local_backend<>> batches{backend, &guard};
+    ddb::txn_api<ddb::local_backend<>> transactions{backend, &guard};
 
     fixture() {
         auth.register_service(ddb::dynamodb_static_roles());
@@ -118,6 +120,7 @@ struct fixture {
         items.register_with(*fe);
         queries.register_with(*fe);
         batches.register_with(*fe);
+        transactions.register_with(*fe);
     }
 
     /// When set, requests go here instead of the front end: a test can run
