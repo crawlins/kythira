@@ -141,6 +141,10 @@ enum class txn_abort_reason : std::uint8_t {
     /// (Requirement 9.2). Never retried: the reads are stale, so begin
     /// again and read afresh.
     read_conflict,
+    /// The shards' state machine refused a write in `validate`
+    /// (`txn_validating_state_machine`); `_validations` says which. Never
+    /// retried: the same writes would be refused again.
+    validation_failed,
 };
 
 template<shard_key Key> struct txn_outcome {
@@ -155,6 +159,12 @@ template<shard_key Key> struct txn_outcome {
     std::uint64_t _commit_ts{0};
     /// Why, for `prepare_failed` and `unknown`.
     std::string _detail{};
+    /// Over a validating state machine, the verdicts the shards reported, in
+    /// no particular order across shards. A shard lists all of its writes
+    /// when it refused one or one had a detail to report, and none when it
+    /// simply accepted them, so a write with no verdict here was accepted
+    /// (or its shard never answered, on an abort for another reason).
+    std::vector<txn_validation_entry<Key>> _validations{};
 };
 
 /// @brief The protocol points a test can stop a coordinator at, as if its
@@ -650,6 +660,16 @@ private:
         switch (res._status) {
             case txn_result_status::ok:
                 return outcome_type{._txn = _txn, ._primary = std::move(primary)};
+            case txn_result_status::validated: {
+                auto out = outcome_type{._txn = _txn, ._primary = std::move(primary)};
+                out._validations = res._validations;
+                return out;
+            }
+            case txn_result_status::validation_failed: {
+                auto out = aborted(txn_abort_reason::validation_failed, std::move(primary));
+                out._validations = res._validations;
+                return out;
+            }
             case txn_result_status::write_conflict: {
                 auto out = aborted(txn_abort_reason::write_conflict, std::move(primary));
                 out._conflict_key = res._key;
@@ -741,6 +761,7 @@ private:
         // (Requirement 4.2) and re-sending any group a split moved.
         std::vector<group_writes> sent;
         std::optional<outcome_type> failure;
+        std::vector<txn_validation_entry<Key>> verdicts;
         auto next_heartbeat = clock::now() + heartbeat_every;
         while (!pending.empty()) {
             auto p = std::move(pending.back());
@@ -763,7 +784,9 @@ private:
             sent.push_back(p._group);
             try {
                 const auto res = decode(std::move(p._future).get());
-                if (res._status != txn_result_status::ok && !failure.has_value()) {
+                verdicts.insert(verdicts.end(), res._validations.begin(), res._validations.end());
+                if (res._status != txn_result_status::ok &&
+                    res._status != txn_result_status::validated && !failure.has_value()) {
                     failure = from_result(res, primary);
                 }
             } catch (...) {
@@ -793,6 +816,7 @@ private:
 
         if (failure.has_value()) {
             abort_groups(sent, primary, deadline);
+            failure->_validations = std::move(verdicts);
             return *failure;
         }
         hook(txn_step::prepared);
@@ -838,6 +862,7 @@ private:
             _in_flight.push_back(_client.send(keys, env, _options.timeout));
         }
         hook(txn_step::secondaries_sent);
+        out._validations = std::move(verdicts);
         return out;
     }
 
