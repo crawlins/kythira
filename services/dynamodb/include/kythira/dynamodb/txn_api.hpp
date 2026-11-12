@@ -351,6 +351,7 @@ private:
         c.gsis = maintained_indexes(table.gsis);
         c.log_changes = table.logs_changes();
         c.stream_ms = table.stream_label();
+        c.region = table.region;
         return c;
     }
 

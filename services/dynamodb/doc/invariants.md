@@ -220,6 +220,8 @@ all fixed with it:
 | A stream shows only its table's records written while it was enabled, with the images its view type names, in write order within a shard; a disabled stream stays listed, its shards ended, while its records can be read | Streams | `dynamodb_streams_test` |
 | A split closes a stream shard and opens one per child naming it, records stay readable for 24 hours from closed parents too, and a merge is refused while a table has a stream (a shard has one parent) | Streams | `dynamodb_streams_test`, `dynamodb_raft_backend_test` |
 
+| A global table's replicas settle on the same items: a write applies elsewhere only if its (time, region) stamp is newer than the item's, a write made after seeing another wins whatever the clocks say, deletes are stamped too, and a new replica's copy keeps each item's stamp | Global tables | `dynamodb_global_table_test` |
+
 ## Deferred
 
 These belong to features not built yet. Each moves into the tables above
@@ -228,6 +230,5 @@ with the task that builds it.
 | Invariant | Source | Task |
 |---|---|---|
 | At most 2 readers share a stream shard | Limits | 16 |
-| Global tables replicate with last writer wins | — | 22 |
 | Resource policies are at most 20 KB | Limits | 21 |
 | Encryption at rest and DAX | — | out of scope |

@@ -85,6 +85,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/vector_graph.hpp`, `hnsw_graph.hpp` | The nearest-neighbour structure of a vector index partition: exact, and HNSW through hnswlib | 26 |
 | `include/kythira/dynamodb/vector_search.hpp` | `SearchVectors`, each node's graphs fed by the change log, and the worker that finishes index creates and deletes | 26 |
 | `tests/dynamodb_vector_test.cpp` | Vector index definitions, updates and the worker, scores, partitions, filters, projections, graphs that follow writes, HNSW recall | 26 |
+| `include/kythira/dynamodb/global_tables.hpp` | Global tables: the peer API's receiver, the replicator, peer links over HTTP | 22 |
+| `tests/dynamodb_global_table_test.cpp` | Replicas in linked clusters: backfill, both directions, clock skew, a three-region mesh, deletion, refusals | 22 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
@@ -158,6 +160,24 @@ then follows the change log, so a search on a node sees writes made
 elsewhere once they reach the log; every result is read again from the
 table, so a search never returns an item that is gone. A build with hnswlib
 (vcpkg builds have it) searches large partitions approximately with HNSW.
+
+Global tables (version 2019.11.21) replicate a table to the same-named
+table in other Kythira clusters, one region each. Give every node of each
+cluster the others as peers and a replication principal's keys that the
+peers accept:
+
+```sh
+KYTHIRA_DYNAMODB_REGION=us-east-1
+KYTHIRA_DYNAMODB_REPLICA_PEERS=us-west-2=https://ddb.west.example:8000
+KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID=AKID...
+KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY=...
+aws dynamodb update-table --table-name orders \
+    --replica-updates '[{"Create":{"RegionName":"us-west-2"}}]'
+```
+
+Writes replicate asynchronously from the change log, and the last writer
+wins by (time, region) as on AWS; `global_tables.hpp` explains the
+ordering and `doc/unsupported.md` lists what `ReplicaUpdates` does not do.
 
 ## Core targets and variables used
 

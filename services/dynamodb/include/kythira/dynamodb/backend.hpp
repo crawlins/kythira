@@ -64,6 +64,11 @@ namespace kythira::dynamodb {
 /// Gets each item of a range read with its base key; returns false to stop.
 using range_visitor = std::function<bool(std::string_view base_key, const item&)>;
 
+/// A range read's visitor that also gets each item's last-writer-wins
+/// stamp (task 22: a global table's backfill carries them).
+using stamped_visitor = std::function<bool(std::string_view base_key, const item&,
+                                           const std::optional<replica_stamp>&)>;
+
 /// `c` with its change record timestamp set from the backend's clock, when
 /// its table logs changes and nothing set one (task 15). Replicas take the
 /// time from the entry, never from their own clocks.
@@ -119,6 +124,14 @@ concept change_feed_backend =
              std::size_t limit) {
         { b.change_shards(range) } -> std::same_as<std::vector<change_shard>>;
         { b.read_changes(key, seq, limit) } -> std::same_as<change_page>;
+    };
+
+/// A backend a global table replicates from (task 22): a range read that
+/// carries each item's last-writer-wins stamp.
+template<typename B>
+concept replica_backend =
+    requires(B& b, const kythira::key_range& range, const stamped_visitor& visit) {
+        { b.read_stamped_range(range, visit) } -> std::same_as<void>;
     };
 
 /// Both state machines on one engine, applied in-process.
@@ -210,6 +223,15 @@ public:
         // must not call back into the backend.
         const std::lock_guard lock(_mu);
         _items.scan_items(range, direction, visit);
+    }
+
+    /// `read_range` with each item's stamp.
+    auto read_stamped_range(const kythira::key_range& range, const stamped_visitor& visit) -> void {
+        const std::lock_guard lock(_mu);
+        _items.scan_items(range, kythira::scan_direction::forward,
+                          [&](std::string_view key, const item& it) {
+                              return visit(key, it, _items.stamp_of(std::string(key)));
+                          });
     }
 
     auto describe(std::string_view name) -> std::optional<table_descriptor> {

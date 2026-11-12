@@ -203,6 +203,12 @@ set_tests_properties(dynamodb_policy_insights_test PROPERTIES
 kythira_dynamodb_test(dynamodb_vector_test dynamodb_vector_test.cpp)
 set_tests_properties(dynamodb_vector_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Global tables (task 22): replicas in linked in-process clusters,
+# backfill, both directions, last-writer-wins under clock skew, a
+# three-region mesh, deletion, statuses and refusals.
+kythira_dynamodb_test(dynamodb_global_table_test dynamodb_global_table_test.cpp)
+set_tests_properties(dynamodb_global_table_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 # Kinesis streaming destinations (task 17): the four actions, the
 # publisher's record format, order and resends, and the SigV4 sink.
 kythira_dynamodb_test(dynamodb_kinesis_destination_test dynamodb_kinesis_destination_test.cpp)

@@ -950,10 +950,53 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       GSIs. Not recorded against AWS: that needs Clark's go, and DynamoDB
       Local may not implement vector search.
 
-- [ ] 22. Global tables, last-writer-wins
+- [x] 22. Global tables, last-writer-wins
   - Peer cluster config, replicator and receiver, replica updates in
     `UpdateTable`, replica status, conflict tests with clock skew
   - _Requirements: 18.1, 18.2_
+  - Notes:
+    - Stamps (`item_state_machine.hpp`): a global table's write carries
+      its time and region (command format 4, written only for regional
+      commands) and keeps them in the item's meta value after the
+      version, tombstones included. A `replicate` command applies only
+      over an older stamp, compared by time then region name; a local
+      write is stamped past the stored stamp, so a write made after seeing
+      another wins everywhere whatever the clocks say. Change records
+      carry the origin region (record format 2, written only when set).
+    - Catalog (format 10: `region` and `replicas` after `vectors`, only
+      for a global table): `set_replicas` (one add or remove at a time;
+      CREATING, ACTIVE, DELETING, CREATION_FAILED) and
+      `replica_progress` (the replicator's cursors per store stream, which
+      only move forward).
+    - `global_tables.hpp`. The peer API is `POST /kythira/replication` on
+      the gateway, SigV4-signed for the peer's region with a replication
+      principal's keys and authorized per action (`CreateTableReplica`,
+      `DeleteTableReplica`, `UpdateTable`, `PutItem`/`DeleteItem`); the
+      design's mTLS option was not needed. Peers are
+      `KYTHIRA_DYNAMODB_REPLICA_PEERS` with `_REPLICA_ACCESS_KEY_ID`,
+      `_REPLICA_SECRET_ACCESS_KEY` and `_REPLICA_CA`.
+    - Deviation from "a replicator on each base group's leader": one
+      replicator runs on the catalog leader with the other background
+      workers and reads every group's change log streams, parents first,
+      as the point-in-time archiver does; its cursors live in the catalog,
+      so a new leader resumes them.
+    - A new replica is copied with each item's stamp (range pages can
+      carry stamps), then the other ACTIVE replicas are told of it and
+      start it at their cursors for the creating cluster, and the creating
+      cluster sends its whole log since the copy, any origin, before the
+      replica goes ACTIVE; after that each cluster sends only its own
+      region's writes. Deleted items are not copied, so under clock skew a
+      write a delete beat can land on a new replica that hears of it first.
+    - Refused or differing (`doc/unsupported.md`): `ReplicaUpdates`
+      `Update` and the per-replica overrides, combining `ReplicaUpdates`
+      with other changes, `DeleteTable` of a table with replicas, and
+      multi-region strong consistency (task 25). Streams are not required.
+    - `dynamodb_global_table_test`: clusters on `local_backend` linked
+      through each other's front ends (signed and authorized as over
+      HTTP): backfill and statuses, both directions, clock skew, ties,
+      deletes, a three-region mesh with a write in flight while a region
+      joins, replica deletion, an unreachable peer, a refused creation,
+      the refusals, and the stored forms.
 
 - [ ] 23. Coverage close-out
   - Every remaining operation in the pinned model implemented or listed in

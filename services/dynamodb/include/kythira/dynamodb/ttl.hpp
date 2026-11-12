@@ -241,6 +241,7 @@ private:
         c.gsis = maintained_indexes(d.gsis);
         c.log_changes = d.logs_changes();
         c.stream_ms = d.stream_label();
+        c.region = d.region;
         // Its change record carries the TTL service's identity (14.1).
         c.ttl_delete = c.log_changes;
         c.expressions = std::move(*compiled);

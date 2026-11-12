@@ -765,6 +765,7 @@ private:
         c.gsis = maintained_indexes(d.gsis);
         c.log_changes = d.logs_changes();
         c.stream_ms = d.stream_label();
+        c.region = d.region;
         if (_backend.write(c).outcome != item_result::status::ok) {
             throw std::runtime_error("a restored delete was refused by its group");
         }

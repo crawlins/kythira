@@ -45,6 +45,15 @@
 /// `TableName` and `IndexName` query parameters name, and answered by the
 /// report handler (`insights_api.hpp`).
 ///
+/// `POST /kythira/replication` (`k_replication_path`) is the other: a
+/// peer cluster's global table replicator calls it, SigV4-signed with a
+/// replication principal's keys for this cluster's region. Its JSON body's
+/// `Action` picks the action authorized on the table its `TableName`
+/// names: `CreateReplica` as `dynamodb:CreateTableReplica`,
+/// `DeleteReplica` as `dynamodb:DeleteTableReplica`, `SetReplicas` as
+/// `dynamodb:UpdateTable` and `Apply` as `dynamodb:PutItem` (the handler
+/// also asks for `dynamodb:DeleteItem` when it deletes).
+///
 /// `DescribeEndpoints` is built in: it answers the node's advertised
 /// endpoint with AWS's 1440-minute cache period (4.4).
 ///
@@ -132,6 +141,10 @@ using resource_lookup = std::function<std::optional<resource_facts>(std::string_
 
 /// The Contributor Insights report path (a Kythira extension).
 inline constexpr std::string_view k_insights_report_path = "/kythira/contributor-insights";
+
+/// The global table replication path (task 22, a Kythira extension): a
+/// peer cluster's replicator POSTs JSON here (`global_tables.hpp`).
+inline constexpr std::string_view k_replication_path = "/kythira/replication";
 
 /// Answers a report request from its decoded query parameters.
 using report_handler = std::function<aws_json::result<boost::json::object>(
@@ -263,9 +276,15 @@ public:
     /// Serves `k_insights_report_path`; unset, the path is not found.
     void set_report_handler(report_handler h) { _report = std::move(h); }
 
+    /// Serves `k_replication_path`; unset, the path is not found.
+    void set_replication_handler(front_end_handler h) { _replication = std::move(h); }
+
     [[nodiscard]] auto handle(const front_end_request& req) -> aws_json::http_response {
         if (req.path == k_insights_report_path && _report) {
             return report(req);
+        }
+        if (req.path == k_replication_path && _replication) {
+            return replicate(req);
         }
         const auto target = detail::header_value(req, "x-amz-target");
         const auto content_type = detail::header_value(req, "content-type");
@@ -397,10 +416,84 @@ private:
         }
     }
 
+    /// A peer's replication call: SigV4, then the action its `Action`
+    /// names on the table, then the handler.
+    [[nodiscard]] auto replicate(const front_end_request& req) -> aws_json::http_response {
+        const aws_json::codec& c = _dynamodb;
+        auto id = c.new_request_id();
+        sigv4::service_rules rules;
+        rules.service = "dynamodb";
+        rules.protocol = sigv4::error_protocol::json;
+        if (!_config.region.empty()) {
+            rules.regions = {_config.region};
+        }
+        const sigv4::request sreq{req.method, req.path, req.query, req.headers, req.body};
+        const auto who = _authorizer.authenticate(sreq, rules);
+        if (!who) {
+            return c.respond(auth_error(who.error()), id);
+        }
+        if (req.method != "POST") {
+            return c.respond(validation_error("Replication calls are POSTed"), id);
+        }
+        boost::json::object in;
+        try {
+            auto v = boost::json::parse(req.body);
+            if (!v.is_object()) {
+                return c.respond(validation_error("The body must be a JSON object"), id);
+            }
+            in = std::move(v.as_object());
+        } catch (const std::exception&) {
+            return c.respond(validation_error("The body is not JSON"), id);
+        }
+        const auto action = detail::string_member(in, "Action");
+        const auto table = detail::string_member(in, "TableName");
+        if (!table || table->empty()) {
+            return c.respond(validation_error("TableName is required"), id);
+        }
+        std::string_view operation;
+        if (action == "CreateReplica") {
+            operation = "CreateTableReplica";
+        } else if (action == "DeleteReplica") {
+            operation = "DeleteTableReplica";
+        } else if (action == "SetReplicas") {
+            operation = "UpdateTable";
+        } else if (action == "Apply") {
+            operation = "PutItem";
+        } else {
+            return c.respond(validation_error("Unknown replication Action"), id);
+        }
+        call_context ctx;
+        ctx.operation = operation;
+        ctx.request_id = id;
+        ctx.principal = *who;
+        ctx.region = _config.region;
+        ctx.partition = _config.partition;
+        ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
+            return check(ctx, req, std::move(r));
+        };
+        if (auto denied = check(ctx, req, primary_request(ctx, in))) {
+            return c.respond(*denied, id);
+        }
+        try {
+            auto out = _replication(ctx, in);
+            if (!out) {
+                return c.respond(out.error(), id);
+            }
+            return c.respond(*out, id);
+        } catch (const std::exception&) {
+            aws_json::error e;
+            e.status = 500;
+            e.type = c.options().style.internal_type;
+            e.message = "Internal server error";
+            return c.respond(e, id);
+        }
+    }
+
     front_end_config _config;
     Authorizer& _authorizer;
     resource_lookup _lookup;
     report_handler _report;
+    front_end_handler _replication;
     aws_json::codec _dynamodb;
     aws_json::codec _streams;
     std::map<std::string, front_end_handler, std::less<>> _handlers;

@@ -709,6 +709,7 @@ private:
                     c.gsis = gsis;
                     c.log_changes = d->logs_changes();
                     c.stream_ms = d->stream_label();
+                    c.region = d->region;
                     c.old_on_condition_failure = report_conditions;
                     const auto res = _backend.write(c);
                     if (res.outcome == item_result::status::ok) {

@@ -763,6 +763,20 @@ template<typename TypeOf>
         out["LatestStreamArn"] = stream_arn(ctx, d.name, d.streams.back().label_ms);
         out["LatestStreamLabel"] = stream_label(d.streams.back().label_ms);
     }
+    if (d.global()) {
+        // The other regions' replicas, as AWS lists them (task 22).
+        out["GlobalTableVersion"] = "2019.11.21";
+        boost::json::array replicas;
+        for (const auto& r : d.replicas) {
+            boost::json::object o{{"RegionName", r.region},
+                                  {"ReplicaStatus", replica_status_name(r.status)}};
+            if (r.status == replica_status::creation_failed && !r.failure.empty()) {
+                o["ReplicaStatusDescription"] = r.failure;
+            }
+            replicas.push_back(std::move(o));
+        }
+        out["Replicas"] = std::move(replicas);
+    }
     if (d.restore.restored() && !d.restore.imported()) {
         // A point-in-time restore names the time restored to, as AWS does.
         boost::json::object summary{
@@ -1145,11 +1159,23 @@ public:
     auto update_table(call_context& ctx, boost::json::object& in) -> result {
         using namespace table_api_detail;
         const auto name = table_name_of(in.at("TableName").as_string());
-        for (const char* member : {"SSESpecification", "ReplicaUpdates", "OnDemandThroughput",
+        for (const char* member : {"SSESpecification", "OnDemandThroughput",
                                    "MultiRegionConsistency", "GlobalTableWitnessUpdates"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
+        }
+        if (const auto* updates = in.if_contains("ReplicaUpdates")) {
+            for (const char* member :
+                 {"BillingMode", "ProvisionedThroughput", "TableClass", "DeletionProtectionEnabled",
+                  "WarmThroughput", "GlobalSecondaryIndexUpdates", "StreamSpecification",
+                  "VectorIndexUpdates"}) {
+                if (in.contains(member)) {
+                    return validation_error(
+                        "ReplicaUpdates cannot be combined with other table updates");
+                }
+            }
+            return replica_updates(ctx, name, *updates);
         }
         if (!in.contains("BillingMode") && !in.contains("ProvisionedThroughput") &&
             !in.contains("TableClass") && !in.contains("DeletionProtectionEnabled") &&
@@ -1453,6 +1479,13 @@ public:
         catalog_command c;
         c.op = catalog_command::kind::delete_table;
         c.table.name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        if (const auto d = _backend.describe(c.table.name); d && !d->replicas.empty()) {
+            // Kythira's deviation: a replica of a global table goes by
+            // `ReplicaUpdates` from another region, so its peers hear of it.
+            return validation_error("Table " + c.table.name +
+                                    " is a global table: delete its replicas with UpdateTable "
+                                    "ReplicaUpdates first");
+        }
         c.now_ms = _backend.now_ms();
         const auto r = _backend.catalog(c);
         if (!r.ok()) {
@@ -1502,7 +1535,93 @@ public:
         return boost::json::object{{"Tags", table_api_detail::tags_json(*d)}};
     }
 
+    /// The peer regions `ReplicaUpdates` may name (task 22); unset, none.
+    void set_peers(std::function<bool(std::string_view)> known) { _peer_known = std::move(known); }
+
 private:
+    /// `UpdateTable`'s `ReplicaUpdates` (task 22): one `Create` or `Delete`
+    /// (the catalog refuses more at a time); `Update` and the per-replica
+    /// overrides are not supported.
+    auto replica_updates(call_context& ctx, const std::string& name,
+                         const boost::json::value& updates) -> result {
+        using namespace table_api_detail;
+        if (!updates.is_array() || updates.as_array().empty()) {
+            return validation_error("ReplicaUpdates must not be empty");
+        }
+        const auto current = _backend.describe(name);
+        if (!current) {
+            return not_found(name);
+        }
+        catalog_command c;
+        c.op = catalog_command::kind::set_replicas;
+        c.table = *current;
+        c.table.region = ctx.region;
+        for (const auto& u : updates.as_array()) {
+            if (!u.is_object() || u.as_object().size() != 1) {
+                return validation_error(
+                    "Each ReplicaUpdates element must have exactly one of Create, Update or "
+                    "Delete");
+            }
+            const auto& [kind, body] = *u.as_object().begin();
+            if (kind == "Update") {
+                return unsupported("ReplicaUpdates Update (per-replica settings)");
+            }
+            if ((kind != "Create" && kind != "Delete") || !body.is_object()) {
+                return validation_error(
+                    "Each ReplicaUpdates element must have exactly one of Create, Update or "
+                    "Delete");
+            }
+            const auto& o = body.as_object();
+            const auto* region_value = o.if_contains("RegionName");
+            if (region_value == nullptr || !region_value->is_string() ||
+                region_value->as_string().empty()) {
+                return validation_error("RegionName is required");
+            }
+            const std::string region(region_value->as_string());
+            if (o.size() > 1) {
+                return unsupported("replica overrides");
+            }
+            // As AWS asks: the replica action too, on the table.
+            if (ctx.authorize) {
+                aws_auth::authz_request az;
+                az.action = kind == "Create" ? "dynamodb:CreateTableReplica"
+                                             : "dynamodb:DeleteTableReplica";
+                az.resource = ctx.table_arn(name);
+                if (auto denied = ctx.authorize(std::move(az))) {
+                    return *denied;
+                }
+            }
+            if (kind == "Create") {
+                if (region == ctx.region) {
+                    return validation_error("Cannot add a replica in the table's own region " +
+                                            region);
+                }
+                if (current->replica_in(region) != nullptr) {
+                    return validation_error("Table " + name + " already has a replica in " +
+                                            region);
+                }
+                if (!_peer_known || !_peer_known(region)) {
+                    return validation_error("Region " + region +
+                                            " is not one of this cluster's peer regions");
+                }
+                c.table.replicas.push_back(table_replica{.region = region});
+            } else {
+                if (current->replica_in(region) == nullptr) {
+                    return validation_error("Cannot delete replica in " + region + ": table " +
+                                            name + " has no replica there");
+                }
+                std::erase_if(c.table.replicas,
+                              [&](const table_replica& r) { return r.region == region; });
+            }
+        }
+        c.now_ms = _backend.now_ms();
+        const auto r = _backend.catalog(c);
+        if (!r.ok()) {
+            return error_of(r);
+        }
+        return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
     static auto not_found(std::string_view name) -> aws_json::error {
         return table_api_detail::modeled(
             "ResourceNotFoundException",
@@ -1586,6 +1705,7 @@ private:
     }
 
     Backend& _backend;
+    std::function<bool(std::string_view)> _peer_known;
 };
 
 }  // namespace kythira::dynamodb
