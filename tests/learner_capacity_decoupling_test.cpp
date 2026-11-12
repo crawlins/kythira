@@ -224,9 +224,14 @@ BOOST_AUTO_TEST_CASE(learners_admit_past_full_voting_target_up_to_learner_capaci
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
     BOOST_REQUIRE_EQUAL(node1.get_cluster_size(), 3u);  // voting target already fully met
 
     // Admit 5 learners (IDs 10-14) — the voting group being full must not

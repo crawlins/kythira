@@ -190,6 +190,7 @@ auto seeded_store(std::uint64_t trailing) -> test_types::persistence_engine_type
 struct cluster {
     sim_t sim;
     std::vector<std::unique_ptr<test_node>> nodes;
+    std::chrono::milliseconds election_timeout_max{};
 
     /// Node 1 starts with @p leader_trailing entries after the snapshot; the
     /// others with none.
@@ -212,6 +213,7 @@ struct cluster {
         }
         std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
         nodes[0]->check_election_timeout();
+        election_timeout_max = cfg._election_timeout_max;
     }
 
     ~cluster() {
@@ -224,6 +226,23 @@ struct cluster {
     auto operator=(const cluster&) -> cluster& = delete;
 
     auto leader() -> test_node& { return *nodes[0]; }
+
+    /// Waits for node 1 to lead. The constructor's single campaign can fail
+    /// on a loaded runner (its vote requests time out) and nothing else ticks
+    /// the nodes, so campaign again whenever a round comes up empty.
+    auto elect(std::chrono::milliseconds deadline = std::chrono::milliseconds{8000}) -> bool {
+        return wait_until(
+            [&] {
+                if (wait_until([&] { return leader().is_leader(); },
+                               std::chrono::milliseconds{1000})) {
+                    return true;
+                }
+                std::this_thread::sleep_for(election_timeout_max + std::chrono::milliseconds{20});
+                leader().check_election_timeout();
+                return false;
+            },
+            deadline);
+    }
 
     /// Drives heartbeats until @p pred holds or @p deadline passes.
     template<typename Pred> auto pump_until(Pred pred, std::chrono::milliseconds deadline) -> bool {
@@ -260,8 +279,7 @@ BOOST_AUTO_TEST_SUITE(snapshot_boundary_replication)
 BOOST_AUTO_TEST_CASE(replicas_starting_from_a_snapshot_with_empty_logs_commit,
                      *boost::unit_test::timeout(30)) {
     cluster c{0};
-    BOOST_REQUIRE(
-        wait_until([&] { return c.leader().is_leader(); }, std::chrono::milliseconds{4000}));
+    BOOST_REQUIRE(c.elect());
 
     BOOST_REQUIRE(c.commit("after-snapshot"));
     BOOST_CHECK(c.pump_until(
@@ -283,8 +301,7 @@ BOOST_AUTO_TEST_CASE(a_follower_at_the_boundary_receives_the_entries_after_it,
                      *boost::unit_test::timeout(30)) {
     constexpr std::uint64_t trailing = 5;
     cluster c{trailing};
-    BOOST_REQUIRE(
-        wait_until([&] { return c.leader().is_leader(); }, std::chrono::milliseconds{4000}));
+    BOOST_REQUIRE(c.elect());
 
     BOOST_REQUIRE(c.commit("after-trailing"));
     BOOST_CHECK(c.pump_until(
@@ -316,8 +333,7 @@ BOOST_AUTO_TEST_CASE(a_follower_behind_an_automatic_snapshot_catches_up_by_insta
     // up before the test reconnects it, or the retry waits behind it.
     cfg._install_snapshot_timeout = std::chrono::milliseconds{300};
     cluster c{0, cfg};
-    BOOST_REQUIRE(
-        wait_until([&] { return c.leader().is_leader(); }, std::chrono::milliseconds{4000}));
+    BOOST_REQUIRE(c.elect());
 
     BOOST_REQUIRE(c.commit("before-cut"));
     BOOST_REQUIRE(

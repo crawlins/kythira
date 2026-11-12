@@ -190,13 +190,21 @@ BOOST_AUTO_TEST_CASE(leave_cluster_via_rpc_shrinks_cluster, *boost::unit_test::t
         node3.start();
 
         // Elect node1 and let heartbeats propagate so followers learn the leader
-        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-        node1.check_election_timeout();
-        std::this_thread::sleep_for(std::chrono::milliseconds{300});
-
+        // One election attempt can fail on a loaded runner (its votes time out),
+        // and nothing else here ticks the nodes, so keep asking node1 to campaign
+        // until it leads.
         BOOST_REQUIRE_MESSAGE(
-            wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}),
+            wait_until(
+                [&] {
+                    std::this_thread::sleep_for(cfg._election_timeout_max +
+                                                std::chrono::milliseconds{20});
+                    node1.check_election_timeout();
+                    return wait_until([&] { return node1.is_leader(); },
+                                      std::chrono::milliseconds{1000});
+                },
+                std::chrono::milliseconds{4000}),
             "iteration " + std::to_string(iteration) + ": node1 did not become leader");
+        std::this_thread::sleep_for(std::chrono::milliseconds{300});
 
         // Drive a few heartbeats so followers learn the leader address before leave_cluster()
         for (int i = 0; i < 5; ++i) {
@@ -266,11 +274,17 @@ BOOST_AUTO_TEST_CASE(cluster_operable_after_leave_rpc, *boost::unit_test::timeou
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+            node1.check_election_timeout();
+            return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+        },
+        std::chrono::milliseconds{4000}));
     std::this_thread::sleep_for(std::chrono::milliseconds{300});
-
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}));
 
     // Drive a few heartbeats so followers learn the leader address before leave_cluster()
     for (int i = 0; i < 5; ++i) {
@@ -404,9 +418,16 @@ BOOST_AUTO_TEST_CASE(leave_cluster_via_stale_leader_uses_redirect, *boost::unit_
     node3.start();
 
     // Phase 1: make node2 the initial leader
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node2.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node2.is_leader(); }, std::chrono::milliseconds{4000}));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node2 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+            node2.check_election_timeout();
+            return wait_until([&] { return node2.is_leader(); }, std::chrono::milliseconds{1000});
+        },
+        std::chrono::milliseconds{4000}));
 
     // Phase 2: drive heartbeats from node2 → node3._known_leader = 2
     // (elapsed > 26ms between each call, so check_heartbeat_timeout() actually fires)
@@ -510,11 +531,17 @@ BOOST_AUTO_TEST_CASE(leave_cluster_rpc_failure_is_handled, *boost::unit_test::ti
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+            node1.check_election_timeout();
+            return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+        },
+        std::chrono::milliseconds{4000}));
     std::this_thread::sleep_for(std::chrono::milliseconds{300});
-
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}));
 
     // Drive heartbeats so node3 learns node1 is the leader (_known_leader = 1)
     for (int i = 0; i < 5; ++i) {
@@ -575,11 +602,17 @@ BOOST_AUTO_TEST_CASE(leave_rpc_to_follower_returns_redirect, *boost::unit_test::
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+            node1.check_election_timeout();
+            return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+        },
+        std::chrono::milliseconds{4000}));
     std::this_thread::sleep_for(std::chrono::milliseconds{300});
-
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}));
 
     // Drive heartbeats so node2 learns node1 is the leader (_known_leader = 1)
     for (int i = 0; i < 5; ++i) {

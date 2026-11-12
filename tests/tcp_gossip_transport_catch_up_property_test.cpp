@@ -224,10 +224,15 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_real_gossip_transport,
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
 
     auto pump_heartbeats = [&](int cycles) {
         for (int i = 0; i < cycles; ++i) {

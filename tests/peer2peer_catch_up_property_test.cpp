@@ -257,11 +257,14 @@ BOOST_AUTO_TEST_CASE(joining_node_catches_up_via_peer_not_leader, *boost::unit_t
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});
-
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     // Commit a batch of entries to the real 2-node cluster.
     constexpr int num_commands = 15;
@@ -379,10 +382,14 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     // Keep heartbeats flowing continuously from here on so node2/node3 never
     // spuriously time out and start their own election (their election timers
@@ -488,9 +495,14 @@ BOOST_AUTO_TEST_CASE(catch_up_waits_for_gap_above_threshold, *boost::unit_test::
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto commit_batch = [&](int first, int count) {
         for (int i = first; i < first + count; ++i) {
@@ -579,11 +591,14 @@ BOOST_AUTO_TEST_CASE(no_op_default_reaches_leadership_and_commits, *boost::unit_
     node1.set_cluster_configuration({1});
     node1.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
-
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto command =
         kythira::test_key_value_state_machine<std::uint64_t>::make_put_command("key", "value");

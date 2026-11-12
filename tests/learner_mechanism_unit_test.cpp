@@ -258,10 +258,15 @@ BOOST_AUTO_TEST_CASE(learner_never_starts_election, *boost::unit_test::timeout(3
     node1.start();
     node2.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
 
     auto add_fut = node1.add_learner(2);
     for (int i = 0; i < 15; ++i) {
@@ -315,9 +320,14 @@ BOOST_AUTO_TEST_CASE(last_caught_up_advances_with_heartbeats_and_stops_without_t
     node2.start();
     BOOST_CHECK(!node2.last_caught_up().has_value());
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto add_fut = node1.add_learner(2);
     bool add_done = false;
@@ -393,9 +403,14 @@ BOOST_AUTO_TEST_CASE(add_learner_and_remove_learner_round_trip, *boost::unit_tes
     node1.start();
     node2.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     // Admitting the same node twice must fail the second time.
     auto add_fut = node1.add_learner(2);
@@ -501,9 +516,14 @@ BOOST_AUTO_TEST_CASE(concurrent_add_learners_both_replicate, *boost::unit_test::
     node3.start();
     node4.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     // Cut the second voter off so neither learner entry can commit until
     // both are in the leader's log.

@@ -177,9 +177,16 @@ void elect_node1(test_node& node1, test_node& node2, test_node& node3,
     node1.start();
     node2.start();
     node3.start();
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+            node1.check_election_timeout();
+            return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+        },
+        std::chrono::milliseconds{4000}));
 }
 
 // Ticks the leader until `pred` holds or `deadline` elapses.
