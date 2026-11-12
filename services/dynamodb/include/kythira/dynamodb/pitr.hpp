@@ -232,6 +232,66 @@ inline constexpr std::uint64_t k_day_ms = 86'400'000;
     return out;
 }
 
+/// Replays the archives of `table_id`: the newest base that ended by
+/// `base_by_ms` (`on_item` with each of its items, as a DynamoDB JSON
+/// map), then every archived record after it whose write time is at most
+/// `upto_ms` (`on_record` with each, as `record_line` wrote it), in the
+/// order written. Throws when no base ended by `base_by_ms`, or when an
+/// object the base or the log names is missing or damaged.
+template<typename OnItem, typename OnRecord>
+void replay(backup_store& store, std::uint64_t table_id, std::uint64_t base_by_ms,
+            std::uint64_t upto_ms, OnItem on_item, OnRecord on_record) {
+    std::set<std::uint64_t> archives;
+    for (const auto& key : store.list(table_prefix(table_id))) {
+        if (const auto owner = archive_of(key)) {
+            archives.insert(owner->second);
+        }
+    }
+    std::optional<pitr_base> base;
+    std::string archive;
+    for (auto it = archives.rbegin(); it != archives.rend() && !base; ++it) {
+        archive = archive_prefix(table_id, *it);
+        for (auto& b : bases(store, archive)) {
+            if (b.end_ms <= base_by_ms) {
+                base = std::move(b);
+            }
+        }
+    }
+    if (!base) {
+        throw std::runtime_error("no point-in-time recovery base of table " +
+                                 std::to_string(table_id) + " ended by " +
+                                 std::to_string(base_by_ms));
+    }
+    for (const auto& o : base->objects) {
+        backup_detail::read_object(store, o, [&](std::string_view line) {
+            on_item(boost::json::parse(line).as_object().at("Item").as_object());
+        });
+    }
+    for (const auto& [n, key] : log_objects(store, archive)) {
+        if (n < base->log_from) {
+            continue;
+        }
+        const auto body = store.get(key);
+        if (!body) {
+            throw std::runtime_error("archive object " + key + " is missing");
+        }
+        std::string_view rest(*body);
+        while (!rest.empty()) {
+            const auto nl = rest.find('\n');
+            const auto line = rest.substr(0, nl);
+            rest = nl == std::string_view::npos ? std::string_view{} : rest.substr(nl + 1);
+            if (line.empty()) {
+                continue;
+            }
+            const auto v = boost::json::parse(line);
+            const auto& rec = v.as_object();
+            if (rec.at("WrittenMs").to_number<std::uint64_t>() <= upto_ms) {
+                on_record(rec);
+            }
+        }
+    }
+}
+
 [[nodiscard]] inline auto ms_of_seconds(double seconds) -> std::uint64_t {
     return seconds <= 0 ? 0 : static_cast<std::uint64_t>(std::llround(seconds * 1000.0));
 }
@@ -672,29 +732,7 @@ private:
     /// Loads a point-in-time restore: the newest base that ended by the
     /// point, then the archived records after it up to the point.
     void load(const table_descriptor& d) {
-        namespace pd = pitr_detail;
         namespace bd = backup_detail;
-        const auto point = d.restore.point_ms;
-        std::set<std::uint64_t> archives;
-        for (const auto& key : _store->list(pd::table_prefix(d.restore.source_table_id))) {
-            if (const auto owner = pd::archive_of(key)) {
-                archives.insert(owner->second);
-            }
-        }
-        std::optional<pitr_base> base;
-        std::string archive;
-        for (auto it = archives.rbegin(); it != archives.rend() && !base; ++it) {
-            archive = pd::archive_prefix(d.restore.source_table_id, *it);
-            for (auto& b : pd::bases(*_store, archive)) {
-                if (b.end_ms <= point) {
-                    base = std::move(b);
-                }
-            }
-        }
-        if (!base) {
-            throw std::runtime_error("no point-in-time recovery base covers the restore of " +
-                                     d.name);
-        }
         const auto put_line = [&](const boost::json::object& image) {
             auto parsed = item_from_json(image);
             if (!parsed) {
@@ -702,39 +740,14 @@ private:
             }
             bd::restore_put(_backend, d, std::move(*parsed));
         };
-        for (const auto& o : base->objects) {
-            bd::read_object(*_store, o, [&](std::string_view line) {
-                put_line(boost::json::parse(line).as_object().at("Item").as_object());
-            });
-        }
-        for (const auto& [n, key] : pd::log_objects(*_store, archive)) {
-            if (n < base->log_from) {
-                continue;
-            }
-            const auto body = _store->get(key);
-            if (!body) {
-                throw std::runtime_error("archive object " + key + " is missing");
-            }
-            std::string_view rest(*body);
-            while (!rest.empty()) {
-                const auto nl = rest.find('\n');
-                const auto line = rest.substr(0, nl);
-                rest = nl == std::string_view::npos ? std::string_view{} : rest.substr(nl + 1);
-                if (line.empty()) {
-                    continue;
-                }
-                const auto v = boost::json::parse(line);
-                const auto& rec = v.as_object();
-                if (rec.at("WrittenMs").to_number<std::uint64_t>() > point) {
-                    continue;
-                }
-                if (const auto* image = rec.if_contains("NewImage")) {
-                    put_line(image->as_object());
-                } else {
-                    remove(d, rec.at("Keys").as_object());
-                }
-            }
-        }
+        pitr_detail::replay(*_store, d.restore.source_table_id, d.restore.point_ms,
+                            d.restore.point_ms, put_line, [&](const boost::json::object& rec) {
+                                if (const auto* image = rec.if_contains("NewImage")) {
+                                    put_line(image->as_object());
+                                } else {
+                                    remove(d, rec.at("Keys").as_object());
+                                }
+                            });
         bd::finish_restore(_backend, d);
     }
 

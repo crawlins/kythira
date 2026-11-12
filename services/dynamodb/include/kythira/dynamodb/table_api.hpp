@@ -705,6 +705,26 @@ public:
     }
 
     auto create_table(call_context& ctx, boost::json::object& in) -> result {
+        auto d = descriptor_of_create(in);
+        if (!d) {
+            return d.error();
+        }
+        catalog_command c;
+        c.op = catalog_command::kind::create_table;
+        c.table = std::move(*d);
+        c.now_ms = _backend.now_ms();
+        const auto r = _backend.catalog(c);
+        if (!r.ok()) {
+            return table_api_detail::error_of(r);
+        }
+        return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
+    /// The table a `CreateTable` request describes, checked as DynamoDB
+    /// checks it; `ImportTable` (`export_import.hpp`) builds its table from
+    /// `TableCreationParameters` with it too.
+    static auto descriptor_of_create(const boost::json::object& in)
+        -> aws_json::result<table_descriptor> {
         using namespace table_api_detail;
         const auto name = table_name_of(in.at("TableName").as_string());
         if (!valid_table_name(name)) {
@@ -889,18 +909,10 @@ public:
             }
         }
 
-        catalog_command c;
-        c.op = catalog_command::kind::create_table;
         if (stream) {
             d.streams = {*stream};
         }
-        c.table = std::move(d);
-        c.now_ms = _backend.now_ms();
-        const auto r = _backend.catalog(c);
-        if (!r.ok()) {
-            return error_of(r);
-        }
-        return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+        return d;
     }
 
     auto describe_table(call_context& ctx, boost::json::object& in) -> result {
