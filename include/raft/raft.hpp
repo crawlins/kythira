@@ -1176,6 +1176,10 @@ private:
     // correctness — the target simply campaigns again — but it costs the
     // cluster a term each time, which is exactly what transfer exists to avoid.
     bool _timeout_now_sent{false};
+    // The term this node led when the transfer was requested. A leader that
+    // reaches this node in a LATER term, and is the target, proves the
+    // transfer's goal was met even if TimeoutNow never went out.
+    term_id_type _transfer_term{};
 
     // ========================================================================
     // Server addition with learner catch-up (dissertation §4.2.1, Req 9.4)
@@ -1243,6 +1247,10 @@ private:
     // under both _mutex and _reconnect_cv_mutex, so either one suffices to
     // read it.
     std::optional<node_id_type> _known_leader;
+    // The term in which _known_leader last sent a valid AppendEntries. Lets a
+    // reader tell a current leader from a stale entry, since _known_leader is
+    // never cleared. Written and read under _mutex.
+    term_id_type _known_leader_term{};
 
     // Terms this node won, appended by become_leader(); see leadership_history().
     std::deque<leadership_record> _leadership_history;
@@ -3395,6 +3403,7 @@ auto node<Types>::transfer_leadership(node_id_type target, std::chrono::millisec
         _transfer_deadline = std::chrono::steady_clock::now() + timeout;
         _transfer_promise = std::make_shared<promise_type>();
         _timeout_now_sent = false;
+        _transfer_term = _current_term;
         auto future = _transfer_promise->getFuture();
 
         _logger.info("Leadership transfer requested",
@@ -3468,6 +3477,28 @@ template<raft_types Types> auto node<Types>::drive_leader_transfer() -> void {
             _metrics.emit();
             auto settle = finish_leader_transfer(std::make_exception_ptr(
                 kythira::leader_transfer_exception("leadership transfer deadline elapsed")));
+            lock.unlock();
+            settle();
+            return;
+        }
+
+        if (_state != kythira::server_state::leader && _known_leader == target &&
+            _known_leader_term == _current_term && _current_term > _transfer_term) {
+            // The target itself is now leading, in a term after the one this
+            // node led when the transfer was asked for: it sent this node a
+            // valid AppendEntries as leader of the current term. That is the
+            // transfer's goal, met, whether it won on our TimeoutNow or on its
+            // own election timer after something else deposed us first (a
+            // fresh leader can lose to a pre-vote already in flight when it
+            // won, before it ever sends TimeoutNow). Without this the caller
+            // waits out its whole deadline and is told the move failed while
+            // the target holds leadership.
+            _logger.info("Leadership transfer: target is now the leader",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"target", node_id_to_string(target)},
+                          {"term", std::to_string(_current_term)},
+                          {"timeout_now_sent", _timeout_now_sent ? "true" : "false"}});
+            auto settle = finish_leader_transfer(nullptr);
             lock.unlock();
             settle();
             return;
@@ -6233,6 +6264,7 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
         _known_leader = request.leader_id();
         _reconnect_cv.notify_all();
     }
+    _known_leader_term = _current_term;
 
     // Rules 3-5 (consistency check, conflict-truncation, append) — extracted into
     // append_entries_with_consistency_check() (.kiro/specs/peer2peer-log-replication/,

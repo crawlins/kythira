@@ -601,6 +601,55 @@ BOOST_AUTO_TEST_CASE(a_transfer_to_an_unreachable_target_times_out_and_the_leade
     cluster.stop();
 }
 
+BOOST_AUTO_TEST_CASE(a_target_that_wins_on_its_own_completes_the_transfer,
+                     *boost::unit_test::timeout(120)) {
+    // CI caught this over HTTP: a fresh leader was deposed before it ever sent
+    // TimeoutNow, the target then won the next election on its own timer, and
+    // the transfer still waited out its whole deadline and reported failure
+    // while the target held leadership. The target leading in a later term is
+    // the transfer's goal, however it got there.
+    transfer_cluster cluster{{1, 2, 3}};
+    cluster.create_group(k_group);
+    cluster.start();
+
+    const auto leader = cluster.require_settled_leader(k_group);
+    std::uint64_t target = 0;
+    std::uint64_t bystander = 0;
+    for (auto id : cluster.nodes()) {
+        if (id == leader) {
+            continue;
+        }
+        (target == 0 ? target : bystander) = id;
+    }
+
+    // The leader can never invite the target, so whatever happens next, it is
+    // not TimeoutNow that moves leadership.
+    cluster.fabric().block_rpc(target, "timeout_now");
+    auto* n = cluster.host(leader).group_node(k_group);
+    const auto budget = std::chrono::milliseconds{10000};
+    const auto started = std::chrono::steady_clock::now();
+    auto transfer = n->transfer_leadership(target, budget);
+
+    // Silence the leader so the others' election timers fire, and keep the
+    // bystander from winning: nothing it asks of the target arrives. The
+    // target's own requests, and its heartbeats back to the old leader, still
+    // flow.
+    cluster.fabric().partition(leader, target);
+    cluster.fabric().partition(leader, bystander);
+    cluster.fabric().block_rpc(target, "request_pre_vote");
+    cluster.fabric().block_rpc(target, "request_vote");
+
+    const auto outcome = cluster.settle(std::move(transfer), budget + std::chrono::seconds{5});
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    BOOST_CHECK_MESSAGE(!outcome, "transfer failed although the target won");
+    BOOST_CHECK(cluster.leader_of(k_group) == std::optional{target});
+    BOOST_CHECK_MESSAGE(elapsed < budget, "the transfer was only settled by its deadline");
+    BOOST_CHECK(!n->leadership_transfer_target().has_value());
+
+    cluster.fabric().heal_all();
+    cluster.stop();
+}
+
 // ── scatter ──────────────────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_CASE(scatter_hands_leadership_to_another_voter, *boost::unit_test::timeout(120)) {
