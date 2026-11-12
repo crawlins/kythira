@@ -144,6 +144,7 @@ constexpr group_id_type k_shard = 1;
 constexpr group_id_type k_oracle = 1000;
 constexpr node_id_t k_node_count = 3;
 constexpr auto k_timeout = std::chrono::seconds{2};
+constexpr auto k_election_timeout_max = std::chrono::milliseconds{260};
 
 /// A directory removed when the test ends.
 class temp_dir {
@@ -238,6 +239,41 @@ public:
         return std::nullopt;
     }
 
+    /// `await_leader`, then wait until that host has kept the lead, in one
+    /// term, for three maximum election timeouts.
+    ///
+    /// A just-elected leader of a fresh cluster can still be deposed: two
+    /// nodes that start pre-vote in the same instant are both granted, and
+    /// the loser's election wins the next term. CI caught it under
+    /// concurrent_allocations_are_unique_and_increasing, twice in 54 runs:
+    /// node 2 won term 1, node 1 won term 2 within milliseconds, and all
+    /// 1200 calls the case sent to node 2 failed. A case that sends straight
+    /// to one host needs the leader that stays.
+    [[nodiscard]] auto await_settled_leader(group_id_type group) -> std::optional<node_id_t> {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto id = await_leader(group);
+            if (!id) {
+                return std::nullopt;
+            }
+            auto* n = host(*id).group_node(group);
+            if (n == nullptr) {
+                continue;
+            }
+            const auto term = n->get_current_term();
+            const auto hold_until = std::chrono::steady_clock::now() + 3 * k_election_timeout_max;
+            bool held = true;
+            while (held && std::chrono::steady_clock::now() < hold_until) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{20});
+                held = n->is_leader() && n->get_current_term() == term;
+            }
+            if (held) {
+                return id;
+            }
+        }
+        return std::nullopt;
+    }
+
     /// `n` timestamps from whichever host leads the oracle, retrying through
     /// elections.
     auto allocate(std::size_t n, const std::vector<node_id_t>& skip = {}) -> timestamp_range {
@@ -282,7 +318,7 @@ private:
                 },
         };
         cfg.config._election_timeout_min = std::chrono::milliseconds{120};
-        cfg.config._election_timeout_max = std::chrono::milliseconds{260};
+        cfg.config._election_timeout_max = k_election_timeout_max;
         cfg.config._heartbeat_interval = std::chrono::milliseconds{25};
         cfg.hibernation = hibernation_mode::off;
         cfg.executor_stripes = 2;
@@ -309,7 +345,7 @@ BOOST_AUTO_TEST_CASE(concurrent_allocations_are_unique_and_increasing,
                      *boost::unit_test::timeout(120)) {
     temp_dir dir;
     cluster c(dir.path());
-    const auto leader = c.await_leader(k_oracle);
+    const auto leader = c.await_settled_leader(k_oracle);
     BOOST_REQUIRE(leader.has_value());
     auto& host = c.host(*leader);
 
