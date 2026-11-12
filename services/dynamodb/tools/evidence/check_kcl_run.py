@@ -9,8 +9,10 @@ Kythira, for each client named, and fails unless:
 
   * Kythira answered every request, and every refusal is one the KCL
     expects: ResourceNotFoundException on DescribeTable (the KCL probes for
-    tables before it creates them) or ConditionalCheckFailedException (a
-    lease taken or renewed under a condition that another write beat);
+    tables before it creates them), ConditionalCheckFailedException (a
+    lease taken or renewed under a condition that another write beat), or
+    ResourceInUseException on a CreateTable sent again after one that
+    succeeded (an SDK retry);
   * the client created its lease table and wrote a lease;
   * for KCL 3.x, the UpdateTable that adds LeaseOwnerToLeaseKeyIndex was
     accepted, and a Query on that index found the lease this worker took
@@ -48,10 +50,27 @@ def check(path, client):
     except OSError as e:
         return ["%s: %s" % (client, e)]
     ops = {}
+    created_tables = set()
     for r in records:
         op, status, resp = r["operation"], r["status"], r["response"]
         ops[op] = ops.get(op, 0) + 1
-        if status != 200 and (op, short_type(resp)) not in EXPECTED_REFUSALS:
+        table = r["body"].get("TableName") if isinstance(r["body"], dict) else None
+        if op == "CreateTable" and status == 200:
+            created_tables.add(table)
+        # An SDK that gave up waiting on a CreateTable Kythira went on to
+        # finish sends it again and is told the table exists; the clients
+        # treat that as success, and so does the check, but only after a
+        # CreateTable of that table was answered 200.
+        retried_create = (
+            op == "CreateTable"
+            and short_type(resp) == "ResourceInUseException"
+            and table in created_tables
+        )
+        if (
+            status != 200
+            and not retried_create
+            and (op, short_type(resp)) not in EXPECTED_REFUSALS
+        ):
             problems.append(
                 "%s: seq %d %s answered %d %s"
                 % (client, r["seq"], op, status, json.dumps(resp)[:300])
