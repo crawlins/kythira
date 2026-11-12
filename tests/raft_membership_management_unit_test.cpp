@@ -307,9 +307,20 @@ BOOST_AUTO_TEST_CASE(partition_during_change_leaves_one_configuration,
     f->partition({minority, majority});
     auto pending = f->node(*leader).remove_server(followers[3]);
 
-    auto new_leader = f->wait_for_leader(scaled_deadline(5000), majority);
-    BOOST_REQUIRE(new_leader.has_value());
-    BOOST_REQUIRE(f->submit_to(*new_leader, raft_multi_node_fixture::put_command("k", "v"), 3s).ok);
+    // The majority can elect more than once after the cut, so the leader
+    // found first can be deposed before the write commits through it (once
+    // in 54 CI runs, 2026-11-10..12). Submit to whichever majority node
+    // leads now, until one commits it.
+    std::optional<node_id> new_leader;
+    kythira::test::op_result put;
+    const auto put_deadline = std::chrono::steady_clock::now() + scaled_deadline(15000);
+    while (!put.ok && std::chrono::steady_clock::now() < put_deadline) {
+        new_leader = f->wait_for_leader(scaled_deadline(5000), majority);
+        if (new_leader.has_value()) {
+            put = f->submit_to(*new_leader, raft_multi_node_fixture::put_command("k", "v"), 3s);
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(put.ok, "no majority leader committed the write: " << put.error);
 
     f->heal();
     // The majority never saw the change, so it is discarded everywhere.
