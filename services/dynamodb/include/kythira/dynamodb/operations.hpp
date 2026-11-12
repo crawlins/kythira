@@ -40,8 +40,10 @@ inline constexpr std::string_view k_dynamodb_error_namespace = "com.amazonaws.dy
 /// (`partiql.hpp`) of task 14, and Kinesis streaming destinations
 /// (`kinesis_destination.hpp`) of task 17, backups (`backup.hpp`) of task
 /// 18, point-in-time recovery (`pitr.hpp`) of task 19, and exports,
-/// imports (`export_import.hpp`) and bulk puts (`bulk_put.hpp`) of task 20.
-inline constexpr std::array<std::string_view, 47> k_implemented_dynamodb_operations{
+/// imports (`export_import.hpp`) and bulk puts (`bulk_put.hpp`) of task 20,
+/// and resource policies (`resource_policy.hpp`) and Contributor Insights
+/// (`insights_api.hpp`) of task 21.
+inline constexpr std::array<std::string_view, 53> k_implemented_dynamodb_operations{
     "DescribeEndpoints",
     "CreateTable",
     "DescribeTable",
@@ -88,7 +90,13 @@ inline constexpr std::array<std::string_view, 47> k_implemented_dynamodb_operati
     "StartBulkPutItems",
     "DescribeBulkOperation",
     "ListBulkOperations",
-    "CancelBulkOperation"};
+    "CancelBulkOperation",
+    "PutResourcePolicy",
+    "GetResourcePolicy",
+    "DeleteResourcePolicy",
+    "UpdateContributorInsights",
+    "DescribeContributorInsights",
+    "ListContributorInsights"};
 
 /// Implemented DynamoDB Streams operations (task 16).
 inline constexpr std::array<std::string_view, 4> k_implemented_streams_operations{

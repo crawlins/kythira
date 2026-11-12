@@ -850,10 +850,52 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 6: the rest of the surface
 
-- [ ] 21. Resource policies and contributor insights
+- [x] 21. Resource policies and contributor insights
   - `PutResourcePolicy`, `GetResourcePolicy`, `DeleteResourcePolicy` through
     IAM's evaluator; contributor insights counters and calls
   - _Requirements: 5.3, 19.4_
+  - Notes:
+    - `resource_policy.hpp`. Policies live in the catalog descriptor
+      (format 8: `policies` and `insights` after `pitr`, written only for
+      a table that has either), one for the table and one per stream,
+      changed by a `set_resource_policy` entry so `ExpectedRevisionId`
+      (and `NO_POLICY`) is checked atomically. Revision ids are entry
+      milliseconds, growing per resource; putting the attached document
+      again keeps its revision; deleting without an expected revision is
+      idempotent. `CreateTable` takes `ResourcePolicy`; restores and
+      imports never copy one. Only the document's shape is checked
+      (20 KB with whitespace, JSON, each statement's `Effect`, `Principal`
+      and `Action`): what it grants is the authorizer's to decide.
+    - The front end's `resource_lookup` (`resource_lookup_for()`) puts the
+      table's policy and tags on every authorization of the table and its
+      indexes, and the stream's policy on the stream's; with a lookup set
+      it also names a foreign resource account. IAM's evaluator then
+      decides as AWS does. `PutResourcePolicy` asks the authorizer whether
+      the new policy still lets the caller put one and refuses a lockout
+      without `ConfirmRemoveSelfResourceAccess`; the account root's
+      `DeleteResourcePolicy` is authorized without the policy. Deviation:
+      `dynamodb_gateway_node` still runs the static-key authorizer, which
+      has no resource policies, so it sets no lookup; wiring IAM's
+      authorizer into the daemon is the composition root's next step, not
+      this task's. Tests use an authorizer that evaluates a policy's
+      denials.
+    - `insights.hpp`, `insights_api.hpp`. Counting happens where capacity
+      is charged (`api_common.hpp`), with or without throttling, for
+      enabled settings: `PKC` and `SKC` by consumed units, `PKT` and
+      `SKT` by throttled requests (`THROTTLED_KEYS` only the latter).
+      Each rule keeps a Space-Saving summary of 256 keys per minute for
+      an hour, keyed by the enable time, so a re-enable starts afresh.
+      Deviation: the requirement's "sampled counters" are bounded
+      summaries that see every request; per gateway node like the token
+      buckets (task 12). The update answers `ENABLING`/`DISABLING` and the
+      setting reads `ENABLED`/`DISABLED` at once (there are no CloudWatch
+      rules to wait for); rule names follow AWS's
+      `DynamoDBContributorInsights-<code>-<table>[-<index>]-<ms>`, cut to
+      128 characters. CloudWatch's rule report is replaced by a Kythira
+      extension, a SigV4-signed `GET /kythira/contributor-insights`
+      authorized as `DescribeContributorInsights`. Deleting a GSI drops
+      its setting. `ListContributorInsights` with `TableName` lists the
+      table and every GSI; without, every setting ever changed.
 
 - [ ] 26. Vector indexes and `SearchVectors` (added after the spec; done
   in this phase, numbered last so later tasks keep their numbers)

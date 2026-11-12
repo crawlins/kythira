@@ -96,8 +96,7 @@ public:
             return key.error();
         }
         const bool consistent = flag(in, "ConsistentRead");
-        const capacity_target target{"", capacity_kind::read,
-                                     api_detail::partition_of(table->schema, *key)};
+        const auto target = api_detail::read_target(*table, *key);
         if (auto e = api_detail::admit(_backend, _profile, ctx, *table, {target})) {
             return *e;
         }

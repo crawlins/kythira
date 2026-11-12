@@ -489,8 +489,7 @@ private:
 
     static auto targets_of(const action& a) -> std::vector<capacity_target> {
         if (a.kind == "Get") {
-            return {{"", capacity_kind::read,
-                     api_detail::partition_of(a.table.schema, a.command.payload)}};
+            return {api_detail::read_target(a.table, a.command.payload)};
         }
         return api_detail::write_targets(a.table, a.command.payload, a.command.op);
     }

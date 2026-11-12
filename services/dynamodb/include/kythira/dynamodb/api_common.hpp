@@ -138,6 +138,32 @@ template<dynamo_backend Backend>
     return pk == nullptr ? std::string{} : encode_item(item{{schema.partition_name, *pk}});
 }
 
+/// The bytes Contributor Insights counts a whole key by: the partition and
+/// sort attributes of `schema` in `it`; empty when `schema` has no sort key
+/// or `it` lacks either.
+[[nodiscard]] inline auto key_of(const key_schema& schema, const item& it) -> std::string {
+    if (!schema.sort_name) {
+        return {};
+    }
+    const auto* pk = find_attribute(it, schema.partition_name);
+    const auto* sk = find_attribute(it, *schema.sort_name);
+    if (pk == nullptr || sk == nullptr) {
+        return {};
+    }
+    return encode_item(item{{schema.partition_name, *pk}, {*schema.sort_name, *sk}});
+}
+
+/// A read target for one item of `table` (`GetItem`, a `BatchGetItem`
+/// key, a transaction's `ConditionCheck`).
+[[nodiscard]] inline auto read_target(const table_descriptor& table, const item& key)
+    -> capacity_target {
+    return {"", capacity_kind::read, partition_of(table.schema, key), key_of(table.schema, key)};
+}
+
+[[nodiscard]] inline auto insights_target_of(const capacity_target& t) -> insights_target {
+    return {t.index, t.partition, t.key};
+}
+
 /// AWS's answer to a throttle: the exception with its `ThrottlingReasons`
 /// (spelled `throttlingReasons` on `ThrottlingException`, as the model has
 /// it), the resource being the table's or the index's ARN.
@@ -163,18 +189,26 @@ template<dynamo_backend Backend>
     const auto now = backend.now_ms();
     for (const auto& t : targets) {
         if (auto th = backend.throttler().admit(table, t, now)) {
+            if (!table.insights.empty()) {
+                backend.throttler().insights().throttled(table, insights_target_of(t), now);
+            }
             return throttle_error(*th, ctx.table_arn(table.name));
         }
     }
     return std::nullopt;
 }
 
-/// Charges `units` to `target`, when the switch is on.
+/// Charges `units` to `target`, when the switch is on, and counts them for
+/// Contributor Insights whether it is or not.
 template<dynamo_backend Backend>
 auto charge(Backend& backend, const dynamo_compat_profile& cluster, const table_descriptor& table,
             const capacity_target& target, double units) -> void {
     if (throttles(cluster, table)) {
         backend.throttler().charge(table, target, units, backend.now_ms());
+    }
+    if (!table.insights.empty()) {
+        backend.throttler().insights().accessed(table, insights_target_of(target), units,
+                                                backend.now_ms());
     }
 }
 
@@ -186,12 +220,13 @@ auto charge(Backend& backend, const dynamo_compat_profile& cluster, const table_
 /// leaves an index alone, and never under-counts.
 [[nodiscard]] inline auto write_targets(const table_descriptor& table, const item& payload,
                                         item_command::kind op) -> std::vector<capacity_target> {
-    std::vector<capacity_target> out{
-        {"", capacity_kind::write, partition_of(table.schema, payload)}};
+    std::vector<capacity_target> out{{"", capacity_kind::write, partition_of(table.schema, payload),
+                                      key_of(table.schema, payload)}};
     for (const auto& g : maintained_indexes(table.gsis)) {
         auto partition = partition_of(g.schema, payload);
         if (op != item_command::kind::put || !partition.empty()) {
-            out.push_back({g.name, capacity_kind::write, std::move(partition)});
+            out.push_back(
+                {g.name, capacity_kind::write, std::move(partition), key_of(g.schema, payload)});
         }
     }
     return out;

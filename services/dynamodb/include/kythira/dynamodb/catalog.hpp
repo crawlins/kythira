@@ -51,6 +51,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -222,6 +223,43 @@ struct continuous_backups {
     friend auto operator==(const continuous_backups&, const continuous_backups&) -> bool = default;
 };
 
+/// A resource-based policy (task 21) on the table or on one of its
+/// streams. The authorizer (IAM's evaluator) reads it on every request to
+/// the resource; the catalog only keeps it.
+struct resource_policy {
+    /// 0 for the table's own policy, else the `label_ms` of the stream it
+    /// is attached to.
+    std::uint64_t stream_label = 0;
+    /// The document, byte for byte as given.
+    std::string document;
+    /// `RevisionId`: decimal milliseconds since the epoch, growing with
+    /// each change of the document. In a `set_resource_policy` command it
+    /// is the `ExpectedRevisionId` instead (empty when none was given).
+    std::string revision;
+
+    friend auto operator==(const resource_policy&, const resource_policy&) -> bool = default;
+};
+
+/// `ContributorInsightsMode`.
+enum class insights_mode : std::uint8_t {
+    accessed_and_throttled = 0,
+    throttled = 1,
+};
+
+/// Contributor Insights (task 21) on the table or one of its GSIs.
+struct contributor_insights {
+    /// Empty for the table.
+    std::string index;
+    bool enabled = false;
+    insights_mode mode = insights_mode::accessed_and_throttled;
+    /// When it was last enabled or disabled (ms since the epoch, from the
+    /// entry): `LastUpdateDateTime`, and the suffix of the rule names.
+    std::uint64_t updated_ms = 0;
+
+    friend auto operator==(const contributor_insights&, const contributor_insights&)
+        -> bool = default;
+};
+
 /// What the catalog knows about a table. Later tasks add replicas; each
 /// new field gets a new descriptor format version.
 struct table_descriptor {
@@ -260,6 +298,29 @@ struct table_descriptor {
     table_restore restore;
     /// Point-in-time recovery (task 19).
     continuous_backups pitr;
+    /// Resource-based policies (task 21): at most one for the table and
+    /// one for each stream.
+    std::vector<resource_policy> policies;
+    /// Contributor Insights settings (task 21): one for the table and for
+    /// each GSI it was ever set on.
+    std::vector<contributor_insights> insights;
+
+    /// The policy on the table (`stream_label` 0) or on a stream, or null.
+    [[nodiscard]] auto policy_of(std::uint64_t stream_label) const -> const resource_policy* {
+        const auto it =
+            std::find_if(policies.begin(), policies.end(),
+                         [&](const resource_policy& p) { return p.stream_label == stream_label; });
+        return it == policies.end() ? nullptr : &*it;
+    }
+
+    /// The Contributor Insights setting of the table (`index` empty) or a
+    /// GSI, or null when it was never set.
+    [[nodiscard]] auto insights_of(std::string_view index) const -> const contributor_insights* {
+        const auto it =
+            std::find_if(insights.begin(), insights.end(),
+                         [&](const contributor_insights& c) { return c.index == index; });
+        return it == insights.end() ? nullptr : &*it;
+    }
 
     /// The enabled stream, or null.
     [[nodiscard]] auto enabled_stream() const -> const table_stream* {
@@ -343,6 +404,19 @@ struct catalog_command {
         /// moving forward). Progress for an archive since replaced is
         /// ignored.
         pitr_progress = 13,
+        /// `PutResourcePolicy` and `DeleteResourcePolicy` (task 21):
+        /// `table.policies` holds one entry naming the resource by
+        /// `stream_label`, its new document (empty to delete) and, in
+        /// `revision`, the `ExpectedRevisionId` (empty for none; `NO_POLICY`
+        /// to require that none exists). A mismatch is refused with
+        /// `PolicyNotFoundException`. Putting the document already there
+        /// keeps its revision; deleting a policy that is not there changes
+        /// nothing.
+        set_resource_policy = 14,
+        /// `UpdateContributorInsights` (task 21): `table.insights` holds one
+        /// entry with the index (empty for the table), `enabled` and
+        /// `mode`; the entry's time becomes `updated_ms`.
+        set_contributor_insights = 15,
     };
 
     /// Which settings an `update_table` changes.
@@ -415,13 +489,19 @@ namespace catalog_detail {
 /// `restore_done` command (task 18), likewise only for a restored table.
 /// 7 added `pitr` after `restore`, with `set_pitr` and `pitr_progress`
 /// (task 19), only for a table that ever had point-in-time recovery.
-inline constexpr std::uint8_t k_descriptor_format_version = 7;
+/// 8 added `policies` and `insights` after `pitr`, with
+/// `set_resource_policy` and `set_contributor_insights` (task 21), only
+/// for a table that has either.
+inline constexpr std::uint8_t k_descriptor_format_version = 8;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 7;
-inline constexpr std::uint8_t k_result_format_version = 7;
+inline constexpr std::uint8_t k_command_format_version = 8;
+inline constexpr std::uint8_t k_result_format_version = 8;
 
 /// The version a form carrying `d` is written as.
 [[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
+    if (!d.policies.empty() || !d.insights.empty()) {
+        return 8;
+    }
     if (d.pitr != continuous_backups{}) {
         return 7;
     }
@@ -535,6 +615,21 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         for (const auto& [key, seq] : d.pitr.cursors) {
             detail::put_bytes(out, key);
             detail::put_varint(out, seq);
+        }
+    }
+    if (version >= 8) {
+        detail::put_varint(out, d.policies.size());
+        for (const auto& p : d.policies) {
+            detail::put_varint(out, p.stream_label);
+            detail::put_bytes(out, p.document);
+            detail::put_bytes(out, p.revision);
+        }
+        detail::put_varint(out, d.insights.size());
+        for (const auto& c : d.insights) {
+            detail::put_bytes(out, c.index);
+            out.push_back(c.enabled ? '\1' : '\0');
+            out.push_back(static_cast<char>(c.mode));
+            detail::put_varint(out, c.updated_ms);
         }
     }
 }
@@ -679,6 +774,37 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         d.pitr.latest_ms = *latest;
         d.pitr.next_object = *next;
     }
+    if (version >= 8) {
+        const auto n = r.count();
+        if (!n) {
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < *n; ++i) {
+            const auto label = r.varint();
+            auto document = r.bytes();
+            auto revision = r.bytes();
+            if (!label || !document || !revision) {
+                return std::nullopt;
+            }
+            d.policies.push_back(
+                resource_policy{*label, std::move(*document), std::move(*revision)});
+        }
+        const auto m = r.count();
+        if (!m) {
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < *m; ++i) {
+            auto index = r.bytes();
+            const auto enabled = get_flag(r);
+            const auto mode = r.byte();
+            const auto updated = r.varint();
+            if (!index || !enabled || !mode || *mode > 1 || !updated) {
+                return std::nullopt;
+            }
+            d.insights.push_back(contributor_insights{std::move(*index), *enabled,
+                                                      static_cast<insights_mode>(*mode), *updated});
+        }
+    }
     d.name = std::move(*name);
     d.table_id = *id;
     d.schema = std::move(*schema);
@@ -758,6 +884,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // At least the version that brought the command's kind.
     auto version = catalog_detail::version_for(c.table);
     switch (c.op) {
+        case catalog_command::kind::set_resource_policy:
+        case catalog_command::kind::set_contributor_insights:
+            version = std::max<std::uint8_t>(version, 8);
+            break;
         case catalog_command::kind::set_pitr:
         case catalog_command::kind::pitr_progress:
             version = std::max<std::uint8_t>(version, 7);
@@ -801,8 +931,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     }
     const auto op = static_cast<std::uint8_t>(bytes[1]);
     // set_ttl came in version 3, the destination commands in 5,
-    // restore_done in 6, the point-in-time recovery commands in 7.
-    const std::uint8_t last_op = version >= 7   ? 13
+    // restore_done in 6, the point-in-time recovery commands in 7, the
+    // resource policy and Contributor Insights commands in 8.
+    const std::uint8_t last_op = version >= 8   ? 15
+                                 : version >= 7 ? 13
                                  : version >= 6 ? 11
                                  : version >= 5 ? 10
                                  : version >= 3 ? 8
@@ -974,6 +1106,12 @@ public:
                 break;
             case catalog_command::kind::pitr_progress:
                 result = pitr_progress(*c, batch);
+                break;
+            case catalog_command::kind::set_resource_policy:
+                result = set_resource_policy(*c, batch);
+                break;
+            case catalog_command::kind::set_contributor_insights:
+                result = set_contributor_insights(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -1185,8 +1323,18 @@ private:
         if (d.restore.in_progress) {
             d.restore.restore_ms = c.now_ms;
         }
-        // Point-in-time recovery is a setting of the source, never copied.
+        // Point-in-time recovery is a setting of the source, never copied;
+        // nor are Contributor Insights or a restored table's policies. A
+        // `CreateTable` `ResourcePolicy` is the table's first revision.
         d.pitr = {};
+        d.insights.clear();
+        if (d.restore.restored()) {
+            d.policies.clear();
+        }
+        std::erase_if(d.policies, [](const resource_policy& p) { return p.stream_label != 0; });
+        for (auto& p : d.policies) {
+            p.revision = std::to_string(c.now_ms);
+        }
         batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
                   catalog_detail::u64_string(next));
         store(batch, d);
@@ -1343,6 +1491,9 @@ private:
             if (want == nullptr) {
                 if (g.status == index_status::active) {
                     g.status = index_status::deleting;
+                    std::erase_if(d.insights, [&](const contributor_insights& ci) {
+                        return ci.index == g.name;
+                    });
                     batch.put(kythira::column_family::data, catalog_detail::job_key(g.index_id),
                               encode_delete_job(delete_job{g.index_id, d.name, g.schema, 0}));
                 }
@@ -1705,6 +1856,100 @@ private:
         p.earliest_ms = std::max(p.earliest_ms, got.earliest_ms);
         ++d->revision;
         store(batch, *d);
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `set_resource_policy` (task 21): see the command.
+    auto set_resource_policy(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->status == table_status::deleting) {
+            return not_found(c.table.name);
+        }
+        if (c.table.policies.size() != 1) {
+            return invalid("set_resource_policy needs exactly one policy");
+        }
+        const auto& want = c.table.policies.front();
+        if (want.stream_label != 0 &&
+            std::none_of(d->streams.begin(), d->streams.end(),
+                         [&](const table_stream& s) { return s.label_ms == want.stream_label; })) {
+            return failure("ResourceNotFoundException", "Requested resource not found");
+        }
+        if (d->status == table_status::creating) {
+            return failure("ResourceInUseException",
+                           "Attempt to change a resource which is still in use: Table is being "
+                           "created: " +
+                               d->name);
+        }
+        const auto it = std::find_if(
+            d->policies.begin(), d->policies.end(),
+            [&](const resource_policy& p) { return p.stream_label == want.stream_label; });
+        const bool has = it != d->policies.end();
+        if (!want.revision.empty()) {
+            const bool matches =
+                want.revision == "NO_POLICY" ? !has : has && it->revision == want.revision;
+            if (!matches) {
+                return failure("PolicyNotFoundException",
+                               has ? "revision " + it->revision : std::string("no policy"));
+            }
+        }
+        catalog_result r;
+        if (want.document.empty()) {
+            if (has) {
+                d->policies.erase(it);
+                ++d->revision;
+                store(batch, *d);
+            }
+        } else if (!has || it->document != want.document) {
+            // Revisions grow even when two changes share a millisecond.
+            std::uint64_t next = c.now_ms;
+            if (has) {
+                next = std::max<std::uint64_t>(next, std::stoull(it->revision) + 1);
+                it->document = want.document;
+                it->revision = std::to_string(next);
+            } else {
+                d->policies.push_back(
+                    resource_policy{want.stream_label, want.document, std::to_string(next)});
+            }
+            ++d->revision;
+            store(batch, *d);
+        }
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `set_contributor_insights` (task 21): see the command.
+    auto set_contributor_insights(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->status == table_status::deleting) {
+            return not_found(c.table.name);
+        }
+        if (c.table.insights.size() != 1) {
+            return invalid("set_contributor_insights needs exactly one setting");
+        }
+        const auto& want = c.table.insights.front();
+        if (!want.index.empty() &&
+            std::none_of(d->gsis.begin(), d->gsis.end(), [&](const global_index& g) {
+                return g.name == want.index && g.status != index_status::deleting;
+            })) {
+            return failure("ResourceNotFoundException",
+                           "Requested resource not found: Index: " + want.index + " not found");
+        }
+        auto it =
+            std::find_if(d->insights.begin(), d->insights.end(),
+                         [&](const contributor_insights& ci) { return ci.index == want.index; });
+        if (it == d->insights.end()) {
+            d->insights.push_back(contributor_insights{want.index});
+            it = std::prev(d->insights.end());
+        }
+        it->enabled = want.enabled;
+        it->mode = want.mode;
+        it->updated_ms = c.now_ms;
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
         r.table = std::move(d);
         return r;
     }

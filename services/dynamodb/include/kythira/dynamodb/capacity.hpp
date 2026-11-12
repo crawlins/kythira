@@ -32,6 +32,7 @@
 /// spread theirs over endpoints, and stricter when they do not.
 
 #include <kythira/dynamodb/catalog.hpp>
+#include <kythira/dynamodb/insights.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -156,6 +157,10 @@ struct capacity_target {
     capacity_kind kind = capacity_kind::read;
     /// The partition key's encoded bytes; empty when the request has none.
     std::string partition;
+    /// The whole key's encoded bytes (partition and sort) when the target
+    /// has a sort key and the request names one item; only Contributor
+    /// Insights reads it (`insights.hpp`).
+    std::string key;
 };
 
 /// Token buckets for every table this process enforces.
@@ -222,8 +227,14 @@ public:
         sweep(now_ms);
     }
 
-    /// Forgets a dropped table's buckets.
+    /// This process's Contributor Insights counters, kept beside its
+    /// buckets: both are per process and fed by the same requests.
+    [[nodiscard]] auto insights() -> insights_recorder& { return _insights; }
+    [[nodiscard]] auto insights() const -> const insights_recorder& { return _insights; }
+
+    /// Forgets a dropped table's buckets and counters.
     auto forget(std::uint64_t table_id) -> void {
+        _insights.forget(table_id);
         const std::lock_guard lock(_mu);
         std::erase_if(_resources,
                       [&](const auto& kv) { return std::get<0>(kv.first) == table_id; });
@@ -304,6 +315,7 @@ private:
     mutable std::mutex _mu;
     std::map<resource_key, token_bucket> _resources;
     std::map<partition_key, token_bucket> _partitions;
+    insights_recorder _insights;
 };
 
 }  // namespace kythira::dynamodb
