@@ -75,6 +75,10 @@ struct change_record {
     /// something else. A record belongs to that stream alone, whatever the
     /// clocks of the writer and the catalog say.
     std::uint64_t stream_ms = 0;
+    /// A global table's write (task 22): the region it was made in. A
+    /// replicator sends only its own region's records on; empty for other
+    /// tables.
+    std::string origin;
 
     friend auto operator==(const change_record&, const change_record&) -> bool = default;
 };
@@ -142,7 +146,8 @@ struct change_page {
 
 namespace change_log_detail {
 
-inline constexpr std::uint8_t k_record_format_version = 1;
+/// 2 added `origin` (task 22); a record without one is still written as 1.
+inline constexpr std::uint8_t k_record_format_version = 2;
 inline constexpr std::uint8_t k_state_format_version = 1;
 
 inline void put_flagged_item(std::string& out, const std::optional<item>& it) {
@@ -380,7 +385,7 @@ inline constexpr std::size_t k_max_entries = std::size_t{1} << 20U;
 [[nodiscard]] inline auto encode_change_record(const change_record& r) -> std::string {
     using namespace change_log_detail;
     std::string out;
-    out.push_back(static_cast<char>(k_record_format_version));
+    out.push_back(static_cast<char>(r.origin.empty() ? 1 : k_record_format_version));
     out.push_back(static_cast<char>(r.event));
     detail::put_varint(out, r.table_id);
     detail::put_bytes(out, encode_item(r.keys));
@@ -389,13 +394,17 @@ inline constexpr std::size_t k_max_entries = std::size_t{1} << 20U;
     out.push_back(r.ttl_delete ? '\1' : '\0');
     detail::put_varint(out, r.written_ms);
     detail::put_varint(out, r.stream_ms);
+    if (!r.origin.empty()) {
+        detail::put_bytes(out, r.origin);
+    }
     return out;
 }
 
 [[nodiscard]] inline auto decode_change_record(std::string_view bytes)
     -> std::optional<change_record> {
     using namespace change_log_detail;
-    if (bytes.size() < 2 || static_cast<std::uint8_t>(bytes[0]) != k_record_format_version) {
+    const auto version = bytes.empty() ? 0 : static_cast<std::uint8_t>(bytes[0]);
+    if (bytes.size() < 2 || version == 0 || version > k_record_format_version) {
         return std::nullopt;
     }
     const auto event = static_cast<std::uint8_t>(bytes[1]);
@@ -412,8 +421,9 @@ inline constexpr std::size_t k_max_entries = std::size_t{1} << 20U;
     const auto ttl = r.byte();
     const auto written = r.varint();
     const auto stream = r.varint();
+    auto origin = version >= 2 ? r.bytes() : std::optional<std::string>{std::string{}};
     if (!table || !keys || !old_image || !new_image || !ttl || *ttl > 1 || !written || !stream ||
-        !r.done()) {
+        !origin || !r.done()) {
         return std::nullopt;
     }
     auto k = decode_item(*keys);
@@ -427,6 +437,7 @@ inline constexpr std::size_t k_max_entries = std::size_t{1} << 20U;
     out.ttl_delete = *ttl == 1;
     out.written_ms = *written;
     out.stream_ms = *stream;
+    out.origin = std::move(*origin);
     return out;
 }
 

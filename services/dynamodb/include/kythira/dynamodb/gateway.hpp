@@ -50,6 +50,11 @@
 /// | `KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX`, `_REGION`, `_ENDPOINT` | | key prefix, region, endpoint |
 /// | `KYTHIRA_DYNAMODB_BUCKET_DIR` | `<backup dir>/buckets` | export and import buckets, one
 /// directory each |
+/// | `KYTHIRA_DYNAMODB_REPLICA_PEERS` | | `region=https://host:port,...`: global tables' peer
+/// regions |
+/// | `KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY` | | the keys peers know
+/// this cluster's replicator by (required with `REPLICA_PEERS`) |
+/// | `KYTHIRA_DYNAMODB_REPLICA_CA` | system roots | PEM bundle peers' certificates chain to |
 ///
 /// Without a backup store a single node keeps backups in memory, and a
 /// cluster refuses `CreateBackup` (`backup.hpp`) and
@@ -61,6 +66,12 @@
 /// `KYTHIRA_DYNAMODB_BUCKET_DIR`, else under `<backup dir>/buckets`, else,
 /// with an S3 backup store, the S3 buckets of those names on its endpoint;
 /// a single node on the memory engine keeps them in memory.
+///
+/// Global tables (`global_tables.hpp`) replicate to the regions
+/// `KYTHIRA_DYNAMODB_REPLICA_PEERS` names, each another Kythira cluster
+/// whose `KYTHIRA_DYNAMODB_REGION` is that region and whose keys include
+/// the replication principal's. Every node of a cluster should have the
+/// same peers: the replicator runs wherever the catalog leads.
 ///
 /// Without `PEERS` the daemon is one node on `local_backend`, with no Raft.
 /// With it, the node joins a Raft cluster on `raft_backend` (one `PEERS`
@@ -83,6 +94,7 @@
 #include <kythira/dynamodb/dynamodb_actions.hpp>
 #include <kythira/dynamodb/forward_link.hpp>
 #include <kythira/dynamodb/front_end.hpp>
+#include <kythira/dynamodb/global_tables.hpp>
 #include <kythira/dynamodb/insights_api.hpp>
 #include <kythira/dynamodb/vector_search.hpp>
 #include <kythira/dynamodb/item_api.hpp>
@@ -180,6 +192,10 @@ struct gateway_config {
     /// else none. The daemon sets `buckets` for S3 and for memory.
     bucket_resolver buckets;
     std::string bucket_dir;
+    /// Global tables' peer regions (task 22): `peers` when set (tests link
+    /// clusters in-process), else one HTTP link per `replica_peers` entry.
+    std::shared_ptr<peer_set> peers;
+    std::vector<replication_peer_config> replica_peers;
 };
 
 /// Reads one environment variable; empty optional when unset.
@@ -322,7 +338,12 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_BACKUP_S3_REGION     its region (the AWS SDK default chain)\n"
     "  KYTHIRA_DYNAMODB_BACKUP_S3_ENDPOINT   an S3-compatible endpoint instead\n"
     "  KYTHIRA_DYNAMODB_BUCKET_DIR           export and import buckets, one directory\n"
-    "                                        each (default <backup dir>/buckets)\n";
+    "                                        each (default <backup dir>/buckets)\n"
+    "  KYTHIRA_DYNAMODB_REPLICA_PEERS        region=https://host:port,... global\n"
+    "                                        tables' peer regions\n"
+    "  KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID      keys the peers know this\n"
+    "  KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY  cluster's replicator by\n"
+    "  KYTHIRA_DYNAMODB_REPLICA_CA           PEM bundle peers' certificates chain to\n";
 
 namespace gateway_detail {
 
@@ -426,6 +447,55 @@ namespace gateway_detail {
     }
     if (c.engine == "rocksdb" && c.data_dir.empty()) {
         return std::string("KYTHIRA_DYNAMODB_ENGINE=rocksdb needs KYTHIRA_DYNAMODB_DATA_DIR");
+    }
+    return std::nullopt;
+}
+
+/// `KYTHIRA_DYNAMODB_REPLICA_*` into `c.replica_peers`; the error text on
+/// a bad setting.
+[[nodiscard]] inline auto replica_peers_from_env(const env_lookup& env, gateway_config& c)
+    -> std::optional<std::string> {
+    const auto text = env("KYTHIRA_DYNAMODB_REPLICA_PEERS").value_or("");
+    if (trim(text).empty()) {
+        return std::nullopt;
+    }
+    auto peers = parse_id_map("KYTHIRA_DYNAMODB_REPLICA_PEERS", text);
+    if (auto* e = std::get_if<std::string>(&peers)) {
+        return *e;
+    }
+    const auto key = env("KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID").value_or("");
+    const auto secret = env("KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY").value_or("");
+    if (key.empty() || secret.empty()) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_REPLICA_PEERS needs KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID and "
+            "KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY");
+    }
+    for (const auto& [region, url] : std::get<0>(peers)) {
+        if (region == c.front.region) {
+            return "KYTHIRA_DYNAMODB_REPLICA_PEERS names this cluster's own region '" + region +
+                   "'";
+        }
+        replication_peer_config p;
+        p.region = region;
+        std::string_view rest = url;
+        if (rest.starts_with("https://")) {
+            rest.remove_prefix(8);
+        } else if (rest.starts_with("http://")) {
+            rest.remove_prefix(7);
+            p.tls = false;
+        } else {
+            return "KYTHIRA_DYNAMODB_REPLICA_PEERS: '" + url +
+                   "' is not http://host:port or https://host:port";
+        }
+        if (!parse_host_port(std::string(rest))) {
+            return "KYTHIRA_DYNAMODB_REPLICA_PEERS: '" + url +
+                   "' is not http://host:port or https://host:port";
+        }
+        p.endpoint = std::string(rest);
+        p.ca_path = env("KYTHIRA_DYNAMODB_REPLICA_CA").value_or("");
+        p.access_key_id = key;
+        p.secret_access_key = secret;
+        c.replica_peers.push_back(std::move(p));
     }
     return std::nullopt;
 }
@@ -562,6 +632,9 @@ namespace gateway_detail {
             "KYTHIRA_DYNAMODB_BACKUP_DIR and KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET are both set; "
             "choose one");
     }
+    if (auto e = gateway_detail::replica_peers_from_env(env, c)) {
+        return *e;
+    }
     return c;
 }
 
@@ -635,6 +708,8 @@ public:
           _insights(backend),
           _vectors(backend),
           _vector_worker(backend, &_vectors.registry()),
+          _receiver(backend),
+          _replicator(backend, nullptr),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -680,6 +755,21 @@ public:
         _policies.register_with(*_front);
         _insights.register_with(*_front);
         _vectors.register_with(*_front);
+        _peers = _config.peers;
+        if (!_peers) {
+            _peers = std::make_shared<peer_set>();
+            for (const auto& p : _config.replica_peers) {
+                _peers->add(p.region, http_replication_send(p));
+            }
+        }
+        _tables.set_peers([peers = _peers](std::string_view r) { return peers->has(r); });
+        _receiver.register_with(*_front);
+        _replicator.set_peers(_peers.get());
+        _replicator.set_log([this](std::string_view line) {
+            if (_log) {
+                _log(true, line);
+            }
+        });
         auto store = _config.backups;
         if (!store && !_config.backup_dir.empty()) {
             store = std::make_shared<directory_backup_store>(_config.backup_dir);
@@ -761,11 +851,11 @@ public:
 private:
     /// The worker for the catalog leader's background jobs: the TTL
     /// sweeper, backups and restores, the point-in-time archiver, exports,
-    /// imports and bulk puts, the vector index worker, and the Kinesis
-    /// destination publisher (`ttl.hpp`, `backup.hpp`, `pitr.hpp`,
-    /// `export_import.hpp`, `bulk_put.hpp`, `vector_search.hpp`,
-    /// `kinesis_destination.hpp`), a pass of each a second, on the node that
-    /// leads the catalog when the backend has one. A long backup or export
+    /// imports and bulk puts, the vector index worker, the global table
+    /// replicator, and the Kinesis destination publisher (`ttl.hpp`,
+    /// `backup.hpp`, `pitr.hpp`, `export_import.hpp`, `bulk_put.hpp`,
+    /// `vector_search.hpp`, `global_tables.hpp`, `kinesis_destination.hpp`), a pass of each a
+    /// second, on the node that leads the catalog when the backend has one. A long backup or export
     /// delays the others until it ends.
     void sweep_loop() {
         std::unique_lock lock(_sweep_mu);
@@ -831,6 +921,15 @@ private:
                     } catch (const std::exception& e) {
                         if (_log) {
                             _log(true, std::string("vector indexes: ") + e.what());
+                        }
+                    }
+                    try {
+                        // Each replica resumes from its stored cursors, here
+                        // or on a new leader.
+                        (void)_replicator.pass();
+                    } catch (const std::exception& e) {
+                        if (_log) {
+                            _log(true, std::string("global tables: ") + e.what());
                         }
                     }
                     // Unpublished records stay in the change log; the next
@@ -902,6 +1001,9 @@ private:
     insights_api<Backend> _insights;
     vector_search_api<Backend> _vectors;
     vector_index_worker<Backend> _vector_worker;
+    std::shared_ptr<peer_set> _peers;
+    replication_receiver<Backend> _receiver;
+    global_table_replicator<Backend> _replicator;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

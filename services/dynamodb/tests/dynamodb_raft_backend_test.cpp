@@ -555,6 +555,33 @@ BOOST_AUTO_TEST_CASE(range_reads_cross_a_split_with_small_pages) {
     // reaches all of them.
     put(c.node(2), "p9", 7);
     BOOST_TEST(count_all(c.node(3), true) == 37U);
+
+    // A global table's backfill (task 22) reads pages that carry each
+    // item's stamp, across every group.
+    ddb::item_command stamped;
+    stamped.op = ddb::item_command::kind::put;
+    stamped.table_id = d->table_id;
+    stamped.schema = d->schema;
+    stamped.payload = *ddb::item_from_json(
+        json::parse(R"({"pk":{"S":"p10"},"sk":{"N":"9"}})").as_object());
+    stamped.region = "us-west-2";
+    stamped.written_ms = 1234;
+    BOOST_REQUIRE((c.backend(3).write(stamped).outcome == ddb::item_result::status::ok));
+    std::size_t items = 0;
+    std::vector<ddb::replica_stamp> stamps;
+    c.backend(2).read_stamped_range(
+        ddb::table_range(d->table_id),
+        [&](std::string_view, const ddb::item&, const std::optional<ddb::replica_stamp>& s) {
+            ++items;
+            if (s) {
+                stamps.push_back(*s);
+            }
+            return true;
+        });
+    BOOST_TEST(items == 38U);
+    BOOST_REQUIRE_EQUAL(stamps.size(), 1U);
+    BOOST_TEST(stamps.front().written_ms == 1234U);
+    BOOST_TEST(stamps.front().region == "us-west-2");
     c.node(1).ok("DeleteTable", R"({"TableName":"Music"})");
     for (std::uint64_t id = 1; id <= k_nodes; ++id) {
         BOOST_TEST(cluster::await([&] { return c.item_keys(id) == 0U; }), "node " << id);

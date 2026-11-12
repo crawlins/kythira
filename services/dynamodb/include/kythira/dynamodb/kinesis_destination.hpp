@@ -675,11 +675,14 @@ namespace kinesis_destination_detail {
     return std::pair{std::move(host), std::string(hp.substr(colon + 1))};
 }
 
-/// A one-connection-per-call HTTP(S) POST to `/`.
-[[nodiscard]] inline auto http_post(const kinesis_http_sink_config& cfg,
-                                    const std::string& host_port,
-                                    const std::vector<std::pair<std::string, std::string>>& headers,
-                                    const std::string& body) -> std::optional<kinesis_http_answer> {
+/// A one-connection-per-call HTTP(S) POST to `path` (global tables post
+/// to their peers' replication path with it too).
+[[nodiscard]] inline auto http_post(
+    const kinesis_http_sink_config& cfg, const std::string& host_port,
+    const std::vector<std::pair<std::string, std::string>>& headers, const std::string& body,
+    std::string_view path = "/",
+    std::string_view user_agent = "kythira-dynamodb-kinesis-destination")
+    -> std::optional<kinesis_http_answer> {
     namespace beast = boost::beast;
     namespace http = beast::http;
     namespace ssl = boost::asio::ssl;
@@ -688,11 +691,11 @@ namespace kinesis_destination_detail {
         return std::nullopt;
     }
     try {
-        http::request<http::string_body> req{http::verb::post, "/", 11};
+        http::request<http::string_body> req{http::verb::post, path, 11};
         for (const auto& [k, v] : headers) {
             req.set(k, v);
         }
-        req.set(http::field::user_agent, "kythira-dynamodb-kinesis-destination");
+        req.set(http::field::user_agent, user_agent);
         req.body() = body;
         req.prepare_payload();
         boost::asio::io_context ioc;

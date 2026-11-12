@@ -80,6 +80,20 @@ enum class return_values : std::uint8_t {
 };
 
 /// One write to a group of items.
+/// When and where a global table's item was last written (task 22).
+struct replica_stamp {
+    std::uint64_t written_ms = 0;
+    std::string region;
+
+    friend auto operator==(const replica_stamp&, const replica_stamp&) -> bool = default;
+};
+
+/// Whether `a` is a later write than `b`: by time, then by region name, so
+/// every replica picks the same winner (AWS's last-writer-wins rule).
+[[nodiscard]] inline auto newer_stamp(const replica_stamp& a, const replica_stamp& b) -> bool {
+    return a.written_ms != b.written_ms ? a.written_ms > b.written_ms : a.region > b.region;
+}
+
 struct item_command {
     enum class kind : std::uint8_t {
         put = 1,
@@ -119,6 +133,12 @@ struct item_command {
         /// left with no records. Leader-proposed, so every replica trims
         /// at the same entry.
         trim_change_log = 11,
+        /// A global table's write from another replica (task 22): `payload`
+        /// is the item as written there (or, with `replica_delete`, its
+        /// key), stamped `written_ms` in `region`. It applies only when
+        /// that stamp is newer than the item's own, AWS's last-writer-wins
+        /// rule; otherwise nothing changes.
+        replicate = 12,
     };
 
     kind op = kind::put;
@@ -155,6 +175,12 @@ struct item_command {
     /// The label of the table's enabled DynamoDB stream (task 16), copied
     /// into the record; 0 when none.
     std::uint64_t stream_ms = 0;
+    /// A global table's region (task 22): the write is stamped
+    /// `(written_ms, region)` for last-writer-wins, and its change record
+    /// names the region it came from. Empty for other tables.
+    std::string region;
+    /// `replicate`: the other replica deleted the item.
+    bool replica_delete = false;
 
     friend auto operator==(const item_command&, const item_command&) -> bool = default;
 };
@@ -209,10 +235,11 @@ struct item_result {
 
 namespace item_sm_detail {
 
-/// 2 added the GSI fields (task 11), 3 the change log fields (task 15).
-/// A command without change log fields is still written as 2, so replicas
-/// not yet upgraded keep applying writes to tables that log nothing.
-inline constexpr std::uint8_t k_command_format_version = 3;
+/// 2 added the GSI fields (task 11), 3 the change log fields (task 15), 4
+/// the region and `replicate` (task 22). A command without change log
+/// fields is still written as 2, and one without a region as 3, so
+/// replicas not yet upgraded keep applying writes to other tables.
+inline constexpr std::uint8_t k_command_format_version = 4;
 inline constexpr std::uint8_t k_result_format_version = 1;
 
 inline void put_u64(std::string& out, std::uint64_t v) {
@@ -279,9 +306,11 @@ inline void put_schema(std::string& out, const key_schema& s) {
 [[nodiscard]] inline auto encode_item_command(const item_command& c) -> std::string {
     using namespace item_sm_detail;
     std::string out;
-    const bool logged = c.log_changes || c.ttl_delete || c.written_ms != 0 || c.stream_ms != 0 ||
-                        c.op == item_command::kind::trim_change_log;
-    out.push_back(static_cast<char>(logged ? k_command_format_version : 2));
+    const bool regional =
+        !c.region.empty() || c.replica_delete || c.op == item_command::kind::replicate;
+    const bool logged = regional || c.log_changes || c.ttl_delete || c.written_ms != 0 ||
+                        c.stream_ms != 0 || c.op == item_command::kind::trim_change_log;
+    out.push_back(static_cast<char>(regional ? k_command_format_version : logged ? 3 : 2));
     out.push_back(static_cast<char>(c.op));
     put_u64(out, c.table_id);
     put_schema(out, c.schema);
@@ -299,9 +328,13 @@ inline void put_schema(std::string& out, const key_schema& s) {
         detail::put_bytes(out, e);
     }
     if (logged) {
-        out.push_back(static_cast<char>((c.log_changes ? 1U : 0U) | (c.ttl_delete ? 2U : 0U)));
+        out.push_back(static_cast<char>((c.log_changes ? 1U : 0U) | (c.ttl_delete ? 2U : 0U) |
+                                        (c.replica_delete ? 4U : 0U)));
         detail::put_varint(out, c.written_ms);
         detail::put_varint(out, c.stream_ms);
+    }
+    if (regional) {
+        detail::put_bytes(out, c.region);
     }
     return out;
 }
@@ -332,9 +365,11 @@ enum class item_command_status : std::uint8_t {
     if (op == 0) {
         return item_command_status::malformed;
     }
-    // trim_change_log came in version 3.
-    if (op > static_cast<std::uint8_t>(version >= 3 ? item_command::kind::trim_change_log
-                                                    : item_command::kind::index_mark)) {
+    // trim_change_log came in version 3, replicate in 4.
+    const auto last = version >= 4   ? item_command::kind::replicate
+                      : version >= 3 ? item_command::kind::trim_change_log
+                                     : item_command::kind::index_mark;
+    if (op > static_cast<std::uint8_t>(last)) {
         // A kind a later release added: upgrade rather than guess.
         return item_command_status::unknown_version;
     }
@@ -384,13 +419,21 @@ enum class item_command_status : std::uint8_t {
         const auto flags = r.byte();
         const auto written = r.varint();
         const auto stream = r.varint();
-        if (!flags || *flags > 3 || !written || !stream) {
+        if (!flags || *flags > (version >= 4 ? 7 : 3) || !written || !stream) {
             return item_command_status::malformed;
         }
         c.log_changes = (*flags & 1U) != 0;
         c.ttl_delete = (*flags & 2U) != 0;
+        c.replica_delete = (*flags & 4U) != 0;
         c.written_ms = *written;
         c.stream_ms = *stream;
+    }
+    if (version >= 4) {
+        auto region = r.bytes();
+        if (!region) {
+            return item_command_status::malformed;
+        }
+        c.region = std::move(*region);
     }
     if (!r.done()) {
         return item_command_status::malformed;
@@ -1103,6 +1146,12 @@ public:
                       });
     }
 
+    /// The last-writer-wins stamp of the item at base key `key` (task 22),
+    /// or nothing for an item no global table write has touched.
+    [[nodiscard]] auto stamp_of(const std::string& key) const -> std::optional<replica_stamp> {
+        return load_meta(key).stamp;
+    }
+
 private:
     [[nodiscard]] auto engine() const -> engine_type& {
         if (_engine == nullptr) {
@@ -1183,8 +1232,58 @@ private:
         return *n;
     }
 
+    /// An item's meta value: its version, then, for a global table's item
+    /// (task 22), the stamp of its last write.
+    struct item_meta {
+        std::uint64_t version = 0;
+        std::optional<replica_stamp> stamp;
+    };
+
+    [[nodiscard]] static auto parse_meta(std::string_view in) -> std::optional<item_meta> {
+        item_meta m;
+        const auto n = item_sm_detail::get_u64(in);
+        if (!n) {
+            return std::nullopt;
+        }
+        m.version = *n;
+        if (!in.empty()) {
+            detail::reader r(in);
+            const auto ms = r.varint();
+            auto region = r.bytes();
+            if (!ms || !region || !r.done()) {
+                return std::nullopt;
+            }
+            m.stamp = replica_stamp{*ms, std::move(*region)};
+        }
+        return m;
+    }
+
+    [[nodiscard]] auto load_meta(const std::string& key) const -> item_meta {
+        const auto v = read_value(kythira::column_family::meta, key);
+        if (!v) {
+            return {};
+        }
+        auto m = parse_meta(*v);
+        if (!m) {
+            throw kythira::persistent_storage_error("dynamo_item_state_machine: corrupt item meta");
+        }
+        return *m;
+    }
+
+    [[nodiscard]] static auto encode_meta(std::uint64_t version,
+                                          const std::optional<replica_stamp>& stamp)
+        -> std::string {
+        std::string v;
+        item_sm_detail::put_u64(v, version);
+        if (stamp) {
+            detail::put_varint(v, stamp->written_ms);
+            detail::put_bytes(v, stamp->region);
+        }
+        return v;
+    }
+
     [[nodiscard]] auto load_version(const std::string& key) const -> std::uint64_t {
-        return load_counter(key);
+        return load_meta(key).version;
     }
 
     static auto put_applied_at(kythira::write_batch& batch, const std::string& at, LogIndex index)
@@ -1254,10 +1353,35 @@ private:
             return r;
         }
 
+        // A global table's write carries its stamp; a replicated one
+        // applies only over an older stamp (last writer wins).
+        const auto meta = c.region.empty() ? item_meta{} : load_meta(*key);
+        std::optional<replica_stamp> stamp;
+        if (!c.region.empty()) {
+            stamp = replica_stamp{c.written_ms, c.region};
+            // A local write follows what this replica holds, whatever the
+            // clocks say, so it wins everywhere as it did here.
+            if (c.op != item_command::kind::replicate && meta.stamp &&
+                stamp->written_ms <= meta.stamp->written_ms) {
+                stamp->written_ms = meta.stamp->written_ms + 1;
+            }
+        }
+        if (c.op == item_command::kind::replicate &&
+            (c.region.empty() || (meta.stamp && !newer_stamp(*stamp, *meta.stamp)))) {
+            item_result r;
+            r.charged_bytes = old_bytes;
+            return r;
+        }
+
         std::optional<item> next;
         switch (c.op) {
             case item_command::kind::put:
                 next = c.payload;
+                break;
+            case item_command::kind::replicate:
+                if (!c.replica_delete) {
+                    next = c.payload;
+                }
                 break;
             case item_command::kind::update: {
                 // An update of an item that does not exist creates it from
@@ -1323,32 +1447,35 @@ private:
         }
         // A table with GSIs keeps a deleted item's version, so the item's
         // versions only grow and an index never takes an older write for a
-        // newer one (`global_index.hpp`).
-        const bool keep_versions = !c.gsis.empty();
+        // newer one (`global_index.hpp`). A global table keeps a deleted
+        // item's stamp, so an older write from another replica cannot
+        // bring it back.
+        const bool keep_versions = !c.gsis.empty() || stamp.has_value();
         if (next) {
             r.version = load_version(*key) + 1;
-            std::string v;
-            item_sm_detail::put_u64(v, r.version);
             batch.put(kythira::column_family::data, *key, encode_item(*next));
-            batch.put(kythira::column_family::meta, *key, std::move(v));
+            batch.put(kythira::column_family::meta, *key, encode_meta(r.version, stamp));
         } else if (old) {
             batch.erase(kythira::column_family::data, *key);
             if (keep_versions) {
-                std::string v;
-                item_sm_detail::put_u64(v, load_version(*key) + 1);
-                batch.put(kythira::column_family::meta, *key, std::move(v));
+                batch.put(kythira::column_family::meta, *key,
+                          encode_meta(load_version(*key) + 1, stamp));
             } else {
                 batch.erase(kythira::column_family::meta, *key);
             }
+        } else if (stamp) {
+            // A delete of an item not here still leaves its stamp.
+            batch.put(kythira::column_family::meta, *key, encode_meta(meta.version, stamp));
         }
-        if (keep_versions && (next || old)) {
+        if (!c.gsis.empty() && (next || old)) {
             record_pending(c, *key, old, next, load_version_staged(batch, *key), batch);
         }
         if (changes != nullptr && c.log_changes) {
             if (auto rec = make_change_record(c.table_id, c.schema, old, next)) {
                 rec->ttl_delete = c.ttl_delete;
-                rec->written_ms = c.written_ms;
+                rec->written_ms = stamp ? stamp->written_ms : c.written_ms;
                 rec->stream_ms = c.stream_ms;
+                rec->origin = c.region;
                 changes->push_back(std::move(*rec));
             }
         }

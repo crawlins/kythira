@@ -224,6 +224,48 @@ struct continuous_backups {
     friend auto operator==(const continuous_backups&, const continuous_backups&) -> bool = default;
 };
 
+/// A replica of a global table (task 22) in another Kythira cluster,
+/// version 2019.11.21. `replica_status` holds AWS's `ReplicaStatus`
+/// values that apply here.
+enum class replica_status : std::uint8_t {
+    creating = 0,
+    active = 1,
+    deleting = 2,
+    creation_failed = 3,
+};
+
+struct table_replica {
+    /// The peer's region name, as `UpdateTable` names it.
+    std::string region;
+    replica_status status = replica_status::creating;
+    /// When it was asked for (ms since the epoch, from the entry).
+    std::uint64_t created_ms = 0;
+    /// The replicator has copied the table's items there (set once the
+    /// replica is created; the change log carries the rest).
+    bool backfilled = false;
+    /// The replicator's position in each store stream of the change log,
+    /// for this replica.
+    std::vector<std::pair<std::string, std::uint64_t>> cursors;
+    /// Why creating it failed (`creation_failed`).
+    std::string failure;
+
+    friend auto operator==(const table_replica&, const table_replica&) -> bool = default;
+};
+
+[[nodiscard]] inline auto replica_status_name(replica_status s) -> std::string_view {
+    switch (s) {
+        case replica_status::creating:
+            return "CREATING";
+        case replica_status::active:
+            return "ACTIVE";
+        case replica_status::deleting:
+            return "DELETING";
+        case replica_status::creation_failed:
+            return "CREATION_FAILED";
+    }
+    return "ACTIVE";
+}
+
 /// A resource-based policy (task 21) on the table or on one of its
 /// streams. The authorizer (IAM's evaluator) reads it on every request to
 /// the resource; the catalog only keeps it.
@@ -307,6 +349,20 @@ struct table_descriptor {
     std::vector<contributor_insights> insights;
     /// Vector indexes (task 26), in creation order.
     std::vector<vector_index> vectors;
+    /// A global table (task 22): this cluster's region, and the replicas
+    /// in other clusters. Empty for any other table.
+    std::string region;
+    std::vector<table_replica> replicas;
+
+    /// The replica in `name`, or null.
+    [[nodiscard]] auto replica_in(std::string_view name) const -> const table_replica* {
+        const auto it = std::find_if(replicas.begin(), replicas.end(),
+                                     [&](const table_replica& r) { return r.region == name; });
+        return it == replicas.end() ? nullptr : &*it;
+    }
+
+    /// Whether this is a global table.
+    [[nodiscard]] auto global() const -> bool { return !region.empty(); }
 
     /// The vector index named `name`, or null.
     [[nodiscard]] auto vector_named(std::string_view index) const -> const vector_index* {
@@ -344,7 +400,7 @@ struct table_descriptor {
     /// the log feeds (task 26). Global tables (22) will turn it on too.
     [[nodiscard]] auto logs_changes() const -> bool {
         return enabled_stream() != nullptr || streaming_destination() != nullptr || pitr.enabled ||
-               !vectors.empty();
+               !vectors.empty() || global();
     }
 
     /// The Kinesis destination being streamed to, or null.
@@ -429,6 +485,22 @@ struct catalog_command {
         /// entry with the index (empty for the table), `enabled` and
         /// `mode`; the entry's time becomes `updated_ms`.
         set_contributor_insights = 15,
+        /// `ReplicaUpdates` (task 22): `table.replicas` is the list the
+        /// table should have and `table.region` this cluster's region. A
+        /// region the table lacks is added CREATING, an ACTIVE or failed
+        /// replica the command lacks starts DELETING, a DELETING one the
+        /// command lacks goes, and a replica's command copy may move it
+        /// from CREATING to ACTIVE or CREATION_FAILED (with `failure`) or
+        /// mark it `backfilled`. An added replica keeps the command's
+        /// cursors, and its ACTIVE status when the command gives it (a
+        /// peer's notice of a replica another cluster created). One replica may be added or removed
+        /// at a time, and none while another is being. With no replicas left the table is no longer
+        /// global.
+        set_replicas = 16,
+        /// The replicator's progress (task 22): each replica of
+        /// `table.replicas` names its region and cursors, which move
+        /// forward; nothing else changes.
+        replica_progress = 17,
     };
 
     /// Which settings an `update_table` changes.
@@ -512,15 +584,21 @@ namespace catalog_detail {
 /// (task 19), only for a table that ever had point-in-time recovery.
 /// 8 added `policies` and `insights` after `pitr`, with
 /// `set_resource_policy` and `set_contributor_insights` (task 21), only
-/// for a table that has either. 9 added `vectors` after `insights`, with
+/// for a table that has either.
+/// 9 added `vectors` after `insights`, with
 /// `update_vectors` (task 26), only for a table that has a vector index.
-inline constexpr std::uint8_t k_descriptor_format_version = 9;
+/// 10 added `region` and `replicas` after `vectors`, with `set_replicas`
+/// and `replica_progress` (task 22), only for a global table.
+inline constexpr std::uint8_t k_descriptor_format_version = 10;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 9;
-inline constexpr std::uint8_t k_result_format_version = 9;
+inline constexpr std::uint8_t k_command_format_version = 10;
+inline constexpr std::uint8_t k_result_format_version = 10;
 
 /// The version a form carrying `d` is written as.
 [[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
+    if (!d.region.empty() || !d.replicas.empty()) {
+        return 10;
+    }
     if (!d.vectors.empty()) {
         return 9;
     }
@@ -659,6 +737,22 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     }
     if (version >= 9) {
         put_vector_indexes(out, d.vectors);
+    }
+    if (version >= 10) {
+        detail::put_bytes(out, d.region);
+        detail::put_varint(out, d.replicas.size());
+        for (const auto& r : d.replicas) {
+            detail::put_bytes(out, r.region);
+            out.push_back(static_cast<char>(r.status));
+            detail::put_varint(out, r.created_ms);
+            out.push_back(r.backfilled ? '\1' : '\0');
+            detail::put_varint(out, r.cursors.size());
+            for (const auto& [key, seq] : r.cursors) {
+                detail::put_bytes(out, key);
+                detail::put_varint(out, seq);
+            }
+            detail::put_bytes(out, r.failure);
+        }
     }
 }
 
@@ -840,6 +934,43 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         }
         d.vectors = std::move(*vectors);
     }
+    if (version >= 10) {
+        auto region = r.bytes();
+        const auto n = r.count();
+        if (!region || !n) {
+            return std::nullopt;
+        }
+        d.region = std::move(*region);
+        for (std::size_t i = 0; i < *n; ++i) {
+            table_replica rep;
+            auto name = r.bytes();
+            const auto status = r.byte();
+            const auto created = r.varint();
+            const auto backfilled = get_flag(r);
+            const auto m = r.count();
+            if (!name || !status || *status > 3 || !created || !backfilled || !m) {
+                return std::nullopt;
+            }
+            for (std::size_t j = 0; j < *m; ++j) {
+                auto key = r.bytes();
+                const auto seq = r.varint();
+                if (!key || !seq) {
+                    return std::nullopt;
+                }
+                rep.cursors.emplace_back(std::move(*key), *seq);
+            }
+            auto failure = r.bytes();
+            if (!failure) {
+                return std::nullopt;
+            }
+            rep.region = std::move(*name);
+            rep.status = static_cast<replica_status>(*status);
+            rep.created_ms = *created;
+            rep.backfilled = *backfilled;
+            rep.failure = std::move(*failure);
+            d.replicas.push_back(std::move(rep));
+        }
+    }
     d.name = std::move(*name);
     d.table_id = *id;
     d.schema = std::move(*schema);
@@ -919,6 +1050,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // At least the version that brought the command's kind.
     auto version = catalog_detail::version_for(c.table);
     switch (c.op) {
+        case catalog_command::kind::set_replicas:
+        case catalog_command::kind::replica_progress:
+            version = std::max<std::uint8_t>(version, 10);
+            break;
         case catalog_command::kind::set_resource_policy:
         case catalog_command::kind::set_contributor_insights:
             version = std::max<std::uint8_t>(version, 8);
@@ -972,7 +1107,8 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // set_ttl came in version 3, the destination commands in 5,
     // restore_done in 6, the point-in-time recovery commands in 7, the
     // resource policy and Contributor Insights commands in 8.
-    const std::uint8_t last_op = version >= 8   ? 15
+    const std::uint8_t last_op = version >= 10  ? 17
+                                 : version >= 8 ? 15
                                  : version >= 7 ? 13
                                  : version >= 6 ? 11
                                  : version >= 5 ? 10
@@ -1155,6 +1291,12 @@ public:
                 break;
             case catalog_command::kind::set_contributor_insights:
                 result = set_contributor_insights(*c, batch);
+                break;
+            case catalog_command::kind::set_replicas:
+                result = set_replicas(*c, batch);
+                break;
+            case catalog_command::kind::replica_progress:
+                result = replica_progress(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -1379,6 +1521,16 @@ private:
         // `CreateTable` `ResourcePolicy` is the table's first revision.
         d.pitr = {};
         d.insights.clear();
+        // A restore is never global (task 22); a replica a peer creates
+        // starts with its region, its peers and no replicator progress.
+        if (d.restore.restored()) {
+            d.region.clear();
+            d.replicas.clear();
+        }
+        for (auto& r : d.replicas) {
+            r.cursors.clear();
+            r.created_ms = c.now_ms;
+        }
         if (d.restore.restored()) {
             d.policies.clear();
         }
@@ -2069,6 +2221,126 @@ private:
         it->enabled = want.enabled;
         it->mode = want.mode;
         it->updated_ms = c.now_ms;
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `set_replicas` (task 22): see the command.
+    auto set_replicas(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->status == table_status::deleting) {
+            return not_found(c.table.name);
+        }
+        if (d->status != table_status::active) {
+            return in_use(*d);
+        }
+        const auto named = [](const std::vector<table_replica>& list,
+                              const std::string& region) -> const table_replica* {
+            const auto it = std::find_if(list.begin(), list.end(), [&](const table_replica& r) {
+                return r.region == region;
+            });
+            return it == list.end() ? nullptr : &*it;
+        };
+        std::vector<table_replica> added;
+        std::size_t removed = 0;
+        for (const auto& want : c.table.replicas) {
+            if (named(d->replicas, want.region) == nullptr) {
+                added.push_back(want);
+            }
+        }
+        for (const auto& have : d->replicas) {
+            if (have.status != replica_status::deleting &&
+                named(c.table.replicas, have.region) == nullptr) {
+                ++removed;
+            }
+        }
+        const bool busy =
+            std::any_of(d->replicas.begin(), d->replicas.end(), [](const table_replica& r) {
+                return r.status == replica_status::creating || r.status == replica_status::deleting;
+            });
+        if (added.size() + removed > 1 || (busy && added.size() + removed == 1)) {
+            return failure("LimitExceededException",
+                           "Only one replica can be created or deleted at a time per table");
+        }
+        if (!added.empty() && (c.table.region.empty() || added.front().region == c.table.region)) {
+            return invalid("A replica must name another region than the table's");
+        }
+        std::erase_if(d->replicas, [&](const table_replica& r) {
+            return r.status == replica_status::deleting &&
+                   named(c.table.replicas, r.region) == nullptr;
+        });
+        for (auto& have : d->replicas) {
+            const auto* want = named(c.table.replicas, have.region);
+            if (want == nullptr) {
+                have.status = replica_status::deleting;
+                continue;
+            }
+            if (have.status == replica_status::creating &&
+                (want->status == replica_status::active ||
+                 want->status == replica_status::creation_failed)) {
+                have.status = want->status;
+                have.failure = want->failure;
+            }
+            have.backfilled = have.backfilled || want->backfilled;
+        }
+        if (!added.empty()) {
+            auto r = added.front();
+            // A peer's notice of a replica another cluster created adds
+            // it ACTIVE; one asked for here starts CREATING.
+            if (r.status != replica_status::active) {
+                r.status = replica_status::creating;
+            }
+            r.created_ms = c.now_ms;
+            r.backfilled = false;
+            // A peer told of a new replica starts it where it is with the
+            // replica that created it, so nothing in flight is missed.
+            r.failure.clear();
+            d->replicas.push_back(std::move(r));
+            if (d->region.empty()) {
+                d->region = c.table.region;
+            }
+        }
+        if (d->replicas.empty()) {
+            d->region.clear();
+        }
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `replica_progress` (task 22): see the command.
+    auto replica_progress(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->status == table_status::deleting) {
+            return not_found(c.table.name);
+        }
+        for (const auto& got : c.table.replicas) {
+            const auto it =
+                std::find_if(d->replicas.begin(), d->replicas.end(),
+                             [&](const table_replica& r) { return r.region == got.region; });
+            if (it == d->replicas.end()) {
+                continue;
+            }
+            std::vector<std::pair<std::string, std::uint64_t>> merged;
+            merged.reserve(got.cursors.size());
+            for (const auto& [key, seq] : got.cursors) {
+                auto next = seq;
+                for (const auto& [old_key, old_seq] : it->cursors) {
+                    if (old_key == key) {
+                        next = std::max(next, old_seq);
+                    }
+                }
+                merged.emplace_back(key, next);
+            }
+            it->cursors = std::move(merged);
+        }
         ++d->revision;
         store(batch, *d);
         catalog_result r;

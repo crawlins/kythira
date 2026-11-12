@@ -230,6 +230,9 @@ struct page {
     /// The part of the asked range this group covers (it is all done when
     /// `more` is false).
     kythira::key_range covered;
+    /// Each item's stamp, when the op asked for them (task 22).
+    bool stamped = false;
+    std::vector<std::optional<replica_stamp>> stamps;
 };
 
 [[nodiscard]] inline auto encode_page(const page& p) -> std::string {
@@ -241,6 +244,18 @@ struct page {
     }
     out.push_back(p.more ? '\1' : '\0');
     put_range(out, p.covered);
+    // Stamps follow only when asked for, so a page without them reads as
+    // it always did.
+    if (p.stamped) {
+        for (std::size_t i = 0; i < p.items.size(); ++i) {
+            const auto& s = i < p.stamps.size() ? p.stamps[i] : std::nullopt;
+            out.push_back(s ? '\1' : '\0');
+            if (s) {
+                detail::put_varint(out, s->written_ms);
+                detail::put_bytes(out, s->region);
+            }
+        }
+    }
     return out;
 }
 
@@ -265,11 +280,33 @@ struct page {
     }
     const auto more = in.byte();
     auto covered = get_range(in);
-    if (!more || *more > 1 || !covered || !in.done()) {
+    if (!more || *more > 1 || !covered) {
         return std::nullopt;
     }
     p.more = *more == 1;
     p.covered = std::move(*covered);
+    if (!in.done()) {
+        p.stamped = true;
+        for (std::size_t i = 0; i < p.items.size(); ++i) {
+            const auto has = in.byte();
+            if (!has || *has > 1) {
+                return std::nullopt;
+            }
+            if (*has == 0) {
+                p.stamps.emplace_back();
+                continue;
+            }
+            const auto ms = in.varint();
+            auto region = in.bytes();
+            if (!ms || !region) {
+                return std::nullopt;
+            }
+            p.stamps.emplace_back(replica_stamp{*ms, std::move(*region)});
+        }
+        if (!in.done()) {
+            return std::nullopt;
+        }
+    }
     return p;
 }
 
@@ -437,6 +474,20 @@ public:
 
     auto read_range(const kythira::key_range& range, kythira::scan_direction direction,
                     bool consistent, const range_visitor& visit) -> void {
+        read_pages(range, direction, consistent, false,
+                   [&](std::string_view key, const item& it, const std::optional<replica_stamp>&) {
+                       return visit(key, it);
+                   });
+    }
+
+    /// `read_range` (consistent, forward) with each item's stamp (task 22).
+    auto read_stamped_range(const kythira::key_range& range, const stamped_visitor& visit) -> void {
+        read_pages(range, kythira::scan_direction::forward, true, true, visit);
+    }
+
+private:
+    void read_pages(const kythira::key_range& range, kythira::scan_direction direction,
+                    bool consistent, bool stamped, const stamped_visitor& visit) {
         using raft_backend_detail::op_tag;
         const bool forward = direction == kythira::scan_direction::forward;
         auto remaining = range;
@@ -455,6 +506,9 @@ public:
             raft_backend_detail::put_range(op, remaining);
             op.push_back(forward ? '\1' : '\0');
             op.push_back(consistent ? '\1' : '\0');
+            if (stamped) {
+                op.push_back('\1');
+            }
             std::string answer;
             try {
                 answer = run(op, desc);
@@ -473,8 +527,11 @@ public:
             if (!p) {
                 throw std::runtime_error("raft_backend: unreadable page");
             }
-            for (const auto& [key, it] : p->items) {
-                if (!visit(key, it)) {
+            for (std::size_t i = 0; i < p->items.size(); ++i) {
+                const auto& [key, it] = p->items[i];
+                const std::optional<replica_stamp> none;
+                const auto& s = i < p->stamps.size() ? p->stamps[i] : none;
+                if (!visit(key, it, s)) {
                     return;
                 }
             }
@@ -502,6 +559,7 @@ public:
         }
     }
 
+public:
     auto describe(std::string_view name) -> std::optional<table_descriptor> {
         std::string op(1, static_cast<char>(raft_backend_detail::op_tag::describe));
         detail::put_bytes(op, name);
@@ -1477,8 +1535,17 @@ private:
         auto range = raft_backend_detail::get_range(in);
         const auto fwd = in.byte();
         const auto cons = in.byte();
-        if (!group || !range || !fwd || !cons || !in.done()) {
+        if (!group || !range || !fwd || !cons) {
             return error_answer("unreadable page op");
+        }
+        // A trailing 1 asks for each item's stamp (task 22).
+        bool stamped = false;
+        if (!in.done()) {
+            const auto s = in.byte();
+            if (!s || *s != 1 || !in.done()) {
+                return error_answer("unreadable page op");
+            }
+            stamped = true;
         }
         const auto g = static_cast<group_id_type>(*group);
         const bool forward = *fwd == 1;
@@ -1517,8 +1584,12 @@ private:
                         }
                         bytes += key.size() + item_size(it);
                         out.items.emplace_back(std::string(key), it);
+                        if (stamped) {
+                            out.stamps.push_back(items->stamp_of(std::string(key)));
+                        }
                         return true;
                     });
+                out.stamped = stamped;
                 return out;
             });
         if (!p) {

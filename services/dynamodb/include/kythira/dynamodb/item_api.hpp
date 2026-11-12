@@ -260,6 +260,7 @@ private:
         c.gsis = maintained_indexes(table.gsis);
         c.log_changes = table.logs_changes();
         c.stream_ms = table.stream_label();
+        c.region = table.region;
         c.old_on_condition_failure = text(in, "ReturnValuesOnConditionCheckFailure") == "ALL_OLD";
         return c;
     }
