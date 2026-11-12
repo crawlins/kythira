@@ -4,14 +4,15 @@
 #pragma once
 
 /// @file backup_s3.hpp
-/// @brief The S3 backup store of dynamodb_gateway_node
-///        (.kiro/specs/dynamodb-compatible-api/ task 18).
+/// @brief The S3 backup store and export buckets of dynamodb_gateway_node
+///        (.kiro/specs/dynamodb-compatible-api/ tasks 18 and 20).
 ///
 /// backup_s3.cpp is the one translation unit that parses an AWS SDK
 /// header, compiled with the SDK's S3 client when the build has it
 /// (KYTHIRA_DYNAMODB_NODE_S3), as ledger_node's export store is.
 
 #include <kythira/dynamodb/backup.hpp>
+#include <kythira/dynamodb/export_import.hpp>
 #include <kythira/dynamodb/gateway.hpp>
 
 #include <memory>
@@ -23,5 +24,11 @@ namespace dynamodb_gateway {
 /// build without the S3 client.
 [[nodiscard]] auto make_s3_backup_store(const kythira::dynamodb::gateway_config& cfg)
     -> std::shared_ptr<kythira::dynamodb::backup_store>;
+
+/// Export and import buckets (task 20) as the S3 buckets of those names on
+/// the backup store's endpoint and region, with the same credentials; null
+/// when `cfg` names no S3 backup store.
+[[nodiscard]] auto make_s3_bucket_resolver(const kythira::dynamodb::gateway_config& cfg)
+    -> kythira::dynamodb::bucket_resolver;
 
 }  // namespace dynamodb_gateway

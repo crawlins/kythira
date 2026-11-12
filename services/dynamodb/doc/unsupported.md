@@ -19,12 +19,6 @@ test reads the table rows: keep one operation per row, in the
 
 | Service | Operation | Why |
 |---|---|---|
-| DynamoDB | `ExportTableToPointInTime` | planned, task 20 |
-| DynamoDB | `DescribeExport` | planned, task 20 |
-| DynamoDB | `ListExports` | planned, task 20 |
-| DynamoDB | `ImportTable` | planned, task 20 |
-| DynamoDB | `DescribeImport` | planned, task 20 |
-| DynamoDB | `ListImports` | planned, task 20 |
 | DynamoDB | `PutResourcePolicy` | planned, task 21 |
 | DynamoDB | `GetResourcePolicy` | planned, task 21 |
 | DynamoDB | `DeleteResourcePolicy` | planned, task 21 |

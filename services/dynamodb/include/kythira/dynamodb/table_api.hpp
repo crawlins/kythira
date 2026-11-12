@@ -659,7 +659,7 @@ template<typename TypeOf>
         out["LatestStreamArn"] = stream_arn(ctx, d.name, d.streams.back().label_ms);
         out["LatestStreamLabel"] = stream_label(d.streams.back().label_ms);
     }
-    if (d.restore.restored()) {
+    if (d.restore.restored() && !d.restore.imported()) {
         // A point-in-time restore names the time restored to, as AWS does.
         boost::json::object summary{
             {"SourceTableArn", d.restore.source_table_arn},

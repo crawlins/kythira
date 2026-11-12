@@ -21,6 +21,28 @@ target_include_directories(kythira_dynamodb INTERFACE "${KYTHIRA_DYNAMODB_INCLUD
 target_link_libraries(kythira_dynamodb INTERFACE kythira_core_headers boost_json
     OpenSSL::SSL OpenSSL::Crypto)
 target_compile_features(kythira_dynamodb INTERFACE cxx_std_23)
+# Exports and imports (task 20, export_formats.hpp): gzip through zlib and
+# zstd input through libzstd, both optional. vcpkg builds have both (gRPC,
+# Folly and proxygen pull them in); without zlib exports are written
+# uncompressed and GZIP input is refused, without libzstd ZSTD input is.
+find_package(ZLIB QUIET)
+if(ZLIB_FOUND)
+    target_link_libraries(kythira_dynamodb INTERFACE ZLIB::ZLIB)
+    target_compile_definitions(kythira_dynamodb INTERFACE KYTHIRA_DYNAMODB_HAS_ZLIB)
+endif()
+find_package(zstd CONFIG QUIET)
+if(TARGET zstd::libzstd_shared)
+    set(_KYTHIRA_DYNAMODB_ZSTD zstd::libzstd_shared)
+elseif(TARGET zstd::libzstd_static)
+    set(_KYTHIRA_DYNAMODB_ZSTD zstd::libzstd_static)
+elseif(TARGET zstd::libzstd)
+    set(_KYTHIRA_DYNAMODB_ZSTD zstd::libzstd)
+endif()
+if(_KYTHIRA_DYNAMODB_ZSTD)
+    target_link_libraries(kythira_dynamodb INTERFACE ${_KYTHIRA_DYNAMODB_ZSTD})
+    target_compile_definitions(kythira_dynamodb INTERFACE KYTHIRA_DYNAMODB_HAS_ZSTD)
+endif()
+message(STATUS "kythira_dynamodb: gzip ${ZLIB_FOUND}, zstd ${_KYTHIRA_DYNAMODB_ZSTD}")
 
 # dynamodb_gateway_node (task 7).
 add_subdirectory(cmd)

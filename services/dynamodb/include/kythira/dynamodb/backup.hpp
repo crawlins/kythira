@@ -943,9 +943,10 @@ public:
         }
         for (const auto& name : _backend.list_tables("", SIZE_MAX)) {
             const auto d = _backend.describe(name);
-            // A point-in-time restore is the archiver's (`pitr.hpp`).
+            // A point-in-time restore is the archiver's (`pitr.hpp`), an
+            // import the importer's (`export_import.hpp`).
             if (d && d->status == table_status::creating && d->restore.in_progress &&
-                !d->restore.source_backup_arn.empty()) {
+                !d->restore.source_backup_arn.empty() && !d->restore.imported()) {
                 load(*d);
                 ++done;
             }

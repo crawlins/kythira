@@ -774,6 +774,53 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     `CancelBulkOperation`: an import into an existing table through
     ordinary writes, rate-limited, with its report
   - _Requirements: 17.3, 22.1_
+  - Notes (exports and imports done; bulk put next):
+    - `export_import.hpp`, `export_formats.hpp`. A request's S3 bucket
+      maps to a store: a directory under `KYTHIRA_DYNAMODB_BUCKET_DIR`
+      (default `<backup dir>/buckets`), the S3 bucket of that name on the
+      backup store's endpoint, or memory for one node on the memory
+      engine. Each export and import is a JSON record in the task 18
+      backup store (`exports/<id>/`, `imports/<id>/`), so there is no
+      catalog change; a worker in the gateway's background loop runs the
+      IN_PROGRESS ones on the catalog leader, from the start again after
+      a leader change. Records are listed for 90 days, client tokens hold
+      for 8 hours (`ExportConflictException`, `ImportConflictException`).
+    - Exports need point-in-time recovery, as on AWS, and write AWS's
+      layout under `<S3Prefix>/AWSDynamoDB/<id>/`: `_started`, gzipped
+      data files of `{"Item":...}` lines (DynamoDB JSON or Ion),
+      `manifest-files.json` with each file's count, base64 MD5, ETag and
+      key, `manifest-summary.json` and its `.md5`. A full export with no
+      `ExportTime` reads the table now; one at T rebuilds it from the
+      point-in-time archive (task 19's base and replay, now shared as
+      `pitr_detail::replay`). An incremental export from F to T rebuilds
+      the table at F, applies the records up to T, and writes one line per
+      touched item: keys, last write time in µs, `OldImage` at F (with
+      `NEW_AND_OLD_IMAGES`) and `NewImage` at T (none once deleted).
+    - Imports create the table `CREATING` from `TableCreationParameters`,
+      checked by `CreateTable`'s own code (now
+      `table_api::descriptor_of_create`), with the import's ARN in its
+      `table_restore` so it loads before it takes writes and shows no
+      `RestoreSummary`. Every object under the prefix is decompressed
+      (none, gzip, zstd) and read as DynamoDB JSON, Ion or CSV (header
+      row or `HeaderList`, a delimiter, key attributes of the table and
+      its GSIs typed as declared, other cells strings, empty cells left
+      out); items go through the ordinary write path, so GSIs are built.
+      Unreadable or refused items count in `ErrorCount` and are skipped.
+      An import with no objects fails and its table is dropped.
+    - Ion follows AWS's mapping (decimals for N, blobs for B, annotated
+      lists for sets); the reader takes ints, decimals, floats, long
+      strings, symbols, clobs and comments, and refuses timestamps,
+      s-expressions, typed nulls and nan or infinities. zlib and libzstd
+      are optional (`find_package`), present in vcpkg builds.
+    - Deviations: a point-in-time or incremental export holds the rebuilt
+      table in the catalog leader's memory; SSE settings are recorded but
+      the stores add no encryption of their own; without zlib, data files
+      are written uncompressed; the 15-minute minimum incremental period
+      is an option (tests set it to 0). Refusal wording is Kythira's
+      (DynamoDB Local has no exports or imports, and no AWS run was made).
+    - Tests: `dynamodb_export_import_test` (18 cases) and, in
+      `dynamodb_raft_backend_test`, an Ion export across a split imported
+      back through another node.
 
 ### Phase 6: the rest of the surface
 
