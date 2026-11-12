@@ -4,9 +4,9 @@
 // Operation coverage (`.kiro/specs/dynamodb-compatible-api/` task 1,
 // Requirements 2.1 and 2.2): every operation in the pinned DynamoDB and
 // DynamoDB Streams models is implemented (operations.hpp) or listed in
-// doc/unsupported.md, never both, and every listed one answers the error
-// the document says. Also that the generated shape tables load into the
-// core AWS JSON codec as expected.
+// doc/unsupported.md, never both, every listed one is out of scope (task
+// 23), and every listed one answers the error the document says. Also that
+// the generated shape tables load into the core AWS JSON codec as expected.
 
 #define BOOST_TEST_MODULE dynamodb_model_coverage_test
 
@@ -17,6 +17,7 @@
 #include <raft/aws_json_protocol.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <fstream>
 #include <map>
 #include <set>
@@ -124,6 +125,28 @@ BOOST_AUTO_TEST_CASE(every_operation_is_implemented_or_listed) {
                   get("DynamoDB"));
     check_service(ddb::dynamodbstreams_model::k_model, ddb::k_implemented_streams_operations,
                   get("DynamoDB Streams"));
+}
+
+BOOST_AUTO_TEST_CASE(every_listed_operation_is_out_of_scope) {
+    // Task 23 closed the coverage: what is left unimplemented is out of
+    // scope, with the reason, not waiting for a task (Requirement 2.1).
+    const std::string path = std::string(KYTHIRA_DYNAMODB_SOURCE_DIR) + "/doc/unsupported.md";
+    std::ifstream in(path);
+    BOOST_REQUIRE_MESSAGE(in.good(), "cannot read " << path);
+    std::string line;
+    std::size_t rows = 0;
+    while (std::getline(in, line)) {
+        const auto tick = line.find("| `");
+        if (!line.starts_with("| ") || tick == std::string::npos) {
+            continue;
+        }
+        const auto why = line.find("` | ", tick + 3);
+        BOOST_REQUIRE_MESSAGE(why != std::string::npos, "malformed row: " << line);
+        BOOST_TEST_INFO(line);
+        BOOST_TEST(line.substr(why + 4).starts_with("out of scope: "));
+        ++rows;
+    }
+    BOOST_TEST(rows > 0U);
 }
 
 BOOST_AUTO_TEST_CASE(every_listed_operation_answers_unknown_operation) {
