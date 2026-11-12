@@ -144,8 +144,9 @@ struct raft_backend_options {
     std::chrono::milliseconds change_log_trim_interval{60000};
 };
 
-/// A transaction op's keys no longer share one group; the coordinator
-/// re-partitions and sends again.
+/// A transaction op's keys no longer share one group, or a page op's group
+/// no longer holds the range it was sent for; the caller re-resolves and
+/// sends again.
 class txn_stale_route : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -454,7 +455,21 @@ public:
             raft_backend_detail::put_range(op, remaining);
             op.push_back(forward ? '\1' : '\0');
             op.push_back(consistent ? '\1' : '\0');
-            const auto p = raft_backend_detail::decode_page(run(op, desc));
+            std::string answer;
+            try {
+                answer = run(op, desc);
+            } catch (const txn_stale_route&) {
+                // A split or merge moved the range off the group resolved
+                // above: resolve it again from the current map. Resending
+                // the same op would only hear the same answer until the
+                // deadline.
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    throw std::runtime_error("raft_backend: the range kept moving");
+                }
+                std::this_thread::sleep_for(_options.retry_backoff);
+                continue;
+            }
+            const auto p = raft_backend_detail::decode_page(answer);
             if (!p) {
                 throw std::runtime_error("raft_backend: unreadable page");
             }
@@ -1152,6 +1167,10 @@ private:
         return out;
     }
 
+    [[nodiscard]] static auto stale_route_answer() -> std::string {
+        return std::string(1, static_cast<char>(raft_backend_detail::answer_tag::stale_route));
+    }
+
     [[nodiscard]] static auto error_answer(std::string_view why) -> std::string {
         std::string out(1, static_cast<char>(raft_backend_detail::answer_tag::error));
         out += why;
@@ -1470,8 +1489,9 @@ private:
         }
         const auto mine = raft_backend_detail::intersect(*range, engine_range(desc->_range));
         if (mine.empty()) {
-            // The local row moved; the caller re-resolves.
-            return not_leader_answer(std::nullopt);
+            // The group no longer holds the range (a split or merge): the
+            // caller re-resolves rather than resend this op.
+            return stale_route_answer();
         }
         barrier(mine.start, consistent);
         const std::size_t cap = _options.page_bytes;
@@ -1501,8 +1521,11 @@ private:
                     });
                 return out;
             });
-        if (!p || !*p) {
+        if (!p) {
             return not_leader_answer(std::nullopt);
+        }
+        if (!*p) {
+            return stale_route_answer();
         }
         return ok_answer(raft_backend_detail::encode_page(**p));
     }
