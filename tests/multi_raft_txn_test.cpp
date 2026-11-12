@@ -748,6 +748,15 @@ BOOST_AUTO_TEST_CASE(finished_records_are_cleaned_up_after_retention,
     BOOST_TEST(!c.remembers_finished(1));
     BOOST_TEST(!c.remembers_finished(2));
     BOOST_TEST((std::chrono::steady_clock::now() - finished_at >= retention));
+    // The resolver counts a cleanup after its proposal returns, and the
+    // records are already gone from the state machines by then, so the count
+    // can trail the poll above by a moment (3 CI retries, 2026-11-10..12,
+    // each "1 < 2"), as the resolution count in
+    // an_abandoned_transaction_clears_within_ttl_plus_two_intervals does.
+    const auto count_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (c.resolver_stats()._cleaned < 2U && std::chrono::steady_clock::now() < count_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
     BOOST_TEST(c.resolver_stats()._cleaned >= 2U);
     // The data stays.
     BOOST_TEST(c.value("apple") == std::optional<std::string>("a"));
