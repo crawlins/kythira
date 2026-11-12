@@ -54,10 +54,10 @@
 /// Without a backup store a single node keeps backups in memory, and a
 /// cluster refuses `CreateBackup` (`backup.hpp`) and
 /// `UpdateContinuousBackups` (`pitr.hpp`). Point-in-time recovery archives
-/// to the same store, and export and import jobs keep their records there
-/// (`export_import.hpp`).
+/// to the same store, and export, import and bulk put jobs keep their
+/// records there (`export_import.hpp`, `bulk_put.hpp`).
 ///
-/// The S3 buckets exports and imports name are directories under
+/// The S3 buckets these jobs name are directories under
 /// `KYTHIRA_DYNAMODB_BUCKET_DIR`, else under `<backup dir>/buckets`, else,
 /// with an S3 backup store, the S3 buckets of those names on its endpoint;
 /// a single node on the memory engine keeps them in memory.
@@ -74,6 +74,7 @@
 
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/backup.hpp>
+#include <kythira/dynamodb/bulk_put.hpp>
 #include <kythira/dynamodb/export_import.hpp>
 #include <kythira/dynamodb/pitr.hpp>
 #include <kythira/dynamodb/batch_api.hpp>
@@ -625,6 +626,8 @@ public:
           _pitr_worker(backend, nullptr),
           _jobs(backend, nullptr, nullptr),
           _job_worker(backend, nullptr, nullptr),
+          _bulk(backend, nullptr, nullptr),
+          _bulk_worker(backend, nullptr, nullptr),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -689,6 +692,12 @@ public:
         _jobs.register_with(*_front);
         _job_worker.set_store(store);
         _job_worker.set_buckets(buckets);
+        _bulk.set_store(store);
+        _bulk.set_buckets(buckets);
+        _bulk.on_started([this] { _bulk_worker.poke(); });
+        _bulk.register_with(*_front);
+        _bulk_worker.set_store(store);
+        _bulk_worker.set_buckets(buckets);
         _publisher.set_sink(_config.kinesis.configured() ? _config.kinesis
                                                          : kinesis_sink_from_env());
         _publisher.set_region(_config.front.region);
@@ -739,9 +748,9 @@ public:
 
 private:
     /// The worker for the catalog leader's background jobs: the TTL
-    /// sweeper, backups and restores, the point-in-time archiver, exports
-    /// and imports, and the Kinesis destination publisher (`ttl.hpp`,
-    /// `backup.hpp`, `pitr.hpp`, `export_import.hpp`,
+    /// sweeper, backups and restores, the point-in-time archiver, exports,
+    /// imports and bulk puts, and the Kinesis destination publisher (`ttl.hpp`,
+    /// `backup.hpp`, `pitr.hpp`, `export_import.hpp`, `bulk_put.hpp`,
     /// `kinesis_destination.hpp`), a pass of each a second, on the node that
     /// leads the catalog when the backend has one. A long backup or export
     /// delays the others until it ends.
@@ -791,6 +800,15 @@ private:
                     } catch (const std::exception& e) {
                         if (_log) {
                             _log(true, std::string("exports and imports: ") + e.what());
+                        }
+                    }
+                    try {
+                        // A bulk put resumes at its first input object not
+                        // done, here or on a new leader.
+                        (void)_bulk_worker.pass();
+                    } catch (const std::exception& e) {
+                        if (_log) {
+                            _log(true, std::string("bulk operations: ") + e.what());
                         }
                     }
                     // Unpublished records stay in the change log; the next
@@ -856,6 +874,8 @@ private:
     pitr_worker<Backend> _pitr_worker;
     export_import_api<Backend> _jobs;
     export_import_worker<Backend> _job_worker;
+    bulk_put_api<Backend> _bulk;
+    bulk_put_worker<Backend> _bulk_worker;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

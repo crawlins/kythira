@@ -33,8 +33,4 @@ test reads the table rows: keep one operation per row, in the
 | DynamoDB | `UpdateGlobalTableSettings` | global tables version 2017.11.29 (legacy); task 22 builds version 2019.11.21 through `UpdateTable`, task 23 decides whether the legacy calls are mapped onto it |
 | DynamoDB | `DescribeTableReplicaAutoScaling` | out of scope: Application Auto Scaling is a separate AWS service (Introduction, "Out of scope") |
 | DynamoDB | `UpdateTableReplicaAutoScaling` | out of scope: Application Auto Scaling is a separate AWS service (Introduction, "Out of scope") |
-| DynamoDB | `StartBulkPutItems` | planned, task 20 |
-| DynamoDB | `DescribeBulkOperation` | planned, task 20 |
-| DynamoDB | `ListBulkOperations` | planned, task 20 |
-| DynamoDB | `CancelBulkOperation` | planned, task 20 |
 | DynamoDB | `SearchVectors` | planned, task 26 |

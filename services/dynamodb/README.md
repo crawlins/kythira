@@ -125,7 +125,7 @@ cluster shares) or, in a build with the AWS SDK, an S3 bucket
 `_ENDPOINT`). Without either, a single node keeps them in memory and a
 cluster refuses `CreateBackup`.
 
-Exports and imports name S3 buckets. Each bucket is a directory under
+Exports, imports and bulk puts name S3 buckets. Each bucket is a directory under
 `KYTHIRA_DYNAMODB_BUCKET_DIR` (default `<backup dir>/buckets`) or, with an
 S3 backup store, the S3 bucket of that name on the same endpoint. Data
 files are gzipped and gzip and zstd input is read when the build finds
