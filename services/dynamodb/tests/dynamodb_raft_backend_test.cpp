@@ -18,6 +18,7 @@
 
 #include <kythira/dynamodb/backup.hpp>
 #include <kythira/dynamodb/group_state_machine.hpp>
+#include <kythira/dynamodb/export_import.hpp>
 #include <kythira/dynamodb/pitr.hpp>
 #include <kythira/dynamodb/raft_backend.hpp>
 
@@ -1503,4 +1504,91 @@ BOOST_AUTO_TEST_CASE(point_in_time_restores_follow_a_split) {
                 items{{"a", "2"}, {"m", "2"}, {"z", "2"}}));
     BOOST_TEST(
         (restore("AtEnd", R"("UseLatestRestorableTime":true)") == items{{"a", "3"}, {"m", "2"}}));
+}
+
+BOOST_AUTO_TEST_CASE(an_export_spans_a_split_and_imports_on_another_node) {
+    cluster c;
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+    const auto d = c.backend(1).describe("Music");
+    BOOST_TEST_REQUIRE(d.has_value());
+    auto store = std::make_shared<ddb::memory_backup_store>();
+    ddb::memory_buckets buckets;
+    ddb::pitr_api<backend_type> pitr1{c.backend(1), store};
+    pitr1.register_with(*c.node(1).fe);
+    ddb::pitr_worker_options options;
+    options.latest_lag_ms = 0;
+    ddb::pitr_worker<backend_type> archiver{c.backend(2), store, options};
+    // The API on nodes 1 and 3, the worker on node 2, one shared store.
+    ddb::export_import_api<backend_type> jobs1{c.backend(1), store, buckets.resolver()};
+    ddb::export_import_api<backend_type> jobs3{c.backend(3), store, buckets.resolver()};
+    jobs1.register_with(*c.node(1).fe);
+    jobs3.register_with(*c.node(3).fe);
+    ddb::export_import_worker<backend_type> worker{c.backend(2), store, buckets.resolver()};
+    c.node(1).ok("UpdateContinuousBackups",
+                 R"({"TableName":"Music","PointInTimeRecoverySpecification":)"
+                 R"({"PointInTimeRecoveryEnabled":true}})");
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        (void)archiver.pass();
+        return c.backend(1).describe("Music").value_or(ddb::table_descriptor{}).pitr.latest_ms > 0;
+    }));
+    std::vector<std::string> pks;
+    for (char ch = 'a'; ch <= 'z'; ++ch) {
+        pks.emplace_back(1, ch);
+        c.node(1).ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":")" + pks.back() +
+                                    R"("},"sk":{"N":"1"},"v":{"S":")" + pks.back() + R"("}}})");
+    }
+    const auto cut = ddb::partition_prefix(d->table_id, ddb::attribute_value::string("m"));
+    const auto l = c.leader(k_item_group);
+    BOOST_TEST_REQUIRE(l != 0U);
+    auto f = c.host(l).split_shard(k_item_group, {cut}, std::chrono::milliseconds{5000});
+    BOOST_TEST_REQUIRE(f.wait(std::chrono::milliseconds{8000}));
+    std::ignore = std::move(f).get();
+
+    const auto table_arn = "arn:aws:dynamodb:us-east-1:" + std::string(k_account) + ":table/Music";
+    const auto export_arn = std::string(
+        c.node(1)
+            .ok("ExportTableToPointInTime",
+                R"({"TableArn":")" + table_arn + R"(","S3Bucket":"bkt","ExportFormat":"ION"})")
+            .at("ExportDescription")
+            .as_object()
+            .at("ExportArn")
+            .as_string());
+    json::object done;
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        worker.poke();
+        (void)worker.pass();
+        done = c.node(3)
+                   .ok("DescribeExport", R"({"ExportArn":")" + export_arn + R"("})")
+                   .at("ExportDescription")
+                   .as_object();
+        return done.at("ExportStatus").as_string() == "COMPLETED";
+    }));
+    BOOST_TEST(done.at("ItemCount").to_number<int>() == 26);
+    const std::string manifest(done.at("ExportManifest").as_string());
+    const auto data = manifest.substr(0, manifest.size() - 21) + "data/";
+
+    const auto r = c.node(3).call(
+        "ImportTable",
+        R"({"S3BucketSource":{"S3Bucket":"bkt","S3KeyPrefix":")" + data +
+            R"("},"InputFormat":"ION",)" +
+            (ddb::export_formats::has_gzip() ? R"("InputCompressionType":"GZIP",)" : "") +
+            R"("TableCreationParameters":{"TableName":"Copy",)"
+            R"("AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"},)"
+            R"({"AttributeName":"sk","AttributeType":"N"}],)"
+            R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"},)"
+            R"({"AttributeName":"sk","KeyType":"RANGE"}],"BillingMode":"PAY_PER_REQUEST"}})");
+    BOOST_TEST_REQUIRE(r.status == 200U, r.type() << ": " << r.message());
+    BOOST_TEST_REQUIRE(cluster::await([&] {
+        worker.poke();
+        (void)worker.pass();
+        return status_of(c.node(1), "Copy") == "ACTIVE";
+    }));
+    const auto scanned = c.node(1).ok("Scan", R"({"TableName":"Copy","ConsistentRead":true})");
+    std::vector<std::string> got;
+    for (const auto& item : scanned.at("Items").as_array()) {
+        got.emplace_back(item.as_object().at("v").as_object().at("S").as_string());
+    }
+    std::ranges::sort(got);
+    BOOST_TEST((got == pks));
 }

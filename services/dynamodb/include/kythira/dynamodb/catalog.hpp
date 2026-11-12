@@ -175,7 +175,8 @@ struct kinesis_destination {
 
 /// Where a restored table came from (tasks 18 and 19): `RestoreSummary`.
 struct table_restore {
-    /// The backup restored from; empty for a point-in-time restore.
+    /// The backup restored from; empty for a point-in-time restore; the
+    /// import's ARN for an imported table.
     std::string source_backup_arn;
     /// Empty for a table that was not restored.
     std::string source_table_arn;
@@ -189,6 +190,11 @@ struct table_restore {
     std::uint64_t point_ms = 0;
 
     [[nodiscard]] auto restored() const -> bool { return !source_table_arn.empty(); }
+    /// An `ImportTable` table (task 20): `source_backup_arn` holds the
+    /// import's ARN (`.../import/<id>`), and there is no restore to report.
+    [[nodiscard]] auto imported() const -> bool {
+        return source_backup_arn.find("/import/") != std::string::npos;
+    }
 
     friend auto operator==(const table_restore&, const table_restore&) -> bool = default;
 };

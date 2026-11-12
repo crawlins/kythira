@@ -184,6 +184,11 @@ set_tests_properties(dynamodb_backup_test PROPERTIES
 kythira_dynamodb_test(dynamodb_pitr_test dynamodb_pitr_test.cpp)
 set_tests_properties(dynamodb_pitr_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Exports and imports (task 20): the formats (Ion, CSV, gzip, zstd, MD5),
+# full, point-in-time and incremental exports, imports of each format.
+kythira_dynamodb_test(dynamodb_export_import_test dynamodb_export_import_test.cpp)
+set_tests_properties(dynamodb_export_import_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 # Kinesis streaming destinations (task 17): the four actions, the
 # publisher's record format, order and resends, and the SigV4 sink.
 kythira_dynamodb_test(dynamodb_kinesis_destination_test dynamodb_kinesis_destination_test.cpp)

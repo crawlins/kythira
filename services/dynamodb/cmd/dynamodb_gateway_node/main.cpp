@@ -144,6 +144,9 @@ auto main(int argc, char** argv) -> int {
         if (!cfg.backups) {
             cfg.backups = dynamodb_gateway::make_s3_backup_store(cfg);
         }
+        if (!cfg.buckets && cfg.bucket_dir.empty() && !cfg.backup_s3_bucket.empty()) {
+            cfg.buckets = dynamodb_gateway::make_s3_bucket_resolver(cfg);
+        }
     } catch (const std::exception& e) {
         std::cerr << "dynamodb_gateway_node: " << e.what() << "\n";
         return 2;
@@ -169,9 +172,14 @@ auto main(int argc, char** argv) -> int {
         ddb::local_backend<> backend(engine, ddb::local_backend<>::system_clock_ms(),
                                      change_log.get());
         // One node on the memory engine keeps backups in memory too, unless
-        // told where else (backup.hpp).
+        // told where else (backup.hpp), and its export and import buckets
+        // (export_import.hpp).
         if (!cfg.backups && cfg.backup_dir.empty()) {
             cfg.backups = std::make_shared<ddb::memory_backup_store>();
+        }
+        ddb::memory_buckets buckets;
+        if (!cfg.buckets && cfg.bucket_dir.empty() && cfg.backup_dir.empty()) {
+            cfg.buckets = buckets.resolver();
         }
         ddb::gateway<ddb::local_backend<>> gw(cfg, backend, log);
         gw.start();

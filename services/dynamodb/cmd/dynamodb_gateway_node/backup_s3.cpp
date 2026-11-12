@@ -11,7 +11,9 @@
 
 #include <aws/core/Aws.h>
 
+#include <map>
 #include <mutex>
+#include <string>
 #endif
 
 namespace dynamodb_gateway {
@@ -85,6 +87,13 @@ struct scoped_s3_client {
 
 static_assert(kythira::key_object_store<scoped_s3_client>);
 
+auto client_of(const kythira::dynamodb::gateway_config& cfg) -> std::shared_ptr<scoped_s3_client> {
+    kythira::aws_client_config c;
+    c.region = cfg.backup_s3_region;
+    c.endpoint_override = cfg.backup_s3_endpoint;
+    return std::make_shared<scoped_s3_client>(c);
+}
+
 }  // namespace
 
 auto make_s3_backup_store(const kythira::dynamodb::gateway_config& cfg)
@@ -92,11 +101,28 @@ auto make_s3_backup_store(const kythira::dynamodb::gateway_config& cfg)
     if (cfg.backup_s3_bucket.empty()) {
         return nullptr;
     }
-    kythira::aws_client_config c;
-    c.region = cfg.backup_s3_region;
-    c.endpoint_override = cfg.backup_s3_endpoint;
     return std::make_shared<kythira::dynamodb::object_backup_store<scoped_s3_client>>(
-        std::make_shared<scoped_s3_client>(c), cfg.backup_s3_bucket, cfg.backup_s3_prefix);
+        client_of(cfg), cfg.backup_s3_bucket, cfg.backup_s3_prefix);
+}
+
+auto make_s3_bucket_resolver(const kythira::dynamodb::gateway_config& cfg)
+    -> kythira::dynamodb::bucket_resolver {
+    if (cfg.backup_s3_bucket.empty()) {
+        return nullptr;
+    }
+    auto client = client_of(cfg);
+    auto made =
+        std::make_shared<std::map<std::string, std::shared_ptr<kythira::dynamodb::backup_store>>>();
+    auto mu = std::make_shared<std::mutex>();
+    return [client, made, mu](const std::string& bucket) {
+        const std::lock_guard lock(*mu);
+        auto& s = (*made)[bucket];
+        if (!s) {
+            s = std::make_shared<kythira::dynamodb::object_backup_store<scoped_s3_client>>(client,
+                                                                                           bucket);
+        }
+        return s;
+    };
 }
 
 #else
@@ -109,6 +135,12 @@ auto make_s3_backup_store(const kythira::dynamodb::gateway_config& cfg)
     throw std::invalid_argument(
         "KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET is set, but this dynamodb_gateway_node was built "
         "without the AWS SDK's S3 client");
+}
+
+auto make_s3_bucket_resolver(const kythira::dynamodb::gateway_config& /*cfg*/)
+    -> kythira::dynamodb::bucket_resolver {
+    // make_s3_backup_store has refused the configuration already.
+    return nullptr;
 }
 
 #endif

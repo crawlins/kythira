@@ -125,6 +125,12 @@ cluster shares) or, in a build with the AWS SDK, an S3 bucket
 `_ENDPOINT`). Without either, a single node keeps them in memory and a
 cluster refuses `CreateBackup`.
 
+Exports and imports name S3 buckets. Each bucket is a directory under
+`KYTHIRA_DYNAMODB_BUCKET_DIR` (default `<backup dir>/buckets`) or, with an
+S3 backup store, the S3 bucket of that name on the same endpoint. Data
+files are gzipped and gzip and zstd input is read when the build finds
+zlib and libzstd (vcpkg builds do).
+
 ## Core targets and variables used
 
 This is the list a split into its own repository would need a Kythira
@@ -143,6 +149,7 @@ package to export.
 | `kythira_test_pch` | the test precompiled header and its links (Boost.Test, Boost.JSON), through `add_raft_completion_test` |
 | `cmake/kythira_test_helpers.cmake` | `add_raft_completion_test`, `kythira_scale_test_timeouts` |
 | `kythira_test_support` | the in-process `multi_raft` fabric (`tests/multi_raft_test_fabric.hpp`), for `dynamodb_raft_backend_test` |
+| `ZLIB::ZLIB`, `zstd::libzstd_*` (optional) | gzip and zstd for exports and imports, through `kythira_dynamodb` |
 | `KYTHIRA_BUILD_DYNAMODB` | set by the top level from `CONFIG_DYNAMODB`, OpenSSL and Boost |
 
 The top level names the module in two places: the `KYTHIRA_BUILD_DYNAMODB`

@@ -48,11 +48,19 @@
 /// | `KYTHIRA_DYNAMODB_BACKUP_DIR` | | directory backups live in (shared by a cluster's nodes) |
 /// | `KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET` | | S3 bucket backups live in (builds with the AWS SDK) |
 /// | `KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX`, `_REGION`, `_ENDPOINT` | | key prefix, region, endpoint |
+/// | `KYTHIRA_DYNAMODB_BUCKET_DIR` | `<backup dir>/buckets` | export and import buckets, one
+/// directory each |
 ///
 /// Without a backup store a single node keeps backups in memory, and a
 /// cluster refuses `CreateBackup` (`backup.hpp`) and
 /// `UpdateContinuousBackups` (`pitr.hpp`). Point-in-time recovery archives
-/// to the same store.
+/// to the same store, and export and import jobs keep their records there
+/// (`export_import.hpp`).
+///
+/// The S3 buckets exports and imports name are directories under
+/// `KYTHIRA_DYNAMODB_BUCKET_DIR`, else under `<backup dir>/buckets`, else,
+/// with an S3 backup store, the S3 buckets of those names on its endpoint;
+/// a single node on the memory engine keeps them in memory.
 ///
 /// Without `PEERS` the daemon is one node on `local_backend`, with no Raft.
 /// With it, the node joins a Raft cluster on `raft_backend` (one `PEERS`
@@ -66,6 +74,7 @@
 
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/backup.hpp>
+#include <kythira/dynamodb/export_import.hpp>
 #include <kythira/dynamodb/pitr.hpp>
 #include <kythira/dynamodb/batch_api.hpp>
 #include <kythira/dynamodb/compat_profile.hpp>
@@ -162,6 +171,11 @@ struct gateway_config {
     std::string backup_s3_prefix;
     std::string backup_s3_region;
     std::string backup_s3_endpoint;
+    /// Export and import buckets (task 20): `buckets` when set, else
+    /// directories under `bucket_dir`, else under `<backup_dir>/buckets`,
+    /// else none. The daemon sets `buckets` for S3 and for memory.
+    bucket_resolver buckets;
+    std::string bucket_dir;
 };
 
 /// Reads one environment variable; empty optional when unset.
@@ -302,7 +316,9 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET     S3 bucket backups live in\n"
     "  KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX     key prefix in that bucket\n"
     "  KYTHIRA_DYNAMODB_BACKUP_S3_REGION     its region (the AWS SDK default chain)\n"
-    "  KYTHIRA_DYNAMODB_BACKUP_S3_ENDPOINT   an S3-compatible endpoint instead\n";
+    "  KYTHIRA_DYNAMODB_BACKUP_S3_ENDPOINT   an S3-compatible endpoint instead\n"
+    "  KYTHIRA_DYNAMODB_BUCKET_DIR           export and import buckets, one directory\n"
+    "                                        each (default <backup dir>/buckets)\n";
 
 namespace gateway_detail {
 
@@ -536,6 +552,7 @@ namespace gateway_detail {
     c.backup_s3_prefix = env("KYTHIRA_DYNAMODB_BACKUP_S3_PREFIX").value_or("");
     c.backup_s3_region = env("KYTHIRA_DYNAMODB_BACKUP_S3_REGION").value_or("");
     c.backup_s3_endpoint = env("KYTHIRA_DYNAMODB_BACKUP_S3_ENDPOINT").value_or("");
+    c.bucket_dir = env("KYTHIRA_DYNAMODB_BUCKET_DIR").value_or("");
     if (!c.backup_dir.empty() && !c.backup_s3_bucket.empty()) {
         return std::string(
             "KYTHIRA_DYNAMODB_BACKUP_DIR and KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET are both set; "
@@ -606,6 +623,8 @@ public:
           _backup_worker(backend, nullptr),
           _pitr(backend, nullptr),
           _pitr_worker(backend, nullptr),
+          _jobs(backend, nullptr, nullptr),
+          _job_worker(backend, nullptr, nullptr),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -658,6 +677,18 @@ public:
         _pitr.on_changed([this] { _pitr_worker.poke(); });
         _pitr.register_with(*_front);
         _pitr_worker.set_store(store);
+        auto buckets = _config.buckets;
+        if (!buckets && !_config.bucket_dir.empty()) {
+            buckets = directory_buckets(_config.bucket_dir);
+        } else if (!buckets && !_config.backup_dir.empty()) {
+            buckets = directory_buckets(std::filesystem::path(_config.backup_dir) / "buckets");
+        }
+        _jobs.set_store(store);
+        _jobs.set_buckets(buckets);
+        _jobs.on_started([this] { _job_worker.poke(); });
+        _jobs.register_with(*_front);
+        _job_worker.set_store(store);
+        _job_worker.set_buckets(buckets);
         _publisher.set_sink(_config.kinesis.configured() ? _config.kinesis
                                                          : kinesis_sink_from_env());
         _publisher.set_region(_config.front.region);
@@ -708,10 +739,12 @@ public:
 
 private:
     /// The worker for the catalog leader's background jobs: the TTL
-    /// sweeper, backups and restores, and the Kinesis destination
-    /// publisher (`ttl.hpp`, `backup.hpp`, `kinesis_destination.hpp`), a
-    /// pass of each a second, on the node that leads the catalog when the
-    /// backend has one. A long backup delays the other two until it ends.
+    /// sweeper, backups and restores, the point-in-time archiver, exports
+    /// and imports, and the Kinesis destination publisher (`ttl.hpp`,
+    /// `backup.hpp`, `pitr.hpp`, `export_import.hpp`,
+    /// `kinesis_destination.hpp`), a pass of each a second, on the node that
+    /// leads the catalog when the backend has one. A long backup or export
+    /// delays the others until it ends.
     void sweep_loop() {
         std::unique_lock lock(_sweep_mu);
         while (!_stopping) {
@@ -749,6 +782,15 @@ private:
                     } catch (const std::exception& e) {
                         if (_log) {
                             _log(true, std::string("point-in-time recovery: ") + e.what());
+                        }
+                    }
+                    try {
+                        // An unfinished export or import runs again from the
+                        // start on the next pass, here or on a new leader.
+                        (void)_job_worker.pass();
+                    } catch (const std::exception& e) {
+                        if (_log) {
+                            _log(true, std::string("exports and imports: ") + e.what());
                         }
                     }
                     // Unpublished records stay in the change log; the next
@@ -812,6 +854,8 @@ private:
     backup_worker<Backend> _backup_worker;
     pitr_api<Backend> _pitr;
     pitr_worker<Backend> _pitr_worker;
+    export_import_api<Backend> _jobs;
+    export_import_worker<Backend> _job_worker;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;
