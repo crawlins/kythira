@@ -1,0 +1,41 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# nightly_defconfig — the feature set .github/workflows/nightly.yml builds
+# the snapshot release binaries from (doc/nightly_snapshots.md).
+#
+# It is the union of the two richest CI trees, so a snapshot ships every
+# server any CI job builds:
+#
+#   ci_full_defconfig  — the IAM, Kinesis and DynamoDB modules and the Redis
+#                        gateway with cross-shard transactions;
+#   ci_ion_defconfig   — Ion, the ledger module (ion-c only), the RocksDB
+#                        engine and the Redis gateway's engine storage.
+#                        Without ENGINE_ROCKSDB ledger_node is a stub.
+#
+# Its vcpkg tree is ci_ion_defconfig's (--x-feature=edhoc, ion, rocksdb); the
+# three modules ci_full adds need only OpenSSL and Boost, which that tree has.
+# Written against -DKYTHIRA_KCONFIG_STRICT=ON like both of them: a symbol the
+# tree cannot satisfy fails the configure instead of silently dropping a
+# binary. When either source file gains or loses a symbol, mirror it here.
+CONFIG_ION_SERIALIZER=y
+CONFIG_LEDGER=y
+CONFIG_ENGINE_ROCKSDB=y
+CONFIG_REDIS_GATEWAY=y
+CONFIG_REDIS_GATEWAY_TRANSACTIONS=y
+CONFIG_REDIS_GATEWAY_ENGINE=y
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
+CONFIG_BOOST_BEAST_TRANSPORT=y
+CONFIG_PROXYGEN_TRANSPORT=y
+CONFIG_PROTOBUF_SERIALIZER=y
+# CONFIG_GCP_SDK is not set
+# CONFIG_GCP_PRIVATECA is not set
+# CONFIG_GCP_STORAGE is not set
+# CONFIG_GCP_STORAGE_PERSISTENCE is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set
+CONFIG_IAM=y
+CONFIG_KINESIS=y
+CONFIG_DYNAMODB=y
