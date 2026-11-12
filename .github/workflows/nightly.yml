@@ -1,0 +1,434 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Nightly snapshot releases (doc/nightly_snapshots.md).
+#
+# Once a night, if main has moved since the last snapshot, build the server
+# binaries for linux x86_64 and aarch64 and publish them as a GitHub
+# prerelease tagged nightly-YYYYMMDD-<sha7>. Older snapshots are pruned so
+# only the newest NIGHTLY_KEEP remain.
+#
+# What a snapshot is, and is not:
+#
+#   - It is main's head at the time of the run, not "the newest commit whose
+#     CI went green". CI on main takes hours and its non-required jobs flake,
+#     so gating on a fully green run would skip most nights. The release notes
+#     link the commit's CI runs instead, so a reader can see its state.
+#   - It is built from configs/nightly_defconfig with g++-14: the union of
+#     ci_full_defconfig (IAM, Kinesis, DynamoDB, Redis transactions) and
+#     ci_ion_defconfig (ledger, RocksDB engine; ledger_node is a stub without
+#     them), so it ships every server any CI job builds. The vcpkg features
+#     and compiler are the Ion Serializer Build job's, so the x64 leg restores
+#     that job's vcpkg tree and most of its sccache objects, and arm64 warms
+#     the same cache keys on its first night.
+#   - Binaries are dynamically linked against glibc and libstdc++, so they run
+#     on Ubuntu 24.04 (glibc 2.39) or newer. vcpkg's linux triplets are static,
+#     so nothing else from the build machine is needed; the release job lists
+#     each binary's shared-library needs in the notes so that stays visible.
+#
+# A pull request that touches this file runs the build legs (and nothing that
+# writes a release), so a change here is proven before it lands.
+
+name: Nightly snapshot
+
+on:
+  schedule:
+    # 07:17 UTC: after the US working day, off the top of the hour that every
+    # other scheduled workflow on GitHub crowds onto.
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even if main has not changed since the last snapshot
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/nightly.yml
+      - configs/nightly_defconfig
+
+permissions:
+  contents: read
+
+# One snapshot at a time. A second trigger waits rather than cancelling a
+# build that may be hours into a cold arm64 dependency compile.
+concurrency:
+  group: nightly-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # How many nightly-* prereleases to keep. Older ones, and their tags, are
+  # deleted after each successful publish.
+  NIGHTLY_KEEP: '14'
+
+jobs:
+  # Decides whether tonight builds at all, and names the snapshot. Cheap: two
+  # API calls, no checkout.
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      publish: ${{ steps.decide.outputs.publish }}
+      sha: ${{ steps.decide.outputs.sha }}
+      tag: ${{ steps.decide.outputs.tag }}
+      previous: ${{ steps.decide.outputs.previous }}
+    steps:
+      - name: Compare main with the newest snapshot
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          FORCE: ${{ inputs.force || false }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          tag="nightly-$(date -u +%Y%m%d)-${SHA::7}"
+          {
+            echo "sha=${SHA}"
+            echo "tag=${tag}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "Pull request: build only, publish nothing."
+            { echo "build=true"; echo "publish=false"; echo "previous="; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A dispatch from a feature branch would publish that branch as a
+          # "main" snapshot. Refuse rather than mislabel it.
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::snapshots are published from main only (this run is on ${REF})"
+            exit 1
+          fi
+
+          # Newest nightly-* release by creation time, drafts excluded.
+          previous=$(gh api --paginate "repos/${REPO}/releases?per_page=100" \
+            --jq '.[] | select(.draft | not) | select(.tag_name | startswith("nightly-")) | [.created_at, .tag_name] | @tsv' \
+            | sort -r | sed -n '1s/.*\t//p')
+          prev_sha=""
+          if [ -n "$previous" ]; then
+            prev_sha=$(gh api "repos/${REPO}/commits/${previous}" --jq .sha)
+          fi
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+          echo "main is ${SHA}; newest snapshot is ${previous:-<none>} at ${prev_sha:-<none>}"
+
+          if [ "$prev_sha" = "$SHA" ] && [ "$FORCE" != "true" ]; then
+            echo "main has not moved since ${previous}; nothing to publish."
+            echo "### Nightly snapshot skipped: main is still at ${previous}" >> "$GITHUB_STEP_SUMMARY"
+            { echo "build=false"; echo "publish=false"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "build=true"; echo "publish=true"; } >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    name: Build snapshot (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    # arm64's first night compiles the whole ion+rocksdb dependency tree cold.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+            triplet: x64-linux
+            link_jobs: ''
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            triplet: arm64-linux
+            # Same cap as ci.yml's arm64 legs: an uncapped mold link wave ran
+            # the arm runner out of memory (PR #744).
+            link_jobs: '2'
+    # Scheduled and dispatched runs are on main, so they get the read-write
+    # build-cache key (build-cache-write's deployment branches are main only)
+    # and leave warm vcpkg packages and sccache objects behind. A pull request
+    # falls back to the create-only pr key, the same as ci.yml.
+    environment: ${{ github.ref == 'refs/heads/main' && 'build-cache-write' || '' }}
+    env:
+      # The release binaries, and nothing else: no tests, chaos tooling or
+      # benchmarks. Every name must exist in the nightly_defconfig tree; the
+      # step after configure fails if one does not, rather than shipping a
+      # snapshot that is silently missing a server.
+      RELEASE_TARGETS: >-
+        multi_raft_node
+        ca_service
+        ca_cluster_node
+        raft_object_backup
+        oci_heartbeat_writer_node
+        redis_gateway_node
+        iam_node
+        kythira-iam
+        ledger_node
+        ledger_ctl
+        kinesis_gateway_node
+        dynamodb_gateway_node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Install system dependencies
+        run: |
+          # Same package set, and the same retry, as ci.yml's Ion Serializer
+          # Build job; see that job and scripts/drop-unused-apt-repos.sh.
+          ./scripts/drop-unused-apt-repos.sh
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update -q \
+                 && timeout 600 sudo apt-get install -y --no-install-recommends \
+                 g++-14 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool mold; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
+      # The lakers (EDHOC) overlay port builds its ffi/ crate from source.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: OCI build cache
+        id: buildcache
+        uses: ./.github/actions/oci-build-cache
+        with:
+          triplet: ${{ matrix.triplet }}
+          rw-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RW_ACCESS_KEY_ID }}
+          rw-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RW_SECRET_ACCESS_KEY }}
+          pr-access-key-id: ${{ secrets.OCI_BUILD_CACHE_PR_ACCESS_KEY_ID }}
+          pr-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_PR_SECRET_ACCESS_KEY }}
+          ro-access-key-id: ${{ secrets.OCI_BUILD_CACHE_RO_ACCESS_KEY_ID }}
+          ro-secret-access-key: ${{ secrets.OCI_BUILD_CACHE_RO_SECRET_ACCESS_KEY }}
+          bucket: ${{ vars.OCI_BUILD_CACHE_BUCKET }}
+          namespace: ${{ vars.OCI_BUILD_CACHE_NAMESPACE }}
+          region: ${{ vars.OCI_CI_REGION }}
+
+      # Byte-identical key to ci.yml's Ion Serializer Build job, so on x64
+      # this restores the tree that job saved on main.
+      - name: Cache vcpkg packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-ion-rocksdb-g++-14-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "vcpkg binary cache: ${VCPKG_BINARY_SOURCES:-<none>}"
+          # Ports are built with the compiler the project is, for the reason
+          # ci.yml gives at its Build & Test vcpkg step (mixed-compiler
+          # static libraries and mold).
+          export CC=gcc-14
+          export CXX=g++-14
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # vcpkg.json's builtin-baseline; see ci.yml for why not HEAD.
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ matrix.triplet }} --no-print-usage \
+            --x-feature=edhoc --x-feature=ion --x-feature=rocksdb
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+
+      - name: Start sccache
+        id: sccache
+        if: steps.buildcache.outputs.enabled == 'true'
+        run: scripts/oci-build-cache/start-sccache.sh
+
+      - name: Configure (Release, nightly_defconfig)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DKYTHIRA_KCONFIG=configs/nightly_defconfig \
+            -DKYTHIRA_KCONFIG_STRICT=ON \
+            -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
+            -DKYTHIRA_LINKER=mold \
+            -DKYTHIRA_LINK_JOBS=${{ matrix.link_jobs }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ matrix.triplet }}
+
+      - name: Assert the build is configured as this job claims
+        run: |
+          scripts/check-build-config.py \
+            --build-dir build \
+            --defconfig configs/nightly_defconfig \
+            --compiler g++-14 \
+            --expect CMAKE_BUILD_TYPE=Release \
+            --expect KYTHIRA_KCONFIG_STRICT=ON
+
+      - name: Assert every release target exists
+        run: |
+          # `ninja -t query` exits non-zero for a name the build graph does
+          # not define. (Parsing `--target help` missed real targets.)
+          missing=0
+          for t in $RELEASE_TARGETS; do
+            if ! ninja -C build -t query "$t" > /dev/null 2>&1; then
+              echo "::error::release target ${t} is not defined by the nightly_defconfig tree"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Build release targets
+        run: |
+          # shellcheck disable=SC2086 # RELEASE_TARGETS is a word list
+          cmake --build build -j"$(nproc)" --target $RELEASE_TARGETS
+
+      - name: sccache statistics
+        if: always() && steps.sccache.outputs.launcher == 'sccache'
+        run: |
+          {
+            echo "### sccache — nightly ${{ matrix.arch }}"
+            echo '```'
+            sccache --show-stats
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sccache --show-stats
+
+      - name: Package
+        id: package
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          name="kythira-${TAG}-linux-${ARCH}"
+          stage="dist/${name}"
+          mkdir -p "${stage}/bin"
+          for t in $RELEASE_TARGETS; do
+            bin=$(find build -type f -perm -u+x -name "$t" -not -path '*/CMakeFiles/*' | sort | sed -n 1p)
+            [ -n "$bin" ] || { echo "::error::built ${t} but cannot find its binary"; exit 1; }
+            cp "$bin" "${stage}/bin/${t}"
+          done
+          # Before strip: check-linker.sh reads the .comment stamp mold leaves.
+          scripts/check-linker.sh mold "${stage}/bin/multi_raft_node"
+          strip --strip-unneeded "${stage}"/bin/*
+          cp LICENSE README.md "${stage}/"
+          {
+            echo "kythira nightly snapshot ${TAG}"
+            echo "commit: ${SHA}"
+            echo "built:  $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(lsb_release -ds) $(uname -m)"
+            echo "config: configs/nightly_defconfig, g++-14 Release, mold"
+            echo
+            echo "Shared libraries each binary needs:"
+            for f in "${stage}"/bin/*; do
+              echo "  $(basename "$f"): $(objdump -p "$f" | awk '/NEEDED/ {print $2}' | sort | paste -sd' ')"
+            done
+          } > "${stage}/BUILDINFO.txt"
+          # Every NEEDED library must resolve on the build image, i.e. stock
+          # Ubuntu 24.04; a "not found" here would be a broken snapshot.
+          if ldd "${stage}"/bin/* | grep -F 'not found'; then
+            echo "::error::a release binary links a library the base image does not have"
+            exit 1
+          fi
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          ls -l "${stage}/bin" "dist/${name}.tar.gz"
+          {
+            echo "### ${name}.tar.gz"
+            echo '```'
+            cat "${stage}/BUILDINFO.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "file=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.file }}
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    needs: [gate, build]
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write   # create the prerelease and its tag; prune old ones
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: snapshot-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          PREVIOUS: ${{ needs.gate.outputs.previous }}
+          SERVER: ${{ github.server_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.tar.gz | sed 's# \./# #' > SHA256SUMS
+          cat SHA256SUMS
+
+          {
+            echo "Automated snapshot of \`main\` at ${SHA}. **Not a supported release**: it is"
+            echo "whatever main held tonight, built without running the test suite."
+            echo
+            echo "- CI for this commit: ${SERVER}/${REPO}/commit/${SHA}/checks"
+            echo "- Built by: ${RUN_URL}"
+            echo "- Platform: Linux x86_64 and aarch64, glibc 2.39+ (Ubuntu 24.04 or newer)"
+            echo "- Config: \`configs/nightly_defconfig\`, g++-14 Release"
+            echo "- Verify: \`sha256sum -c SHA256SUMS --ignore-missing\`"
+            echo
+            if [ -n "$PREVIOUS" ]; then
+              echo "### Changes since ${PREVIOUS}"
+              echo
+              echo "${SERVER}/${REPO}/compare/${PREVIOUS}...${SHA}"
+              echo
+              # The compare API returns at most 250 commits, oldest first;
+              # plenty for a day, and the link above has the full range.
+              gh api "repos/${REPO}/compare/${PREVIOUS}...${SHA}" \
+                --jq '.commits | reverse | .[] | "- \(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+            else
+              echo "First nightly snapshot."
+            fi
+          } > notes.md
+
+          # A forced re-run on the same day and commit reuses the name.
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Replacing existing release ${TAG}"
+            gh release delete "$TAG" --repo "$REPO" --cleanup-tag --yes
+          fi
+          # --latest=false keeps a snapshot from becoming the repository's
+          # "Latest release".
+          gh release create "$TAG" --repo "$REPO" \
+            --target "$SHA" \
+            --title "Nightly ${TAG#nightly-}" \
+            --notes-file notes.md \
+            --prerelease --latest=false \
+            ./*.tar.gz SHA256SUMS
+          echo "### Published ${SERVER}/${REPO}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prune old snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${REPO}/releases?per_page=100" \
+            --jq '.[] | select(.tag_name | startswith("nightly-")) | [.created_at, .tag_name] | @tsv' \
+            | sort -r | cut -f2 | tail -n +"$((NIGHTLY_KEEP + 1))" \
+            | while read -r old; do
+                echo "Deleting ${old}"
+                gh release delete "$old" --repo "$REPO" --cleanup-tag --yes
+              done
