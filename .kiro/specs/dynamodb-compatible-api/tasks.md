@@ -662,8 +662,13 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       in-process Kythira Kinesis gateway with static-key SigV4 checks,
       50 of 50 records over two Kinesis shards, in per-item order, and an
       enable refused with Kinesis's own "not found" text before the stream
-      existed. Not run against AWS Kinesis (real-cloud spend needs
-      approval).
+      existed.
+    - Run once against AWS Kinesis on November 12, 2026, with Clark's go
+      (under $1): the publisher with SigV4 to a real stream, 50 of 50
+      records, in per-item order, in the documented record format; an
+      enable of a stream that does not exist ended `ENABLE_FAILED` with
+      AWS's own "Stream X under account N not found." text. Not checked
+      in (it needs AWS credentials and a stream).
 
 ### Phase 5: data protection
 
