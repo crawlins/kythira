@@ -36,7 +36,6 @@ multi_raft_driver_agreement_test                   1/54
 raft_multi_node_property_test                      5 jobs, "no leader" after a disruption round
 raft_batched_durable_writes_test                   2 jobs, no leader within 4 s
 coap_io_wait_mode_test                             2 jobs
-http_pre_vote_timeout_now_test                     2 jobs
 ca_cluster_node_rpc_tls_test                       2 jobs
 multi_raft_node_s3_process_test                    no lost write; 4 rescues in 99 runs after 11-05 fix, test-process segfault open; see TODO.md
 
@@ -50,3 +49,9 @@ multi_raft_node_s3_process_test                    no lost write; 4 rescues in 9
 # was tls_tcp_rpc_client closing its socket before SSL_shutdown(), whose
 # close_notify then overwrote the first 24 bytes of the Raft log; see the
 # TODO.md entry "Retry-rescued flakes on the allowlist".
+
+# Removed 2026-11-12: http_pre_vote_timeout_now_test (6/54 runs). A transfer
+# started from a leader about to be deposed waited out its deadline; the case
+# now settles the leader first, and a transfer whose target wins on its own
+# reports success. See the TODO.md entry "Retry-rescued flakes on the
+# allowlist".

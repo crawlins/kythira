@@ -1981,6 +1981,24 @@ unverified completion claim.
       order). Every user of the client was exposed (`iam_node`,
       `ca_cluster_node`), with whatever file or socket held the reused
       number as the target. Off the allowlist.
+    - **`http_pre_vote_timeout_now_test`, fixed November 12, 2026** (6
+      rescues in 54 runs to November 12, all in
+      `transfer_and_scatter_move_leadership`, across all three HTTP
+      transports). Every failure was the fresh-leader race above: the case
+      sampled a leader, a pre-vote already in flight deposed it, and the
+      transfer it had started never sent TimeoutNow and waited out its 20 s
+      deadline. The case now starts from a settled leader. One failure
+      showed a product gap too: the target then won the next election on
+      its own timer, and the transfer still reported "deadline elapsed"
+      while the target led. `drive_leader_transfer()` now settles the
+      transfer as a success when this node has heard a valid AppendEntries
+      from the target as leader of the current term, and that term is later
+      than the one in which the transfer was requested (a new
+      `_known_leader_term` tells a current leader from a stale
+      `_known_leader`, which is never cleared). `leader_transfer_test`'s
+      `a_target_that_wins_on_its_own_completes_the_transfer` blocks
+      TimeoutNow and lets the target win by election; it fails on the old
+      code. Off the allowlist.
   - **Disk mode applies under the node mutex. OPEN** (found November 9,
     2026). `cache_kv_state_machine` fsyncs a chunk, its pack record and
     the directory inside `apply()`, and `apply_committed_entries()` runs
