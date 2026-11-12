@@ -121,6 +121,33 @@ template<typename Cluster> auto require_leader(Cluster& cluster) -> std::uint64_
     return *id;
 }
 
+/// A leader that has held its term, with every node on that term, for longer
+/// than the election timeout. A just-elected leader in a fresh cluster can
+/// still be deposed by a peer whose pre-vote was already in flight when the
+/// election finished; a transfer started in that window is either refused or
+/// stranded (the old leader never sends TimeoutNow and waits out its whole
+/// deadline), which is the test's race, not the product's.
+template<typename Cluster> auto require_settled_leader(Cluster& cluster) -> std::uint64_t {
+    const auto hold = std::chrono::milliseconds{700};
+    const auto deadline =
+        std::chrono::steady_clock::now() + kythira::testing::scaled_deadline(15000);
+    while (true) {
+        const auto id = require_leader(cluster);
+        const auto term = term_of(cluster, id);
+        const auto same_term = [&] {
+            return term_of(cluster, 1) == term && term_of(cluster, 2) == term &&
+                   term_of(cluster, 3) == term;
+        };
+        const bool settled = wait_until(same_term, hold);
+        std::this_thread::sleep_for(hold);
+        if (settled && same_term() && leader_id(cluster) == std::optional{id}) {
+            return id;
+        }
+        BOOST_REQUIRE_MESSAGE(std::chrono::steady_clock::now() < deadline,
+                              "no leader settled over " << Cluster::transport_type::name());
+    }
+}
+
 /// The exception a future settled with, or nullptr. The cluster's own driver
 /// threads tick underneath, so a plain timed wait is enough here.
 template<typename Future> auto outcome_of(Future future) -> std::exception_ptr {
@@ -153,7 +180,7 @@ auto describe(const std::exception_ptr& e) -> std::string {
 template<typename Transport> void transfer_and_scatter_move_leadership() {
     kythira::testing::kv_cluster<Transport> cluster{three_hosts_one_group()};
 
-    auto from = require_leader(cluster);
+    auto from = require_settled_leader(cluster);
     const std::uint64_t to = from == 3 ? 1 : from + 1;
     std::exception_ptr transferred;
     for (int attempt = 0; attempt < 3; ++attempt) {
@@ -165,7 +192,7 @@ template<typename Transport> void transfer_and_scatter_move_leadership() {
         if (!transferred || describe(transferred).find("not the leader") == std::string::npos) {
             break;
         }
-        from = require_leader(cluster);
+        from = require_settled_leader(cluster);
     }
     BOOST_CHECK_MESSAGE(!transferred, "transfer failed: " << describe(transferred));
     BOOST_CHECK_MESSAGE(wait_until([&] { return leader_id(cluster) == std::optional{to}; },
