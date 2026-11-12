@@ -170,9 +170,14 @@ BOOST_AUTO_TEST_CASE(blocked_at_target, *boost::unit_test::timeout(15)) {
     node1.set_cluster_configuration({1});
     node1.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto fut = node1.add_learner(2);
     bool threw = false;
@@ -210,9 +215,14 @@ BOOST_AUTO_TEST_CASE(allowed_below_target, *boost::unit_test::timeout(15)) {
     node1.start();
     node2.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto fut = node1.add_learner(2);
     for (int i = 0; i < 15; ++i) {
@@ -244,9 +254,14 @@ BOOST_AUTO_TEST_CASE(fails_closed_on_undeclared_group, *boost::unit_test::timeou
     node1.set_cluster_configuration({1});
     node1.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto fut = node1.add_learner(2);
     bool threw = false;

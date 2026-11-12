@@ -217,10 +217,14 @@ BOOST_AUTO_TEST_CASE(add_server_makes_new_node_immediately_eligible,
     node1.start();
     node2.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     BOOST_CHECK_EQUAL(node1.get_cluster_size(), 1u);
     node1.add_server(2);
@@ -291,10 +295,14 @@ BOOST_AUTO_TEST_CASE(remove_server_union_keeps_departing_node_eligible_mid_fligh
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto pump_heartbeats = [&](int cycles) {
         for (int i = 0; i < cycles; ++i) {
@@ -435,10 +443,14 @@ BOOST_AUTO_TEST_CASE(learner_never_offered_as_catch_up_source, *boost::unit_test
     node2.start();
     node4.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto pump_heartbeats = [&](int cycles) {
         for (int i = 0; i < cycles; ++i) {

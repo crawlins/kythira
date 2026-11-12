@@ -226,10 +226,14 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
         n->start();
     }
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1 to
+    // campaign until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     auto pump_heartbeats = [&](int cycles) {
         for (int i = 0; i < cycles; ++i) {
@@ -305,10 +309,15 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     // node3 (only non-dormant node among {3,4,5}) wins a real election using
     // just node4/node5's votes — neither node1 nor node2 is reachable, and
     // neither is needed: 3 of 5 is majority regardless.
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node3.check_election_timeout();
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node3 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node3.check_election_timeout();
+        return wait_until([&] { return node3.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
     std::this_thread::sleep_for(std::chrono::milliseconds{150});
-    BOOST_REQUIRE(wait_until([&] { return node3.is_leader(); }));
 
     auto pump_node3_heartbeats = [&](int cycles) {
         for (int i = 0; i < cycles; ++i) {

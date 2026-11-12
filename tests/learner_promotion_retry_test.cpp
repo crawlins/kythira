@@ -217,9 +217,14 @@ BOOST_AUTO_TEST_CASE(blocked_learner_promotes_after_vacancy_in_same_group,
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     // Target 2, 1 voter (node1) — room for exactly one more. Admit node2 as a
     // learner (voting+learner = 1 < 2).
@@ -309,9 +314,14 @@ BOOST_AUTO_TEST_CASE(vacancy_in_different_group_does_not_help, *boost::unit_test
     node3.start();
     node4.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node1 to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node1.check_election_timeout();
+        return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     // Group A target 2, 1 voter (node1) — room for node2 to join as a learner.
     auto add2_fut = node1.add_learner(2);

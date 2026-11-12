@@ -371,9 +371,14 @@ BOOST_AUTO_TEST_CASE(simulator_composite_cluster_elects_replicates_and_catches_u
     node_b.start();
     node_c.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node_a.check_election_timeout();
-    BOOST_REQUIRE(wait_until([&] { return node_a.is_leader(); }));
+    // One election attempt can fail on a loaded runner (its votes time out),
+    // and nothing else here ticks the nodes, so keep asking node_a to campaign
+    // until it leads.
+    BOOST_REQUIRE(wait_until([&] {
+        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+        node_a.check_election_timeout();
+        return wait_until([&] { return node_a.is_leader(); }, std::chrono::milliseconds{1000});
+    }));
 
     constexpr int num_commands = 10;
     for (int i = 0; i < num_commands; ++i) {

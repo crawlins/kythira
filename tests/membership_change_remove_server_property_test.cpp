@@ -194,12 +194,19 @@ BOOST_AUTO_TEST_CASE(remove_server_resolves_and_cluster_shrinks, *boost::unit_te
         node2.start();
         node3.start();
 
-        std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-        node1.check_election_timeout();
-        std::this_thread::sleep_for(std::chrono::milliseconds{200});
-
+        // One election attempt can fail on a loaded runner (its votes time
+        // out), and nothing else here ticks the nodes, so keep asking node 1
+        // to campaign until it leads.
         BOOST_REQUIRE_MESSAGE(
-            wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}),
+            wait_until(
+                [&] {
+                    std::this_thread::sleep_for(cfg._election_timeout_max +
+                                                std::chrono::milliseconds{20});
+                    node1.check_election_timeout();
+                    return wait_until([&] { return node1.is_leader(); },
+                                      std::chrono::milliseconds{1000});
+                },
+                std::chrono::milliseconds{8000}),
             "iteration " + std::to_string(iteration) + ": node1 did not become leader");
 
         // Remove node3 from the cluster
@@ -273,11 +280,16 @@ BOOST_AUTO_TEST_CASE(command_applied_after_remove, *boost::unit_test::timeout(30
     node2.start();
     node3.start();
 
-    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
-    node1.check_election_timeout();
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});
-
-    BOOST_REQUIRE(wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{4000}));
+    // One election attempt can fail on a loaded runner (its votes time
+    // out), and nothing else here ticks the nodes, so keep asking node 1
+    // to campaign until it leads.
+    BOOST_REQUIRE(wait_until(
+        [&] {
+            std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{20});
+            node1.check_election_timeout();
+            return wait_until([&] { return node1.is_leader(); }, std::chrono::milliseconds{1000});
+        },
+        std::chrono::milliseconds{8000}));
 
     auto rm_fut = node1.remove_server(3);
 
