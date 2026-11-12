@@ -772,14 +772,14 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       `dynamodb_raft_backend_test`, restores to times on both sides of a
       split with the archiver on another node.
 
-- [ ] 20. Export, import and bulk put
+- [x] 20. Export, import and bulk put
   - Full and incremental `ExportTableToPointInTime`, `ImportTable`, the
     describe and list calls; AWS file layouts
   - `StartBulkPutItems`, `DescribeBulkOperation`, `ListBulkOperations`,
     `CancelBulkOperation`: an import into an existing table through
     ordinary writes, rate-limited, with its report
   - _Requirements: 17.3, 22.1_
-  - Notes (exports and imports done; bulk put next):
+  - Notes:
     - `export_import.hpp`, `export_formats.hpp`. A request's S3 bucket
       maps to a store: a directory under `KYTHIRA_DYNAMODB_BUCKET_DIR`
       (default `<backup dir>/buckets`), the S3 bucket of that name on the
@@ -826,6 +826,27 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     - Tests: `dynamodb_export_import_test` (18 cases) and, in
       `dynamodb_raft_backend_test`, an Ion export across a split imported
       back through another node.
+    - Bulk put (`bulk_put.hpp`): `StartBulkPutItems` reads DynamoDB JSON
+      or Ion records with the import reader and puts each `Item` into the
+      existing table through the write path, so conditions, LSIs, GSIs,
+      streams and the change log see every item. A record may carry
+      `ConditionExpression` and its names and values, compiled as
+      `PutItem` compiles them. Records live in the backup store
+      (`bulk/<id>/`, ARN `.../bulk-operation/<id>`); progress is saved
+      after each input object with the objects done, so a new leader
+      resumes at the first object not done (only that object is put
+      twice). `MaxWriteRequestUnits` drives a token bucket (one unit per
+      started KB, one second of burst). `ERROR` and
+      `CONDITION_CHECK_FAILURE` reports are JSON lines under
+      `<prefix>/AWSDynamoDB/BulkOperations/<id>/` in the output bucket
+      (Kythira's layout: AWS documents none). Status ends `COMPLETED`, or
+      `COMPLETED_WITH_ERRORS` when a record or object was in error
+      (condition failures are not errors). `CancelBulkOperation` writes a
+      cancel marker and answers `CANCELLING`; the worker stops at its next
+      check (every 256 records) and ends `CANCELLED`, keeping what it
+      wrote. `ListBulkOperations` is newest first, 90 days.
+      `PerformanceTier` is recorded only.
+    - Tests: `dynamodb_bulk_put_test` (7 cases).
 
 ### Phase 6: the rest of the surface
 

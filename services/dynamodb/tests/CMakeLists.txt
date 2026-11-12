@@ -189,6 +189,10 @@ set_tests_properties(dynamodb_pitr_test PROPERTIES
 kythira_dynamodb_test(dynamodb_export_import_test dynamodb_export_import_test.cpp)
 set_tests_properties(dynamodb_export_import_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Bulk put (task 20): conditions, reports, the rate limit, resume, cancel.
+kythira_dynamodb_test(dynamodb_bulk_put_test dynamodb_bulk_put_test.cpp)
+set_tests_properties(dynamodb_bulk_put_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 # Kinesis streaming destinations (task 17): the four actions, the
 # publisher's record format, order and resends, and the SigV4 sink.
 kythira_dynamodb_test(dynamodb_kinesis_destination_test dynamodb_kinesis_destination_test.cpp)
