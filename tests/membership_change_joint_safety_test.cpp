@@ -218,9 +218,21 @@ BOOST_AUTO_TEST_CASE(truncated_configuration_entry_is_reverted,
 
     // The majority elects a leader that never saw the entry, and writes over
     // its index.
-    auto new_leader = f->wait_for_leader(scaled_deadline(5000), majority);
-    BOOST_REQUIRE(new_leader.has_value());
-    BOOST_REQUIRE(f->submit_to(*new_leader, raft_multi_node_fixture::put_command("k", "v"), 3s).ok);
+    //
+    // The majority can elect more than once (see below), so a leader found
+    // early can be deposed before the write commits through it: CI saw the
+    // write fail 3 times in 54 runs (2026-11-10..12). Submit to whichever
+    // majority node leads now, until one commits it.
+    std::optional<node_id> new_leader;
+    kythira::test::op_result put;
+    const auto put_deadline = std::chrono::steady_clock::now() + scaled_deadline(15000);
+    while (!put.ok && std::chrono::steady_clock::now() < put_deadline) {
+        new_leader = f->wait_for_leader(scaled_deadline(5000), majority);
+        if (new_leader.has_value()) {
+            put = f->submit_to(*new_leader, raft_multi_node_fixture::put_command("k", "v"), 3s);
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(put.ok, "no majority leader committed the write: " << put.error);
     BOOST_REQUIRE_GE(f->commit_index_of(*new_leader), joint_index);
 
     f->heal();
@@ -254,6 +266,19 @@ BOOST_AUTO_TEST_CASE(add_server_never_has_two_leaders,
             auto f = make_running_cluster(3);
             auto leader = f->wait_for_leader(scaled_deadline(5000));
             BOOST_REQUIRE(leader.has_value());
+            // Let the first leader settle before the change. A just-elected
+            // leader can still be deposed when two nodes ran pre-vote in the
+            // same instant of a fresh cluster, and that election, not the
+            // add, then cost the leadership ("leadership lost while the new
+            // server was catching up", once in 54 CI runs). Once every node
+            // has applied the leader's no-op, each has heard from it and
+            // pre-vote keeps it in place.
+            BOOST_REQUIRE(f->wait_for_convergence(scaled_deadline(3000), 1));
+            leader = f->wait_for_leader(scaled_deadline(5000));
+            BOOST_REQUIRE(leader.has_value());
+            // The property is about the change, so judge it from here on.
+            const auto term_before = f->term_of(*leader);
+            f->reset_simultaneous_leaders();
             f->add_node(4, {1, 2, 3}, {4});
             f->start_node(4);
 
@@ -263,8 +288,14 @@ BOOST_AUTO_TEST_CASE(add_server_never_has_two_leaders,
             BOOST_CHECK(f->submit(raft_multi_node_fixture::put_command("k", "v"), 3s).ok);
 
             BOOST_CHECK_EQUAL(f->max_simultaneous_leaders(), 1u);
-            auto leaders = f->observed_leaders();
-            BOOST_CHECK_EQUAL(leaders.size(), 1u);
+            // No election while the server was added (no leader in a term
+            // after the settled one), and never two leaders in one term.
+            for (const auto& [term, ids] : f->observed_leaders()) {
+                BOOST_CHECK_MESSAGE(term <= term_before, "a leader was elected in term "
+                                                             << term << " during the change");
+                BOOST_CHECK_MESSAGE(ids.size() == 1u,
+                                    "term " << term << " had " << ids.size() << " leaders");
+            }
             check_safety(*f);
         }
     }
