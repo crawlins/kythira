@@ -42,8 +42,9 @@ inline constexpr std::string_view k_dynamodb_error_namespace = "com.amazonaws.dy
 /// 18, point-in-time recovery (`pitr.hpp`) of task 19, and exports,
 /// imports (`export_import.hpp`) and bulk puts (`bulk_put.hpp`) of task 20,
 /// and resource policies (`resource_policy.hpp`) and Contributor Insights
-/// (`insights_api.hpp`) of task 21.
-inline constexpr std::array<std::string_view, 53> k_implemented_dynamodb_operations{
+/// (`insights_api.hpp`) of task 21, and vector search (`vector_search.hpp`)
+/// of task 26.
+inline constexpr std::array<std::string_view, 54> k_implemented_dynamodb_operations{
     "DescribeEndpoints",
     "CreateTable",
     "DescribeTable",
@@ -96,7 +97,8 @@ inline constexpr std::array<std::string_view, 53> k_implemented_dynamodb_operati
     "DeleteResourcePolicy",
     "UpdateContributorInsights",
     "DescribeContributorInsights",
-    "ListContributorInsights"};
+    "ListContributorInsights",
+    "SearchVectors"};
 
 /// Implemented DynamoDB Streams operations (task 16).
 inline constexpr std::array<std::string_view, 4> k_implemented_streams_operations{

@@ -514,6 +514,23 @@ inline auto apply_overrides(const boost::json::object& in, table_descriptor& d)
             return std::ranges::find(*keep, l.name) == keep->end();
         });
     }
+    // Unlike the other index overrides, a vector index override gives the
+    // whole definitions: the restored table has exactly these.
+    if (const auto* v = in.if_contains("VectorIndexOverride"); v != nullptr && v->is_array()) {
+        std::vector<vector_index> vectors;
+        for (const auto& e : v->as_array()) {
+            auto parsed = vector_index_from(e.as_object(), d.schema);
+            if (!parsed) {
+                return parsed.error();
+            }
+            if (std::ranges::any_of(
+                    vectors, [&](const vector_index& x) { return x.name == parsed->name; })) {
+                return validation_error("Duplicate index name: " + parsed->name);
+            }
+            vectors.push_back(std::move(*parsed));
+        }
+        d.vectors = std::move(vectors);
+    }
     return std::nullopt;
 }
 

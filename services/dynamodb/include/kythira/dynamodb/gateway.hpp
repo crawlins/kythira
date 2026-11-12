@@ -84,6 +84,7 @@
 #include <kythira/dynamodb/forward_link.hpp>
 #include <kythira/dynamodb/front_end.hpp>
 #include <kythira/dynamodb/insights_api.hpp>
+#include <kythira/dynamodb/vector_search.hpp>
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/partiql.hpp>
 #include <kythira/dynamodb/query_api.hpp>
@@ -632,6 +633,8 @@ public:
           _bulk_worker(backend, nullptr, nullptr),
           _policies(backend),
           _insights(backend),
+          _vectors(backend),
+          _vector_worker(backend, &_vectors.registry()),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -676,6 +679,7 @@ public:
         // feeds it them; a root with IAM's sets `resource_lookup_for()`.
         _policies.register_with(*_front);
         _insights.register_with(*_front);
+        _vectors.register_with(*_front);
         auto store = _config.backups;
         if (!store && !_config.backup_dir.empty()) {
             store = std::make_shared<directory_backup_store>(_config.backup_dir);
@@ -757,8 +761,9 @@ public:
 private:
     /// The worker for the catalog leader's background jobs: the TTL
     /// sweeper, backups and restores, the point-in-time archiver, exports,
-    /// imports and bulk puts, and the Kinesis destination publisher (`ttl.hpp`,
-    /// `backup.hpp`, `pitr.hpp`, `export_import.hpp`, `bulk_put.hpp`,
+    /// imports and bulk puts, the vector index worker, and the Kinesis
+    /// destination publisher (`ttl.hpp`, `backup.hpp`, `pitr.hpp`,
+    /// `export_import.hpp`, `bulk_put.hpp`, `vector_search.hpp`,
     /// `kinesis_destination.hpp`), a pass of each a second, on the node that
     /// leads the catalog when the backend has one. A long backup or export
     /// delays the others until it ends.
@@ -817,6 +822,15 @@ private:
                     } catch (const std::exception& e) {
                         if (_log) {
                             _log(true, std::string("bulk operations: ") + e.what());
+                        }
+                    }
+                    try {
+                        // A new vector index turns ACTIVE once this node has
+                        // built its graphs; others build theirs on demand.
+                        (void)_vector_worker.pass();
+                    } catch (const std::exception& e) {
+                        if (_log) {
+                            _log(true, std::string("vector indexes: ") + e.what());
                         }
                     }
                     // Unpublished records stay in the change log; the next
@@ -886,6 +900,8 @@ private:
     bulk_put_worker<Backend> _bulk_worker;
     resource_policy_api<Backend> _policies;
     insights_api<Backend> _insights;
+    vector_search_api<Backend> _vectors;
+    vector_index_worker<Backend> _vector_worker;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

@@ -41,6 +41,7 @@
 #include <kythira/dynamodb/item_codec.hpp>
 #include <kythira/dynamodb/item_state_machine.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
+#include <kythira/dynamodb/vector_index.hpp>
 
 #include <raft/memory_kv_engine.hpp>
 #include <raft/persistent_state_machine.hpp>
@@ -304,6 +305,15 @@ struct table_descriptor {
     /// Contributor Insights settings (task 21): one for the table and for
     /// each GSI it was ever set on.
     std::vector<contributor_insights> insights;
+    /// Vector indexes (task 26), in creation order.
+    std::vector<vector_index> vectors;
+
+    /// The vector index named `name`, or null.
+    [[nodiscard]] auto vector_named(std::string_view index) const -> const vector_index* {
+        const auto it = std::find_if(vectors.begin(), vectors.end(),
+                                     [&](const vector_index& v) { return v.name == index; });
+        return it == vectors.end() ? nullptr : &*it;
+    }
 
     /// The policy on the table (`stream_label` 0) or on a stream, or null.
     [[nodiscard]] auto policy_of(std::uint64_t stream_label) const -> const resource_policy* {
@@ -330,9 +340,11 @@ struct table_descriptor {
     /// Whether writes to the table append change records (task 15,
     /// `change_log.hpp`): while a DynamoDB stream is enabled or a Kinesis
     /// destination is streaming (task 17), or point-in-time recovery is
-    /// enabled (task 19). Global tables (22) will turn it on too.
+    /// enabled (task 19), or the table has a vector index, whose graphs
+    /// the log feeds (task 26). Global tables (22) will turn it on too.
     [[nodiscard]] auto logs_changes() const -> bool {
-        return enabled_stream() != nullptr || streaming_destination() != nullptr || pitr.enabled;
+        return enabled_stream() != nullptr || streaming_destination() != nullptr || pitr.enabled ||
+               !vectors.empty();
     }
 
     /// The Kinesis destination being streamed to, or null.
@@ -438,6 +450,15 @@ struct catalog_command {
         /// enabling a stream of its view type, or with `disabled_ms` set,
         /// disabling the table's.
         update_stream = 1U << 6U,
+        /// `VectorIndexUpdates` (task 26): `table.vectors` is the list the
+        /// table should have, as for `update_gsis`. A name the table lacks
+        /// is created (CREATING), an ACTIVE index the command lacks starts
+        /// DELETING, a DELETING index the command lacks is dropped, and a
+        /// CREATING index whose command copy is ACTIVE becomes ACTIVE (its
+        /// graphs can be built). One index may be created or deleted at a
+        /// time. Graphs live in memory on each node and are built from the
+        /// table and its change log, so no key space or job is needed.
+        update_vectors = 1U << 7U,
     };
 
     kind op = kind::create_table;
@@ -491,14 +512,18 @@ namespace catalog_detail {
 /// (task 19), only for a table that ever had point-in-time recovery.
 /// 8 added `policies` and `insights` after `pitr`, with
 /// `set_resource_policy` and `set_contributor_insights` (task 21), only
-/// for a table that has either.
-inline constexpr std::uint8_t k_descriptor_format_version = 8;
+/// for a table that has either. 9 added `vectors` after `insights`, with
+/// `update_vectors` (task 26), only for a table that has a vector index.
+inline constexpr std::uint8_t k_descriptor_format_version = 9;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 8;
-inline constexpr std::uint8_t k_result_format_version = 8;
+inline constexpr std::uint8_t k_command_format_version = 9;
+inline constexpr std::uint8_t k_result_format_version = 9;
 
 /// The version a form carrying `d` is written as.
 [[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
+    if (!d.vectors.empty()) {
+        return 9;
+    }
     if (!d.policies.empty() || !d.insights.empty()) {
         return 8;
     }
@@ -631,6 +656,9 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
             out.push_back(static_cast<char>(c.mode));
             detail::put_varint(out, c.updated_ms);
         }
+    }
+    if (version >= 9) {
+        put_vector_indexes(out, d.vectors);
     }
 }
 
@@ -805,6 +833,13 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
                                                       static_cast<insights_mode>(*mode), *updated});
         }
     }
+    if (version >= 9) {
+        auto vectors = get_vector_indexes(r);
+        if (!vectors) {
+            return std::nullopt;
+        }
+        d.vectors = std::move(*vectors);
+    }
     d.name = std::move(*name);
     d.table_id = *id;
     d.schema = std::move(*schema);
@@ -902,6 +937,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         default:
             break;
     }
+    // A vector update can leave the table none (its last index dropped).
+    if ((c.update_fields & catalog_command::update_vectors) != 0) {
+        version = std::max<std::uint8_t>(version, 9);
+    }
     out.push_back(static_cast<char>(version));
     out.push_back(static_cast<char>(c.op));
     catalog_detail::put_descriptor_body(out, c.table, version);
@@ -955,7 +994,11 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     const auto interval = version >= 3 ? r.varint() : std::optional<std::uint64_t>{0};
     // update_gsis came with the descriptor's GSI list, in version 2, and
     // update_stream with its streams, in 4.
-    const std::uint8_t known_fields = version >= 4 ? 0x7F : version >= 2 ? 0x3F : 0x1F;
+    // update_vectors with the vector indexes, in 9.
+    const std::uint8_t known_fields = version >= 9   ? 0xFF
+                                      : version >= 4 ? 0x7F
+                                      : version >= 2 ? 0x3F
+                                                     : 0x1F;
     if (!table || !fields || *fields > known_fields || !from || *from > 3 || !to || *to > 3 ||
         !now || !deleted || !done || !interval || !r.done()) {
         return std::nullopt;
@@ -1310,6 +1353,14 @@ private:
             g.index_id = next++;
             g.status = index_status::active;
         }
+        // An empty table's vector graphs are built at once (a restore's
+        // from its items as they load); a backup's dropped index stays so.
+        std::erase_if(d.vectors,
+                      [](const vector_index& v) { return v.status == index_status::deleting; });
+        for (auto& v : d.vectors) {
+            v.status = index_status::active;
+            v.created_ms = c.now_ms;
+        }
         d.status = table_status::creating;
         d.created_ms = c.now_ms;
         d.revision = 1;
@@ -1403,6 +1454,11 @@ private:
                 return *refused;
             }
         }
+        if ((c.update_fields & catalog_command::update_vectors) != 0) {
+            if (auto refused = update_vectors(c, *d)) {
+                return *refused;
+            }
+        }
         if ((c.update_fields & catalog_command::update_deletion_protection) != 0) {
             // Takes effect at once and needs no background work, so the
             // table stays ACTIVE.
@@ -1449,6 +1505,72 @@ private:
         std::erase_if(d.streams, [&](const table_stream& s) {
             return s.disabled_ms != 0 && s.disabled_ms + k_stream_retention_ms < c.now_ms;
         });
+        return std::nullopt;
+    }
+
+    /// `update_vectors` (see `catalog_command::update_field`) applied to
+    /// `d`, refused in DynamoDB's words.
+    static auto update_vectors(const catalog_command& c, table_descriptor& d)
+        -> std::optional<catalog_result> {
+        const auto named = [](const std::vector<vector_index>& list,
+                              const std::string& name) -> const vector_index* {
+            const auto it = std::find_if(list.begin(), list.end(),
+                                         [&](const vector_index& v) { return v.name == name; });
+            return it == list.end() ? nullptr : &*it;
+        };
+        std::vector<vector_index> added;
+        std::size_t removed = 0;
+        for (const auto& v : c.table.vectors) {
+            if (named(d.vectors, v.name) == nullptr) {
+                added.push_back(v);
+            }
+        }
+        for (const auto& v : d.vectors) {
+            if (v.status == index_status::active && named(c.table.vectors, v.name) == nullptr) {
+                ++removed;
+            }
+        }
+        const bool busy =
+            std::any_of(d.vectors.begin(), d.vectors.end(),
+                        [](const vector_index& v) { return v.status != index_status::active; });
+        if (added.size() + removed > 1 || (busy && added.size() + removed == 1)) {
+            return failure("LimitExceededException",
+                           "Subscriber limit exceeded: Only 1 online index can be created or "
+                           "deleted simultaneously per table");
+        }
+        if (!added.empty() && d.vectors.size() >= k_max_vector_indexes) {
+            return failure("LimitExceededException",
+                           "VectorIndex count exceeds the per-table limit");
+        }
+        if (!added.empty() &&
+            (named(d.vectors, added.front().name) != nullptr ||
+             std::any_of(d.gsis.begin(), d.gsis.end(),
+                         [&](const global_index& g) { return g.name == added.front().name; }) ||
+             std::any_of(d.lsis.begin(), d.lsis.end(),
+                         [&](const local_index& l) { return l.name == added.front().name; }))) {
+            return invalid("Index already exists: " + added.front().name);
+        }
+        std::erase_if(d.vectors, [&](const vector_index& v) {
+            return v.status == index_status::deleting && named(c.table.vectors, v.name) == nullptr;
+        });
+        for (auto& v : d.vectors) {
+            const auto* want = named(c.table.vectors, v.name);
+            if (want == nullptr) {
+                if (v.status == index_status::active) {
+                    v.status = index_status::deleting;
+                }
+                continue;
+            }
+            if (v.status == index_status::creating && want->status == index_status::active) {
+                v.status = index_status::active;
+            }
+        }
+        if (!added.empty()) {
+            auto v = added.front();
+            v.status = index_status::creating;
+            v.created_ms = c.now_ms;
+            d.vectors.push_back(std::move(v));
+        }
         return std::nullopt;
     }
 

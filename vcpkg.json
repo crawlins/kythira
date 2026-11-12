@@ -47,6 +47,9 @@
       "name": "grpc"
     },
     {
+      "name": "hnswlib"
+    },
+    {
       "name": "libcoap",
       "features": [
         "dtls"

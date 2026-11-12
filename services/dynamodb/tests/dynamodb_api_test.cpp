@@ -110,12 +110,13 @@ BOOST_AUTO_TEST_CASE(create_table_checks_in_aws_order_and_wording) {
                     pt + R"(,"GlobalSecondaryIndexes":[{"IndexName":"gsi","KeySchema":[)" + hash +
                         R"(],"Projection":{"ProjectionType":"ALL"}}])"),
          "No provisioned throughput specified for the global secondary index"},
-        // Vector indexes come with task 26.
+        // Vector indexes (task 26) are checked too.
         {try_create(ad1, "[" + hash + "]",
                     pt + R"(,"VectorIndexes":[{"IndexName":"vec","VectorAttribute":)"
-                         R"({"AttributeName":"v"},"Projection":{"ProjectionType":"ALL"},)"
+                         R"({"AttributeName":"pk"},"Projection":{"ProjectionType":"ALL"},)"
                          R"("Dimensions":3,"DistanceFunction":"COSINE"}])"),
-         "Kythira does not support VectorIndexes yet"},
+         "One or more parameter values were invalid: The vector attribute pk of vector index vec "
+         "cannot be a key attribute of the table"},
     };
     for (const auto& c : cases) {
         BOOST_TEST(c.got.status == 400U);
@@ -148,7 +149,8 @@ BOOST_AUTO_TEST_CASE(update_table) {
                "GlobalSecondaryIndexUpdates or SSESpecification or ReplicaUpdates is required");
     r = f.call("UpdateTable",
                R"({"TableName":"orders","VectorIndexUpdates":[{"Delete":{"IndexName":"vec"}}]})");
-    BOOST_TEST(r.message() == "Kythira does not support VectorIndexUpdates yet");
+    BOOST_TEST(r.type() == "ResourceNotFoundException");
+    BOOST_TEST(r.message() == "Requested resource not found: Vector index vec does not exist");
     r = f.call(
         "UpdateTable",
         R"({"TableName":"orders","ProvisionedThroughput":{"ReadCapacityUnits":5,"WriteCapacityUnits":5}})");
