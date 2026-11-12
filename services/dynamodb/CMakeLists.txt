@@ -42,7 +42,19 @@ if(_KYTHIRA_DYNAMODB_ZSTD)
     target_link_libraries(kythira_dynamodb INTERFACE ${_KYTHIRA_DYNAMODB_ZSTD})
     target_compile_definitions(kythira_dynamodb INTERFACE KYTHIRA_DYNAMODB_HAS_ZSTD)
 endif()
-message(STATUS "kythira_dynamodb: gzip ${ZLIB_FOUND}, zstd ${_KYTHIRA_DYNAMODB_ZSTD}")
+# Vector search (task 26, hnsw_graph.hpp): approximate nearest neighbours
+# through hnswlib, header-only and in vcpkg.json; without it every search
+# scores every candidate, which ranks the same but slows with the table.
+find_package(hnswlib CONFIG QUIET)
+if(TARGET hnswlib::hnswlib)
+    target_link_libraries(kythira_dynamodb INTERFACE hnswlib::hnswlib)
+    target_compile_definitions(kythira_dynamodb INTERFACE KYTHIRA_DYNAMODB_HAS_HNSWLIB)
+    set(_KYTHIRA_DYNAMODB_HNSW ON)
+else()
+    set(_KYTHIRA_DYNAMODB_HNSW OFF)
+endif()
+message(STATUS "kythira_dynamodb: gzip ${ZLIB_FOUND}, zstd ${_KYTHIRA_DYNAMODB_ZSTD}, "
+               "hnswlib ${_KYTHIRA_DYNAMODB_HNSW}")
 
 # dynamodb_gateway_node (task 7).
 add_subdirectory(cmd)

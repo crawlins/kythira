@@ -627,6 +627,49 @@ template<typename TypeOf>
     return out;
 }
 
+/// `TableDescription.VectorIndexes`, as `global_index_descriptions` shows
+/// GSIs: `Backfilling` while CREATING, zero counts once ACTIVE.
+[[nodiscard]] inline auto vector_index_descriptions(const table_descriptor& d,
+                                                    const call_context& ctx) -> boost::json::array {
+    boost::json::array out;
+    for (const auto& v : d.vectors) {
+        boost::json::object projection{{"ProjectionType", projection_name(v.projection)}};
+        if (v.projection == projection_kind::include) {
+            boost::json::array nk;
+            for (const auto& n : v.non_key) {
+                nk.emplace_back(n);
+            }
+            projection["NonKeyAttributes"] = std::move(nk);
+        }
+        boost::json::object o{
+            {"IndexName", v.name},
+            {"VectorAttribute", boost::json::object{{"AttributeName", v.attribute}}},
+            {"Dimensions", v.dimensions},
+            {"DistanceFunction", distance_name(v.distance)},
+            {"Projection", std::move(projection)},
+            {"IndexStatus", index_status_name(v.status)},
+        };
+        if (!v.schema.empty()) {
+            boost::json::array schema;
+            for (const auto& e : v.schema) {
+                schema.push_back(boost::json::object{
+                    {"AttributeName", e.name},
+                    {"SearchSchemaElementType", e.hash ? "HASH" : "INLINE_FILTER"}});
+            }
+            o["SearchSchema"] = std::move(schema);
+        }
+        if (v.status == index_status::creating) {
+            o["Backfilling"] = true;
+        } else if (v.status == index_status::active) {
+            o["IndexSizeBytes"] = 0;
+            o["ItemCount"] = 0;
+        }
+        o["IndexArn"] = ctx.table_arn(d.name) + "/index/" + v.name;
+        out.push_back(std::move(o));
+    }
+    return out;
+}
+
 [[nodiscard]] inline auto table_description(const table_descriptor& d, const call_context& ctx)
     -> boost::json::object {
     using namespace table_api_detail;
@@ -702,6 +745,9 @@ template<typename TypeOf>
     }
     if (!d.gsis.empty()) {
         out["GlobalSecondaryIndexes"] = global_index_descriptions(d, ctx);
+    }
+    if (!d.vectors.empty()) {
+        out["VectorIndexes"] = vector_index_descriptions(d, ctx);
     }
     out["WarmThroughput"] = boost::json::object{
         {"ReadUnitsPerSecond", warm_read_of(d)},
@@ -788,9 +834,7 @@ public:
         if (!valid_table_name(name)) {
             return bad_table_name();
         }
-        // VectorIndexes come with task 26; refusing them beats creating a
-        // table without the index the caller asked for.
-        for (const char* member : {"SSESpecification", "OnDemandThroughput", "VectorIndexes"}) {
+        for (const char* member : {"SSESpecification", "OnDemandThroughput"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
@@ -975,10 +1019,92 @@ public:
             d.policies = {resource_policy{0, document, ""}};
         }
 
+        if (const auto* vectors = in.if_contains("VectorIndexes")) {
+            for (const auto& v : vectors->as_array()) {
+                auto parsed = vector_index_from(v.as_object(), d.schema);
+                if (!parsed) {
+                    return parsed.error();
+                }
+                if (auto e = vector_name_taken(d, parsed->name)) {
+                    return *e;
+                }
+                d.vectors.push_back(std::move(*parsed));
+            }
+            if (d.vectors.size() > k_max_vector_indexes) {
+                return validation_error("VectorIndex count exceeds the per-table limit of " +
+                                        std::to_string(k_max_vector_indexes));
+            }
+        }
+
         if (stream) {
             d.streams = {*stream};
         }
         return d;
+    }
+
+    /// Refuses a vector index name another index of `d` has.
+    static auto vector_name_taken(const table_descriptor& d, const std::string& name)
+        -> std::optional<aws_json::error> {
+        const bool taken = d.vector_named(name) != nullptr ||
+                           std::any_of(d.gsis.begin(), d.gsis.end(),
+                                       [&](const global_index& g) { return g.name == name; }) ||
+                           std::any_of(d.lsis.begin(), d.lsis.end(),
+                                       [&](const local_index& l) { return l.name == name; });
+        if (taken) {
+            return validation_error("Duplicate index name: " + name);
+        }
+        return std::nullopt;
+    }
+
+    /// `UpdateTable`'s `VectorIndexUpdates`: the vector index list the
+    /// table should have (see `catalog_command::update_vectors`). The
+    /// catalog refuses more than one change at a time.
+    static auto vector_index_updates(const boost::json::array& updates,
+                                     const table_descriptor& table)
+        -> aws_json::result<std::vector<vector_index>> {
+        auto list = table.vectors;
+        if (updates.empty()) {
+            return validation_error("VectorIndexUpdates must not be empty");
+        }
+        for (const auto& u : updates) {
+            const auto& o = u.as_object();
+            const auto* create = o.if_contains("Create");
+            const auto* drop = o.if_contains("Delete");
+            if ((create == nullptr) == (drop == nullptr)) {
+                return validation_error(
+                    "One or more parameter values were invalid: Exactly one of Create or Delete "
+                    "must be given in each VectorIndexUpdate");
+            }
+            if (create != nullptr) {
+                auto parsed = vector_index_from(create->as_object(), table.schema);
+                if (!parsed) {
+                    return parsed.error();
+                }
+                table_descriptor probe = table;
+                probe.vectors = list;
+                if (auto e = vector_name_taken(probe, parsed->name)) {
+                    return *e;
+                }
+                list.push_back(std::move(*parsed));
+                continue;
+            }
+            const std::string name(drop->as_object().at("IndexName").as_string());
+            const auto it = std::find_if(list.begin(), list.end(),
+                                         [&](const vector_index& v) { return v.name == name; });
+            if (it == list.end()) {
+                return table_api_detail::modeled(
+                    "ResourceNotFoundException",
+                    "Requested resource not found: Vector index " + name + " does not exist");
+            }
+            if (it->status != index_status::active) {
+                return table_api_detail::modeled("ResourceInUseException",
+                                                 "Vector index " + name + " is " +
+                                                     std::string(index_status_name(it->status)) +
+                                                     "; it cannot be deleted now");
+            }
+            list.erase(it);
+        }
+        return list;
     }
 
     auto describe_table(call_context& ctx, boost::json::object& in) -> result {
@@ -1019,9 +1145,8 @@ public:
     auto update_table(call_context& ctx, boost::json::object& in) -> result {
         using namespace table_api_detail;
         const auto name = table_name_of(in.at("TableName").as_string());
-        for (const char* member :
-             {"SSESpecification", "ReplicaUpdates", "OnDemandThroughput", "MultiRegionConsistency",
-              "GlobalTableWitnessUpdates", "VectorIndexUpdates"}) {
+        for (const char* member : {"SSESpecification", "ReplicaUpdates", "OnDemandThroughput",
+                                   "MultiRegionConsistency", "GlobalTableWitnessUpdates"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
@@ -1029,7 +1154,7 @@ public:
         if (!in.contains("BillingMode") && !in.contains("ProvisionedThroughput") &&
             !in.contains("TableClass") && !in.contains("DeletionProtectionEnabled") &&
             !in.contains("WarmThroughput") && !in.contains("GlobalSecondaryIndexUpdates") &&
-            !in.contains("StreamSpecification")) {
+            !in.contains("StreamSpecification") && !in.contains("VectorIndexUpdates")) {
             return validation_error(
                 "At least one of ProvisionedThroughput, BillingMode, UpdateStreamEnabled, "
                 "GlobalSecondaryIndexUpdates or SSESpecification or ReplicaUpdates is required");
@@ -1106,6 +1231,14 @@ public:
             }
             c.table.gsis = std::move(*list);
             c.update_fields |= catalog_command::update_gsis;
+        }
+        if (const auto* updates = in.if_contains("VectorIndexUpdates")) {
+            auto list = vector_index_updates(updates->as_array(), *current);
+            if (!list) {
+                return list.error();
+            }
+            c.table.vectors = std::move(*list);
+            c.update_fields |= catalog_command::update_vectors;
         }
         c.now_ms = _backend.now_ms();
         const auto r = _backend.catalog(c);

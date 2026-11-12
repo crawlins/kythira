@@ -81,6 +81,10 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/pitr.hpp` | Point-in-time recovery: the three actions, the change-record archive and bases in the backup store, pruning to the recovery period, and point-in-time restores | 19 |
 | `tests/dynamodb_pitr_test.cpp` | Restores to chosen times across puts, updates and deletes, the restorable window, re-enables, pruning, refusals, and the stored forms | 19 |
 | `tests/dynamodb_kinesis_destination_test.cpp` | Destination lifecycle and refusals, record format, per-item order, partial failures, resuming from stored cursors, and the signed calls | 17 |
+| `include/kythira/dynamodb/vector_index.hpp` | Vector indexes: definitions and their checks, stored form, vectors from items, the three distance functions, `SearchConditionExpression` | 26 |
+| `include/kythira/dynamodb/vector_graph.hpp`, `hnsw_graph.hpp` | The nearest-neighbour structure of a vector index partition: exact, and HNSW through hnswlib | 26 |
+| `include/kythira/dynamodb/vector_search.hpp` | `SearchVectors`, each node's graphs fed by the change log, and the worker that finishes index creates and deletes | 26 |
+| `tests/dynamodb_vector_test.cpp` | Vector index definitions, updates and the worker, scores, partitions, filters, projections, graphs that follow writes, HNSW recall | 26 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
@@ -147,6 +151,14 @@ curl --aws-sigv4 "aws:amz:us-east-1:dynamodb" --user "$AWS_ACCESS_KEY_ID:$AWS_SE
 
 `insights_api.hpp` documents the parameters and the answer.
 
+Vector indexes (`VectorIndexes` on `CreateTable`, `VectorIndexUpdates` on
+`UpdateTable`) are searched with `SearchVectors`. Each node builds an
+index's graphs from the table the first time it serves a search on it and
+then follows the change log, so a search on a node sees writes made
+elsewhere once they reach the log; every result is read again from the
+table, so a search never returns an item that is gone. A build with hnswlib
+(vcpkg builds have it) searches large partitions approximately with HNSW.
+
 ## Core targets and variables used
 
 This is the list a split into its own repository would need a Kythira
@@ -166,6 +178,7 @@ package to export.
 | `cmake/kythira_test_helpers.cmake` | `add_raft_completion_test`, `kythira_scale_test_timeouts` |
 | `kythira_test_support` | the in-process `multi_raft` fabric (`tests/multi_raft_test_fabric.hpp`), for `dynamodb_raft_backend_test` |
 | `ZLIB::ZLIB`, `zstd::libzstd_*` (optional) | gzip and zstd for exports and imports, through `kythira_dynamodb` |
+| `hnswlib::hnswlib` (optional) | approximate nearest neighbours for vector search, through `kythira_dynamodb` |
 | `KYTHIRA_BUILD_DYNAMODB` | set by the top level from `CONFIG_DYNAMODB`, OpenSSL and Boost |
 
 The top level names the module in two places: the `KYTHIRA_BUILD_DYNAMODB`

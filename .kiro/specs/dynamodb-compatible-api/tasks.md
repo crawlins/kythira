@@ -897,7 +897,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       its setting. `ListContributorInsights` with `TableName` lists the
       table and every GSI; without, every setting ever changed.
 
-- [ ] 26. Vector indexes and `SearchVectors` (added after the spec; done
+- [x] 26. Vector indexes and `SearchVectors` (added after the spec; done
   in this phase, numbered last so later tasks keep their numbers)
   - `VectorIndexes` on `CreateTable`, `VectorIndexUpdates` on
     `UpdateTable`, their descriptions
@@ -906,6 +906,49 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
   - Recorded against AWS only with Clark's go, as DynamoDB Local may not
     implement vector search
   - _Requirements: 22.2-22.4_
+  - Notes:
+    - `vector_index.hpp`. Indexes live in the catalog descriptor (format
+      9: `vectors` after `insights`, written only for a table that has
+      one) and change through `update_vectors`, which works like
+      `update_gsis`: one create or delete at a time, CREATING then ACTIVE,
+      DELETING then gone. They need no key space: graphs are in memory.
+      `CreateTable` indexes are ACTIVE with the table; restores keep the
+      backup's or take `VectorIndexOverride` (whole definitions). A table
+      with a vector index logs its changes. Checks: 1-4096 dimensions, a
+      vector attribute that is not a key, at most one `HASH`, no attribute
+      twice, `NonKeyAttributes` only with `INCLUDE`, names unique across
+      LSIs, GSIs and vector indexes, 20 per table.
+    - `vector_search.hpp`. Deviation from "per-group graphs": each gateway
+      node keeps graphs of the indexes it has searched, per `HASH` value,
+      built from a consistent table read and then fed from every change
+      log stream of the table (parents before children, as the
+      point-in-time archiver reads them); records trimmed before they were
+      read cause a rebuild. One node's graphs cover the whole table, so
+      there is no fan-out or merge: the node ranks its candidates, reads
+      the best again consistently, re-scores them from the item as it is,
+      drops any that are gone or no longer match, and fetches more until
+      it has `TopK`. So a search never returns an item that is not in the
+      table (22.4), and maintenance follows writes asynchronously.
+    - Graphs: HNSW through hnswlib (Clark, 2026-11-12, decision card:
+      "hnswlib via vcpkg"), header-only in `vcpkg.json`; a partition under
+      1000 entries is scored exactly, larger ones search HNSW with a breadth
+      of at least 64 and twice `TopK`, and scores are always recomputed
+      from the stored vector. A build without hnswlib scores everything
+      exactly. Scores: `COSINE` 1 - cosine similarity (0 to 2, a zero
+      vector at 1), `EUCLIDEAN` the distance, `DOT_PRODUCT` the dot
+      product (largest first); ties by key.
+    - `SearchConditionExpression` takes `attribute = :value` terms joined
+      by `AND` on search schema attributes, and must give the `HASH`
+      value. KEYS_ONLY results show the table keys, the vector and the
+      search schema attributes; `ProjectionExpression` narrows further.
+      Deviation: `VectorSearchRequestBytes` is the search vector's size as
+      32-bit floats; AWS does not document how it counts. A search on an
+      index that is not ACTIVE is a `ValidationException`.
+    - The catalog leader's `vector_index_worker` (gateway sweep loop)
+      builds its own graphs of a new index before marking it ACTIVE, and
+      drops DELETING ones. `ItemCount` and `IndexSizeBytes` read 0, as for
+      GSIs. Not recorded against AWS: that needs Clark's go, and DynamoDB
+      Local may not implement vector search.
 
 - [ ] 22. Global tables, last-writer-wins
   - Peer cluster config, replicator and receiver, replica updates in
