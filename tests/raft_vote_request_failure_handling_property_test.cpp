@@ -7,6 +7,8 @@
 #include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
+
+#include "test_timeout_scale.hpp"
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 #include <memory>
@@ -382,11 +384,20 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
                                                        << "ms");
                 BOOST_TEST_MESSAGE("Total election time: " << total_election_time.count() << "ms");
 
-                // Expected: 50ms, 100ms (with timing tolerance)
+                // Expected: 50ms, 100ms. The upper bounds come from
+                // delay_upper_bound(), which adds a fixed scheduler-jitter
+                // allowance: a flat 70 ms ceiling on the 50 ms delay failed
+                // twice in 54 CI runs (2026-11-10..12) on loaded runners
+                // whose schedule was otherwise right. 110/170 ms still
+                // catches a first delay at the cap or a doubled multiplier.
                 BOOST_CHECK_GE(delay1.count(), 30);
-                BOOST_CHECK_LE(delay1.count(), 70);
+                BOOST_CHECK_LE(
+                    delay1.count(),
+                    kythira::testing::delay_upper_bound(std::chrono::milliseconds{50}).count());
                 BOOST_CHECK_GE(delay2.count(), 80);
-                BOOST_CHECK_LE(delay2.count(), 120);
+                BOOST_CHECK_LE(
+                    delay2.count(),
+                    kythira::testing::delay_upper_bound(std::chrono::milliseconds{100}).count());
 
                 BOOST_TEST_MESSAGE("✓ Election timing constraints verified");
             }
