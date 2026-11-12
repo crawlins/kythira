@@ -389,7 +389,7 @@ BOOST_AUTO_TEST_CASE(leadership_moves_to_the_named_target, *boost::unit_test::ti
     cluster.create_group(k_group);
     cluster.start();
 
-    auto from = cluster.require_leader(k_group);
+    auto from = cluster.require_settled_leader(k_group);
 
     // Pick a target that is not the current leader, and remember the term on
     // the *third* node — the one taking no part in the transfer.
@@ -511,7 +511,7 @@ BOOST_AUTO_TEST_CASE(a_follower_cannot_transfer_leadership, *boost::unit_test::t
     cluster.create_group(k_group);
     cluster.start();
 
-    const auto leader = cluster.require_leader(k_group);
+    const auto leader = cluster.require_settled_leader(k_group);
     std::uint64_t follower = 0;
     for (auto id : cluster.nodes()) {
         if (id != leader) {
@@ -536,7 +536,7 @@ BOOST_AUTO_TEST_CASE(a_leader_cannot_transfer_to_itself, *boost::unit_test::time
     cluster.create_group(k_group);
     cluster.start();
 
-    const auto leader = cluster.require_leader(k_group);
+    const auto leader = cluster.require_settled_leader(k_group);
     auto* n = cluster.host(leader).group_node(k_group);
     BOOST_CHECK(is_a<leader_transfer_exception>(
         cluster.settle(n->transfer_leadership(leader, std::chrono::milliseconds{500}))));
@@ -551,7 +551,7 @@ BOOST_AUTO_TEST_CASE(a_target_outside_the_configuration_is_refused,
     cluster.create_group(k_group);
     cluster.start();
 
-    const auto leader = cluster.require_leader(k_group);
+    const auto leader = cluster.require_settled_leader(k_group);
     auto* n = cluster.host(leader).group_node(k_group);
     BOOST_CHECK(is_a<leader_transfer_exception>(
         cluster.settle(n->transfer_leadership(99, std::chrono::milliseconds{500}))));
@@ -568,7 +568,7 @@ BOOST_AUTO_TEST_CASE(a_transfer_to_an_unreachable_target_times_out_and_the_leade
     cluster.create_group(k_group);
     cluster.start();
 
-    const auto leader = cluster.require_leader(k_group);
+    const auto leader = cluster.require_settled_leader(k_group);
     std::uint64_t target = 0;
     for (auto id : cluster.nodes()) {
         if (id != leader) {
@@ -608,7 +608,7 @@ BOOST_AUTO_TEST_CASE(scatter_hands_leadership_to_another_voter, *boost::unit_tes
     cluster.create_group(k_group);
     cluster.start();
 
-    const auto from = cluster.require_leader(k_group);
+    const auto from = cluster.require_settled_leader(k_group);
     auto future = cluster.host(from).scatter(k_group, std::chrono::milliseconds{3000});
 
     const bool moved = cluster.tick_until(
