@@ -998,10 +998,23 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       joins, replica deletion, an unreachable peer, a refused creation,
       the refusals, and the stored forms.
 
-- [ ] 23. Coverage close-out
+- [x] 23. Coverage close-out
   - Every remaining operation in the pinned model implemented or listed in
     `unsupported.md`; coverage test green
   - _Requirements: 2.1-2.3_
+  - Notes:
+    - Every operation of both pinned models is implemented except eight,
+      all out of scope: the two replica auto scaling calls (Application
+      Auto Scaling) and the six global tables version 2017.11.29 (legacy)
+      calls. Decision: the legacy calls are not mapped onto version
+      2019.11.21 tables, as AWS asks new tables not to use them and its
+      own legacy calls do not see 2019.11.21 tables; the requirements'
+      out-of-scope list now names them.
+    - `dynamodb_model_coverage_test` now also fails on a row that is not
+      out of scope, so nothing can be left waiting for a task.
+    - `doc/invariants.md`: the 20 KB policy limit moved to the checked
+      table (task 21 tests it); "at most 2 readers per stream shard" is
+      listed as not enforced, AWS wording it as advice with no error.
 
 ### Phase 7: conformance and docs
 

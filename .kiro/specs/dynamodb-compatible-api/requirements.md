@@ -33,8 +33,9 @@ wire protocol and SigV4 authentication, and the tests.
 
 **Out of scope**: DAX (a separate AWS service with its own protocol),
 Application Auto Scaling (a separate service; provisioned capacity values
-are stored and enforced, not auto-scaled by AWS's API), and global tables
-that include real AWS regions.
+are stored and enforced, not auto-scaled by AWS's API), global tables
+that include real AWS regions, and global tables version 2017.11.29
+(legacy: its six operations; version 2019.11.21 is built, task 23).
 
 ## Glossary
 
