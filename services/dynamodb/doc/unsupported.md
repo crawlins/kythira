@@ -19,12 +19,6 @@ test reads the table rows: keep one operation per row, in the
 
 | Service | Operation | Why |
 |---|---|---|
-| DynamoDB | `PutResourcePolicy` | planned, task 21 |
-| DynamoDB | `GetResourcePolicy` | planned, task 21 |
-| DynamoDB | `DeleteResourcePolicy` | planned, task 21 |
-| DynamoDB | `UpdateContributorInsights` | planned, task 21 |
-| DynamoDB | `DescribeContributorInsights` | planned, task 21 |
-| DynamoDB | `ListContributorInsights` | planned, task 21 |
 | DynamoDB | `CreateGlobalTable` | global tables version 2017.11.29 (legacy); task 22 builds version 2019.11.21 through `UpdateTable`, task 23 decides whether the legacy calls are mapped onto it |
 | DynamoDB | `DescribeGlobalTable` | global tables version 2017.11.29 (legacy); task 22 builds version 2019.11.21 through `UpdateTable`, task 23 decides whether the legacy calls are mapped onto it |
 | DynamoDB | `DescribeGlobalTableSettings` | global tables version 2017.11.29 (legacy); task 22 builds version 2019.11.21 through `UpdateTable`, task 23 decides whether the legacy calls are mapped onto it |

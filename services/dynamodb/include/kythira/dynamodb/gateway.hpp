@@ -83,9 +83,11 @@
 #include <kythira/dynamodb/dynamodb_actions.hpp>
 #include <kythira/dynamodb/forward_link.hpp>
 #include <kythira/dynamodb/front_end.hpp>
+#include <kythira/dynamodb/insights_api.hpp>
 #include <kythira/dynamodb/item_api.hpp>
 #include <kythira/dynamodb/partiql.hpp>
 #include <kythira/dynamodb/query_api.hpp>
+#include <kythira/dynamodb/resource_policy.hpp>
 #include <kythira/dynamodb/kinesis_destination.hpp>
 #include <kythira/dynamodb/streams.hpp>
 #include <kythira/dynamodb/table_api.hpp>
@@ -628,6 +630,8 @@ public:
           _job_worker(backend, nullptr, nullptr),
           _bulk(backend, nullptr, nullptr),
           _bulk_worker(backend, nullptr, nullptr),
+          _policies(backend),
+          _insights(backend),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
     }
@@ -668,6 +672,10 @@ public:
         _partiql.register_with(*_front);
         _streams.register_with(*_front);
         _destinations.register_with(*_front);
+        // The static-key authorizer has no resource policies, so no lookup
+        // feeds it them; a root with IAM's sets `resource_lookup_for()`.
+        _policies.register_with(*_front);
+        _insights.register_with(*_front);
         auto store = _config.backups;
         if (!store && !_config.backup_dir.empty()) {
             store = std::make_shared<directory_backup_store>(_config.backup_dir);
@@ -876,6 +884,8 @@ private:
     export_import_worker<Backend> _job_worker;
     bulk_put_api<Backend> _bulk;
     bulk_put_worker<Backend> _bulk_worker;
+    resource_policy_api<Backend> _policies;
+    insights_api<Backend> _insights;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

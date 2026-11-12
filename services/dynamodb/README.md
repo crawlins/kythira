@@ -131,6 +131,22 @@ S3 backup store, the S3 bucket of that name on the same endpoint. Data
 files are gzipped and gzip and zstd input is read when the build finds
 zlib and libzstd (vcpkg builds do).
 
+Resource-based policies (`PutResourcePolicy`, or `ResourcePolicy` on
+`CreateTable`) are stored on tables and streams and handed to the
+authorizer with every request. The static-key authorizer the daemon runs
+today has roles only, so it ignores them; IAM's evaluator applies them.
+
+Contributor Insights counts each node's own requests. With it enabled on a
+table or GSI, read the most-accessed and most-throttled keys from the
+node with a SigV4-signed GET:
+
+```
+curl --aws-sigv4 "aws:amz:us-east-1:dynamodb" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  "http://localhost:8000/kythira/contributor-insights?TableName=Music&Rule=PKC&Minutes=15"
+```
+
+`insights_api.hpp` documents the parameters and the answer.
+
 ## Core targets and variables used
 
 This is the list a split into its own repository would need a Kythira

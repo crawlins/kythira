@@ -105,6 +105,64 @@ namespace table_api_detail {
     return std::nullopt;
 }
 
+/// The largest resource-based policy DynamoDB takes, whitespace counted.
+inline constexpr std::size_t k_max_policy_bytes = 20 * 1024;
+
+/// Why `document` cannot be a resource-based policy (task 21), or nothing.
+/// Only its shape is checked here: a JSON object of at most 20 KB whose
+/// `Statement` (one, or a non-empty list) each have an `Effect` of `Allow`
+/// or `Deny`, a `Principal` or `NotPrincipal`, and an `Action` or
+/// `NotAction`. What it grants is the authorizer's to evaluate.
+[[nodiscard]] inline auto policy_document_error(std::string_view document)
+    -> std::optional<aws_json::error> {
+    if (document.size() > k_max_policy_bytes) {
+        return validation_error("Resource-based policy document size " +
+                                std::to_string(document.size()) +
+                                " exceeds the maximum allowed size of 20 KB");
+    }
+    const auto bad = [](std::string_view why) {
+        return validation_error("Invalid policy document: " + std::string(why));
+    };
+    boost::system::error_code ec;
+    const auto doc = boost::json::parse(document, ec);
+    if (ec || !doc.is_object()) {
+        return bad("the policy is not a JSON object");
+    }
+    const auto* statement = doc.as_object().if_contains("Statement");
+    if (statement == nullptr) {
+        return bad("the policy has no Statement");
+    }
+    std::vector<const boost::json::value*> statements;
+    if (statement->is_array()) {
+        for (const auto& st : statement->as_array()) {
+            statements.push_back(&st);
+        }
+    } else {
+        statements.push_back(statement);
+    }
+    if (statements.empty()) {
+        return bad("the Statement list is empty");
+    }
+    for (const auto* st : statements) {
+        if (!st->is_object()) {
+            return bad("a Statement is not an object");
+        }
+        const auto& o = st->as_object();
+        const auto* effect = o.if_contains("Effect");
+        if (effect == nullptr || !effect->is_string() ||
+            (effect->as_string() != "Allow" && effect->as_string() != "Deny")) {
+            return bad("a Statement's Effect must be Allow or Deny");
+        }
+        if (!o.contains("Principal") && !o.contains("NotPrincipal")) {
+            return bad("a Statement has no Principal");
+        }
+        if (!o.contains("Action") && !o.contains("NotAction")) {
+            return bad("a Statement has no Action");
+        }
+    }
+    return std::nullopt;
+}
+
 /// A stream's `StreamLabel`: its enable time, UTC, to the millisecond.
 [[nodiscard]] inline auto stream_label(std::uint64_t ms) -> std::string {
     const auto secs = static_cast<std::time_t>(ms / 1000);
@@ -732,8 +790,7 @@ public:
         }
         // VectorIndexes come with task 26; refusing them beats creating a
         // table without the index the caller asked for.
-        for (const char* member :
-             {"SSESpecification", "ResourcePolicy", "OnDemandThroughput", "VectorIndexes"}) {
+        for (const char* member : {"SSESpecification", "OnDemandThroughput", "VectorIndexes"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
@@ -907,6 +964,15 @@ public:
                 const auto& o = t.as_object();
                 d.tags.emplace_back(o.at("Key").as_string(), o.at("Value").as_string());
             }
+        }
+
+        // The catalog stamps its revision.
+        if (const auto* policy = in.if_contains("ResourcePolicy")) {
+            const std::string document(policy->as_string());
+            if (auto e = policy_document_error(document)) {
+                return *e;
+            }
+            d.policies = {resource_policy{0, document, ""}};
         }
 
         if (stream) {

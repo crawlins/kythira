@@ -30,6 +30,21 @@
 ///      `k_operation_actions`.
 ///   5. The handler. An exception becomes InternalServerError (500).
 ///
+/// Every authorization (step 4 and `call_context::authorize`) asks the
+/// resource lookup, when one is set, for the resource's tags and
+/// resource-based policy (task 21): a table's for the table and its
+/// indexes, a stream's for the stream. The authorizer evaluates them (IAM's
+/// evaluator does; `static_key_authorizer` has roles only, so a gateway on
+/// static keys sets no lookup). As AWS lets the account root, a root caller
+/// may always `DeleteResourcePolicy`, whatever the policy says.
+///
+/// `GET /kythira/contributor-insights` (`k_insights_report_path`) is a
+/// Kythira extension, there being no CloudWatch to hold Contributor
+/// Insights rules: SigV4-signed like any request, authorized as
+/// `dynamodb:DescribeContributorInsights` on the table or index its
+/// `TableName` and `IndexName` query parameters name, and answered by the
+/// report handler (`insights_api.hpp`).
+///
 /// `DescribeEndpoints` is built in: it answers the node's advertised
 /// endpoint with AWS's 1440-minute cache period (4.4).
 ///
@@ -105,6 +120,23 @@ struct call_context {
 using front_end_handler =
     std::function<aws_json::result<boost::json::object>(call_context&, boost::json::object&)>;
 
+/// What authorization needs to know about a resource (task 21).
+struct resource_facts {
+    std::vector<std::pair<std::string, std::string>> tags;
+    std::optional<std::string> policy;
+};
+
+/// Looks a table, index or stream up by ARN for authorization; nullopt
+/// when it does not exist (the handler then answers not-found).
+using resource_lookup = std::function<std::optional<resource_facts>(std::string_view arn)>;
+
+/// The Contributor Insights report path (a Kythira extension).
+inline constexpr std::string_view k_insights_report_path = "/kythira/contributor-insights";
+
+/// Answers a report request from its decoded query parameters.
+using report_handler = std::function<aws_json::result<boost::json::object>(
+    call_context&, const std::map<std::string, std::string, std::less<>>&)>;
+
 namespace detail {
 
 [[nodiscard]] inline auto header_value(const front_end_request& r, std::string_view name)
@@ -118,6 +150,65 @@ namespace detail {
         }
     }
     return {};
+}
+
+/// Percent-decodes a query component (`+` is a space, as forms send it).
+[[nodiscard]] inline auto url_decode(std::string_view in) -> std::optional<std::string> {
+    std::string out;
+    out.reserve(in.size());
+    const auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        return -1;
+    };
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '+') {
+            out.push_back(' ');
+        } else if (in[i] == '%') {
+            if (i + 2 >= in.size()) {
+                return std::nullopt;
+            }
+            const int hi = hex(in[i + 1]);
+            const int lo = hex(in[i + 2]);
+            if (hi < 0 || lo < 0) {
+                return std::nullopt;
+            }
+            out.push_back(static_cast<char>((hi << 4) | lo));
+            i += 2;
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
+/// `a=1&b=2` as a map; nullopt on a bad escape or a repeated name.
+[[nodiscard]] inline auto query_params(std::string_view query)
+    -> std::optional<std::map<std::string, std::string, std::less<>>> {
+    std::map<std::string, std::string, std::less<>> out;
+    while (!query.empty()) {
+        const auto amp = query.find('&');
+        const auto part = query.substr(0, amp);
+        query = amp == std::string_view::npos ? std::string_view{} : query.substr(amp + 1);
+        if (part.empty()) {
+            continue;
+        }
+        const auto eq = part.find('=');
+        auto name = url_decode(part.substr(0, eq));
+        auto value =
+            url_decode(eq == std::string_view::npos ? std::string_view{} : part.substr(eq + 1));
+        if (!name || !value || !out.emplace(std::move(*name), std::move(*value)).second) {
+            return std::nullopt;
+        }
+    }
+    return out;
 }
 
 [[nodiscard]] inline auto string_member(const boost::json::object& o, std::string_view key)
@@ -166,7 +257,16 @@ public:
         return _handlers.contains(std::string(operation));
     }
 
+    /// Supplies resource tags and policies to every authorization.
+    void set_resource_lookup(resource_lookup lookup) { _lookup = std::move(lookup); }
+
+    /// Serves `k_insights_report_path`; unset, the path is not found.
+    void set_report_handler(report_handler h) { _report = std::move(h); }
+
     [[nodiscard]] auto handle(const front_end_request& req) -> aws_json::http_response {
+        if (req.path == k_insights_report_path && _report) {
+            return report(req);
+        }
         const auto target = detail::header_value(req, "x-amz-target");
         const auto content_type = detail::header_value(req, "content-type");
         const aws_json::http_request_view view{req.method, req.path, content_type, target,
@@ -238,8 +338,69 @@ public:
     }
 
 private:
+    /// The Contributor Insights report: SigV4, then the read action on the
+    /// table or index, then the handler.
+    [[nodiscard]] auto report(const front_end_request& req) -> aws_json::http_response {
+        const aws_json::codec& c = _dynamodb;
+        auto id = c.new_request_id();
+        sigv4::service_rules rules;
+        rules.service = "dynamodb";
+        rules.protocol = sigv4::error_protocol::json;
+        if (!_config.region.empty()) {
+            rules.regions = {_config.region};
+        }
+        const sigv4::request sreq{req.method, req.path, req.query, req.headers, req.body};
+        const auto who = _authorizer.authenticate(sreq, rules);
+        if (!who) {
+            return c.respond(auth_error(who.error()), id);
+        }
+        if (req.method != "GET") {
+            return c.respond(validation_error("The report is read with GET"), id);
+        }
+        const auto params = detail::query_params(req.query);
+        if (!params) {
+            return c.respond(validation_error("Malformed query string"), id);
+        }
+        const auto table = params->find("TableName");
+        if (table == params->end() || table->second.empty()) {
+            return c.respond(validation_error("TableName is required"), id);
+        }
+        call_context ctx;
+        ctx.operation = "DescribeContributorInsights";
+        ctx.request_id = id;
+        ctx.principal = *who;
+        ctx.region = _config.region;
+        ctx.partition = _config.partition;
+        ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
+            return check(ctx, req, std::move(r));
+        };
+        boost::json::object in;
+        in["TableName"] = table->second;
+        if (const auto index = params->find("IndexName"); index != params->end()) {
+            in["IndexName"] = index->second;
+        }
+        if (auto denied = check(ctx, req, primary_request(ctx, in))) {
+            return c.respond(*denied, id);
+        }
+        try {
+            auto out = _report(ctx, *params);
+            if (!out) {
+                return c.respond(out.error(), id);
+            }
+            return c.respond(*out, id);
+        } catch (const std::exception&) {
+            aws_json::error e;
+            e.status = 500;
+            e.type = c.options().style.internal_type;
+            e.message = "Internal server error";
+            return c.respond(e, id);
+        }
+    }
+
     front_end_config _config;
     Authorizer& _authorizer;
+    resource_lookup _lookup;
+    report_handler _report;
     aws_json::codec _dynamodb;
     aws_json::codec _streams;
     std::map<std::string, front_end_handler, std::less<>> _handlers;
@@ -329,18 +490,63 @@ private:
         r.user_agent = std::string(detail::header_value(req, "user-agent"));
         r.region = _config.region;
         r.secure_transport = req.secure;
+        if (r.resource != "*" && r.resource.starts_with("arn:")) {
+            add_resource_facts(ctx, r);
+        }
         const auto d = _authorizer.authorize(ctx.principal, r);
         if (d.allowed) {
             return std::nullopt;
         }
         aws_json::error e;
         e.type = "com.amazon.coral.service#AccessDeniedException";
-        e.message = "User: " + ctx.principal.arn + " is not authorized to perform: " + r.action +
-                    " on resource: " + r.resource +
-                    (d.explicit_deny
-                         ? " with an explicit deny in an identity-based policy"
-                         : " because no identity-based policy allows the " + r.action + " action");
+        // IAM's authorizer names the resource policy "resource".
+        const bool by_resource_policy = r.resource_policy.has_value() && d.policy == "resource";
+        e.message =
+            "User: " + ctx.principal.arn + " is not authorized to perform: " + r.action +
+            " on resource: " + r.resource +
+            (d.explicit_deny
+                 ? (by_resource_policy ? " with an explicit deny in a resource-based policy"
+                                       : " with an explicit deny in an identity-based policy")
+                 : " because no identity-based policy allows the " + r.action + " action");
         return e;
+    }
+
+    /// With a lookup set: the resource's account when it is not the
+    /// caller's (cross-account access needs a resource policy, so it is
+    /// named only to an authorizer that evaluates them; without one a
+    /// foreign ARN reads as not found, as DynamoDB Local answers), and its
+    /// tags and policy.
+    void add_resource_facts(const call_context& ctx, aws_auth::authz_request& r) const {
+        if (!_lookup) {
+            return;
+        }
+        if (r.resource_account.empty()) {
+            // arn:<partition>:dynamodb:<region>:<account>:<resource>
+            std::string_view rest(r.resource);
+            for (int field = 0; field < 4 && !rest.empty(); ++field) {
+                const auto colon = rest.find(':');
+                rest =
+                    colon == std::string_view::npos ? std::string_view{} : rest.substr(colon + 1);
+            }
+            const auto account = rest.substr(0, rest.find(':'));
+            if (!account.empty() && account != ctx.principal.account) {
+                r.resource_account = std::string(account);
+            }
+        }
+        auto facts = _lookup(r.resource);
+        if (!facts) {
+            return;
+        }
+        if (r.resource_tags.empty()) {
+            r.resource_tags = std::move(facts->tags);
+        }
+        // The account root may always delete a resource policy, so a policy
+        // cannot lock its account out of its own table.
+        const bool root_delete = r.action == "dynamodb:DeleteResourcePolicy" &&
+                                 ctx.principal.type == aws_auth::principal_type::root;
+        if (!r.resource_policy && !root_delete) {
+            r.resource_policy = std::move(facts->policy);
+        }
     }
 };
 

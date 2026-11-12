@@ -164,8 +164,7 @@ public:
                     left.push_back(item_to_json(key));
                     continue;
                 }
-                const capacity_target target{"", capacity_kind::read,
-                                             api_detail::partition_of(g.table.schema, key)};
+                const auto target = api_detail::read_target(g.table, key);
                 if (auto e = api_detail::admit(_backend, _profile, ctx, g.table, {target})) {
                     throttled = std::move(*e);
                     left.push_back(item_to_json(key));
