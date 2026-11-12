@@ -710,6 +710,14 @@ public:
                             "raft_backend: a transaction read lost its result");
                     }
                 }
+                // commit() returns once the primary's group has committed;
+                // the other groups' commits are still in flight. DynamoDB
+                // promises every item is visible once TransactWriteItems
+                // returns, and a consistent read serves the leader's applied
+                // state without looking at intents, so wait for them here.
+                // Without this a GetItem straight after the call could still
+                // see the old value of an item in another group.
+                coordinator.drain();
                 return r;
             case kythira::txn_outcome_kind::unknown:
                 throw std::runtime_error("raft_backend: transaction outcome unknown: " +
