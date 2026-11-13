@@ -962,9 +962,21 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     multi-raft host with wide-area timings, a strong catalog group, the
     empty-table conversion, leaving strong mode by membership change,
     requests, splits, GSIs and the change log
-  - [ ] 27.2 Strong host: config (`KYTHIRA_DYNAMODB_STRONG_*`), mTLS peers
-    across regions, region-qualified node ids and group id ranges,
-    `strong-layout.json`, restart
+  - [x] 27.2 Strong host: config (`KYTHIRA_DYNAMODB_STRONG_*`), peers
+    across regions, group id ranges, everything under `<data dir>/strong/`,
+    restart
+    - `strong_config` and `strong_from_env` (`gateway.hpp`): exactly three
+      regions with the same number of voters each, this node in its own
+      region, a gateway for every other strong voter, a shared secret,
+      wide-area timings (250 ms heartbeat, 2.5-5 s elections)
+    - `host_runtime` (`run_cluster.hpp`) runs one multi-raft host; the
+      daemon runs two, the strong one with its own raft_backend whose
+      ops reach other regions' gateways at `k_strong_forward_path`
+    - Tests: settings parsed and refused (`dynamodb_gateway_test`); three
+      one-node clusters in three regions form one strong host
+      (`dynamodb_gateway_cluster_test`). By hand on RocksDB: three daemons
+      formed it, a node restarted with one region down rejoined, and all
+      three restarted together came back
   - [ ] 27.3 Strong catalog: strong ids, shared settings, membership,
     status; each region's catalog applies them to its descriptor
   - [ ] 27.4 `UpdateTable` with `MultiRegionConsistency=STRONG`,

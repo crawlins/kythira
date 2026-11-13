@@ -44,6 +44,9 @@ namespace kythira::dynamodb {
 
 /// Where peers send ops.
 inline constexpr std::string_view k_forward_path = "/_kythira/dynamodb/forward";
+/// Where strong voters send ops for the strong host's groups (task 27),
+/// which may come from another region; signed with the strong secret.
+inline constexpr std::string_view k_strong_forward_path = "/_kythira/dynamodb/strong-forward";
 inline constexpr std::string_view k_forward_time_header = "X-Kythira-Forward-Time";
 inline constexpr std::string_view k_forward_mac_header = "X-Kythira-Forward-Mac";
 /// How far a request's time may be from the receiver's clock.
@@ -107,6 +110,9 @@ struct forward_client_config {
     /// PEM bundle peers' certificates chain to; empty uses the system's.
     std::string ca_path;
     std::chrono::milliseconds timeout{20000};
+    /// The peers' endpoint: `k_forward_path`, or `k_strong_forward_path`
+    /// for the strong host.
+    std::string path{k_forward_path};
 };
 
 /// Sends ops to peer gateways, one connection per op. Thread-safe: it holds
@@ -142,7 +148,7 @@ private:
             static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                            std::chrono::system_clock::now().time_since_epoch())
                                            .count());
-        request req{http::verb::post, k_forward_path, 11};
+        request req{http::verb::post, _config.path, 11};
         req.set(http::field::host, peer.host + ":" + std::to_string(peer.port));
         req.set(http::field::content_type, "application/octet-stream");
         req.set(k_forward_time_header, std::to_string(now));

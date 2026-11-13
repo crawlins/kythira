@@ -86,16 +86,24 @@ auto run_cluster_node(const kythira::dynamodb::gateway_config& cfg,
         return;
     }
 #if defined(KYTHIRA_DYNAMODB_ROCKSDB)
-    // Layout: engine/ (the database) and raft/<group> (the Raft logs).
+    // Layout: engine/ (the database) and raft/<group> (the Raft logs); the
+    // strong host's (task 27) the same under strong/.
     const std::filesystem::path dir(cfg.data_dir);
-    std::filesystem::create_directories(dir / "engine");
-    std::filesystem::create_directories(dir / "raft");
+    const auto storage_in = [](const std::filesystem::path& d) {
+        std::filesystem::create_directories(d / "engine");
+        std::filesystem::create_directories(d / "raft");
+        return dynamodb_gateway::host_storage<rocksdb_storage>{
+            std::make_shared<kythira::rocksdb_kv_engine>(d / "engine"), [d](std::uint64_t group) {
+                return rocksdb_storage::persistence_engine_type{d / "raft" / std::to_string(group)};
+            }};
+    };
+    auto local = storage_in(dir);
+    std::optional<dynamodb_gateway::host_storage<rocksdb_storage>> strong;
+    if (cfg.strong.enabled()) {
+        strong = storage_in(dir / "strong");
+    }
     dynamodb_gateway::run_cluster<rocksdb_storage>(
-        cfg, std::make_shared<kythira::rocksdb_kv_engine>(dir / "engine"),
-        [dir](std::uint64_t group) {
-            return rocksdb_storage::persistence_engine_type{dir / "raft" / std::to_string(group)};
-        },
-        log, wait);
+        cfg, std::move(local.engine), local.store_factory, log, wait, std::move(strong));
 #else
     throw std::invalid_argument(
         "KYTHIRA_DYNAMODB_ENGINE=rocksdb: this build has no RocksDB (CONFIG_ENGINE_ROCKSDB)");

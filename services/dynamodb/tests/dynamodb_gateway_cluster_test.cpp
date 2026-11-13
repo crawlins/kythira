@@ -27,6 +27,7 @@
 #include <folly/init/Init.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <condition_variable>
@@ -104,11 +105,20 @@ struct cluster {
     bool stopping = false;
     std::vector<std::thread> nodes;
     std::array<std::exception_ptr, k_nodes> failures{};
+    /// Three regions (task 27): node `i` is a one-node cluster in
+    /// `k_regions[i]`, and the three are voters of one strong host.
+    bool regions = false;
+    std::array<std::uint16_t, k_nodes> strong_ports{};
+    std::array<std::vector<std::string>, k_nodes> logs{};
 
-    cluster() {
+    static constexpr std::array<std::string_view, k_nodes> k_regions{"us-east-1", "us-east-2",
+                                                                     "us-west-2"};
+
+    explicit cluster(bool three_regions = false) : regions(three_regions) {
         for (int i = 0; i < k_nodes; ++i) {
             gateway_ports.at(i) = kythira::testing::free_port();
             raft_ports.at(i) = kythira::testing::free_port();
+            strong_ports.at(i) = kythira::testing::free_port();
         }
         for (int i = 0; i < k_nodes; ++i) {
             nodes.emplace_back([this, i] { run(i); });
@@ -131,7 +141,12 @@ struct cluster {
         }
     }
 
+    /// Node `i`'s settings: one of three voters of one cluster, or with
+    /// `regions` a one-node cluster in its own region with a strong host.
     auto config_of(int i) -> ddb::gateway_config {
+        if (regions) {
+            return region_config_of(i);
+        }
         std::string peers;
         std::string gateways;
         for (int j = 0; j < k_nodes; ++j) {
@@ -156,6 +171,49 @@ struct cluster {
             {"KYTHIRA_DYNAMODB_PEER_GATEWAYS", gateways},
             {"KYTHIRA_DYNAMODB_FORWARD_SECRET", "0123456789abcdef-cluster-test"},
         };
+        return parse(vars);
+    }
+
+    auto region_config_of(int i) -> ddb::gateway_config {
+        const auto id = std::to_string(i + 1);
+        std::string strong_peers;
+        std::string strong_gateways;
+        for (int j = 0; j < k_nodes; ++j) {
+            const auto sid = std::to_string(10 * (j + 1) + 1);
+            strong_peers += (j == 0 ? "" : ",") + sid + "=" + std::string(k_regions.at(j)) +
+                            "@http://127.0.0.1:" + std::to_string(strong_ports.at(j));
+            if (j != i) {
+                strong_gateways += (strong_gateways.empty() ? "" : ",") + sid +
+                                   "=127.0.0.1:" + std::to_string(gateway_ports.at(j));
+            }
+        }
+        const std::map<std::string, std::string> vars{
+            {"KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT", "1"},
+            {"KYTHIRA_DYNAMODB_BIND", "127.0.0.1"},
+            {"KYTHIRA_DYNAMODB_PORT", std::to_string(gateway_ports.at(i))},
+            {"KYTHIRA_DYNAMODB_REGION", std::string(k_regions.at(i))},
+            {"KYTHIRA_DYNAMODB_STATIC_KEYS",
+             "AKIDADMIN:" + std::string(k_secret) + ":111122223333:admin:admin"},
+            {"KYTHIRA_DYNAMODB_NODE_ID", id},
+            {"KYTHIRA_DYNAMODB_PEERS",
+             id + "=http://127.0.0.1:" + std::to_string(raft_ports.at(i))},
+            {"KYTHIRA_DYNAMODB_RAFT_BIND", "127.0.0.1"},
+            {"KYTHIRA_DYNAMODB_RAFT_PORT", std::to_string(raft_ports.at(i))},
+            {"KYTHIRA_DYNAMODB_STRONG_NODE_ID", std::to_string(10 * (i + 1) + 1)},
+            {"KYTHIRA_DYNAMODB_STRONG_PEERS", strong_peers},
+            {"KYTHIRA_DYNAMODB_STRONG_RAFT_BIND", "127.0.0.1"},
+            {"KYTHIRA_DYNAMODB_STRONG_RAFT_PORT", std::to_string(strong_ports.at(i))},
+            {"KYTHIRA_DYNAMODB_STRONG_GATEWAYS", strong_gateways},
+            {"KYTHIRA_DYNAMODB_STRONG_SECRET", "0123456789abcdef-strong-test"},
+            // Loopback is not a wide-area network.
+            {"KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS", "50"},
+            {"KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS", "300"},
+            {"KYTHIRA_DYNAMODB_STRONG_ELECTION_MAX_MS", "600"},
+        };
+        return parse(vars);
+    }
+
+    static auto parse(const std::map<std::string, std::string>& vars) -> ddb::gateway_config {
         auto r = ddb::gateway_config_from_env([&vars](std::string_view name) {
             const auto it = vars.find(std::string(name));
             return it == vars.end() ? std::nullopt : std::optional<std::string>(it->second);
@@ -166,13 +224,30 @@ struct cluster {
         return std::get<ddb::gateway_config>(r);
     }
 
+    /// Waits until node `i` has logged a line holding `text`.
+    auto wait_for_log(int i, std::string_view text, std::chrono::seconds limit) -> bool {
+        std::unique_lock lock(mutex);
+        return cv.wait_for(lock, limit, [&] {
+            const auto& lines = logs.at(i);
+            return std::any_of(lines.begin(), lines.end(), [&](const std::string& l) {
+                return l.find(text) != std::string::npos;
+            });
+        });
+    }
+
     auto run(int i) -> void {
         using storage = dynamodb_gateway::memory_storage;
         try {
             dynamodb_gateway::run_cluster<storage>(
                 config_of(i), std::make_shared<storage::engine_type>(),
                 [](std::uint64_t) { return storage::persistence_engine_type{}; },
-                [](bool, std::string_view) {},
+                [this, i](bool, std::string_view line) {
+                    {
+                        const std::lock_guard lock(mutex);
+                        logs.at(i).emplace_back(line);
+                    }
+                    cv.notify_all();
+                },
                 [this] {
                     std::unique_lock lock(mutex);
                     cv.wait(lock, [this] { return stopping; });
@@ -330,6 +405,22 @@ BOOST_AUTO_TEST_CASE(a_saved_group_layout_loads_back) {
     }
     BOOST_CHECK_THROW((void)file.load(), std::runtime_error);
     std::filesystem::remove_all(dir);
+}
+
+// Task 27.2: three one-node clusters in three regions run one strong
+// host. Its catalog answers on every node once a leader that a quorum
+// spanning two regions elected is known, which takes the strong forward
+// link from the nodes that do not lead it.
+BOOST_AUTO_TEST_CASE(three_regions_form_one_strong_host) {
+    cluster c(true);
+    for (int i = 0; i < k_nodes; ++i) {
+        BOOST_TEST_INFO("node " << i);
+        BOOST_TEST(c.wait_for_log(i, "strong host ready", std::chrono::seconds(60)));
+    }
+    for (int i = 0; i < k_nodes; ++i) {
+        BOOST_TEST(c.wait_for_log(i, "in regions us-east-1, us-east-2, us-west-2",
+                                  std::chrono::seconds(1)));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(requests_on_every_node_reach_one_table) {
