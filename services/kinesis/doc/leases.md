@@ -13,7 +13,7 @@ cluster (`.kiro/specs/kinesis-compatible-streams/` task 9, Requirement 15).
 | Kythira native lease layer (`java/kythira-kcl-leases`) | yes (built and tested against 2.7.4) | no: KCL 3.x hard-wires its DynamoDB DAOs (worker metrics, coordinator state), so a refresher alone cannot move it |
 | Kythira's DynamoDB-compatible API (`dynamodb_gateway_node`) | yes (2.7.4) | yes (3.5.4) |
 | DynamoDB Local | yes (2.7.4, against 3.3.2) | yes (3.5.4, against 3.3.2) |
-| AWS DynamoDB | expected to work (KCL's own backend), not run here: a run is real-cloud spend and needs Clark's go | the same |
+| AWS DynamoDB | yes (2.7.4, us-east-1, 2026-11-13) | yes (3.5.4, us-east-1, 2026-11-13) |
 
 The DynamoDB rows are KCL's own lease management, unchanged: point its
 DynamoDB client at the endpoint, and it creates and uses its lease table
@@ -25,6 +25,31 @@ processed, and after a restart each worker carries on from the checkpoints
 its table kept (task 16). The sample consumer (`tests/kcl/sample`, and
 `tests/kcl/sample3` for KCL 3.x) shows the wiring: `KCL_LEASES=dynamodb`
 with `KCL_DYNAMODB_ENDPOINT`.
+
+### AWS DynamoDB
+
+The same case passed with the lease tables in AWS DynamoDB (us-east-1,
+2026-11-13), for KCL 2.7.4 and 3.5.4 reading a Kythira stream: every record
+of the first two batches, then after a restart of every worker every record
+of the third, and none of the first two again. Leave
+`KCL_DYNAMODB_ENDPOINT` unset (or empty) and set `KCL_DYNAMODB_PROFILE` to
+a shared-credentials profile: the lease calls sign with that profile, while
+the Kinesis calls keep the key the cluster knows. The scenario adds two
+such workers with `KINESIS_SCENARIO_AWS_LEASES=1` (real AWS spend, never on
+in CI); the header of compose.yml's `aws-leases` profile lists the other
+variables. Delete the run's tables afterwards.
+
+What the run showed:
+
+- KCL 3.x adds the `LeaseOwnerToLeaseKeyIndex` GSI to its lease table and
+  takes no lease until the index is ACTIVE. On AWS that took about 16
+  minutes on an empty on-demand table, both times, so a KCL 3.x
+  application's first records arrive that much later; allow 20 minutes or
+  more for its startup.
+- KCL 3.5.4 created no `-CoordinatorState` or `-WorkerMetricStats` table on
+  AWS. It found no legacy tables, marked its migration complete, and kept
+  the coordinator state and worker metrics as items in the lease table, so
+  each application had exactly one table.
 
 ## The Lease API
 

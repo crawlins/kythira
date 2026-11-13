@@ -91,6 +91,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -239,8 +240,8 @@ struct stack_fixture {
     ~stack_fixture() {
         os::try_exec(os::real_exec,
                      compose_cmd({"--profile", "clients", "--profile", "kcl", "--profile",
-                                  "kcl-efo", "--profile", "s3", "--profile", "leases", "down", "-v",
-                                  "--remove-orphans"}));
+                                  "kcl-efo", "--profile", "s3", "--profile", "leases", "--profile",
+                                  "aws-leases", "down", "-v", "--remove-orphans"}));
     }
     stack_fixture(const stack_fixture&) = delete;
     stack_fixture& operator=(const stack_fixture&) = delete;
@@ -834,10 +835,26 @@ BOOST_AUTO_TEST_CASE(kcl_2_and_3_keep_their_leases_in_dynamodb) {
                         "100", "--tag", "d0"});
         BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
     }
-    const std::vector<std::string> workers{"kcl2-kythira-ddb", "kcl3-kythira-ddb", "kcl2-ddb-local",
-                                           "kcl3-ddb-local"};
-    const auto events_of = [](const std::string& worker) {
-        return kcl_events({"--profile", "leases", "logs", "--no-color", worker});
+    std::vector<std::string> workers{"kcl2-kythira-ddb", "kcl3-kythira-ddb", "kcl2-ddb-local",
+                                     "kcl3-ddb-local"};
+    // With KINESIS_SCENARIO_AWS_LEASES=1 two more applications keep their
+    // leases in AWS DynamoDB (compose.yml's aws-leases profile). That is
+    // real AWS spend, so it is never on by default; the tables it leaves
+    // are named by KINESIS_SCENARIO_AWS_RUN and deleted by whoever ran it.
+    const char* aws = std::getenv("KINESIS_SCENARIO_AWS_LEASES");
+    const bool on_aws = aws != nullptr && std::string_view(aws) == "1";
+    std::vector<std::string> profiles{"--profile", "leases"};
+    if (on_aws) {
+        workers.insert(workers.end(), {"kcl2-aws-ddb", "kcl3-aws-ddb"});
+        profiles.insert(profiles.end(), {"--profile", "aws-leases"});
+    }
+    const auto with_profiles = [&](std::initializer_list<std::string> rest) {
+        auto args = profiles;
+        args.insert(args.end(), rest);
+        return args;
+    };
+    const auto events_of = [&](const std::string& worker) {
+        return kcl_events(with_profiles({"logs", "--no-color", worker}));
     };
     const auto tagged = [](const std::string& tag) {
         std::set<std::string> out;
@@ -851,11 +868,15 @@ BOOST_AUTO_TEST_CASE(kcl_2_and_3_keep_their_leases_in_dynamodb) {
         return std::includes(seen.begin(), seen.end(), want.begin(), want.end());
     };
 
-    std::vector<std::string> up{"--profile", "leases", "up", "-d", "ddb-leases", "ddb-local"};
+    auto up = with_profiles({"up", "-d", "ddb-leases", "ddb-local"});
     up.insert(up.end(), workers.begin(), workers.end());
     os::checked_exec(os::real_exec, compose_cmd(up));
+    // KCL 3.x adds a GSI to its lease table and waits for it to be ACTIVE
+    // before it takes a lease. AWS took about 16 minutes to build it on an
+    // empty on-demand table, so the first records get far longer on AWS.
+    const auto first_limit = on_aws ? std::chrono::seconds(2700) : std::chrono::seconds(300);
     for (const auto& w : workers) {
-        BOOST_TEST(eventually([&] { return all_read(w, tagged("d0")); }, 300s),
+        BOOST_TEST(eventually([&] { return all_read(w, tagged("d0")); }, first_limit),
                    w << " never processed the first 100 records");
     }
     {
@@ -875,7 +896,7 @@ BOOST_AUTO_TEST_CASE(kcl_2_and_3_keep_their_leases_in_dynamodb) {
     const auto restarted_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                   std::chrono::system_clock::now().time_since_epoch())
                                   .count();
-    std::vector<std::string> restart{"--profile", "leases", "restart"};
+    auto restart = with_profiles({"restart"});
     restart.insert(restart.end(), workers.begin(), workers.end());
     os::checked_exec(os::real_exec, compose_cmd(restart));
     {
