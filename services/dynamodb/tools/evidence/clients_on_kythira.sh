@@ -2,25 +2,38 @@
 # Copyright (c) 2026 Clark Rawlins
 # SPDX-License-Identifier: Apache-2.0
 
-# Run KCL 2.x and 3.x on Kythira's DynamoDB API
-# (.kiro/specs/dynamodb-compatible-api/ tasks 7 and 11): the evidence
-# clients' KCL workers keep their lease table (and, on KCL 3.x, its
-# LeaseOwnerToLeaseKeyIndex GSI and the coordinator and worker-metrics
-# entries) on Kythira, while the recording stub stands in for the Kinesis
-# stream. The Streams Kinesis Adapter (task 16, Requirement 14.5) then
-# consumes a real Kythira stream: its client creates a table with a
-# stream, writes to it before and while its KCL 3.x worker runs, and fails
-# unless the worker sees every item exactly once. check_kcl_run.py then
-# reads what Kythira answered.
+# Run every conformance client on Kythira's DynamoDB API
+# (.kiro/specs/dynamodb-compatible-api/ tasks 7, 11, 16 and 24), each
+# through the recording stub, which passes its DynamoDB and Streams calls
+# to Kythira and records what Kythira answered:
+#
+#   * the AWS CLI, boto3, aws-sdk-java-v2 and the DynamoDB lock client run
+#     their evidence flows (task 1), each failing on an error it does not
+#     expect;
+#   * Terraform applies an aws_dynamodb_table with indexes, TTL, a stream
+#     and tags, plans again to find nothing to change, changes it in place
+#     and destroys it (clients/terraform);
+#   * KCL 2.x and 3.x keep their lease table (and, on KCL 3.x, its
+#     LeaseOwnerToLeaseKeyIndex GSI and the coordinator and worker-metrics
+#     entries) on Kythira, while the stub stands in for the Kinesis stream;
+#   * the Streams Kinesis Adapter (Requirement 14.5) consumes a real
+#     Kythira stream: its client writes to a table before and while its KCL
+#     3.x worker runs, and fails unless the worker sees every item exactly
+#     once.
+#
+# check_client_runs.py then reads what Kythira answered each client.
 #
 # Usage:
-#   kcl_on_kythira.sh compose OUT_DIR   a three-node cluster and the clients
-#                                       in containers (compose.yml, profile
-#                                       kythira), under
-#                                       $KYTHIRA_CONTAINER_RUNTIME (default
-#                                       docker; podman works rootless).
-#   kcl_on_kythira.sh native OUT_DIR    one node and the clients on this
-#                                       host (mvn and java 17+).
+#   clients_on_kythira.sh compose OUT_DIR [CLIENT...]
+#       a three-node cluster and the clients in containers (compose.yml,
+#       profile kythira), under $KYTHIRA_CONTAINER_RUNTIME (default docker;
+#       podman works rootless).
+#   clients_on_kythira.sh native OUT_DIR [CLIENT...]
+#       one node and the Java and Python clients on this host (mvn, java
+#       17+, and boto3 for boto3); the AWS CLI and Terraform need theirs.
+#
+# CLIENT names a subset (default all): aws-cli boto3 java-sdk lock-client
+# terraform kcl2 kcl3 streams-adapter.
 #
 # KYTHIRA_DYNAMODB_GATEWAY names the dynamodb_gateway_node binary (default
 # build/dynamodb_gateway_node under the checkout).
@@ -29,16 +42,20 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "${here}/../../../.." && pwd)"
-usage="usage: kcl_on_kythira.sh compose|native OUT_DIR"
+usage="usage: clients_on_kythira.sh compose|native OUT_DIR [CLIENT...]"
 mode="${1:?${usage}}"
 out="$(mkdir -p "${2:?${usage}}" && cd "$2" && pwd)"
+shift 2
 rm -f "${out}"/*.jsonl
 gateway="${KYTHIRA_DYNAMODB_GATEWAY:-${root}/build/dynamodb_gateway_node}"
 if [ ! -x "${gateway}" ]; then
     echo "no dynamodb_gateway_node at ${gateway}; set KYTHIRA_DYNAMODB_GATEWAY" >&2
     exit 2
 fi
-clients=(kcl2 kcl3 streams-adapter)
+clients=(aws-cli boto3 java-sdk lock-client terraform kcl2 kcl3 streams-adapter)
+if [ "$#" -gt 0 ]; then
+    clients=("$@")
+fi
 # The table the Streams Kinesis Adapter's client creates and reads.
 source_table=adapter-source
 secret=evidence-secret-not-a-credential
@@ -88,8 +105,13 @@ except urllib.error.HTTPError as e:
         exit 1
     fi
     for c in "${clients[@]}"; do
-        "${compose[@]}" run --rm -e ENDPOINT=http://forwarder:8000 \
-            -e SOURCE_TABLE="${source_table}" java "${c}"
+        case "${c}" in
+            aws-cli | boto3 | terraform)
+                "${compose[@]}" run --rm -e ENDPOINT=http://forwarder:8000 "${c}" ;;
+            *)
+                "${compose[@]}" run --rm -e ENDPOINT=http://forwarder:8000 \
+                    -e SOURCE_TABLE="${source_table}" java "${c}" ;;
+        esac
     done
 elif [ "${mode}" = native ]; then
     api_port="${KCL_KYTHIRA_PORT:-8766}"
@@ -110,10 +132,26 @@ elif [ "${mode}" = native ]; then
     export ENDPOINT="http://127.0.0.1:${stub_port}"
     export SOURCE_TABLE="${source_table}"
     for c in "${clients[@]}"; do
-        sh "${here}/clients/run_java.sh" "${c}"
+        case "${c}" in
+            aws-cli) sh "${here}/clients/aws_cli.sh" ;;
+            boto3) python3 "${here}/clients/boto3_client.py" ;;
+            terraform) sh "${here}/clients/terraform/run_terraform.sh" ;;
+            *) sh "${here}/clients/run_java.sh" "${c}" ;;
+        esac
     done
 else
     echo "unknown mode ${mode}" >&2
     exit 2
 fi
-python3 "${here}/check_kcl_run.py" "${out}" "${clients[@]}"
+status=0
+python3 "${here}/check_client_runs.py" "${out}" "${clients[@]}" || status=$?
+if [ "${status}" -ne 0 ]; then
+    # The artifact keeps nodes.log, but say here why any request was
+    # answered 500 (the gateway logs each cause), so the job log alone
+    # names it.
+    if [ "${mode}" = compose ]; then
+        "${compose[@]}" logs ddb-1 ddb-2 ddb-3 > "${out}/nodes.log" 2>&1 || true
+    fi
+    grep -h "answered InternalServerError" "${out}/nodes.log" >&2 || true
+fi
+exit "${status}"

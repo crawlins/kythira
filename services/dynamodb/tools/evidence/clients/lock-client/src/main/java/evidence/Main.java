@@ -48,6 +48,10 @@ public final class Main {
                 .builder(ddb, THROUGHPUT, "evidence-locks-sorted")
                 .withSortKeyName("sortKey")
                 .build());
+        // CreateTable answers CREATING; the lock client's table check
+        // wants ACTIVE, so wait as a caller must on AWS too.
+        ddb.waiter().waitUntilTableExists(r -> r.tableName("evidence-locks"));
+        ddb.waiter().waitUntilTableExists(r -> r.tableName("evidence-locks-sorted"));
 
         try (AmazonDynamoDBLockClient client = new AmazonDynamoDBLockClient(
                 AmazonDynamoDBLockClientOptions.builder(ddb, "evidence-locks")

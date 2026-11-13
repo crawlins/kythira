@@ -2,18 +2,23 @@
 # Copyright (c) 2026 Clark Rawlins
 # SPDX-License-Identifier: Apache-2.0
 
-"""Checks a KCL run on Kythira (kcl_on_kythira.sh, task 11).
+"""Checks the clients' runs on Kythira (clients_on_kythira.sh, tasks 11 and
+24).
 
 Reads <client>.upstream.jsonl, the DynamoDB exchanges the stub passed to
 Kythira, for each client named, and fails unless:
 
-  * Kythira answered every request, and every refusal is one the KCL
-    expects: ResourceNotFoundException on DescribeTable (the KCL probes for
-    tables before it creates them), ConditionalCheckFailedException (a
-    lease taken or renewed under a condition that another write beat), or
-    ResourceInUseException on a CreateTable sent again after one that
-    succeeded (an SDK retry);
-  * the client created its lease table and wrote a lease;
+  * Kythira answered every request, and every refusal is one the client
+    expects: ResourceNotFoundException on DescribeTable (clients probe for
+    tables before they create them, and wait for them to go after a
+    delete), ConditionalCheckFailedException (a write under a condition
+    that another write beat: a lease, a lock, boto3's deliberate
+    duplicate), or ResourceInUseException on a CreateTable sent again
+    after one that succeeded (an SDK retry);
+  * every client created a table (the AWS CLI, boto3, aws-sdk-java-v2, the
+    lock client and Terraform also exit non-zero on any error their flows
+    do not expect, which fails the run before this check);
+  * each KCL client created its lease table and wrote a lease;
   * for KCL 3.x, the UpdateTable that adds LeaseOwnerToLeaseKeyIndex was
     accepted, and a Query on that index found the lease this worker took
     (the GSI is eventually consistent, so not every Query has to);
@@ -22,7 +27,7 @@ Kythira, for each client named, and fails unless:
     records. The client itself fails unless it saw every item it wrote
     exactly once.
 
-Usage: check_kcl_run.py DIR CLIENT...
+Usage: check_client_runs.py DIR CLIENT...
 """
 
 import json
@@ -35,6 +40,7 @@ EXPECTED_REFUSALS = {
     ("UpdateItem", "ConditionalCheckFailedException"),
     ("DeleteItem", "ConditionalCheckFailedException"),
 }
+KCL_CLIENTS = {"kcl2", "kcl3", "streams-adapter"}
 LEASE_INDEX = "LeaseOwnerToLeaseKeyIndex"
 
 
@@ -80,6 +86,10 @@ def check(path, client):
     )
     if not created:
         problems.append("%s: no CreateTable succeeded" % client)
+    if client not in KCL_CLIENTS:
+        summary = ", ".join("%s %d" % kv for kv in sorted(ops.items()))
+        print("%s: %d DynamoDB requests (%s)" % (client, len(records), summary))
+        return problems
     lease_written = any(
         r["operation"] == "PutItem"
         and r["status"] == 200
@@ -140,7 +150,7 @@ def main(argv):
     for p in problems:
         print("FAIL " + p, file=sys.stderr)
     if not problems:
-        print("KCL on Kythira: every check passed")
+        print("clients on Kythira: every check passed")
     return 1 if problems else 0
 
 
