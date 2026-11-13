@@ -3105,7 +3105,10 @@ private:
                (b._end != max_hash_key && b._end + 1 == a._start);
     }
 
-    // The open shard a reshard names, or AWS's refusal.
+    // The open shard a reshard names, or AWS's refusal. A closed shard is
+    // InvalidArgumentException, not ResourceInUseException: the AWS
+    // differential recordings (seed 1 step 74, seed 2 step 134) show that
+    // type for a SplitShard on a shard that was already split.
     [[nodiscard]] static auto shard_to_reshard(const stream_record& rec, const std::string& text)
         -> aws_json::result<const shard_entry*> {
         const auto ordinal = parse_shard_id(text);
@@ -3115,7 +3118,7 @@ private:
                                       " under account " + rec._account + ".");
         }
         if (!sh->open()) {
-            return service_detail::in_use(
+            return invalid_argument(
                 "Shard " + text + " in stream " + rec._name + " under account " + rec._account +
                 " has already been merged or split, and thus is not eligible for merging or "
                 "splitting.");

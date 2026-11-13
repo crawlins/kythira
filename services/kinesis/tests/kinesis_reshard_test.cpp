@@ -301,7 +301,15 @@ BOOST_AUTO_TEST_CASE(reshard_refusals_carry_aws_messages) {
     r = f.call("SplitShard", {{"StreamName", "s"},
                               {"ShardToSplit", "shardId-000000000000"},
                               {"NewStartingHashKey", "100"}});
-    BOOST_TEST(type_of(r) == "ResourceInUseException");
+    // AWS answers InvalidArgumentException here (the differential
+    // recordings), and MergeShards on a closed shard goes through the same
+    // check.
+    BOOST_TEST(type_of(r) == "InvalidArgumentException");
+    BOOST_TEST(message_of(r).find("has already been merged or split") != std::string::npos);
+    r = f.call("MergeShards", {{"StreamName", "s"},
+                               {"ShardToMerge", "shardId-000000000000"},
+                               {"AdjacentShardToMerge", "shardId-000000000001"}});
+    BOOST_TEST(type_of(r) == "InvalidArgumentException");
     BOOST_TEST(message_of(r).find("has already been merged or split") != std::string::npos);
 
     r = f.call("UpdateShardCount",
