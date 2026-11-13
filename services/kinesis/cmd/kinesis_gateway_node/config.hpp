@@ -15,6 +15,7 @@
 
 #include <raft/host_node_id.hpp>
 #include <raft/logger.hpp>
+#include <raft/static_or_iam_authorizer.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -56,7 +57,11 @@ struct node_options {
     bool _allow_plaintext{false};
     std::string _region{"us-east-1"};
     std::string _partition{"aws"};
-    /// `KINESIS_STATIC_KEYS_FILE` (kinesis_static_keys.hpp).
+    /// `KINESIS_AUTH`: `static` keys (the default), Kythira `iam`, or
+    /// `both` (static_or_iam_authorizer.hpp).
+    kythira::aws_auth::auth_mode _auth{kythira::aws_auth::auth_mode::static_keys};
+    /// `KINESIS_STATIC_KEYS_FILE` (kinesis_static_keys.hpp): required with
+    /// `static` and `both`, refused with `iam`.
     std::string _static_keys_file;
     /// `KINESIS_FORWARD_SECRET` or `KINESIS_FORWARD_SECRET_FILE`: what the
     /// gateways sign forwarded writes and segment fetches with. Required

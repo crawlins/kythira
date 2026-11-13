@@ -50,6 +50,7 @@
 #include <raft/persistence.hpp>
 #include <raft/record_segment_store.hpp>
 #include <raft/static_key_authorizer.hpp>
+#include <raft/static_or_iam_authorizer.hpp>
 #include <raft/txn_state_machine.hpp>
 
 #include <algorithm>
@@ -63,6 +64,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -207,7 +209,8 @@ using config_type = kythira::multi_raft_config<host_types, std::string, std::uin
 using descriptor_type =
     kythira::shard_descriptor<std::uint64_t, std::string, kythira::host_node_id>;
 using cluster_type = kinesis::raft_stream_cluster<host_type>;
-using front_end_type = kinesis::front_end<aws_auth::static_key_authorizer>;
+using authorizer_type = aws_auth::static_or_iam_authorizer;
+using front_end_type = kinesis::front_end<authorizer_type>;
 using gateway_type = kinesis::gateway<front_end_type>;
 
 auto read_file(const std::string& path, std::string_view what) -> std::string {
@@ -223,17 +226,26 @@ auto read_file(const std::string& path, std::string_view what) -> std::string {
 
 }  // namespace
 
-auto run(const node_options& opt) -> int {
+auto run(const node_options& opt, std::optional<aws_auth::iam_hooks> iam) -> int {
     kythira::console_logger logger{opt._log_level};
 
     // Everything that can be wrong with the configuration fails before a
-    // port is bound: the key file, the data directory, the store.
-    aws_auth::static_key_authorizer authorizer(
-        kinesis::parse_static_keys(read_file(opt._static_keys_file, "KINESIS_STATIC_KEYS_FILE")),
-        opt._partition);
+    // port is bound: the key file, a key IAM also has, the data directory,
+    // the store.
+    authorizer_type authorizer(opt._static_keys_file.empty()
+                                   ? std::vector<aws_auth::static_key>{}
+                                   : kinesis::parse_static_keys(read_file(
+                                         opt._static_keys_file, "KINESIS_STATIC_KEYS_FILE")),
+                               opt._partition);
     authorizer.register_service(kinesis::kinesis_static_roles());
     // The Lease API authorizes on the DynamoDB actions KCL needs on AWS.
     authorizer.register_service(kinesis::lease_static_roles());
+    authorizer.set_mode(opt._auth, std::move(iam));
+    if (const auto clash = authorizer.conflicting_keys(); !clash.empty()) {
+        throw std::invalid_argument("KINESIS_AUTH=both: IAM also has the static key " +
+                                    clash.front() +
+                                    "; an access key id may be in one or the other");
+    }
     auto profile = kinesis::cluster_profile(opt._compat);
     if (!profile) {
         throw std::invalid_argument("kinesis_gateway_node: KINESIS_COMPAT refused");
@@ -412,8 +424,7 @@ auto run(const node_options& opt) -> int {
         [&cluster](const std::string& key, const std::vector<std::byte>& command,
                    kinesis::admission mode) { return cluster.propose_local(key, command, mode); },
         &store, opt._forward_secret);
-    kinesis::lease_api<cluster_type, aws_auth::static_key_authorizer> leases(cluster, authorizer,
-                                                                             fc);
+    kinesis::lease_api<cluster_type, authorizer_type> leases(cluster, authorizer, fc);
     gateway.set_lease_handler(
         [&leases](const kinesis::front_end_request& r) { return leases.handle(r); });
     if (opt._metrics) {

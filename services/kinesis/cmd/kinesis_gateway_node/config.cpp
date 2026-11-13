@@ -238,7 +238,24 @@ void read_kinesis_side(const reader& r, node_options& o) {
     if (o._region.empty() || o._partition.empty()) {
         fail("KINESIS_REGION and KINESIS_PARTITION must not be empty");
     }
-    o._static_keys_file = r.required("KINESIS_STATIC_KEYS_FILE");
+    using kythira::aws_auth::auth_mode;
+    const auto auth = r.opt("KINESIS_AUTH", "static");
+    if (auth == "static") {
+        o._auth = auth_mode::static_keys;
+    } else if (auth == "iam") {
+        o._auth = auth_mode::iam;
+    } else if (auth == "both") {
+        o._auth = auth_mode::both;
+    } else {
+        fail("KINESIS_AUTH: static, iam or both, not '" + auth + "'");
+    }
+    if (o._auth == auth_mode::iam) {
+        if (r.set("KINESIS_STATIC_KEYS_FILE")) {
+            fail("KINESIS_AUTH=iam takes no KINESIS_STATIC_KEYS_FILE: use both, or unset it");
+        }
+    } else {
+        o._static_keys_file = r.required("KINESIS_STATIC_KEYS_FILE");
+    }
     o._data_dir = r.required("KINESIS_DATA_DIR");
 
     if (r.set("KINESIS_FORWARD_SECRET") && r.set("KINESIS_FORWARD_SECRET_FILE")) {
@@ -376,6 +393,11 @@ auto describe(const node_options& o) -> std::string {
         << (o._allow_plaintext ? " http" : " https") << '\n'
         << "region=" << o._region << " partition=" << o._partition << '\n'
         << "data_dir=" << o._data_dir.string() << '\n'
+        << "auth="
+        << (o._auth == kythira::aws_auth::auth_mode::iam    ? "iam"
+            : o._auth == kythira::aws_auth::auth_mode::both ? "both"
+                                                            : "static")
+        << '\n'
         << "static_keys_file=" << o._static_keys_file << '\n'
         << "forward_secret=" << (o._forward_secret.empty() ? "unset" : "set") << '\n'
         << "iterator_keys="
@@ -433,8 +455,11 @@ auto usage() -> std::string {
            "  KINESIS_TLS_CERT, KINESIS_TLS_KEY     PEM chain and key (required unless\n"
            "  KINESIS_ALLOW_PLAINTEXT=true)\n"
            "  KINESIS_REGION, KINESIS_PARTITION     us-east-1, aws\n"
-           "  KINESIS_STATIC_KEYS_FILE         access keys: id secret account name role "
-           "(required)\n"
+           "  KINESIS_AUTH                     static, iam or both (static): sign in by\n"
+           "                                   the keys file, Kythira IAM (KYTHIRA_IAM_*),\n"
+           "                                   or the file's keys first and IAM for the rest\n"
+           "  KINESIS_STATIC_KEYS_FILE         access keys: id secret account name role\n"
+           "                                   (required with static and both)\n"
            "  KINESIS_DATA_DIR                 Raft state and record segments (required)\n"
            "  KINESIS_FORWARD_SECRET[_FILE]    shared by the gateways; required with >1 voter\n"
            "  KINESIS_ITERATOR_KEYS_FILE       shard-iterator keys: id secret, first signs\n"
