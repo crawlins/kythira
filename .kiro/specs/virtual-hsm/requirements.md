@@ -27,8 +27,9 @@ key that no single node's disk holds whole; PKCS#11 attribute enforcement
 and a standard boundary, so the same consumers can later use a YubiHSM, a
 network HSM or AWS CloudHSM by changing configuration only.
 
-It is meant as the key store under a future Kythira KMS. The KMS itself
-(key policies, grants, aliases, the AWS KMS wire API) is **out of scope**.
+It is meant as the key store under a Kythira KMS. The KMS itself (key
+policies, grants, aliases, the AWS KMS wire API) is **out of scope** here
+and specified in `.kiro/specs/kms-compatible-api/`.
 
 **Scope**: the HSM state machine and key store, master key handling with
 Shamir secret sharing, the PKCS#11 v3.0 client library, the native C++
