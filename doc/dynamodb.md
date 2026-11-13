@@ -187,8 +187,13 @@ host (`KYTHIRA_DYNAMODB_STRONG_PEERS`) the three regions share the strong
 catalog, so all three need the setting and the same
 `KYTHIRA_DYNAMODB_ACCOUNT_ID`: the first to settle moves the strong
 tables to that account too, and a region that disagrees serves nothing
-and says why. A global table's replication principal must belong to the
-table's account.
+and says why. A global table is replicated as its owner: a peer finds
+the table in the account of the key the replicator signs with, so give
+each account with global tables its own replication key in
+`KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE` (`account:access_key_id:secret`
+per line, a key the peers know in that account); other tables use
+`KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID`. A replica sent with another
+account's key fails with a message naming both accounts.
 
 Noisy neighbours are handled as AWS handles them, by quota rather than
 at run time: an account's provisioned tables and GSIs may add up to its

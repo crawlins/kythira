@@ -31,10 +31,12 @@ namespace {
 constexpr std::string_view k_east = "us-east-1";
 constexpr std::string_view k_west = "us-west-2";
 constexpr std::string_view k_europe = "eu-west-1";
+/// A second account, for per-account tables (task 28).
+constexpr std::string_view k_other = "444455556666";
 
 /// A request signed for `region` as an SDK signs it.
-auto signed_in(std::string_view region, std::string_view op, const std::string& body)
-    -> ddb::front_end_request {
+auto signed_in(std::string_view region, std::string_view op, const std::string& body,
+               std::string_view akid = "AKIDADMIN") -> ddb::front_end_request {
     ddb::front_end_request r;
     r.method = "POST";
     r.path = "/";
@@ -50,7 +52,7 @@ auto signed_in(std::string_view region, std::string_view op, const std::string& 
     rules.protocol = sv4::error_protocol::json;
     const sv4::credential_scope scope{"20261110", std::string(region), "dynamodb"};
     r.headers.emplace_back("Authorization",
-                           "AWS4-HMAC-SHA256 Credential=AKIDADMIN/" + scope.text() +
+                           "AWS4-HMAC-SHA256 Credential=" + std::string(akid) + "/" + scope.text() +
                                ", SignedHeaders=content-type;host;x-amz-date;x-amz-target"
                                ", Signature=" +
                                std::string(64, '0'));
@@ -72,9 +74,15 @@ struct region_cluster {
     ddb::local_backend<> backend{engine, [this] { return clock_ms; }, &change_log};
     az::static_key_authorizer auth{
         std::vector<az::static_key>{{"AKIDADMIN", std::string(k_secret), std::string(k_account),
-                                     "admin", az::static_role::admin}},
+                                     "admin", az::static_role::admin},
+                                    {"AKIDOTHER", std::string(k_secret), std::string(k_other),
+                                     "other", az::static_role::admin}},
         "aws", [] { return std::chrono::system_clock::time_point(k_now); }};
     std::unique_ptr<ddb::front_end<az::static_key_authorizer>> fe;
+    /// Per-account tables (task 28), and the replication principals peers
+    /// sign with for each account.
+    bool per_account = false;
+    std::map<std::string, std::pair<std::string, std::string>, std::less<>> account_keys;
     ddb::table_api<ddb::local_backend<>> tables{backend};
     ddb::item_api<ddb::local_backend<>> items{backend};
     ddb::query_api<ddb::local_backend<>> queries{backend};
@@ -91,6 +99,7 @@ struct region_cluster {
         ddb::front_end_config cfg;
         cfg.region = region;
         cfg.advertised_endpoint = "localhost:8000";
+        cfg.namespaced = [this] { return per_account; };
         fe = std::make_unique<ddb::front_end<az::static_key_authorizer>>(cfg, auth);
         tables.register_with(*fe);
         items.register_with(*fe);
@@ -102,13 +111,15 @@ struct region_cluster {
         queries.set_compat_profile(off);
     }
 
-    auto call(std::string_view op, const std::string& body) -> reply {
-        const auto r = fe->handle(signed_in(region, op, body));
+    auto call(std::string_view op, const std::string& body, std::string_view akid = "AKIDADMIN")
+        -> reply {
+        const auto r = fe->handle(signed_in(region, op, body, akid));
         return reply{r.status, json::parse(r.body).as_object()};
     }
 
-    auto ok(std::string_view op, const std::string& body) -> json::object {
-        auto r = call(op, body);
+    auto ok(std::string_view op, const std::string& body, std::string_view akid = "AKIDADMIN")
+        -> json::object {
+        auto r = call(op, body, akid);
         BOOST_REQUIRE_MESSAGE(r.status == 200U, region + " " + std::string(op) +
                                                     " failed: " + r.type() + ": " + r.message());
         return r.body;
@@ -128,13 +139,16 @@ struct region_cluster {
         cfg.endpoint = "localhost:8000";
         cfg.access_key_id = "AKIDADMIN";
         cfg.secret_access_key = std::string(k_secret);
+        cfg.account_keys = account_keys;
         cfg.clock = [] { return std::chrono::time_point_cast<std::chrono::seconds>(k_now); };
         ddb::front_end_request r;
         r.method = "POST";
         r.path = std::string(ddb::k_replication_path);
         r.body = json::serialize(request);
         r.source_ip = "192.0.2.20";
-        r.headers = ddb::global_tables_detail::signed_replication_headers(cfg, r.body);
+        const auto [akid, secret] = ddb::global_tables_detail::replication_keys(cfg, request);
+        r.headers =
+            ddb::global_tables_detail::signed_replication_headers(cfg, akid, secret, r.body);
         const auto res = fe->handle(r);
         if (res.status != 200U) {
             return ddb::global_tables_detail::answer_error(
@@ -353,6 +367,81 @@ BOOST_FIXTURE_TEST_CASE(last_writer_wins_under_clock_skew, two_regions) {
                                   {"Region", std::string(k_east)}}}}});
     BOOST_REQUIRE(stale.has_value());
     BOOST_TEST(!west.get("orders", "t", 1).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(each_accounts_global_table_replicates_with_its_own_principal) {
+    region_cluster east{k_east, 1794300000000ULL};
+    region_cluster west{k_west, 1794300000000ULL};
+    for (auto* c : {&east, &west}) {
+        c->per_account = true;
+    }
+    link({&east, &west});
+    const auto make_global = [&](std::string_view akid) {
+        (void)east.ok("CreateTable",
+                      R"({"TableName":"orders","AttributeDefinitions":[)"
+                      R"({"AttributeName":"pk","AttributeType":"S"},)"
+                      R"({"AttributeName":"sk","AttributeType":"N"}],)"
+                      R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"},)"
+                      R"({"AttributeName":"sk","KeyType":"RANGE"}],)"
+                      R"("BillingMode":"PAY_PER_REQUEST"})",
+                      akid);
+        (void)east.ok("UpdateTable",
+                      R"({"TableName":"orders","ReplicaUpdates":[{"Create":{"RegionName":")" +
+                          std::string(k_west) + R"("}}]})",
+                      akid);
+    };
+    const auto status = [&](std::string_view akid) {
+        const auto t =
+            east.ok("DescribeTable", R"({"TableName":"orders"})", akid).at("Table").as_object();
+        return t.at("Replicas").as_array().at(0).as_object();
+    };
+
+    // The other account's table, with no replication principal of its own:
+    // the peer finds no table in the default principal's account and says
+    // whose key the replicator needs.
+    make_global("AKIDOTHER");
+    pump({&east, &west});
+    const auto failed = status("AKIDOTHER");
+    BOOST_TEST(failed.at("ReplicaStatus").as_string() == "CREATION_FAILED");
+    BOOST_TEST(std::string(failed.at("ReplicaStatusDescription").as_string())
+                   .find("belongs to account " + std::string(k_other)) != std::string::npos);
+    // The failed replica goes once the principal is there to remove it.
+    west.account_keys[std::string(k_other)] = {"AKIDOTHER", std::string(k_secret)};
+    (void)east.ok("UpdateTable",
+                  R"({"TableName":"orders","ReplicaUpdates":[{"Delete":{"RegionName":")" +
+                      std::string(k_west) + R"("}}]})",
+                  "AKIDOTHER");
+    pump({&east, &west});
+    (void)east.ok("DeleteTable", R"({"TableName":"orders"})", "AKIDOTHER");
+
+    // With each account's principal both accounts' orders replicate, each
+    // to its own account's table in the west.
+    make_global("AKIDADMIN");
+    make_global("AKIDOTHER");
+    pump({&east, &west});
+    BOOST_TEST(status("AKIDADMIN").at("ReplicaStatus").as_string() == "ACTIVE");
+    BOOST_TEST(status("AKIDOTHER").at("ReplicaStatus").as_string() == "ACTIVE");
+    const auto put = [&](std::string_view akid, const char* v) {
+        (void)east.ok("PutItem",
+                      std::string(R"({"TableName":"orders","Item":{"pk":{"S":"a"},)"
+                                  R"("sk":{"N":"1"},"v":{"S":")") +
+                          v + R"("}}})",
+                      akid);
+    };
+    put("AKIDADMIN", "mine");
+    put("AKIDOTHER", "theirs");
+    pump({&east, &west});
+    const auto read = [&](std::string_view akid) {
+        const auto r = west.ok(
+            "GetItem",
+            R"({"TableName":"orders","Key":{"pk":{"S":"a"},"sk":{"N":"1"}},"ConsistentRead":true})",
+            akid);
+        return std::string(r.at("Item").as_object().at("v").as_object().at("S").as_string());
+    };
+    BOOST_TEST(read("AKIDADMIN") == "mine");
+    BOOST_TEST(read("AKIDOTHER") == "theirs");
+    BOOST_TEST(west.backend.describe(std::string(k_other) + "/orders").has_value());
+    BOOST_TEST(west.backend.describe(std::string(k_account) + "/orders").has_value());
 }
 
 BOOST_AUTO_TEST_CASE(three_region_mesh) {
