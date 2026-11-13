@@ -421,6 +421,26 @@ BOOST_AUTO_TEST_CASE(cluster_settings_are_read) {
     BOOST_TEST(c.cluster.peer_gateways.at("2").host == "10.0.0.2");
     BOOST_TEST(c.cluster.peer_gateways.at("3").host == "fd00::3");
     BOOST_TEST(c.cluster.peer_gateways.at("3").port == 8443U);
+    // Automatic splits are on at the host's thresholds by default.
+    BOOST_TEST(c.cluster.splits_enabled());
+    BOOST_TEST(c.cluster.split_bytes == ddb::cluster_config::k_default_split_bytes);
+    BOOST_TEST(c.cluster.split_keys == ddb::cluster_config::k_default_split_keys);
+    BOOST_TEST((c.cluster.split_interval == std::chrono::hours{1}));
+    {
+        auto v = vars;
+        v["KYTHIRA_DYNAMODB_SPLIT_BYTES"] = "65536";
+        v["KYTHIRA_DYNAMODB_SPLIT_KEYS"] = "0";
+        v["KYTHIRA_DYNAMODB_SPLIT_INTERVAL_MS"] = "2000";
+        const auto k =
+            std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(v))).cluster;
+        BOOST_TEST(k.split_bytes == 65536U);
+        BOOST_TEST(k.split_keys == 0U);
+        BOOST_TEST((k.split_interval == std::chrono::milliseconds{2000}));
+        BOOST_TEST(k.splits_enabled());
+        v["KYTHIRA_DYNAMODB_SPLIT_BYTES"] = "0";
+        BOOST_TEST(!std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(v)))
+                        .cluster.splits_enabled());
+    }
 
     // Without PEERS there is no cluster; one PEERS entry is a cluster of
     // one, which needs no secret or gateways.
@@ -452,6 +472,10 @@ BOOST_AUTO_TEST_CASE(bad_cluster_settings_are_refused_with_the_variable_named) {
                "KYTHIRA_DYNAMODB_PEERS: expected id=value, got '1'");
     BOOST_TEST(with("KYTHIRA_DYNAMODB_RAFT_PORT", "70000") ==
                "KYTHIRA_DYNAMODB_RAFT_PORT: not a port: '70000'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_SPLIT_BYTES", "lots") ==
+               "KYTHIRA_DYNAMODB_SPLIT_BYTES: not a count: 'lots'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_SPLIT_INTERVAL_MS", "0") ==
+               "KYTHIRA_DYNAMODB_SPLIT_INTERVAL_MS: not a positive count: '0'");
     BOOST_TEST(with("KYTHIRA_DYNAMODB_FORWARD_SECRET", "short")
                    .find("KYTHIRA_DYNAMODB_FORWARD_SECRET is required") == 0U);
     BOOST_TEST(with("KYTHIRA_DYNAMODB_FORWARD_SECRET", std::nullopt)

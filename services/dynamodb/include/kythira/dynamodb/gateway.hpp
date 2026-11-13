@@ -154,8 +154,21 @@ struct cluster_config {
     /// PEM bundle the peers' gateway certificates chain to; empty uses the
     /// system's.
     std::string forward_ca_path;
+    /// Automatic splits (task 24): a group's leader splits it once it holds
+    /// this many bytes, or this many keys; 0 turns that measure off, and
+    /// both 0 turns automatic splits off. The defaults are the host's.
+    std::uint64_t split_bytes = k_default_split_bytes;
+    std::uint64_t split_keys = k_default_split_keys;
+    /// The least time between two splits of one group.
+    std::chrono::milliseconds split_interval{std::chrono::hours{1}};
+
+    static constexpr std::uint64_t k_default_split_bytes = 96ULL * 1024 * 1024;
+    static constexpr std::uint64_t k_default_split_keys = 960'000;
 
     [[nodiscard]] auto enabled() const -> bool { return !peers.empty(); }
+    [[nodiscard]] auto splits_enabled() const -> bool {
+        return split_bytes != 0 || split_keys != 0;
+    }
 };
 
 struct gateway_config {
@@ -319,6 +332,12 @@ inline constexpr std::string_view k_gateway_env_help =
     "                                        (16 or more characters)\n"
     "  KYTHIRA_DYNAMODB_FORWARD_CA           PEM bundle peers' certificates chain\n"
     "                                        to (system roots)\n"
+    "  KYTHIRA_DYNAMODB_SPLIT_BYTES          a group splits at this many bytes;\n"
+    "                                        0 never by size (100663296)\n"
+    "  KYTHIRA_DYNAMODB_SPLIT_KEYS           or at this many keys; 0 never by\n"
+    "                                        count (960000); both 0: no splits\n"
+    "  KYTHIRA_DYNAMODB_SPLIT_INTERVAL_MS    least time between two splits of a\n"
+    "                                        group (3600000)\n"
     "  KYTHIRA_DYNAMODB_LOG_LEVEL            Raft log level: trace, debug, info,\n"
     "                                        warning, error or critical (info)\n"
     "  KYTHIRA_DYNAMODB_COMPAT               switch=value,... the cluster's\n"
@@ -420,6 +439,23 @@ namespace gateway_detail {
         k.raft_port = *p;
     }
     k.forward_ca_path = env("KYTHIRA_DYNAMODB_FORWARD_CA").value_or("");
+    for (const auto& [name, field] : {std::pair{"KYTHIRA_DYNAMODB_SPLIT_BYTES", &k.split_bytes},
+                                      std::pair{"KYTHIRA_DYNAMODB_SPLIT_KEYS", &k.split_keys}}) {
+        if (auto v = env(name)) {
+            const auto n = number<std::uint64_t>(*v);
+            if (!n) {
+                return std::string(name) + ": not a count: '" + *v + "'";
+            }
+            *field = *n;
+        }
+    }
+    if (auto v = env("KYTHIRA_DYNAMODB_SPLIT_INTERVAL_MS")) {
+        const auto n = number<std::uint64_t>(*v);
+        if (!n || *n == 0) {
+            return "KYTHIRA_DYNAMODB_SPLIT_INTERVAL_MS: not a positive count: '" + *v + "'";
+        }
+        k.split_interval = std::chrono::milliseconds{static_cast<std::int64_t>(*n)};
+    }
     if (k.peers.size() > 1) {
         k.forward_secret = env("KYTHIRA_DYNAMODB_FORWARD_SECRET").value_or("");
         if (k.forward_secret.size() < k_min_forward_secret) {
