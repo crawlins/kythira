@@ -139,15 +139,18 @@ template<kythira::kv_engine Engine = kythira::memory_kv_engine> class local_back
 public:
     using clock_fn = std::function<std::uint64_t()>;
 
-    /// Items of every table live in one group over `t/`. Its change
-    /// records go to `change_log` (task 15); without one, DynamoDB Streams
-    /// list shards that never hold a record.
+    /// Items of every table live in one group over `items` (all of `t/`
+    /// by default; a strong host's tests pass the strong keys, as its Raft
+    /// layout has a group starting there, task 27.7). Its change records
+    /// go to `change_log` (task 15); without one, DynamoDB Streams list
+    /// shards that never hold a record.
     explicit local_backend(Engine& engine, clock_fn clock = system_clock_ms(),
-                           kythira::record_segment_store* change_log = nullptr)
+                           kythira::record_segment_store* change_log = nullptr,
+                           kythira::key_range items = prefix_range("t/"))
         : _clock(std::move(clock)) {
         _catalog.open(engine, catalog_range());
         _items.set_change_log(change_log, {});
-        _items.open(engine, prefix_range("t/"));
+        _items.open(engine, std::move(items));
         // The index can only be read once both machines are open.
         // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
         _index = std::max<std::uint64_t>(_catalog.applied_index(), _items.applied_index());

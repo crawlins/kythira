@@ -13,10 +13,14 @@
 
 #include "dynamodb_test_fixture.hpp"
 
+#include <kythira/dynamodb/backup.hpp>
+#include <kythira/dynamodb/pitr.hpp>
 #include <kythira/dynamodb/routed_backend.hpp>
 #include <kythira/dynamodb/strong_tables.hpp>
 
 #include <cstdint>
+#include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -209,7 +213,19 @@ struct api_region {
     ddb::item_api<routed> items{backend};
     ddb::ttl_api<routed> ttl{backend};
     ddb::txn_api<routed> transactions{backend};
+    ddb::query_api<routed> queries{backend};
+    ddb::streams_api<routed> streams{backend};
     ddb::strong_table_worker<routed> worker{backend};
+    /// Point-in-time recovery is a replica's own (task 27.7).
+    std::shared_ptr<ddb::memory_backup_store> store = std::make_shared<ddb::memory_backup_store>();
+    ddb::pitr_api<routed> pitr{backend, store};
+    ddb::backup_api<routed> backups{backend, store};
+    ddb::backup_worker<routed> backup_worker{backend, store};
+    ddb::pitr_worker<routed> pitr_worker{backend, store, [] {
+                                             ddb::pitr_worker_options o;
+                                             o.latest_lag_ms = 0;
+                                             return o;
+                                         }()};
 
     api_region(std::string region, ddb::local_backend<>& strong)
         : name(std::move(region)), backend(local.backend, &strong) {
@@ -225,6 +241,10 @@ struct api_region {
         items.register_with(*fe);
         ttl.register_with(*fe);
         transactions.register_with(*fe);
+        queries.register_with(*fe);
+        streams.register_with(*fe);
+        pitr.register_with(*fe);
+        backups.register_with(*fe);
         tables.set_strong_regions({"us-east-1", "us-east-2", "us-west-2"});
         worker.set_region(name);
     }
@@ -259,7 +279,9 @@ struct api_region {
 
 /// Three regions sharing one strong host.
 struct three_regions {
-    fixture strong_host;
+    /// Its item group starts at the strong keys, as the Raft strong host's
+    /// does, so a stream key names the host that owns it.
+    fixture strong_host{kythira::key_range{ddb::strong_key_start(), ddb::prefix_end("t/")}};
     api_region east1{"us-east-1", strong_host.backend};
     api_region east2{"us-east-2", strong_host.backend};
     api_region west2{"us-west-2", strong_host.backend};
@@ -297,8 +319,8 @@ auto statuses(const json::object& table) -> std::map<std::string, std::string> {
     return out;
 }
 
-auto describe(api_region& r) -> json::object {
-    return r.ok("DescribeTable", R"({"TableName":"Music"})").at("Table").as_object();
+auto describe(api_region& r, const std::string& table = "Music") -> json::object {
+    return r.ok("DescribeTable", R"({"TableName":")" + table + R"("})").at("Table").as_object();
 }
 
 }  // namespace
@@ -506,6 +528,173 @@ BOOST_AUTO_TEST_CASE(a_replica_and_the_witness_go_together) {
     BOOST_TEST(!describe(w.east1).contains("MultiRegionConsistency"));
     BOOST_TEST(w.east2.call("DescribeTable", R"({"TableName":"Music"})").type() ==
                "ResourceNotFoundException");
+}
+
+// Task 27.7: a GSI made in one region is the strong catalog's, with a
+// strong index id, and serves queries in every region.
+BOOST_AUTO_TEST_CASE(a_strong_tables_gsis_are_shared_by_its_regions) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    w.east2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"a"},"artist":{"S":"Nina"}}})");
+    const auto made = w.east2
+                          .ok("UpdateTable",
+                              R"({"TableName":"Music","AttributeDefinitions":[)"
+                              R"({"AttributeName":"artist","AttributeType":"S"}],)"
+                              R"("GlobalSecondaryIndexUpdates":[{"Create":{"IndexName":"byArtist",)"
+                              R"("KeySchema":[{"AttributeName":"artist","KeyType":"HASH"}],)"
+                              R"("Projection":{"ProjectionType":"ALL"}}}]})")
+                          .at("TableDescription")
+                          .as_object();
+    BOOST_TEST(made.at("GlobalSecondaryIndexes").as_array().size() == 1U);
+    const auto shared = w.strong_host.backend.describe("Music");
+    BOOST_TEST_REQUIRE(shared.has_value());
+    BOOST_TEST_REQUIRE(shared->gsis.size() == 1U);
+    BOOST_TEST(ddb::is_strong_table(shared->gsis[0].index_id));
+    w.run_workers();
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        BOOST_TEST_INFO("region " << r->name);
+        const auto d = r->local.backend.describe("Music");
+        BOOST_TEST_REQUIRE(d.has_value());
+        BOOST_TEST_REQUIRE(d->gsis.size() == 1U);
+        BOOST_TEST(d->gsis[0].index_id == shared->gsis[0].index_id);
+        BOOST_TEST((d->gsis[0].status == ddb::index_status::active));
+        const auto q = r->ok("Query", R"({"TableName":"Music","IndexName":"byArtist",)"
+                                      R"("KeyConditionExpression":"artist = :a",)"
+                                      R"("ExpressionAttributeValues":{":a":{"S":"Nina"}}})");
+        BOOST_TEST(q.at("Count").to_number<int>() == 1);
+    }
+    // Dropped in another region, it goes everywhere.
+    w.west2.ok("UpdateTable", R"({"TableName":"Music","GlobalSecondaryIndexUpdates":[)"
+                              R"({"Delete":{"IndexName":"byArtist"}}]})");
+    w.run_workers();
+    w.run_workers();
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        BOOST_TEST_INFO("region " << r->name);
+        BOOST_TEST(r->local.backend.describe("Music")->gsis.empty());
+    }
+}
+
+// Task 27.7: AWS keeps the billing mode and capacity the same on every
+// replica. A switch to provisioned in one region reaches the others.
+BOOST_AUTO_TEST_CASE(a_strong_tables_billing_is_shared_by_its_regions) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    w.east2.ok("UpdateTable",
+               R"({"TableName":"Music","BillingMode":"PROVISIONED",)"
+               R"("ProvisionedThroughput":{"ReadCapacityUnits":7,"WriteCapacityUnits":3}})");
+    const auto shared = w.strong_host.backend.describe("Music");
+    BOOST_TEST_REQUIRE(shared.has_value());
+    BOOST_TEST((shared->billing == ddb::billing_mode::provisioned));
+    w.run_workers();
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        BOOST_TEST_INFO("region " << r->name);
+        const auto d = r->local.backend.describe("Music");
+        BOOST_TEST_REQUIRE(d.has_value());
+        BOOST_TEST((d->billing == ddb::billing_mode::provisioned));
+        BOOST_TEST(d->read_capacity == 7U);
+        BOOST_TEST(d->write_capacity == 3U);
+    }
+}
+
+// Task 27.7: AWS gives every replica's stream the same records. A stream
+// enabled in one region shows the writes every region makes.
+BOOST_AUTO_TEST_CASE(a_stream_on_one_replica_sees_every_regions_writes) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    w.east2.ok("UpdateTable", R"({"TableName":"Music","StreamSpecification":)"
+                              R"({"StreamEnabled":true,"StreamViewType":"NEW_IMAGE"}})");
+    w.east1.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-east1"}}})");
+    w.west2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-west2"}}})");
+    w.east2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-east2"}}})");
+
+    const auto arn = std::string(describe(w.east2).at("LatestStreamArn").as_string());
+    const auto stream =
+        w.east2.ok("DescribeStream", R"({"StreamArn":")" + arn + R"("})").at("StreamDescription");
+    std::set<std::string> seen;
+    for (const auto& shard : stream.at("Shards").as_array()) {
+        auto it = w.east2
+                      .ok("GetShardIterator", R"({"StreamArn":")" + arn + R"(","ShardId":")" +
+                                                  std::string(shard.at("ShardId").as_string()) +
+                                                  R"(","ShardIteratorType":"TRIM_HORIZON"})")
+                      .at("ShardIterator");
+        const auto got = w.east2.ok(
+            "GetRecords", R"({"ShardIterator":")" + std::string(it.as_string()) + R"("})");
+        for (const auto& rec : got.at("Records").as_array()) {
+            seen.insert(std::string(rec.at("dynamodb").at("Keys").at("pk").at("S").as_string()));
+        }
+    }
+    BOOST_TEST((seen == std::set<std::string>{"from-east1", "from-east2", "from-west2"}));
+    // The other regions have no stream of their own.
+    BOOST_TEST(!describe(w.east1).contains("LatestStreamArn"));
+}
+
+// Task 27.7: PITR is per replica, as on AWS, and a replica's archive holds
+// every region's writes, so a restore there has them all.
+BOOST_AUTO_TEST_CASE(pitr_on_one_replica_restores_every_regions_writes) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    w.west2.ok("UpdateContinuousBackups",
+               R"({"TableName":"Music","PointInTimeRecoverySpecification":)"
+               R"({"PointInTimeRecoveryEnabled":true}})");
+    w.east1.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-east1"}}})");
+    w.east2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-east2"}}})");
+    w.west2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-west2"}}})");
+    (void)w.west2.pitr_worker.pass();
+    (void)w.west2.pitr_worker.pass();
+
+    w.west2.ok("RestoreTableToPointInTime",
+               R"({"SourceTableName":"Music","TargetTableName":"Restored",)"
+               R"("UseLatestRestorableTime":true})");
+    (void)w.west2.pitr_worker.pass();
+    const auto scan = w.west2.ok("Scan", R"({"TableName":"Restored","ConsistentRead":true})");
+    std::set<std::string> keys;
+    for (const auto& i : scan.at("Items").as_array()) {
+        keys.insert(std::string(i.at("pk").at("S").as_string()));
+    }
+    BOOST_TEST((keys == std::set<std::string>{"from-east1", "from-east2", "from-west2"}));
+    // The restored table is the region's own, and the other replicas have
+    // PITR off.
+    BOOST_TEST(!describe(w.west2, "Restored").contains("MultiRegionConsistency"));
+    BOOST_TEST(w.east1.ok("DescribeContinuousBackups", R"({"TableName":"Music"})")
+                   .at("ContinuousBackupsDescription")
+                   .at("PointInTimeRecoveryDescription")
+                   .at("PointInTimeRecoveryStatus")
+                   .as_string() == "DISABLED");
+}
+
+// Task 27.7: an on-demand backup taken in one region holds every region's
+// writes and restores as that region's own table.
+BOOST_AUTO_TEST_CASE(a_backup_in_one_region_holds_every_regions_writes) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    w.east1.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-east1"}}})");
+    w.west2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"from-west2"}}})");
+    const auto arn =
+        std::string(w.east2.ok("CreateBackup", R"({"TableName":"Music","BackupName":"before"})")
+                        .at("BackupDetails")
+                        .at("BackupArn")
+                        .as_string());
+    (void)w.east2.backup_worker.pass();
+    w.east2.ok("RestoreTableFromBackup",
+               R"({"TargetTableName":"FromBackup","BackupArn":")" + arn + R"("})");
+    (void)w.east2.backup_worker.pass();
+    const auto scan = w.east2.ok("Scan", R"({"TableName":"FromBackup","ConsistentRead":true})");
+    std::set<std::string> keys;
+    for (const auto& i : scan.at("Items").as_array()) {
+        keys.insert(std::string(i.at("pk").at("S").as_string()));
+    }
+    BOOST_TEST((keys == std::set<std::string>{"from-east1", "from-west2"}));
+    BOOST_TEST(!describe(w.east2, "FromBackup").contains("MultiRegionConsistency"));
 }
 
 BOOST_AUTO_TEST_CASE(the_leave_commands_round_trip) {

@@ -475,7 +475,7 @@ public:
             }
             for (const auto& [seq, rec] : page.records) {
                 next = seq + 1;
-                if (rec.table_id == table.table_id && rec.stream_ms == stream.label_ms) {
+                if (rec.table_id == table.table_id && in_stream(table, stream, rec)) {
                     records.push_back(record_json(ctx, pos->key, epoch, seq, rec, stream.view));
                 }
             }
@@ -495,6 +495,21 @@ public:
     }
 
 private:
+    /// Whether `rec` belongs to `stream`. A record carries the label of
+    /// the stream its writer saw enabled. A strongly consistent table's
+    /// stream is each region's own while every region writes (task 27.7),
+    /// and AWS gives every replica the same records, so there a record
+    /// belongs to the stream by when it was written instead: from the
+    /// stream's label until it was disabled.
+    [[nodiscard]] static auto in_stream(const table_descriptor& table, const table_stream& stream,
+                                        const change_record& rec) -> bool {
+        if (!table.strong) {
+            return rec.stream_ms == stream.label_ms;
+        }
+        return rec.written_ms >= stream.label_ms &&
+               (stream.disabled_ms == 0 || rec.written_ms < stream.disabled_ms);
+    }
+
     /// Whether a stream is still listed: enabled, or disabled less than
     /// retention ago.
     [[nodiscard]] static auto listed(const table_stream& s, std::uint64_t now) -> bool {

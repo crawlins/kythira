@@ -23,8 +23,9 @@
 ///   - A strong table that lists this region as its witness gets its
 ///     witness marked ACTIVE: the region's strong voters already hold the
 ///     table, since every strong group spans the three regions.
-///   - The other regions' replica and witness statuses are copied from the
-///     strong catalog into this region's descriptor (`strong_members`).
+///   - The other regions' replica and witness statuses, and the GSIs
+///     (task 27.7), are copied from the strong catalog into this region's
+///     descriptor (`strong_members`).
 ///   - A strong table whose other members this region's `UpdateTable`
 ///     marked DELETING leaves strong mode (task 27.6, `leave`): its ids'
 ///     key ranges get groups of their own (`isolate`), those groups lose
@@ -171,6 +172,27 @@ private:
             }
         }
         c.table.witnesses = shared.witnesses;
+        // The GSIs too: created, backfilled and dropped in the strong
+        // catalog (task 27.7).
+        if (here->gsis != shared.gsis) {
+            c.table.gsis = shared.gsis;
+            c.update_fields |= catalog_command::update_gsis;
+            differs = true;
+        }
+        // And the billing mode and capacity, which AWS keeps the same on
+        // every replica.
+        if (here->billing != shared.billing) {
+            c.table.billing = shared.billing;
+            c.update_fields |= catalog_command::update_billing;
+            differs = true;
+        }
+        if (here->read_capacity != shared.read_capacity ||
+            here->write_capacity != shared.write_capacity) {
+            c.table.read_capacity = shared.read_capacity;
+            c.table.write_capacity = shared.write_capacity;
+            c.update_fields |= catalog_command::update_throughput;
+            differs = true;
+        }
         if (differs) {
             c.now_ms = _backend.now_ms();
             if (_backend.catalog(c).ok()) {

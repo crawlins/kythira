@@ -133,7 +133,10 @@ struct fixture {
     /// The change log DynamoDB Streams reads (task 16).
     scratch_dir log_dir;
     kythira::record_segment_store change_log{change_log_options(log_dir.path)};
-    ddb::local_backend<> backend{engine, [this] { return clock_ms; }, &change_log};
+    /// The keys the backend's item group holds: all of `t/` unless a test
+    /// stands in for a strong host (task 27.7).
+    kythira::key_range items_range;
+    ddb::local_backend<> backend{engine, [this] { return clock_ms; }, &change_log, items_range};
     ddb::disk_guard guard{"/data", 1024,
                           [this](const std::filesystem::path&) { return free_bytes; }};
     az::static_key_authorizer auth{
@@ -152,7 +155,9 @@ struct fixture {
     /// Not run on its own: tests call `sweeper.pass()`.
     ddb::ttl_sweeper<ddb::local_backend<>> sweeper{backend};
 
-    fixture() {
+    fixture() : fixture(ddb::prefix_range("t/")) {}
+
+    explicit fixture(kythira::key_range items_of) : items_range(std::move(items_of)) {
         auth.register_service(ddb::dynamodb_static_roles());
         ddb::front_end_config cfg;
         cfg.advertised_endpoint = "localhost:8000";
