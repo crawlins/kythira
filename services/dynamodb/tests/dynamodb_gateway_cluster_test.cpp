@@ -521,17 +521,100 @@ BOOST_AUTO_TEST_CASE(a_table_made_strong_serves_all_three_regions) {
     // consistent reads fail, eventually consistent reads still answer from
     // the region's own replica.
     c.stop(1);
-    const auto lonely = c.call(
-        0, "PutItem", R"({"TableName":"accounts","Item":{"id":{"S":"no-quorum"}}})");
+    const auto lonely =
+        c.call(0, "PutItem", R"({"TableName":"accounts","Item":{"id":{"S":"no-quorum"}}})");
     BOOST_TEST(lonely.status == 500U);
-    const auto strong_read = c.call(
-        0, "GetItem",
-        R"({"TableName":"accounts","ConsistentRead":true,"Key":{"id":{"S":"after-loss"}}})");
+    const auto strong_read =
+        c.call(0, "GetItem",
+               R"({"TableName":"accounts","ConsistentRead":true,"Key":{"id":{"S":"after-loss"}}})");
     BOOST_TEST(strong_read.status == 500U);
-    const auto eventual = c.call(
-        0, "GetItem", R"({"TableName":"accounts","Key":{"id":{"S":"after-loss"}}})");
+    const auto eventual =
+        c.call(0, "GetItem", R"({"TableName":"accounts","Key":{"id":{"S":"after-loss"}}})");
     BOOST_TEST(eventual.status == 200U);
     BOOST_TEST(eventual.body.contains("Item"));
+}
+
+// Task 27.6: deleting the other two replicas makes a strong table a
+// single-region one. Its groups get a range of their own and lose the
+// other regions' voters, so it keeps serving with those regions gone.
+BOOST_AUTO_TEST_CASE(a_strong_table_left_for_one_region_survives_the_others) {
+    cluster c(true);
+    for (int i = 0; i < k_nodes; ++i) {
+        BOOST_REQUIRE(c.wait_for_log(i, "strong host ready", std::chrono::seconds(60)));
+    }
+    const auto described = [&](int i, auto&& ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto d = c.call_until_served(i, "DescribeTable", R"({"TableName":"ledger"})");
+            if (ready(d)) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return false;
+    };
+    const auto created = c.call_until_served(
+        0, "CreateTable",
+        R"({"TableName":"ledger","BillingMode":"PAY_PER_REQUEST",)"
+        R"("AttributeDefinitions":[{"AttributeName":"id","AttributeType":"S"}],)"
+        R"("KeySchema":[{"AttributeName":"id","KeyType":"HASH"}]})");
+    BOOST_REQUIRE_MESSAGE(created.status == 200U, json::serialize(created.body));
+    BOOST_REQUIRE(described(0, [](const answer& d) {
+        return d.status == 200U && d.body.at("Table").at("TableStatus").as_string() == "ACTIVE";
+    }));
+    const auto made = c.call_until_served(
+        0, "UpdateTable",
+        R"({"TableName":"ledger","MultiRegionConsistency":"STRONG","ReplicaUpdates":[)"
+        R"({"Create":{"RegionName":"us-east-2"}},{"Create":{"RegionName":"us-west-2"}}]})");
+    BOOST_REQUIRE_MESSAGE(made.status == 200U, json::serialize(made.body));
+    const auto all_active = [](const answer& d) {
+        if (d.status != 200U || !d.body.at("Table").as_object().contains("Replicas")) {
+            return false;
+        }
+        const auto& replicas = d.body.at("Table").at("Replicas").as_array();
+        return replicas.size() == 2U &&
+               std::all_of(replicas.begin(), replicas.end(), [](const json::value& r) {
+                   return r.at("ReplicaStatus").as_string() == "ACTIVE";
+               });
+    };
+    for (int i = 0; i < k_nodes; ++i) {
+        BOOST_REQUIRE(described(i, all_active));
+    }
+    const auto written = c.call_until_served(
+        1, "PutItem", R"({"TableName":"ledger","Item":{"id":{"S":"while-strong"}}})");
+    BOOST_REQUIRE_MESSAGE(written.status == 200U, json::serialize(written.body));
+
+    const auto left = c.call_until_served(
+        0, "UpdateTable",
+        R"({"TableName":"ledger","ReplicaUpdates":[{"Delete":{"RegionName":"us-east-2"}},)"
+        R"({"Delete":{"RegionName":"us-west-2"}}]})");
+    BOOST_REQUIRE_MESSAGE(left.status == 200U, json::serialize(left.body));
+    BOOST_TEST(described(0, [](const answer& d) {
+        return d.status == 200U && !d.body.at("Table").as_object().contains("Replicas") &&
+               !d.body.at("Table").as_object().contains("MultiRegionConsistency");
+    }));
+    for (int i = 1; i < k_nodes; ++i) {
+        BOOST_TEST_INFO("region " << cluster::k_regions.at(i));
+        BOOST_TEST(
+            described(i, [](const answer& d) { return d.type() == "ResourceNotFoundException"; }));
+    }
+
+    // With both other regions gone the table still takes writes and
+    // strongly consistent reads: its groups' only voters are here.
+    c.stop(1);
+    c.stop(2);
+    const auto put =
+        c.call_until_served(0, "PutItem", R"({"TableName":"ledger","Item":{"id":{"S":"alone"}}})");
+    BOOST_REQUIRE_MESSAGE(put.status == 200U, json::serialize(put.body));
+    for (const char* id : {"while-strong", "alone"}) {
+        const auto got = c.call_until_served(
+            0, "GetItem",
+            std::string(R"({"TableName":"ledger","ConsistentRead":true,"Key":{"id":{"S":")") + id +
+                R"("}}})");
+        BOOST_TEST_INFO(id);
+        BOOST_TEST(got.status == 200U);
+        BOOST_TEST(got.body.contains("Item"));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(requests_on_every_node_reach_one_table) {

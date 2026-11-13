@@ -25,6 +25,15 @@
 ///     table, since every strong group spans the three regions.
 ///   - The other regions' replica and witness statuses are copied from the
 ///     strong catalog into this region's descriptor (`strong_members`).
+///   - A strong table whose other members this region's `UpdateTable`
+///     marked DELETING leaves strong mode (task 27.6, `leave`): its ids'
+///     key ranges get groups of their own (`isolate`), those groups lose
+///     every voter outside this region (`shrink`), and both catalogs make
+///     it a single-region table (`leave_strong`).
+///   - A table that left strong mode is forgotten by the regions removed
+///     from it (`forget_strong`), which also destroy their replicas of its
+///     groups; once the remaining region deletes it, the strong catalog's
+///     entry goes too.
 ///   - A table made strong here more than `k_salvage_delay_ms` ago has its
 ///     old key space salvaged: an item a request still in flight wrote
 ///     under the old table id is copied into the strong table (unless the
@@ -37,12 +46,15 @@
 #include <kythira/dynamodb/item_state_machine.hpp>
 #include <kythira/dynamodb/key_layout.hpp>
 
+#include <raft/composite_node_id.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -53,6 +65,9 @@ public:
     explicit strong_table_worker(Backend& backend) : _backend(backend) {}
 
     void set_region(std::string region) { _region = std::move(region); }
+    /// This region's strong voters, as node id text: the voters a table
+    /// leaving strong mode keeps.
+    void set_region_voters(std::vector<std::string> ids) { _voters = std::move(ids); }
     void set_log(std::function<void(std::string_view)> log) { _log = std::move(log); }
 
     /// One pass; returns the changes it made.
@@ -64,12 +79,19 @@ public:
         auto& strong = _backend.strong();
         for (const auto& name : strong.list_tables("", SIZE_MAX)) {
             const auto shared = strong.describe(name);
-            if (!shared || !shared->strong || shared->status == table_status::deleting) {
+            if (!shared || shared->status == table_status::deleting) {
+                continue;
+            }
+            if (!shared->strong) {
+                changed += left(*shared);
                 continue;
             }
             changed += witness(*shared);
             if (shared->replica_in(_region) != nullptr) {
                 changed += replica(*shared);
+                if (leaving(*shared)) {
+                    changed += leave(*shared);
+                }
             }
         }
         const auto now = _backend.now_ms();
@@ -158,6 +180,130 @@ private:
         return changed;
     }
 
+    /// Whether every member but this region is DELETING: this region's
+    /// `UpdateTable` asked for the table to leave strong mode.
+    [[nodiscard]] auto leaving(const table_descriptor& shared) const -> bool {
+        bool others = false;
+        for (const auto& r : shared.replicas) {
+            if (r.region == _region) {
+                continue;
+            }
+            if (r.status != replica_status::deleting) {
+                return false;
+            }
+            others = true;
+        }
+        for (const auto& w : shared.witnesses) {
+            if (w.status != witness_status::deleting) {
+                return false;
+            }
+            others = true;
+        }
+        return others;
+    }
+
+    /// The table's ids: its own and its indexes'.
+    [[nodiscard]] static auto ids_of(const table_descriptor& d) -> std::vector<std::uint64_t> {
+        std::vector<std::uint64_t> out{d.table_id};
+        for (const auto& g : d.gsis) {
+            out.push_back(g.index_id);
+        }
+        return out;
+    }
+
+    /// Removes the other regions from the table's groups, then makes it a
+    /// single-region table in both catalogs.
+    auto leave(const table_descriptor& shared) -> std::size_t {
+        const auto here = _backend.describe(shared.name);
+        if (!here || !here->strong || here->table_id != shared.table_id) {
+            return 0;
+        }
+        auto& strong = _backend.strong();
+        using strong_type = std::remove_reference_t<decltype(strong)>;
+        if constexpr (requires(strong_type& b) {
+                          b.isolate(std::uint64_t{});
+                          typename strong_type::node_id_type;
+                      }) {
+            using node_id_type = typename strong_type::node_id_type;
+            std::vector<node_id_type> keep;
+            for (const auto& text : _voters) {
+                if (auto id = kythira::node_id_traits<node_id_type>::from_text(text)) {
+                    keep.push_back(std::move(*id));
+                }
+            }
+            if (keep.empty()) {
+                if (_log) {
+                    _log("strong tables: " + shared.name +
+                         " cannot leave strong mode: this region's strong voters are unknown");
+                }
+                return 0;
+            }
+            for (const auto id : ids_of(*here)) {
+                strong.isolate(id);
+                strong.shrink(id, keep);
+            }
+        }
+        catalog_command c;
+        c.op = catalog_command::kind::leave_strong;
+        c.table.name = shared.name;
+        c.table.table_id = shared.table_id;
+        c.table.schema = shared.schema;
+        c.table.region = _region;
+        c.now_ms = _backend.now_ms();
+        if (const auto r = strong.catalog(c); !r.ok()) {
+            if (_log) {
+                _log(
+                    "strong tables: " + shared.name +
+                    " left its regions' groups but the strong catalog refused: " + r.error_message);
+            }
+            return 1;
+        }
+        (void)_backend.catalog(c);
+        if (_log) {
+            _log("strong tables: " + shared.name + " is a single-region table in " + _region);
+        }
+        return 1;
+    }
+
+    /// A table that left strong mode: a removed region forgets it and
+    /// drops its replicas; the remaining region, once it deleted the
+    /// table, deletes the strong catalog's entry.
+    auto left(const table_descriptor& shared) -> std::size_t {
+        const auto here = _backend.describe(shared.name);
+        const bool mine =
+            here && here->table_id == shared.table_id && here->status != table_status::deleting;
+        if (shared.replica_in(_region) != nullptr) {
+            if (mine) {
+                return 0;
+            }
+            catalog_command c;
+            c.op = catalog_command::kind::delete_table;
+            c.table.name = shared.name;
+            c.now_ms = _backend.now_ms();
+            return _backend.strong().catalog(c).ok() ? 1 : 0;
+        }
+        std::size_t changed = 0;
+        if (mine) {
+            catalog_command c;
+            c.op = catalog_command::kind::forget_strong;
+            c.table.name = shared.name;
+            c.table.table_id = shared.table_id;
+            c.table.schema = shared.schema;
+            c.now_ms = _backend.now_ms();
+            if (_backend.catalog(c).ok()) {
+                ++changed;
+            }
+        }
+        auto& strong = _backend.strong();
+        using strong_type = std::remove_reference_t<decltype(strong)>;
+        if constexpr (requires(strong_type& b) { b.drop_replicas(std::uint64_t{}, true); }) {
+            for (const auto id : ids_of(shared)) {
+                changed += strong.drop_replicas(id, true);
+            }
+        }
+        return changed;
+    }
+
     /// Sets this region's replica status in the strong catalog.
     auto report(const table_descriptor& shared, replica_status status, std::string failure)
         -> std::size_t {
@@ -232,6 +378,7 @@ private:
 
     Backend& _backend;
     std::string _region;
+    std::vector<std::string> _voters;
     std::function<void(std::string_view)> _log;
 };
 
