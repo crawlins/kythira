@@ -77,11 +77,37 @@ if(TARGET kinesis_gateway_node)
                 $<TARGET_FILE:kinesis_gateway_node> --check-config)
     set_tests_properties(kinesis_gateway_node_config_needs_tls PROPERTIES
         PASS_REGULAR_EXPRESSION "KINESIS_TLS_CERT and KINESIS_TLS_KEY are required")
+    # KINESIS_AUTH (DynamoDB spec task 28): iam takes no keys file, both
+    # and static need one, and anything else is named.
+    add_test(NAME kinesis_gateway_node_config_auth_iam
+        COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env} KINESIS_AUTH=iam
+                KINESIS_STATIC_KEYS_FILE= $<TARGET_FILE:kinesis_gateway_node> --check-config)
+    set_tests_properties(kinesis_gateway_node_config_auth_iam PROPERTIES
+        PASS_REGULAR_EXPRESSION "auth=iam\nstatic_keys_file=\n")
+    add_test(NAME kinesis_gateway_node_config_auth_iam_no_keys
+        COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env} KINESIS_AUTH=iam
+                $<TARGET_FILE:kinesis_gateway_node> --check-config)
+    set_tests_properties(kinesis_gateway_node_config_auth_iam_no_keys PROPERTIES
+        PASS_REGULAR_EXPRESSION "KINESIS_AUTH=iam takes no KINESIS_STATIC_KEYS_FILE")
+    add_test(NAME kinesis_gateway_node_config_auth_both_needs_keys
+        COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env} KINESIS_AUTH=both
+                KINESIS_STATIC_KEYS_FILE= $<TARGET_FILE:kinesis_gateway_node> --check-config)
+    set_tests_properties(kinesis_gateway_node_config_auth_both_needs_keys PROPERTIES
+        PASS_REGULAR_EXPRESSION "KINESIS_STATIC_KEYS_FILE")
+    add_test(NAME kinesis_gateway_node_config_auth_unknown
+        COMMAND "${CMAKE_COMMAND}" -E env ${_kinesis_env} KINESIS_AUTH=password
+                $<TARGET_FILE:kinesis_gateway_node> --check-config)
+    set_tests_properties(kinesis_gateway_node_config_auth_unknown PROPERTIES
+        PASS_REGULAR_EXPRESSION "KINESIS_AUTH: static, iam or both, not 'password'")
     set_tests_properties(
         kinesis_gateway_node_self_test
         kinesis_gateway_node_config
         kinesis_gateway_node_config_needs_secret
         kinesis_gateway_node_config_needs_tls
+        kinesis_gateway_node_config_auth_iam
+        kinesis_gateway_node_config_auth_iam_no_keys
+        kinesis_gateway_node_config_auth_both_needs_keys
+        kinesis_gateway_node_config_auth_unknown
         PROPERTIES LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
 endif()
 

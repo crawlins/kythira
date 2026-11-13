@@ -98,6 +98,17 @@ the previous one kept for at least five minutes). Off a trusted network, give ea
 plaintext, as in `redis_gateway_node`, so `KYTHIRA_ALLOW_PLAINTEXT_RAFT` is
 required off loopback.
 
+`KINESIS_AUTH` picks who signs requests in, as `KYTHIRA_DYNAMODB_AUTH`
+does for DynamoDB (`doc/dynamodb.md`). `static` (the default) uses the key
+file. `iam` authenticates and authorizes against Kythira IAM through a
+read replica the daemon embeds (the `KYTHIRA_IAM_*` settings, as for
+`redis_gateway_node`), with the Kinesis actions and the Lease API's
+`dynamodb` actions on `table/<application>` registered; it takes no key
+file. `both` sends the key file's keys to their roles and any other key to
+IAM, and an access key id both know is refused, at start or per request.
+`iam` and `both` need `CONFIG_KINESIS_GATEWAY_IAM` (on whenever
+`CONFIG_IAM` is).
+
 Retention and tiering (`doc/retention.md`) need no setup: every node runs a
 maintenance pass each `KINESIS_MAINTENANCE_INTERVAL_MS` (a minute), and a
 shard's leader trims what is past the stream's retention period. Writes

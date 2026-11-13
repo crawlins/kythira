@@ -73,6 +73,24 @@ namespace kythira::kinesis {
     return {"dynamodb", {"GetItem", "Scan"}, {"PutItem", "UpdateItem", "DeleteItem"}};
 }
 
+/// The `dynamodb` actions lease requests authorize on, for an IAM
+/// registry: a gateway on Kythira IAM registers this next to
+/// `kinesis_actions()`, so a KCL worker's policy grants leases as it would
+/// grant its lease table on AWS. Resource formats and the tag condition key
+/// are AWS's for these actions.
+[[nodiscard]] inline auto lease_actions() -> aws_auth::aws_action_table {
+    const std::vector<std::string> table{
+        "arn:${Partition}:dynamodb:${Region}:${Account}:table/${TableName}"};
+    const std::vector<std::string> tag{"aws:ResourceTag/${TagKey}"};
+    aws_auth::aws_action_table t;
+    t.service_prefix = "dynamodb";
+    for (const char* name :
+         {"DeleteItem", "DeleteTable", "GetItem", "PutItem", "Scan", "UpdateItem"}) {
+        t.actions.push_back({name, table, tag});
+    }
+    return t;
+}
+
 namespace lease_detail {
 
 [[nodiscard]] inline auto percent_decode(std::string_view s) -> std::optional<std::string> {

@@ -42,6 +42,31 @@ set_target_properties(kinesis_gateway_node PROPERTIES
     JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
+# IAM authentication (DynamoDB spec task 28, KINESIS_AUTH=iam|both): the
+# composition root wires in the IAM module's embedded replica and
+# authorizer, as redis_gateway_node and dynamodb_gateway_node do. Without
+# CONFIG_KINESIS_GATEWAY_IAM the daemon has no IAM code, documents no
+# KYTHIRA_IAM_* variables, and refuses iam and both at start.
+set(_KINESIS_GATEWAY_IAM OFF)
+if(KCONFIG_KINESIS_GATEWAY_IAM AND KYTHIRA_BUILD_IAM AND TARGET certificate_authority)
+    set(_KINESIS_GATEWAY_IAM ON)
+    target_sources(kinesis_gateway_node PRIVATE kinesis_gateway_node/iam_auth.cpp)
+    target_compile_definitions(kinesis_gateway_node PRIVATE KYTHIRA_KINESIS_GATEWAY_IAM)
+    # kythira_iam is defined by services/iam/, which the top level may enter
+    # after this module; CMake resolves the name when it generates.
+    target_link_libraries(kinesis_gateway_node PRIVATE kythira_iam certificate_authority)
+endif()
+add_test(NAME kinesis_gateway_node_iam_switch COMMAND kinesis_gateway_node --help)
+if(_KINESIS_GATEWAY_IAM)
+    set_tests_properties(kinesis_gateway_node_iam_switch PROPERTIES
+        PASS_REGULAR_EXPRESSION "KYTHIRA_IAM_VOTERS")
+else()
+    set_tests_properties(kinesis_gateway_node_iam_switch PROPERTIES
+        FAIL_REGULAR_EXPRESSION "KYTHIRA_IAM_")
+endif()
+set_tests_properties(kinesis_gateway_node_iam_switch PROPERTIES
+    LABELS "unit;kinesis;kinesis-module" TIMEOUT 30)
+
 # Tiering to S3 (task 10): only with the AWS SDK's s3 component, compiled in
 # tier_s3.cpp alone so no other unit parses an SDK header. Without it the
 # daemon refuses KINESIS_TIER_S3_BUCKET at startup and keeps every segment

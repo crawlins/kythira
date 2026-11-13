@@ -25,6 +25,7 @@
 
 #include <chrono>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -386,6 +387,30 @@ BOOST_AUTO_TEST_CASE(dynamodb_actions_on_the_application_table_authorize) {
     const auto unsigned_r = f.api->handle(request("GET", path));
     BOOST_TEST(unsigned_r.status == 400U);
     BOOST_TEST(type_of(unsigned_r) != "ResourceNotFoundException");
+}
+
+BOOST_AUTO_TEST_CASE(iam_knows_every_action_the_lease_api_authorizes) {
+    // A gateway on Kythira IAM registers lease_actions(): each action the
+    // Lease API asks about must be in it, on the application's table ARN,
+    // or IAM refuses it as undeclared.
+    const auto t = kin::lease_actions();
+    BOOST_TEST(t.service_prefix == "dynamodb");
+    std::set<std::string> names;
+    for (const auto& a : t.actions) {
+        names.insert(a.name);
+        BOOST_TEST(a.resource_templates ==
+                   std::vector<std::string>{
+                       "arn:${Partition}:dynamodb:${Region}:${Account}:table/${TableName}"});
+    }
+    BOOST_TEST(names == (std::set<std::string>{"DeleteItem", "DeleteTable", "GetItem", "PutItem",
+                                               "Scan", "UpdateItem"}));
+    // The static roles grant from the same list (DeleteTable is admin's).
+    const auto roles = kin::lease_static_roles();
+    for (const auto* list : {&roles.read_only, &roles.read_write}) {
+        for (const auto& action : *list) {
+            BOOST_TEST(names.contains(action), action);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_CASE(malformed_requests_are_refused) {

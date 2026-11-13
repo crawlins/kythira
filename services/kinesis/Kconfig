@@ -22,3 +22,16 @@ config KINESIS
 	  SigV4, segment digests and iterator tokens. Off by default like
 	  every new module (services/README.md). See
 	  .kiro/specs/kinesis-compatible-streams/.
+
+config KINESIS_GATEWAY_IAM
+	bool "IAM authentication in kinesis_gateway_node"
+	default y
+	depends on KINESIS && IAM
+	help
+	  Builds kinesis_gateway_node with an embedded read replica of the
+	  IAM Raft group and IAM's authorizer, so KINESIS_AUTH=iam or both
+	  authenticates and authorizes requests against Kythira IAM with no
+	  network call. Configured by the KYTHIRA_IAM_* variables. The
+	  Kinesis module itself never includes IAM: only the daemon's
+	  composition root does. See .kiro/specs/dynamodb-compatible-api/
+	  task 28.
