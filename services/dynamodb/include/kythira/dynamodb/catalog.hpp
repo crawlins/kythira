@@ -501,6 +501,11 @@ struct catalog_command {
         /// `table.replicas` names its region and cursors, which move
         /// forward; nothing else changes.
         replica_progress = 17,
+        /// The strong catalog's first entry (task 27): the next table id
+        /// becomes at least `table.table_id`, so the strong host's ids start
+        /// at `k_strong_table_id_base`. Proposed by every strong voter at
+        /// start; only the first changes anything.
+        seed_ids = 18,
     };
 
     /// Which settings an `update_table` changes.
@@ -589,9 +594,11 @@ namespace catalog_detail {
 /// `update_vectors` (task 26), only for a table that has a vector index.
 /// 10 added `region` and `replicas` after `vectors`, with `set_replicas`
 /// and `replica_progress` (task 22), only for a global table.
+/// Commands only: 11 added `seed_ids` (task 27), which the descriptor
+/// does not change.
 inline constexpr std::uint8_t k_descriptor_format_version = 10;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 10;
+inline constexpr std::uint8_t k_command_format_version = 11;
 inline constexpr std::uint8_t k_result_format_version = 10;
 
 /// The version a form carrying `d` is written as.
@@ -1050,6 +1057,9 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // At least the version that brought the command's kind.
     auto version = catalog_detail::version_for(c.table);
     switch (c.op) {
+        case catalog_command::kind::seed_ids:
+            version = std::max<std::uint8_t>(version, 11);
+            break;
         case catalog_command::kind::set_replicas:
         case catalog_command::kind::replica_progress:
             version = std::max<std::uint8_t>(version, 10);
@@ -1107,13 +1117,14 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // set_ttl came in version 3, the destination commands in 5,
     // restore_done in 6, the point-in-time recovery commands in 7, the
     // resource policy and Contributor Insights commands in 8.
-    const std::uint8_t last_op = version >= 10  ? 17
-                                 : version >= 8 ? 15
-                                 : version >= 7 ? 13
-                                 : version >= 6 ? 11
-                                 : version >= 5 ? 10
-                                 : version >= 3 ? 8
-                                                : 7;
+    const std::uint8_t last_op = version >= 11   ? 18
+                                 : version >= 10 ? 17
+                                 : version >= 8  ? 15
+                                 : version >= 7  ? 13
+                                 : version >= 6  ? 11
+                                 : version >= 5  ? 10
+                                 : version >= 3  ? 8
+                                                 : 7;
     if (version == 0 || op < 1 || op > last_op) {
         return std::nullopt;
     }
@@ -1297,6 +1308,12 @@ public:
                 break;
             case catalog_command::kind::replica_progress:
                 result = replica_progress(*c, batch);
+                break;
+            case catalog_command::kind::seed_ids:
+                if (next_table_id() < c->table.table_id) {
+                    batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
+                              catalog_detail::u64_string(c->table.table_id));
+                }
                 break;
         }
         const auto out = encode_catalog_result(result);

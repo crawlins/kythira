@@ -54,7 +54,7 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/raft_backend.hpp` | `raft_backend`: the `dynamo_backend` over `multi_raft`, hopping to each group's leader, read barriers, range reads across groups, and the catalog leader's follow-on work | 7 |
 | `tests/dynamodb_raft_backend_test.cpp` | three in-process nodes: requests on any node, a split under range reads, losing an item group's leader, delete jobs | 7 |
 | `include/kythira/dynamodb/forward_link.hpp` | how one gateway hands a `raft_backend` op to the group leader's gateway: an HTTP(S) POST to `/_kythira/dynamodb/forward` with a time-stamped HMAC-SHA256 over the body | 7 |
-| `cmd/dynamodb_gateway_node/run_cluster.hpp` | the daemon as a cluster node: the `multi_raft` host on core's Beast transport, the bootstrap groups, `raft_backend` and the gateway, and their shutdown order | 7 |
+| `cmd/dynamodb_gateway_node/run_cluster.hpp` | the daemon as a cluster node: each `multi_raft` host (`host_runtime`) on core's Beast transport, the bootstrap groups, `raft_backend` and the gateway, the strong host when configured, and their shutdown order | 7, 27 |
 | `tests/dynamodb_gateway_cluster_test.cpp` | three `run_cluster()` nodes in one process: requests on every node, consistent reads across nodes, conditions, Query, Scan and DeleteTable over the forward link | 7 |
 | `include/kythira/dynamodb/api_common.hpp` | helpers the data-plane handlers share: request members, usable tables, simple capacity units | 7, 8 |
 | `include/kythira/dynamodb/query_api.hpp` | `Query` and `Scan`: key-condition ranges, hash-sliced segments, 1 MB pages, cursors | 8 |
@@ -86,9 +86,11 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/vector_search.hpp` | `SearchVectors`, each node's graphs fed by the change log, and the worker that finishes index creates and deletes | 26 |
 | `tests/dynamodb_vector_test.cpp` | Vector index definitions, updates and the worker, scores, partitions, filters, projections, graphs that follow writes, HNSW recall | 26 |
 | `include/kythira/dynamodb/global_tables.hpp` | Global tables: the peer API's receiver, the replicator, peer links over HTTP | 22 |
+| `include/kythira/dynamodb/routed_backend.hpp` | Multi-region strong consistency: the backend that sends each call to the cluster's host or the strong host, by table id | 27 |
 | `tests/dynamodb_global_table_test.cpp` | Replicas in linked clusters: backfill, both directions, clock skew, a three-region mesh, deletion, refusals | 22 |
 | `cmd/dynamodb_gateway_node/group_ids.hpp`, `group_layout.hpp`, `durable_file.hpp` | Each voter's own range of group ids for splits, and the saved group layout a node restarts from | 24 |
 | `tools/chaos/` | The chaos scenario: SIGKILLs on a RocksDB cluster during splits and GSI propagation, with streams on (`run_chaos.sh`) | 24 |
+| `tests/dynamodb_strong_test.cpp` | The strong catalog's ids from 2^62 and routing between the cluster's host and the strong host | 27 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
