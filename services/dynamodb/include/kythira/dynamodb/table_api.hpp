@@ -830,6 +830,9 @@ public:
         c.op = catalog_command::kind::create_table;
         c.table = std::move(*d);
         c.now_ms = _backend.now_ms();
+        if (auto e = within_account_limit(ctx, c.table)) {
+            return *e;
+        }
         const auto r = _backend.catalog(c);
         if (!r.ok()) {
             return table_api_detail::error_of(r);
@@ -1311,11 +1314,68 @@ public:
                 c.table.gsis = mirrored->gsis;
             }
         }
+        if (auto e = within_account_limit(ctx, c.table)) {
+            return *e;
+        }
         const auto r = _backend.catalog(c);
         if (!r.ok()) {
             return error_of(r);
         }
         return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
+    /// Provisioned read and write units a table holds, its GSIs included;
+    /// none for an on-demand table.
+    static auto provisioned_units(const table_descriptor& d)
+        -> std::pair<std::uint64_t, std::uint64_t> {
+        if (d.billing != billing_mode::provisioned) {
+            return {0, 0};
+        }
+        std::pair<std::uint64_t, std::uint64_t> u{d.read_capacity, d.write_capacity};
+        for (const auto& g : d.gsis) {
+            if (g.status != index_status::deleting) {
+                u.first += g.read_capacity;
+                u.second += g.write_capacity;
+            }
+        }
+        return u;
+    }
+
+    /// Refuses a table whose provisioned capacity would take its account
+    /// over the account's limit (task 28; AWS's per-account quota, which an
+    /// operator raises with `KYTHIRA_DYNAMODB_ACCOUNT_LIMITS`). `proposed`
+    /// is the table as it would be; its current form is left out of the sum.
+    /// Checked here rather than in the catalog, so two concurrent requests
+    /// can both pass, as AWS's own quota is not transactional either.
+    auto within_account_limit(const call_context& ctx, const table_descriptor& proposed)
+        -> std::optional<aws_json::error> {
+        auto total = provisioned_units(proposed);
+        if (total.first == 0 && total.second == 0) {
+            return std::nullopt;
+        }
+        for (const auto& n : _backend.list_tables("", SIZE_MAX)) {
+            if (n == proposed.name || !ctx.owns(n)) {
+                continue;
+            }
+            if (const auto d = _backend.describe(n); d && d->status != table_status::deleting) {
+                const auto u = provisioned_units(*d);
+                total.first += u.first;
+                total.second += u.second;
+            }
+        }
+        const auto [read_max, write_max] = ctx.account_limit();
+        if (total.first <= read_max && total.second <= write_max) {
+            return std::nullopt;
+        }
+        const bool read = total.first > read_max;
+        aws_json::error e;
+        e.status = 400;
+        e.type = dynamodb_error_style().service_prefix + "LimitExceededException";
+        e.message =
+            std::string("Subscriber limit exceeded: the account's tables would provision ") +
+            std::to_string(read ? total.first : total.second) + (read ? " read" : " write") +
+            " capacity units, over its limit of " + std::to_string(read ? read_max : write_max);
+        return e;
     }
 
     /// The shared settings `fields` of `c` (GSIs, billing mode, capacity),
@@ -1582,8 +1642,8 @@ public:
 
     auto describe_limits(call_context& ctx, boost::json::object& /*in*/) -> result {
         return boost::json::object{
-            {"AccountMaxReadCapacityUnits", k_account_max_capacity_units},
-            {"AccountMaxWriteCapacityUnits", k_account_max_capacity_units},
+            {"AccountMaxReadCapacityUnits", ctx.account_limit().first},
+            {"AccountMaxWriteCapacityUnits", ctx.account_limit().second},
             {"TableMaxReadCapacityUnits", k_table_max_capacity_units},
             {"TableMaxWriteCapacityUnits", k_table_max_capacity_units},
         };

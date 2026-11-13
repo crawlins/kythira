@@ -406,6 +406,69 @@ BOOST_AUTO_TEST_CASE(each_account_has_its_own_tables_once_namespaces_are_on) {
     BOOST_TEST(r.result_int() == 503U);
 }
 
+namespace {
+
+auto provisioned(std::string_view name, int read, int write) -> std::string {
+    return R"({"TableName":")" + std::string(name) +
+           R"(","AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"}],)"
+           R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"}],)"
+           R"("ProvisionedThroughput":{"ReadCapacityUnits":)" +
+           std::to_string(read) + R"(,"WriteCapacityUnits":)" + std::to_string(write) + "}}";
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(each_account_has_a_capacity_limit_the_operator_can_raise) {
+    auto settings = k_two_accounts;
+    settings["KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT"] = "100:100";
+    settings["KYTHIRA_DYNAMODB_ACCOUNT_LIMITS"] = "444455556666=500:400";
+    served s(settings);
+
+    auto r = s.call("DescribeLimits", "{}");
+    BOOST_TEST(body_of(r).at("AccountMaxReadCapacityUnits").as_int64() == 100);
+    r = s.call("DescribeLimits", "{}", "AKIDOTHER");
+    BOOST_TEST(body_of(r).at("AccountMaxReadCapacityUnits").as_int64() == 500);
+    BOOST_TEST(body_of(r).at("AccountMaxWriteCapacityUnits").as_int64() == 400);
+
+    // The owner's tables add up to at most 100 each way; on-demand tables
+    // count for nothing.
+    BOOST_REQUIRE(s.call("CreateTable", provisioned("first", 60, 10)).result_int() == 200U);
+    r = s.call("CreateTable", provisioned("second", 50, 10));
+    BOOST_TEST(type_of(r) == "LimitExceededException");
+    BOOST_TEST(std::string(body_of(r).at("message").as_string()).find("110 read") !=
+               std::string::npos);
+    BOOST_TEST(s.call("CreateTable", provisioned("second", 40, 10)).result_int() == 200U);
+    BOOST_TEST(s.call("CreateTable", std::string(k_orders)).result_int() == 200U);
+    r = s.call("UpdateTable", R"({"TableName":"first","ProvisionedThroughput":)"
+                              R"({"ReadCapacityUnits":61,"WriteCapacityUnits":10}})");
+    BOOST_TEST(type_of(r) == "LimitExceededException");
+    r = s.call("UpdateTable", R"({"TableName":"first","ProvisionedThroughput":)"
+                              R"({"ReadCapacityUnits":50,"WriteCapacityUnits":10}})");
+    BOOST_TEST(r.result_int() == 200U);
+
+    // The other account's tables count against its own, raised limit.
+    BOOST_TEST(s.call("CreateTable", provisioned("big", 450, 400), "AKIDOTHER").result_int() ==
+               200U);
+    r = s.call("CreateTable", provisioned("more", 1, 1), "AKIDOTHER");
+    BOOST_TEST(type_of(r) == "LimitExceededException");
+    BOOST_TEST(std::string(body_of(r).at("message").as_string()).find("401 write") !=
+               std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(account_limit_settings_are_checked) {
+    auto vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT"] = "100";
+    BOOST_TEST(config_error(vars) ==
+               "KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT: expected read:write units, got '100'");
+    vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_ACCOUNT_LIMITS"] = "111122223333=10:10, 4444=1:1";
+    BOOST_TEST(config_error(vars) ==
+               "KYTHIRA_DYNAMODB_ACCOUNT_LIMITS: expected account=read:write, got '4444=1:1'");
+    vars["KYTHIRA_DYNAMODB_ACCOUNT_LIMITS"] = "111122223333=10:10";
+    const auto c = std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars)));
+    BOOST_TEST(c.front.account_limits.at("111122223333").second == 10U);
+}
+
 BOOST_AUTO_TEST_CASE(namespaces_setting_is_on_or_off) {
     auto vars = minimal_env();
     BOOST_TEST(
