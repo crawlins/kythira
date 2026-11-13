@@ -450,9 +450,9 @@ public:
 
     [[nodiscard]] auto registry() -> vector_registry<Backend>& { return _registry; }
 
-    auto search(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto search(call_context& ctx, boost::json::object& in) -> result {
         namespace vs = vector_search_detail;
-        auto table = api_detail::usable_table(_backend, in.at("TableName").as_string());
+        auto table = api_detail::usable_table(_backend, ctx, in.at("TableName").as_string());
         if (!table) {
             return table.error();
         }

@@ -671,7 +671,7 @@ private:
     auto send(const table_descriptor& d, const std::string& region, boost::json::array writes)
         -> aws_json::result<boost::json::object> {
         return call(region, boost::json::object{{"Action", "Apply"},
-                                                {"TableName", d.name},
+                                                {"TableName", call_context::bare_name(d.name)},
                                                 {"SourceRegion", d.region},
                                                 {"Writes", std::move(writes)}});
     }
@@ -727,7 +727,7 @@ private:
         const auto created = call(
             r.region,
             boost::json::object{{"Action", "CreateReplica"},
-                                {"TableName", d.name},
+                                {"TableName", call_context::bare_name(d.name)},
                                 {"SourceRegion", d.region},
                                 {"Descriptor", detail::base64_of(encode_table_descriptor(d))}});
         if (!created) {
@@ -792,10 +792,11 @@ private:
             if (other.region == r.region || other.status != replica_status::active) {
                 continue;
             }
-            const auto told = call(other.region, boost::json::object{{"Action", "SetReplicas"},
-                                                                     {"TableName", d.name},
-                                                                     {"SourceRegion", d.region},
-                                                                     {"Add", r.region}});
+            const auto told = call(
+                other.region, boost::json::object{{"Action", "SetReplicas"},
+                                                  {"TableName", call_context::bare_name(d.name)},
+                                                  {"SourceRegion", d.region},
+                                                  {"Add", r.region}});
             if (!told && !global_tables_detail::not_found(told.error())) {
                 if (!global_tables_detail::retryable(told.error())) {
                     say(d.name + ": telling " + other.region + " of " + r.region + ": " +
@@ -816,8 +817,9 @@ private:
     /// DELETING: delete the peer's table, tell the others, drop it.
     auto remove(const table_descriptor& d, const table_replica& r, bool linked) -> bool {
         if (linked) {
-            const auto gone = call(
-                r.region, boost::json::object{{"Action", "DeleteReplica"}, {"TableName", d.name}});
+            const auto gone =
+                call(r.region, boost::json::object{{"Action", "DeleteReplica"},
+                                                   {"TableName", call_context::bare_name(d.name)}});
             if (!gone && !global_tables_detail::not_found(gone.error())) {
                 say(d.name + ": deleting the replica in " + r.region + ": " +
                     gone.error().message.value_or(gone.error().type));
@@ -829,10 +831,11 @@ private:
                 _peers == nullptr || !_peers->has(other.region)) {
                 continue;
             }
-            const auto told = call(other.region, boost::json::object{{"Action", "SetReplicas"},
-                                                                     {"TableName", d.name},
-                                                                     {"SourceRegion", d.region},
-                                                                     {"Remove", r.region}});
+            const auto told = call(
+                other.region, boost::json::object{{"Action", "SetReplicas"},
+                                                  {"TableName", call_context::bare_name(d.name)},
+                                                  {"SourceRegion", d.region},
+                                                  {"Remove", r.region}});
             if (!told && !global_tables_detail::not_found(told.error())) {
                 return false;
             }

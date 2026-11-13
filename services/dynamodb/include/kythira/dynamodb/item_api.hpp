@@ -83,7 +83,7 @@ public:
     }
 
     auto get_item(call_context& ctx, boost::json::object& in) -> result {
-        auto table = usable_table(in);
+        auto table = usable_table(ctx, in);
         if (!table) {
             return table.error();
         }
@@ -115,7 +115,7 @@ public:
     }
 
     auto put_item(call_context& ctx, boost::json::object& in) -> result {
-        auto table = usable_table(in);
+        auto table = usable_table(ctx, in);
         if (!table) {
             return table.error();
         }
@@ -150,7 +150,7 @@ public:
     }
 
     auto update_item(call_context& ctx, boost::json::object& in) -> result {
-        auto table = usable_table(in);
+        auto table = usable_table(ctx, in);
         if (!table) {
             return table.error();
         }
@@ -173,7 +173,7 @@ public:
     }
 
     auto delete_item(call_context& ctx, boost::json::object& in) -> result {
-        auto table = usable_table(in);
+        auto table = usable_table(ctx, in);
         if (!table) {
             return table.error();
         }
@@ -203,8 +203,9 @@ private:
         return api_detail::text(in, member);
     }
 
-    auto usable_table(const boost::json::object& in) -> aws_json::result<table_descriptor> {
-        return api_detail::usable_table(_backend, in.at("TableName").as_string());
+    auto usable_table(const call_context& ctx, const boost::json::object& in)
+        -> aws_json::result<table_descriptor> {
+        return api_detail::usable_table(_backend, ctx, in.at("TableName").as_string());
     }
 
     static auto compile(std::string_view op, const boost::json::object& in,

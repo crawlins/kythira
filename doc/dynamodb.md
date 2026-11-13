@@ -80,6 +80,7 @@ from the environment; `dynamodb_gateway_node --help` lists them all.
 | `KYTHIRA_DYNAMODB_TLS_CERT`, `_TLS_KEY` | TLS for the API (port 8000 by default) |
 | `KYTHIRA_DYNAMODB_STATIC_KEYS_FILE` | access keys, `id:secret:account:name:role` per line, when IAM is not used |
 | `KYTHIRA_DYNAMODB_ACCOUNT_ID` | the account that owns the tables; defaults to the keys' account, and is required when the keys name more than one |
+| `KYTHIRA_DYNAMODB_NAMESPACES` | `on` gives each account its own tables, and the tables made before belong to `KYTHIRA_DYNAMODB_ACCOUNT_ID`; `off` (default). Cannot be turned off once on |
 | `KYTHIRA_DYNAMODB_REGION`, `_PARTITION` | the region and ARN partition answers carry (`us-east-1`, `aws`) |
 | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | writes are refused below this much free space (1 GiB) |
 | `KYTHIRA_DYNAMODB_SPLIT_BYTES`, `_SPLIT_KEYS`, `_SPLIT_INTERVAL_MS` | the split policy; both thresholds 0 turns splits off |
@@ -155,6 +156,19 @@ belong to one account (`KYTHIRA_DYNAMODB_ACCOUNT_ID`): a caller from
 another account is a cross-account caller and needs the table's resource
 policy, as on AWS, and a static key from another account reaches nothing.
 An ARN naming any other account is not found.
+
+With `KYTHIRA_DYNAMODB_NAMESPACES=on` each account has its own tables
+instead: two accounts can each have `orders`, a caller lists and reaches
+its own by name, and another account's table only by ARN, as a
+cross-account caller (a resource policy with IAM; static keys are
+refused). Turning it on moves the tables already there to
+`KYTHIRA_DYNAMODB_ACCOUNT_ID`, keeping their names, ARNs and data; this
+happens once, on the first request after every node runs with the
+setting, and cannot be undone: a gateway started without the setting on
+a catalog that has it serves nothing and says why. Every node must run a
+version that knows the setting before it is turned on. Not yet with a
+strong host (`KYTHIRA_DYNAMODB_STRONG_PEERS`), and a global table's
+replication principal must belong to the table's account.
 Expressions were checked against about 3000 cases recorded from DynamoDB
 Local, and the operations corpus against recorded scenarios.
 

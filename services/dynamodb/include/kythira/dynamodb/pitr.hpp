@@ -342,9 +342,9 @@ public:
               [this](call_context& c, boost::json::object& in) { return restore(c, in); });
     }
 
-    auto update(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto update(call_context& ctx, boost::json::object& in) -> result {
         namespace pd = pitr_detail;
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         const auto& spec = in.at("PointInTimeRecoverySpecification").as_object();
         const bool enable = spec.at("PointInTimeRecoveryEnabled").as_bool();
         std::uint32_t days = 35;
@@ -380,8 +380,8 @@ public:
         return boost::json::object{{"ContinuousBackupsDescription", description(*res.table)}};
     }
 
-    auto describe(call_context& /*ctx*/, boost::json::object& in) -> result {
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+    auto describe(call_context& ctx, boost::json::object& in) -> result {
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         const auto d = _backend.describe(name);
         if (!d) {
             return pitr_detail::modeled("TableNotFoundException", "Table not found: " + name);
@@ -398,7 +398,7 @@ public:
         }
         std::string source = bd::text(in, "SourceTableName");
         if (source.empty()) {
-            source = table_api_detail::table_name_of(bd::text(in, "SourceTableArn"));
+            source = ctx.table_name(bd::text(in, "SourceTableArn"));
         }
         if (source.empty()) {
             return validation_error("Either SourceTableArn or SourceTableName must be specified");

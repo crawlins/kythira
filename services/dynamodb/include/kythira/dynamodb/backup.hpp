@@ -668,7 +668,7 @@ public:
 
     auto create_backup(call_context& ctx, boost::json::object& in) -> result {
         namespace bd = backup_detail;
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         if (!table_api_detail::valid_table_name(name)) {
             return table_api_detail::bad_table_name();
         }
@@ -717,14 +717,14 @@ public:
         return boost::json::object{{"BackupDescription", description(*r, ctx)}};
     }
 
-    auto list_backups(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto list_backups(call_context& ctx, boost::json::object& in) -> result {
         boost::json::array summaries;
         if (!_store) {
             return boost::json::object{{"BackupSummaries", std::move(summaries)}};
         }
         std::string table;
         if (const auto* t = in.if_contains("TableName"); t != nullptr && t->is_string()) {
-            table = table_api_detail::table_name_of(t->as_string());
+            table = ctx.table_name(t->as_string());
         }
         const auto type = text(in, "BackupType");
         if (!type.empty() && type != "USER" && type != "ALL") {
@@ -752,8 +752,10 @@ public:
                 continue;
             }
             const auto at = table_api_detail::millis_to_seconds(r.created_ms);
-            if ((!table.empty() && r.table_name != table) || (lower && at < *lower) ||
-                (upper && at > *upper)) {
+            if (!ctx.owns_arn(r.arn) ||
+                (!table.empty() &&
+                 call_context::bare_name(r.table_name) != call_context::bare_name(table)) ||
+                (lower && at < *lower) || (upper && at > *upper)) {
                 continue;
             }
             if (summaries.size() >= limit) {
@@ -761,7 +763,7 @@ public:
                 break;
             }
             auto s = details(r);
-            s["TableName"] = r.table_name;
+            s["TableName"] = call_context::bare_name(r.table_name);
             s["TableId"] = table_api_detail::table_uuid(r.source.table_id);
             s["TableArn"] = r.table_arn;
             summaries.push_back(std::move(s));
@@ -869,7 +871,7 @@ private:
         -> boost::json::object {
         const auto table = table_description(r.source, ctx);
         boost::json::object source{
-            {"TableName", r.table_name},
+            {"TableName", call_context::bare_name(r.table_name)},
             {"TableId", table_api_detail::table_uuid(r.source.table_id)},
             {"TableArn", r.table_arn},
             {"TableSizeBytes", r.size_bytes},

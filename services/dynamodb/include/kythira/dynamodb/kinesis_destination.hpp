@@ -225,7 +225,7 @@ namespace kinesis_destination_detail {
         {"eventName", streams_detail::event_name(rec.event)},
         {"userIdentity", nullptr},
         {"recordFormat", "application/json"},
-        {"tableName", table},
+        {"tableName", call_context::bare_name(table)},
         {"dynamodb", std::move(body)},
         {"eventSource", "aws:dynamodb"},
     };
@@ -525,8 +525,8 @@ public:
         return change(ctx, in, destination_status::updating, "UpdateKinesisStreamingConfiguration");
     }
 
-    auto describe(call_context& /*ctx*/, boost::json::object& in) -> result {
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+    auto describe(call_context& ctx, boost::json::object& in) -> result {
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         if (auto e = check_name(name)) {
             return *e;
         }
@@ -547,7 +547,7 @@ public:
             }
             list.push_back(std::move(o));
         }
-        return boost::json::object{{"TableName", d->name},
+        return boost::json::object{{"TableName", call_context::bare_name(d->name)},
                                    {"KinesisDataStreamDestinations", std::move(list)}};
     }
 
@@ -555,7 +555,7 @@ private:
     auto change(call_context& ctx, boost::json::object& in, destination_status want,
                 std::string_view config_member) -> result {
         namespace kd = kinesis_destination_detail;
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         if (auto e = check_name(name)) {
             return *e;
         }
@@ -597,9 +597,10 @@ private:
         if (!r.ok()) {
             return table_api_detail::error_of(r);
         }
-        boost::json::object out{{"TableName", r.table ? r.table->name : name},
-                                {"StreamArn", arn},
-                                {"DestinationStatus", kd::status_name(want)}};
+        boost::json::object out{
+            {"TableName", call_context::bare_name(r.table ? r.table->name : name)},
+            {"StreamArn", arn},
+            {"DestinationStatus", kd::status_name(want)}};
         if (want != destination_status::disabling) {
             out[config_member] = boost::json::object{
                 {"ApproximateCreationDateTimePrecision", kd::precision_name(precision)}};

@@ -220,7 +220,7 @@ private:
     static auto delete_if_unchanged(const table_descriptor& d, const item& key,
                                     const dynamo_decimal& value) -> std::optional<item_command> {
         boost::json::object in{
-            {"TableName", d.name},
+            {"TableName", call_context::bare_name(d.name)},
             {"ConditionExpression", "#t = :v"},
             {"ExpressionAttributeNames", boost::json::object{{"#t", d.ttl.attribute}}},
             {"ExpressionAttributeValues",
@@ -271,8 +271,8 @@ public:
               [this](call_context& c, boost::json::object& in) { return describe_ttl(c, in); });
     }
 
-    auto describe_ttl(call_context& /*ctx*/, boost::json::object& in) -> result {
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+    auto describe_ttl(call_context& ctx, boost::json::object& in) -> result {
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         if (auto e = check_name(name)) {
             return *e;
         }
@@ -287,8 +287,8 @@ public:
         return boost::json::object{{"TimeToLiveDescription", std::move(desc)}};
     }
 
-    auto update_ttl(call_context& /*ctx*/, boost::json::object& in) -> result {
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+    auto update_ttl(call_context& ctx, boost::json::object& in) -> result {
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         if (auto e = check_name(name)) {
             return *e;
         }

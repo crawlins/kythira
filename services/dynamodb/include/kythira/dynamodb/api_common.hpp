@@ -60,9 +60,9 @@ namespace kythira::dynamodb::api_detail {
 
 /// The named table, if it can serve data-plane calls.
 template<dynamo_backend Backend>
-[[nodiscard]] auto usable_table(Backend& backend, std::string_view raw_name)
-    -> aws_json::result<table_descriptor> {
-    auto d = backend.describe(table_api_detail::table_name_of(raw_name));
+[[nodiscard]] auto usable_table(Backend& backend, const call_context& ctx,
+                                std::string_view raw_name) -> aws_json::result<table_descriptor> {
+    auto d = backend.describe(ctx.table_name(raw_name));
     if (!d || d->status == table_status::creating || d->status == table_status::deleting) {
         return not_found();
     }
@@ -77,7 +77,8 @@ template<dynamo_backend Backend>
 /// One table's `ConsumedCapacity` entry.
 [[nodiscard]] inline auto capacity(const boost::json::object& in, const std::string& table,
                                    double units) -> boost::json::object {
-    boost::json::object out{{"TableName", table}, {"CapacityUnits", units}};
+    boost::json::object out{{"TableName", call_context::bare_name(table)},
+                            {"CapacityUnits", units}};
     if (text(in, "ReturnConsumedCapacity") == "INDEXES") {
         out["Table"] = boost::json::object{{"CapacityUnits", units}};
     }

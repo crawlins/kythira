@@ -35,6 +35,8 @@
 /// | `KYTHIRA_DYNAMODB_STATIC_KEYS` | | the same, `,`-separated, for tests |
 /// | `KYTHIRA_DYNAMODB_ACCOUNT_ID` | the keys' account | the account that owns the tables;
 /// required when the keys name more than one |
+/// | `KYTHIRA_DYNAMODB_NAMESPACES` | `off` | `on` gives each account its own tables; tables made
+/// before belong to `ACCOUNT_ID`. Cannot be turned off again |
 /// | `KYTHIRA_DYNAMODB_DATA_DIR` | | the disk guard's directory, and the database's |
 /// | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | 1 GiB | free space below which writes are refused |
 /// | `KYTHIRA_DYNAMODB_ENGINE` | `memory` | `memory`, or `rocksdb` (needs `PEERS`, `DATA_DIR`) |
@@ -239,6 +241,10 @@ struct gateway_config {
     https::server_config http{};
     front_end_config front{};
     std::vector<aws_auth::static_key> keys;
+    /// Per-account table names (task 28): each account has its own tables,
+    /// and `front.account` names the account that tables made before the
+    /// switch move to. Once a catalog has them they cannot be turned off.
+    bool namespaces = false;
     /// Empty: no disk guard.
     std::string data_dir;
     std::uint64_t disk_floor_bytes = disk_guard::k_default_floor_bytes;
@@ -386,6 +392,9 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_ACCOUNT_ID           account that owns the tables (the\n"
     "                                        keys' account; required when they\n"
     "                                        name more than one)\n"
+    "  KYTHIRA_DYNAMODB_NAMESPACES           on: each account has its own tables;\n"
+    "                                        older ones belong to ACCOUNT_ID.\n"
+    "                                        Cannot be undone (off)\n"
     "  KYTHIRA_DYNAMODB_DATA_DIR             directory the disk guard watches\n"
     "  KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES     free-space floor for writes (1 GiB)\n"
     "  KYTHIRA_DYNAMODB_ENGINE               storage engine: memory, or rocksdb\n"
@@ -812,6 +821,13 @@ namespace gateway_detail {
         }
     }
 
+    if (auto v = env("KYTHIRA_DYNAMODB_NAMESPACES")) {
+        if (*v != "on" && *v != "off") {
+            return "KYTHIRA_DYNAMODB_NAMESPACES: on or off, not '" + *v + "'";
+        }
+        c.namespaces = *v == "on";
+    }
+
     c.data_dir = env("KYTHIRA_DYNAMODB_DATA_DIR").value_or("");
     if (auto v = env("KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES")) {
         const auto f = number<std::uint64_t>(*v);
@@ -880,6 +896,13 @@ namespace gateway_detail {
     }
     if (auto e = gateway_detail::strong_from_env(env, c)) {
         return *e;
+    }
+    // The strong catalog names tables without an account; it learns them
+    // in a later step of task 28.
+    if (c.namespaces && c.strong.enabled()) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_NAMESPACES=on does not work with a strong host yet: unset "
+            "KYTHIRA_DYNAMODB_STRONG_PEERS or KYTHIRA_DYNAMODB_NAMESPACES");
     }
     return c;
 }
@@ -992,6 +1015,7 @@ public:
                                " answered InternalServerError: " + std::string(what));
             }
         };
+        front.namespaced = [this] { return _namespaced.load(std::memory_order_acquire); };
         _front = std::make_unique<front_end<authorizer>>(std::move(front), _auth);
         _items.set_compat_profile(_config.compat);
         _queries.set_compat_profile(_config.compat);
@@ -1107,7 +1131,7 @@ public:
             res.prepare_payload();
             return res;
         }
-        if (!_ready.load()) {
+        if (!_ready.load() || !settle_namespaces()) {
             https::response res{http::status::service_unavailable, req.version()};
             res.prepare_payload();
             return res;
@@ -1126,6 +1150,57 @@ public:
     }
 
 private:
+    /// Whether the catalog's table naming is known (task 28): per-account
+    /// names when the catalog records an owner, turning them on first when
+    /// `namespaces` is set. Until it is known nothing is served, since a
+    /// name would mean a different table under the wrong naming. Retried at
+    /// most every 200 ms while the backend has no leader.
+    auto settle_namespaces() -> bool {
+        if (_namespaces_settled.load(std::memory_order_acquire)) {
+            return true;
+        }
+        const std::lock_guard lock(_namespaces_mu);
+        if (_namespaces_settled.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now < _namespaces_next_try) {
+            return false;
+        }
+        _namespaces_next_try = now + std::chrono::milliseconds{200};
+        try {
+            auto marker = _backend.describe(catalog_detail::k_namespace_probe);
+            if (!marker && _config.namespaces) {
+                catalog_command c;
+                c.op = catalog_command::kind::qualify_tables;
+                c.table.name = _config.front.account;
+                (void)_backend.catalog(c);
+                marker = _backend.describe(catalog_detail::k_namespace_probe);
+                if (!marker) {
+                    return false;
+                }
+                if (_log) {
+                    _log(false, "per-account tables on; existing tables belong to " +
+                                    _config.front.account);
+                }
+            }
+            if (marker && !_config.namespaces) {
+                if (_log) {
+                    _log(true, "the catalog has per-account tables (owner of older tables " +
+                                   marker->name.substr(0, marker->name.size() - 1) +
+                                   "): set KYTHIRA_DYNAMODB_NAMESPACES=on; serving nothing");
+                }
+                _namespaces_next_try = now + std::chrono::seconds{10};
+                return false;
+            }
+            _namespaced.store(marker.has_value(), std::memory_order_release);
+            _namespaces_settled.store(true, std::memory_order_release);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
     /// The worker for the catalog leader's background jobs: the TTL
     /// sweeper, backups and restores, the point-in-time archiver, exports,
     /// imports and bulk puts, the vector index worker, the global table
@@ -1306,6 +1381,10 @@ private:
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;
     std::atomic<bool> _ready{false};
+    std::atomic<bool> _namespaced{false};
+    std::atomic<bool> _namespaces_settled{false};
+    std::mutex _namespaces_mu;
+    std::chrono::steady_clock::time_point _namespaces_next_try{};
     std::mutex _sweep_mu;
     std::condition_variable _sweep_cv;
     bool _stopping = false;

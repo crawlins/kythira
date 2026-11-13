@@ -218,12 +218,19 @@ struct served {
     ddb::local_backend<> backend{engine};
     std::optional<ddb::gateway<ddb::local_backend<>>> gw;
 
-    served() {
+    explicit served(const std::map<std::string, std::string>& extra = {}) { restart(extra); }
+
+    /// A new gateway on the same database, with `extra` over the settings.
+    void restart(const std::map<std::string, std::string>& extra) {
+        gw.reset();
         auto vars = minimal_env();
         vars["KYTHIRA_DYNAMODB_BIND"] = "127.0.0.1";
         vars["KYTHIRA_DYNAMODB_PORT"] = "0";
         vars["KYTHIRA_DYNAMODB_STATIC_KEYS"] +=
             ",AKIDREAD:" + std::string(k_secret) + ":111122223333:reader:read-only";
+        for (const auto& [k, v] : extra) {
+            vars[k] = k == "KYTHIRA_DYNAMODB_STATIC_KEYS" ? vars[k] + "," + v : v;
+        }
         auto c = ddb::gateway_config_from_env(env_of(vars));
         BOOST_REQUIRE(std::holds_alternative<ddb::gateway_config>(c));
         gw.emplace(std::get<ddb::gateway_config>(c), backend);
@@ -324,6 +331,90 @@ BOOST_AUTO_TEST_CASE(signed_requests_round_trip_over_the_socket) {
     r = s.call("DescribeEndpoints", "{}");
     BOOST_TEST(body_of(r).at("Endpoints").at(0).at("Address").as_string() ==
                "localhost:" + std::to_string(s.gw->port()));
+}
+
+namespace {
+
+constexpr std::string_view k_orders =
+    R"({"TableName":"orders","BillingMode":"PAY_PER_REQUEST",)"
+    R"("AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"}],)"
+    R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"}]})";
+
+auto table_names(const http::response<http::string_body>& r) -> std::string {
+    return json::serialize(body_of(r).at("TableNames"));
+}
+
+const std::map<std::string, std::string> k_two_accounts{
+    {"KYTHIRA_DYNAMODB_STATIC_KEYS",
+     "AKIDOTHER:" + std::string(k_secret) + ":444455556666:other:admin"},
+    {"KYTHIRA_DYNAMODB_ACCOUNT_ID", "111122223333"},
+    {"KYTHIRA_DYNAMODB_NAMESPACES", "on"}};
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(each_account_has_its_own_tables_once_namespaces_are_on) {
+    // Before: one account's table.
+    served s;
+    BOOST_REQUIRE(s.call("CreateTable", std::string(k_orders)).result_int() == 200U);
+    BOOST_REQUIRE(
+        s.call("PutItem", R"({"TableName":"orders","Item":{"pk":{"S":"old"}}})").result_int() ==
+        200U);
+
+    // Turned on: the table stays the owner's, under the same name and ARN.
+    s.restart(k_two_accounts);
+    auto r = s.call("DescribeTable", R"({"TableName":"orders"})");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+    BOOST_TEST(body_of(r).at("Table").at("TableName").as_string() == "orders");
+    BOOST_TEST(body_of(r).at("Table").at("TableArn").as_string() ==
+               "arn:aws:dynamodb:us-east-1:111122223333:table/orders");
+    r = s.call("GetItem", R"({"TableName":"orders","Key":{"pk":{"S":"old"}}})");
+    BOOST_TEST(body_of(r).contains("Item"));
+
+    // The other account sees none of it, and makes its own "orders".
+    r = s.call("ListTables", "{}", "AKIDOTHER");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+    BOOST_TEST(table_names(r) == "[]");
+    r = s.call("DescribeTable", R"({"TableName":"orders"})", "AKIDOTHER");
+    BOOST_TEST(type_of(r) == "ResourceNotFoundException");
+    BOOST_TEST(std::string(body_of(r).at("message").as_string()).find("444455556666") ==
+               std::string::npos);
+    r = s.call("CreateTable", std::string(k_orders), "AKIDOTHER");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+    BOOST_TEST(body_of(r).at("TableDescription").at("TableArn").as_string() ==
+               "arn:aws:dynamodb:us-east-1:444455556666:table/orders");
+    BOOST_REQUIRE(
+        s.call("PutItem", R"({"TableName":"orders","Item":{"pk":{"S":"new"}}})", "AKIDOTHER")
+            .result_int() == 200U);
+
+    // Each reads only its own items and lists only its own table.
+    r = s.call("Scan", R"({"TableName":"orders"})");
+    BOOST_TEST(json::serialize(body_of(r).at("Items")) == R"([{"pk":{"S":"old"}}])");
+    r = s.call("Scan", R"({"TableName":"orders"})", "AKIDOTHER");
+    BOOST_TEST(json::serialize(body_of(r).at("Items")) == R"([{"pk":{"S":"new"}}])");
+    BOOST_TEST(table_names(s.call("ListTables", "{}")) == R"(["orders"])");
+    BOOST_TEST(table_names(s.call("ListTables", "{}", "AKIDOTHER")) == R"(["orders"])");
+
+    // By ARN, the other account's table is cross-account: static keys are
+    // refused it.
+    r = s.call("GetItem", R"({"TableName":"arn:aws:dynamodb:us-east-1:444455556666:table/orders",)"
+                          R"("Key":{"pk":{"S":"new"}}})");
+    BOOST_TEST(type_of(r) == "AccessDeniedException");
+
+    // And it cannot be turned off again: nothing is served.
+    s.restart({});
+    r = s.call("ListTables", "{}");
+    BOOST_TEST(r.result_int() == 503U);
+}
+
+BOOST_AUTO_TEST_CASE(namespaces_setting_is_on_or_off) {
+    auto vars = minimal_env();
+    BOOST_TEST(
+        !std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars))).namespaces);
+    vars["KYTHIRA_DYNAMODB_NAMESPACES"] = "on";
+    BOOST_TEST(
+        std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars))).namespaces);
+    vars["KYTHIRA_DYNAMODB_NAMESPACES"] = "yes";
+    BOOST_TEST(config_error(vars) == "KYTHIRA_DYNAMODB_NAMESPACES: on or off, not 'yes'");
 }
 
 BOOST_AUTO_TEST_CASE(roles_and_signatures_are_enforced) {
