@@ -38,10 +38,13 @@ replica updates. These parts of the API answer `ValidationException`
   (`KMSMasterKeyId`, `ProvisionedThroughputOverride`,
   `OnDemandThroughputOverride`, `GlobalSecondaryIndexes`,
   `TableClassOverride`): replicas take the source table's settings.
-- `MultiRegionConsistency` and `GlobalTableWitnessUpdates`: multi-region
-  strong consistency is planned (task 27, Requirement 18.3). It needs every
-  write to commit in a quorum spanning clusters, and a Kythira group's
-  voters all sit in one cluster today; `doc/dynamodb.md` explains.
+- On multi-region strongly consistent tables (task 27), as on AWS:
+  replicas cannot be added after creation, transactions, TTL and LSIs
+  are refused, and a single replica or the witness cannot be deleted
+  alone. Kythira's own rule: the `UpdateTable` that deletes the other
+  two members goes to the region that keeps the table. A region without
+  a quorum answers `InternalServerError`, since AWS's error for that
+  case is not documented.
 - `DeleteTable` of a table with replicas is refused; AWS deletes that
   replica. Remove the replicas with `ReplicaUpdates` `Delete` first.
 - `ReplicaUpdates` cannot be combined with other `UpdateTable` changes in

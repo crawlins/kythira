@@ -16,8 +16,18 @@ current list of outstanding work, see [TODO.md](TODO.md).
   tables. Groups split automatically as tables grow. A chaos run kills
   each node of a RocksDB cluster during splits and GSI propagation, and
   no acknowledged write, index entry or stream record is lost or
-  duplicated. Multi-region strong consistency comes next (task 27). See
-  [dynamodb.md](dynamodb.md).
+  duplicated. See [dynamodb.md](dynamodb.md).
+
+- **Strongly consistent tables across three regions.**
+  `MultiRegionConsistency=STRONG` works as on AWS (task 27): a write
+  returns once two regions have it, and a strongly consistent read in any
+  region sees it. The table's Raft groups have voters in all three
+  regions, in a second multi-raft host on each node, so no region holds a
+  quorum alone and nothing is resolved afterwards. Witnesses, leaving for
+  one region, shared GSIs and per-replica streams and PITR work. Tests cut
+  a region off and bring it back, race conditional writes across regions
+  and split groups under load; a three-region compose harness runs under
+  Docker and rootless Podman.
 
 ### What Changed (November 12, 2026)
 
