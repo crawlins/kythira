@@ -100,7 +100,7 @@ DynamoDB. These are the choices:
 | Kythira's native lease layer (`java/kythira-kcl-leases`) | yes, tested against 2.7.4 | no: KCL 3.x reaches DynamoDB directly for more than leases |
 | Kythira's DynamoDB-compatible API | yes, tested against 2.7.4 | yes, tested against 3.5.4 |
 | DynamoDB Local | yes, tested against 2.7.4 | yes, tested against 3.5.4 |
-| AWS DynamoDB | KCL's own backend; not run against AWS | the same |
+| AWS DynamoDB | yes, run against AWS with 2.7.4 | yes, run against AWS with 3.5.4 |
 
 Both polling and enhanced fan-out work with the native lease layer. With
 a DynamoDB backend KCL's own lease management runs unchanged, pointed at

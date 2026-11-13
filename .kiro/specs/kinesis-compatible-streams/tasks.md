@@ -357,7 +357,7 @@ asked.
 
 ### Phase 7: KCL 3.x and every lease backend
 
-- [ ] 16. KCL on DynamoDB backends
+- [x] 16. KCL on DynamoDB backends
   - KCL 2.x and 3.x conformance with leases in Kythira DynamoDB (needs
     DynamoDB tasks 7 and 11) and DynamoDB Local
   - AWS DynamoDB lease backend run (**Clark's go**, real-cloud spend)
@@ -381,7 +381,14 @@ asked.
       restart. Four applications polling two shards exceed 5 GetRecords
       calls a second per shard, so KCL meets and retries
       `ProvisionedThroughputExceededException`, as it would on AWS.
-    - Left: the AWS DynamoDB lease backend run (Clark's go).
+    - Done: the AWS DynamoDB run (Clark's go, 2026-11-13). The sample
+      takes `KCL_DYNAMODB_PROFILE` for the lease calls alone, and the
+      scenario adds `kcl2-aws-ddb` and `kcl3-aws-ddb` with
+      `KINESIS_SCENARIO_AWS_LEASES=1`. On Clark's machine, one Kythira
+      node with leases in us-east-1: KCL 2.7.4 and 3.5.4 each read d0 and
+      d1 100/100, then after a restart d2 100/100 with nothing of d0 or d1
+      again. KCL 3.x waited about 16 minutes for its lease-table GSI on
+      AWS. The run's four tables were deleted.
 
 ### Phase 8: conformance and docs
 

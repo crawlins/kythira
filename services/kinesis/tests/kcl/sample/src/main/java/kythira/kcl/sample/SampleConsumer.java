@@ -7,7 +7,9 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 import software.amazon.awssdk.http.Protocol;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.awssdk.regions.Region;
@@ -146,16 +148,28 @@ public final class SampleConsumer {
             System.err.println("KCL_LEASES must be kythira or dynamodb, not " + leaseStore);
             System.exit(2);
         }
-        // KCL_DYNAMODB_ENDPOINT unset with KCL_LEASES=dynamodb means AWS DynamoDB in the region,
-        // with the default credentials. With the Kythira lease API, KCL still insists on a
-        // DynamoDB client but never calls it.
+        // KCL_DYNAMODB_ENDPOINT unset or empty with KCL_LEASES=dynamodb means AWS DynamoDB in
+        // the region. With the Kythira lease API, KCL still insists on a DynamoDB client but
+        // never calls it.
         String dynamoEndpoint = System.getenv().get("KCL_DYNAMODB_ENDPOINT");
+        if (dynamoEndpoint != null && dynamoEndpoint.isBlank()) {
+            dynamoEndpoint = null;
+        }
         if (leaseStore.equals("kythira")) {
             dynamoEndpoint = "http://127.0.0.1:1";
         }
+        // KCL_DYNAMODB_PROFILE names a shared-credentials profile for the lease tables alone.
+        // Against AWS DynamoDB the lease calls then sign with AWS credentials, while the
+        // Kinesis calls keep the Kythira client key from the environment, which the default
+        // chain would otherwise hand to both.
+        String dynamoProfile = System.getenv().get("KCL_DYNAMODB_PROFILE");
+        AwsCredentialsProvider dynamoCredentials =
+                dynamoProfile == null || dynamoProfile.isBlank()
+                        ? DefaultCredentialsProvider.builder().build()
+                        : ProfileCredentialsProvider.create(dynamoProfile);
         var dynamoBuilder = DynamoDbAsyncClient.builder()
                 .region(region)
-                .credentialsProvider(DefaultCredentialsProvider.builder().build());
+                .credentialsProvider(dynamoCredentials);
         if (dynamoEndpoint != null) {
             dynamoBuilder.endpointOverride(URI.create(dynamoEndpoint));
         }

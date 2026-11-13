@@ -283,6 +283,32 @@ services:
       AWS_EC2_METADATA_DISABLED: "true"
     command: ["http://kin-1:4567", "111122223333", "flink-in", "flink-out"]
 
+  # Task 16's AWS run, in the `aws-leases` profile, which the scenario
+  # adds only with KINESIS_SCENARIO_AWS_LEASES=1 (real AWS spend): KCL 2.x
+  # and 3.x with their lease tables in AWS DynamoDB. The lease calls sign
+  # with a profile from the host's AWS config directory, mounted read-only;
+  # the Kinesis calls keep the client key. KINESIS_SCENARIO_AWS_RUN names
+  # the run, so its tables are told apart and can be deleted afterwards:
+  # kcl2-aws-<run> and kcl3-aws-<run>. (KCL 3.5.4 also looks for
+  # -CoordinatorState and -WorkerMetricStats tables; on AWS it made none
+  # and kept that state in the lease table, but check for them.)
+  kcl2-aws-ddb: &kcl_aws
+    <<: *kcl_ddb
+    profiles: ["aws-leases"]
+    volumes:
+      - ${KINESIS_SCENARIO_AWS_CONFIG_DIR:-/nonexistent}:/root/.aws:ro
+    environment:
+      <<: *kcl_ddb_env
+      AWS_REGION: ${KINESIS_SCENARIO_AWS_REGION:-us-east-1}
+      KCL_DYNAMODB_ENDPOINT: ""
+      KCL_DYNAMODB_PROFILE: ${KINESIS_SCENARIO_AWS_PROFILE:-default}
+    command: ["http://kin-2:4567", "leases", "kcl2-aws-${KINESIS_SCENARIO_AWS_RUN:-run}", "kcl2-a"]
+
+  kcl3-aws-ddb:
+    <<: *kcl_aws
+    entrypoint: ["/opt/kcl3-sample/bin/kythira-kcl3-sample"]
+    command: ["http://kin-3:4567", "leases", "kcl3-aws-${KINESIS_SCENARIO_AWS_RUN:-run}", "kcl3-a"]
+
 networks:
   kinesis_net:
     driver: bridge
