@@ -173,6 +173,15 @@ under Docker and rootless Podman.
   writes it would propose or lead, with an error that says why.
 - **Clients.** Point clients at all nodes, or at a load balancer over
   them. Any node answers any call.
+- **KPL.** KPL calls STS `GetCallerIdentity` before its first write, to
+  build the `StreamARN` it sends. Set `StsEndpoint` and `StsPort` to a
+  node, as well as `KinesisEndpoint` and `KinesisPort`: every node answers
+  `GetCallerIdentity` (signed for `sts`) from the caller's own signature,
+  and refuses every other STS action. Left unset, KPL asks
+  `sts.<region>.amazonaws.com` even with a custom Kinesis endpoint. KPL
+  speaks HTTPS only, so the nodes need TLS; the container scenario puts a
+  TLS front before plaintext nodes instead (`tests/kpl/kpl_produce.sh`).
+  KCL deaggregates what KPL aggregates, through any node.
 
 ## Not supported
 

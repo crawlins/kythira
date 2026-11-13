@@ -8,7 +8,8 @@
 // action on the right resource with the request's tags, handler-driven
 // authorization and its safety net, and errors. Real SigV4 through the
 // static-key authorizer, plus a recording authorizer for the resource and
-// key checks.
+// key checks. Also STS GetCallerIdentity, which KPL calls on the same
+// endpoint before it writes.
 
 #define BOOST_TEST_MODULE kinesis_front_end_test
 
@@ -63,16 +64,30 @@ auto sign(kin::front_end_request r, std::string_view akid, std::string_view serv
     rules.service = std::string(service);
     rules.protocol = sv4::error_protocol::json;
     const sv4::credential_scope scope{"20261110", "us-east-1", std::string(service)};
-    r._headers.emplace_back(
-        "Authorization", "AWS4-HMAC-SHA256 Credential=" + std::string(akid) + "/" + scope.text() +
-                             ", SignedHeaders=content-type;host;x-amz-date;x-amz-target"
-                             ", Signature=" +
-                             std::string(64, '0'));
+    // A Query-protocol call (STS) has no X-Amz-Target to sign.
+    const bool has_target = !kin::detail::header_value(r, "X-Amz-Target").empty();
+    r._headers.emplace_back("Authorization", "AWS4-HMAC-SHA256 Credential=" + std::string(akid) +
+                                                 "/" + scope.text() +
+                                                 ", SignedHeaders=content-type;host;x-amz-date" +
+                                                 (has_target ? ";x-amz-target" : "") +
+                                                 ", Signature=" + std::string(64, '0'));
     const auto parsed =
         sv4::parse(sv4::request{r._method, r._path, r._query, r._headers, r._body}, rules, k_now);
     BOOST_REQUIRE_MESSAGE(parsed.has_value(), parsed.error().message);
     const auto sig = sv4::compute_signature(*parsed, sv4::derive_signing_key(k_secret, scope));
     r._headers.back().second.replace(r._headers.back().second.size() - 64, 64, sig);
+    return r;
+}
+
+// An STS Query call as KPL sends it: a form body and no X-Amz-Target.
+auto sts_request(std::string body) -> kin::front_end_request {
+    kin::front_end_request r;
+    r._method = "POST";
+    r._path = "/";
+    r._body = std::move(body);
+    r._headers = {{"Host", "localhost:4567"},
+                  {"Content-Type", "application/x-www-form-urlencoded; charset=utf-8"},
+                  {"X-Amz-Date", "20261110T120000Z"}};
     return r;
 }
 
@@ -182,6 +197,53 @@ BOOST_AUTO_TEST_CASE(a_signed_read_reaches_its_handler) {
     BOOST_TEST(b.at("replica").as_bool());
     BOOST_TEST(r.header("Content-Type").value_or("") == k_json);
     BOOST_TEST(r.header("x-amzn-RequestId").has_value());
+}
+
+// KPL asks STS who it is before its first write and builds the StreamARN
+// it sends from the answer; the Kinesis endpoint answers that one action.
+BOOST_AUTO_TEST_CASE(sts_get_caller_identity_is_answered_from_the_signature) {
+    static_fixture f;
+    const auto ok = f.fe->handle(
+        sign(sts_request("Action=GetCallerIdentity&Version=2011-06-15"), "AKIDWRITE", "sts"));
+    BOOST_TEST(ok.status == 200U, ok.body);
+    BOOST_TEST(ok.header("Content-Type").value_or("") == "text/xml");
+    BOOST_TEST(ok.body.starts_with("<GetCallerIdentityResponse "
+                                   "xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">"
+                                   "<GetCallerIdentityResult>"),
+               ok.body);
+    BOOST_TEST(
+        ok.body.find("<Arn>arn:aws:iam::111122223333:user/writer</Arn>") != std::string::npos,
+        ok.body);
+    BOOST_TEST(ok.body.find("<UserId>AKIDWRITE</UserId>") != std::string::npos, ok.body);
+    BOOST_TEST(ok.body.find("<Account>111122223333</Account>") != std::string::npos, ok.body);
+
+    // Signed for kinesis rather than sts: the scope is wrong.
+    const auto scope =
+        f.fe->handle(sign(sts_request("Action=GetCallerIdentity&Version=2011-06-15"), "AKIDWRITE"));
+    BOOST_TEST(scope.status >= 400U, scope.body);
+    BOOST_TEST(scope.body.starts_with("<ErrorResponse"), scope.body);
+
+    // Unsigned: refused in STS's own words.
+    const auto unsigned_call =
+        f.fe->handle(sts_request("Action=GetCallerIdentity&Version=2011-06-15"));
+    BOOST_TEST(unsigned_call.status >= 400U);
+    BOOST_TEST(unsigned_call.body.find("<Type>Sender</Type>") != std::string::npos,
+               unsigned_call.body);
+
+    // Every other STS action is refused, credentials included.
+    const auto other = f.fe->handle(
+        sign(sts_request("Action=AssumeRole&Version=2011-06-15&RoleArn=x&RoleSessionName=s"),
+             "AKIDWRITE", "sts"));
+    BOOST_TEST(other.status == 400U);
+    BOOST_TEST(other.body.find("<Code>InvalidAction</Code>") != std::string::npos, other.body);
+
+    // A form body with an X-Amz-Target is still a Kinesis call, and the
+    // codec refuses its content type.
+    auto framed = sts_request("Action=GetCallerIdentity");
+    framed._headers.emplace_back("X-Amz-Target", "Kinesis_20131202.ListStreams");
+    const auto kinesis = f.fe->handle(sign(std::move(framed), "AKIDWRITE"));
+    BOOST_TEST(kinesis.status >= 400U);
+    BOOST_TEST(kinesis.body.find("GetCallerIdentityResponse") == std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(cbor_requests_are_answered_in_cbor) {

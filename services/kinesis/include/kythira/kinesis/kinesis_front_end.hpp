@@ -41,6 +41,13 @@
 ///
 /// Every answer is in the request's encoding (CBOR for the Java SDK).
 ///
+/// One request outside the Kinesis API is answered too: STS
+/// `GetCallerIdentity`, a form-encoded `POST /` with no X-Amz-Target and
+/// signed for `sts`. KPL calls it before its first write to build the
+/// `StreamARN` it sends, and takes an STS endpoint that can point here. The
+/// answer comes from the signature alone, as AWS's needs no permission;
+/// every other STS action is refused with InvalidAction.
+///
 /// The front end is transport-free: the composition root adapts the shared
 /// Beast host's request into `front_end_request` and the response back, and
 /// answers `Expect: 100-continue` there (KPL sends it on every batch).
@@ -55,6 +62,7 @@
 
 #include <raft/aws_eventstream.hpp>
 #include <raft/aws_json_protocol.hpp>
+#include <raft/aws_query_protocol.hpp>
 #include <raft/aws_request_authorizer.hpp>
 #include <raft/sigv4_verifier.hpp>
 
@@ -225,13 +233,17 @@ using front_end_handler =
 
 namespace detail {
 
+[[nodiscard]] inline auto iequals(std::string_view a, std::string_view b) -> bool {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) {
+               return std::tolower(x) == std::tolower(y);
+           });
+}
+
 [[nodiscard]] inline auto header_value(const front_end_request& r, std::string_view name)
     -> std::string_view {
     for (const auto& [n, v] : r._headers) {
-        if (n.size() == name.size() &&
-            std::equal(n.begin(), n.end(), name.begin(), [](unsigned char a, unsigned char b) {
-                return std::tolower(a) == std::tolower(b);
-            })) {
+        if (iequals(n, name)) {
             return v;
         }
     }
@@ -322,6 +334,9 @@ public:
     [[nodiscard]] auto handle_streaming(const front_end_request& req) -> reply {
         const auto target = detail::header_value(req, "x-amz-target");
         const auto content_type = detail::header_value(req, "content-type");
+        if (target.empty() && is_sts_query(req, content_type)) {
+            return handle_sts(req);
+        }
         const aws_json::http_request_view view{req._method, req._path, content_type, target,
                                                req._body};
         const auto encoding =
@@ -427,6 +442,69 @@ private:
         o.accept_cbor = true;
         o.cbor_timestamps = aws_json::cbor_timestamp_unit::milliseconds;
         return o;
+    }
+
+    // STS on the Kinesis endpoint: a form-encoded `POST /` with no
+    // X-Amz-Target, the shape of every Query-protocol call.
+    [[nodiscard]] static auto is_sts_query(const front_end_request& req,
+                                           std::string_view content_type) -> bool {
+        const auto semi = content_type.find(';');
+        auto media = content_type.substr(0, semi);
+        while (!media.empty() && media.back() == ' ') {
+            media.remove_suffix(1);
+        }
+        return req._method == "POST" && req._path == "/" &&
+               detail::iequals(media, "application/x-www-form-urlencoded");
+    }
+
+    // `GetCallerIdentity`, answered from the signature alone (README of
+    // tests/evidence: KPL calls it before its first write to build the
+    // StreamARN it sends, and takes a separate STS endpoint that can point
+    // here). It needs no permission on AWS either. Every other STS action
+    // is refused: credentials come from IAM's STS, not from here.
+    [[nodiscard]] auto handle_sts(const front_end_request& req) -> aws_json::http_response {
+        static constexpr std::string_view k_ns = "https://sts.amazonaws.com/doc/2011-06-15/";
+        static constexpr std::size_t k_max_body = 8U * 1024U;
+        const auto id = _codec.new_request_id();
+        const auto answer = [&id](unsigned status, std::string body) {
+            aws_json::http_response r;
+            r.status = status;
+            r.headers = {{"Content-Type", "text/xml"}, {"x-amzn-RequestId", id}};
+            r.body = std::move(body);
+            return r;
+        };
+        const auto refuse = [&](unsigned status, std::string_view code, std::string_view msg) {
+            return answer(status, aws_query::error_xml(k_ns, status < 500, code, msg, id));
+        };
+        if (req._body.size() > k_max_body) {
+            return refuse(413, "RequestEntityTooLarge", "The request body is too large.");
+        }
+        sigv4::service_rules rules;
+        rules.service = "sts";
+        rules.protocol = sigv4::error_protocol::query;
+        if (!_config._region.empty()) {
+            rules.regions = {_config._region};
+        }
+        const sigv4::request sreq{req._method, req._path, req._query, req._headers, req._body};
+        const auto who = _authorizer.authenticate(sreq, rules);
+        if (!who) {
+            return refuse(static_cast<unsigned>(who.error().http_status), who.error().code,
+                          who.error().message);
+        }
+        const auto form = aws_query::form::parse(req._body);
+        if (!form) {
+            return refuse(400, "MalformedQueryString", "The request body is not form-encoded.");
+        }
+        const auto action = form->get("Action").value_or("");
+        if (action != "GetCallerIdentity") {
+            return refuse(400, "InvalidAction",
+                          "This endpoint answers only the STS action GetCallerIdentity.");
+        }
+        aws_query::xml_writer w;
+        w.element("Arn", who->arn);
+        w.element("UserId", who->userid.empty() ? who->account : who->userid);
+        w.element("Account", who->account);
+        return answer(200, aws_query::response_xml("GetCallerIdentity", k_ns, w.str(), id));
     }
 
     [[nodiscard]] static auto unknown_operation() -> aws_json::error {
