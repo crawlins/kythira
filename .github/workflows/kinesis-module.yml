@@ -440,8 +440,8 @@ jobs:
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       # Builds kinesis_gateway_node and the scenario, stages the node image,
-      # builds the boto3 client image, and runs the scenario against a live
-      # stack.
+      # builds the boto3 and aws-sdk-cpp client images, and runs the scenario
+      # against a live stack.
       - name: docker-kinesis-node-tests
         run: cmake --build build --target docker-kinesis-node-tests -j"$(nproc)"
 

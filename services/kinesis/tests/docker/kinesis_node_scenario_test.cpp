@@ -14,6 +14,8 @@
 //   * boto3 writes 500 records through one node and a polling consumer
 //     reads all of them, once each and in sequence order per shard, with
 //     each page from the next node;
+//   * the aws-sdk-cpp client does the same with 300 records, and boto3
+//     reads what it wrote;
 //   * with one node stopped the other two keep taking writes and serving
 //     reads, and the stopped node catches up when it starts again and
 //     serves every record itself.
@@ -136,6 +138,17 @@ os::CmdResult boto3(std::initializer_list<std::string> args, const char* key_id 
     auto cmd = compose_cmd({"--profile", "clients", "run", "--rm", "-T", "-e",
                             std::string("AWS_ACCESS_KEY_ID=") + key_id, "-e",
                             std::string("AWS_SECRET_ACCESS_KEY=") + secret, "boto3"});
+    cmd.insert(cmd.end(), args);
+    return os::real_exec(cmd);
+}
+
+/// kinesis_sdk_cpp, the aws-sdk-cpp client (services/kinesis/docker/
+/// kinesis_sdk_cpp/).
+os::CmdResult sdk_cpp(std::initializer_list<std::string> args, const char* key_id = k_client_id,
+                      const char* secret = k_client_secret) {
+    auto cmd = compose_cmd({"--profile", "clients", "run", "--rm", "-T", "-e",
+                            std::string("AWS_ACCESS_KEY_ID=") + key_id, "-e",
+                            std::string("AWS_SECRET_ACCESS_KEY=") + secret, "sdk-cpp"});
     cmd.insert(cmd.end(), args);
     return os::real_exec(cmd);
 }
@@ -430,6 +443,31 @@ BOOST_AUTO_TEST_CASE(sdks_against_a_cluster_by_service_name) {
                    "--stream", "py", "--expect", "500"});
         BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 consume failed:\n" << r.out);
         BOOST_TEST(r.out.find("\"consumed\": 500") != std::string::npos, r.out);
+    }
+
+    // 3b. aws-sdk-cpp: 300 records in through kin-2 and out across every
+    // node with the C++ SDK's own signing and JSON; boto3 reads the same
+    // records, so what one SDK wrote another reads.
+    {
+        auto r = sdk_cpp({"create", "--endpoint", endpoint(2), "--stream", "cpp", "--shards", "2"},
+                         k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "sdk-cpp create failed:\n" << r.out);
+    }
+    {
+        auto r = sdk_cpp({"produce", "--endpoint", endpoint(2), "--stream", "cpp", "--count", "300",
+                          "--tag", "c"});
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "sdk-cpp produce failed:\n" << r.out);
+        BOOST_TEST(r.out.find("\"produced\": 300") != std::string::npos, r.out);
+    }
+    {
+        auto r =
+            sdk_cpp({"consume", "--endpoints", endpoint(3) + "," + endpoint(1) + "," + endpoint(2),
+                     "--stream", "cpp", "--expect", "300"});
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "sdk-cpp consume failed:\n" << r.out);
+        BOOST_TEST(r.out.find("\"consumed\": 300") != std::string::npos, r.out);
+        auto b =
+            boto3({"consume", "--endpoints", endpoint(1), "--stream", "cpp", "--expect", "300"});
+        BOOST_REQUIRE_MESSAGE(b.code == 0, "boto3 could not read sdk-cpp's records:\n" << b.out);
     }
 
     // 4. One node down: the other two take writes and serve reads.

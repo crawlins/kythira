@@ -29,6 +29,7 @@ set(_KINESIS_NODE_DOCKERFILE "${_KINESIS_DOCKER_DIR}/kinesis_gateway_node/Docker
 set(_KINESIS_NODE_DIST "${_KINESIS_DOCKER_DIR}/kinesis_gateway_node/dist")
 set(_KINESIS_CLIENTS_DOCKERFILE "${_KINESIS_DOCKER_DIR}/kinesis_clients/Dockerfile")
 set(_KINESIS_KCL_DOCKERFILE "${_KINESIS_DOCKER_DIR}/kinesis_kcl_sample/Dockerfile")
+set(_KINESIS_SDK_CPP_DOCKERFILE "${_KINESIS_DOCKER_DIR}/kinesis_sdk_cpp/Dockerfile")
 set(_KINESIS_COMPOSE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/compose.yml")
 
 if(_RUNTIME_EXE)
@@ -75,12 +76,18 @@ if(_RUNTIME_EXE)
                     --file "${_KINESIS_CLIENTS_DOCKERFILE}"
                     --tag kythira-kinesis-clients:dev
                     "${KYTHIRA_IMAGE_CONTEXT}"
+            # The aws-sdk-cpp client (the SDK and the client are built
+            # inside the image).
+            COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
+                    --file "${_KINESIS_SDK_CPP_DOCKERFILE}"
+                    --tag kythira-kinesis-sdk-cpp:dev
+                    "${KYTHIRA_IMAGE_CONTEXT}"
             # The KCL sample workers (Java, built inside the image).
             COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_KINESIS_KCL_DOCKERFILE}"
                     --tag kythira-kinesis-kcl:dev
                     "${KYTHIRA_IMAGE_CONTEXT}"
-            COMMENT "Staging kinesis_gateway_node (and chaos_s3_mock, dynamodb_gateway_node) and building the kythira-kinesis-node, -clients and -kcl :dev images"
+            COMMENT "Staging kinesis_gateway_node (and chaos_s3_mock, dynamodb_gateway_node) and building the kythira-kinesis-node, -clients, -sdk-cpp and -kcl :dev images"
             WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
         )
         # Called once the whole tree is configured (the image context is
