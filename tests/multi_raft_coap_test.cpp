@@ -769,6 +769,20 @@ BOOST_AUTO_TEST_CASE(a_split_and_merge_complete_under_per_group_oscore,
         scaled_deadline(20000)));
     const auto child = c.host(1).resolve("delta")->_group_id;
     BOOST_REQUIRE(c.await([&] { return c.leader_of(child) != nullptr; }, scaled_deadline(20000)));
+    // The merge below is refused as "not colocated" by a k_right leader whose
+    // host has no replica of the child yet: a leader for the child somewhere
+    // does not mean every host has applied the split. CI hit exactly that
+    // ("3 source member(s), 0 target member(s)"), so wait for all three.
+    BOOST_REQUIRE(c.await(
+        [&] {
+            for (node_id_t id = 1; id <= k_node_count; ++id) {
+                if (c.host(id).group_node(child) == nullptr) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        scaled_deadline(20000)));
     BOOST_REQUIRE(c.put("baker", "after-split"));
     BOOST_REQUIRE(c.put("echo", "after-split"));
 

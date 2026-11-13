@@ -220,13 +220,35 @@ public:
         return nullptr;
     }
 
+    /// @brief Wait for a leader that has settled: every node on its term, and
+    ///        the same leader in the same term after more than an election
+    ///        timeout.
+    ///
+    /// A just-elected leader in a fresh group can still be deposed by a node
+    /// whose pre-vote was in flight when it won. CI caught exactly that: node
+    /// 1 won term 1, node 3 won term 2 within milliseconds, and the admin entry
+    /// the case had just proposed to node 1 failed with it. Once every node
+    /// has the leader's term and kept it past the election timeout, each has
+    /// heard from the leader and refuses stray pre-votes.
     auto await_leader(std::chrono::milliseconds budget) -> bool {
         const auto deadline = std::chrono::steady_clock::now() + budget;
+        constexpr auto hold = std::chrono::milliseconds{400};  // election_timeout_max is 260
         while (std::chrono::steady_clock::now() < deadline) {
-            if (leader() != nullptr) {
+            auto* first = leader();
+            if (first == nullptr) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{20});
+                continue;
+            }
+            const auto term = first->get_current_term();
+            std::this_thread::sleep_for(hold);
+            bool settled = leader() == first && first->get_current_term() == term;
+            for (node_id_t id = 1; settled && id <= k_node_count; ++id) {
+                auto* n = node(id);
+                settled = n != nullptr && n->get_current_term() == term;
+            }
+            if (settled) {
                 return true;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds{20});
         }
         return false;
     }

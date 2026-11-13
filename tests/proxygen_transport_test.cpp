@@ -1076,8 +1076,11 @@ BOOST_AUTO_TEST_CASE(peer_identity_error_matches_rfc6125_rules) {
 // first. "*" is 0.0.0.0 and :: on one port.
 BOOST_AUTO_TEST_CASE(localhost_and_star_binds_round_trip,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
-    std::uint16_t port = kythira::testing::free_port();
     for (std::string bind : {"localhost", "*"}) {
+        // A fresh claimed port per bind. This used to take port + 1 for the
+        // second server, which nothing had claimed or checked, and CI saw
+        // "bind() on port N" here once.
+        const std::uint16_t port = kythira::testing::free_port();
         // A fresh executor per server: proxygen_server::stop() stops the
         // executor it was handed, so a second server on the same one would
         // find no threads left.
@@ -1100,7 +1103,6 @@ BOOST_AUTO_TEST_CASE(localhost_and_star_binds_round_trip,
                        .get()
                        .vote_granted());
         server.stop();
-        ++port;
     }
 }
 
