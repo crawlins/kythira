@@ -129,6 +129,14 @@ if(folly_FOUND)
     # including a 1 GiB PUT whose peak RSS must stay under 64 MiB.
     kythira_redis_test(cache_http_front_end_test cache_http_front_end_test.cpp)
     target_link_libraries(cache_http_front_end_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    # In the `heavy_tu` pool (top-level CMakeLists.txt): this TU measured
+    # 11.9 GiB of compiler RSS (g++-13, -O2 -g, Boost backend, on main and
+    # on PR #745 alike), most of a 16 GiB runner. It only shows when the
+    # compiler cache misses, as it does for any change to the chunk store
+    # headers. Unpooled, it compiled beside the pooled redis_gateway_node
+    # TUs, and the arm64 g++-13 Build & Test runner was shut down for
+    # running out of memory three times in a row on PR #745.
+    set_target_properties(cache_http_front_end_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
     set_tests_properties(cache_http_front_end_test PROPERTIES
         LABELS "multi-raft;redis;cache" TIMEOUT 900)
     # .kiro/specs/multi-raft-transactions/ task 9: the gateway's
