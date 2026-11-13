@@ -957,16 +957,34 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 - [ ] 27. Multi-region strong consistency (added 2026-11-13: Clark chose
   to build it in task 25)
-  - Design first: a strongly consistent global table's ranges in Raft
-    groups whose voters span three clusters (or two and a witness), and
-    what that means for placement, splits, the forward link, transactions
-    and the change log
-  - `MultiRegionConsistency=STRONG` on `CreateTable` and `UpdateTable`
-    replica updates, `GlobalTableWitnessUpdates`, and their descriptions
-  - Strongly consistent reads in every region; writes refused, as AWS does,
-    when the region cannot reach a quorum
-  - Tests across three linked clusters, including losing a region
-  - _Requirements: 18.3_
+  - [x] 27.1 Design (design.md, "Multi-region strong consistency"): MRSC
+    groups with `n` voters in each of three regions in a second
+    multi-raft host with wide-area timings, a strong catalog group, the
+    empty-table conversion, leaving strong mode by membership change,
+    requests, splits, GSIs and the change log
+  - [ ] 27.2 Strong host: config (`KYTHIRA_DYNAMODB_STRONG_*`), mTLS peers
+    across regions, region-qualified node ids and group id ranges,
+    `strong-layout.json`, restart
+  - [ ] 27.3 Strong catalog: strong ids, shared settings, membership,
+    status; each region's catalog applies them to its descriptor
+  - [ ] 27.4 `UpdateTable` with `MultiRegionConsistency=STRONG`,
+    `ReplicaUpdates` and `GlobalTableWitnessUpdates`: validation, seal,
+    emptiness check, conversion; `DescribeTable` with
+    `MultiRegionConsistency`, `Replicas` and `GlobalTableWitnesses`
+  - [ ] 27.5 Requests: item, query, scan and batch operations routed to
+    the strong host; cross-region forward link; eventually consistent
+    reads in-region; quorum loss answered as AWS does; transactions, TTL
+    and LSIs refused
+  - [ ] 27.6 Leaving strong mode (two replicas, or replica and witness,
+    removed) and `DeleteTable` rules
+  - [ ] 27.7 Splits, GSIs, Streams, Kinesis destinations, PITR and
+    backups on MRSC tables
+  - [ ] 27.8 Tests: three in-process clusters (write in one region, strong
+    read in another; racing conditional writes; lose a region; cut a
+    region off and bring it back; split under load; witness); a compose
+    harness with three clusters under Docker and rootless Podman
+  - [ ] 27.9 Docs: `doc/dynamodb.md`, `unsupported.md`, module README
+  - _Requirements: 18.3, 18.4, 18.5_
 
 - [x] 22. Global tables, last-writer-wins
   - Peer cluster config, replicator and receiver, replica updates in

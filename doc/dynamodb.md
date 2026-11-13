@@ -168,12 +168,16 @@ Parts of supported operations are also refused. Among them are
 lands they answer `ValidationException`, and global tables are eventually
 consistent across regions with last-writer-wins.
 
-What it takes: each write must commit in a quorum that spans clusters, as
-AWS does with three regions (or two and a witness), so every write pays a
-cross-region round trip. In Kythira that means Raft groups whose voters sit
-in different clusters for a strongly consistent table's ranges. Group
-placement, splits, the forward link and transactions all assume today that
-a group's voters are in one cluster, so task 27 starts with a design.
+How it will work (the design is in
+`.kiro/specs/dynamodb-compatible-api/design.md`): a strongly consistent
+table's items live in Raft groups with the same number of voters in each of
+the three regions, so no region holds a quorum alone. Every write commits
+in at least two regions, and every region applies the same log. These
+groups run in a second multi-raft host on each node, with timings for a
+wide-area network, and a strong catalog group spanning the regions holds
+what they must agree on. Every write pays at least one cross-region round
+trip. Transactions, TTL and LSIs are refused on such tables, as AWS
+refuses them.
 
 ## Testing it
 
