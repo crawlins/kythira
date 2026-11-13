@@ -131,7 +131,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     before a write is proposed, because free space differs between
     replicas and so cannot be checked in `apply()`.
 
-- [ ] 7. Control plane and single-item API
+- [x] 7. Control plane and single-item API
   - `CreateTable`, `DescribeTable`, `ListTables`, `UpdateTable` (basic),
     `DeleteTable`, `DescribeLimits`, tags, deletion protection, table class,
     warm throughput
@@ -169,6 +169,11 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       Query, Scan and delete.
     - Left: warm throughput. The KCL sample is the KCL 2.x run in
       `kcl_on_kythira.sh` (task 11).
+    - Closed in task 25's review: warm throughput had landed with the
+      capacity work (`WarmThroughput` on `CreateTable` and `UpdateTable`
+      and in `DescribeTable`, refused when not positive or below the
+      current value; `dynamodb_api_test`), and the KCL runs moved to
+      `clients_on_kythira.sh` (task 24), so the box is ticked.
 
 - [x] 8. Query, Scan and batch operations
   - Range reads with every `Query` option; cross-shard `Scan` cursors;
@@ -950,6 +955,19 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       GSIs. Not recorded against AWS: that needs Clark's go, and DynamoDB
       Local may not implement vector search.
 
+- [ ] 27. Multi-region strong consistency (added 2026-11-13: Clark chose
+  to build it in task 25)
+  - Design first: a strongly consistent global table's ranges in Raft
+    groups whose voters span three clusters (or two and a witness), and
+    what that means for placement, splits, the forward link, transactions
+    and the change log
+  - `MultiRegionConsistency=STRONG` on `CreateTable` and `UpdateTable`
+    replica updates, `GlobalTableWitnessUpdates`, and their descriptions
+  - Strongly consistent reads in every region; writes refused, as AWS does,
+    when the region cannot reach a quorum
+  - Tests across three linked clusters, including losing a region
+  - _Requirements: 18.3_
+
 - [x] 22. Global tables, last-writer-wins
   - Peer cluster config, replicator and receiver, replica updates in
     `UpdateTable`, replica status, conflict tests with clock skew
@@ -1070,8 +1088,18 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       logs `provision_node failed` on every heartbeat once a peer is
       silent for 30 s; an overloaded run wrote millions of such lines.
 
-- [ ] 25. Documentation and decisions
+- [x] 25. Documentation and decisions
   - `doc/dynamodb.md`: model, profile switches, limits, operations,
     unsupported list, deployment
   - Decide multi-region strong consistency (Requirement 18.3) with Clark
   - _Requirements: 18.3_
+  - Notes:
+    - `doc/dynamodb.md` covers the model (catalog and item groups, key
+      layout, LSIs, GSIs, transactions, the change log, splits and the
+      saved layout), deployment, the compatibility switches, limits,
+      operations, what is unsupported, and the conformance and chaos runs.
+      The module README's stale "one node, no Raft" note now points to it.
+    - Multi-region strong consistency: Clark chose to build it
+      (2026-11-13), as task 27. Until then `MultiRegionConsistency=STRONG`
+      and `GlobalTableWitnessUpdates` answer `ValidationException`, and the
+      docs list it as planned.

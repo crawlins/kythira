@@ -87,6 +87,8 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_vector_test.cpp` | Vector index definitions, updates and the worker, scores, partitions, filters, projections, graphs that follow writes, HNSW recall | 26 |
 | `include/kythira/dynamodb/global_tables.hpp` | Global tables: the peer API's receiver, the replicator, peer links over HTTP | 22 |
 | `tests/dynamodb_global_table_test.cpp` | Replicas in linked clusters: backfill, both directions, clock skew, a three-region mesh, deletion, refusals | 22 |
+| `cmd/dynamodb_gateway_node/group_ids.hpp`, `group_layout.hpp`, `durable_file.hpp` | Each voter's own range of group ids for splits, and the saved group layout a node restarts from | 24 |
+| `tools/chaos/` | The chaos scenario: SIGKILLs on a RocksDB cluster during splits and GSI propagation, with streams on (`run_chaos.sh`) | 24 |
 
 The rest follows the plan in the spec's `tasks.md`.
 
@@ -96,11 +98,12 @@ model generator (`scripts/gen_aws_json_shapes.py`).
 
 ## Running the daemon
 
-So far `dynamodb_gateway_node` runs one node on the in-memory engine, with
-no Raft and nothing kept across a restart, like DynamoDB Local's
-`-inMemory`. The Raft-hosted backend on RocksDB comes next in task 7.
-Settings come from the environment; `dynamodb_gateway_node --help` lists
-them, and `gateway.hpp` documents each one.
+`doc/dynamodb.md` (at the top of the repository) covers running a cluster
+on RocksDB. Without `KYTHIRA_DYNAMODB_PEERS`, `dynamodb_gateway_node` runs
+one node on the in-memory engine, with no Raft and nothing kept across a
+restart, like DynamoDB Local's `-inMemory`. Settings come from the
+environment; `dynamodb_gateway_node --help` lists them, and `gateway.hpp`
+documents each one.
 
 ```
 KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT=1 \
