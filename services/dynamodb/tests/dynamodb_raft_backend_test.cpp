@@ -601,7 +601,16 @@ BOOST_AUTO_TEST_CASE(range_reads_cross_a_split_with_small_pages) {
 // hash buckets its state machine picks, and every item stays readable.
 BOOST_AUTO_TEST_CASE(the_size_policy_splits_a_growing_group_at_partition_buckets) {
     constexpr std::size_t k_split_bytes = 6 * 1024;
-    cluster c(test_options(), [](config_type& cfg) {
+    // What each replica is told of its own groups when the split applies
+    // (on_local_layout_changed), which a RocksDB node saves to restart with.
+    std::mutex layouts_mu;
+    std::map<std::uint64_t, std::vector<host_type::descriptor_type>> layouts;
+    cluster c(test_options(), [&](config_type& cfg) {
+        cfg.on_local_layout_changed = [&layouts_mu, &layouts,
+                                       id = cfg.node_id](const auto& groups) {
+            const std::lock_guard lock(layouts_mu);
+            layouts[id] = groups;
+        };
         kythira::threshold_split_merge_policy_config pc;
         pc._shard_split_size_bytes = k_split_bytes;
         pc._shard_split_keys = std::numeric_limits<std::size_t>::max();
@@ -645,6 +654,25 @@ BOOST_AUTO_TEST_CASE(the_size_policy_splits_a_growing_group_at_partition_buckets
         }
     }
     BOOST_TEST(cuts >= 1U);
+    // Every replica was told the layout the splits left it: the same groups
+    // and ranges as its routing map.
+    BOOST_TEST(cluster::await([&] {
+        const std::lock_guard lock(layouts_mu);
+        for (std::uint64_t id = 1; id <= k_nodes; ++id) {
+            const auto it = layouts.find(id);
+            const auto now = c.host(id).shard_map_snapshot();
+            if (it == layouts.end() || it->second.size() != now.size()) {
+                return false;
+            }
+            for (const auto& d : it->second) {
+                const auto row = now.find(d._group_id);
+                if (!row || !(row->_range == d._range)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }));
     std::set<std::string> seen;
     BOOST_TEST(count_all(c.node(2), true, &seen) == static_cast<std::size_t>(k_items));
     BOOST_TEST(seen.size() == static_cast<std::size_t>(k_items));

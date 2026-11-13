@@ -14,6 +14,9 @@
 // node's engine (memory, or one RocksDB database under the data directory,
 // with the Raft logs beside it).
 
+#include "group_ids.hpp"
+#include "group_layout.hpp"
+
 #include <kythira/dynamodb/forward_link.hpp>
 #include <kythira/dynamodb/gateway.hpp>
 #include <kythira/dynamodb/group_state_machine.hpp>
@@ -43,6 +46,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -269,6 +273,18 @@ auto run_cluster(
         .on_group_destroyed = {},
     };
     hc.state_engine = std::move(engine);
+    // Where a group stages the checkpoints it sends and the snapshots it
+    // receives. Without it a leader cannot send a format-1 snapshot, so a
+    // follower that fell behind the leader's log (one that was down, or a
+    // split child's replica that missed entries) never catches up.
+    std::optional<scratch_dir> snapshot_scratch;
+    if (cfg.engine != "memory" && !cfg.data_dir.empty()) {
+        hc.config._snapshot_staging_directory = std::filesystem::path(cfg.data_dir) / "snapshots";
+    } else {
+        snapshot_scratch.emplace("kythira-ddb-snapshots");
+        hc.config._snapshot_staging_directory = snapshot_scratch->path();
+    }
+    std::filesystem::create_directories(hc.config._snapshot_staging_directory);
     hc.logger = kythira::console_logger{cfg.log_level};
     hc.logger_factory = [level = cfg.log_level](const std::uint64_t&) {
         return kythira::console_logger{level};
@@ -306,8 +322,33 @@ auto run_cluster(
     }
     hc.automatic_split_merge_enabled = cfg.cluster.splits_enabled();
     hc.split_merge_interval = cfg.cluster.split_interval;
+    // A split's children need fresh group ids: this voter's reserved range
+    // (group_ids.hpp), recorded beside a RocksDB node's data.
+    auto group_ids = std::make_shared<reserved_group_ids>(
+        static_cast<std::size_t>(std::distance(c.peers.begin(), c.peers.find(c.node_id))),
+        cfg.engine == "rocksdb" ? std::optional<std::filesystem::path>(
+                                      std::filesystem::path(cfg.data_dir) / "group-ids")
+                                : std::nullopt);
+    hc.allocate_group_ids = [group_ids](std::size_t n) { return group_ids->allocate(n); };
+    // A RocksDB node restarts with the groups it last had (group_layout.hpp),
+    // saved on every split before the parent applies anything later.
+    using descriptor_type = typename config_type::descriptor_type;
+    std::optional<group_layout_file<descriptor_type, node_id>> layout;
+    if (cfg.engine != "memory" && !cfg.data_dir.empty()) {
+        layout.emplace(
+            std::filesystem::path(cfg.data_dir) / "layout.json",
+            [](const node_id& n) { return traits::to_text(n); },
+            [](const std::string& t) { return peer_id(t); });
+        hc.on_local_layout_changed = [&layout, &log](const std::vector<descriptor_type>& groups) {
+            if (!layout->save(groups)) {
+                log(true, "cannot save the group layout to " + layout->path().string() +
+                              "; a restart before the next save may lose a split's groups");
+            }
+        };
+    }
     auto host = std::make_unique<host_type>(std::move(hc));
-    for (const auto& d : backend_type::bootstrap_descriptors(voters)) {
+    const auto saved = layout ? layout->load() : std::nullopt;
+    for (const auto& d : saved ? *saved : backend_type::bootstrap_descriptors(voters)) {
         host->create_group(d);
     }
     host->start();
