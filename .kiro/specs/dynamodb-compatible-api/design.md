@@ -243,6 +243,7 @@ the lock client and the Streams adapter are recorded once against a stub, as
 ## Open questions
 
 1. Multi-region strong consistency for global tables: build it on a
-   cross-cluster Raft group, or list it as unsupported?
+   cross-cluster Raft group, or list it as unsupported? Decided in task
+   25 (Clark, 2026-11-13): build it, as task 27.
 2. Should `dynamodb_gateway_node` and `kinesis_gateway_node` also be
    offered as one combined binary for small deployments?

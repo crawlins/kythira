@@ -39,7 +39,9 @@ replica updates. These parts of the API answer `ValidationException`
   `OnDemandThroughputOverride`, `GlobalSecondaryIndexes`,
   `TableClassOverride`): replicas take the source table's settings.
 - `MultiRegionConsistency` and `GlobalTableWitnessUpdates`: multi-region
-  strong consistency waits for task 25's decision (Requirement 18.3).
+  strong consistency is planned (task 27, Requirement 18.3). It needs every
+  write to commit in a quorum spanning clusters, and a Kythira group's
+  voters all sit in one cluster today; `doc/dynamodb.md` explains.
 - `DeleteTable` of a table with replicas is refused; AWS deletes that
   replica. Remove the replicas with `ReplicaUpdates` `Delete` first.
 - `ReplicaUpdates` cannot be combined with other `UpdateTable` changes in

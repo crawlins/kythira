@@ -3,6 +3,22 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (November 13, 2026)
+
+- **Kythira speaks DynamoDB.** Tasks 1-26 of the `dynamodb-compatible-api`
+  spec are done. `dynamodb_gateway_node` serves the DynamoDB and DynamoDB
+  Streams APIs on Kythira's Raft groups. The AWS CLI, boto3,
+  aws-sdk-java-v2, the lock client, KCL 2.x and 3.x with the Streams
+  adapter, and Terraform's `aws_dynamodb_table` run against it unchanged.
+  It covers items, expressions, Query and Scan, transactions, PartiQL,
+  LSIs and GSIs, TTL, Streams, Kinesis destinations, backups,
+  point-in-time recovery, exports and imports, vector search, and global
+  tables. Groups split automatically as tables grow. A chaos run kills
+  each node of a RocksDB cluster during splits and GSI propagation, and
+  no acknowledged write, index entry or stream record is lost or
+  duplicated. Multi-region strong consistency comes next (task 27). See
+  [dynamodb.md](dynamodb.md).
+
 ### What Changed (November 12, 2026)
 
 - **A stalled disk no longer costs a disk-mode shard its leader.** The
