@@ -112,6 +112,11 @@ except urllib.error.HTTPError as e:
                 "${compose[@]}" run --rm -e ENDPOINT=http://forwarder:8000 \
                     -e SOURCE_TABLE="${source_table}" java "${c}" ;;
         esac
+        # Keep the nodes' logs after every client: a later `run` can
+        # recreate the nodes (it did before terraform under rootless
+        # Podman), and their logs, with the cause of any 500 an earlier
+        # client met, go with the old containers.
+        "${compose[@]}" logs ddb-1 ddb-2 ddb-3 > "${out}/nodes-after-${c}.log" 2>&1 || true
     done
 elif [ "${mode}" = native ]; then
     api_port="${KCL_KYTHIRA_PORT:-8766}"
@@ -152,6 +157,6 @@ if [ "${status}" -ne 0 ]; then
     if [ "${mode}" = compose ]; then
         "${compose[@]}" logs ddb-1 ddb-2 ddb-3 > "${out}/nodes.log" 2>&1 || true
     fi
-    grep -h "answered InternalServerError" "${out}/nodes.log" >&2 || true
+    grep -h "answered InternalServerError" "${out}"/nodes*.log 2>/dev/null | sort -u >&2 || true
 fi
 exit "${status}"
