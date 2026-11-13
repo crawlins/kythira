@@ -301,65 +301,60 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, *boost::unit_test:
     auto* expected_ptr = cpu_executor.get();
     std::atomic<int> successful_operations{0};
     std::atomic<int> total_operations{0};
+    // Shared, not on this frame's stack: a task the pool runs late must not
+    // write to a counter that has gone out of scope.
+    auto tasks_executed = std::make_shared<std::atomic<int>>(0);
     std::vector<std::thread> threads;
 
     // Launch threads that perform concurrent pointer access and reference counting operations
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back(
-            [&original_keep_alive, expected_ptr, &successful_operations, &total_operations]() {
-                for (int j = 0; j < operations_per_thread; ++j) {
-                    total_operations.fetch_add(1, std::memory_order_relaxed);
+        threads.emplace_back([&original_keep_alive, expected_ptr, &successful_operations,
+                              &total_operations, tasks_executed]() {
+            for (int j = 0; j < operations_per_thread; ++j) {
+                total_operations.fetch_add(1, std::memory_order_relaxed);
 
-                    try {
-                        // Test concurrent get() calls
-                        auto* ptr = original_keep_alive.get();
-                        if (ptr == expected_ptr) {
-                            successful_operations.fetch_add(1, std::memory_order_relaxed);
-                        }
-
-                        // Test concurrent copy construction
-                        KeepAlive copy(original_keep_alive);
-                        if (copy.get() == expected_ptr && copy.is_valid()) {
-                            successful_operations.fetch_add(1, std::memory_order_relaxed);
-                        }
-
-                        // Test concurrent move construction
-                        KeepAlive moved(std::move(copy));
-                        if (moved.get() == expected_ptr && moved.is_valid()) {
-                            successful_operations.fetch_add(1, std::memory_order_relaxed);
-                        }
-
-                        // Test concurrent assignment
-                        KeepAlive assigned;
-                        assigned = original_keep_alive;
-                        if (assigned.get() == expected_ptr && assigned.is_valid()) {
-                            successful_operations.fetch_add(1, std::memory_order_relaxed);
-                        }
-
-                        // Test concurrent work submission
-                        // Shared, not on this iteration's stack: a task the
-                        // pool runs after the wait below must not write to a
-                        // flag that has already gone out of scope.
-                        auto task_executed = std::make_shared<std::atomic<bool>>(false);
-                        assigned.add([task_executed]() {
-                            task_executed->store(true, std::memory_order_relaxed);
-                        });
-
-                        // Brief wait to allow task execution
-                        std::this_thread::sleep_for(std::chrono::microseconds(100));
-
-                        if (task_executed->load()) {
-                            successful_operations.fetch_add(1, std::memory_order_relaxed);
-                        }
-
-                        total_operations.fetch_add(
-                            4, std::memory_order_relaxed);  // 4 additional operations per iteration
-                    } catch (const std::exception& e) {
-                        // Log exception but continue testing
-                        BOOST_TEST_MESSAGE("Exception in thread: " << e.what());
+                try {
+                    // Test concurrent get() calls
+                    auto* ptr = original_keep_alive.get();
+                    if (ptr == expected_ptr) {
+                        successful_operations.fetch_add(1, std::memory_order_relaxed);
                     }
+
+                    // Test concurrent copy construction
+                    KeepAlive copy(original_keep_alive);
+                    if (copy.get() == expected_ptr && copy.is_valid()) {
+                        successful_operations.fetch_add(1, std::memory_order_relaxed);
+                    }
+
+                    // Test concurrent move construction
+                    KeepAlive moved(std::move(copy));
+                    if (moved.get() == expected_ptr && moved.is_valid()) {
+                        successful_operations.fetch_add(1, std::memory_order_relaxed);
+                    }
+
+                    // Test concurrent assignment
+                    KeepAlive assigned;
+                    assigned = original_keep_alive;
+                    if (assigned.get() == expected_ptr && assigned.is_valid()) {
+                        successful_operations.fetch_add(1, std::memory_order_relaxed);
+                    }
+
+                    // Test concurrent work submission. Counted once the
+                    // pool has run it, after the threads join: judging it
+                    // by a fixed 100 us wait here made the pass rate a
+                    // measure of the runner's load (89.3 % in one CI run).
+                    assigned.add([tasks_executed]() {
+                        tasks_executed->fetch_add(1, std::memory_order_relaxed);
+                    });
+
+                    total_operations.fetch_add(
+                        4, std::memory_order_relaxed);  // 4 additional operations per iteration
+                } catch (const std::exception& e) {
+                    // Log exception but continue testing
+                    BOOST_TEST_MESSAGE("Exception in thread: " << e.what());
                 }
-            });
+            }
+        });
     }
 
     // Wait for all threads to complete
@@ -367,16 +362,22 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, *boost::unit_test:
         thread.join();
     }
 
-    // Wait for any remaining tasks to complete
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // Every submitted task must run; wait for the pool to drain them.
+    const int submitted = num_threads * operations_per_thread;
+    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (tasks_executed->load() < submitted &&
+           std::chrono::steady_clock::now() < drain_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    BOOST_CHECK_EQUAL(tasks_executed->load(), submitted);
+    successful_operations.fetch_add(tasks_executed->load(), std::memory_order_relaxed);
 
-    // Verify that most operations succeeded (allow for some timing-related failures)
     int expected_total = num_threads * operations_per_thread * 5;  // 5 operations per iteration
     BOOST_CHECK_EQUAL(total_operations.load(), expected_total);
 
-    // At least 90% of operations should succeed
+    // Nothing here depends on timing any more, so every operation succeeds.
     double success_rate = static_cast<double>(successful_operations.load()) / expected_total;
-    BOOST_CHECK_GE(success_rate, 0.9);
+    BOOST_CHECK_EQUAL(successful_operations.load(), expected_total);
 
     // Original KeepAlive should still be valid
     BOOST_CHECK(original_keep_alive.get() == expected_ptr);
