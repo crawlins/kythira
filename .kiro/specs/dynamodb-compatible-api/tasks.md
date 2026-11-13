@@ -977,7 +977,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       (`dynamodb_gateway_cluster_test`). By hand on RocksDB: three daemons
       formed it, a node restarted with one region down rejoined, and all
       three restarted together came back
-  - [ ] 27.3 Strong catalog: strong ids, shared settings, membership,
+  - [x] 27.3 Strong catalog: strong ids, shared settings, membership,
     status; each region's catalog applies them to its descriptor
     - [x] Strong ids: the strong host's first layout puts every strong
       table in a group starting at `strong_key_start()`; each strong
@@ -986,16 +986,52 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     - [x] `routed_backend`: the gateway's backend sends each call to the
       host owning its table id, key range or stream key; a transaction
       across both hosts is refused (`dynamodb_strong_test`)
-    - [ ] Shared settings, membership and status, mirrored into each
-      region's catalog (with 27.4, which first writes them)
-  - [ ] 27.4 `UpdateTable` with `MultiRegionConsistency=STRONG`,
-    `ReplicaUpdates` and `GlobalTableWitnessUpdates`: validation, seal,
+    - [x] Shared settings, membership and status, mirrored into each
+      region's catalog (with 27.4)
+  - [x] 27.4 `UpdateTable` with `MultiRegionConsistency=STRONG`,
+    `ReplicaUpdates` and `GlobalTableWitnessUpdates`: validation,
     emptiness check, conversion; `DescribeTable` with
     `MultiRegionConsistency`, `Replicas` and `GlobalTableWitnesses`
-  - [ ] 27.5 Requests: item, query, scan and batch operations routed to
+    - `table_api::strong_updates`: the checks (enum, three regions that
+      are the strong host's, one witness at most, creates only, ACTIVE,
+      not global, no LSI, TTL off, empty), the strong catalog's copy,
+      then `make_strong` on this region's catalog (undone in the strong
+      catalog if it fails)
+    - Catalog format 11: `strong`, `witnesses`, `retired_ids`,
+      `salvage_after_ms`; commands `make_strong`, `adopt_strong`,
+      `strong_members`, `salvage_done`
+    - `strong_table_worker` (`strong_tables.hpp`) on each catalog leader:
+      adoption, witness and replica statuses, salvage of writes in flight
+      during the switch (instead of a seal: the switch, then a sweep a
+      minute later)
+    - Global table replication and its peer API skip strong tables, and
+      strong tables log changes only for their own consumers
+    - Tests: `dynamodb_strong_test` (three regions over one strong
+      backend: conversion, adoption, a write in one region read in the
+      others, a conditional write, the witness, every refusal, a name
+      taken in a replica region, salvage);
+      `dynamodb_gateway_cluster_test` (three in-process regions over a
+      real strong host). The refusal messages are Kythira's; AWS's were
+      not recorded
+  - [x] 27.5 Requests: item, query, scan and batch operations routed to
     the strong host; cross-region forward link; eventually consistent
     reads in-region; quorum loss answered as AWS does; transactions, TTL
     and LSIs refused
+    - Routing is `routed_backend` (27.3): the API layer is unchanged, and
+      a strong table's descriptor carries strong ids. Writes and strong
+      reads forward to the strong group's leader over the strong forward
+      link; an eventually consistent read is answered by this region's
+      own strong voter.
+    - Quorum loss: AWS's answer is not documented or recorded (open
+      question 3), so a write or strong read with no strong quorum is
+      answered InternalServerError once the strong host's 30 s deadline
+      passes; eventually consistent reads keep working.
+      `a_table_made_strong_serves_all_three_regions` stops one region
+      (writes and strong reads still work), then a second (they get 500,
+      an eventually consistent read gets 200).
+    - TransactWriteItems and TransactGetItems naming a strong table,
+      and enabling TTL on one, are refused with ValidationException; a
+      table with LSIs cannot be made strong
   - [ ] 27.6 Leaving strong mode (two replicas, or replica and witness,
     removed) and `DeleteTable` rules
   - [ ] 27.7 Splits, GSIs, Streams, Kinesis destinations, PITR and

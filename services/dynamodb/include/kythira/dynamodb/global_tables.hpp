@@ -447,7 +447,7 @@ private:
             if (add == ctx.region || d->replica_in(add) != nullptr) {
                 return boost::json::object{};
             }
-            if (!d->global() || d->replica_in(source) == nullptr) {
+            if (!d->global() || d->strong || d->replica_in(source) == nullptr) {
                 return validation_error("Table " + name + " is not a replica of " + source);
             }
             // Start it where this cluster is with the source: what has not
@@ -487,7 +487,7 @@ private:
         if (d->status != table_status::active) {
             return busy("Table is not ACTIVE: " + name);
         }
-        if (!d->global() || d->replica_in(source) == nullptr) {
+        if (!d->global() || d->strong || d->replica_in(source) == nullptr) {
             return validation_error("Table " + name + " is not a replica of " + source);
         }
         const auto* writes = in.if_contains("Writes");
@@ -596,7 +596,9 @@ public:
         std::size_t moved = 0;
         for (const auto& name : _backend.list_tables("", SIZE_MAX)) {
             const auto d = _backend.describe(name);
-            if (!d || !d->global() || d->status != table_status::active) {
+            // A strongly consistent table (task 27) replicates through the
+            // strong host's Raft groups, not from here.
+            if (!d || !d->global() || d->strong || d->status != table_status::active) {
                 continue;
             }
             for (const auto& r : d->replicas) {

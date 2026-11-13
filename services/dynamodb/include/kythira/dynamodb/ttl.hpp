@@ -301,6 +301,12 @@ public:
         c.now_ms = _backend.now_ms();
         // The hourly limit follows the table's ttl-delay switch.
         if (const auto d = _backend.describe(name)) {
+            // AWS: "Time to Live (TTL) is not supported for MRSC global
+            // tables" (task 27).
+            if (d->strong && c.table.ttl.enabled) {
+                return validation_error(
+                    "Time to Live is not supported for multi-Region strongly consistent tables");
+            }
             c.ttl_min_interval_ms = resolve_profile(_profile, d->tags).aws_ttl_delay
                                         ? ttl_detail::k_min_change_interval_ms
                                         : 0;

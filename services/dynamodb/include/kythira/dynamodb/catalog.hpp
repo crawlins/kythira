@@ -252,6 +252,33 @@ struct table_replica {
     friend auto operator==(const table_replica&, const table_replica&) -> bool = default;
 };
 
+/// A multi-region strongly consistent table's witness (task 27): a region
+/// whose strong voters store the table but serve no reads or writes.
+enum class witness_status : std::uint8_t {
+    creating = 0,
+    active = 1,
+    deleting = 2,
+};
+
+struct table_witness {
+    std::string region;
+    witness_status status = witness_status::creating;
+
+    friend auto operator==(const table_witness&, const table_witness&) -> bool = default;
+};
+
+[[nodiscard]] inline auto witness_status_name(witness_status s) -> std::string_view {
+    switch (s) {
+        case witness_status::creating:
+            return "CREATING";
+        case witness_status::active:
+            return "ACTIVE";
+        case witness_status::deleting:
+            return "DELETING";
+    }
+    return "CREATING";
+}
+
 [[nodiscard]] inline auto replica_status_name(replica_status s) -> std::string_view {
     switch (s) {
         case replica_status::creating:
@@ -353,6 +380,26 @@ struct table_descriptor {
     /// in other clusters. Empty for any other table.
     std::string region;
     std::vector<table_replica> replicas;
+    /// Multi-region strong consistency (task 27): the table's items live in
+    /// the strong host under strong ids, and `replicas` are the other
+    /// regions'. In the strong catalog `region` is empty and `replicas`
+    /// lists every replica region.
+    bool strong = false;
+    /// An MRSC table's witness region, at most one.
+    std::vector<table_witness> witnesses;
+    /// The ids the table and its indexes had in the cluster's host before
+    /// it was made strong, each with the strong id that replaced it. Kept
+    /// until `salvage_after_ms`, when the worker moves any item a request
+    /// in flight wrote under an old id and drops the old key spaces.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> retired_ids;
+    std::uint64_t salvage_after_ms = 0;
+
+    /// The witness in `name`, or null.
+    [[nodiscard]] auto witness_in(std::string_view name) const -> const table_witness* {
+        const auto it = std::find_if(witnesses.begin(), witnesses.end(),
+                                     [&](const table_witness& w) { return w.region == name; });
+        return it == witnesses.end() ? nullptr : &*it;
+    }
 
     /// The replica in `name`, or null.
     [[nodiscard]] auto replica_in(std::string_view name) const -> const table_replica* {
@@ -397,10 +444,12 @@ struct table_descriptor {
     /// `change_log.hpp`): while a DynamoDB stream is enabled or a Kinesis
     /// destination is streaming (task 17), or point-in-time recovery is
     /// enabled (task 19), or the table has a vector index, whose graphs
-    /// the log feeds (task 26). Global tables (22) will turn it on too.
+    /// the log feeds (task 26), or the table is global with last-writer-wins
+    /// replication from the log (task 22). A strongly consistent table
+    /// (task 27) replicates through Raft, not the log.
     [[nodiscard]] auto logs_changes() const -> bool {
         return enabled_stream() != nullptr || streaming_destination() != nullptr || pitr.enabled ||
-               !vectors.empty() || global();
+               !vectors.empty() || (global() && !strong);
     }
 
     /// The Kinesis destination being streamed to, or null.
@@ -506,6 +555,26 @@ struct catalog_command {
         /// at `k_strong_table_id_base`. Proposed by every strong voter at
         /// start; only the first changes anything.
         seed_ids = 18,
+        /// `UpdateTable` made the table multi-region strongly consistent
+        /// (task 27), in the region it was asked in: `table` names it and
+        /// carries its strong `table_id`, its GSIs with their strong ids (by
+        /// name), its `region`, the other regions' `replicas` (CREATING),
+        /// its `witnesses`, `retired_ids` (the current ids each with its
+        /// strong one) and `salvage_after_ms`. Refused unless the table is
+        /// ACTIVE, neither global nor strong, and still has those ids.
+        make_strong = 19,
+        /// A replica region's catalog takes a strong table the strong
+        /// catalog lists for it (task 27): `table` is the whole descriptor,
+        /// stored ACTIVE as given. Refused when the name is taken.
+        adopt_strong = 20,
+        /// The members of a strong table (task 27): the statuses (and
+        /// failures) of `table.replicas` and `table.witnesses` replace the
+        /// stored ones, by region.
+        strong_members = 21,
+        /// The worker salvaged the items written under a strong table's
+        /// retired ids (task 27): `retired_ids` go, each old key space gets
+        /// a delete job.
+        salvage_done = 22,
     };
 
     /// Which settings an `update_table` changes.
@@ -594,15 +663,20 @@ namespace catalog_detail {
 /// `update_vectors` (task 26), only for a table that has a vector index.
 /// 10 added `region` and `replicas` after `vectors`, with `set_replicas`
 /// and `replica_progress` (task 22), only for a global table.
-/// Commands only: 11 added `seed_ids` (task 27), which the descriptor
-/// does not change.
-inline constexpr std::uint8_t k_descriptor_format_version = 10;
+/// 11 added `strong`, `witnesses`, `retired_ids` and `salvage_after_ms`
+/// after `replicas`, with `seed_ids`, `make_strong`, `adopt_strong`,
+/// `strong_members` and `salvage_done` (task 27), only for a
+/// multi-region strongly consistent table.
+inline constexpr std::uint8_t k_descriptor_format_version = 11;
 inline constexpr std::uint8_t k_job_format_version = 1;
 inline constexpr std::uint8_t k_command_format_version = 11;
-inline constexpr std::uint8_t k_result_format_version = 10;
+inline constexpr std::uint8_t k_result_format_version = 11;
 
 /// The version a form carrying `d` is written as.
 [[nodiscard]] inline auto version_for(const table_descriptor& d) -> std::uint8_t {
+    if (d.strong || !d.witnesses.empty() || !d.retired_ids.empty()) {
+        return 11;
+    }
     if (!d.region.empty() || !d.replicas.empty()) {
         return 10;
     }
@@ -760,6 +834,20 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
             }
             detail::put_bytes(out, r.failure);
         }
+    }
+    if (version >= 11) {
+        out.push_back(d.strong ? '\1' : '\0');
+        detail::put_varint(out, d.witnesses.size());
+        for (const auto& w : d.witnesses) {
+            detail::put_bytes(out, w.region);
+            out.push_back(static_cast<char>(w.status));
+        }
+        detail::put_varint(out, d.retired_ids.size());
+        for (const auto& [from, to] : d.retired_ids) {
+            detail::put_varint(out, from);
+            detail::put_varint(out, to);
+        }
+        detail::put_varint(out, d.salvage_after_ms);
     }
 }
 
@@ -978,6 +1066,40 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
             d.replicas.push_back(std::move(rep));
         }
     }
+    if (version >= 11) {
+        const auto strong = get_flag(r);
+        const auto n = r.count();
+        if (!strong || !n) {
+            return std::nullopt;
+        }
+        d.strong = *strong;
+        for (std::size_t i = 0; i < *n; ++i) {
+            auto region = r.bytes();
+            const auto status = r.byte();
+            if (!region || !status || *status > 2) {
+                return std::nullopt;
+            }
+            d.witnesses.push_back(
+                table_witness{std::move(*region), static_cast<witness_status>(*status)});
+        }
+        const auto m = r.count();
+        if (!m) {
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < *m; ++i) {
+            const auto from = r.varint();
+            const auto to = r.varint();
+            if (!from || !to) {
+                return std::nullopt;
+            }
+            d.retired_ids.emplace_back(*from, *to);
+        }
+        const auto after = r.varint();
+        if (!after) {
+            return std::nullopt;
+        }
+        d.salvage_after_ms = *after;
+    }
     d.name = std::move(*name);
     d.table_id = *id;
     d.schema = std::move(*schema);
@@ -1058,6 +1180,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     auto version = catalog_detail::version_for(c.table);
     switch (c.op) {
         case catalog_command::kind::seed_ids:
+        case catalog_command::kind::make_strong:
+        case catalog_command::kind::adopt_strong:
+        case catalog_command::kind::strong_members:
+        case catalog_command::kind::salvage_done:
             version = std::max<std::uint8_t>(version, 11);
             break;
         case catalog_command::kind::set_replicas:
@@ -1117,7 +1243,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // set_ttl came in version 3, the destination commands in 5,
     // restore_done in 6, the point-in-time recovery commands in 7, the
     // resource policy and Contributor Insights commands in 8.
-    const std::uint8_t last_op = version >= 11   ? 18
+    const std::uint8_t last_op = version >= 11   ? 22
                                  : version >= 10 ? 17
                                  : version >= 8  ? 15
                                  : version >= 7  ? 13
@@ -1314,6 +1440,18 @@ public:
                     batch.put(kythira::column_family::data, catalog_detail::next_id_key(),
                               catalog_detail::u64_string(c->table.table_id));
                 }
+                break;
+            case catalog_command::kind::make_strong:
+                result = make_strong(*c, batch);
+                break;
+            case catalog_command::kind::adopt_strong:
+                result = adopt_strong(*c, batch);
+                break;
+            case catalog_command::kind::strong_members:
+                result = strong_members(*c, batch);
+                break;
+            case catalog_command::kind::salvage_done:
+                result = salvage_done(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -2246,6 +2384,142 @@ private:
     }
 
     /// `set_replicas` (task 22): see the command.
+    /// `make_strong` (task 27): see the command.
+    auto make_strong(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->status == table_status::deleting) {
+            return not_found(c.table.name);
+        }
+        if (d->status != table_status::active) {
+            return in_use(*d);
+        }
+        if (d->global() || d->strong) {
+            return failure("ValidationException",
+                           "Table " + d->name + " is already a global table");
+        }
+        // The handler read the table's ids before the strong catalog gave
+        // the new ones; a table deleted and made again since has others.
+        if (c.table.retired_ids.empty() || c.table.retired_ids.front().first != d->table_id ||
+            c.table.gsis.size() != d->gsis.size()) {
+            return failure("ResourceInUseException",
+                           "Attempt to change a resource which is still in use: Table " + d->name +
+                               " changed while it was being made strong");
+        }
+        d->table_id = c.table.table_id;
+        for (auto& g : d->gsis) {
+            const auto it = std::find_if(c.table.gsis.begin(), c.table.gsis.end(),
+                                         [&](const global_index& w) { return w.name == g.name; });
+            if (it == c.table.gsis.end()) {
+                return failure("ResourceInUseException",
+                               "Attempt to change a resource which is still in use: Table " +
+                                   d->name + " changed while it was being made strong");
+            }
+            g.index_id = it->index_id;
+        }
+        d->strong = true;
+        d->region = c.table.region;
+        d->replicas = c.table.replicas;
+        for (auto& r : d->replicas) {
+            r.created_ms = c.now_ms;
+            r.cursors.clear();
+        }
+        d->witnesses = c.table.witnesses;
+        d->retired_ids = c.table.retired_ids;
+        d->salvage_after_ms = c.table.salvage_after_ms;
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(*d);
+        return r;
+    }
+
+    /// `adopt_strong` (task 27): see the command.
+    auto adopt_strong(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        if (describe(c.table.name)) {
+            return failure("ResourceInUseException", "Table already exists: " + c.table.name);
+        }
+        if (!c.table.strong || !is_strong_table(c.table.table_id)) {
+            return failure("ValidationException",
+                           "Table " + c.table.name + " is not a strongly consistent replica");
+        }
+        auto d = c.table;
+        d.status = table_status::active;
+        d.revision = 1;
+        d.retired_ids.clear();
+        d.salvage_after_ms = 0;
+        store(batch, d);
+        catalog_result r;
+        r.table = std::move(d);
+        return r;
+    }
+
+    /// `strong_members` (task 27): see the command.
+    auto strong_members(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->status == table_status::deleting) {
+            return not_found(c.table.name);
+        }
+        if (!d->strong || d->table_id != c.table.table_id) {
+            return failure("ValidationException",
+                           "Table " + c.table.name + " is not this strongly consistent table");
+        }
+        bool changed = false;
+        for (const auto& want : c.table.replicas) {
+            for (auto& have : d->replicas) {
+                if (have.region == want.region &&
+                    (have.status != want.status || have.failure != want.failure)) {
+                    have.status = want.status;
+                    have.failure = want.failure;
+                    changed = true;
+                }
+            }
+        }
+        for (const auto& want : c.table.witnesses) {
+            for (auto& have : d->witnesses) {
+                if (have.region == want.region && have.status != want.status) {
+                    have.status = want.status;
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            ++d->revision;
+            store(batch, *d);
+        }
+        catalog_result r;
+        r.table = std::move(*d);
+        return r;
+    }
+
+    /// `salvage_done` (task 27): see the command.
+    auto salvage_done(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->table_id != c.table.table_id) {
+            return not_found(c.table.name);
+        }
+        for (const auto& [from, to] : d->retired_ids) {
+            // The old key space had the schema of what replaced it.
+            auto schema = d->schema;
+            for (const auto& g : d->gsis) {
+                if (g.index_id == to) {
+                    schema = g.schema;
+                }
+            }
+            batch.put(kythira::column_family::data, catalog_detail::job_key(from),
+                      encode_delete_job(delete_job{from, d->name, schema, 0}));
+        }
+        d->retired_ids.clear();
+        d->salvage_after_ms = 0;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(*d);
+        return r;
+    }
+
     auto set_replicas(const catalog_command& c, kythira::write_batch& batch) const
         -> catalog_result {
         auto d = describe(c.table.name);
