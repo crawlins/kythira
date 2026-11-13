@@ -154,6 +154,12 @@ the freedom to relax it where my workload needs it.
    SHALL be available for standalone and test clusters.
 4. ARNs SHALL use the account id from IAM (or a configured one) and the
    configured partition.
+5. Tables, and every resource that belongs to a table, SHALL be per
+   account, as on AWS: two accounts may each have a table of the same
+   name, a caller lists and reaches only its own account's tables, and a
+   resource's ARN carries the account that owns it. Another account's
+   table SHALL be reachable only by its full ARN and only where AWS allows
+   cross-account access (a resource policy).
 
 ### Requirement 6: Data types and item encoding
 

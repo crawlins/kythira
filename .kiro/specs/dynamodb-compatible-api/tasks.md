@@ -1075,6 +1075,44 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
   - [x] 27.9 Docs: `doc/dynamodb.md`, `unsupported.md`, module README
   - _Requirements: 18.3, 18.4, 18.5_
 
+- [ ] 28. Per-account tables (added 2026-11-13: Clark asked for it after
+  finding that a cluster holds one account's tables)
+  - Today the catalog keys a table by name alone (`table_key(name)` in
+    `catalog.hpp`), `table_descriptor` has no owner, and
+    `call_context::table_arn` builds every ARN from the caller's account.
+    Keys for several accounts therefore share one table namespace: two
+    accounts cannot both have `orders`, each lists and reaches the other's
+    tables under an ARN with its own account id, and only IAM policy
+    separates them. Kinesis already keys streams per account
+    (`kinesis_catalog.hpp`, `stream_key(account, name)`); follow it.
+  - Catalog: an owning account on `table_descriptor`, table keys under
+    `account/name` (with Kinesis's `valid_account`), `ListTables` scanning
+    only the caller's prefix, and a descriptor and command format bump
+    (12). An existing catalog's tables move to one configured account on
+    upgrade; a node that has not upgraded refuses the new format rather
+    than misreading it.
+  - ARNs from the owner, not the caller: `table_arn`, index, stream,
+    backup and export ARNs, Kinesis destinations, resource policies and
+    the authorizer's resource facts. A request naming another account's
+    table by ARN reaches it only with a resource policy that allows it
+    (Requirement 5.3); by name, a caller sees only its own account.
+  - Everything else keyed by table name or stream label, checked for the
+    account: backups and restores, PITR, exports and imports, global
+    table replicas (the same account on every peer), MRSC tables and the
+    strong catalog, contributor insights, the change log and Streams,
+    TTL, PartiQL and transactions (one account per transaction, as AWS
+    requires).
+  - Limits per account where AWS keeps them per account (tables,
+    concurrent table operations) rather than per cluster.
+  - Tests: two accounts with a table of the same name each read and write
+    only their own; `ListTables` and `ListStreams` per account; ARNs carry
+    the owner; cross-account by ARN refused without a policy and allowed
+    with one; an upgraded catalog keeps every table under the configured
+    account; global tables and MRSC across two accounts; the static keys
+    and IAM paths both.
+  - Docs: `doc/dynamodb.md` (model, deployment), module README
+  - _Requirements: 5.4, 5.5_
+
 - [x] 22. Global tables, last-writer-wins
   - Peer cluster config, replicator and receiver, replica updates in
     `UpdateTable`, replica status, conflict tests with clock skew
