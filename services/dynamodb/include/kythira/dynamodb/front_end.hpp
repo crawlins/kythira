@@ -94,6 +94,11 @@ struct front_end_config {
     /// it (`host:port`).
     std::string advertised_endpoint;
     aws_json::request_limits limits{};
+    /// Told the operation and the exception's message whenever a handler
+    /// throws and the client is answered `InternalServerError`, so the
+    /// cause is in the node's log; the answer itself says nothing more, as
+    /// AWS's does not.
+    std::function<void(std::string_view operation, std::string_view what)> on_internal_error{};
 };
 
 /// An HTTP request as the transport hands it over.
@@ -347,7 +352,10 @@ public:
                 return c.respond(out.error(), id);
             }
             return c.respond(*out, id);
-        } catch (const std::exception&) {
+        } catch (const std::exception& ex) {
+            if (_config.on_internal_error) {
+                _config.on_internal_error(op->name, ex.what());
+            }
             aws_json::error e;
             e.status = 500;
             e.type = c.options().style.internal_type;
@@ -407,7 +415,10 @@ private:
                 return c.respond(out.error(), id);
             }
             return c.respond(*out, id);
-        } catch (const std::exception&) {
+        } catch (const std::exception& ex) {
+            if (_config.on_internal_error) {
+                _config.on_internal_error("DescribeContributorInsights", ex.what());
+            }
             aws_json::error e;
             e.status = 500;
             e.type = c.options().style.internal_type;
@@ -480,7 +491,10 @@ private:
                 return c.respond(out.error(), id);
             }
             return c.respond(*out, id);
-        } catch (const std::exception&) {
+        } catch (const std::exception& ex) {
+            if (_config.on_internal_error) {
+                _config.on_internal_error(operation, ex.what());
+            }
             aws_json::error e;
             e.status = 500;
             e.type = c.options().style.internal_type;
