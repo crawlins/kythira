@@ -13,7 +13,8 @@ Unmodified clients point their endpoint at any node of a cluster:
 - the AWS CLI;
 - the AWS SDKs, over JSON or CBOR;
 - KPL;
-- KCL 2.x, with the lease layer in [leases.md](leases.md).
+- KCL 2.x, with the lease layer in [leases.md](leases.md);
+- the Flink AWS connector's Kinesis source and sink (5.x).
 
 Every node takes every call. A write is forwarded to the leader of its
 shard's Raft group; a read is served from the receiving node's own replica.

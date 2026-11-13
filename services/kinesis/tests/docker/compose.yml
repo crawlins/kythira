@@ -267,6 +267,22 @@ services:
     profiles: ["kpl"]
     command: ["http://kin-3:4567", "kpl", "kpl-app", "kpl-worker"]
 
+  # Task 17's Flink case: a Flink 1.20 job on an in-process mini cluster,
+  # the AWS connector's source reading flink-in and its sink writing every
+  # record to flink-out. In the `flink` profile.
+  flink:
+    image: kythira-kinesis-kcl:dev
+    profiles: ["flink"]
+    networks:
+      - kinesis_net
+    entrypoint: ["/opt/flink-pipe/bin/kythira-flink-pipe"]
+    environment:
+      AWS_ACCESS_KEY_ID: AKIDKINESISCLIENT01
+      AWS_SECRET_ACCESS_KEY: kinesis-scenario-client-secret
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+    command: ["http://kin-1:4567", "111122223333", "flink-in", "flink-out"]
+
 networks:
   kinesis_net:
     driver: bridge
