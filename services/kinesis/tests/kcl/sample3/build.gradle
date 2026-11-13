@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+// The KCL sample consumer built against KCL 3.x
+// (.kiro/specs/kinesis-compatible-streams/ task 16). It compiles ../sample's
+// SampleConsumer unchanged; only KythiraLeases is this project's own, since
+// the Kythira lease layer implements KCL 2.x's interfaces. Its leases live
+// in DynamoDB (KCL_LEASES=dynamodb): Kythira's, DynamoDB Local or AWS.
+
+plugins {
+    id 'application'
+}
+
+repositories {
+    // repo1 is the same Maven Central; the CI proxy rate-limits the other name less.
+    maven { url = 'https://repo1.maven.org/maven2' }
+}
+
+sourceSets {
+    main {
+        java {
+            srcDir '../sample/src/main/java'
+        }
+    }
+}
+
+dependencies {
+    implementation 'software.amazon.kinesis:amazon-kinesis-client:3.5.4'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.17'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+application {
+    mainClass = 'kythira.kcl.sample.SampleConsumer'
+}

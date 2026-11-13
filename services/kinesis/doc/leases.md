@@ -11,9 +11,20 @@ cluster (`.kiro/specs/kinesis-compatible-streams/` task 9, Requirement 15).
 | Lease backend | KCL 2.x | KCL 3.x |
 |---|---|---|
 | Kythira native lease layer (`java/kythira-kcl-leases`) | yes (built and tested against 2.7.4) | no: KCL 3.x hard-wires its DynamoDB DAOs (worker metrics, coordinator state), so a refresher alone cannot move it |
-| Kythira's DynamoDB-compatible API | planned (task 16) | planned (task 16) |
-| AWS DynamoDB | planned (task 16; real-cloud spend, needs Clark's go) | planned (task 16) |
-| DynamoDB Local | planned (task 16) | planned (task 16) |
+| Kythira's DynamoDB-compatible API (`dynamodb_gateway_node`) | yes (2.7.4) | yes (3.5.4) |
+| DynamoDB Local | yes (2.7.4, against 3.3.2) | yes (3.5.4, against 3.3.2) |
+| AWS DynamoDB | expected to work (KCL's own backend), not run here: a run is real-cloud spend and needs Clark's go | the same |
+
+The DynamoDB rows are KCL's own lease management, unchanged: point its
+DynamoDB client at the endpoint, and it creates and uses its lease table
+there (KCL 3.x also its worker metrics and coordinator state tables, and
+the lease table's `LeaseOwnerToLeaseKeyIndex` GSI). The container
+scenario's `kcl_2_and_3_keep_their_leases_in_dynamodb` case runs all four
+Kythira and DynamoDB Local combinations on one stream: every record is
+processed, and after a restart each worker carries on from the checkpoints
+its table kept (task 16). The sample consumer (`tests/kcl/sample`, and
+`tests/kcl/sample3` for KCL 3.x) shows the wiring: `KCL_LEASES=dynamodb`
+with `KCL_DYNAMODB_ENDPOINT`.
 
 ## The Lease API
 

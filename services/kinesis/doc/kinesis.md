@@ -97,13 +97,15 @@ DynamoDB. These are the choices:
 | Lease backend | KCL 2.x | KCL 3.x |
 |---|---|---|
 | Kythira's native lease layer (`java/kythira-kcl-leases`) | yes, tested against 2.7.4 | no: KCL 3.x reaches DynamoDB directly for more than leases |
-| Kythira's DynamoDB-compatible API | planned (task 16) | planned (task 16) |
-| AWS DynamoDB | planned (task 16) | planned (task 16) |
-| DynamoDB Local | planned (task 16) | planned (task 16) |
+| Kythira's DynamoDB-compatible API | yes, tested against 2.7.4 | yes, tested against 3.5.4 |
+| DynamoDB Local | yes, tested against 2.7.4 | yes, tested against 3.5.4 |
+| AWS DynamoDB | KCL's own backend; not run against AWS | the same |
 
-Both polling and enhanced fan-out work with the native lease layer. See
-[leases.md](leases.md) for installing it, and [fan-out.md](fan-out.md) for
-enhanced fan-out.
+Both polling and enhanced fan-out work with the native lease layer. With
+a DynamoDB backend KCL's own lease management runs unchanged, pointed at
+that endpoint. See [leases.md](leases.md) for installing the lease layer
+and for the DynamoDB backends, and [fan-out.md](fan-out.md) for enhanced
+fan-out.
 
 ## Deploying
 

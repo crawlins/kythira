@@ -46,6 +46,12 @@
 // pass. Read in lineage order, parents before children, every record is
 // there and each key's records are in the order they were written.
 //
+// A lease-backend case (task 16, Requirement 15.3) runs KCL 2.x and 3.x
+// with their leases in DynamoDB tables (the `leases` profile): on Kythira's
+// own DynamoDB, a dynamodb_gateway_node from the node image, and on
+// DynamoDB Local. Four applications read one stream; each processes every
+// record, and after a restart carries on from its checkpoints.
+//
 // The last case (task 17, Requirement 11.3) recreates the nodes with
 // tiering to an in-memory S3 mock (the `s3` profile) five seconds after a
 // segment's last record. A producer writes while every node is killed in
@@ -212,7 +218,7 @@ struct stack_fixture {
     ~stack_fixture() {
         os::try_exec(os::real_exec,
                      compose_cmd({"--profile", "clients", "--profile", "kcl", "--profile",
-                                  "kcl-efo", "--profile", "s3", "down", "-v",
+                                  "kcl-efo", "--profile", "s3", "--profile", "leases", "down", "-v",
                                   "--remove-orphans"}));
     }
     stack_fixture(const stack_fixture&) = delete;
@@ -764,6 +770,88 @@ BOOST_AUTO_TEST_CASE(reshards_survive_a_node_kill_with_no_lost_or_reordered_reco
                c.out);
 }
 
+// Task 16: KCL 2.x and 3.x with their leases in DynamoDB tables instead
+// of the Kythira lease API, on Kythira's own DynamoDB (`ddb-leases`) and
+// on DynamoDB Local (`ddb-local`), four applications reading one stream
+// at once. Each must process every record; then every worker restarts and
+// must carry on from the checkpoints its lease table kept, reading the
+// next records and none of the first ones again.
+BOOST_AUTO_TEST_CASE(kcl_2_and_3_keep_their_leases_in_dynamodb) {
+    const logs_on_failure logs;
+    BOOST_REQUIRE_MESSAGE(eventually([&] { return aws_cli(1, {"list-streams"}).code == 0; }, 120s),
+                          service(1) << " never answered ListStreams");
+    {
+        auto r = boto3({"create", "--endpoint", endpoint(1), "--stream", "leases", "--shards", "2"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create failed:\n" << r.out);
+        auto p = boto3({"produce", "--endpoint", endpoint(1), "--stream", "leases", "--count",
+                        "100", "--tag", "d0"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    const std::vector<std::string> workers{"kcl2-kythira-ddb", "kcl3-kythira-ddb", "kcl2-ddb-local",
+                                           "kcl3-ddb-local"};
+    const auto events_of = [](const std::string& worker) {
+        return kcl_events({"--profile", "leases", "logs", "--no-color", worker});
+    };
+    const auto tagged = [](const std::string& tag) {
+        std::set<std::string> out;
+        for (int i = 0; i < 100; ++i) {
+            out.insert(tag + "-" + std::to_string(i));
+        }
+        return out;
+    };
+    const auto all_read = [&](const std::string& worker, const std::set<std::string>& want) {
+        const auto seen = kcl_records(events_of(worker));
+        return std::includes(seen.begin(), seen.end(), want.begin(), want.end());
+    };
+
+    std::vector<std::string> up{"--profile", "leases", "up", "-d", "ddb-leases", "ddb-local"};
+    up.insert(up.end(), workers.begin(), workers.end());
+    os::checked_exec(os::real_exec, compose_cmd(up));
+    for (const auto& w : workers) {
+        BOOST_TEST(eventually([&] { return all_read(w, tagged("d0")); }, 300s),
+                   w << " never processed the first 100 records");
+    }
+    {
+        auto p = boto3({"produce", "--endpoint", endpoint(2), "--stream", "leases", "--count",
+                        "100", "--tag", "d1"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    for (const auto& w : workers) {
+        BOOST_TEST(eventually([&] { return all_read(w, tagged("d1")); }, 180s),
+                   w << " never processed the second 100 records");
+    }
+
+    // Restart every worker. Each finds its leases and checkpoints in its
+    // table, so it reads on from there: d2, and nothing of d0, which was
+    // checkpointed long before. (KCL is at-least-once, so the last batch
+    // before a restart may come again; d0 is far behind that.)
+    const auto restarted_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count();
+    std::vector<std::string> restart{"--profile", "leases", "restart"};
+    restart.insert(restart.end(), workers.begin(), workers.end());
+    os::checked_exec(os::real_exec, compose_cmd(restart));
+    {
+        auto p = boto3({"produce", "--endpoint", endpoint(3), "--stream", "leases", "--count",
+                        "100", "--tag", "d2"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    for (const auto& w : workers) {
+        BOOST_TEST(eventually([&] { return all_read(w, tagged("d2")); }, 300s),
+                   w << " never processed the records written after its restart");
+        std::size_t again = 0;
+        for (const auto& e : events_of(w)) {
+            if (e._what == "record" && e._ms >= restarted_ms && e._data.starts_with("d0-")) {
+                ++again;
+            }
+        }
+        BOOST_TEST(again == 0U, w << " read " << again
+                                  << " of the first records again after restarting: its "
+                                     "checkpoints were not kept");
+    }
+}
+
 // Task 17: tiering through leader kills and S3 faults. Runs last, since it
 // recreates the nodes with tiering on (the volumes, and so the cluster,
 // survive the recreate).
@@ -771,15 +859,15 @@ BOOST_AUTO_TEST_CASE(tiered_segments_survive_leader_kills_and_s3_faults) {
     const logs_on_failure logs;
     const std::string control = "http://s3mock:9001";
     const auto s3 = [&](std::initializer_list<std::string> extra) {
-        std::vector<std::string> args = {"--profile", "clients", "run", "--rm", "-T", "boto3",
-                                         "s3-control", "--url", control};
+        std::vector<std::string> args = {"--profile", "clients",    "run",   "--rm", "-T",
+                                         "boto3",     "s3-control", "--url", control};
         args.insert(args.end(), extra);
         auto r = os::real_exec(compose_cmd(args));
         return r.code == 0 ? last_json(r.out) : std::nullopt;
     };
     const auto number = [](const boost::json::object& o, const char* key) -> std::int64_t {
         const auto* v = o.if_contains(key);
-        return v != nullptr && v->is_int64() ? v->as_int64()
+        return v != nullptr && v->is_int64()    ? v->as_int64()
                : v != nullptr && v->is_uint64() ? static_cast<std::int64_t>(v->as_uint64())
                                                 : -1;
     };
@@ -815,8 +903,8 @@ BOOST_AUTO_TEST_CASE(tiered_segments_survive_leader_kills_and_s3_faults) {
     const auto count = std::to_string(k_records);
     os::CmdResult produced;
     std::thread producer([&] {
-        produced = boto3({"batch-produce", "--endpoints", all, "--stream", "tier", "--count",
-                          count, "--keys", "8", "--tag", "t", "--timeout", "600"});
+        produced = boto3({"batch-produce", "--endpoints", all, "--stream", "tier", "--count", count,
+                          "--keys", "8", "--tag", "t", "--timeout", "600"});
     });
     for (int n : {1, 2, 3}) {
         // Long enough for a segment to seal and its upload to start.
