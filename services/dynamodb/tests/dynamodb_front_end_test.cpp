@@ -280,7 +280,13 @@ BOOST_AUTO_TEST_CASE(handlers_authorize_what_the_front_end_cannot) {
 
 BOOST_AUTO_TEST_CASE(handler_failures_and_registration_errors) {
     recording_authorizer auth;
-    ddb::front_end<recording_authorizer> fe(ddb::front_end_config{}, auth);
+    // The cause goes to the operator's hook, never to the client.
+    std::vector<std::string> reported;
+    ddb::front_end_config cfg;
+    cfg.on_internal_error = [&reported](std::string_view op, std::string_view what) {
+        reported.push_back(std::string(op) + ": " + std::string(what));
+    };
+    ddb::front_end<recording_authorizer> fe(cfg, auth);
     fe.on("ListTables",
           [](ddb::call_context&, json::object&) -> ddb::front_end_handler::result_type {
               throw std::runtime_error("boom");
@@ -289,6 +295,8 @@ BOOST_AUTO_TEST_CASE(handler_failures_and_registration_errors) {
     BOOST_TEST(r.status == 500U);
     BOOST_TEST(type_of(r) == "com.amazonaws.dynamodb.v20120810#InternalServerError");
     BOOST_TEST(body_of(r).at("message").as_string() == "Internal server error");
+    BOOST_TEST_REQUIRE(reported.size() == 1U);
+    BOOST_TEST(reported[0] == "ListTables: boom");
 
     BOOST_CHECK_THROW(fe.on("ListTables", {}), std::invalid_argument);
     BOOST_CHECK_THROW(fe.on("DescribeEndpoints", {}), std::invalid_argument);  // built in

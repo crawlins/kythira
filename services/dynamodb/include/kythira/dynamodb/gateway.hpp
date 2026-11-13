@@ -770,6 +770,12 @@ public:
         if (front.advertised_endpoint.empty()) {
             front.advertised_endpoint = "localhost:" + std::to_string(_server->port());
         }
+        front.on_internal_error = [this](std::string_view operation, std::string_view what) {
+            if (_log) {
+                _log(true, std::string(operation) +
+                               " answered InternalServerError: " + std::string(what));
+            }
+        };
         _front = std::make_unique<front_end<authorizer>>(std::move(front), _auth);
         _items.set_compat_profile(_config.compat);
         _queries.set_compat_profile(_config.compat);
