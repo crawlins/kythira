@@ -10,3 +10,9 @@
 tests/dynamodb_raft_backend_test.cpp     multi_raft_impl.hpp           stands up in-process hosts
 cmd/dynamodb_gateway_node/run_cluster.hpp  multi_raft_impl.hpp           instantiates the multi-raft host
 cmd/dynamodb_gateway_node/run_cluster.hpp  beast_http_transport_impl.hpp instantiates the Beast transport
+
+# The composition root wiring in another module's adapter to a core concept
+# (scripts/check_module_boundaries.py, `module-adapter`), only in a
+# CONFIG_DYNAMODB_GATEWAY_IAM build:
+# file                                   module-adapter  header                                why
+cmd/dynamodb_gateway_node/iam_auth.cpp   module-adapter  kythira/iam/iam_gateway_auth.hpp      the IAM replica requests are signed against

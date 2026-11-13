@@ -5459,6 +5459,21 @@ set_tests_properties(static_key_authorizer_test PROPERTIES
     LABELS "unit;sigv4;aws;dynamodb;kinesis"
 )
 
+# DynamoDB spec task 28: a gateway's sign-in by static keys, IAM hooks or
+# both, split by access key id (the DynamoDB and Kinesis gateways).
+add_executable(static_or_iam_authorizer_test static_or_iam_authorizer_test.cpp)
+target_link_libraries(static_or_iam_authorizer_test PRIVATE
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+target_compile_features(static_or_iam_authorizer_test PRIVATE cxx_std_23)
+add_test(NAME static_or_iam_authorizer_test COMMAND static_or_iam_authorizer_test)
+set_tests_properties(static_or_iam_authorizer_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;sigv4;aws;dynamodb;kinesis"
+)
+
 # IAM spec task 7: streaming (aws-chunked) payloads and the SigV4 failure
 # limiter, against vectors a pinned botocore signed (sigv4_chunked/).
 add_executable(sigv4_chunk_decoder_test sigv4_chunk_decoder_test.cpp)
