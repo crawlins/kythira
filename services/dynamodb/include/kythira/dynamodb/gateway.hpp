@@ -985,13 +985,6 @@ namespace gateway_detail {
     if (auto e = gateway_detail::strong_from_env(env, c)) {
         return *e;
     }
-    // The strong catalog names tables without an account; it learns them
-    // in a later step of task 28.
-    if (c.namespaces && c.strong.enabled()) {
-        return std::string(
-            "KYTHIRA_DYNAMODB_NAMESPACES=on does not work with a strong host yet: unset "
-            "KYTHIRA_DYNAMODB_STRONG_PEERS or KYTHIRA_DYNAMODB_NAMESPACES");
-    }
     return c;
 }
 
@@ -1294,12 +1287,68 @@ private:
                 _namespaces_next_try = now + std::chrono::seconds{10};
                 return false;
             }
+            if (!settle_strong_namespaces(marker, now)) {
+                return false;
+            }
             _namespaced.store(marker.has_value(), std::memory_order_release);
             _namespaces_settled.store(true, std::memory_order_release);
             return true;
         } catch (const std::exception&) {
             return false;
         }
+    }
+
+    /// The strong catalog (task 27) follows the region's: it is shared by
+    /// the three regions, and its names must be the regions' catalog names
+    /// for the strong worker to match them. The first region to settle
+    /// moves the strong catalog's older tables to the same owner as its
+    /// own. A strong catalog with per-account tables and a region without
+    /// them, or with another owner, serves nothing: the names would not
+    /// meet.
+    auto settle_strong_namespaces(const std::optional<table_descriptor>& marker,
+                                  std::chrono::steady_clock::time_point now) -> bool {
+        if constexpr (k_routes_strong) {
+            if (!_backend.has_strong()) {
+                return true;
+            }
+            auto& strong = _backend.strong();
+            auto shared = strong.describe(catalog_detail::k_namespace_probe);
+            if (!shared && marker) {
+                catalog_command c;
+                c.op = catalog_command::kind::qualify_tables;
+                c.table.name = marker->name.substr(0, marker->name.size() - 1);
+                (void)strong.catalog(c);
+                shared = strong.describe(catalog_detail::k_namespace_probe);
+                if (!shared) {
+                    return false;
+                }
+                if (_log) {
+                    _log(false,
+                         "per-account tables on in the strong catalog; existing strong "
+                         "tables belong to " +
+                             c.table.name);
+                }
+            }
+            const auto owner = [](const table_descriptor& d) {
+                return d.name.substr(0, d.name.size() - 1);
+            };
+            if (shared && (!marker || shared->name != marker->name)) {
+                if (_log) {
+                    _log(true, "the strong catalog has per-account tables (owner of older tables " +
+                                   owner(*shared) + ") but this region " +
+                                   (marker ? "gives older tables to " + owner(*marker)
+                                           : std::string("has none")) +
+                                   ": every region needs KYTHIRA_DYNAMODB_NAMESPACES=on and the "
+                                   "same KYTHIRA_DYNAMODB_ACCOUNT_ID; serving nothing");
+                }
+                _namespaces_next_try = now + std::chrono::seconds{10};
+                return false;
+            }
+        } else {
+            (void)marker;
+            (void)now;
+        }
+        return true;
     }
 
     /// The worker for the catalog leader's background jobs: the TTL
@@ -1377,7 +1426,10 @@ private:
                         }
                     }
                     if constexpr (k_routes_strong) {
-                        if (_strong_tables) {
+                        // Only once the names are settled: before, this
+                        // region and the strong catalog may name a table
+                        // differently, and the worker would adopt it again.
+                        if (_strong_tables && _ready.load() && settle_namespaces()) {
                             try {
                                 // Replicas adopted, statuses copied, old key
                                 // spaces salvaged (task 27).

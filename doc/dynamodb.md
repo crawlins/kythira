@@ -182,9 +182,13 @@ refused). Turning it on moves the tables already there to
 happens once, on the first request after every node runs with the
 setting, and cannot be undone: a gateway started without the setting on
 a catalog that has it serves nothing and says why. Every node must run a
-version that knows the setting before it is turned on. Not yet with a
-strong host (`KYTHIRA_DYNAMODB_STRONG_PEERS`), and a global table's
-replication principal must belong to the table's account.
+version that knows the setting before it is turned on. With a strong
+host (`KYTHIRA_DYNAMODB_STRONG_PEERS`) the three regions share the strong
+catalog, so all three need the setting and the same
+`KYTHIRA_DYNAMODB_ACCOUNT_ID`: the first to settle moves the strong
+tables to that account too, and a region that disagrees serves nothing
+and says why. A global table's replication principal must belong to the
+table's account.
 
 Noisy neighbours are handled as AWS handles them, by quota rather than
 at run time: an account's provisioned tables and GSIs may add up to its

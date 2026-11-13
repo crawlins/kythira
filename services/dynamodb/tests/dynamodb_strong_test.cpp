@@ -18,6 +18,7 @@
 #include <kythira/dynamodb/routed_backend.hpp>
 #include <kythira/dynamodb/strong_tables.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <set>
@@ -28,6 +29,9 @@
 using namespace dynamodb_test;
 
 namespace {
+
+/// A second account, for per-account tables (task 28).
+constexpr std::string_view k_other = "444455556666";
 
 const std::string k_create_s =
     R"({"TableName":"Strong","AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"}],)"
@@ -206,7 +210,9 @@ struct api_region {
     routed backend;
     az::static_key_authorizer auth{
         std::vector<az::static_key>{{"AKIDADMIN", std::string(k_secret), std::string(k_account),
-                                     "admin", az::static_role::admin}},
+                                     "admin", az::static_role::admin},
+                                    {"AKIDOTHER", std::string(k_secret), std::string(k_other),
+                                     "other", az::static_role::admin}},
         "aws", [] { return std::chrono::system_clock::time_point(k_now); }};
     std::unique_ptr<ddb::front_end<az::static_key_authorizer>> fe;
     ddb::table_api<routed> tables{backend};
@@ -227,10 +233,15 @@ struct api_region {
                                              return o;
                                          }()};
 
+    /// Per-account tables (task 28), as the gateway turns them on.
+    std::shared_ptr<std::atomic<bool>> namespaced = std::make_shared<std::atomic<bool>>(false);
+
     api_region(std::string region, ddb::local_backend<>& strong)
         : name(std::move(region)), backend(local.backend, &strong) {
         auth.register_service(ddb::dynamodb_static_roles());
         ddb::front_end_config cfg;
+        cfg.account = std::string(k_account);
+        cfg.namespaced = [on = namespaced] { return on->load(); };
         cfg.advertised_endpoint = "localhost:8000";
         cfg.region = name;
         cfg.on_internal_error = [](const ddb::internal_error_report& r) {
@@ -250,7 +261,8 @@ struct api_region {
         worker.set_region(name);
     }
 
-    auto call(std::string_view op, const std::string& body) -> reply {
+    auto call(std::string_view op, const std::string& body, std::string_view akid = "AKIDADMIN")
+        -> reply {
         auto req = signed_request(op, body);
         // Signed for this region.
         sv4::service_rules rules;
@@ -258,7 +270,7 @@ struct api_region {
         rules.protocol = sv4::error_protocol::json;
         const sv4::credential_scope scope{"20261110", name, "dynamodb"};
         req.headers.back().second =
-            "AWS4-HMAC-SHA256 Credential=AKIDADMIN/" + scope.text() +
+            "AWS4-HMAC-SHA256 Credential=" + std::string(akid) + "/" + scope.text() +
             ", SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=" +
             std::string(64, '0');
         const auto parsed = sv4::parse(
@@ -270,8 +282,9 @@ struct api_region {
         return reply{r.status, json::parse(r.body).as_object()};
     }
 
-    auto ok(std::string_view op, const std::string& body) -> json::object {
-        auto r = call(op, body);
+    auto ok(std::string_view op, const std::string& body, std::string_view akid = "AKIDADMIN")
+        -> json::object {
+        auto r = call(op, body, akid);
         BOOST_REQUIRE_MESSAGE(r.status == 200U, name + " " + std::string(op) +
                                                     " failed: " + r.type() + ": " + r.message());
         return r.body;
@@ -367,6 +380,79 @@ BOOST_AUTO_TEST_CASE(an_empty_table_becomes_strong_in_three_regions) {
         BOOST_TEST_REQUIRE(d.has_value());
         BOOST_TEST(ddb::is_strong_table(d->table_id));
         BOOST_TEST(count_in(r->local.backend, d->table_id) == 0U);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(strong_tables_belong_to_their_account_once_namespaces_are_on) {
+    // A strong table made before per-account tables.
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    w.east2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"old"}}})");
+
+    // Every region's catalog and the strong catalog move their tables to
+    // the owner, as the gateways do when they settle the names.
+    ddb::catalog_command q;
+    q.op = ddb::catalog_command::kind::qualify_tables;
+    q.table.name = std::string(k_account);
+    BOOST_REQUIRE(w.strong_host.backend.catalog(q).ok());
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        BOOST_REQUIRE(r->local.backend.catalog(q).ok());
+        r->namespaced->store(true);
+    }
+    const std::string owned = std::string(k_account) + "/Music";
+    BOOST_TEST(w.strong_host.backend.describe(owned).has_value());
+    w.run_workers();
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        BOOST_TEST_INFO("region " << r->name);
+        const auto t = describe(*r);
+        BOOST_TEST(t.at("TableName").as_string() == "Music");
+        BOOST_TEST(t.at("MultiRegionConsistency").as_string() == "STRONG");
+        BOOST_TEST(t.at("TableArn").as_string() ==
+                   "arn:aws:dynamodb:" + r->name + ":" + std::string(k_account) + ":table/Music");
+        // No second copy: the worker matched the strong table by its name.
+        BOOST_TEST(!r->local.backend.describe("Music").has_value());
+        const auto got = r->ok(
+            "GetItem", R"({"TableName":"Music","Key":{"pk":{"S":"old"}},"ConsistentRead":true})");
+        BOOST_TEST(got.contains("Item"));
+    }
+
+    // Another account makes its own Music strong in the same regions.
+    const std::string other(k_other);
+    BOOST_TEST(w.east2.call("DescribeTable", R"({"TableName":"Music"})", "AKIDOTHER").type() ==
+               "ResourceNotFoundException");
+    w.east2.ok("CreateTable", k_music, "AKIDOTHER");
+    const auto made =
+        w.east2
+            .ok("UpdateTable",
+                R"({"TableName":"Music","MultiRegionConsistency":"STRONG","ReplicaUpdates":[)"
+                R"({"Create":{"RegionName":"us-east-1"}},{"Create":{"RegionName":"us-west-2"}}]})",
+                "AKIDOTHER")
+            .at("TableDescription")
+            .as_object();
+    BOOST_TEST(made.at("TableArn").as_string() ==
+               "arn:aws:dynamodb:us-east-2:" + other + ":table/Music");
+    w.run_workers();
+    BOOST_TEST(w.strong_host.backend.describe(other + "/Music").has_value());
+    w.west2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"theirs"}}})", "AKIDOTHER");
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        BOOST_TEST_INFO("region " << r->name);
+        const auto theirs =
+            r->ok("DescribeTable", R"({"TableName":"Music"})", "AKIDOTHER").at("Table").as_object();
+        BOOST_TEST(theirs.at("TableStatus").as_string() == "ACTIVE");
+        BOOST_TEST(theirs.at("TableArn").as_string() ==
+                   "arn:aws:dynamodb:" + r->name + ":" + other + ":table/Music");
+        // Each account reads only its own table's items.
+        const auto key = [](const char* pk) {
+            return std::string(R"({"TableName":"Music","Key":{"pk":{"S":")") + pk +
+                   R"("}},"ConsistentRead":true})";
+        };
+        BOOST_TEST(r->ok("GetItem", key("theirs"), "AKIDOTHER").contains("Item"));
+        BOOST_TEST(!r->ok("GetItem", key("old"), "AKIDOTHER").contains("Item"));
+        BOOST_TEST(!r->ok("GetItem", key("theirs")).contains("Item"));
+        const auto listed = r->ok("ListTables", "{}", "AKIDOTHER").at("TableNames").as_array();
+        BOOST_TEST(listed.size() == 1U);
     }
 }
 
