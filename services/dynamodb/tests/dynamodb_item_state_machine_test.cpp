@@ -19,7 +19,6 @@
 
 #include <boost/json.hpp>
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -343,8 +342,8 @@ BOOST_AUTO_TEST_CASE(splits_only_between_item_collections) {
     BOOST_TEST(found == 6U);
 }
 
-// Task 24: what the host's size policy reads. The cuts it is offered are
-// partition hash buckets in key order, each a boundary the veto accepts.
+// Task 24: what the host's size policy reads. The cut it is offered is a
+// partition hash bucket the veto accepts.
 BOOST_AUTO_TEST_CASE(the_size_policy_is_offered_bucket_cuts) {
     fixture f;
     BOOST_TEST(f.sm.approximate_size_bytes() == 0U);
@@ -361,10 +360,9 @@ BOOST_AUTO_TEST_CASE(the_size_policy_is_offered_bucket_cuts) {
     BOOST_TEST(fresh.approximate_size_bytes() > 0U);
     BOOST_TEST(fresh.approximate_key_count() >= 40U);
 
-    const auto cuts = f.sm.suggest_split_keys(3);
-    BOOST_TEST_REQUIRE(!cuts.empty());
-    BOOST_TEST(cuts.size() <= 3U);
-    BOOST_TEST(std::is_sorted(cuts.begin(), cuts.end()));
+    // One cut, whatever the host allows: a group splits in two.
+    const auto cuts = f.sm.suggest_split_keys(10);
+    BOOST_TEST_REQUIRE(cuts.size() == 1U);
     for (const auto& k : cuts) {
         BOOST_TEST(k.size() == 13U);
         BOOST_TEST(k.starts_with(ddb::table_prefix(k_table)));

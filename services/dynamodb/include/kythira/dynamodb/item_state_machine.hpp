@@ -909,13 +909,19 @@ public:
         return _sizes.keys;
     }
 
-    /// Up to `max` cuts spaced by bytes, each at a partition hash bucket
-    /// (`t/<id>/<h16>`), so no item collection is split.
+    /// One cut near the middle by bytes, at a partition hash bucket
+    /// (`t/<id>/<h16>`), so no item collection is split. A group splits in
+    /// two, as a DynamoDB partition does, whatever `max` allows: the host
+    /// asks for up to its batch limit (10), and cutting a group that just
+    /// crossed the threshold into eleven leaves eleven small groups whose
+    /// Raft traffic outweighs their data (task 24's chaos run reached 72
+    /// groups for 1.4 MB that way).
     [[nodiscard]] auto suggest_split_keys(std::size_t max) const -> std::vector<std::string> {
         std::vector<std::string> out;
         if (max == 0 || _engine == nullptr) {
             return out;
         }
+        max = 1;
         constexpr std::size_t k_bucket_bytes = 2 + 8 + 1 + 2;
         std::vector<std::pair<std::string, std::size_t>> buckets;
         std::size_t total = 0;

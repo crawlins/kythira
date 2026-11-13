@@ -32,15 +32,20 @@
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <variant>
 #include <vector>
+
+#include <unistd.h>
 
 // The default (Folly) backend needs folly::Init before the first Raft
 // timer asks for folly's Timekeeper singleton.
@@ -241,6 +246,91 @@ struct cluster {
 };
 
 }  // namespace
+
+// Task 24: the ids a voter gives a split's children. Voters' ranges are
+// disjoint, and a node that keeps its data never hands out an id twice,
+// even when it is killed between reserving and using a block.
+BOOST_AUTO_TEST_CASE(split_children_get_ids_from_the_voters_own_range) {
+    using dynamodb_gateway::reserved_group_ids;
+    reserved_group_ids a(0, std::nullopt);
+    reserved_group_ids b(1, std::nullopt);
+    BOOST_TEST(a.first() > 2U);  // above the bootstrap groups
+    BOOST_TEST(a.last() == b.first());
+    const auto from_a = a.allocate(3);
+    const auto from_b = b.allocate(3);
+    BOOST_TEST_REQUIRE(from_a.size() == 3U);
+    BOOST_TEST_REQUIRE(from_b.size() == 3U);
+    for (const auto id : from_a) {
+        BOOST_TEST((id >= a.first() && id < a.last()));
+    }
+    for (const auto id : from_b) {
+        BOOST_TEST((id >= b.first() && id < b.last()));
+    }
+    BOOST_CHECK_THROW(reserved_group_ids(255, std::nullopt), std::invalid_argument);
+
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("kythira-ddb-group-ids-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::vector<std::uint64_t> seen;
+    {
+        reserved_group_ids first_run(2, dir / "group-ids");
+        for (const auto id : first_run.allocate(reserved_group_ids::k_block + 5)) {
+            seen.push_back(id);
+        }
+    }
+    // A restart (or a SIGKILL) resumes after the last reserved block.
+    reserved_group_ids second_run(2, dir / "group-ids");
+    const auto more = second_run.allocate(4);
+    BOOST_TEST_REQUIRE(more.size() == 4U);
+    for (const auto id : more) {
+        BOOST_TEST(id > seen.back());
+        BOOST_TEST((id >= second_run.first() && id < second_run.last()));
+    }
+    // Another voter's file is refused rather than trusted.
+    BOOST_CHECK_THROW(reserved_group_ids(3, dir / "group-ids"), std::runtime_error);
+    std::filesystem::remove_all(dir);
+}
+
+// Task 24: the layout a RocksDB node restarts with. Binary range bounds,
+// open ends, epochs and members come back as saved; no file means none;
+// a damaged file is refused rather than read as the bootstrap layout.
+BOOST_AUTO_TEST_CASE(a_saved_group_layout_loads_back) {
+    using descriptor = kythira::shard_descriptor<std::uint64_t, std::string, std::uint64_t>;
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("kythira-ddb-layout-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const dynamodb_gateway::group_layout_file<descriptor, std::uint64_t> file(
+        dir / "layout.json", [](const std::uint64_t& n) { return std::to_string(n); },
+        [](const std::string& t) { return static_cast<std::uint64_t>(std::stoull(t)); });
+    BOOST_TEST(!file.load().has_value());
+
+    descriptor left;
+    left._group_id = 2;
+    left._range._start = std::string("t/", 2);
+    left._range._end = std::string("t/\0\0\0\0\0\0\0\x05/\xff\x01", 13);
+    left._epoch = {._version = 3, ._conf_version = 1};
+    left._voters = {1, 2, 3};
+    descriptor right = left;
+    right._group_id = 281474976710656ULL;
+    right._range._start = left._range._end;
+    right._range._end.reset();
+    right._learners = {4};
+    BOOST_TEST_REQUIRE(file.save({left, right}));
+    const auto loaded = file.load();
+    BOOST_TEST_REQUIRE(loaded.has_value());
+    BOOST_TEST_REQUIRE(loaded->size() == 2U);
+    BOOST_TEST(((*loaded)[0] == left));
+    BOOST_TEST(((*loaded)[1] == right));
+    BOOST_TEST(((*loaded)[1]._learners == std::vector<std::uint64_t>{4}));
+
+    {
+        std::ofstream(dir / "layout.json") << "{\"groups\": [";
+    }
+    BOOST_CHECK_THROW((void)file.load(), std::runtime_error);
+    std::filesystem::remove_all(dir);
+}
 
 BOOST_AUTO_TEST_CASE(requests_on_every_node_reach_one_table) {
     cluster c;
