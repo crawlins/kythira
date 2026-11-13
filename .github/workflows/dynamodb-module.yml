@@ -33,6 +33,11 @@
 #     index entry or stream record may be lost or duplicated. The build
 #     job applies configs/ci_dynamodb_defconfig (ci_full_defconfig plus
 #     the RocksDB engine) for it.
+#   - then, the same way, the multi-region strong consistency scenario
+#     (task 27.8, services/dynamodb/tools/strong/run_strong.sh): three
+#     regions' one-node RocksDB clusters over one strong host; a strong
+#     table read across regions, racing conditional writes, a region
+#     SIGKILLed and started again, and a lone region refusing writes.
 #
 # The evidence job compiles the one test by hand against the distribution's
 # Boost instead of configuring the whole tree: the test needs only the
@@ -258,6 +263,12 @@ jobs:
           KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
         run: services/dynamodb/tools/chaos/run_chaos.sh compose "$RUNNER_TEMP/chaos-docker"
 
+      - name: Multi-region strong consistency on Kythira (docker)
+        env:
+          KYTHIRA_CONTAINER_RUNTIME: docker
+          KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
+        run: services/dynamodb/tools/strong/run_strong.sh compose "$RUNNER_TEMP/strong-docker"
+
       # Rootless Podman as iam-module.yml's container job sets it up.
       - name: Set up rootless Podman
         run: |
@@ -307,6 +318,12 @@ jobs:
           KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
         run: services/dynamodb/tools/chaos/run_chaos.sh compose "$RUNNER_TEMP/chaos-podman"
 
+      - name: Multi-region strong consistency on Kythira (podman)
+        env:
+          KYTHIRA_CONTAINER_RUNTIME: podman
+          KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
+        run: services/dynamodb/tools/strong/run_strong.sh compose "$RUNNER_TEMP/strong-podman"
+
       - name: Upload what Kythira answered the clients
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -319,6 +336,10 @@ jobs:
             ${{ runner.temp }}/chaos-docker/*.txt
             ${{ runner.temp }}/chaos-podman/*.log
             ${{ runner.temp }}/chaos-podman/*.txt
+            ${{ runner.temp }}/strong-docker/*.log
+            ${{ runner.temp }}/strong-docker/*.txt
+            ${{ runner.temp }}/strong-podman/*.log
+            ${{ runner.temp }}/strong-podman/*.txt
           if-no-files-found: ignore
           retention-days: 14
 

@@ -107,6 +107,16 @@ if(TARGET dynamodb_gateway_node)
     set_target_properties(dynamodb_gateway_cluster_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
     set_tests_properties(dynamodb_gateway_cluster_test PROPERTIES
         LABELS "integration;dynamodb;dynamodb-module" TIMEOUT 300)
+    # Task 27: three regions' one-node clusters over one strong host, with
+    # links between regions through relays a test can cut.
+    kythira_dynamodb_test(dynamodb_strong_cluster_test dynamodb_strong_cluster_test.cpp)
+    target_include_directories(dynamodb_strong_cluster_test PRIVATE
+        "${KYTHIRA_DYNAMODB_SOURCE_DIR}/cmd/dynamodb_gateway_node")
+    target_link_libraries(dynamodb_strong_cluster_test PRIVATE
+        kythira_test_support kythira_host_node_id)
+    set_target_properties(dynamodb_strong_cluster_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
+    set_tests_properties(dynamodb_strong_cluster_test PROPERTIES
+        LABELS "integration;dynamodb;dynamodb-module" TIMEOUT 600)
 endif()
 # Task 8: Query, Scan and the batch operations at their limits (1 MB pages,
 # segments, the 16 MB BatchGetItem response), and the operations corpus,

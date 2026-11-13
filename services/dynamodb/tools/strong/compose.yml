@@ -1,0 +1,84 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# Multi-region strong consistency in containers (.kiro/specs/
+# dynamodb-compatible-api/ task 27.8, run_strong.sh compose): three
+# regions, each a one-node dynamodb_gateway_node cluster on RocksDB
+# (east1, east2, west2), whose strong hosts are the voters of one set of
+# Raft groups. Each node keeps its data in its own volume, so a SIGKILLed
+# region starts again on what it had. `driver` idles until run_strong.sh
+# execs strong_driver.py in it. Everything is wired by service name: no
+# static addresses, no host networking, nothing published on the host, so
+# it runs the same under rootful Docker and rootless Podman (CLAUDE.md).
+#
+# STRONG_OUT is the host directory the driver writes its write logs into.
+
+name: kythira-dynamodb-strong
+
+x-strong-env: &strong_env
+  KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT: "1"
+  KYTHIRA_DYNAMODB_ENGINE: rocksdb
+  KYTHIRA_DYNAMODB_DATA_DIR: /data
+  KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES: "0"
+  KYTHIRA_DYNAMODB_LOG_LEVEL: warning
+  KYTHIRA_DYNAMODB_COMPAT: throttling=off
+  KYTHIRA_DYNAMODB_FORWARD_SECRET: dynamodb-strong-forward-secret
+  KYTHIRA_DYNAMODB_STATIC_KEYS: STRONG-driver:strong-secret-not-a-credential:000000000000:driver:admin
+  KYTHIRA_DYNAMODB_STRONG_PEERS: "11=us-east-1@http://east1:7001,21=us-east-2@http://east2:7001,31=us-west-2@http://west2:7001"
+  KYTHIRA_DYNAMODB_STRONG_SECRET: dynamodb-strong-secret-shared-by-regions
+  # One container network is not a wide-area one: the strong groups use
+  # the cluster's own Raft timings.
+  KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS: "100"
+  KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS: "1000"
+  KYTHIRA_DYNAMODB_STRONG_ELECTION_MAX_MS: "2000"
+
+services:
+  east1:
+    image: kythira-dynamodb-node:dev
+    environment:
+      <<: *strong_env
+      KYTHIRA_DYNAMODB_REGION: us-east-1
+      KYTHIRA_DYNAMODB_NODE_ID: "1"
+      KYTHIRA_DYNAMODB_PEERS: "1=http://east1:7000"
+      KYTHIRA_DYNAMODB_STRONG_NODE_ID: "11"
+      KYTHIRA_DYNAMODB_STRONG_GATEWAYS: "21=east2:8000,31=west2:8000"
+    volumes:
+      - east1:/data
+
+  east2:
+    image: kythira-dynamodb-node:dev
+    environment:
+      <<: *strong_env
+      KYTHIRA_DYNAMODB_REGION: us-east-2
+      KYTHIRA_DYNAMODB_NODE_ID: "2"
+      KYTHIRA_DYNAMODB_PEERS: "2=http://east2:7000"
+      KYTHIRA_DYNAMODB_STRONG_NODE_ID: "21"
+      KYTHIRA_DYNAMODB_STRONG_GATEWAYS: "11=east1:8000,31=west2:8000"
+    volumes:
+      - east2:/data
+
+  west2:
+    image: kythira-dynamodb-node:dev
+    environment:
+      <<: *strong_env
+      KYTHIRA_DYNAMODB_REGION: us-west-2
+      KYTHIRA_DYNAMODB_NODE_ID: "3"
+      KYTHIRA_DYNAMODB_PEERS: "3=http://west2:7000"
+      KYTHIRA_DYNAMODB_STRONG_NODE_ID: "31"
+      KYTHIRA_DYNAMODB_STRONG_GATEWAYS: "11=east1:8000,21=east2:8000"
+    volumes:
+      - west2:/data
+
+  driver:
+    image: docker.io/library/python:3.13.9-slim
+    entrypoint: ["sh", "-c", "pip install -q --root-user-action=ignore -r /tools/requirements.txt && exec sleep infinity"]
+    environment:
+      ENDPOINTS: us-east-1=http://east1:8000,us-east-2=http://east2:8000,us-west-2=http://west2:8000
+    volumes:
+      - ./:/tools:ro
+      - ${STRONG_OUT:?set STRONG_OUT}:/out
+
+volumes:
+  east1:
+  east2:
+  west2:
