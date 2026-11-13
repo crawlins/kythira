@@ -392,7 +392,7 @@ asked.
 
 ### Phase 8: conformance and docs
 
-- [ ] 17. Conformance and chaos
+- [x] 17. Conformance and chaos
   - Differential test against the chosen emulator; conformance jobs for
     every client in Requirement 17.2, including KPL and the Flink connector
   - Chaos: leader kills during `PutRecords`, tiering and fan-out
@@ -411,9 +411,20 @@ asked.
     the first six, and kills every node in turn under a producer; every
     failure must fire, segments must reach the store, and every record
     must read back in order under each key through every node. It needs
-    the AWS SDK's s3 component, so it runs only in CI. Left: the
-    differential test (emulator choice asked of Clark 11-10; kinesis-mock
-    recommended). aws-sdk-cpp runs in the container scenario since task
+    the AWS SDK's s3 component, so it runs only in CI. Differential:
+    Clark chose recordings over an emulator. `tests/differential/` runs a
+    seeded operation mix, normalises the answers, and compares them step
+    by step; two recordings made against real AWS Kinesis in us-east-1
+    on 2026-11-10 (seeds 1 and 2, 177 and 181 steps) are checked in, and
+    the scenario's `differential_replay_matches_the_aws_recordings`
+    replays them against a node after a self-check across two others.
+    The first replay found one difference: a reshard of a closed shard
+    answered ResourceInUseException where AWS answers
+    InvalidArgumentException. With that fixed both recordings replay
+    with no failures; error messages are compared as notes only, and two
+    kinds still differ in wording (ListShards' invalid NextToken, and
+    PutRecords' validation message, which AWS prints as Java toString).
+    aws-sdk-cpp runs in the container scenario since task
     7. Flink: a Flink 1.20.3 job on an in-process mini cluster
     (`tests/flink`), with connector 5.1.0-1.20's KinesisStreamsSource
     (stream by ARN, polling from the trim horizon) and
