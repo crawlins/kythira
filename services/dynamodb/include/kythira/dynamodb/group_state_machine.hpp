@@ -33,6 +33,7 @@
 
 #include <raft/memory_kv_engine.hpp>
 #include <raft/persistent_state_machine.hpp>
+#include <raft/splittable_state_machine.hpp>
 #include <raft/txn_state_machine.hpp>
 
 #include <cstdint>
@@ -171,6 +172,17 @@ public:
         return items_type::can_split_at(key);
     }
 
+    // The split policy's sizes and cuts (task 24); the catalog never splits.
+    [[nodiscard]] auto approximate_size_bytes() const -> std::size_t {
+        return _items ? _items->approximate_size_bytes() : 0;
+    }
+    [[nodiscard]] auto approximate_key_count() const -> std::size_t {
+        return _items ? _items->approximate_key_count() : 0;
+    }
+    [[nodiscard]] auto suggest_split_keys(std::size_t max) const -> std::vector<std::string> {
+        return _items ? _items->suggest_split_keys(max) : std::vector<std::string>{};
+    }
+
     /// The catalog, when this is the catalog group (else null).
     [[nodiscard]] auto catalog() -> catalog_type* { return _catalog ? &*_catalog : nullptr; }
     [[nodiscard]] auto catalog() const -> const catalog_type* {
@@ -237,5 +249,7 @@ using dynamo_txn_group_state_machine =
                                          dynamo_partitioner>;
 
 static_assert(kythira::persistent_splittable_state_machine<dynamo_txn_group_state_machine<>>);
+// The host's size policy can measure and cut DynamoDB groups (task 24).
+static_assert(kythira::split_policy_state_machine<dynamo_txn_group_state_machine<>, std::string>);
 
 }  // namespace kythira::dynamodb

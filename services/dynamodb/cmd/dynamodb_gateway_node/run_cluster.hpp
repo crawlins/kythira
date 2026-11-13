@@ -31,6 +31,7 @@
 #include <raft/multi_raft_transport_handles.hpp>
 #include <raft/persistence.hpp>
 #include <raft/record_segment_store.hpp>
+#include <raft/split_merge_policy.hpp>
 
 #include <boost/asio.hpp>
 
@@ -42,6 +43,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -284,8 +286,26 @@ auto run_cluster(
             });
         return typename types::state_machine_type(std::move(inner));
     };
-    hc.automatic_split_merge_enabled = false;
-    hc.split_merge_interval = std::chrono::hours{1};
+    // Automatic splits (task 24): the host's size policy, on the bytes and
+    // keys each group's state machine reports, cut at a partition hash
+    // bucket the state machine picks. Never automatic merges: the catalog
+    // group reports no size, and a merge policy would read that as small.
+    if (cfg.cluster.splits_enabled()) {
+        constexpr auto k_never = std::numeric_limits<std::size_t>::max();
+        kythira::threshold_split_merge_policy_config pc;
+        pc._shard_split_size_bytes = cfg.cluster.split_bytes != 0
+                                         ? static_cast<std::size_t>(cfg.cluster.split_bytes)
+                                         : k_never;
+        pc._shard_split_keys = cfg.cluster.split_keys != 0
+                                   ? static_cast<std::size_t>(cfg.cluster.split_keys)
+                                   : k_never;
+        hc.evaluate_split =
+            [policy = kythira::threshold_split_merge_policy<std::uint64_t, std::string,
+                                                            typename types::node_id_type>(pc)](
+                const auto& stats) mutable { return policy.evaluate_split(stats); };
+    }
+    hc.automatic_split_merge_enabled = cfg.cluster.splits_enabled();
+    hc.split_merge_interval = cfg.cluster.split_interval;
     auto host = std::make_unique<host_type>(std::move(hc));
     for (const auto& d : backend_type::bootstrap_descriptors(voters)) {
         host->create_group(d);

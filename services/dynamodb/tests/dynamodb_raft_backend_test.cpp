@@ -28,6 +28,7 @@
 #include <raft/multi_raft_impl.hpp>
 #include <raft/persistence.hpp>
 #include <raft/record_segment_store.hpp>
+#include <raft/split_merge_policy.hpp>
 #include <raft/txn_envelope.hpp>
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
@@ -40,6 +41,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -187,7 +189,9 @@ auto test_options(std::size_t page_bytes = std::size_t{1} << 20U) -> ddb::raft_b
 /// Three nodes, both bootstrap groups on each.
 class cluster {
 public:
-    explicit cluster(ddb::raft_backend_options options = test_options()) {
+    explicit cluster(ddb::raft_backend_options options = test_options(),
+                     std::function<void(config_type&)> tweak = {})
+        : _tweak(std::move(tweak)) {
         for (std::uint64_t id = 1; id <= k_nodes; ++id) {
             _engines.push_back(std::make_shared<kythira::memory_kv_engine>());
             kythira::record_segment_store_options o;
@@ -336,6 +340,9 @@ private:
         cfg.split_merge_interval = std::chrono::milliseconds{0};
         // Expired transaction locks resolve within a few passes.
         cfg.resolver_interval = std::chrono::milliseconds{100};
+        if (_tweak) {
+            _tweak(cfg);
+        }
         return cfg;
     }
 
@@ -348,6 +355,7 @@ private:
         return _backends[to - 1]->serve(op);
     }
 
+    std::function<void(config_type&)> _tweak;
     message_fabric _fabric{8};
     std::mutex _ids_mu;
     std::uint64_t _next_id = 100;
@@ -562,8 +570,8 @@ BOOST_AUTO_TEST_CASE(range_reads_cross_a_split_with_small_pages) {
     stamped.op = ddb::item_command::kind::put;
     stamped.table_id = d->table_id;
     stamped.schema = d->schema;
-    stamped.payload = *ddb::item_from_json(
-        json::parse(R"({"pk":{"S":"p10"},"sk":{"N":"9"}})").as_object());
+    stamped.payload =
+        *ddb::item_from_json(json::parse(R"({"pk":{"S":"p10"},"sk":{"N":"9"}})").as_object());
     stamped.region = "us-west-2";
     stamped.written_ms = 1234;
     BOOST_REQUIRE((c.backend(3).write(stamped).outcome == ddb::item_result::status::ok));
@@ -586,6 +594,67 @@ BOOST_AUTO_TEST_CASE(range_reads_cross_a_split_with_small_pages) {
     for (std::uint64_t id = 1; id <= k_nodes; ++id) {
         BOOST_TEST(cluster::await([&] { return c.item_keys(id) == 0U; }), "node " << id);
     }
+}
+
+// Task 24: the daemon's size policy. A group that outgrows the split
+// threshold is split by its leader without being told where, at partition
+// hash buckets its state machine picks, and every item stays readable.
+BOOST_AUTO_TEST_CASE(the_size_policy_splits_a_growing_group_at_partition_buckets) {
+    constexpr std::size_t k_split_bytes = 6 * 1024;
+    cluster c(test_options(), [](config_type& cfg) {
+        kythira::threshold_split_merge_policy_config pc;
+        pc._shard_split_size_bytes = k_split_bytes;
+        pc._shard_split_keys = std::numeric_limits<std::size_t>::max();
+        cfg.evaluate_split =
+            [policy = kythira::threshold_split_merge_policy<std::uint64_t, std::string>(pc)](
+                const auto& stats) mutable { return policy.evaluate_split(stats); };
+        cfg.policy_interval = std::chrono::milliseconds{100};
+        cfg.split_merge_interval = std::chrono::hours{1};
+    });
+    c.node(1).ok("CreateTable", k_create);
+    BOOST_TEST_REQUIRE(cluster::await([&] { return status_of(c.node(1), "Music") == "ACTIVE"; }));
+
+    // The groups' own sizes: the catalog reports none, the item group what
+    // it holds.
+    const auto size_of = [&](std::uint64_t id, std::uint64_t group) {
+        return c.host(id)
+            .with_group_state_machine(
+                group, [](auto& sm, const auto&) { return sm.approximate_size_bytes(); })
+            .value_or(0);
+    };
+    BOOST_TEST(size_of(1, k_catalog_group) == 0U);
+    const std::string pad(64, 'x');
+    constexpr int k_items = 160;
+    for (int i = 0; i < k_items; ++i) {
+        put(c.node(1 + (i % k_nodes)), "p" + std::to_string(i), 1,
+            R"(,"pad":{"S":")" + pad + R"("})");
+    }
+    BOOST_TEST_REQUIRE(cluster::await([&] { return c.host(1).shard_map_snapshot().size() > 2U; },
+                                      std::chrono::milliseconds{20000}));
+
+    // Every cut is a partition hash bucket: no item collection was cut.
+    // (The first item group still starts at `t/` itself.)
+    const auto map = c.host(1).shard_map_snapshot();
+    std::size_t cuts = 0;
+    for (const auto& d : map.descriptors()) {
+        if (d.range().start() && d.range().start()->starts_with("t/") &&
+            *d.range().start() != "t/") {
+            ++cuts;
+            BOOST_TEST(d.range().start()->size() == 13U);
+            BOOST_TEST(ddb::is_partition_boundary(*d.range().start()));
+        }
+    }
+    BOOST_TEST(cuts >= 1U);
+    std::set<std::string> seen;
+    BOOST_TEST(count_all(c.node(2), true, &seen) == static_cast<std::size_t>(k_items));
+    BOOST_TEST(seen.size() == static_cast<std::size_t>(k_items));
+    for (int i = 0; i < k_items; i += 17) {
+        const auto r = c.node(3).ok("GetItem", get_body(true, "p" + std::to_string(i), 1));
+        BOOST_TEST(r.contains("Item"));
+    }
+    // Writes keep landing after the split.
+    put(c.node(1), "after", 1);
+    BOOST_TEST(c.node(2).ok("GetItem", get_body(true, "after", 1)).contains("Item"));
 }
 
 BOOST_AUTO_TEST_CASE(item_leader_loss) {

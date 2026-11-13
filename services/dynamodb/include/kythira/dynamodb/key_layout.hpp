@@ -120,8 +120,9 @@ inline constexpr std::string_view k_catalog_prefix{"\0meta/dynamodb/", 15};
 }
 
 /// True when `key` is a place a group of item keys may be split: a table
-/// prefix, or a partition prefix with nothing after it. Anything else would
-/// cut an item collection in two.
+/// prefix, a partition hash bucket (`t/<id>/<h16>`, every collection of
+/// which lies wholly on one side), or a partition prefix with nothing after
+/// it. Anything else would cut an item collection in two.
 [[nodiscard]] inline auto is_partition_boundary(std::string_view key) -> bool {
     constexpr std::size_t k_table_prefix_bytes = 2 + 8 + 1;
     if (key.size() < k_table_prefix_bytes || !key.starts_with("t/") ||
@@ -137,6 +138,9 @@ inline constexpr std::string_view k_catalog_prefix{"\0meta/dynamodb/", 15};
     }
     const auto hash = rest.substr(0, 2);
     rest.remove_prefix(2);
+    if (rest.empty()) {
+        return true;
+    }
     // The rest must be exactly one encoded key component whose hash leads
     // it. S and B components end with 0x00 0x01; N components are
     // self-delimiting, so try both readings.

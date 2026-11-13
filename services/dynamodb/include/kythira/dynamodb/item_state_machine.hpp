@@ -50,6 +50,7 @@
 #include <raft/txn_state_machine.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -577,6 +578,7 @@ public:
     auto open(engine_type& engine, const kythira::key_range& range) -> void {
         _engine = &engine;
         _range = range;
+        _sizes = size_cache{};
         _ring.clear();
         _applied = 0;
         if (const auto v = _engine->get(kythira::column_family::meta, _range.start)) {
@@ -890,6 +892,62 @@ public:
         return is_partition_boundary(key);
     }
 
+    // -- split policy (task 24) ------------------------------------------------
+    //
+    // Leader-only and advisory: the host's size policy asks how big the group
+    // is and where to cut it. The sizes come from a scan of the group's
+    // items, kept for `k_size_refresh` so a policy tick does not rescan.
+
+    /// Bytes of the group's item and index entries (keys and values).
+    [[nodiscard]] auto approximate_size_bytes() const -> std::size_t {
+        refresh_sizes();
+        return _sizes.bytes;
+    }
+
+    [[nodiscard]] auto approximate_key_count() const -> std::size_t {
+        refresh_sizes();
+        return _sizes.keys;
+    }
+
+    /// Up to `max` cuts spaced by bytes, each at a partition hash bucket
+    /// (`t/<id>/<h16>`), so no item collection is split.
+    [[nodiscard]] auto suggest_split_keys(std::size_t max) const -> std::vector<std::string> {
+        std::vector<std::string> out;
+        if (max == 0 || _engine == nullptr) {
+            return out;
+        }
+        constexpr std::size_t k_bucket_bytes = 2 + 8 + 1 + 2;
+        std::vector<std::pair<std::string, std::size_t>> buckets;
+        std::size_t total = 0;
+        engine().scan(kythira::column_family::data, _range, kythira::scan_direction::forward,
+                      [&](std::string_view k, std::string_view v) {
+                          const auto bytes = k.size() + v.size();
+                          total += bytes;
+                          if (k.size() >= k_bucket_bytes && k.starts_with("t/")) {
+                              auto b = std::string(k.substr(0, k_bucket_bytes));
+                              if (buckets.empty() || buckets.back().first != b) {
+                                  buckets.emplace_back(std::move(b), 0);
+                              }
+                              buckets.back().second += bytes;
+                          }
+                          return true;
+                      });
+        const auto step = std::max<std::size_t>(total / (max + 1), 1);
+        std::size_t acc = 0;
+        std::size_t next = step;
+        for (const auto& [bucket, bytes] : buckets) {
+            if (out.size() < max && acc >= next && bucket > _range.start &&
+                (!_range.end || bucket < *_range.end)) {
+                out.push_back(bucket);
+                while (next <= acc) {
+                    next += step;
+                }
+            }
+            acc += bytes;
+        }
+        return out;
+    }
+
     /// The item collection limit of tables with LSIs. Every replica of a
     /// group must use the same value; tests lower it.
     auto set_collection_limit(std::uint64_t bytes) -> void { _collection_limit = bytes; }
@@ -1153,6 +1211,25 @@ public:
     }
 
 private:
+    /// How long a size scan stands for the split policy.
+    static constexpr std::chrono::seconds k_size_refresh{10};
+
+    auto refresh_sizes() const -> void {
+        const auto now = std::chrono::steady_clock::now();
+        if (_engine == nullptr || (_sizes.valid && now - _sizes.at < k_size_refresh)) {
+            return;
+        }
+        std::size_t bytes = 0;
+        std::size_t keys = 0;
+        engine().scan(kythira::column_family::data, _range, kythira::scan_direction::forward,
+                      [&](std::string_view k, std::string_view v) {
+                          bytes += k.size() + v.size();
+                          ++keys;
+                          return true;
+                      });
+        _sizes = size_cache{bytes, keys, now, true};
+    }
+
     [[nodiscard]] auto engine() const -> engine_type& {
         if (_engine == nullptr) {
             throw std::logic_error("dynamo_item_state_machine: not opened");
@@ -1979,6 +2056,14 @@ private:
     std::set<std::string> _pending;
     /// Data and meta writes staged into the open batch (see `stage`).
     std::map<std::pair<kythira::column_family, std::string>, std::optional<std::string>> _staged;
+    /// The split policy's last size scan (leader-only, never replicated).
+    struct size_cache {
+        std::size_t bytes = 0;
+        std::size_t keys = 0;
+        std::chrono::steady_clock::time_point at;
+        bool valid = false;
+    };
+    mutable size_cache _sizes;
     /// The node's change record store (task 15), or none.
     kythira::record_segment_store* _log = nullptr;
     change_log_fetcher _fetch;
