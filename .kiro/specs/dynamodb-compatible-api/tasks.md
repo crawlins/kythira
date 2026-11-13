@@ -955,7 +955,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       GSIs. Not recorded against AWS: that needs Clark's go, and DynamoDB
       Local may not implement vector search.
 
-- [ ] 27. Multi-region strong consistency (added 2026-11-13: Clark chose
+- [x] 27. Multi-region strong consistency (added 2026-11-13: Clark chose
   to build it in task 25)
   - [x] 27.1 Design (design.md, "Multi-region strong consistency"): MRSC
     groups with `n` voters in each of three regions in a second
@@ -1052,8 +1052,8 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       are stopped and the table still takes writes and strong reads)
   - [x] 27.7 Splits, GSIs, Streams, Kinesis destinations, PITR and
     backups on MRSC tables
-    - GSI changes go to the strong catalog and every region's worker
-      mirrors them; an MRSC table always logs changes; a stream picks
+    - GSI, billing mode and capacity changes go to the strong catalog
+      and every region's worker mirrors them; an MRSC table always logs changes; a stream picks
       an MRSC table's records by write time, since each region labels
       its writes with its own stream setting. Splits are Raft entries
       in the strong host's groups and need nothing new (the split-under-
@@ -1072,7 +1072,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       runtimes. A write a lone region answers with 500 may still commit
       once a quorum is back (its outcome is unknown, as AWS says of a
       500); the harness allows for it.
-  - [ ] 27.9 Docs: `doc/dynamodb.md`, `unsupported.md`, module README
+  - [x] 27.9 Docs: `doc/dynamodb.md`, `unsupported.md`, module README
   - _Requirements: 18.3, 18.4, 18.5_
 
 - [x] 22. Global tables, last-writer-wins

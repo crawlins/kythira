@@ -91,7 +91,9 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `tests/dynamodb_global_table_test.cpp` | Replicas in linked clusters: backfill, both directions, clock skew, a three-region mesh, deletion, refusals | 22 |
 | `cmd/dynamodb_gateway_node/group_ids.hpp`, `group_layout.hpp`, `durable_file.hpp` | Each voter's own range of group ids for splits, and the saved group layout a node restarts from | 24 |
 | `tools/chaos/` | The chaos scenario: SIGKILLs on a RocksDB cluster during splits and GSI propagation, with streams on (`run_chaos.sh`) | 24 |
-| `tests/dynamodb_strong_test.cpp` | The strong catalog's ids from 2^62 and routing between the cluster's host and the strong host | 27 |
+| `tests/dynamodb_strong_test.cpp` | The strong catalog's ids from 2^62, routing between the cluster's host and the strong host, making tables strong, leaving, GSIs, streams, PITR and backups across regions | 27 |
+| `tests/dynamodb_strong_cluster_test.cpp`, `dynamodb_cluster_fixture.hpp` | Three in-process regions over one strong host: cross-region reads, racing conditional writes, losing a region, cutting one off through relays, a witness, splits under load | 27 |
+| `tools/strong/` | Three regions on RocksDB under Docker, rootless Podman or as processes, with a region killed and restarted (`run_strong.sh`) | 27 |
 
 The rest follows the plan in the spec's `tasks.md`.
 

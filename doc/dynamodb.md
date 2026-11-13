@@ -161,23 +161,72 @@ are out of scope and answer `UnknownOperationException`:
 Parts of supported operations are also refused. Among them are
 `ReplicaUpdates` `Update` and the per-replica overrides.
 
-### Multi-region strong consistency
+## Multi-region strong consistency
 
-`MultiRegionConsistency=STRONG` and `GlobalTableWitnessUpdates` are planned
-(Requirement 18.3, task 27; decided with Clark on 2026-11-13). Until that
-lands they answer `ValidationException`, and global tables are eventually
-consistent across regions with last-writer-wins.
+A table with `MultiRegionConsistency=STRONG` (task 27) is strongly
+consistent across three regions, as on AWS: a write returns once it is
+in at least two regions, and a strongly consistent read or a condition
+in any region sees every write that returned before it, from any region.
 
-How it will work (the design is in
-`.kiro/specs/dynamodb-compatible-api/design.md`): a strongly consistent
-table's items live in Raft groups with the same number of voters in each of
-the three regions, so no region holds a quorum alone. Every write commits
-in at least two regions, and every region applies the same log. These
-groups run in a second multi-raft host on each node, with timings for a
-wide-area network, and a strong catalog group spanning the regions holds
-what they must agree on. Every write pays at least one cross-region round
-trip. Transactions, TTL and LSIs are refused on such tables, as AWS
-refuses them.
+**How.** Each node runs a second multi-raft host, the strong host, beside
+its cluster's own. Its groups have the same number of voters in each of
+the three regions, so no region holds a quorum alone, and all three
+regions apply one Raft log: there is no last-writer-wins step, and
+concurrent writes from two regions are ordered rather than conflicting
+(`ReplicatedWriteConflictException` is never returned). A strong catalog
+group spanning the regions holds what they share: key schema, billing,
+GSIs, members and status. Each region's own catalog keeps the per-replica
+settings. The design is in `.kiro/specs/dynamodb-compatible-api/design.md`.
+
+**Setup.** Every strong voter gets these on top of its cluster settings;
+the three regions must use the same peers list and secret:
+
+| Setting | What |
+|---|---|
+| `KYTHIRA_DYNAMODB_REGION` | this cluster's region |
+| `KYTHIRA_DYNAMODB_STRONG_NODE_ID` | this node's id among the strong voters, unique across the regions |
+| `KYTHIRA_DYNAMODB_STRONG_PEERS` | `id=region@http://host:port,...`: every strong voter of the three regions, the same number in each |
+| `KYTHIRA_DYNAMODB_STRONG_RAFT_BIND`, `_RAFT_PORT` | the strong Raft listener (default port 7001) |
+| `KYTHIRA_DYNAMODB_STRONG_GATEWAYS` | `id=host:port,...`: every other strong voter's API address |
+| `KYTHIRA_DYNAMODB_STRONG_SECRET` | the key strong voters sign forwarded requests with (16 or more characters) |
+| `KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS`, `_ELECTION_MIN_MS`, `_ELECTION_MAX_MS` | wide-area Raft timings (250, 2500, 5000) |
+
+The strong host keeps its state under `<data dir>/strong/`.
+`services/dynamodb/tools/strong/compose.yml` is a working three-region
+setup under Docker or rootless Podman.
+
+**Using it.** As on AWS:
+
+- Make an existing, empty, ACTIVE table strong with `UpdateTable`:
+  `MultiRegionConsistency=STRONG` and `ReplicaUpdates` `Create` for the
+  two other regions, or for one of them plus `GlobalTableWitnessUpdates`
+  `Create` for the third. A witness region stores the data and votes, but
+  has no table to serve.
+- Replicas cannot be added later. To leave, delete the two other members
+  (both replicas, or a replica and the witness) in one `UpdateTable`.
+  Kythira's rule: send it to the region that keeps the table. The table
+  becomes that region's own; its groups shrink to that region's voters,
+  so nothing is copied.
+- `DeleteTable` is refused while the table has replicas.
+- GSIs, billing mode and throughput are shared: a change in one region
+  reaches the others. Streams, Kinesis destinations, PITR, deletion
+  protection and tags are per replica, and every replica's stream holds
+  every region's writes.
+- Transactions, TTL and LSIs are refused on strong tables.
+
+**Failures.** Lose one region and the other two keep serving everything.
+A region that cannot reach either other region keeps answering
+eventually consistent reads from its own replica; writes and strongly
+consistent reads answer `InternalServerError` after the request
+deadline. Like any 500, such a write's outcome is unknown: it can still
+commit once the region reconnects. AWS does not document its error for
+this case.
+
+**Costs.** A write from a region that does not lead the item's group
+crosses regions twice (forward to the leader, then replicate), against
+once on AWS, and a strongly consistent read is forwarded to the leader.
+Leader placement and follower reads are later improvements. Tables that
+are not strong never touch the strong host.
 
 ## Testing it
 
@@ -191,6 +240,10 @@ refuses them.
   RocksDB cluster in turn while writers fill a table that has a GSI and a
   stream, and groups split. It fails on any lost or duplicated write,
   index entry or stream record.
+- `services/dynamodb/tools/strong/run_strong.sh` runs three regions over
+  one strong host: cross-region strong reads, racing conditional writes,
+  a region SIGKILLed and restarted on its data, and a lone region
+  refusing writes.
 
-The `dynamodb-module` workflow runs both, under Docker and under rootless
-Podman.
+The `dynamodb-module` workflow runs all three, under Docker and under
+rootless Podman.
