@@ -33,7 +33,6 @@ multi_raft_driver_agreement_test                   1/54
 # Added 2026-10-28 from 78 ci.yml runs (2026-10-24..28): every test that
 # needed a retry in two or more jobs and is not fixed yet. Counts are jobs.
 # See the TODO.md entry "Re-measured October 28, 2026".
-raft_multi_node_property_test                      5 jobs, "no leader" after a disruption round
 raft_batched_durable_writes_test                   2 jobs, no leader within 4 s
 coap_io_wait_mode_test                             2 jobs
 ca_cluster_node_rpc_tls_test                       2 jobs
@@ -55,3 +54,9 @@ multi_raft_node_s3_process_test                    no lost write; 4 rescues in 9
 # now settles the leader first, and a transfer whose target wins on its own
 # reports success. See the TODO.md entry "Retry-rescued flakes on the
 # allowlist".
+
+# Removed 2026-11-13: raft_multi_node_property_test (3/54 runs). The
+# fixture's submit() asked get_leader(), which reports nobody once a
+# partitioned minority's term passes the majority leader's; and two cases
+# sampled the leader instead of waiting for it. See the TODO.md entry
+# "Retry-rescued flakes on the allowlist".

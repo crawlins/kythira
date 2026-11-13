@@ -1999,6 +1999,22 @@ unverified completion claim.
       `a_target_that_wins_on_its_own_completes_the_transfer` blocks
       TimeoutNow and lets the target win by election; it fails on the old
       code. Off the allowlist.
+    - **`raft_multi_node_property_test`, fixed November 13, 2026** (3
+      rescues in 54 runs). Two causes, both test-side:
+      - `raft_multi_node_fixture::submit()` picked its target with
+        `get_leader()`, which also requires the leader's term to be the
+        highest any running node holds. A minority cut off by `partition()`
+        raises its term with every failed election, so once it passed the
+        majority leader's term `submit()` saw no leader for the rest of the
+        partition, although that leader was committing. One log showed node
+        2 leading term 4 with nodes 1 and 4 while nodes 3 and 5 sat at term
+        6, and the round failed "no leader". `submit()` now tries any node
+        that believes it leads (`self_declared_leader()`); a stale one fails
+        its bounded attempt and the loop moves on.
+      - Two cases read `get_leader()` once right after a successful submit
+        and required a value; a re-election in between failed them. They
+        now wait for a leader.
+      Off the allowlist.
   - **Disk mode applies under the node mutex. OPEN** (found November 9,
     2026). `cache_kv_state_machine` fsyncs a chunk, its pack record and
     the directory inside `apply()`, and `apply_committed_entries()` runs

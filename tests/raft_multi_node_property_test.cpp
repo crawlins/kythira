@@ -178,7 +178,9 @@ BOOST_AUTO_TEST_CASE(committed_entries_survive_and_state_converges,
             auto leader = f->wait_for_leader(scaled_deadline(5000));
             BOOST_REQUIRE(leader.has_value());
             BOOST_REQUIRE(f->submit(raft_multi_node_fixture::put_command("final", "1"), 3s).ok);
-            leader = f->get_leader();
+            // A sample, not a wait, could land mid-election: the restored
+            // nodes may still be catching the leader up or deposing it.
+            leader = f->wait_for_leader(scaled_deadline(5000));
             BOOST_REQUIRE(leader.has_value());
             BOOST_REQUIRE(
                 f->wait_for_convergence(scaled_deadline(5000), f->commit_index_of(*leader)));
@@ -230,7 +232,7 @@ BOOST_AUTO_TEST_CASE(survives_minority_failures, *boost::unit_test::timeout(scal
             auto r = f->submit(raft_multi_node_fixture::put_command("survivor", "1"),
                                scaled_deadline(5000));
             BOOST_REQUIRE_MESSAGE(r.ok, r.error);
-            auto leader = f->get_leader();
+            auto leader = f->wait_for_leader(scaled_deadline(5000));
             BOOST_REQUIRE(leader.has_value());
             BOOST_CHECK(std::find(victims.begin(), victims.end(), *leader) == victims.end());
             BOOST_CHECK(

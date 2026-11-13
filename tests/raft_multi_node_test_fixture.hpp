@@ -404,6 +404,24 @@ public:
         return std::nullopt;
     }
 
+    /// The running node that believes it leads in the highest term, whether or
+    /// not some other node has a higher term. See submit().
+    [[nodiscard]] auto self_declared_leader() const -> std::optional<node_id_type> {
+        std::optional<node_id_type> leader;
+        term_id_type leader_term = 0;
+        for (auto id : running_node_ids()) {
+            if (!is_node_running(id)) {
+                continue;
+            }
+            auto s = entry(id).raft->debug_state();
+            if (s.is_leader && (!leader || s.current_term > leader_term)) {
+                leader = id;
+                leader_term = s.current_term;
+            }
+        }
+        return leader;
+    }
+
     auto wait_for_leader(std::chrono::milliseconds timeout,
                          const std::vector<node_id_type>& among = {})
         -> std::optional<node_id_type> {
@@ -472,7 +490,14 @@ public:
         op_result last{.error = "no leader"};
         auto no_leader = [&] { last.error = "no leader:" + cluster_summary(); };
         while (std::chrono::steady_clock::now() < end) {
-            auto leader = get_leader();
+            // Not get_leader(): it also requires the leader's term to be the
+            // highest any running node holds, and a minority cut off by
+            // partition() keeps raising its own term with failed elections.
+            // Once it passes the majority leader's term, get_leader() reports
+            // nobody for as long as the partition lasts, although that leader
+            // still commits. Any node that believes it leads is worth an
+            // attempt; a stale one just fails it and the loop moves on.
+            auto leader = self_declared_leader();
             if (!leader) {
                 no_leader();
                 std::this_thread::sleep_for(std::chrono::milliseconds{10});
