@@ -53,7 +53,8 @@ Consequences for later tasks:
   `GetCallerIdentity` before it writes. It takes a separate STS endpoint
   and port (`StsEndpoint`, `StsPort`). The gateway can point those at IAM's
   STS (`services/iam`), or answer `GetCallerIdentity` itself for
-  static-key setups. Without either, KPL never sends a record. It also
+  static-key setups. The gateway now answers it (task 17; the
+  container scenario's KPL case runs KPL against a node). Without either, KPL never sends a record. It also
   reaches out to real `sts.us-east-1.amazonaws.com` when no STS endpoint
   is set, even with a custom Kinesis endpoint, which `doc/kinesis.md`
   (task 18) must warn about.

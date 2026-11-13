@@ -33,6 +33,10 @@
 // while they read: every record written before, during and after is
 // processed.
 //
+// A KPL case (task 17, Requirement 17.2) writes 500 user records through
+// KPL with aggregation on, behind a TLS front (KPL speaks HTTPS only), and
+// a KCL 2.x worker on another node must deaggregate every one of them.
+//
 // A chaos case (task 17, Requirement 17.3) kills every node in turn while
 // a producer writes with PutRecords and a fan-out consumer follows the
 // stream: every record arrives, in order under each key, pushed and
@@ -888,6 +892,58 @@ BOOST_AUTO_TEST_CASE(kcl_2_and_3_keep_their_leases_in_dynamodb) {
                                   << " of the first records again after restarting: its "
                                      "checkpoints were not kept");
     }
+}
+
+// Task 17: KPL conformance. KPL resolves the stream ARN with STS
+// GetCallerIdentity on the node, aggregates user records into Kinesis
+// records (protobuf behind the KPL magic) and sends them with PutRecords
+// over TLS; a KCL worker on another node deaggregates them. Every user
+// record must come out, and fewer Kinesis records than user records must
+// have gone in, or KPL did not aggregate and the case proves nothing about
+// deaggregation.
+BOOST_AUTO_TEST_CASE(kpl_aggregated_records_are_read_back_by_kcl) {
+    const logs_on_failure logs;
+    BOOST_REQUIRE_MESSAGE(eventually([&] { return aws_cli(2, {"list-streams"}).code == 0; }, 120s),
+                          service(2) << " never answered ListStreams");
+    {
+        auto r = boto3({"create", "--endpoint", endpoint(2), "--stream", "kpl", "--shards", "2"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create failed:\n" << r.out);
+    }
+    constexpr int k_count = 500;
+    {
+        auto r = os::real_exec(
+            compose_cmd({"--profile", "clients", "run", "--rm", "-T", "kpl", service(2) + ":4567",
+                         "kpl", std::to_string(k_count), "kpl"}));
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "KPL failed:\n" << r.out);
+        const auto out = last_json(r.out);
+        BOOST_REQUIRE_MESSAGE(out.has_value(), "no JSON from KPL:\n" << r.out);
+        BOOST_TEST(out->at("produced").as_int64() == k_count, r.out);
+        const auto records = out->at("kinesis_records").as_int64();
+        BOOST_TEST(records < k_count / 2, "KPL sent " << records << " Kinesis records for "
+                                                      << k_count
+                                                      << " user records: it did not aggregate");
+    }
+    std::set<std::string> expected;
+    for (int i = 0; i < k_count; ++i) {
+        expected.insert("kpl-" + std::to_string(i));
+    }
+    const auto events = [] {
+        return kcl_events({"--profile", "kpl", "logs", "--no-color", "kcl-kpl"});
+    };
+    os::checked_exec(os::real_exec, compose_cmd({"--profile", "kpl", "up", "-d", "kcl-kpl"}));
+    const auto all_seen = [&] {
+        const auto seen = kcl_records(events());
+        return std::includes(seen.begin(), seen.end(), expected.begin(), expected.end());
+    };
+    BOOST_TEST(eventually(all_seen, 240s), "KCL never read every KPL user record");
+    const auto seen = kcl_records(events());
+    std::vector<std::string> missing;
+    std::set_difference(expected.begin(), expected.end(), seen.begin(), seen.end(),
+                        std::back_inserter(missing));
+    BOOST_TEST(missing.empty(), missing.size() << " KPL records never read, first "
+                                               << (missing.empty() ? "" : missing.front()));
+    os::real_exec(compose_cmd({"--profile", "kpl", "stop", "kcl-kpl"}));
 }
 
 // Task 17: tiering through leader kills and S3 faults. Runs last, since it

@@ -406,8 +406,15 @@ asked.
     must read back in order under each key through every node. It needs
     the AWS SDK's s3 component, so it runs only in CI. Left: the
     differential test (emulator choice asked of Clark 11-10; kinesis-mock
-    recommended) and conformance jobs for KPL and the Flink connector
-    (aws-sdk-cpp runs in the container scenario since task 7).
+    recommended) and the Flink connector's conformance job
+    (aws-sdk-cpp runs in the container scenario since task 7). KPL: every
+    node answers STS `GetCallerIdentity` from the caller's signature
+    (KPL's first call), and the scenario's KPL case writes 500 user
+    records through KPL 0.15.12 with aggregation on, behind a socat TLS
+    front, through one node; they must land in fewer than half as many
+    Kinesis records, and a KCL 2.x worker on another node must
+    deaggregate every one. A native run passed (500 user records in 2
+    Kinesis records, all 500 read back).
 
 - [x] 18. Documentation
   - `doc/kinesis.md`: model, profile switches, limits, clock assumption,
