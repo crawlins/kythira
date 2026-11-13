@@ -358,6 +358,26 @@ asked.
     DynamoDB tasks 7 and 11) and DynamoDB Local
   - AWS DynamoDB lease backend run (**Clark's go**, real-cloud spend)
   - _Requirements: 15.3, 15.4_
+  - Progress:
+    - Done: the sample consumer takes `KCL_LEASES=dynamodb` and
+      `KCL_DYNAMODB_ENDPOINT` and then runs KCL's own lease management
+      against that endpoint. `tests/kcl/sample3` builds the same source
+      against KCL 3.5.4; only `KythiraLeases`, the one class that uses the
+      lease layer (KCL 2.x interfaces), is its own. The KCL image carries
+      both (`/opt/kcl-sample`, `/opt/kcl3-sample`).
+    - Done: the container scenario's
+      `kcl_2_and_3_keep_their_leases_in_dynamodb` case: KCL 2.x and 3.x,
+      each with its lease table on Kythira's DynamoDB (`ddb-leases`, a
+      `dynamodb_gateway_node` staged into the node image) and on DynamoDB
+      Local 3.3.2 (`ddb-local`). Four applications read one stream; each
+      must process every record, and after every worker restarts each
+      must read the next records and none of the first again, so its
+      checkpoints were kept. A native run here (one Kinesis node) passed
+      all four: 300 of 300 records each, nothing re-read after the
+      restart. Four applications polling two shards exceed 5 GetRecords
+      calls a second per shard, so KCL meets and retries
+      `ProvisionedThroughputExceededException`, as it would on AWS.
+    - Left: the AWS DynamoDB lease backend run (Clark's go).
 
 ### Phase 8: conformance and docs
 

@@ -7,9 +7,6 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
-import kythira.kcl.leases.HttpLeaseApi;
-import kythira.kcl.leases.KythiraLeaseManagementFactory;
-import kythira.kcl.leases.LeaseApi;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.http.Protocol;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
@@ -36,11 +33,18 @@ import software.amazon.kinesis.retrieval.fanout.FanOutConfig;
 import software.amazon.kinesis.retrieval.polling.PollingConfig;
 
 /**
- * A KCL 2.x worker on Kythira: records and leases both on the cluster.
+ * A KCL worker on Kythira Kinesis, with its leases on the cluster or in a DynamoDB table.
  *
  * <p>{@code SampleConsumer <endpoint> <stream> <application> [worker-id]}, with credentials from
- * the default chain and the region from {@code AWS_REGION} (us-east-1 by default). Prints one
- * line per event on stdout, for the scenario to check:
+ * the default chain and the region from {@code AWS_REGION} (us-east-1 by default).
+ *
+ * <p>{@code KCL_LEASES} picks where the leases live: {@code kythira} (the default) is the Kythira
+ * lease API on the same endpoint (task 9, KCL 2.x only); {@code dynamodb} is KCL's own lease
+ * table, in the DynamoDB API at {@code KCL_DYNAMODB_ENDPOINT}: Kythira's DynamoDB or DynamoDB
+ * Local, or AWS DynamoDB in the region when it is unset (task 16). The same source builds against KCL 2.x ({@code sample}) and KCL 3.x
+ * ({@code sample3}).
+ *
+ * <p>Prints one line per event on stdout, for the scenario to check:
  *
  * <pre>
  * EVENT &lt;millis&gt; &lt;worker&gt; init &lt;shard&gt;
@@ -137,12 +141,26 @@ public final class SampleConsumer {
                         .protocol(fanOut ? Protocol.HTTP2 : Protocol.HTTP1_1)
                         .connectionTimeout(Duration.ofSeconds(5)))
                 .build();
-        // KCL insists on these two; neither is ever called.
-        DynamoDbAsyncClient dynamo = DynamoDbAsyncClient.builder()
-                .endpointOverride(URI.create("http://127.0.0.1:1"))
+        String leaseStore = System.getenv().getOrDefault("KCL_LEASES", "kythira");
+        if (!leaseStore.equals("kythira") && !leaseStore.equals("dynamodb")) {
+            System.err.println("KCL_LEASES must be kythira or dynamodb, not " + leaseStore);
+            System.exit(2);
+        }
+        // KCL_DYNAMODB_ENDPOINT unset with KCL_LEASES=dynamodb means AWS DynamoDB in the region,
+        // with the default credentials. With the Kythira lease API, KCL still insists on a
+        // DynamoDB client but never calls it.
+        String dynamoEndpoint = System.getenv().get("KCL_DYNAMODB_ENDPOINT");
+        if (leaseStore.equals("kythira")) {
+            dynamoEndpoint = "http://127.0.0.1:1";
+        }
+        var dynamoBuilder = DynamoDbAsyncClient.builder()
                 .region(region)
-                .credentialsProvider(DefaultCredentialsProvider.builder().build())
-                .build();
+                .credentialsProvider(DefaultCredentialsProvider.builder().build());
+        if (dynamoEndpoint != null) {
+            dynamoBuilder.endpointOverride(URI.create(dynamoEndpoint));
+        }
+        DynamoDbAsyncClient dynamo = dynamoBuilder.build();
+        // KCL insists on this one too; NullMetricsFactory means it is never called.
         CloudWatchAsyncClient cloudWatch = CloudWatchAsyncClient.builder()
                 .endpointOverride(URI.create("http://127.0.0.1:1"))
                 .region(region)
@@ -156,9 +174,9 @@ public final class SampleConsumer {
                 worker, factory);
 
         LeaseManagementConfig leases = configs.leaseManagementConfig().failoverTimeMillis(failover);
-        LeaseApi api = new HttpLeaseApi(endpoint, application,
-                DefaultCredentialsProvider.builder().build(), region.id());
-        leases.leaseManagementFactory(KythiraLeaseManagementFactory.create(leases, api, false));
+        if (leaseStore.equals("kythira")) {
+            KythiraLeases.install(leases, endpoint, application, region);
+        }
 
         Scheduler scheduler = new Scheduler(
                 configs.checkpointConfig(),

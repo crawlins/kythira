@@ -25,8 +25,8 @@
 #
 # The clients are in the `clients` profile, so `up` never starts them; the
 # scenario runs each with `compose --profile clients run --rm`. The KCL
-# workers are in the `kcl` profile and the S3 mock in `s3` for the same
-# reason. Each node
+# workers are in the `kcl` profile, the S3 mock in `s3` and the DynamoDB
+# lease stores with their workers in `leases`, for the same reason. Each node
 # keeps its Raft state and segments in its own named volume, so
 # `stop`/`start` resumes it and `down -v` is a clean slate.
 
@@ -174,6 +174,67 @@ services:
   kcl-efo-2:
     <<: *kcl_efo
     command: ["http://kin-2:4567", "efo", "efo-app", "efo-worker-2"]
+
+  # Task 16: KCL's own lease tables in DynamoDB, in the `leases` profile.
+  # ddb-leases is Kythira's DynamoDB (one dynamodb_gateway_node on the
+  # memory engine, staged into the node image when the build has it);
+  # ddb-local is DynamoDB Local. Each takes the client key, the one the
+  # workers sign with.
+  ddb-leases:
+    image: kythira-kinesis-node:dev
+    profiles: ["leases"]
+    networks:
+      - kinesis_net
+    entrypoint: ["/usr/local/bin/dynamodb_gateway_node"]
+    environment:
+      KYTHIRA_DYNAMODB_PORT: "8000"
+      KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT: "1"
+      KYTHIRA_DYNAMODB_STATIC_KEYS: AKIDKINESISCLIENT01:kinesis-scenario-client-secret:111122223333:client:admin
+      KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES: "0"
+      KYTHIRA_DYNAMODB_COMPAT: throttling=off
+
+  ddb-local:
+    image: docker.io/amazon/dynamodb-local:3.3.2
+    profiles: ["leases"]
+    networks:
+      - kinesis_net
+
+  # Four applications on one stream: KCL 2.x and 3.x, each with its lease
+  # table on ddb-leases and on ddb-local.
+  kcl2-kythira-ddb: &kcl_ddb
+    image: kythira-kinesis-kcl:dev
+    profiles: ["leases"]
+    networks:
+      - kinesis_net
+    environment: &kcl_ddb_env
+      AWS_ACCESS_KEY_ID: AKIDKINESISCLIENT01
+      AWS_SECRET_ACCESS_KEY: kinesis-scenario-client-secret
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      KCL_FAILOVER_MILLIS: "10000"
+      KCL_LEASES: dynamodb
+      KCL_DYNAMODB_ENDPOINT: http://ddb-leases:8000
+    command: ["http://kin-1:4567", "leases", "kcl2-on-kythira-ddb", "kcl2-k"]
+
+  kcl3-kythira-ddb:
+    <<: *kcl_ddb
+    entrypoint: ["/opt/kcl3-sample/bin/kythira-kcl3-sample"]
+    command: ["http://kin-2:4567", "leases", "kcl3-on-kythira-ddb", "kcl3-k"]
+
+  kcl2-ddb-local:
+    <<: *kcl_ddb
+    environment:
+      <<: *kcl_ddb_env
+      KCL_DYNAMODB_ENDPOINT: http://ddb-local:8000
+    command: ["http://kin-3:4567", "leases", "kcl2-on-ddb-local", "kcl2-l"]
+
+  kcl3-ddb-local:
+    <<: *kcl_ddb
+    entrypoint: ["/opt/kcl3-sample/bin/kythira-kcl3-sample"]
+    environment:
+      <<: *kcl_ddb_env
+      KCL_DYNAMODB_ENDPOINT: http://ddb-local:8000
+    command: ["http://kin-1:4567", "leases", "kcl3-on-ddb-local", "kcl3-l"]
 
 networks:
   kinesis_net:

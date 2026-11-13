@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A KCL 2.x consumer on Kythira Kinesis with its leases on Kythira
-// (.kiro/specs/kinesis-compatible-streams/ task 9). The container scenario
-// runs several of these against one stream and checks from their output that
-// every record was processed and no shard had two owners past the failover
-// time.
+// (.kiro/specs/kinesis-compatible-streams/ task 9) or in DynamoDB (task
+// 16). The container scenario runs several of these against one stream and
+// checks from their output that every record was processed and no shard had
+// two owners past the failover time.
 
 plugins {
     id 'application'
@@ -14,6 +14,16 @@ plugins {
 repositories {
     // repo1 is the same Maven Central; the CI proxy rate-limits the other name less.
     maven { url = 'https://repo1.maven.org/maven2' }
+}
+
+sourceSets {
+    main {
+        java {
+            // KythiraLeases, the one class that uses the lease layer, sits
+            // apart so the KCL 3.x build (../sample3) can bring its own.
+            srcDir 'src/leases/java'
+        }
+    }
 }
 
 dependencies {

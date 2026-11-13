@@ -50,12 +50,23 @@ if(_RUNTIME_EXE)
             set(_KINESIS_S3_MOCK_STAGE ${CMAKE_COMMAND} -E rm -f
                 "${_KINESIS_NODE_DIST}/chaos_s3_mock")
         endif()
+        # The lease backend case (task 16) runs Kythira's DynamoDB from this
+        # image too. Its target is defined after this directory (the
+        # DynamoDB module is added later), so the copy is chosen at generate
+        # time and the dependency added at the end of the configure, below.
+        # Without the module the stale copy goes, and the case fails naming
+        # the missing binary.
+        set(_KINESIS_DDB_STAGE
+            "$<IF:$<TARGET_EXISTS:dynamodb_gateway_node>,copy,rm>"
+            "$<IF:$<TARGET_EXISTS:dynamodb_gateway_node>,$<TARGET_FILE:dynamodb_gateway_node>,-f>"
+            "${_KINESIS_NODE_DIST}/dynamodb_gateway_node")
         add_custom_target(docker-kinesis-node-image
             DEPENDS kinesis_gateway_node ${_KINESIS_S3_MOCK_DEP}
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_KINESIS_NODE_DIST}"
             COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:kinesis_gateway_node>"
                     "${_KINESIS_NODE_DIST}/kinesis_gateway_node"
             COMMAND ${_KINESIS_S3_MOCK_STAGE}
+            COMMAND ${CMAKE_COMMAND} -E ${_KINESIS_DDB_STAGE}
             COMMAND ${_RUNTIME_EXE} build ${_IMAGE_FORMAT_ARGS}
                     --file "${_KINESIS_NODE_DOCKERFILE}"
                     --tag kythira-kinesis-node:dev
@@ -69,9 +80,18 @@ if(_RUNTIME_EXE)
                     --file "${_KINESIS_KCL_DOCKERFILE}"
                     --tag kythira-kinesis-kcl:dev
                     "${KYTHIRA_IMAGE_CONTEXT}"
-            COMMENT "Staging kinesis_gateway_node (and chaos_s3_mock) and building the kythira-kinesis-node, -clients and -kcl :dev images"
+            COMMENT "Staging kinesis_gateway_node (and chaos_s3_mock, dynamodb_gateway_node) and building the kythira-kinesis-node, -clients and -kcl :dev images"
             WORKING_DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}"
         )
+        # Called once the whole tree is configured (the image context is
+        # the top-level directory), when the DynamoDB module's targets exist.
+        function(_kinesis_image_needs_dynamodb)
+            if(TARGET dynamodb_gateway_node)
+                add_dependencies(docker-kinesis-node-image dynamodb_gateway_node)
+            endif()
+        endfunction()
+        cmake_language(DEFER DIRECTORY "${KYTHIRA_IMAGE_CONTEXT}" CALL
+                       _kinesis_image_needs_dynamodb)
     else()
         add_custom_target(docker-kinesis-node-image
             COMMAND ${CMAKE_COMMAND} -E echo

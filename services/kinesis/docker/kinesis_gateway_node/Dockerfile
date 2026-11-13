@@ -27,16 +27,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnghttp2-14 \
     && rm -rf /var/lib/apt/lists/*
 
-# Everything staged in dist/: kinesis_gateway_node, and chaos_s3_mock when
-# the build has it (the scenario's tiering case runs it as the `s3mock`
-# service from this same image, so no second image is needed).
+# Everything staged in dist/: kinesis_gateway_node, chaos_s3_mock when the
+# build has it (the scenario's tiering case runs it as the `s3mock` service
+# from this same image, so no second image is needed), and
+# dynamodb_gateway_node when the build has the DynamoDB module (the lease
+# backend case's `ddb-leases`).
 COPY services/kinesis/docker/kinesis_gateway_node/dist/ /usr/local/bin/
 
 # Fail the image build, naming the library, rather than leave a container
 # to exit 127 with nothing in its log if the host build links a shared
 # library this image does not carry.
 RUN test -x /usr/local/bin/kinesis_gateway_node; \
-    for bin in /usr/local/bin/kinesis_gateway_node /usr/local/bin/chaos_s3_mock; do \
+    for bin in /usr/local/bin/kinesis_gateway_node /usr/local/bin/chaos_s3_mock \
+               /usr/local/bin/dynamodb_gateway_node; do \
       [ -e "$bin" ] || continue; \
       missing="$(ldd "$bin" | sed -n '/not found/p')"; \
       if [ -n "$missing" ]; then echo "$bin: $missing" >&2; exit 1; fi; \
