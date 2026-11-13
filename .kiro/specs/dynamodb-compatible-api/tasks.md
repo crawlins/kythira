@@ -1018,7 +1018,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
 
 ### Phase 7: conformance and docs
 
-- [ ] 24. Conformance and chaos
+- [x] 24. Conformance and chaos
   - Conformance jobs: AWS CLI, boto3, aws-sdk-java-v2, lock client, KCL 2.x
     and 3.x, Streams adapter, Terraform `aws_dynamodb_table`
   - Chaos: leader kills mid-GSI-propagation and mid-split with streams on;
@@ -1026,6 +1026,49 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     and rootless Podman)
   - Optional recording run against real AWS DynamoDB (**Clark's go**)
   - _Requirements: 20.4, 21.1, 21.4-21.6_
+  - Notes:
+    - Conformance: `tools/evidence/clients_on_kythira.sh` (was
+      `kcl_on_kythira.sh`) runs all eight clients against a three-node
+      gateway through the recording stub, and `check_client_runs.py`
+      checks every recording. Terraform is a new client (apply, empty
+      second plan, capacity change, destroy). The run found two bugs in
+      the clients' own scripts (boto3 used the reserved word `blob`
+      unescaped, and its batch writer put and deleted one key in a batch);
+      real DynamoDB refuses both too, so the scripts were fixed.
+    - The AWS recording run was not made: no go was asked for, as the
+      existing evidence recordings already cover the clients' calls.
+    - Splits: there were none without an admin call, so the chaos case
+      could not happen. The item state machine now answers the host's
+      size policy (exact scan, cached 10 s; cuts are partition hash
+      buckets, so no item collection is cut) and the daemon runs it,
+      splits only (`KYTHIRA_DYNAMODB_SPLIT_BYTES`, `_SPLIT_KEYS`,
+      `_SPLIT_INTERVAL_MS`). Deviation: a split makes two groups, not up
+      to ten: ten-way splits under load made 72 groups on three nodes and
+      Raft timed out.
+    - Group ids: the daemon had no allocator for new groups. Each voter
+      takes ids from its own range, `(ordinal + 1) << 48` onward, saved in
+      `group-ids` on RocksDB (`group_ids.hpp`), so two leaders never pick
+      the same id with no coordination.
+    - Restart after a split (found by the chaos run): a group whose state
+      machine keeps its applied index does not replay the split after a
+      restart, so the node came back with only its bootstrap groups and
+      halted on "key outside the group's range". The host now reports
+      every replica's layout synchronously in the apply path
+      (`multi_raft_config::on_local_layout_changed`, core), the daemon
+      saves it durably as `layout.json` (`group_layout.hpp`), and starts
+      from it.
+    - Chaos: `tools/chaos/` (`run_chaos.sh compose|native`,
+      `chaos_driver.py`, `compose.yml`). Three RocksDB nodes split at
+      512 KiB; each is SIGKILLed twice while writers fill a table with a
+      GSI and a stream. The driver fails on any lost, duplicated or
+      phantom item, GSI entry or stream record, and when no split
+      happened. Native runs here: 8,427 and 8,949 writes, 16 and 14
+      shards, every check passed. CI runs it under Docker and rootless
+      Podman in the dynamodb-module workflow (`ci_dynamodb_defconfig`
+      adds RocksDB).
+    - Left open (core, not DynamoDB): the group-scoped quorum manager
+      logs `provision_node failed` on every heartbeat once a peer is
+      silent for 30 s; an overloaded run wrote millions of such lines.
 
 - [ ] 25. Documentation and decisions
   - `doc/dynamodb.md`: model, profile switches, limits, operations,

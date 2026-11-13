@@ -1,0 +1,69 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The DynamoDB chaos scenario in containers (.kiro/specs/
+# dynamodb-compatible-api/ task 24, run_chaos.sh compose): three
+# dynamodb_gateway_node containers on RocksDB (ddb-1 .. ddb-3, a Raft
+# cluster wired by service name), each keeping its data in its own volume
+# so a SIGKILLed node starts again on what it had, and `driver`, which
+# idles until run_chaos.sh execs chaos_driver.py in it. No static
+# addresses, no host networking, nothing published on the host: it runs
+# the same under rootful Docker and rootless Podman (CLAUDE.md).
+#
+# CHAOS_OUT is the host directory the driver writes its write log into.
+
+name: kythira-dynamodb-chaos
+
+services:
+  ddb-1: &ddb
+    image: kythira-dynamodb-node:dev
+    environment: &ddb_env
+      KYTHIRA_DYNAMODB_NODE_ID: "1"
+      KYTHIRA_DYNAMODB_PEERS: "1=http://ddb-1:7000,2=http://ddb-2:7000,3=http://ddb-3:7000"
+      KYTHIRA_DYNAMODB_PEER_GATEWAYS: "2=ddb-2:8000,3=ddb-3:8000"
+      KYTHIRA_DYNAMODB_FORWARD_SECRET: dynamodb-chaos-forward-secret
+      KYTHIRA_DYNAMODB_INSECURE_PLAINTEXT: "1"
+      KYTHIRA_DYNAMODB_ENGINE: rocksdb
+      KYTHIRA_DYNAMODB_DATA_DIR: /data
+      KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES: "0"
+      KYTHIRA_DYNAMODB_LOG_LEVEL: warning
+      KYTHIRA_DYNAMODB_COMPAT: throttling=off
+      # Small groups, so splits happen all through the kills.
+      KYTHIRA_DYNAMODB_SPLIT_BYTES: "524288"
+      KYTHIRA_DYNAMODB_SPLIT_KEYS: "0"
+      KYTHIRA_DYNAMODB_SPLIT_INTERVAL_MS: "2000"
+      KYTHIRA_DYNAMODB_STATIC_KEYS: CHAOS-driver:chaos-secret-not-a-credential:000000000000:driver:admin
+    volumes:
+      - ddb-1:/data
+
+  ddb-2:
+    <<: *ddb
+    environment:
+      <<: *ddb_env
+      KYTHIRA_DYNAMODB_NODE_ID: "2"
+      KYTHIRA_DYNAMODB_PEER_GATEWAYS: "1=ddb-1:8000,3=ddb-3:8000"
+    volumes:
+      - ddb-2:/data
+
+  ddb-3:
+    <<: *ddb
+    environment:
+      <<: *ddb_env
+      KYTHIRA_DYNAMODB_NODE_ID: "3"
+      KYTHIRA_DYNAMODB_PEER_GATEWAYS: "1=ddb-1:8000,2=ddb-2:8000"
+    volumes:
+      - ddb-3:/data
+
+  driver:
+    image: docker.io/library/python:3.13.9-slim
+    entrypoint: ["sh", "-c", "pip install -q --root-user-action=ignore -r /tools/requirements.txt && exec sleep infinity"]
+    environment:
+      ENDPOINTS: http://ddb-1:8000,http://ddb-2:8000,http://ddb-3:8000
+    volumes:
+      - ./:/tools:ro
+      - ${CHAOS_OUT:?set CHAOS_OUT}:/out
+
+volumes:
+  ddb-1:
+  ddb-2:
+  ddb-3:
