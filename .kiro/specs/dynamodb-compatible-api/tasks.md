@@ -1125,6 +1125,27 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       per-account limiter; per-table throttling stays.
     - Operator logs and metrics carry the account; nothing a customer
       sees adds an account dimension.
+  - Progress (2026-11-13):
+    - Done: `KYTHIRA_DYNAMODB_NAMESPACES=on` gives each account its own
+      tables (catalog names `<account>/<name>`, command format 12's
+      `qualify_tables` moves an existing catalog's tables to
+      `KYTHIRA_DYNAMODB_ACCOUNT_ID` once; listings per account; ARNs from
+      the owner); per-account provisioned capacity limits on CreateTable
+      and UpdateTable, reported by `DescribeLimits`
+      (`KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT`, `_ACCOUNT_LIMITS`);
+      `KYTHIRA_DYNAMODB_AUTH` and `KINESIS_AUTH` = `static|iam|both`
+      through the core `static_or_iam_authorizer` and the IAM module's
+      `iam_gateway_auth.hpp`; the account in the operator's
+      InternalServerError log lines; namespaces with the strong host (the
+      first region to settle moves the strong catalog's tables to the
+      same owner, and a region that disagrees serves nothing); global
+      tables per account (the peer's receiver resolves names in the
+      replication principal's account, and
+      `KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE` gives each account its
+      own principal).
+    - Left: cross-account access by ARN under IAM with a resource
+      policy, tested end to end; per-account limits on table count and
+      concurrent table operations.
   - _Requirements: 5.4, 5.5_
 
 - [x] 29. Kinesis streaming destination against real AWS (added
