@@ -52,6 +52,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
@@ -104,7 +105,7 @@ template<typename Serializer> struct beast_stack {
         : _work(boost::asio::make_work_guard(*_ioc)),
           _server(*_ioc, opt._bind_address, opt._raft_port, raft_server_config(opt),
                   kythira::noop_metrics{}),
-          _client(*_ioc,
+          _client(std::in_place, *_ioc,
                   std::unordered_map<kythira::host_node_id, std::string>{opt._peers.begin(),
                                                                          opt._peers.end()},
                   kythira::boost_beast_client_config{}, kythira::noop_metrics{}, _ioc) {
@@ -116,7 +117,7 @@ template<typename Serializer> struct beast_stack {
         // dials the peer's gateway listener, and the cache's HTTP front end
         // its HTTP listener, on other ports, so those addresses are learned
         // here from the same sighting.
-        _server.set_peer_seen_handler([raft = _client.peer_seen_handler(),
+        _server.set_peer_seen_handler([raft = _client->peer_seen_handler(),
                                        gateways = opt._peer_gateways, http = opt._cache._peer_http](
                                           const kythira::host_node_id& id,
                                           const sockaddr_storage& from, socklen_t len) {
@@ -151,6 +152,12 @@ template<typename Serializer> struct beast_stack {
         if (_stopped.exchange(true)) {
             return;
         }
+        // The client goes first, while the threads still run: its
+        // destructor closes its connections and waits for each RPC still
+        // in flight to reach its completion handler, which only these
+        // threads run. Destroyed after them, a node stopping with an RPC
+        // to a silent peer outstanding waited forever.
+        _client.reset();
         _work.reset();
         _ioc->stop();
         for (auto& t : _io_threads) {
@@ -164,7 +171,8 @@ template<typename Serializer> struct beast_stack {
     std::shared_ptr<boost::asio::io_context> _ioc{std::make_shared<boost::asio::io_context>()};
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> _work;
     server_type _server;
-    client_type _client;
+    /// Reset by `shutdown`, before the threads stop.
+    std::optional<client_type> _client;
     std::vector<std::thread> _io_threads;
     std::atomic<bool> _stopped{false};
 };
@@ -461,7 +469,7 @@ template<typename Serializer, typename Storage> auto run_host(const node_options
 
     config_type cfg{
         .node_id = opt._node_id,
-        .network_client = typename types::network_client_type{stack._client},
+        .network_client = typename types::network_client_type{*stack._client},
         .network_server = typename types::network_server_type{stack._server},
         .store_factory =
             [&opt](const std::uint64_t& group) {

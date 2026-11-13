@@ -181,8 +181,8 @@ struct beast_stack {
                 const std::unordered_map<node_id, std::string>& urls)
         : _work(boost::asio::make_work_guard(*_ioc)),
           _server(*_ioc, bind, port, kythira::boost_beast_server_config{}, kythira::noop_metrics{}),
-          _client(*_ioc, urls, kythira::boost_beast_client_config{}, kythira::noop_metrics{},
-                  _ioc) {
+          _client(std::in_place, *_ioc, urls, kythira::boost_beast_client_config{},
+                  kythira::noop_metrics{}, _ioc) {
         const auto threads = std::max(2U, std::thread::hardware_concurrency() / 2);
         for (unsigned i = 0; i < threads; ++i) {
             _io_threads.emplace_back([this] { _ioc->run(); });
@@ -201,6 +201,12 @@ struct beast_stack {
         if (_stopped.exchange(true)) {
             return;
         }
+        // The client goes first, while the threads still run: its
+        // destructor closes its connections and waits for each RPC still
+        // in flight to reach its completion handler, which only these
+        // threads run. Destroyed after them, a node stopping with an RPC
+        // to a silent peer outstanding waited forever.
+        _client.reset();
         _work.reset();
         _ioc->stop();
         for (auto& t : _io_threads) {
@@ -214,7 +220,8 @@ struct beast_stack {
     std::shared_ptr<boost::asio::io_context> _ioc{std::make_shared<boost::asio::io_context>()};
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> _work;
     server_type _server;
-    client_type _client;
+    /// Reset by `shutdown`, before the threads stop.
+    std::optional<client_type> _client;
     std::vector<std::thread> _io_threads;
     std::atomic<bool> _stopped{false};
 };
@@ -277,7 +284,7 @@ public:
           _stack(spec.bind, spec.port, spec.urls) {
         config_type hc{
             .node_id = spec.self,
-            .network_client = typename types::network_client_type{_stack._client},
+            .network_client = typename types::network_client_type{*_stack._client},
             .network_server = typename types::network_server_type{_stack._server},
             .store_factory = [factory = std::move(storage.store_factory)](
                                  const std::uint64_t& group) { return factory(group); },

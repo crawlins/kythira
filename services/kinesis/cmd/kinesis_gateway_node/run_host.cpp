@@ -84,13 +84,13 @@ struct beast_stack {
         : _work(boost::asio::make_work_guard(*_ioc)),
           _server(*_ioc, opt._bind_address, opt._raft_port, raft_server_config(opt),
                   kythira::noop_metrics{}),
-          _client(*_ioc,
+          _client(std::in_place, *_ioc,
                   std::unordered_map<kythira::host_node_id, std::string>{opt._peers.begin(),
                                                                          opt._peers.end()},
                   kythira::boost_beast_client_config{}, kythira::noop_metrics{}, _ioc) {
         // A peer that speaks to this node has told the Raft client where it
         // is, for names that do not resolve yet (bounded_resolver.hpp).
-        _server.set_peer_seen_handler(_client.peer_seen_handler());
+        _server.set_peer_seen_handler(_client->peer_seen_handler());
         const auto threads = std::max(2U, std::thread::hardware_concurrency() / 2);
         for (unsigned i = 0; i < threads; ++i) {
             _io_threads.emplace_back([this] { _ioc->run(); });
@@ -117,6 +117,12 @@ struct beast_stack {
         if (_stopped.exchange(true)) {
             return;
         }
+        // The client goes first, while the threads still run: its
+        // destructor closes its connections and waits for each RPC still
+        // in flight to reach its completion handler, which only these
+        // threads run. Destroyed after them, a node stopping with an RPC
+        // to a silent peer outstanding waited forever.
+        _client.reset();
         _work.reset();
         _ioc->stop();
         for (auto& t : _io_threads) {
@@ -130,7 +136,8 @@ struct beast_stack {
     std::shared_ptr<boost::asio::io_context> _ioc{std::make_shared<boost::asio::io_context>()};
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> _work;
     server_type _server;
-    client_type _client;
+    /// Reset by `shutdown`, before the threads stop.
+    std::optional<client_type> _client;
     std::vector<std::thread> _io_threads;
     std::atomic<bool> _stopped{false};
 };
@@ -290,7 +297,7 @@ auto run(const node_options& opt) -> int {
 
     config_type cfg{
         .node_id = opt._node_id,
-        .network_client = host_types::network_client_type{stack._client},
+        .network_client = host_types::network_client_type{*stack._client},
         .network_server = host_types::network_server_type{stack._server},
         .store_factory =
             [&opt](const std::uint64_t& group) {
