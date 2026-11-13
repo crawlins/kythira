@@ -233,8 +233,9 @@ struct api_region {
         ddb::front_end_config cfg;
         cfg.advertised_endpoint = "localhost:8000";
         cfg.region = name;
-        cfg.on_internal_error = [](std::string_view op, std::string_view what) {
-            BOOST_ERROR(std::string(op) + " answered InternalServerError: " + std::string(what));
+        cfg.on_internal_error = [](const ddb::internal_error_report& r) {
+            BOOST_ERROR(std::string(r.operation) +
+                        " answered InternalServerError: " + std::string(r.what));
         };
         fe = std::make_unique<ddb::front_end<az::static_key_authorizer>>(cfg, auth);
         tables.register_with(*fe);
