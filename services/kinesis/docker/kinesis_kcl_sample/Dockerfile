@@ -5,7 +5,8 @@
 # (.kiro/specs/kinesis-compatible-streams/ tasks 9 and 16): the sample
 # consumer in services/kinesis/tests/kcl/sample, built with the lease layer
 # from source (services/kinesis/java/kythira-kcl-leases), and the same
-# consumer on KCL 3.x (tests/kcl/sample3, /opt/kcl3-sample). Built by the
+# consumer on KCL 3.x (tests/kcl/sample3, /opt/kcl3-sample), and the KPL
+# producer of the conformance case (tests/kpl, task 17). Built by the
 # docker-kinesis-node-image target with the source root as its context.
 #
 # No capabilities, no privileged or host networking: CLAUDE.md's container
@@ -22,10 +23,21 @@ RUN gradle --no-daemon --max-workers=1 -q installDist
 # The same consumer on KCL 3.x (task 16), leases in DynamoDB only.
 WORKDIR /src/services/kinesis/tests/kcl/sample3
 RUN gradle --no-daemon --max-workers=1 -q installDist
+# The KPL producer of the conformance case (task 17).
+COPY services/kinesis/tests/kpl /src/services/kinesis/tests/kpl
+WORKDIR /src/services/kinesis/tests/kpl
+RUN gradle --no-daemon --max-workers=1 -q installDist
 
 FROM eclipse-temurin:21-jre@sha256:0b99b3376fbb50dbf9c0af8535fdd5b8eb0d3fdfc8b1e4967f383b6919f6901a
 
 COPY --from=build /src/services/kinesis/tests/kcl/sample/build/install/kythira-kcl-sample /opt/kcl-sample
 COPY --from=build /src/services/kinesis/tests/kcl/sample3/build/install/kythira-kcl3-sample /opt/kcl3-sample
+
+# KPL (task 17) talks HTTPS only; kpl_produce.sh puts a socat TLS front
+# with a throwaway certificate before a plaintext node.
+RUN apt-get update && apt-get install -y --no-install-recommends socat openssl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/services/kinesis/tests/kpl/build/install/kythira-kpl-producer /opt/kpl-producer
+COPY services/kinesis/tests/kpl/kpl_produce.sh /opt/kpl-producer/kpl_produce.sh
 
 ENTRYPOINT ["/opt/kcl-sample/bin/kythira-kcl-sample"]

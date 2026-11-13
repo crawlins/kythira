@@ -138,6 +138,21 @@ services:
     environment:
       AWS_EC2_METADATA_DISABLED: "true"
 
+  # KPL with aggregation on (task 17), through a TLS front of its own
+  # (KPL speaks HTTPS only); kpl_produce.sh takes the node as host:port.
+  kpl:
+    image: kythira-kinesis-kcl:dev
+    profiles: ["clients"]
+    networks:
+      - kinesis_net
+    entrypoint: ["/opt/kpl-producer/kpl_produce.sh"]
+    environment:
+      AWS_ACCESS_KEY_ID: AKIDKINESISCLIENT01
+      AWS_SECRET_ACCESS_KEY: kinesis-scenario-client-secret
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_JAVA_V1_DISABLE_DEPRECATION_ANNOUNCEMENT: "true"
+
   # KCL 2.x workers with their leases on the cluster (task 9), one per
   # node so that killing a node also cuts one worker off. In the `kcl`
   # profile; the scenario starts them with `up -d` and reads their EVENT
@@ -244,6 +259,13 @@ services:
       <<: *kcl_ddb_env
       KCL_DYNAMODB_ENDPOINT: http://ddb-local:8000
     command: ["http://kin-1:4567", "leases", "kcl3-on-ddb-local", "kcl3-l"]
+
+  # Task 17's KPL case: one KCL 2.x worker reading what KPL aggregated,
+  # through another node than the one KPL wrote to. In the `kpl` profile.
+  kcl-kpl:
+    <<: *kcl
+    profiles: ["kpl"]
+    command: ["http://kin-3:4567", "kpl", "kpl-app", "kpl-worker"]
 
 networks:
   kinesis_net:
