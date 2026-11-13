@@ -73,6 +73,7 @@
 
 #include <raft/composite_node_id.hpp>
 #include <raft/future_default.hpp>
+#include <raft/group_storage.hpp>
 #include <raft/persistent_state_machine.hpp>
 #include <raft/shard_exceptions.hpp>
 #include <raft/txn_coordinator.hpp>
@@ -174,6 +175,10 @@ enum class op_tag : std::uint8_t {
     shards = 11,
     /// A page of one change log stream's records (task 16).
     changes = 12,
+    /// Split a group at a table's boundary (task 27.6).
+    isolate = 13,
+    /// Remove a group's voters outside a kept set (task 27.6).
+    shrink = 14,
 };
 
 /// The answer tags.
@@ -835,6 +840,84 @@ public:
         }
     }
 
+    // -- Membership (task 27.6) ---------------------------------------------
+
+    /// Splits the groups holding table (or index) `id` so that its keys,
+    /// `[table_prefix(id), table_prefix(id + 1))`, are a range of their
+    /// own: groups wholly inside it hold nothing else. Both cuts are table
+    /// prefixes, which the item groups' split veto accepts.
+    auto isolate(std::uint64_t id) -> void {
+        for (const auto& cut : {table_prefix(id), table_prefix(id + 1)}) {
+            const auto deadline = std::chrono::steady_clock::now() + _options.deadline;
+            for (;;) {
+                const auto desc = _host.resolve(cut);
+                if (!desc) {
+                    throw std::runtime_error("raft_backend: no group owns " +
+                                             ("table id " + std::to_string(id)));
+                }
+                if (desc->_range._start && *desc->_range._start == cut) {
+                    break;
+                }
+                std::string op(1, static_cast<char>(raft_backend_detail::op_tag::isolate));
+                detail::put_varint(op, static_cast<std::uint64_t>(desc->_group_id));
+                detail::put_bytes(op, cut);
+                (void)run(op, desc);
+                // The split is applied where it ran; this node's routing
+                // map learns it from its own replica or the next gossip.
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    throw std::runtime_error("raft_backend: cannot isolate " +
+                                             ("table id " + std::to_string(id)));
+                }
+                std::this_thread::sleep_for(_options.retry_backoff);
+            }
+        }
+    }
+
+    /// Leaves only `keep` as voters of every group wholly inside table (or
+    /// index) `id`'s range (call `isolate` first). Each group's leader
+    /// moves its leadership into `keep` if it must, then removes the other
+    /// voters one configuration change at a time.
+    auto shrink(std::uint64_t id, const std::vector<node_id_type>& keep) -> void {
+        kythira::shard_range<std::string> sr;
+        sr._start = table_prefix(id);
+        sr._end = table_prefix(id + 1);
+        for (const auto& desc : _host.shard_map_snapshot().range_scan(sr)) {
+            if (inside(desc, sr)) {
+                std::string op(1, static_cast<char>(raft_backend_detail::op_tag::shrink));
+                detail::put_varint(op, static_cast<std::uint64_t>(desc._group_id));
+                detail::put_varint(op, keep.size());
+                for (const auto& n : keep) {
+                    detail::put_bytes(op, kythira::node_id_traits<node_id_type>::to_text(n));
+                }
+                (void)run(op, desc);
+            } else {
+                throw std::runtime_error("raft_backend: " + ("table id " + std::to_string(id)) +
+                                         " shares a group; isolate it first");
+            }
+        }
+    }
+
+    /// Whether this node holds a replica of a group inside table (or
+    /// index) `id`'s range, and destroys those replicas when `destroy`.
+    /// A region removed from a table's groups calls it after the shrink.
+    auto drop_replicas(std::uint64_t id, bool destroy) -> std::size_t {
+        kythira::shard_range<std::string> sr;
+        sr._start = table_prefix(id);
+        sr._end = table_prefix(id + 1);
+        std::size_t n = 0;
+        for (const auto& desc : _host.shard_map_snapshot().range_scan(sr)) {
+            if (!inside(desc, sr) || !_host.has_group(desc._group_id)) {
+                continue;
+            }
+            ++n;
+            if (destroy) {
+                (void)_host.destroy_group(desc._group_id,
+                                          kythira::tombstone_reason::replica_removed);
+            }
+        }
+        return n;
+    }
+
     // -- Serving ops ----------------------------------------------------------
 
     /// Runs one op on this node and returns its answer. The forward endpoint
@@ -871,6 +954,10 @@ public:
                     return serve_shards(body);
                 case op_tag::changes:
                     return serve_changes(body);
+                case op_tag::isolate:
+                    return serve_isolate(body);
+                case op_tag::shrink:
+                    return serve_shrink(body);
             }
             return error_answer("unknown op");
         } catch (const kythira::shard_not_leader_exception<group_id_type, node_id_type>& e) {
@@ -1404,6 +1491,105 @@ private:
 
     /// The item's pending GSI change, at the item group's leader after a
     /// read barrier, as `pending key, record, [item]`; empty when none.
+    /// Whether `desc`'s range lies wholly in `sr` (both ends set).
+    [[nodiscard]] static auto inside(const descriptor_type& desc,
+                                     const kythira::shard_range<std::string>& sr) -> bool {
+        return desc._range._start && *desc._range._start >= *sr._start && desc._range._end &&
+               *desc._range._end <= *sr._end;
+    }
+
+    /// Where a group's leader is: what this replica knows, else the
+    /// routing map's hint.
+    template<typename Node>
+    [[nodiscard]] static auto leader_of(Node* n, const std::optional<descriptor_type>& desc)
+        -> std::optional<node_id_type> {
+        if (n != nullptr) {
+            if (auto known = n->known_leader()) {
+                return known;
+            }
+        }
+        return desc ? desc->_leader_hint : std::nullopt;
+    }
+
+    auto serve_isolate(std::string_view body) -> std::string {
+        detail::reader in(body);
+        const auto group = in.varint();
+        auto cut = in.bytes();
+        if (!group || !cut || !in.done()) {
+            return error_answer("unreadable isolate op");
+        }
+        const auto g = static_cast<group_id_type>(*group);
+        const auto desc = _host.shard_map_snapshot().find(g);
+        if (desc && desc->_range._start && *desc->_range._start == *cut) {
+            return ok_answer({});
+        }
+        auto* n = _host.group_node(g);
+        if (n == nullptr || !n->is_leader()) {
+            return not_leader_answer(leader_of(n, desc));
+        }
+        try {
+            (void)await(_host.split_shard(g, {std::string(*cut)}, _options.attempt_timeout));
+        } catch (const kythira::shard_not_leader_exception<group_id_type, node_id_type>& e) {
+            return not_leader_answer(e.leader_hint());
+        } catch (const std::exception& e) {
+            // Said, not retried: the worker logs it and tries again on its
+            // next pass.
+            return error_answer(std::string("cannot split for isolation: ") + e.what());
+        }
+        return ok_answer({});
+    }
+
+    auto serve_shrink(std::string_view body) -> std::string {
+        detail::reader in(body);
+        const auto group = in.varint();
+        const auto count = in.varint();
+        if (!group || !count) {
+            return error_answer("unreadable shrink op");
+        }
+        std::vector<node_id_type> keep;
+        for (std::uint64_t i = 0; i < *count; ++i) {
+            const auto text = in.bytes();
+            if (!text) {
+                return error_answer("unreadable shrink op");
+            }
+            auto id = kythira::node_id_traits<node_id_type>::from_text(*text);
+            if (!id) {
+                return error_answer("unreadable shrink op");
+            }
+            keep.push_back(std::move(*id));
+        }
+        if (!in.done() || keep.empty()) {
+            return error_answer("unreadable shrink op");
+        }
+        const auto g = static_cast<group_id_type>(*group);
+        auto* n = _host.group_node(g);
+        if (n == nullptr || !n->is_leader()) {
+            return not_leader_answer(leader_of(n, _host.shard_map_snapshot().find(g)));
+        }
+        const auto kept = [&](const node_id_type& id) {
+            return std::find(keep.begin(), keep.end(), id) != keep.end();
+        };
+        if (!kept(_host.node_id())) {
+            // Hand the group to a kept voter, which then removes this one.
+            (void)await(n->transfer_leadership(keep.front(), _options.attempt_timeout));
+            return not_leader_answer(keep.front());
+        }
+        for (;;) {
+            const auto m = n->current_membership();
+            if (m.joint) {
+                std::this_thread::sleep_for(_options.retry_backoff);
+                continue;
+            }
+            const auto gone = std::find_if(m.voters.begin(), m.voters.end(),
+                                           [&](const node_id_type& v) { return !kept(v); });
+            if (gone == m.voters.end()) {
+                break;
+            }
+            (void)await(n->remove_server(*gone));
+        }
+        return ok_answer({});
+    }
+
     auto serve_segment(std::string_view body) -> std::string {
         detail::reader in(body);
         auto stream = in.bytes();

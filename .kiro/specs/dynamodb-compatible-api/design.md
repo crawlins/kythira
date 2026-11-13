@@ -247,14 +247,37 @@ descriptor.
    spaces delete jobs (`salvage_done`). AWS asks that nothing be written
    during the conversion; this keeps a write that was not lost anyway.
 
-**Leaving strong mode.** Removing two replicas, or a replica and the
-witness, is a membership change on every group of the table (joint
-consensus, which the multi-raft host already has) down to the remaining
-region's voters. The table stays in that region's strong host as a
-single-region table with `MultiRegionConsistency` absent. Copying it back
-into the local host would cost a full copy for no gain. `DeleteTable` on
-one replica of a three-region table is refused, as AWS refuses removing a
-single replica; deleting the last replica deletes the groups.
+**Leaving strong mode.** AWS lets only two replicas, or a replica and the
+witness, be deleted together, leaving a single-region table; a single
+replica or the witness cannot go alone, and nothing can be added. Copying
+the table back into the local host would cost a full copy for no gain, so
+it stays in the strong host and its groups shrink to the remaining
+region's voters:
+
+1. `UpdateTable` in the region that keeps the table (Kythira's rule: the
+   request is sent there) checks that every other member is named, then
+   marks them DELETING in the strong catalog and its own.
+2. That region's `strong_table_worker` sees every other member DELETING.
+   For the table's id and each index id it splits the strong host's
+   groups at `table_prefix(id)` and `table_prefix(id + 1)` (`isolate`),
+   both table prefixes, which the split veto accepts, so the id's keys
+   are groups of their own. Strong tables share the strong host's groups
+   until then, which is why this step comes first.
+3. Each of those groups' leader moves leadership into the region if it
+   must, then removes the other voters one configuration change at a
+   time (`shrink`). The remaining region's voters are the only ones left.
+4. `leave_strong` in the strong catalog keeps only that region's replica,
+   and in its own catalog clears `strong`, the replicas and the witness.
+   The ids stay strong ones, so routing is unchanged.
+5. The removed regions' workers see the strong catalog's entry is no
+   longer strong and does not list them: they `forget_strong` (the
+   descriptor goes with no delete job, which would reach the remaining
+   region's keys) and destroy their replicas of the table's groups.
+
+`DeleteTable` on a strong table is refused while it has replicas, as AWS
+refuses removing a single replica. After leaving, it deletes as any table
+does; the delete jobs run against the strong host's groups, and the
+worker then deletes the strong catalog's entry.
 
 **Requests.**
 

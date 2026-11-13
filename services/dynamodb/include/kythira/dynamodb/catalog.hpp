@@ -575,6 +575,20 @@ struct catalog_command {
         /// retired ids (task 27): `retired_ids` go, each old key space gets
         /// a delete job.
         salvage_done = 22,
+        /// The table left multi-region strong consistency (task 27.6): the
+        /// other regions were removed from its groups, so it is a
+        /// single-region table again. `strong` and `witnesses` are
+        /// cleared, and every replica but `table.region`'s (the strong
+        /// catalog lists the remaining region's own; a region's catalog
+        /// does not); its ids stay the strong ones, whose groups now have
+        /// voters only in this region. Refused unless the table is strong
+        /// with `table.table_id`.
+        leave_strong = 23,
+        /// A region removed from a strong table forgets it (task 27.6): the
+        /// descriptor goes with no delete job, since its keys live on in
+        /// the remaining region's groups. Refused unless the stored table
+        /// has `table.table_id`.
+        forget_strong = 24,
     };
 
     /// Which settings an `update_table` changes.
@@ -665,7 +679,8 @@ namespace catalog_detail {
 /// and `replica_progress` (task 22), only for a global table.
 /// 11 added `strong`, `witnesses`, `retired_ids` and `salvage_after_ms`
 /// after `replicas`, with `seed_ids`, `make_strong`, `adopt_strong`,
-/// `strong_members` and `salvage_done` (task 27), only for a
+/// `strong_members`, `salvage_done`, `leave_strong` and `forget_strong`
+/// (task 27), only for a
 /// multi-region strongly consistent table.
 inline constexpr std::uint8_t k_descriptor_format_version = 11;
 inline constexpr std::uint8_t k_job_format_version = 1;
@@ -1184,6 +1199,8 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
         case catalog_command::kind::adopt_strong:
         case catalog_command::kind::strong_members:
         case catalog_command::kind::salvage_done:
+        case catalog_command::kind::leave_strong:
+        case catalog_command::kind::forget_strong:
             version = std::max<std::uint8_t>(version, 11);
             break;
         case catalog_command::kind::set_replicas:
@@ -1243,7 +1260,7 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // set_ttl came in version 3, the destination commands in 5,
     // restore_done in 6, the point-in-time recovery commands in 7, the
     // resource policy and Contributor Insights commands in 8.
-    const std::uint8_t last_op = version >= 11   ? 22
+    const std::uint8_t last_op = version >= 11   ? 24
                                  : version >= 10 ? 17
                                  : version >= 8  ? 15
                                  : version >= 7  ? 13
@@ -1452,6 +1469,12 @@ public:
                 break;
             case catalog_command::kind::salvage_done:
                 result = salvage_done(*c, batch);
+                break;
+            case catalog_command::kind::leave_strong:
+                result = leave_strong(*c, batch);
+                break;
+            case catalog_command::kind::forget_strong:
+                result = forget_strong(*c, batch);
                 break;
         }
         const auto out = encode_catalog_result(result);
@@ -2515,6 +2538,45 @@ private:
         d->retired_ids.clear();
         d->salvage_after_ms = 0;
         store(batch, *d);
+        catalog_result r;
+        r.table = std::move(*d);
+        return r;
+    }
+
+    /// `leave_strong` (task 27.6): see the command.
+    auto leave_strong(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->status == table_status::deleting) {
+            return not_found(c.table.name);
+        }
+        if (!d->strong || d->table_id != c.table.table_id) {
+            return failure("ValidationException",
+                           "Table " + c.table.name + " is not this strongly consistent table");
+        }
+        d->strong = false;
+        std::erase_if(d->replicas,
+                      [&](const table_replica& r) { return r.region != c.table.region; });
+        d->witnesses.clear();
+        if (d->replicas.empty()) {
+            // Not a global table any more.
+            d->region.clear();
+        }
+        ++d->revision;
+        store(batch, *d);
+        catalog_result r;
+        r.table = std::move(*d);
+        return r;
+    }
+
+    /// `forget_strong` (task 27.6): see the command.
+    auto forget_strong(const catalog_command& c, kythira::write_batch& batch) const
+        -> catalog_result {
+        auto d = describe(c.table.name);
+        if (!d || d->table_id != c.table.table_id) {
+            return not_found(c.table.name);
+        }
+        batch.erase(kythira::column_family::data, catalog_detail::table_key(d->name));
         catalog_result r;
         r.table = std::move(*d);
         return r;

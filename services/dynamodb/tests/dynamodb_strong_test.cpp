@@ -426,13 +426,104 @@ BOOST_AUTO_TEST_CASE(making_a_table_strong_is_refused_as_aws_refuses_it) {
                        R"({"Create":{"RegionName":"us-west-2"}}]})")
                    .find("Local secondary indexes are not supported") != std::string::npos);
 
-    // Once strong, replicas cannot be added or changed.
+    // Once strong, nothing can be added, and a single replica cannot go.
     w.east1.ok("CreateTable", R"({"TableName":"Other",)" + k_music.substr(21));
     w.east1.ok("UpdateTable", R"({"TableName":"Other",)" + k_make_strong.substr(21));
+    w.run_workers();
     BOOST_TEST(refused(R"({"TableName":"Other","ReplicaUpdates":[)"
                        R"({"Delete":{"RegionName":"us-east-2"}}]})")
-                   .find("cannot be added to or changed") != std::string::npos);
+                   .find("A single replica or witness cannot be deleted") != std::string::npos);
+    BOOST_TEST(refused(R"({"TableName":"Other","ReplicaUpdates":[)"
+                       R"({"Create":{"RegionName":"eu-west-1"}}]})")
+                   .find("cannot be added") != std::string::npos);
+    BOOST_TEST(refused(R"({"TableName":"Other","MultiRegionConsistency":"STRONG"})")
+                   .find("cannot be added") != std::string::npos);
+    BOOST_TEST(refused(R"({"TableName":"Other","ReplicaUpdates":[)"
+                       R"({"Delete":{"RegionName":"us-east-1"}},)"
+                       R"({"Delete":{"RegionName":"us-east-2"}}]})")
+                   .find("from the region that keeps the table") != std::string::npos);
     BOOST_TEST(w.east1.call("DeleteTable", R"({"TableName":"Other"})").status == 400U);
+}
+
+BOOST_AUTO_TEST_CASE(deleting_two_replicas_leaves_a_single_region_table) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    w.east2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"a"},"v":{"N":"1"}}})");
+
+    // Asked in us-west-2, which keeps the table.
+    const auto asked = w.west2
+                           .ok("UpdateTable", R"({"TableName":"Music","ReplicaUpdates":[)"
+                                              R"({"Delete":{"RegionName":"us-east-1"}},)"
+                                              R"({"Delete":{"RegionName":"us-east-2"}}]})")
+                           .at("TableDescription")
+                           .as_object();
+    BOOST_TEST((statuses(asked) == std::map<std::string, std::string>{{"us-east-1", "DELETING"},
+                                                                      {"us-east-2", "DELETING"}}));
+    w.run_workers();
+
+    const auto t = describe(w.west2);
+    BOOST_TEST(!t.contains("MultiRegionConsistency"));
+    BOOST_TEST(!t.contains("Replicas"));
+    BOOST_TEST(!t.contains("GlobalTableWitnesses"));
+    // The item written in us-east-2 while the table was strong is still
+    // here, and the table takes writes as any other.
+    const auto got = w.west2.ok(
+        "GetItem", R"({"TableName":"Music","Key":{"pk":{"S":"a"}},"ConsistentRead":true})");
+    BOOST_TEST(got.at("Item").as_object().at("v").as_object().at("N").as_string() == "1");
+    w.west2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"b"}}})");
+    // The removed regions forgot it.
+    for (auto* r : {&w.east1, &w.east2}) {
+        BOOST_TEST_INFO("region " << r->name);
+        BOOST_TEST(r->call("DescribeTable", R"({"TableName":"Music"})").type() ==
+                   "ResourceNotFoundException");
+    }
+    // Transactions and TTL work on it again.
+    w.west2.ok("TransactGetItems",
+               R"({"TransactItems":[{"Get":{"TableName":"Music","Key":{"pk":{"S":"a"}}}}]})");
+
+    // Deleting it here deletes the strong catalog's entry too.
+    w.west2.ok("DeleteTable", R"({"TableName":"Music"})");
+    w.run_workers();
+    const auto shared = w.strong_host.backend.describe("Music");
+    BOOST_TEST((!shared || shared->status == ddb::table_status::deleting));
+}
+
+BOOST_AUTO_TEST_CASE(a_replica_and_the_witness_go_together) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong_with_witness);
+    w.run_workers();
+    const auto refused = w.east1.call(
+        "UpdateTable",
+        R"({"TableName":"Music","GlobalTableWitnessUpdates":[{"Delete":{"RegionName":"us-west-2"}}]})");
+    BOOST_TEST(refused.message().find("A single replica or witness") != std::string::npos);
+    w.east1.ok("UpdateTable",
+               R"({"TableName":"Music","ReplicaUpdates":[{"Delete":{"RegionName":"us-east-2"}}],)"
+               R"("GlobalTableWitnessUpdates":[{"Delete":{"RegionName":"us-west-2"}}]})");
+    w.run_workers();
+    BOOST_TEST(!describe(w.east1).contains("MultiRegionConsistency"));
+    BOOST_TEST(w.east2.call("DescribeTable", R"({"TableName":"Music"})").type() ==
+               "ResourceNotFoundException");
+}
+
+BOOST_AUTO_TEST_CASE(the_leave_commands_round_trip) {
+    for (const auto op :
+         {ddb::catalog_command::kind::leave_strong, ddb::catalog_command::kind::forget_strong}) {
+        ddb::catalog_command c;
+        c.op = op;
+        c.table.name = "Music";
+        c.table.table_id = ddb::k_strong_table_id_base + 3;
+        c.table.region = "us-west-2";
+        const auto bytes = ddb::encode_catalog_command(c);
+        BOOST_TEST(static_cast<int>(static_cast<std::uint8_t>(bytes[0])) == 11);
+        bool newer = false;
+        const auto back = ddb::decode_catalog_command(bytes, newer);
+        BOOST_TEST_REQUIRE(back.has_value());
+        BOOST_TEST((back->op == op));
+        BOOST_TEST(back->table.table_id == c.table.table_id);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(without_a_strong_host_strong_consistency_is_not_offered) {
@@ -488,24 +579,24 @@ BOOST_AUTO_TEST_CASE(transactions_and_ttl_are_refused_on_a_strong_table) {
     w.east1.ok("UpdateTable", k_make_strong);
     w.run_workers();
     for (auto* r : {&w.east1, &w.east2}) {
-        const auto put = r->call(
-            "TransactWriteItems",
-            R"({"TransactItems":[{"Put":{"TableName":"Music","Item":{"pk":{"S":"t"}}}}]})");
+        const auto put =
+            r->call("TransactWriteItems",
+                    R"({"TransactItems":[{"Put":{"TableName":"Music","Item":{"pk":{"S":"t"}}}}]})");
         BOOST_TEST(put.type() == "ValidationException");
         BOOST_TEST(put.message().find("Transactions are not supported") != std::string::npos);
-        const auto get = r->call(
-            "TransactGetItems",
-            R"({"TransactItems":[{"Get":{"TableName":"Music","Key":{"pk":{"S":"t"}}}}]})");
+        const auto get =
+            r->call("TransactGetItems",
+                    R"({"TransactItems":[{"Get":{"TableName":"Music","Key":{"pk":{"S":"t"}}}}]})");
         BOOST_TEST(get.type() == "ValidationException");
-        const auto ttl = r->call("UpdateTimeToLive",
-                                 R"({"TableName":"Music","TimeToLiveSpecification":)"
-                                 R"({"Enabled":true,"AttributeName":"exp"}})");
+        const auto ttl =
+            r->call("UpdateTimeToLive", R"({"TableName":"Music","TimeToLiveSpecification":)"
+                                        R"({"Enabled":true,"AttributeName":"exp"}})");
         BOOST_TEST(ttl.type() == "ValidationException");
         BOOST_TEST(ttl.message().find("Time to Live is not supported") != std::string::npos);
     }
     // Nothing was written.
-    BOOST_TEST(!w.east2.ok("GetItem", R"({"TableName":"Music","Key":{"pk":{"S":"t"}}})")
-                    .contains("Item"));
+    BOOST_TEST(
+        !w.east2.ok("GetItem", R"({"TableName":"Music","Key":{"pk":{"S":"t"}}})").contains("Item"));
     // Another table's transactions still work.
     w.east1.ok("CreateTable", R"({"TableName":"Plain",)" + k_music.substr(21));
     w.east1.ok("TransactWriteItems",

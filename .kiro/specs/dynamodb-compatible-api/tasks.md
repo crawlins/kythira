@@ -1032,8 +1032,24 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     - TransactWriteItems and TransactGetItems naming a strong table,
       and enabling TTL on one, are refused with ValidationException; a
       table with LSIs cannot be made strong
-  - [ ] 27.6 Leaving strong mode (two replicas, or replica and witness,
+  - [x] 27.6 Leaving strong mode (two replicas, or replica and witness,
     removed) and `DeleteTable` rules
+    - Design deviation: strong tables share the strong host's groups, so
+      the table's ids are first split into groups of their own
+      (`raft_backend::isolate`), then those groups shrink to the
+      remaining region's voters (`raft_backend::shrink`), then removed
+      regions forget the table and destroy their replicas
+      (`forget_strong`, `drop_replicas`). Catalog commands
+      `leave_strong` (23) and `forget_strong` (24) at format 11.
+    - Kythira's rule: the request goes to the region that keeps the
+      table; naming that region is refused. AWS's own messages for these
+      refusals were not recorded.
+    - Tests: `dynamodb_strong_test` (two replicas, replica and witness,
+      every refusal, delete after leaving, the commands' round trip);
+      `dynamodb_gateway_cluster_test`
+      `a_strong_table_left_for_one_region_survives_the_others` (three
+      regions over a real strong host: after leaving, both other regions
+      are stopped and the table still takes writes and strong reads)
   - [ ] 27.7 Splits, GSIs, Streams, Kinesis destinations, PITR and
     backups on MRSC tables
   - [ ] 27.8 Tests: three in-process clusters (write in one region, strong

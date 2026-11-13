@@ -1614,11 +1614,7 @@ private:
                 return not_found(name);
             }
             if (current->strong) {
-                // Leaving strong mode is task 27.6.
-                return validation_error(
-                    "Replicas and witnesses cannot be added to or changed on a multi-Region "
-                    "strongly consistent global table " +
-                    name);
+                return leave_strong(ctx, *current, in, strong);
             }
             if (!strong) {
                 return validation_error(
@@ -1811,6 +1807,115 @@ private:
     /// `UpdateTable`'s `ReplicaUpdates` (task 22): one `Create` or `Delete`
     /// (the catalog refuses more at a time); `Update` and the per-replica
     /// overrides are not supported.
+    /// `UpdateTable` on a strong table (task 27.6). AWS lets only two
+    /// replicas, or a replica and the witness, be deleted together, which
+    /// leaves a single-region table; nothing can be added. This marks the
+    /// deleted members DELETING in the strong catalog and here; the asking
+    /// region's `strong_table_worker` then removes them from the table's
+    /// groups and makes the table single-region.
+    auto leave_strong(call_context& ctx, const table_descriptor& current,
+                      const boost::json::object& in, bool strong) -> result {
+        using namespace table_api_detail;
+        const auto added = validation_error(
+            "Replicas and witnesses cannot be added to a multi-Region strongly consistent global "
+            "table " +
+            current.name);
+        if (strong) {
+            return added;
+        }
+        std::vector<std::string> replicas;
+        std::vector<std::string> witnesses;
+        for (const auto& [member, out] :
+             {std::pair<const char*, std::vector<std::string>*>{"ReplicaUpdates", &replicas},
+              {"GlobalTableWitnessUpdates", &witnesses}}) {
+            const auto* list = in.if_contains(member);
+            if (list == nullptr) {
+                continue;
+            }
+            if (!list->is_array() || list->as_array().empty()) {
+                return validation_error(std::string(member) + " must not be empty");
+            }
+            for (const auto& u : list->as_array()) {
+                if (!u.is_object() || u.as_object().size() != 1) {
+                    return validation_error(std::string(member) + " entries take one action");
+                }
+                if (u.as_object().contains("Create") || u.as_object().contains("Update")) {
+                    return added;
+                }
+                const auto* body = u.as_object().if_contains("Delete");
+                const auto* region = body != nullptr && body->is_object()
+                                         ? body->as_object().if_contains("RegionName")
+                                         : nullptr;
+                if (region == nullptr || !region->is_string()) {
+                    return validation_error("RegionName is required");
+                }
+                out->emplace_back(region->as_string());
+            }
+        }
+        const auto listed = [](const std::vector<std::string>& v, const std::string& r) {
+            return std::find(v.begin(), v.end(), r) != v.end();
+        };
+        for (const auto& r : replicas) {
+            if (current.replica_in(r) == nullptr) {
+                return validation_error(r == current.region
+                                            ? "Kythira deletes a multi-Region strongly consistent "
+                                              "table's other replicas from the region that keeps "
+                                              "the table: send this request to another replica's "
+                                              "region"
+                                            : "Region " + r + " is not a replica of table " +
+                                                  current.name);
+            }
+        }
+        for (const auto& w : witnesses) {
+            if (current.witness_in(w) == nullptr) {
+                return validation_error("Region " + w + " is not the witness of table " +
+                                        current.name);
+            }
+        }
+        // Every member but this region must go, together.
+        bool all = replicas.size() + witnesses.size() ==
+                   current.replicas.size() + current.witnesses.size();
+        for (const auto& r : current.replicas) {
+            all = all && listed(replicas, r.region);
+        }
+        for (const auto& w : current.witnesses) {
+            all = all && listed(witnesses, w.region);
+        }
+        if (!all) {
+            return validation_error(
+                "A single replica or witness cannot be deleted from a multi-Region strongly "
+                "consistent global table: delete two replicas, or a replica and the witness, "
+                "together");
+        }
+        for (const auto& r : current.replicas) {
+            if (r.status != replica_status::active) {
+                return in_use_message("Table " + current.name +
+                                      " has a replica that is not ACTIVE");
+            }
+        }
+        catalog_command c;
+        c.op = catalog_command::kind::strong_members;
+        c.table.name = current.name;
+        c.table.table_id = current.table_id;
+        c.table.schema = current.schema;
+        for (const auto& r : current.replicas) {
+            c.table.replicas.push_back(
+                table_replica{.region = r.region, .status = replica_status::deleting});
+        }
+        for (const auto& w : current.witnesses) {
+            c.table.witnesses.push_back(table_witness{w.region, witness_status::deleting});
+        }
+        c.now_ms = _backend.now_ms();
+        if (const auto r = _backend.strong().catalog(c); !r.ok()) {
+            return error_of(r);
+        }
+        const auto r = _backend.catalog(c);
+        if (!r.ok()) {
+            return error_of(r);
+        }
+        return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
     auto replica_updates(call_context& ctx, const std::string& name,
                          const boost::json::value& updates) -> result {
         using namespace table_api_detail;

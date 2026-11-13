@@ -1002,6 +1002,7 @@ public:
                 _tables.set_strong_regions(_config.strong.regions());
                 _strong_tables = std::make_unique<strong_table_worker<Backend>>(_backend);
                 _strong_tables->set_region(_config.front.region);
+                _strong_tables->set_region_voters(_config.strong.voters_in(_config.front.region));
                 _strong_tables->set_log([this](std::string_view line) {
                     if (_log) {
                         _log(true, line);
