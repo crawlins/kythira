@@ -26,7 +26,10 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
+#include <functional>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -72,6 +75,53 @@ struct answer {
         }
         return m == nullptr ? std::string{} : std::string(m->as_string());
     }
+};
+
+/// Aborts the process unless destroyed within `limit`, first printing
+/// `what` and running `report`. A cluster test that hangs (a node that
+/// never stops, a step that never returns) otherwise runs into ctest's
+/// timeout while the live nodes log a retry per heartbeat to the stuck
+/// one: one such run grew its output until ctest itself failed with
+/// bad_alloc, and the output that would have named the step was lost.
+/// Aborting names the step, and Boost.Test reports the case and its
+/// last checkpoint.
+class watchdog {
+public:
+    watchdog(std::string what, std::chrono::seconds limit, std::function<void()> report = {})
+        : _thread([this, what = std::move(what), limit, report = std::move(report)] {
+              std::unique_lock lock(_mu);
+              if (_cv.wait_for(lock, limit, [this] { return _done; })) {
+                  return;
+              }
+              std::cerr << "watchdog: " << what << " did not finish within " << limit.count()
+                        << " s; aborting\n";
+              if (report) {
+                  report();
+              }
+              std::cerr << std::flush;
+              std::abort();
+          }) {}
+
+    watchdog(const watchdog&) = delete;
+    auto operator=(const watchdog&) -> watchdog& = delete;
+    watchdog(watchdog&&) = delete;
+    auto operator=(watchdog&&) -> watchdog& = delete;
+
+    ~watchdog() {
+        {
+            const std::lock_guard lock(_mu);
+            _done = true;
+        }
+        _cv.notify_all();
+        _thread.join();
+    }
+
+private:
+    std::mutex _mu;
+    std::condition_variable _cv;
+    bool _done = false;
+    // Last, so the members it uses exist before it starts.
+    std::thread _thread;
 };
 
 /// A TCP relay on a free loopback port to `target` that can be cut: while
@@ -214,6 +264,13 @@ private:
 
 /// Three run_cluster() nodes on threads, stopped when the fixture goes.
 struct cluster {
+    /// The longest a cluster may live, stops included. The slowest case
+    /// takes about 65 s on an idle machine; this leaves room for a loaded
+    /// runner and still fails well inside ctest's scaled timeout.
+    static constexpr std::chrono::seconds k_lifetime{600};
+    /// The longest one node may take to stop.
+    static constexpr std::chrono::seconds k_stop_limit{120};
+
     std::array<std::uint16_t, k_nodes> gateway_ports{};
     std::array<std::uint16_t, k_nodes> raft_ports{};
     std::mutex mutex;
@@ -229,6 +286,11 @@ struct cluster {
     std::array<std::vector<std::string>, k_nodes> logs{};
 
     std::map<std::string, std::string> extra_vars;
+    // After `mutex` and `logs`, which its report reads, and before the
+    // relays, so it is destroyed after them: the destructor's body stops
+    // the nodes under their own watchdogs, and this one also covers the
+    // relays' teardown that follows.
+    watchdog lifetime{"a cluster test", k_lifetime, [this] { report_logs(); }};
     /// `[from][to]`: node `from`'s link to node `to`, when relayed.
     std::array<std::array<std::unique_ptr<relay>, k_nodes>, k_nodes> raft_relays{};
     std::array<std::array<std::unique_ptr<relay>, k_nodes>, k_nodes> gateway_relays{};
@@ -274,9 +336,11 @@ struct cluster {
             stopping = true;
         }
         cv.notify_all();
-        for (auto& t : nodes) {
-            if (t.joinable()) {
-                t.join();
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (nodes.at(i).joinable()) {
+                const watchdog w("stopping node " + std::to_string(i), k_stop_limit,
+                                 [this] { report_logs(); });
+                nodes.at(i).join();
             }
         }
     }
@@ -288,7 +352,28 @@ struct cluster {
             stopped.at(i) = true;
         }
         cv.notify_all();
+        const watchdog w("stopping node " + std::to_string(i), k_stop_limit,
+                         [this] { report_logs(); });
         nodes.at(i).join();
+    }
+
+    /// Each node's last log lines, for a watchdog about to abort. It does
+    /// not wait for `mutex`, which a hung step may hold.
+    auto report_logs() -> void {
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            std::cerr << "watchdog: node logs are locked; not printed\n";
+            return;
+        }
+        constexpr std::size_t k_tail = 20;
+        for (std::size_t i = 0; i < logs.size(); ++i) {
+            const auto& lines = logs.at(i);
+            std::cerr << "watchdog: node " << i << "'s last log lines:\n";
+            for (std::size_t j = lines.size() > k_tail ? lines.size() - k_tail : 0;
+                 j < lines.size(); ++j) {
+                std::cerr << "  " << lines.at(j) << "\n";
+            }
+        }
     }
 
     /// Cuts node `i` off from the other two, both ways, or with `heal`
