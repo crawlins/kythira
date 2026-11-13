@@ -37,6 +37,10 @@
 // KPL with aggregation on, behind a TLS front (KPL speaks HTTPS only), and
 // a KCL 2.x worker on another node must deaggregate every one of them.
 //
+// A Flink case (task 17) runs a Flink 1.20 job whose AWS connector source
+// and sink copy one stream into another, records written before and during
+// the job alike.
+//
 // A chaos case (task 17, Requirement 17.3) kills every node in turn while
 // a producer writes with PutRecords and a fan-out consumer follows the
 // stream: every record arrives, in order under each key, pushed and
@@ -944,6 +948,43 @@ BOOST_AUTO_TEST_CASE(kpl_aggregated_records_are_read_back_by_kcl) {
     BOOST_TEST(missing.empty(), missing.size() << " KPL records never read, first "
                                                << (missing.empty() ? "" : missing.front()));
     os::real_exec(compose_cmd({"--profile", "kpl", "stop", "kcl-kpl"}));
+}
+
+// Task 17: the Flink connector. A Flink 1.20 job (the `flink` profile)
+// reads flink-in with the AWS connector's KinesisStreamsSource, which names
+// its stream by ARN and polls from the trim horizon, and writes every record
+// to flink-out with its KinesisStreamsSink. Records written before the job
+// starts and while it runs must all come out, once each.
+BOOST_AUTO_TEST_CASE(flink_source_and_sink_copy_every_record) {
+    const logs_on_failure logs;
+    BOOST_REQUIRE_MESSAGE(eventually([&] { return aws_cli(1, {"list-streams"}).code == 0; }, 120s),
+                          service(1) << " never answered ListStreams");
+    for (const char* stream : {"flink-in", "flink-out"}) {
+        auto r = boto3({"create", "--endpoint", endpoint(1), "--stream", stream, "--shards", "2"},
+                       k_admin_id, k_admin_secret);
+        BOOST_REQUIRE_MESSAGE(r.code == 0, "boto3 create " << stream << " failed:\n" << r.out);
+    }
+    {
+        auto p = boto3({"produce", "--endpoint", endpoint(2), "--stream", "flink-in", "--count",
+                        "300", "--tag", "f0"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    os::checked_exec(os::real_exec, compose_cmd({"--profile", "flink", "up", "-d", "flink"}));
+    {
+        auto c = boto3({"consume", "--endpoints", endpoint(3), "--stream", "flink-out", "--expect",
+                        "300", "--timeout", "240"});
+        BOOST_REQUIRE_MESSAGE(c.code == 0, "the Flink job never copied the first 300 records:\n"
+                                               << c.out);
+    }
+    {
+        auto p = boto3({"produce", "--endpoint", endpoint(3), "--stream", "flink-in", "--count",
+                        "200", "--tag", "f1"});
+        BOOST_REQUIRE_MESSAGE(p.code == 0, "boto3 produce failed:\n" << p.out);
+    }
+    auto c = boto3({"consume", "--endpoints", endpoint(2) + "," + endpoint(1), "--stream",
+                    "flink-out", "--expect", "500", "--timeout", "180"});
+    BOOST_TEST(c.code == 0, "the Flink job never copied all 500 records:\n" << c.out);
+    os::real_exec(compose_cmd({"--profile", "flink", "stop", "flink"}));
 }
 
 // Task 17: tiering through leader kills and S3 faults. Runs last, since it

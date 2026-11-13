@@ -1,0 +1,49 @@
+// Copyright (c) 2026 Clark Rawlins
+// SPDX-License-Identifier: Apache-2.0
+
+// A Flink job for the Kinesis container scenario's conformance case
+// (.kiro/specs/kinesis-compatible-streams/ task 17): the Flink AWS
+// connector's KinesisStreamsSource reads one stream and its
+// KinesisStreamsSink writes every record to another, on an in-process
+// mini cluster. Versions pinned.
+
+plugins {
+    id 'application'
+}
+
+repositories {
+    // repo1 is the same Maven Central; the CI proxy rate-limits the other name less.
+    maven { url = 'https://repo1.maven.org/maven2' }
+}
+
+def flinkVersion = '1.20.3'
+
+dependencies {
+    implementation "org.apache.flink:flink-streaming-java:${flinkVersion}"
+    implementation "org.apache.flink:flink-clients:${flinkVersion}"
+    implementation "org.apache.flink:flink-connector-base:${flinkVersion}"
+    implementation 'org.apache.flink:flink-connector-aws-kinesis-streams:5.1.0-1.20'
+    runtimeOnly 'org.slf4j:slf4j-simple:1.7.36'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+application {
+    mainClass = 'kythira.flink.FlinkPipe'
+    // Flink 1.20 reflects into the JDK; these are the opens its own
+    // launcher passes on Java 17 and later.
+    applicationDefaultJvmArgs = [
+        '--add-opens=java.base/java.lang=ALL-UNNAMED',
+        '--add-opens=java.base/java.util=ALL-UNNAMED',
+        '--add-opens=java.base/java.net=ALL-UNNAMED',
+        '--add-opens=java.base/java.nio=ALL-UNNAMED',
+        '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED',
+        '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+        '--add-opens=java.base/java.io=ALL-UNNAMED',
+        '--add-opens=java.base/java.util.concurrent=ALL-UNNAMED',
+    ]
+}

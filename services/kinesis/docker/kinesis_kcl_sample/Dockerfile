@@ -6,7 +6,8 @@
 # consumer in services/kinesis/tests/kcl/sample, built with the lease layer
 # from source (services/kinesis/java/kythira-kcl-leases), and the same
 # consumer on KCL 3.x (tests/kcl/sample3, /opt/kcl3-sample), and the KPL
-# producer of the conformance case (tests/kpl, task 17). Built by the
+# producer and Flink job of the conformance cases (tests/kpl and
+# tests/flink, task 17). Built by the
 # docker-kinesis-node-image target with the source root as its context.
 #
 # No capabilities, no privileged or host networking: CLAUDE.md's container
@@ -27,6 +28,10 @@ RUN gradle --no-daemon --max-workers=1 -q installDist
 COPY services/kinesis/tests/kpl /src/services/kinesis/tests/kpl
 WORKDIR /src/services/kinesis/tests/kpl
 RUN gradle --no-daemon --max-workers=1 -q installDist
+# The Flink connector's job (task 17).
+COPY services/kinesis/tests/flink /src/services/kinesis/tests/flink
+WORKDIR /src/services/kinesis/tests/flink
+RUN gradle --no-daemon --max-workers=1 -q installDist
 
 FROM eclipse-temurin:21-jre@sha256:0b99b3376fbb50dbf9c0af8535fdd5b8eb0d3fdfc8b1e4967f383b6919f6901a
 
@@ -39,5 +44,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends socat openssl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/services/kinesis/tests/kpl/build/install/kythira-kpl-producer /opt/kpl-producer
 COPY services/kinesis/tests/kpl/kpl_produce.sh /opt/kpl-producer/kpl_produce.sh
+COPY --from=build /src/services/kinesis/tests/flink/build/install/kythira-flink-pipe /opt/flink-pipe
 
 ENTRYPOINT ["/opt/kcl-sample/bin/kythira-kcl-sample"]

@@ -70,12 +70,12 @@ Consequences for later tasks:
 
 ## Not recorded yet, and why
 
-aws-sdk-cpp is not recorded here: its producer and polling consumer run
-end to end against real nodes in the container scenario instead
-(`tests/docker/`, image built from `docker/kinesis_sdk_cpp/`).
+aws-sdk-cpp and the Flink connector are not recorded here: they run end
+to end against real nodes in the container scenario instead
+(`tests/docker/`). The Flink connector 5.x no longer runs KCL: its source
+is its own, on the Java SDK v2, and names the stream by ARN.
 
 | Client | When | Why not now |
 |---|---|---|
 | KCL 2.x and 3.x | tasks 9 and 16 | KCL needs a lease table (DynamoDB or the native lease API) before it calls Kinesis at all, and the stub has neither. |
-| Flink connector | task 17 | Same as KCL (it runs KCL's polling or EFO consumer), plus a Flink job harness. |
 | `SubscribeToShard` (HTTP/2 event stream) | task 13 | The stub speaks HTTP/1.1 only. |
