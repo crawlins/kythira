@@ -143,7 +143,7 @@ asked.
     `append_batch_command`, answered per part, so a batch costs one
     proposal per group rather than one per shard.
 
-- [ ] 7. Reads and iterators
+- [x] 7. Reads and iterators
   - HMAC iterator tokens with key rotation; all five iterator types;
     `GetRecords` with `MillisBehindLatest` and `ChildShards`
   - AWS CLI, boto3, aws-sdk-cpp producer and polling consumer end to end
@@ -163,9 +163,13 @@ asked.
     Kinesis Module workflow's container job) runs three nodes by service
     name with the AWS CLI v2 and a boto3 producer and polling consumer,
     through a stopped node and its catch-up; it passes under Docker
-    locally. Open: the aws-sdk-cpp producer and consumer, which needs the
-    `kinesis` feature of vcpkg's aws-sdk-cpp; `ChildShards` is in place but
-    untested until resharding (task 11) closes a shard.
+    locally. The aws-sdk-cpp producer and polling consumer
+    (`docker/kinesis_sdk_cpp/`) are built in their own image against
+    aws-sdk-cpp 1.11.665 (kinesis only, static) rather than through
+    vcpkg, and join the scenario: they produce to a two-shard stream
+    through one node and consume it across all three, with boto3 reading
+    the same records back. `ChildShards` is covered by
+    `kinesis_reshard_test` and the scenario's resharding case.
 
 - [ ] 8. Throughput limits and the measurement row
   - Leader-side token buckets for writes and reads, throttling errors
@@ -402,8 +406,8 @@ asked.
     must read back in order under each key through every node. It needs
     the AWS SDK's s3 component, so it runs only in CI. Left: the
     differential test (emulator choice asked of Clark 11-10; kinesis-mock
-    recommended) and conformance jobs for KPL, aws-sdk-cpp and the Flink
-    connector.
+    recommended) and conformance jobs for KPL and the Flink connector
+    (aws-sdk-cpp runs in the container scenario since task 7).
 
 - [x] 18. Documentation
   - `doc/kinesis.md`: model, profile switches, limits, clock assumption,

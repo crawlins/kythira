@@ -69,9 +69,12 @@ Consequences for later tasks:
 
 ## Not recorded yet, and why
 
+aws-sdk-cpp is not recorded here: its producer and polling consumer run
+end to end against real nodes in the container scenario instead
+(`tests/docker/`, image built from `docker/kinesis_sdk_cpp/`).
+
 | Client | When | Why not now |
 |---|---|---|
-| aws-sdk-cpp | task 7 | Its producer and polling consumer run end to end against the gateway there. The sandbox that recorded these cannot build the SDK (no vcpkg). |
 | KCL 2.x and 3.x | tasks 9 and 16 | KCL needs a lease table (DynamoDB or the native lease API) before it calls Kinesis at all, and the stub has neither. |
 | Flink connector | task 17 | Same as KCL (it runs KCL's polling or EFO consumer), plus a Flink job harness. |
 | `SubscribeToShard` (HTTP/2 event stream) | task 13 | The stub speaks HTTP/1.1 only. |
