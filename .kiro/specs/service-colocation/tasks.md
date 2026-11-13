@@ -1,0 +1,64 @@
+# Implementation Plan
+
+Each task is one PR unless noted. Tasks 4-8 can go in any order once task 3
+is in.
+
+- [ ] 1. Service module interface and registry
+  - `service_module`, `caller`, group space and `module_registry` in core
+    public headers; build-time registrar; unit tests with two fake modules
+  - _Requirements: 1.1-1.3, 7.1_
+
+- [ ] 2. Node core
+  - `KYTHIRA_NODE_*` configuration, identity and TLS, peer list, logger with
+    a `service` field, shared metrics and health endpoint, signals,
+    dependency-ordered start and reverse stop, drain before Raft stops
+  - _Requirements: 2.2, 2.4, 2.5, 8.1, 8.3_
+
+- [ ] 3. `kythira_node` and group spaces
+  - The composite daemon over node core; `KYTHIRA_SERVICES`; module numbers
+    and partitioned group ids and key prefixes on the shared host;
+    split/merge hooks scoped per module; overlap check
+  - _Requirements: 2.1, 2.3, 4.1-4.4_
+
+- [ ] 4. Ledger as a module
+  - Adapter over `ledger_host`; `ledger_node` rebuilt as a one-module node
+    with its variables as aliases; existing tests unchanged
+  - _Requirements: 3.1, 3.2, 3.4, 8.2_
+
+- [ ] 5. Kinesis as a module
+  - Adapter over the Kinesis gateway; `kinesis_gateway_node` rebuilt;
+    publishes `kinesis.put_records`
+  - _Requirements: 3.1, 3.2, 3.4, 7.1, 8.2_
+
+- [ ] 6. DynamoDB as a module
+  - Adapter over the gateway; bootstrap groups and per-voter id ranges
+    inside the module's range; `dynamodb_gateway_node` rebuilt; Kinesis
+    destination uses the in-process path when Kinesis is co-located
+  - _Requirements: 3.1, 3.2, 3.4, 4.1, 7.3, 7.4, 8.2_
+
+- [ ] 7. Redis gateway as a module
+  - Adapter over the Redis gateway and build cache; `redis_gateway_node`
+    rebuilt; embedded IAM replica replaced by the co-located IAM module
+    when present, `KYTHIRA_IAM_*` kept for stand-alone
+  - _Requirements: 3.1, 3.2, 3.4, 7.3, 8.2_
+
+- [ ] 8. IAM on the multi-raft host, as a module
+  - IAM state machine as a host group; `iam_node --convert-data-dir`;
+    publishes `iam.evaluator`; co-located modules authorize through it
+  - _Requirements: 5.1-5.3, 7.2_
+
+- [ ] 9. Resource isolation
+  - Per-module executors and thread counts, disk floors and memory budgets;
+    saturation test showing no elections in other modules
+  - _Requirements: 6.1-6.4_
+
+- [ ] 10. Packaging, compose and docker-chaos
+  - `kythira_node` image; three-node DynamoDB + Kinesis + IAM compose file
+    by service name; docker-chaos scenario under Docker and rootless Podman
+  - _Requirements: 9.1, 9.2, 10.3_
+
+- [ ] 11. Test matrix and docs
+  - All-modules in-process cluster test; build legs per module alone and
+    all together; `doc/colocation.md` covering what is and is not isolated
+    and how to move a service between layouts
+  - _Requirements: 3.3, 6.4, 10.1, 10.2, 10.4_

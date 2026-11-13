@@ -1111,7 +1111,57 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
     account; global tables and MRSC across two accounts; the static keys
     and IAM paths both.
   - Docs: `doc/dynamodb.md` (model, deployment), module README
+  - Decisions (Clark, 2026-11-13):
+    - Authentication: `KYTHIRA_DYNAMODB_AUTH=static|iam|both`, as the
+      Redis gateway's `auth=password|iam|both`. Static accounts are the
+      key file's account ids; IAM accounts and principals come from
+      Kythira IAM through an embedded replica (wire the IAM authorizer
+      into the DynamoDB and Kinesis gateways, which build only the
+      static-key one today). `both` tries static keys first; an access
+      key id in both is a startup error.
+    - Noisy neighbours, as on AWS: account capacity totals per owner,
+      enforced on CreateTable and UpdateTable, reported by
+      `DescribeLimits`, raisable per account by the operator. No runtime
+      per-account limiter; per-table throttling stays.
+    - Operator logs and metrics carry the account; nothing a customer
+      sees adds an account dimension.
   - _Requirements: 5.4, 5.5_
+
+- [x] 29. Kinesis streaming destination against real AWS (added
+  2026-11-13: Clark asked for an end-to-end check; AWS spend approved in
+  advance by Clark)
+  - Task 17 tested `EnableKinesisStreamingDestination` against Kythira's
+    own Kinesis and a stub. Delivery to real Amazon Kinesis Data Streams
+    has not been run: the destination's SigV4 client, the record format
+    and the retry path have only met fakes.
+  - Run: a Kythira gateway with a table whose destination is a real
+    Kinesis stream in a sandbox account; writes, updates and deletes; a
+    reader on the stream checks every change arrives at least once and in
+    order per item, in the AWS record format, with
+    `ApproximateCreationDateTimePrecision` honoured; a throttled stream (one shard, burst writes) shows retries
+    and no loss; disabling the destination stops delivery.
+  - The stream is deleted after the run and the cost reported. The
+    reverse (AWS DynamoDB streaming into Kythira Kinesis) is not
+    possible: AWS only delivers to streams in AWS.
+  - _Requirements: 16.1, 16.2_
+  - Done 2026-11-13 with `tools/evidence/kinesis_destination_aws.py`,
+    on Clark's machine against account 827617851594 in us-east-1, a
+    one-shard provisioned stream each time, deleted after each run. Three
+    runs, about $0.045 in all at list price:
+    - Every run: every change delivered (3167, 4167 and 227 records), in
+      write order per item, no duplicates, in AWS's record format with
+      microsecond precision; disabling the destination stopped delivery.
+    - AWS never throttled. A burst of 3000 small items, then 4000 from
+      16 writers, reached Kinesis in calls of about 120 KB: the gateway
+      publishes from its sweep loop once a second, one PutRecords call
+      at a time, so client write speed does not set the publishing rate.
+      A burst of 60 items of 200 KB filled calls to the publisher's
+      4 MiB cap (CloudWatch: one call of 4,009,962 bytes, 12 MB in a
+      minute), and the one shard still refused nothing: AWS lets a shard
+      absorb short bursts well past its 1 MiB/s. The script reports
+      throttled writes but does not require them; the retry path is
+      covered by `a_failed_record_is_resent_without_reordering_its_item`
+      and the HTTP sink's parsing of a partly throttled answer.
 
 - [x] 22. Global tables, last-writer-wins
   - Peer cluster config, replicator and receiver, replica updates in
