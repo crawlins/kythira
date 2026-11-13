@@ -14,6 +14,7 @@ import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable;
 import software.amazon.awssdk.enhanced.dynamodb.Expression;
 import software.amazon.awssdk.enhanced.dynamodb.Key;
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
+import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbAttribute;
 import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbBean;
 import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbPartitionKey;
 import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbSortKey;
@@ -42,11 +43,15 @@ public final class Main {
         private Integer number;
         private String status;
 
+        // Mapped onto the table's key attributes: DynamoDB refuses an item
+        // that lacks them.
         @DynamoDbPartitionKey
+        @DynamoDbAttribute("pk")
         public String getCustomer() { return customer; }
         public void setCustomer(String v) { customer = v; }
 
         @DynamoDbSortKey
+        @DynamoDbAttribute("sk")
         public Integer getNumber() { return number; }
         public void setNumber(Integer v) { number = v; }
 

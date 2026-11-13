@@ -17,12 +17,15 @@
 #     wire-evidence test on the fresh recording, and report how it differs
 #     from the checked-in one. A client upgrade that starts sending a
 #     member the pinned model lacks fails here.
-#   - in the build job, after the tests (tasks 7 and 11): the KCL 2.x and
-#     3.x evidence clients with their lease tables on a three-node cluster
+#   - in the build job, after the tests (tasks 7, 11 and 24): every
+#     conformance client (the AWS CLI, boto3, aws-sdk-java-v2, the lock
+#     client, Terraform's aws_dynamodb_table, KCL 2.x and 3.x with their
+#     lease tables, and the Streams Kinesis Adapter) on a three-node cluster
 #     of the dynamodb_gateway_node just built, in containers, under rootful
 #     Docker and then rootless Podman
-#     (services/dynamodb/tools/evidence/kcl_on_kythira.sh). It runs there,
-#     not in a job of its own, so the daemon needs no artifact hand-off.
+#     (services/dynamodb/tools/evidence/clients_on_kythira.sh). It runs
+#     there, not in a job of its own, so the daemon needs no artifact
+#     hand-off. Terraform fetches its AWS provider from the registry.
 #
 # The evidence job compiles the one test by hand against the distribution's
 # Boost instead of configuring the whole tree: the test needs only the
@@ -228,11 +231,11 @@ jobs:
       - name: Run the module's tests
         run: ctest --test-dir build -L '^dynamodb$' --output-on-failure --no-tests=error
 
-      - name: KCL 2.x and 3.x with their leases on Kythira (docker)
+      - name: Conformance clients on Kythira (docker)
         env:
           KYTHIRA_CONTAINER_RUNTIME: docker
           KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
-        run: services/dynamodb/tools/evidence/kcl_on_kythira.sh compose "$RUNNER_TEMP/kcl-docker"
+        run: services/dynamodb/tools/evidence/clients_on_kythira.sh compose "$RUNNER_TEMP/kcl-docker"
 
       # Rootless Podman as iam-module.yml's container job sets it up.
       - name: Set up rootless Podman
@@ -271,13 +274,13 @@ jobs:
           for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
           test -S "$sock"
 
-      - name: KCL 2.x and 3.x with their leases on Kythira (podman)
+      - name: Conformance clients on Kythira (podman)
         env:
           KYTHIRA_CONTAINER_RUNTIME: podman
           KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
-        run: services/dynamodb/tools/evidence/kcl_on_kythira.sh compose "$RUNNER_TEMP/kcl-podman"
+        run: services/dynamodb/tools/evidence/clients_on_kythira.sh compose "$RUNNER_TEMP/kcl-podman"
 
-      - name: Upload what Kythira answered the KCL
+      - name: Upload what Kythira answered the clients
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

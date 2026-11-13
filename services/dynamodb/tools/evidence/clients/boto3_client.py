@@ -85,9 +85,10 @@ def main():
     ddb.update_item(
         TableName=TABLE,
         Key={"pk": {"S": "user#1"}, "sk": {"N": "1"}},
-        UpdateExpression="SET #n = :n, visits = if_not_exists(visits, :zero) + :one REMOVE blob",
+        # BLOB is a DynamoDB reserved word, so it needs a placeholder too.
+        UpdateExpression="SET #n = :n, visits = if_not_exists(visits, :zero) + :one REMOVE #b",
         ConditionExpression="attribute_exists(pk)",
-        ExpressionAttributeNames={"#n": "name"},
+        ExpressionAttributeNames={"#n": "name", "#b": "blob"},
         ExpressionAttributeValues={":n": {"S": "Ada L"}, ":zero": {"N": "0"}, ":one": {"N": "1"}},
         ReturnValues="ALL_NEW",
     )
@@ -119,7 +120,9 @@ def main():
         pass
 
     # Batches (the resource batch_writer buffers and resends unprocessed).
-    with table.batch_writer() as bw:
+    # DynamoDB refuses a batch naming one key twice, so the writer drops
+    # the put of sk 2 that the delete supersedes.
+    with table.batch_writer(overwrite_by_pkeys=["pk", "sk"]) as bw:
         for i in range(3):
             bw.put_item(Item={"pk": "batch", "sk": i})
         bw.delete_item(Key={"pk": "batch", "sk": 2})

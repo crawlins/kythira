@@ -35,12 +35,13 @@ runs the evidence test on the fresh recording and reports the diff. To
 replace the checked-in recording, record into this directory and run
 `summarize.py evidence`, which rewrites `summary.json` and the tables below.
 
-The KCL clients also run on Kythira itself (task 11):
-`tools/evidence/kcl_on_kythira.sh compose|native OUT_DIR` starts the stub
-with `--dynamodb-upstream`, so the KCL's DynamoDB requests reach a
-`dynamodb_gateway_node` (a three-node cluster in compose mode) unchanged
-while the stub still serves its Kinesis calls, then
-`tools/evidence/check_kcl_run.py` checks what Kythira answered. The
+Every client also runs on Kythira itself (tasks 11 and 24), with
+Terraform's `aws_dynamodb_table` besides:
+`tools/evidence/clients_on_kythira.sh compose|native OUT_DIR [CLIENT...]`
+starts the stub with `--dynamodb-upstream`, so each client's DynamoDB
+requests reach a `dynamodb_gateway_node` (a three-node cluster in compose
+mode) unchanged while the stub still serves the KCL's Kinesis calls, then
+`tools/evidence/check_client_runs.py` checks what Kythira answered. The
 `build` job in `dynamodb-module.yml` runs it under both runtimes.
 
 <!-- BEGIN GENERATED (summarize.py) -->

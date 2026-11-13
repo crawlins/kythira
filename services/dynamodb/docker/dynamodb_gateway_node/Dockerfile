@@ -1,13 +1,13 @@
 # Copyright (c) 2026 Clark Rawlins
 # SPDX-License-Identifier: Apache-2.0
 
-# The DynamoDB module's daemon in a container, for the KCL run on Kythira
-# (services/dynamodb/tools/evidence/kcl_on_kythira.sh, task 11): one
+# The DynamoDB module's daemon in a container, for the client runs on Kythira
+# (services/dynamodb/tools/evidence/clients_on_kythira.sh, tasks 11, 24): one
 # `dynamodb_gateway_node` per container, addressed by compose service name.
 #
 # The build context is this directory. The binary is built on the host
 # (Ubuntu 24.04, so this base carries the libstdc++ it was linked against)
-# and copied into dist/ by kcl_on_kythira.sh, never rebuilt here, as in
+# and copied into dist/ by clients_on_kythira.sh, never rebuilt here, as in
 # services/kinesis/docker/kinesis_gateway_node/Dockerfile. No HEALTHCHECK:
 # the script probes readiness itself, which also sidesteps Podman's
 # OCI-format HEALTHCHECK drop.

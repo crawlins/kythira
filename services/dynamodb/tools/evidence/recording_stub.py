@@ -35,7 +35,7 @@ headers unchanged, to that server (a Kythira gateway node or DynamoDB
 Local) and relays its answer; each exchange is also written to
 `<client>.upstream.jsonl` with the upstream's status and body. That is how
 the KCL clients run on Kythira's DynamoDB API with a stand-in Kinesis
-stream (kcl_on_kythira.sh, task 11), and the Streams Kinesis Adapter reads
+stream (clients_on_kythira.sh, task 11), and the Streams Kinesis Adapter reads
 a real Kythira stream (task 16).
 
 Usage:

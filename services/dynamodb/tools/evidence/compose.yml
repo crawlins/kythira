@@ -11,11 +11,12 @@
 #
 # EVIDENCE_OUT is the host directory the stub writes <client>.jsonl into.
 #
-# The `kythira` profile is the KCL run on Kythira (task 11,
-# kcl_on_kythira.sh): three dynamodb_gateway_node containers (ddb-1 ..
-# ddb-3, a Raft cluster wired by service name) and `forwarder`, the stub
-# with --dynamodb-upstream, which serves the KCL clients' Kinesis calls
-# itself and passes their DynamoDB calls to ddb-2. The API, Raft and the
+# The `kythira` profile is the conformance run on Kythira (tasks 11 and
+# 24, clients_on_kythira.sh): three dynamodb_gateway_node containers
+# (ddb-1 .. ddb-3, a Raft cluster wired by service name) and `forwarder`,
+# the stub with --dynamodb-upstream, which serves the KCL clients' Kinesis
+# calls itself and passes every client's DynamoDB calls to ddb-2. The
+# `terraform` client runs only there. The API, Raft and the
 # gateways' forwarding are plaintext inside this private network; nothing
 # is published on the host. `up` without the profile never starts them.
 
@@ -64,6 +65,19 @@ services:
     depends_on:
       - stub
 
+  # Terraform's AWS provider against Kythira (task 24); it fetches the
+  # provider from the Terraform registry.
+  terraform:
+    image: docker.io/hashicorp/terraform:1.9.8
+    profiles: ["kythira"]
+    entrypoint: ["sh", "/tools/clients/terraform/run_terraform.sh"]
+    environment:
+      ENDPOINT: http://forwarder:8000
+    volumes:
+      - ./:/tools:ro
+    depends_on:
+      - forwarder
+
   ddb-1: &ddb
     image: kythira-dynamodb-node:dev
     profiles: ["kythira"]
@@ -76,7 +90,7 @@ services:
       KYTHIRA_DYNAMODB_LOG_LEVEL: warning
       # The keys the evidence clients sign with (EVIDENCE-<client>).
       KYTHIRA_DYNAMODB_STATIC_KEYS: >-
-        EVIDENCE-kcl2:evidence-secret-not-a-credential:000000000000:kcl2:admin,EVIDENCE-kcl3:evidence-secret-not-a-credential:000000000000:kcl3:admin,EVIDENCE-streams-adapter:evidence-secret-not-a-credential:000000000000:streams-adapter:admin
+        EVIDENCE-aws-cli:evidence-secret-not-a-credential:000000000000:aws-cli:admin,EVIDENCE-boto3:evidence-secret-not-a-credential:000000000000:boto3:admin,EVIDENCE-java-sdk:evidence-secret-not-a-credential:000000000000:java-sdk:admin,EVIDENCE-lock-client:evidence-secret-not-a-credential:000000000000:lock-client:admin,EVIDENCE-terraform:evidence-secret-not-a-credential:000000000000:terraform:admin,EVIDENCE-kcl2:evidence-secret-not-a-credential:000000000000:kcl2:admin,EVIDENCE-kcl3:evidence-secret-not-a-credential:000000000000:kcl3:admin,EVIDENCE-streams-adapter:evidence-secret-not-a-credential:000000000000:streams-adapter:admin
 
   ddb-2:
     <<: *ddb

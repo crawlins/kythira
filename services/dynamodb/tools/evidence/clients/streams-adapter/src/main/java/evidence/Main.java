@@ -48,7 +48,7 @@ import software.amazon.kinesis.processor.StreamTracker;
  * traffic.
  *
  * <p>With {@code SOURCE_TABLE} set, it runs on a real stream instead (task 16,
- * Requirement 14.5, kcl_on_kythira.sh): it creates that table with a stream,
+ * Requirement 14.5, clients_on_kythira.sh): it creates that table with a stream,
  * writes {@code ITEMS} items before and while the worker runs, and fails
  * unless the worker sees every one exactly once.
  */
