@@ -406,26 +406,64 @@ BOOST_AUTO_TEST_CASE(delete_and_recreate) {
     BOOST_TEST(str(f.put("orders", "k").at("ShardId")) == "shardId-000000000000");
 }
 
-BOOST_AUTO_TEST_CASE(a_stream_not_yet_active_takes_no_writes) {
-    fixture f;
-    // A create interrupted after its first step: CREATING, no shards open.
+namespace {
+
+// A create interrupted after its first step: CREATING, no shards open.
+void half_create(fixture& f, const std::string& name, std::uint32_t shards) {
     kin::create_stream_command c;
     c._account = std::string(k_account);
-    c._name = "half";
-    c._shard_count = 1;
+    c._name = name;
+    c._shard_count = shards;
     const kin::stream_command cmd = c;
     BOOST_REQUIRE(f.cluster.propose(kin::command_key(cmd), kin::encode_command(cmd))->_status ==
                   kin::apply_status::ok);
-    BOOST_TEST(str(f.ok("DescribeStreamSummary", {{"StreamName", "half"}})
-                       .at("StreamDescriptionSummary")
-                       .at("StreamStatus")) == "CREATING");
+}
+
+auto status_of(fixture& f, const std::string& name) -> std::string {
+    return str(f.ok("DescribeStreamSummary", {{"StreamName", name}})
+                   .at("StreamDescriptionSummary")
+                   .at("StreamStatus"));
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(a_stream_not_yet_active_takes_no_writes) {
+    fixture f;
+    half_create(f, "half", 1);
+    BOOST_TEST(status_of(f, "half") == "CREATING");
     BOOST_TEST(f.error_type("PutRecord",
                             {{"StreamName", "half"}, {"PartitionKey", "k"}, {"Data", "aGk="}}) ==
                "ResourceNotFoundException");
-    BOOST_TEST(f.error_type("CreateStream", {{"StreamName", "half"}, {"ShardCount", 1}}) ==
-               "ResourceInUseException");
     // DeleteStream clears it.
     BOOST_TEST(f.ok("DeleteStream", {{"StreamName", "half"}}).empty());
+}
+
+// A create interrupted between the catalog commit and ACTIVE (a leader
+// change mid-create, seen once under rootless Podman as a stream that never
+// left CREATING) must not stay that way: the caller's retry finishes it, and
+// so does the maintenance pass once it has sat CREATING for a while.
+BOOST_AUTO_TEST_CASE(an_interrupted_create_is_finished) {
+    fixture f;
+    half_create(f, "retried", 2);
+    // The SDK's retry: answered in use, as AWS answers, but the stream
+    // comes out ACTIVE with both shards open and writable.
+    BOOST_TEST(f.error_type("CreateStream", {{"StreamName", "retried"}, {"ShardCount", 2}}) ==
+               "ResourceInUseException");
+    BOOST_TEST(status_of(f, "retried") == "ACTIVE");
+    for (const auto* key : {"a", "b", "c", "d", "e", "f"}) {
+        (void)f.put("retried", key);
+    }
+
+    half_create(f, "abandoned", 3);
+    BOOST_TEST(f.service.repair_creates(1'000, 30'000) == 0U);   // first sighting
+    BOOST_TEST(f.service.repair_creates(20'000, 30'000) == 0U);  // still fresh
+    BOOST_TEST(status_of(f, "abandoned") == "CREATING");
+    BOOST_TEST(f.service.repair_creates(31'000, 30'000) == 1U);
+    BOOST_TEST(status_of(f, "abandoned") == "ACTIVE");
+    BOOST_TEST(f.ok("ListShards", {{"StreamName", "abandoned"}}).at("Shards").as_array().size() ==
+               3U);
+    (void)f.put("abandoned", "k");
+    BOOST_TEST(f.service.repair_creates(90'000, 30'000) == 0U);  // nothing left
 }
 
 BOOST_AUTO_TEST_CASE(record_and_batch_size_limits) {

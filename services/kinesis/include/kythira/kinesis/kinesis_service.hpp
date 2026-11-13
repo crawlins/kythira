@@ -17,7 +17,8 @@
 /// DELETING, drops each shard and removes the record. Both run to the end
 /// before they answer, so a client usually never sees CREATING; the states
 /// are still real (a create interrupted between steps leaves CREATING, which
-/// SDK waiters see, and a retried DeleteStream finishes the job).
+/// SDK waiters see until a retried CreateStream or the maintenance pass
+/// finishes it, and a retried DeleteStream finishes the job).
 ///
 /// Writes. A record's hash is its `ExplicitHashKey` or the MD5 of its
 /// partition key (Requirement 7.1); the open shard owning the hash takes it.
@@ -488,28 +489,60 @@ public:
             return internal_failure();
         }
         if (created->_status == apply_status::already_exists) {
+            // A retry of a create interrupted after the catalog commit (the
+            // SDKs retry InternalFailure) finds its own stream in CREATING:
+            // finish it, so the stream does not wait for the maintenance
+            // pass, and answer as AWS does for an existing stream.
+            (void)finish_create(account, name, std::nullopt);
             return service_detail::in_use("Stream " + name + " under account " + account +
                                           " already exists.");
         }
         if (created->_status != apply_status::ok) {
             return internal_failure();
         }
-        const auto id = created->_id;
-        for (std::uint32_t ordinal = 0; ordinal < count; ++ordinal) {
-            const auto opened = propose(open_shard_command{routing_key(id, ordinal), 0});
-            if (!opened || (opened->_status != apply_status::ok &&
-                            opened->_status != apply_status::already_exists)) {
-                // Left in CREATING; a retry of CreateStream reports it in
-                // use, and DeleteStream clears it.
-                return internal_failure();
-            }
-        }
-        const auto active =
-            propose(set_stream_status_command{account, name, id, stream_status::active});
-        if (!active || active->_status != apply_status::ok) {
+        if (!finish_create(account, name, created->_id)) {
+            // Left in CREATING; a retry of CreateStream or the maintenance
+            // pass (`repair_creates`) finishes it, and DeleteStream clears
+            // it.
             return internal_failure();
         }
         return boost::json::object{};
+    }
+
+    /// The maintenance pass's half of CreateStream: a stream CREATING for
+    /// longer than `stale_ms` (seen by this node's earlier calls; a live
+    /// create takes a few commit round trips) lost its caller between the
+    /// catalog commit and ACTIVE, so open its shards and make it ACTIVE.
+    /// Without this a create interrupted by a leader change stays CREATING
+    /// forever, and every write to it is answered not found. Returns how
+    /// many streams it finished.
+    auto repair_creates(std::int64_t now_ms, std::int64_t stale_ms) -> std::size_t {
+        std::vector<stream_record> streams;
+        (void)read_catalog([&](const auto& sm) {
+            const auto prefix = streams_prefix();
+            const auto& entries = sm.entries();
+            for (auto it = entries.lower_bound(prefix);
+                 it != entries.end() && it->first.starts_with(prefix); ++it) {
+                if (const auto* r = std::get_if<stream_record>(&it->second);
+                    r != nullptr && r->_status == stream_status::creating) {
+                    streams.push_back(*r);
+                }
+            }
+        });
+        std::size_t repaired = 0;
+        const std::scoped_lock lock(_creating_mutex);
+        std::map<std::uint64_t, std::int64_t> still;
+        for (const auto& rec : streams) {
+            const auto seen = _creating_since.find(rec._id);
+            const auto since = seen == _creating_since.end() ? now_ms : seen->second;
+            if (now_ms - since < stale_ms || !finish_create(rec._account, rec._name, rec._id)) {
+                still[rec._id] = since;
+                continue;
+            }
+            ++repaired;
+        }
+        _creating_since = std::move(still);
+        return repaired;
     }
 
     auto delete_stream(call_context& ctx, boost::json::object& in) -> result {
@@ -3304,6 +3337,9 @@ public:
     }
 
 private:
+    std::mutex _creating_mutex;
+    /// When this node first saw each CREATING stream (`repair_creates`).
+    std::map<std::uint64_t, std::int64_t> _creating_since;
     std::mutex _updating_mutex;
     /// When this node first saw each UPDATING stream (`repair_reshards`).
     std::map<std::uint64_t, std::int64_t> _updating_since;
@@ -3343,6 +3379,52 @@ private:
         return record_once(rec._account, rec._name, rec._id, [](const stream_record& r) {
             return r._status == stream_status::updating;
         });
+    }
+
+    // CreateStream's steps after the catalog commit: open every shard of
+    // the stream's table under its routing key and move it to ACTIVE. Each
+    // step is idempotent, so a retry, another node's maintenance pass or
+    // both at once are safe. `id` pins the stream a caller just created;
+    // nullopt takes whichever stream has the name. True once the stream is
+    // ACTIVE (or was not CREATING to begin with).
+    auto finish_create(const std::string& account, const std::string& name,
+                       std::optional<std::uint64_t> id) -> bool {
+        std::optional<stream_record> rec;
+        if (!read_catalog([&](const auto& sm) {
+                if (const auto* s = sm.find_stream(account, name)) {
+                    rec = *s;
+                }
+            })) {
+            return false;
+        }
+        if (id && (!rec || rec->_id != *id)) {
+            // Our own commit is not on this replica yet: wait for it.
+            rec = record_once(account, name, *id, [](const stream_record&) { return true; });
+        }
+        if (!rec || (id && rec->_id != *id)) {
+            return false;
+        }
+        if (rec->_status != stream_status::creating) {
+            return true;
+        }
+        for (const auto& sh : rec->_shards) {
+            const auto opened = propose(open_shard_command{routing_key(rec->_id, sh._ordinal), 0});
+            if (!opened || (opened->_status != apply_status::ok &&
+                            opened->_status != apply_status::already_exists)) {
+                return false;
+            }
+        }
+        const auto active =
+            propose(set_stream_status_command{account, name, rec->_id, stream_status::active});
+        if (active && active->_status == apply_status::ok) {
+            return true;
+        }
+        // Someone else (a retry, another node's pass) may have got there
+        // first: ACTIVE is ACTIVE whoever set it.
+        return active && active->_status == apply_status::bad_transition &&
+               record_once(account, name, rec->_id, [](const stream_record& r) {
+                   return r._status == stream_status::active;
+               }).has_value();
     }
 
     // The stream the request names, as this replica's catalog has it.

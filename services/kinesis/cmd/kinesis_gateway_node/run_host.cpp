@@ -483,6 +483,16 @@ auto run(const node_options& opt) -> int {
                                " failures=" + std::to_string(od._failures),
                            {});
             }
+            // A create whose caller lost it between the catalog commit and
+            // ACTIVE (a leader change mid-create) is finished here after
+            // half a minute in CREATING.
+            const auto created = service.repair_creates(cluster.now_ms(), 30000);
+            if (created > 0) {
+                logger.log(kythira::log_level::info,
+                           "kinesis maintenance: finished " + std::to_string(created) +
+                               " interrupted create(s)",
+                           {});
+            }
             // A reshard whose caller died after its transaction committed
             // is finished here once it has sat UPDATING for a minute.
             const auto repaired = service.repair_reshards(cluster.now_ms(), 60000);
