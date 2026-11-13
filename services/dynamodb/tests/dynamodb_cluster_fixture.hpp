@@ -25,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -83,8 +84,10 @@ struct answer {
 /// timeout while the live nodes log a retry per heartbeat to the stuck
 /// one: one such run grew its output until ctest itself failed with
 /// bad_alloc, and the output that would have named the step was lost.
-/// Aborting names the step, and Boost.Test reports the case and its
-/// last checkpoint.
+/// The abort ends the process. Boost.Test catches SIGABRT, fails the
+/// current case and runs the next one, which leaves the hung case's
+/// nodes running and logging; so the watchdog puts SIGABRT back to its
+/// default action first, and names the case itself.
 class watchdog {
 public:
     watchdog(std::string what, std::chrono::seconds limit, std::function<void()> report = {})
@@ -94,11 +97,13 @@ public:
                   return;
               }
               std::cerr << "watchdog: " << what << " did not finish within " << limit.count()
-                        << " s; aborting\n";
+                        << " s in " << boost::unit_test::framework::current_test_case().p_name.get()
+                        << "; aborting\n";
               if (report) {
                   report();
               }
               std::cerr << std::flush;
+              std::signal(SIGABRT, SIG_DFL);
               std::abort();
           }) {}
 
