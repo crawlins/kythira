@@ -224,18 +224,28 @@ descriptor.
 **Making a table strong.**
 
 1. `UpdateTable` in region A checks the request: three regions in total,
-   each configured as a strong peer, no LSI, TTL off, the table empty.
-   It answers `ValidationException` otherwise, with AWS's wording.
-2. A's catalog seals the table (its groups refuse writes from here) and
-   checks it is still empty; a write that slipped in before the seal fails
-   the conversion and the replicas end `CREATION_FAILED`.
-3. A proposes the table to the strong catalog, which creates the item
-   groups (and GSI groups) in the strong host.
-4. Each replica region's catalog leader sees the entry, creates its local
-   descriptor (`CREATING`, then `ACTIVE` once its strong host has the
-   groups), and the witness region records only the membership.
-5. A's local ranges for the table are dropped. They were empty, which is
-   why AWS requires an empty table: nothing has to be copied.
+   which must be the strong host's, each named once, at most one witness,
+   only `Create` actions; and the table: ACTIVE, not global, no LSI, TTL
+   off, empty. It answers `ValidationException` otherwise.
+2. A writes the table into the strong catalog (`create_table` there), with
+   the shared settings, every replica region (A's ACTIVE, the others
+   CREATING) and the witness. That gives the strong table and index ids.
+3. A's catalog switches its descriptor to the strong ids (`make_strong`),
+   recording the old ids. From then on every request A serves goes to the
+   strong host. A's local ranges were empty, which is why AWS requires an
+   empty table: nothing has to be copied.
+4. Each region's catalog leader runs `strong_table_worker`
+   (`strong_tables.hpp`). A replica region adopts the strong catalog's
+   descriptor (`adopt_strong`) and marks its replica ACTIVE in the strong
+   catalog, or CREATION_FAILED when a table of that name is already there.
+   The witness region marks its witness ACTIVE. Every region copies the
+   others' statuses into its own descriptor (`strong_members`).
+5. A request that read A's old descriptor just before the switch may still
+   write under the old id. A minute after the switch (longer than any
+   request lives), A's worker moves any such item into the strong table,
+   unless the strong table already has that key, and gives the old key
+   spaces delete jobs (`salvage_done`). AWS asks that nothing be written
+   during the conversion; this keeps a write that was not lost anyway.
 
 **Leaving strong mode.** Removing two replicas, or a replica and the
 witness, is a membership change on every group of the table (joint

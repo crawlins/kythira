@@ -111,6 +111,7 @@
 #include <kythira/dynamodb/resource_policy.hpp>
 #include <kythira/dynamodb/kinesis_destination.hpp>
 #include <kythira/dynamodb/streams.hpp>
+#include <kythira/dynamodb/strong_tables.hpp>
 #include <kythira/dynamodb/table_api.hpp>
 #include <kythira/dynamodb/ttl.hpp>
 #include <kythira/dynamodb/txn_api.hpp>
@@ -995,6 +996,19 @@ public:
             }
         }
         _tables.set_peers([peers = _peers](std::string_view r) { return peers->has(r); });
+        if constexpr (k_routes_strong) {
+            // Multi-region strong consistency (task 27).
+            if (_backend.has_strong() && !_strong_tables) {
+                _tables.set_strong_regions(_config.strong.regions());
+                _strong_tables = std::make_unique<strong_table_worker<Backend>>(_backend);
+                _strong_tables->set_region(_config.front.region);
+                _strong_tables->set_log([this](std::string_view line) {
+                    if (_log) {
+                        _log(true, line);
+                    }
+                });
+            }
+        }
         _receiver.register_with(*_front);
         _replicator.set_peers(_peers.get());
         _replicator.set_log([this](std::string_view line) {
@@ -1160,6 +1174,19 @@ private:
                             _log(true, std::string("vector indexes: ") + e.what());
                         }
                     }
+                    if constexpr (k_routes_strong) {
+                        if (_strong_tables) {
+                            try {
+                                // Replicas adopted, statuses copied, old key
+                                // spaces salvaged (task 27).
+                                (void)_strong_tables->pass();
+                            } catch (const std::exception& e) {
+                                if (_log) {
+                                    _log(true, std::string("strong tables: ") + e.what());
+                                }
+                            }
+                        }
+                    }
                     try {
                         // Each replica resumes from its stored cursors, here
                         // or on a new leader.
@@ -1244,6 +1271,11 @@ private:
     std::shared_ptr<peer_set> _peers;
     replication_receiver<Backend> _receiver;
     global_table_replicator<Backend> _replicator;
+    /// A backend with a strong host (`routed_backend`, task 27).
+    static constexpr bool k_routes_strong = requires(Backend& b) {
+        { b.has_strong() } -> std::same_as<bool>;
+    };
+    std::unique_ptr<strong_table_worker<Backend>> _strong_tables;
     std::function<void(bool, std::string_view)> _log;
     std::unique_ptr<front_end<authorizer>> _front;
     std::unique_ptr<https::server> _server;

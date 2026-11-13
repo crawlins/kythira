@@ -106,6 +106,15 @@ inline constexpr std::uint64_t k_token_table_id = 0;
     return validation_error("Transaction request cannot include multiple operations on one item");
 }
 
+/// A transaction naming a multi-region strongly consistent table (task
+/// 27): AWS documents that these "will return an error"; the code and
+/// wording here are Kythira's, not recorded against AWS.
+[[nodiscard]] inline auto strong_refused(std::string_view table) -> aws_json::error {
+    return validation_error("Transactions are not supported for multi-Region strongly consistent "
+                            "global tables: " +
+                            std::string(table));
+}
+
 /// The reason code an action's refusal maps to.
 [[nodiscard]] inline auto reason_code(const item_result& r) -> std::string {
     if (r.outcome == item_result::status::condition_failed) {
@@ -172,6 +181,9 @@ public:
             auto a = parse_write(ctx, kind, e.at(kind).as_object());
             if (!a) {
                 return a.error();
+            }
+            if (a->table.strong) {
+                return txn_detail::strong_refused(a->table.name);
             }
             if (!seen.insert(*base_item_key(a->table.table_id, a->table.schema, a->command.payload))
                      .second) {
@@ -249,6 +261,9 @@ public:
             auto table = api_detail::usable_table(_backend, get.at("TableName").as_string());
             if (!table) {
                 return table.error();
+            }
+            if (table->strong) {
+                return txn_detail::strong_refused(table->name);
             }
             if (auto denied = authorize(ctx, "GetItem", table->name)) {
                 return *denied;

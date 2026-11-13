@@ -777,6 +777,18 @@ template<typename TypeOf>
         }
         out["Replicas"] = std::move(replicas);
     }
+    if (d.strong) {
+        // Multi-region strong consistency (task 27).
+        out["MultiRegionConsistency"] = "STRONG";
+        if (!d.witnesses.empty()) {
+            boost::json::array witnesses;
+            for (const auto& w : d.witnesses) {
+                witnesses.push_back(boost::json::object{
+                    {"RegionName", w.region}, {"WitnessStatus", witness_status_name(w.status)}});
+            }
+            out["GlobalTableWitnesses"] = std::move(witnesses);
+        }
+    }
     if (d.restore.restored() && !d.restore.imported()) {
         // A point-in-time restore names the time restored to, as AWS does.
         boost::json::object summary{
@@ -1159,11 +1171,26 @@ public:
     auto update_table(call_context& ctx, boost::json::object& in) -> result {
         using namespace table_api_detail;
         const auto name = table_name_of(in.at("TableName").as_string());
-        for (const char* member : {"SSESpecification", "OnDemandThroughput",
-                                   "MultiRegionConsistency", "GlobalTableWitnessUpdates"}) {
+        for (const char* member : {"SSESpecification", "OnDemandThroughput"}) {
             if (in.contains(member)) {
                 return unsupported(member);
             }
+        }
+        bool strong = false;
+        if (const auto* mode = in.if_contains("MultiRegionConsistency")) {
+            if (!mode->is_string() ||
+                (mode->as_string() != "STRONG" && mode->as_string() != "EVENTUAL")) {
+                return validation_error(
+                    "1 validation error detected: Value '" +
+                    std::string(mode->is_string() ? std::string_view(mode->as_string()) : "") +
+                    "' at 'multiRegionConsistency' failed to satisfy constraint: Member must "
+                    "satisfy enum value set: [EVENTUAL, STRONG]");
+            }
+            strong = mode->as_string() == "STRONG";
+        }
+        if (strong || in.contains("GlobalTableWitnessUpdates") ||
+            ((in.contains("ReplicaUpdates")) && is_strong(name))) {
+            return strong_updates(ctx, name, in, strong);
         }
         if (const auto* updates = in.if_contains("ReplicaUpdates")) {
             for (const char* member :
@@ -1538,7 +1565,249 @@ public:
     /// The peer regions `ReplicaUpdates` may name (task 22); unset, none.
     void set_peers(std::function<bool(std::string_view)> known) { _peer_known = std::move(known); }
 
+    /// The three regions of the strong host (task 27); empty without one.
+    void set_strong_regions(std::vector<std::string> regions) {
+        _strong_regions = std::move(regions);
+    }
+
+    /// How long after a table is made strong the worker salvages items a
+    /// request in flight wrote under its old ids (task 27): longer than any
+    /// request can take.
+    static constexpr std::uint64_t k_salvage_delay_ms = 60000;
+
 private:
+    /// A backend with a strong host (task 27): `routed_backend`.
+    static constexpr bool k_has_strong = requires(Backend& b) {
+        { b.has_strong() } -> std::same_as<bool>;
+        b.strong().catalog(catalog_command{});
+    };
+
+    [[nodiscard]] auto is_strong(const std::string& name) -> bool {
+        const auto d = _backend.describe(name);
+        return d && d->strong;
+    }
+
+    /// `UpdateTable` on a multi-region strongly consistent table, or making
+    /// one (task 27, design.md): `MultiRegionConsistency=STRONG` with
+    /// `ReplicaUpdates` creating the other two regions' replicas, or one and
+    /// a witness (`GlobalTableWitnessUpdates`), on an empty ACTIVE table
+    /// that is not global, has no LSI and has TTL off. The three regions
+    /// must be the strong host's. AWS has not been recorded for these
+    /// messages.
+    auto strong_updates(call_context& ctx, const std::string& name, boost::json::object& in,
+                        bool strong) -> result {
+        using namespace table_api_detail;
+        if constexpr (!k_has_strong) {
+            return unsupported(strong ? "MultiRegionConsistency" : "GlobalTableWitnessUpdates");
+        } else {
+            for (const char* member :
+                 {"BillingMode", "ProvisionedThroughput", "TableClass", "DeletionProtectionEnabled",
+                  "WarmThroughput", "GlobalSecondaryIndexUpdates", "StreamSpecification",
+                  "VectorIndexUpdates"}) {
+                if (in.contains(member)) {
+                    return validation_error(
+                        "ReplicaUpdates cannot be combined with other table updates");
+                }
+            }
+            const auto current = _backend.describe(name);
+            if (!current || current->status == table_status::deleting) {
+                return not_found(name);
+            }
+            if (current->strong) {
+                // Leaving strong mode is task 27.6.
+                return validation_error(
+                    "Replicas and witnesses cannot be added to or changed on a multi-Region "
+                    "strongly consistent global table " +
+                    name);
+            }
+            if (!strong) {
+                return validation_error(
+                    "GlobalTableWitnessUpdates needs MultiRegionConsistency STRONG on a table that "
+                    "is not yet global");
+            }
+            if (!_backend.has_strong() || _strong_regions.size() != 3) {
+                return validation_error(
+                    "MultiRegionConsistency STRONG needs this cluster to be a strong voter: set "
+                    "KYTHIRA_DYNAMODB_STRONG_PEERS");
+            }
+            // The regions asked for.
+            std::vector<std::string> replicas;
+            std::vector<std::string> witnesses;
+            const auto regions_of =
+                [&](const char* member, const char* noun,
+                    std::vector<std::string>& out) -> std::optional<aws_json::error> {
+                const auto* list = in.if_contains(member);
+                if (list == nullptr) {
+                    return std::nullopt;
+                }
+                if (!list->is_array() || list->as_array().empty()) {
+                    return validation_error(std::string(member) + " must not be empty");
+                }
+                for (const auto& u : list->as_array()) {
+                    if (!u.is_object() || u.as_object().size() != 1 ||
+                        !u.as_object().contains("Create")) {
+                        return validation_error(
+                            "A table can only be made multi-Region strongly consistent by "
+                            "creating its " +
+                            std::string(noun) + "s");
+                    }
+                    const auto& body = u.as_object().at("Create");
+                    const auto* region =
+                        body.is_object() ? body.as_object().if_contains("RegionName") : nullptr;
+                    if (region == nullptr || !region->is_string() || region->as_string().empty()) {
+                        return validation_error("RegionName is required");
+                    }
+                    if (body.as_object().size() > 1) {
+                        return unsupported("replica overrides");
+                    }
+                    out.emplace_back(region->as_string());
+                }
+                return std::nullopt;
+            };
+            if (auto e = regions_of("ReplicaUpdates", "replica", replicas)) {
+                return *e;
+            }
+            if (auto e = regions_of("GlobalTableWitnessUpdates", "witness", witnesses)) {
+                return *e;
+            }
+            if (witnesses.size() > 1) {
+                return validation_error(
+                    "A multi-Region strongly consistent table has at most "
+                    "one witness");
+            }
+            std::vector<std::string> all{ctx.region};
+            all.insert(all.end(), replicas.begin(), replicas.end());
+            all.insert(all.end(), witnesses.begin(), witnesses.end());
+            std::sort(all.begin(), all.end());
+            if (std::adjacent_find(all.begin(), all.end()) != all.end()) {
+                return validation_error(
+                    "Each region may appear once among the table's region, "
+                    "its replicas and its witness");
+            }
+            if (all != _strong_regions) {
+                std::string list;
+                for (const auto& r : _strong_regions) {
+                    list += (list.empty() ? "" : ", ") + r;
+                }
+                return validation_error(
+                    "A multi-Region strongly consistent table spans exactly three regions: "
+                    "this cluster's strong regions are " +
+                    list);
+            }
+            // As AWS asks: the replica and witness actions too, on the
+            // table.
+            if (ctx.authorize) {
+                for (const auto* action :
+                     {replicas.empty() ? "" : "dynamodb:CreateTableReplica",
+                      witnesses.empty() ? "" : "dynamodb:CreateGlobalTableWitness"}) {
+                    if (*action == '\0') {
+                        continue;
+                    }
+                    aws_auth::authz_request az;
+                    az.action = action;
+                    az.resource = ctx.table_arn(name);
+                    if (auto denied = ctx.authorize(std::move(az))) {
+                        return *denied;
+                    }
+                }
+            }
+            if (current->status != table_status::active) {
+                return modeled("ResourceInUseException",
+                               "Attempt to change a resource which is still in use: Table is "
+                               "being updated: " +
+                                   name);
+            }
+            if (current->global()) {
+                return validation_error("Table " + name +
+                                        " is already a global table; its consistency mode "
+                                        "cannot be changed");
+            }
+            if (!current->lsis.empty()) {
+                return validation_error(
+                    "Local secondary indexes are not supported for multi-Region strongly "
+                    "consistent tables");
+            }
+            if (current->ttl.enabled) {
+                return validation_error(
+                    "Time to Live is not supported for multi-Region strongly consistent tables");
+            }
+            bool empty = true;
+            _backend.read_range(table_range(current->table_id), kythira::scan_direction::forward,
+                                true, [&](std::string_view, const item&) {
+                                    empty = false;
+                                    return false;
+                                });
+            if (!empty) {
+                return validation_error(
+                    "Table " + name +
+                    " must be empty to become a multi-Region strongly consistent table");
+            }
+
+            // The strong catalog's copy: the shared settings, every
+            // replica region, the witness. It gives the strong ids.
+            const auto now = _backend.now_ms();
+            catalog_command sc;
+            sc.op = catalog_command::kind::create_table;
+            sc.now_ms = now;
+            auto& shared = sc.table;
+            shared.name = current->name;
+            shared.schema = current->schema;
+            shared.billing = current->billing;
+            shared.read_capacity = current->read_capacity;
+            shared.write_capacity = current->write_capacity;
+            shared.storage_class = current->storage_class;
+            shared.gsis = current->gsis;
+            shared.strong = true;
+            shared.replicas.push_back(
+                table_replica{.region = ctx.region, .status = replica_status::active});
+            for (const auto& r : replicas) {
+                shared.replicas.push_back(table_replica{.region = r});
+            }
+            for (const auto& w : witnesses) {
+                shared.witnesses.push_back(table_witness{w, witness_status::creating});
+            }
+            auto& strong_backend = _backend.strong();
+            const auto made = strong_backend.catalog(sc);
+            if (!made.ok()) {
+                return error_of(made);
+            }
+
+            catalog_command c;
+            c.op = catalog_command::kind::make_strong;
+            c.now_ms = now;
+            c.table.name = name;
+            c.table.schema = current->schema;
+            c.table.table_id = made.table->table_id;
+            c.table.gsis = made.table->gsis;
+            c.table.region = ctx.region;
+            for (const auto& r : replicas) {
+                c.table.replicas.push_back(table_replica{.region = r});
+            }
+            c.table.witnesses = made.table->witnesses;
+            c.table.retired_ids.emplace_back(current->table_id, made.table->table_id);
+            for (const auto& g : current->gsis) {
+                for (const auto& sg : made.table->gsis) {
+                    if (sg.name == g.name) {
+                        c.table.retired_ids.emplace_back(g.index_id, sg.index_id);
+                    }
+                }
+            }
+            c.table.salvage_after_ms = now + k_salvage_delay_ms;
+            const auto r = _backend.catalog(c);
+            if (!r.ok()) {
+                // Nothing reached the strong table yet: take it back.
+                catalog_command undo;
+                undo.op = catalog_command::kind::delete_table;
+                undo.table.name = name;
+                undo.table.schema = current->schema;
+                undo.now_ms = now;
+                (void)strong_backend.catalog(undo);
+                return error_of(r);
+            }
+            return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+        }
+    }
+
     /// `UpdateTable`'s `ReplicaUpdates` (task 22): one `Create` or `Delete`
     /// (the catalog refuses more at a time); `Update` and the per-replica
     /// overrides are not supported.
@@ -1705,6 +1974,7 @@ private:
     }
 
     Backend& _backend;
+    std::vector<std::string> _strong_regions;
     std::function<bool(std::string_view)> _peer_known;
 };
 

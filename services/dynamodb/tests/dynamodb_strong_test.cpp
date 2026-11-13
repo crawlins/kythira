@@ -14,6 +14,7 @@
 #include "dynamodb_test_fixture.hpp"
 
 #include <kythira/dynamodb/routed_backend.hpp>
+#include <kythira/dynamodb/strong_tables.hpp>
 
 #include <cstdint>
 #include <stdexcept>
@@ -184,4 +185,329 @@ BOOST_AUTO_TEST_CASE(without_a_strong_host_everything_stays_in_the_cluster) {
     BOOST_TEST((routed.write(put_of(d, "x")).outcome == ddb::item_result::status::ok));
     BOOST_TEST(count_in(f.backend, d.table_id) == 1U);
     BOOST_TEST(count_in(routed, d.table_id) == 1U);
+}
+
+// -- UpdateTable with MultiRegionConsistency=STRONG (task 27.4) ---------------
+
+namespace {
+
+using routed = ddb::routed_backend<ddb::local_backend<>>;
+
+/// One region's node as the API sees it: its cluster's catalog and items
+/// (`local`), the strong host every region shares (one replicated log, so
+/// one backend here), and the handlers over the routed backend.
+struct api_region {
+    std::string name;
+    fixture local;
+    routed backend;
+    az::static_key_authorizer auth{
+        std::vector<az::static_key>{{"AKIDADMIN", std::string(k_secret), std::string(k_account),
+                                     "admin", az::static_role::admin}},
+        "aws", [] { return std::chrono::system_clock::time_point(k_now); }};
+    std::unique_ptr<ddb::front_end<az::static_key_authorizer>> fe;
+    ddb::table_api<routed> tables{backend};
+    ddb::item_api<routed> items{backend};
+    ddb::ttl_api<routed> ttl{backend};
+    ddb::txn_api<routed> transactions{backend};
+    ddb::strong_table_worker<routed> worker{backend};
+
+    api_region(std::string region, ddb::local_backend<>& strong)
+        : name(std::move(region)), backend(local.backend, &strong) {
+        auth.register_service(ddb::dynamodb_static_roles());
+        ddb::front_end_config cfg;
+        cfg.advertised_endpoint = "localhost:8000";
+        cfg.region = name;
+        cfg.on_internal_error = [](std::string_view op, std::string_view what) {
+            BOOST_ERROR(std::string(op) + " answered InternalServerError: " + std::string(what));
+        };
+        fe = std::make_unique<ddb::front_end<az::static_key_authorizer>>(cfg, auth);
+        tables.register_with(*fe);
+        items.register_with(*fe);
+        ttl.register_with(*fe);
+        transactions.register_with(*fe);
+        tables.set_strong_regions({"us-east-1", "us-east-2", "us-west-2"});
+        worker.set_region(name);
+    }
+
+    auto call(std::string_view op, const std::string& body) -> reply {
+        auto req = signed_request(op, body);
+        // Signed for this region.
+        sv4::service_rules rules;
+        rules.service = "dynamodb";
+        rules.protocol = sv4::error_protocol::json;
+        const sv4::credential_scope scope{"20261110", name, "dynamodb"};
+        req.headers.back().second =
+            "AWS4-HMAC-SHA256 Credential=AKIDADMIN/" + scope.text() +
+            ", SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=" +
+            std::string(64, '0');
+        const auto parsed = sv4::parse(
+            sv4::request{req.method, req.path, req.query, req.headers, req.body}, rules, k_now);
+        BOOST_REQUIRE(parsed.has_value());
+        const auto sig = sv4::compute_signature(*parsed, sv4::derive_signing_key(k_secret, scope));
+        req.headers.back().second.replace(req.headers.back().second.size() - 64, 64, sig);
+        const auto r = fe->handle(req);
+        return reply{r.status, json::parse(r.body).as_object()};
+    }
+
+    auto ok(std::string_view op, const std::string& body) -> json::object {
+        auto r = call(op, body);
+        BOOST_REQUIRE_MESSAGE(r.status == 200U, name + " " + std::string(op) +
+                                                    " failed: " + r.type() + ": " + r.message());
+        return r.body;
+    }
+};
+
+/// Three regions sharing one strong host.
+struct three_regions {
+    fixture strong_host;
+    api_region east1{"us-east-1", strong_host.backend};
+    api_region east2{"us-east-2", strong_host.backend};
+    api_region west2{"us-west-2", strong_host.backend};
+
+    three_regions() { seed(strong_host.backend, ddb::k_strong_table_id_base); }
+
+    auto run_workers() -> void {
+        for (int i = 0; i < 2; ++i) {
+            (void)east1.worker.pass();
+            (void)east2.worker.pass();
+            (void)west2.worker.pass();
+        }
+    }
+};
+
+const std::string k_music =
+    R"({"TableName":"Music","AttributeDefinitions":[{"AttributeName":"pk","AttributeType":"S"}],)"
+    R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"}],"BillingMode":"PAY_PER_REQUEST"})";
+
+const std::string k_make_strong =
+    R"({"TableName":"Music","MultiRegionConsistency":"STRONG","ReplicaUpdates":[)"
+    R"({"Create":{"RegionName":"us-east-2"}},{"Create":{"RegionName":"us-west-2"}}]})";
+
+const std::string k_make_strong_with_witness =
+    R"({"TableName":"Music","MultiRegionConsistency":"STRONG",)"
+    R"("ReplicaUpdates":[{"Create":{"RegionName":"us-east-2"}}],)"
+    R"("GlobalTableWitnessUpdates":[{"Create":{"RegionName":"us-west-2"}}]})";
+
+auto statuses(const json::object& table) -> std::map<std::string, std::string> {
+    std::map<std::string, std::string> out;
+    for (const auto& r : table.at("Replicas").as_array()) {
+        out[std::string(r.at("RegionName").as_string())] =
+            std::string(r.at("ReplicaStatus").as_string());
+    }
+    return out;
+}
+
+auto describe(api_region& r) -> json::object {
+    return r.ok("DescribeTable", R"({"TableName":"Music"})").at("Table").as_object();
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(an_empty_table_becomes_strong_in_three_regions) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    const auto made = w.east1.ok("UpdateTable", k_make_strong).at("TableDescription").as_object();
+    BOOST_TEST(made.at("MultiRegionConsistency").as_string() == "STRONG");
+    BOOST_TEST(made.at("GlobalTableVersion").as_string() == "2019.11.21");
+    BOOST_TEST((statuses(made) == std::map<std::string, std::string>{{"us-east-2", "CREATING"},
+                                                                     {"us-west-2", "CREATING"}}));
+
+    w.run_workers();
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        BOOST_TEST_INFO("region " << r->name);
+        const auto t = describe(*r);
+        BOOST_TEST(t.at("TableStatus").as_string() == "ACTIVE");
+        BOOST_TEST(t.at("MultiRegionConsistency").as_string() == "STRONG");
+        const auto s = statuses(t);
+        BOOST_TEST(s.size() == 2U);
+        BOOST_TEST(!s.contains(r->name));
+        for (const auto& [region, status] : s) {
+            BOOST_TEST(status == "ACTIVE");
+        }
+    }
+
+    // One table, written in one region, read in the others.
+    w.east2.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"a"},"v":{"N":"1"}}})");
+    for (auto* r : {&w.east1, &w.west2}) {
+        const auto got = r->ok(
+            "GetItem", R"({"TableName":"Music","Key":{"pk":{"S":"a"}},"ConsistentRead":true})");
+        BOOST_TEST(got.at("Item").as_object().at("v").as_object().at("N").as_string() == "1");
+    }
+    // A conditional write sees the latest version wherever it is made.
+    const auto clash =
+        w.west2.call("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"a"}},)"
+                                R"x("ConditionExpression":"attribute_not_exists(pk)"})x");
+    BOOST_TEST(clash.type() == "ConditionalCheckFailedException");
+    // Nothing went to any region's own host.
+    for (auto* r : {&w.east1, &w.east2, &w.west2}) {
+        const auto d = r->local.backend.describe("Music");
+        BOOST_TEST_REQUIRE(d.has_value());
+        BOOST_TEST(ddb::is_strong_table(d->table_id));
+        BOOST_TEST(count_in(r->local.backend, d->table_id) == 0U);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_witness_region_holds_no_table_and_is_listed) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    const auto made =
+        w.east1.ok("UpdateTable", k_make_strong_with_witness).at("TableDescription").as_object();
+    const auto& witnesses = made.at("GlobalTableWitnesses").as_array();
+    BOOST_TEST_REQUIRE(witnesses.size() == 1U);
+    BOOST_TEST(witnesses[0].at("RegionName").as_string() == "us-west-2");
+    BOOST_TEST(witnesses[0].at("WitnessStatus").as_string() == "CREATING");
+
+    w.run_workers();
+    const auto t = describe(w.east1);
+    BOOST_TEST(t.at("GlobalTableWitnesses").as_array()[0].at("WitnessStatus").as_string() ==
+               "ACTIVE");
+    BOOST_TEST((statuses(t) == std::map<std::string, std::string>{{"us-east-2", "ACTIVE"}}));
+    BOOST_TEST(describe(w.east2).at("GlobalTableWitnesses").as_array().size() == 1U);
+    BOOST_TEST(w.west2.call("DescribeTable", R"({"TableName":"Music"})").type() ==
+               "ResourceNotFoundException");
+}
+
+BOOST_AUTO_TEST_CASE(making_a_table_strong_is_refused_as_aws_refuses_it) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    const auto refused = [&](const std::string& body) {
+        const auto r = w.east1.call("UpdateTable", body);
+        BOOST_TEST_INFO(body);
+        BOOST_TEST(r.status == 400U);
+        return r.message();
+    };
+    BOOST_TEST(refused(R"({"TableName":"Music","MultiRegionConsistency":"SOMETIMES",)"
+                       R"("ReplicaUpdates":[{"Create":{"RegionName":"us-east-2"}}]})")
+                   .find("enum value set: [EVENTUAL, STRONG]") != std::string::npos);
+    // Two regions, or a region outside the strong host's.
+    BOOST_TEST(refused(R"({"TableName":"Music","MultiRegionConsistency":"STRONG",)"
+                       R"("ReplicaUpdates":[{"Create":{"RegionName":"us-east-2"}}]})")
+                   .find("spans exactly three regions") != std::string::npos);
+    BOOST_TEST(refused(R"({"TableName":"Music","MultiRegionConsistency":"STRONG",)"
+                       R"("ReplicaUpdates":[{"Create":{"RegionName":"us-east-2"}},)"
+                       R"({"Create":{"RegionName":"eu-west-1"}}]})")
+                   .find("spans exactly three regions") != std::string::npos);
+    BOOST_TEST(refused(R"({"TableName":"Music","MultiRegionConsistency":"STRONG",)"
+                       R"("ReplicaUpdates":[{"Create":{"RegionName":"us-east-2"}}],)"
+                       R"("GlobalTableWitnessUpdates":[{"Create":{"RegionName":"us-west-2"}},)"
+                       R"({"Create":{"RegionName":"us-east-2"}}]})")
+                   .find("Member must have length less than or equal to 1") != std::string::npos);
+    BOOST_TEST(refused(R"({"TableName":"Music","MultiRegionConsistency":"STRONG",)"
+                       R"("ReplicaUpdates":[{"Delete":{"RegionName":"us-east-2"}}]})")
+                   .find("by creating its replicas") != std::string::npos);
+    BOOST_TEST(refused(R"({"TableName":"Music",)"
+                       R"("GlobalTableWitnessUpdates":[{"Create":{"RegionName":"us-west-2"}}]})")
+                   .find("needs MultiRegionConsistency STRONG") != std::string::npos);
+
+    // Not empty.
+    w.east1.ok("PutItem", R"({"TableName":"Music","Item":{"pk":{"S":"a"}}})");
+    BOOST_TEST(refused(k_make_strong).find("must be empty") != std::string::npos);
+    w.east1.ok("DeleteItem", R"({"TableName":"Music","Key":{"pk":{"S":"a"}}})");
+
+    // TTL on.
+    w.east1.ok("UpdateTimeToLive", R"({"TableName":"Music","TimeToLiveSpecification":)"
+                                   R"({"Enabled":true,"AttributeName":"exp"}})");
+    BOOST_TEST(refused(k_make_strong).find("Time to Live is not supported") != std::string::npos);
+
+    // An LSI.
+    w.east1.ok(
+        "CreateTable",
+        R"({"TableName":"Indexed","AttributeDefinitions":[)"
+        R"({"AttributeName":"pk","AttributeType":"S"},)"
+        R"({"AttributeName":"sk","AttributeType":"S"},)"
+        R"({"AttributeName":"alt","AttributeType":"S"}],)"
+        R"("KeySchema":[{"AttributeName":"pk","KeyType":"HASH"},)"
+        R"({"AttributeName":"sk","KeyType":"RANGE"}],)"
+        R"("LocalSecondaryIndexes":[{"IndexName":"byAlt","KeySchema":[)"
+        R"({"AttributeName":"pk","KeyType":"HASH"},{"AttributeName":"alt","KeyType":"RANGE"}],)"
+        R"("Projection":{"ProjectionType":"KEYS_ONLY"}}],"BillingMode":"PAY_PER_REQUEST"})");
+    BOOST_TEST(refused(R"({"TableName":"Indexed","MultiRegionConsistency":"STRONG",)"
+                       R"("ReplicaUpdates":[{"Create":{"RegionName":"us-east-2"}},)"
+                       R"({"Create":{"RegionName":"us-west-2"}}]})")
+                   .find("Local secondary indexes are not supported") != std::string::npos);
+
+    // Once strong, replicas cannot be added or changed.
+    w.east1.ok("CreateTable", R"({"TableName":"Other",)" + k_music.substr(21));
+    w.east1.ok("UpdateTable", R"({"TableName":"Other",)" + k_make_strong.substr(21));
+    BOOST_TEST(refused(R"({"TableName":"Other","ReplicaUpdates":[)"
+                       R"({"Delete":{"RegionName":"us-east-2"}}]})")
+                   .find("cannot be added to or changed") != std::string::npos);
+    BOOST_TEST(w.east1.call("DeleteTable", R"({"TableName":"Other"})").status == 400U);
+}
+
+BOOST_AUTO_TEST_CASE(without_a_strong_host_strong_consistency_is_not_offered) {
+    fixture f;
+    f.ok("CreateTable", k_music);
+    const auto r = f.call("UpdateTable", k_make_strong);
+    BOOST_TEST(r.type() == "ValidationException");
+    BOOST_TEST(r.message() == "Kythira does not support MultiRegionConsistency yet");
+}
+
+BOOST_AUTO_TEST_CASE(a_replica_region_with_the_name_taken_fails_its_replica) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east2.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    const auto s = statuses(describe(w.east1));
+    BOOST_TEST(s.at("us-east-2") == "CREATION_FAILED");
+    BOOST_TEST(s.at("us-west-2") == "ACTIVE");
+    // East 2 kept its own table.
+    BOOST_TEST(!describe(w.east2).contains("MultiRegionConsistency"));
+}
+
+BOOST_AUTO_TEST_CASE(a_write_in_flight_during_the_switch_is_salvaged) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    const auto before = *w.east1.local.backend.describe("Music");
+    w.east1.ok("UpdateTable", k_make_strong);
+    const auto after = *w.east1.local.backend.describe("Music");
+    BOOST_TEST(after.retired_ids.size() == 1U);
+
+    // A request that read the old descriptor writes after the switch.
+    BOOST_TEST((w.east1.local.backend.write(put_of(before, "late")).outcome ==
+                ddb::item_result::status::ok));
+    BOOST_TEST(count_in(w.east1.local.backend, before.table_id) == 1U);
+
+    // Not before the delay.
+    w.run_workers();
+    BOOST_TEST(count_in(w.east1.local.backend, before.table_id) == 1U);
+    w.east1.local.clock_ms += ddb::table_api<routed>::k_salvage_delay_ms;
+    w.run_workers();
+    BOOST_TEST(count_in(w.east1.local.backend, before.table_id) == 0U);
+    BOOST_TEST(w.east2.ok("GetItem", R"({"TableName":"Music","Key":{"pk":{"S":"late"}}})")
+                   .contains("Item"));
+    BOOST_TEST(w.east1.local.backend.describe("Music")->retired_ids.empty());
+}
+
+// -- Requests on a strong table (task 27.5) -----------------------------------
+
+BOOST_AUTO_TEST_CASE(transactions_and_ttl_are_refused_on_a_strong_table) {
+    three_regions w;
+    w.east1.ok("CreateTable", k_music);
+    w.east1.ok("UpdateTable", k_make_strong);
+    w.run_workers();
+    for (auto* r : {&w.east1, &w.east2}) {
+        const auto put = r->call(
+            "TransactWriteItems",
+            R"({"TransactItems":[{"Put":{"TableName":"Music","Item":{"pk":{"S":"t"}}}}]})");
+        BOOST_TEST(put.type() == "ValidationException");
+        BOOST_TEST(put.message().find("Transactions are not supported") != std::string::npos);
+        const auto get = r->call(
+            "TransactGetItems",
+            R"({"TransactItems":[{"Get":{"TableName":"Music","Key":{"pk":{"S":"t"}}}}]})");
+        BOOST_TEST(get.type() == "ValidationException");
+        const auto ttl = r->call("UpdateTimeToLive",
+                                 R"({"TableName":"Music","TimeToLiveSpecification":)"
+                                 R"({"Enabled":true,"AttributeName":"exp"}})");
+        BOOST_TEST(ttl.type() == "ValidationException");
+        BOOST_TEST(ttl.message().find("Time to Live is not supported") != std::string::npos);
+    }
+    // Nothing was written.
+    BOOST_TEST(!w.east2.ok("GetItem", R"({"TableName":"Music","Key":{"pk":{"S":"t"}}})")
+                    .contains("Item"));
+    // Another table's transactions still work.
+    w.east1.ok("CreateTable", R"({"TableName":"Plain",)" + k_music.substr(21));
+    w.east1.ok("TransactWriteItems",
+               R"({"TransactItems":[{"Put":{"TableName":"Plain","Item":{"pk":{"S":"t"}}}}]})");
 }

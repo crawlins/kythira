@@ -86,6 +86,7 @@ configuration `.github/workflows/dynamodb-module.yml` checks.
 | `include/kythira/dynamodb/vector_search.hpp` | `SearchVectors`, each node's graphs fed by the change log, and the worker that finishes index creates and deletes | 26 |
 | `tests/dynamodb_vector_test.cpp` | Vector index definitions, updates and the worker, scores, partitions, filters, projections, graphs that follow writes, HNSW recall | 26 |
 | `include/kythira/dynamodb/global_tables.hpp` | Global tables: the peer API's receiver, the replicator, peer links over HTTP | 22 |
+| `include/kythira/dynamodb/strong_tables.hpp` | Multi-region strong consistency: the worker that adopts strong tables in replica regions, copies replica and witness statuses, and salvages writes made during the switch | 27 |
 | `include/kythira/dynamodb/routed_backend.hpp` | Multi-region strong consistency: the backend that sends each call to the cluster's host or the strong host, by table id | 27 |
 | `tests/dynamodb_global_table_test.cpp` | Replicas in linked clusters: backfill, both directions, clock skew, a three-region mesh, deletion, refusals | 22 |
 | `cmd/dynamodb_gateway_node/group_ids.hpp`, `group_layout.hpp`, `durable_file.hpp` | Each voter's own range of group ids for splits, and the saved group layout a node restarts from | 24 |

@@ -108,6 +108,7 @@ struct cluster {
     /// Three regions (task 27): node `i` is a one-node cluster in
     /// `k_regions[i]`, and the three are voters of one strong host.
     bool regions = false;
+    std::array<bool, k_nodes> stopped{};
     std::array<std::uint16_t, k_nodes> strong_ports{};
     std::array<std::vector<std::string>, k_nodes> logs{};
 
@@ -137,8 +138,20 @@ struct cluster {
         }
         cv.notify_all();
         for (auto& t : nodes) {
-            t.join();
+            if (t.joinable()) {
+                t.join();
+            }
         }
+    }
+
+    /// Stops node `i` (a region, with `regions`) for the rest of the test.
+    auto stop(int i) -> void {
+        {
+            const std::lock_guard lock(mutex);
+            stopped.at(i) = true;
+        }
+        cv.notify_all();
+        nodes.at(i).join();
     }
 
     /// Node `i`'s settings: one of three voters of one cluster, or with
@@ -248,9 +261,9 @@ struct cluster {
                     }
                     cv.notify_all();
                 },
-                [this] {
+                [this, i] {
                     std::unique_lock lock(mutex);
-                    cv.wait(lock, [this] { return stopping; });
+                    cv.wait(lock, [this, i] { return stopping || stopped.at(i); });
                 });
         } catch (...) {
             failures.at(i) = std::current_exception();
@@ -268,7 +281,9 @@ struct cluster {
             {"Host", host},
             {"X-Amz-Date", amz_date},
             {"X-Amz-Target", "DynamoDB_20120810." + std::string(op)}};
-        const sv4::credential_scope scope{amz_date.substr(0, 8), "us-east-1", "dynamodb"};
+        const sv4::credential_scope scope{amz_date.substr(0, 8),
+                                          regions ? std::string(k_regions.at(i)) : "us-east-1",
+                                          "dynamodb"};
         headers.emplace_back("Authorization",
                              "AWS4-HMAC-SHA256 Credential=AKIDADMIN/" + scope.text() +
                                  ", SignedHeaders=content-type;host;x-amz-date;x-amz-target"
@@ -421,6 +436,102 @@ BOOST_AUTO_TEST_CASE(three_regions_form_one_strong_host) {
         BOOST_TEST(c.wait_for_log(i, "in regions us-east-1, us-east-2, us-west-2",
                                   std::chrono::seconds(1)));
     }
+}
+
+// Task 27.4: a table made strong in one region is adopted by the other
+// two, and one write is read consistently everywhere: three regions' gateways
+// over one strong host, each region a one-node cluster.
+BOOST_AUTO_TEST_CASE(a_table_made_strong_serves_all_three_regions) {
+    cluster c(true);
+    for (int i = 0; i < k_nodes; ++i) {
+        BOOST_REQUIRE(c.wait_for_log(i, "strong host ready", std::chrono::seconds(60)));
+    }
+    const std::string create =
+        R"({"TableName":"accounts","BillingMode":"PAY_PER_REQUEST",)"
+        R"("AttributeDefinitions":[{"AttributeName":"id","AttributeType":"S"}],)"
+        R"("KeySchema":[{"AttributeName":"id","KeyType":"HASH"}]})";
+    const auto created = c.call_until_served(0, "CreateTable", create);
+    BOOST_REQUIRE_MESSAGE(created.status == 200U, json::serialize(created.body));
+    const auto active_in = [&](int i, auto&& ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto d = c.call_until_served(i, "DescribeTable", R"({"TableName":"accounts"})");
+            if (d.status == 200U && ready(d.body.at("Table").as_object())) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return false;
+    };
+    BOOST_REQUIRE(active_in(
+        0, [](const json::object& t) { return t.at("TableStatus").as_string() == "ACTIVE"; }));
+    const auto made = c.call_until_served(
+        0, "UpdateTable",
+        R"({"TableName":"accounts","MultiRegionConsistency":"STRONG","ReplicaUpdates":[)"
+        R"({"Create":{"RegionName":"us-east-2"}},{"Create":{"RegionName":"us-west-2"}}]})");
+    BOOST_REQUIRE_MESSAGE(made.status == 200U, json::serialize(made.body));
+
+    // Every region's catalog comes to hold it, strong, with both other
+    // replicas ACTIVE.
+    for (int i = 0; i < k_nodes; ++i) {
+        BOOST_TEST_INFO("region " << cluster::k_regions.at(i));
+        BOOST_TEST(active_in(i, [](const json::object& t) {
+            if (!t.contains("MultiRegionConsistency") || !t.contains("Replicas")) {
+                return false;
+            }
+            const auto& replicas = t.at("Replicas").as_array();
+            return replicas.size() == 2U &&
+                   std::all_of(replicas.begin(), replicas.end(), [](const json::value& r) {
+                       return r.at("ReplicaStatus").as_string() == "ACTIVE";
+                   });
+        }));
+    }
+
+    // A write in each region is read consistently in every other.
+    for (int i = 0; i < k_nodes; ++i) {
+        const auto put = c.call_until_served(i, "PutItem",
+                                             R"({"TableName":"accounts","Item":{"id":{"S":"a)" +
+                                                 std::to_string(i) + R"("},"by":{"N":")" +
+                                                 std::to_string(i) + R"("}}})");
+        BOOST_REQUIRE_MESSAGE(put.status == 200U, json::serialize(put.body));
+        for (int j = 0; j < k_nodes; ++j) {
+            const auto got = c.call_until_served(
+                j, "GetItem",
+                R"({"TableName":"accounts","ConsistentRead":true,"Key":{"id":{"S":"a)" +
+                    std::to_string(i) + R"("}}})");
+            BOOST_TEST_INFO("written in " << i << ", read in " << j);
+            BOOST_TEST(got.status == 200U);
+            BOOST_TEST(got.body.contains("Item"));
+        }
+    }
+
+    // Task 27.5: lose one region and the other two keep serving, writes
+    // and strongly consistent reads included.
+    c.stop(2);
+    const auto put = c.call_until_served(
+        0, "PutItem", R"({"TableName":"accounts","Item":{"id":{"S":"after-loss"}}})");
+    BOOST_REQUIRE_MESSAGE(put.status == 200U, json::serialize(put.body));
+    const auto got = c.call_until_served(
+        1, "GetItem",
+        R"({"TableName":"accounts","ConsistentRead":true,"Key":{"id":{"S":"after-loss"}}})");
+    BOOST_TEST(got.status == 200U);
+    BOOST_TEST(got.body.contains("Item"));
+
+    // Lose a second and the last region has no quorum: writes and strongly
+    // consistent reads fail, eventually consistent reads still answer from
+    // the region's own replica.
+    c.stop(1);
+    const auto lonely = c.call(
+        0, "PutItem", R"({"TableName":"accounts","Item":{"id":{"S":"no-quorum"}}})");
+    BOOST_TEST(lonely.status == 500U);
+    const auto strong_read = c.call(
+        0, "GetItem",
+        R"({"TableName":"accounts","ConsistentRead":true,"Key":{"id":{"S":"after-loss"}}})");
+    BOOST_TEST(strong_read.status == 500U);
+    const auto eventual = c.call(
+        0, "GetItem", R"({"TableName":"accounts","Key":{"id":{"S":"after-loss"}}})");
+    BOOST_TEST(eventual.status == 200U);
+    BOOST_TEST(eventual.body.contains("Item"));
 }
 
 BOOST_AUTO_TEST_CASE(requests_on_every_node_reach_one_table) {
