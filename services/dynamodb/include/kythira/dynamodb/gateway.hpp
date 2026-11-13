@@ -35,6 +35,9 @@
 /// | `KYTHIRA_DYNAMODB_STATIC_KEYS` | | the same, `,`-separated, for tests |
 /// | `KYTHIRA_DYNAMODB_ACCOUNT_ID` | the keys' account | the account that owns the tables;
 /// required when the keys name more than one |
+/// | `KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT` | `80000:80000` | provisioned read:write units an
+/// account's tables may add up to |
+/// | `KYTHIRA_DYNAMODB_ACCOUNT_LIMITS` | | `account=read:write,...`: raised (or lowered) limits |
 /// | `KYTHIRA_DYNAMODB_NAMESPACES` | `off` | `on` gives each account its own tables; tables made
 /// before belong to `ACCOUNT_ID`. Cannot be turned off again |
 /// | `KYTHIRA_DYNAMODB_DATA_DIR` | | the disk guard's directory, and the database's |
@@ -392,6 +395,10 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_ACCOUNT_ID           account that owns the tables (the\n"
     "                                        keys' account; required when they\n"
     "                                        name more than one)\n"
+    "  KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT read:write provisioned units an\n"
+    "                                        account's tables may total\n"
+    "                                        (80000:80000)\n"
+    "  KYTHIRA_DYNAMODB_ACCOUNT_LIMITS       account=read:write,... per account\n"
     "  KYTHIRA_DYNAMODB_NAMESPACES           on: each account has its own tables;\n"
     "                                        older ones belong to ACCOUNT_ID.\n"
     "                                        Cannot be undone (off)\n"
@@ -818,6 +825,53 @@ namespace gateway_detail {
                     "the access keys name more than one account: set "
                     "KYTHIRA_DYNAMODB_ACCOUNT_ID to the account that owns the tables");
             }
+        }
+    }
+
+    // Provisioned capacity per account (task 28): "read:write" units.
+    const auto units_pair =
+        [](std::string_view text) -> std::optional<std::pair<std::uint64_t, std::uint64_t>> {
+        const auto colon = text.find(':');
+        if (colon == std::string_view::npos) {
+            return std::nullopt;
+        }
+        const auto r = number<std::uint64_t>(std::string(text.substr(0, colon)));
+        const auto w = number<std::uint64_t>(std::string(text.substr(colon + 1)));
+        if (!r || !w || *r == 0 || *w == 0) {
+            return std::nullopt;
+        }
+        return std::pair{*r, *w};
+    };
+    if (auto v = env("KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT")) {
+        const auto u = units_pair(*v);
+        if (!u) {
+            return "KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT: expected read:write units, got '" + *v +
+                   "'";
+        }
+        c.front.default_account_limit = *u;
+    }
+    if (auto v = env("KYTHIRA_DYNAMODB_ACCOUNT_LIMITS")) {
+        std::string_view rest(*v);
+        while (!rest.empty()) {
+            const auto comma = rest.find(',');
+            const auto entry = gateway_detail::trim(rest.substr(0, comma));
+            rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+            if (entry.empty()) {
+                continue;
+            }
+            const auto eq = entry.find('=');
+            const auto account =
+                eq == std::string_view::npos ? std::string_view{} : entry.substr(0, eq);
+            const auto u =
+                eq == std::string_view::npos ? std::nullopt : units_pair(entry.substr(eq + 1));
+            if (account.size() != 12 ||
+                !std::all_of(account.begin(), account.end(),
+                             [](unsigned char ch) { return std::isdigit(ch) != 0; }) ||
+                !u) {
+                return "KYTHIRA_DYNAMODB_ACCOUNT_LIMITS: expected account=read:write, got '" +
+                       std::string(entry) + "'";
+            }
+            c.front.account_limits[std::string(account)] = *u;
         }
     }
 

@@ -80,6 +80,8 @@ from the environment; `dynamodb_gateway_node --help` lists them all.
 | `KYTHIRA_DYNAMODB_TLS_CERT`, `_TLS_KEY` | TLS for the API (port 8000 by default) |
 | `KYTHIRA_DYNAMODB_STATIC_KEYS_FILE` | access keys, `id:secret:account:name:role` per line, when IAM is not used |
 | `KYTHIRA_DYNAMODB_ACCOUNT_ID` | the account that owns the tables; defaults to the keys' account, and is required when the keys name more than one |
+| `KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT` | `read:write` provisioned capacity units one account's tables and GSIs may add up to (`80000:80000`, AWS's default) |
+| `KYTHIRA_DYNAMODB_ACCOUNT_LIMITS` | `account=read:write,...`: an account's own limit, as an AWS quota increase would set it |
 | `KYTHIRA_DYNAMODB_NAMESPACES` | `on` gives each account its own tables, and the tables made before belong to `KYTHIRA_DYNAMODB_ACCOUNT_ID`; `off` (default). Cannot be turned off once on |
 | `KYTHIRA_DYNAMODB_REGION`, `_PARTITION` | the region and ARN partition answers carry (`us-east-1`, `aws`) |
 | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | writes are refused below this much free space (1 GiB) |
@@ -169,6 +171,13 @@ a catalog that has it serves nothing and says why. Every node must run a
 version that knows the setting before it is turned on. Not yet with a
 strong host (`KYTHIRA_DYNAMODB_STRONG_PEERS`), and a global table's
 replication principal must belong to the table's account.
+
+Noisy neighbours are handled as AWS handles them, by quota rather than
+at run time: an account's provisioned tables and GSIs may add up to its
+limit (`DescribeLimits` reports it), and a CreateTable or UpdateTable
+that would pass it gets `LimitExceededException`. On-demand tables do
+not count, and per-table throttling still applies to every table. The
+check is not transactional, so two concurrent requests can both pass.
 Expressions were checked against about 3000 cases recorded from DynamoDB
 Local, and the operations corpus against recorded scenarios.
 

@@ -79,6 +79,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <map>
@@ -109,6 +110,11 @@ struct front_end_config {
     /// request, so a migration that turns namespaces on takes effect at
     /// once. Unset: off.
     std::function<bool()> namespaced{};
+    /// Provisioned capacity each account's tables may add up to (task 28),
+    /// read then write units, by account; an account not listed gets
+    /// `default_account_limit`. AWS's default is 80000 each.
+    std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> account_limits{};
+    std::pair<std::uint64_t, std::uint64_t> default_account_limit{80000, 80000};
     aws_json::request_limits limits{};
     /// Told the operation and the exception's message whenever a handler
     /// throws and the client is answered `InternalServerError`, so the
@@ -156,6 +162,21 @@ struct call_context {
     /// Tables are named `<account>/<name>` inside (task 28): each account
     /// has its own tables. Off, a gateway's tables all belong to `owner()`.
     bool namespaced = false;
+    /// The front end's account limits (`front_end_config`); null in tests
+    /// that build a context by hand, which then get AWS's default.
+    const std::map<std::string, std::pair<std::uint64_t, std::uint64_t>>* account_limits = nullptr;
+    std::pair<std::uint64_t, std::uint64_t> default_account_limit{80000, 80000};
+
+    /// The owner's limit on provisioned read and write units over all its
+    /// tables and their GSIs.
+    [[nodiscard]] auto account_limit() const -> std::pair<std::uint64_t, std::uint64_t> {
+        if (account_limits != nullptr) {
+            if (const auto it = account_limits->find(owner()); it != account_limits->end()) {
+                return it->second;
+            }
+        }
+        return default_account_limit;
+    }
 
     /// The account that owns a table named without an ARN: the caller's
     /// with namespaces on, else the gateway's (or the caller's when the
@@ -471,6 +492,8 @@ public:
         ctx.partition = _config.partition;
         ctx.account = _config.account;
         ctx.namespaced = _config.namespaced && _config.namespaced();
+        ctx.account_limits = &_config.account_limits;
+        ctx.default_account_limit = _config.default_account_limit;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -551,6 +574,8 @@ private:
         ctx.partition = _config.partition;
         ctx.account = _config.account;
         ctx.namespaced = _config.namespaced && _config.namespaced();
+        ctx.account_limits = &_config.account_limits;
+        ctx.default_account_limit = _config.default_account_limit;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -634,6 +659,8 @@ private:
         ctx.partition = _config.partition;
         ctx.account = _config.account;
         ctx.namespaced = _config.namespaced && _config.namespaced();
+        ctx.account_limits = &_config.account_limits;
+        ctx.default_account_limit = _config.default_account_limit;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
