@@ -33,8 +33,8 @@ the set of services is a build choice today and stays one.
 
 The multi-raft host already supports many groups and key ranges. A module
 number `m` (fixed per module in core: redis 1, dynamodb 2, kinesis 3,
-ledger 4, iam 5, hsm 6) gives a composite node's module the group range
-`[m << 56, (m + 1) << 56)` and the key prefix `\x00m/`. DynamoDB's
+ledger 4, iam 5, hsm 6, kms 7) gives a composite node's module the group
+range `[m << 56, (m + 1) << 56)` and the key prefix `\x00m/`. DynamoDB's
 per-voter split ranges (`(ordinal + 1) << 48`) fit inside its 2^56 range.
 In a stand-alone daemon the offset is zero and the prefix empty, so ids and
 keys are exactly today's (Requirement 3.2, 4.4). The cost is that a
