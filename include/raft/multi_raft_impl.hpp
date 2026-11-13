@@ -355,6 +355,7 @@ auto multi_raft<Types, Key, GroupId>::destroy_group(const GroupId& group, tombst
         _tombstones.insert(group, reason, std::chrono::system_clock::now());
     }
     persist_tombstones();
+    report_local_layout();
 
     // Drain the group's own stripe so nothing is executing inside the node we
     // are about to destroy. `post_and_wait` refuses to run from that stripe,
@@ -2199,6 +2200,9 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
         // `release` is idempotent and returns a frozen shard to `frozen`, so
         // this costs nothing on the ordinary already-applied path.
         release(parent);
+        // A replay after a crash between creating the children and saving
+        // the layout finishes the save too.
+        report_local_layout();
         return;
     }
 
@@ -2373,6 +2377,7 @@ auto multi_raft<Types, Key, GroupId>::apply_split(group_state& parent,
     release(parent);
     _applied_splits.fetch_add(1, std::memory_order_relaxed);
     publish_report(parent);
+    report_local_layout();
 
     _cfg.logger.info("Applied split",
                      {{"group", detail::describe_value(parent._group_id)},
@@ -2433,6 +2438,20 @@ auto multi_raft<Types, Key, GroupId>::gc_tombstones(std::chrono::system_clock::t
         persist_tombstones();
     }
     return removed;
+}
+
+template<raft_types Types, shard_key Key, raft_group_id GroupId>
+auto multi_raft<Types, Key, GroupId>::report_local_layout() -> void {
+    if (!_cfg.on_local_layout_changed) {
+        return;
+    }
+    std::vector<descriptor_type> layout;
+    for (const auto& g : all_groups()) {
+        if (!g->_destroyed.load(std::memory_order_acquire)) {
+            layout.push_back(g->_descriptor);
+        }
+    }
+    _cfg.on_local_layout_changed(layout);
 }
 
 template<raft_types Types, shard_key Key, raft_group_id GroupId>
@@ -3086,6 +3105,7 @@ auto multi_raft<Types, Key, GroupId>::apply_merge_commit(
     }
     _applied_merges.fetch_add(1, std::memory_order_relaxed);
     publish_report(target);
+    report_local_layout();
     persist_tombstones();
 
 #ifndef NDEBUG
