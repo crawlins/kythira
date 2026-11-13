@@ -143,7 +143,135 @@ replication principal). The receiver applies a record only if its
 `(timestamp, region id)` is newer than the item's, AWS's last-writer-wins
 rule. Item timestamps come from the leader's clamped wall clock, the same
 assumption Kinesis arrival timestamps use. Multi-region strong consistency
-needs a cross-cluster quorum and is left to task 25's decision.
+is a different mechanism, below.
+
+### Multi-region strong consistency (task 27)
+
+AWS's rules, from the developer guide's "How global tables work" page,
+which this design follows:
+
+- A table with `MultiRegionConsistency=STRONG` (MRSC) has exactly three
+  regions: three replicas, or two replicas and a witness. A witness holds
+  the data but serves no reads or writes, and is listed in
+  `DescribeTable`'s `GlobalTableWitnesses`.
+- It is made with `UpdateTable` on an existing **empty** table, adding the
+  replicas (`ReplicaUpdates`) and at most one witness
+  (`GlobalTableWitnessUpdates`). Replicas cannot be added later, a single
+  replica or the witness cannot be removed, and the mode cannot change.
+  Removing two replicas, or one and the witness, leaves a single-region
+  table.
+- A write returns once it is in at least one other region. Strongly
+  consistent reads and conditions see the latest version in every region.
+  GSI reads stay eventually consistent.
+- A region without a second region to form a quorum serves only
+  eventually consistent reads; writes and strongly consistent reads answer
+  errors until it is back and caught up.
+- Transactions, TTL and LSIs are not supported on MRSC tables. Streams are
+  off by default, may be enabled per replica, and every replica's stream
+  holds the same records in the same order.
+- Billing mode, throughput and GSIs are kept the same on every replica.
+  Deletion protection, PITR, tags, Contributor Insights, Kinesis
+  destinations, resource policies and the stream setting are per replica.
+
+**One log for all three regions.** An MRSC table's items live in Raft
+groups whose voters are spread evenly over the three regions: `n` voters
+in each (`n` is 3 by default, 1 for tests), so a group has `3n` voters and
+a quorum of `floor(3n/2) + 1`. No region holds a quorum alone, so every
+commit includes a second region (AWS's "in at least one other region"),
+and any one region can be lost. A witness region runs ordinary voters for
+these groups; it stores the data, as AWS's witness does, but its catalog
+has no table, so its gateways answer `ResourceNotFoundException`.
+Log-only witness voters would save its disk and are left for later.
+
+Because all three regions apply one Raft log, nothing has to be resolved
+afterwards: there is no last-writer-wins step, every replica's change log
+and stream are the same, and conditions are evaluated in apply as for any
+table. Writes are serialized by the log, so a concurrent write from
+another region waits instead of failing; `ReplicatedWriteConflictException`
+is never returned. That is allowed, since AWS documents it as retryable.
+
+**A second multi-raft host.** Each node runs a second `multi_raft` host,
+the strong host, beside the cluster's own. It holds only MRSC groups, with
+its own Raft listener, its own RocksDB database and `strong-layout.json`,
+and Raft timings for a wide-area network (election timeouts in seconds,
+not hundreds of milliseconds), so cross-region latency never slows a
+local group's elections. Its peers are every strong voter in the three
+regions (`KYTHIRA_DYNAMODB_STRONG_PEERS`), over mTLS, with each region's
+CA trusted by the others. Node ids in the strong host carry the region's
+ordinal in their high bits, and group ids are allocated per (region,
+voter) range, extending the per-voter scheme splits already use, so two
+regions splitting at once never collide.
+
+**The strong catalog.** One group in the strong host, with voters in all
+three regions, holds what the regions must agree on: each MRSC table's
+strong id, its shared settings (key schema, billing, throughput, GSIs),
+its regions and witness, and its status. Each region's own catalog keeps
+the per-replica settings and a pointer to the strong id. An `UpdateTable`
+that changes a shared setting is a strong catalog entry, applied by each
+region's catalog leader to its local descriptor.
+
+**Making a table strong.**
+
+1. `UpdateTable` in region A checks the request: three regions in total,
+   each configured as a strong peer, no LSI, TTL off, the table empty.
+   It answers `ValidationException` otherwise, with AWS's wording.
+2. A's catalog seals the table (its groups refuse writes from here) and
+   checks it is still empty; a write that slipped in before the seal fails
+   the conversion and the replicas end `CREATION_FAILED`.
+3. A proposes the table to the strong catalog, which creates the item
+   groups (and GSI groups) in the strong host.
+4. Each replica region's catalog leader sees the entry, creates its local
+   descriptor (`CREATING`, then `ACTIVE` once its strong host has the
+   groups), and the witness region records only the membership.
+5. A's local ranges for the table are dropped. They were empty, which is
+   why AWS requires an empty table: nothing has to be copied.
+
+**Leaving strong mode.** Removing two replicas, or a replica and the
+witness, is a membership change on every group of the table (joint
+consensus, which the multi-raft host already has) down to the remaining
+region's voters. The table stays in that region's strong host as a
+single-region table with `MultiRegionConsistency` absent. Copying it back
+into the local host would cost a full copy for no gain. `DeleteTable` on
+one replica of a three-region table is refused, as AWS refuses removing a
+single replica; deleting the last replica deletes the groups.
+
+**Requests.**
+
+- A write goes to the group's leader, which may be in another region.
+  The forward link reaches leaders in other regions through their
+  gateways, authenticated with the replication principal that global
+  tables already use. A write from a region without the leader therefore
+  costs about two cross-region round trips, against one on AWS. Spreading
+  leaders over the regions, and moving a group's leadership toward the
+  region that writes to it most, are later improvements.
+- A strongly consistent read takes the read barrier on the leader, as
+  today, so it is forwarded too. Follower read-index, which would answer
+  from the local replica after one round trip to the leader, is a later
+  improvement.
+- An eventually consistent read is answered by a voter in the caller's
+  region. It keeps working when the region is cut off.
+- A region that cannot reach a quorum cannot commit or take a barrier.
+  Writes and strongly consistent reads give up after the request deadline
+  and answer the error AWS returns in that case. AWS does not document
+  which code that is, so it must be recorded before it is chosen; until
+  then the module answers `InternalServerError`.
+- `TransactWriteItems`, `TransactGetItems` and PartiQL transactions naming
+  an MRSC table, `UpdateTimeToLive` enabling TTL, and an LSI in
+  `CreateTable` or `UpdateTable` are refused with AWS's error.
+
+**Splits, GSIs and the change log.** Splits work as for any group: the cut
+is a Raft entry, so every region's replica splits at the same index, and
+stream shard lineage is identical everywhere. GSI groups also live in the
+strong host, spread over the regions, so every region has its index; the
+propagator runs on each base group's leader, and index reads stay
+eventually consistent. Per-replica consumers of the change log (Streams,
+Kinesis destinations, PITR, backups) read their own region's replica, so a
+replica's stream setting and destinations stay local, as on AWS.
+
+**What it costs.** Every write to an MRSC table pays at least one
+cross-region round trip, and the strong host doubles each node's Raft
+listeners and databases. Tables that are not MRSC are untouched: they
+never enter the strong host.
 
 ### Backups and point-in-time recovery
 
@@ -244,6 +372,10 @@ the lock client and the Streams adapter are recorded once against a stub, as
 
 1. Multi-region strong consistency for global tables: build it on a
    cross-cluster Raft group, or list it as unsupported? Decided in task
-   25 (Clark, 2026-11-13): build it, as task 27.
+   25 (Clark, 2026-11-13): build it, as task 27, designed above.
 2. Should `dynamodb_gateway_node` and `kinesis_gateway_node` also be
    offered as one combined binary for small deployments?
+3. Which error does AWS return for a write or a strongly consistent read
+   on an MRSC replica whose region has no quorum? Recording it needs a
+   three-region MRSC table and an AWS FIS region isolation experiment,
+   which is real spend and needs Clark's go.

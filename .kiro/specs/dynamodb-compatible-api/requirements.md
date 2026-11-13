@@ -345,6 +345,15 @@ the freedom to relax it where my workload needs it.
 3. Multi-region strong consistency SHALL be available as an option where
    the peers allow a cross-cluster quorum, or listed as unsupported with the
    reason (Requirement 2.1).
+4. A table made strong (`MultiRegionConsistency=STRONG`, three regions or
+   two and a witness) SHALL commit every write in a quorum that spans at
+   least two regions, so strongly consistent reads and conditions in any
+   region see the latest version, and SHALL keep serving in the other two
+   regions when any one region is lost.
+5. AWS's rules for such tables SHALL apply: only an empty table can be made
+   strong; replicas cannot be added later; a single replica or the witness
+   cannot be removed; transactions, TTL and LSIs are refused; a region
+   without a quorum serves only eventually consistent reads.
 
 ### Requirement 19: Capacity, throttling and insights
 
