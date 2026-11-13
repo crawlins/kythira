@@ -54,6 +54,30 @@ else()
     message(STATUS "dynamodb_gateway_node: no S3 backup store (needs the AWS SDK and "
                    "CONFIG_AWS_S3_PERSISTENCE)")
 endif()
+# IAM authentication (task 28, KYTHIRA_DYNAMODB_AUTH=iam|both): the
+# composition root wires in the IAM module's embedded replica and
+# authorizer, as redis_gateway_node does. Without
+# CONFIG_DYNAMODB_GATEWAY_IAM the daemon has no IAM code, documents no
+# KYTHIRA_IAM_* variables, and refuses iam and both at start.
+set(_DYNAMODB_GATEWAY_IAM OFF)
+if(KCONFIG_DYNAMODB_GATEWAY_IAM AND KYTHIRA_BUILD_IAM AND TARGET certificate_authority)
+    set(_DYNAMODB_GATEWAY_IAM ON)
+    target_sources(dynamodb_gateway_node PRIVATE dynamodb_gateway_node/iam_auth.cpp)
+    target_compile_definitions(dynamodb_gateway_node PRIVATE KYTHIRA_DYNAMODB_GATEWAY_IAM)
+    # kythira_iam is defined by services/iam/, which the top level may enter
+    # after this module; CMake resolves the name when it generates.
+    target_link_libraries(dynamodb_gateway_node PRIVATE kythira_iam certificate_authority)
+endif()
+add_test(NAME dynamodb_gateway_node_iam_switch COMMAND dynamodb_gateway_node --help)
+if(_DYNAMODB_GATEWAY_IAM)
+    set_tests_properties(dynamodb_gateway_node_iam_switch PROPERTIES
+        PASS_REGULAR_EXPRESSION "KYTHIRA_IAM_VOTERS")
+else()
+    set_tests_properties(dynamodb_gateway_node_iam_switch PROPERTIES
+        FAIL_REGULAR_EXPRESSION "KYTHIRA_IAM_")
+endif()
+set_tests_properties(dynamodb_gateway_node_iam_switch PROPERTIES
+    LABELS "unit;dynamodb" TIMEOUT 30)
 target_compile_features(dynamodb_gateway_node PRIVATE cxx_std_23)
 set_target_properties(dynamodb_gateway_node PROPERTIES
     JOB_POOL_COMPILE heavy_tu

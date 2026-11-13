@@ -78,7 +78,8 @@ from the environment; `dynamodb_gateway_node --help` lists them all.
 | `KYTHIRA_DYNAMODB_FORWARD_SECRET` | the HMAC key gateways sign forwarded requests with (16 or more characters, the same on every node) |
 | `KYTHIRA_DYNAMODB_ENGINE=rocksdb`, `KYTHIRA_DYNAMODB_DATA_DIR` | where the database, the Raft logs, `layout.json` and `group-ids` live |
 | `KYTHIRA_DYNAMODB_TLS_CERT`, `_TLS_KEY` | TLS for the API (port 8000 by default) |
-| `KYTHIRA_DYNAMODB_STATIC_KEYS_FILE` | access keys, `id:secret:account:name:role` per line, when IAM is not used |
+| `KYTHIRA_DYNAMODB_AUTH` | `static` (default), `iam` or `both`: how requests are signed in (below) |
+| `KYTHIRA_DYNAMODB_STATIC_KEYS_FILE` | access keys, `id:secret:account:name:role` per line, with `AUTH=static` or `both` |
 | `KYTHIRA_DYNAMODB_ACCOUNT_ID` | the account that owns the tables; defaults to the keys' account, and is required when the keys name more than one |
 | `KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT` | `read:write` provisioned capacity units one account's tables and GSIs may add up to (`80000:80000`, AWS's default) |
 | `KYTHIRA_DYNAMODB_ACCOUNT_LIMITS` | `account=read:write,...`: an account's own limit, as an AWS quota increase would set it |
@@ -99,6 +100,19 @@ AWS SDK, `KYTHIRA_DYNAMODB_BACKUP_S3_BUCKET` (with `_PREFIX`, `_REGION`,
 example). Global tables need `KYTHIRA_DYNAMODB_REPLICA_PEERS` and a
 replication principal's keys; `services/dynamodb/README.md` shows the
 setup.
+
+`KYTHIRA_DYNAMODB_AUTH` picks who signs requests in. `static` uses the
+keys file and its roles. `iam` authenticates and authorizes every request
+against Kythira IAM, through a read replica of the IAM group that the
+daemon embeds (the `KYTHIRA_IAM_*` settings, as for `redis_gateway_node`);
+it takes no keys file and needs `KYTHIRA_DYNAMODB_ACCOUNT_ID`. `both`
+sends a request signed with a key from the file to the static roles and
+any other to IAM. An access key id both know is an error: the gateway
+refuses to start when IAM already has one of its static keys, and refuses
+each request signed with such a key if IAM makes one later, so one secret
+never stands in for the other. `iam` and `both` need a build with
+`CONFIG_DYNAMODB_GATEWAY_IAM` (on whenever `CONFIG_IAM` is); without it
+they are refused at start.
 
 `services/dynamodb/tools/chaos/compose.yml` is a working three-node
 cluster on RocksDB under Docker or rootless Podman.

@@ -27,7 +27,9 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -218,22 +220,34 @@ struct served {
     ddb::local_backend<> backend{engine};
     std::optional<ddb::gateway<ddb::local_backend<>>> gw;
 
-    explicit served(const std::map<std::string, std::string>& extra = {}) { restart(extra); }
+    explicit served(const std::map<std::string, std::string>& extra = {},
+                    std::optional<ddb::iam_hooks> iam = std::nullopt) {
+        restart(extra, std::move(iam));
+    }
 
     /// A new gateway on the same database, with `extra` over the settings.
-    void restart(const std::map<std::string, std::string>& extra) {
+    void restart(const std::map<std::string, std::string>& extra,
+                 std::optional<ddb::iam_hooks> iam = std::nullopt) {
         gw.reset();
         auto vars = minimal_env();
         vars["KYTHIRA_DYNAMODB_BIND"] = "127.0.0.1";
         vars["KYTHIRA_DYNAMODB_PORT"] = "0";
         vars["KYTHIRA_DYNAMODB_STATIC_KEYS"] +=
             ",AKIDREAD:" + std::string(k_secret) + ":111122223333:reader:read-only";
+        // Extra static keys are added to the two; an empty value drops them.
         for (const auto& [k, v] : extra) {
-            vars[k] = k == "KYTHIRA_DYNAMODB_STATIC_KEYS" ? vars[k] + "," + v : v;
+            if (k == "KYTHIRA_DYNAMODB_STATIC_KEYS" && v.empty()) {
+                vars.erase(k);
+            } else {
+                vars[k] = k == "KYTHIRA_DYNAMODB_STATIC_KEYS" ? vars[k] + "," + v : v;
+            }
         }
         auto c = ddb::gateway_config_from_env(env_of(vars));
-        BOOST_REQUIRE(std::holds_alternative<ddb::gateway_config>(c));
-        gw.emplace(std::get<ddb::gateway_config>(c), backend);
+        const auto* error = std::get_if<std::string>(&c);
+        BOOST_REQUIRE_MESSAGE(error == nullptr, (error != nullptr ? *error : std::string{}));
+        auto& config = std::get<ddb::gateway_config>(c);
+        config.iam = std::move(iam);
+        gw.emplace(config, backend);
         gw->start();
     }
 
@@ -467,6 +481,100 @@ BOOST_AUTO_TEST_CASE(account_limit_settings_are_checked) {
     vars["KYTHIRA_DYNAMODB_ACCOUNT_LIMITS"] = "111122223333=10:10";
     const auto c = std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars)));
     BOOST_TEST(c.front.account_limits.at("111122223333").second == 10U);
+}
+
+namespace {
+
+/// IAM as the daemon would hand it in: here it knows `AKIDIAM` (signed with
+/// the test secret, so `call` works with it), lets it list and describe
+/// tables only, and reports `extra` as keys it also has.
+/// A fake IAM that knows AKIDIAM, the ids in `extra`, and any id added to
+/// `later` once the gateway runs.
+auto fake_iam(std::set<std::string> extra = {},
+              std::shared_ptr<std::set<std::string>> later = nullptr) -> ddb::iam_hooks {
+    ddb::iam_hooks h;
+    h.authenticate = [](const sv4::request& req,
+                        const sv4::service_rules& rules) -> kythira::aws_auth::authn_result {
+        const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        const auto parsed = sv4::parse(req, rules, now);
+        if (!parsed) {
+            return parsed.error();
+        }
+        if (parsed->access_key_id != "AKIDIAM" ||
+            !sv4::verify(*parsed, sv4::derive_signing_key(k_secret, parsed->scope))) {
+            return sv4::invalid_client_token_id(rules.protocol);
+        }
+        kythira::aws_auth::principal_context p;
+        p.account = "111122223333";
+        p.access_key_id = "AKIDIAM";
+        p.username = "iam-reader";
+        p.arn = "arn:aws:iam::111122223333:user/iam-reader";
+        return p;
+    };
+    h.authorize = [](const kythira::aws_auth::principal_context& who,
+                     const kythira::aws_auth::authz_request& r) {
+        kythira::aws_auth::authz_decision d;
+        d.allowed = who.access_key_id == "AKIDIAM" &&
+                    (r.action == "dynamodb:ListTables" || r.action == "dynamodb:DescribeTable");
+        return d;
+    };
+    h.has_key = [extra = std::move(extra), later = std::move(later)](std::string_view id) {
+        return id == "AKIDIAM" || extra.contains(std::string(id)) ||
+               (later && later->contains(std::string(id)));
+    };
+    return h;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(static_keys_iam_or_both_authenticate) {
+    // Both: static keys are the static authorizer's, the rest IAM's.
+    served s({{"KYTHIRA_DYNAMODB_AUTH", "both"}}, fake_iam());
+    BOOST_REQUIRE(s.call("CreateTable", std::string(k_orders)).result_int() == 200U);
+    auto r = s.call("ListTables", "{}", "AKIDIAM");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+    BOOST_TEST(table_names(r) == R"(["orders"])");
+    r = s.call("DeleteTable", R"({"TableName":"orders"})", "AKIDIAM");
+    BOOST_TEST(type_of(r) == "AccessDeniedException");
+    r = s.call("ListTables", "{}", "AKIDNOBODY");
+    BOOST_TEST(r.result_int() == 400U);
+
+    // A key IAM makes later with a static key's id is refused per request.
+    auto later = std::make_shared<std::set<std::string>>();
+    served c({{"KYTHIRA_DYNAMODB_AUTH", "both"}}, fake_iam({}, later));
+    BOOST_TEST(c.call("ListTables", "{}").result_int() == 200U);
+    later->insert("AKIDADMIN");
+    r = c.call("ListTables", "{}");
+    BOOST_TEST(r.result_int() == 400U);
+    BOOST_TEST(type_of(r) == "UnrecognizedClientException");
+
+    // IAM alone: no static keys, and the owner named.
+    served i({{"KYTHIRA_DYNAMODB_AUTH", "iam"},
+              {"KYTHIRA_DYNAMODB_STATIC_KEYS", ""},
+              {"KYTHIRA_DYNAMODB_ACCOUNT_ID", "111122223333"}},
+             fake_iam());
+    BOOST_TEST(i.call("ListTables", "{}", "AKIDIAM").result_int() == 200U);
+    BOOST_TEST(i.call("ListTables", "{}").result_int() == 400U);  // AKIDADMIN is not IAM's
+
+    // A key id both know does not start, and a build without IAM cannot
+    // run IAM.
+    BOOST_CHECK_THROW(s.restart({{"KYTHIRA_DYNAMODB_AUTH", "both"}}, fake_iam({"AKIDREAD"})),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(s.restart({{"KYTHIRA_DYNAMODB_AUTH", "both"}}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(auth_setting_is_checked) {
+    auto vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_AUTH"] = "password";
+    BOOST_TEST(config_error(vars) == "KYTHIRA_DYNAMODB_AUTH: static, iam or both, not 'password'");
+    vars["KYTHIRA_DYNAMODB_AUTH"] = "iam";
+    BOOST_TEST(config_error(vars).starts_with("KYTHIRA_DYNAMODB_AUTH=iam takes no static keys"));
+    vars.erase("KYTHIRA_DYNAMODB_STATIC_KEYS");
+    BOOST_TEST(config_error(vars).starts_with("KYTHIRA_DYNAMODB_ACCOUNT_ID is required"));
+    vars["KYTHIRA_DYNAMODB_ACCOUNT_ID"] = "111122223333";
+    BOOST_TEST(config_error(vars) == "ok");
+    vars["KYTHIRA_DYNAMODB_AUTH"] = "both";
+    BOOST_TEST(config_error(vars).starts_with("no access keys"));
 }
 
 BOOST_AUTO_TEST_CASE(namespaces_setting_is_on_or_off) {

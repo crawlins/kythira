@@ -13,6 +13,9 @@
 
 #include "backup_s3.hpp"
 #include "run_cluster.hpp"
+#ifdef KYTHIRA_DYNAMODB_GATEWAY_IAM
+#include "iam_auth.hpp"
+#endif
 
 #include <kythira/dynamodb/backend.hpp>
 #include <kythira/dynamodb/gateway.hpp>
@@ -120,6 +123,9 @@ auto main(int argc, char** argv) -> int {
         std::FILE* out = help ? stdout : stderr;
         std::fputs(k_usage.data(), out);
         std::fwrite(ddb::k_gateway_env_help.data(), 1, ddb::k_gateway_env_help.size(), out);
+#ifdef KYTHIRA_DYNAMODB_GATEWAY_IAM
+        std::fputs(dynamodb_gateway::iam_auth_usage().c_str(), out);
+#endif
         return help ? 0 : 2;
     }
 
@@ -158,6 +164,26 @@ auto main(int argc, char** argv) -> int {
     } catch (const std::exception& e) {
         std::cerr << "dynamodb_gateway_node: " << e.what() << "\n";
         return 2;
+    }
+
+    // IAM (task 28): the replica outlives the gateway that uses it.
+#ifdef KYTHIRA_DYNAMODB_GATEWAY_IAM
+    std::unique_ptr<dynamodb_gateway::iam_auth> iam;
+#endif
+    if (cfg.auth != ddb::auth_mode::static_keys) {
+#ifdef KYTHIRA_DYNAMODB_GATEWAY_IAM
+        try {
+            iam = dynamodb_gateway::start_iam_auth_from_env();
+            cfg.iam = iam->hooks();
+        } catch (const std::exception& e) {
+            std::cerr << "dynamodb_gateway_node: " << e.what() << "\n";
+            return 2;
+        }
+#else
+        std::cerr << "dynamodb_gateway_node: KYTHIRA_DYNAMODB_AUTH=iam or both needs a build "
+                     "with CONFIG_DYNAMODB_GATEWAY_IAM\n";
+        return 2;
+#endif
     }
 
     const auto log = [](bool warning, std::string_view m) {

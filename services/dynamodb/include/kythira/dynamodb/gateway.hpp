@@ -38,7 +38,9 @@
 /// | `KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT` | `80000:80000` | provisioned read:write units an
 /// account's tables may add up to |
 /// | `KYTHIRA_DYNAMODB_ACCOUNT_LIMITS` | | `account=read:write,...`: raised (or lowered) limits |
-/// | `KYTHIRA_DYNAMODB_NAMESPACES` | `off` | `on` gives each account its own tables; tables made
+/// | `KYTHIRA_DYNAMODB_AUTH` | `static` | `static` keys, Kythira `iam` (the `KYTHIRA_IAM_*`
+/// replica, in builds with it), or `both`; an access key id both know is refused | |
+/// `KYTHIRA_DYNAMODB_NAMESPACES` | `off` | `on` gives each account its own tables; tables made
 /// before belong to `ACCOUNT_ID`. Cannot be turned off again |
 /// | `KYTHIRA_DYNAMODB_DATA_DIR` | | the disk guard's directory, and the database's |
 /// | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | 1 GiB | free space below which writes are refused |
@@ -125,6 +127,7 @@
 #include <raft/beast_https_server.hpp>
 #include <raft/logger.hpp>
 #include <raft/static_key_authorizer.hpp>
+#include <raft/static_or_iam_authorizer.hpp>
 
 #include <boost/beast/http.hpp>
 
@@ -152,6 +155,10 @@
 #include <vector>
 
 namespace kythira::dynamodb {
+
+/// `KYTHIRA_DYNAMODB_AUTH` and IAM's side of it (static_or_iam_authorizer.hpp).
+using aws_auth::auth_mode;
+using aws_auth::iam_hooks;
 
 /// A Raft cluster of gateways. Empty `peers` means one node with no Raft
 /// (`local_backend`).
@@ -248,6 +255,11 @@ struct gateway_config {
     /// and `front.account` names the account that tables made before the
     /// switch move to. Once a catalog has them they cannot be turned off.
     bool namespaces = false;
+    /// `KYTHIRA_DYNAMODB_AUTH` (task 28): static keys (the default), IAM,
+    /// or both. IAM comes from the daemon as `iam`, built only with
+    /// `CONFIG_DYNAMODB_GATEWAY_IAM`.
+    auth_mode auth = auth_mode::static_keys;
+    std::optional<iam_hooks> iam;
     /// Empty: no disk guard.
     std::string data_dir;
     std::uint64_t disk_floor_bytes = disk_guard::k_default_floor_bytes;
@@ -395,6 +407,8 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_ACCOUNT_ID           account that owns the tables (the\n"
     "                                        keys' account; required when they\n"
     "                                        name more than one)\n"
+    "  KYTHIRA_DYNAMODB_AUTH                 static, iam or both (static); iam\n"
+    "                                        needs a build with IAM and KYTHIRA_IAM_*\n"
     "  KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT read:write provisioned units an\n"
     "                                        account's tables may total\n"
     "                                        (80000:80000)\n"
@@ -802,10 +816,26 @@ namespace gateway_detail {
             c.keys.push_back(std::move(k));
         }
     }
-    if (c.keys.empty()) {
+    if (auto v = env("KYTHIRA_DYNAMODB_AUTH")) {
+        if (*v == "static") {
+            c.auth = auth_mode::static_keys;
+        } else if (*v == "iam") {
+            c.auth = auth_mode::iam;
+        } else if (*v == "both") {
+            c.auth = auth_mode::both;
+        } else {
+            return "KYTHIRA_DYNAMODB_AUTH: static, iam or both, not '" + *v + "'";
+        }
+    }
+    if (c.keys.empty() && c.auth != auth_mode::iam) {
         return std::string(
             "no access keys: set KYTHIRA_DYNAMODB_STATIC_KEYS_FILE or "
             "KYTHIRA_DYNAMODB_STATIC_KEYS");
+    }
+    if (!c.keys.empty() && c.auth == auth_mode::iam) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_AUTH=iam takes no static keys: use both, or unset "
+            "KYTHIRA_DYNAMODB_STATIC_KEYS_FILE and KYTHIRA_DYNAMODB_STATIC_KEYS");
     }
     // The tables belong to one account. A key of any other account is
     // refused every call (static keys get no cross-account access), so
@@ -817,6 +847,10 @@ namespace gateway_detail {
             return "KYTHIRA_DYNAMODB_ACCOUNT_ID: not a 12-digit account id: '" + *v + "'";
         }
         c.front.account = *v;
+    } else if (c.keys.empty()) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_ACCOUNT_ID is required with KYTHIRA_DYNAMODB_AUTH=iam: the account "
+            "that owns the tables");
     } else {
         c.front.account = c.keys.front().account;
         for (const auto& k : c.keys) {
@@ -997,7 +1031,7 @@ namespace gateway_detail {
 /// The front end and handlers over one backend, served over HTTPS.
 template<dynamo_backend Backend> class gateway {
 public:
-    using authorizer = aws_auth::static_key_authorizer;
+    using authorizer = aws_auth::static_or_iam_authorizer;
 
     /// Throws `std::invalid_argument` on a bad key table.
     /// Ops forwarded to this node's strong host (task 27), served at
@@ -1041,6 +1075,7 @@ public:
           _replicator(backend, nullptr),
           _log(std::move(log)) {
         _auth.register_service(dynamodb_static_roles());
+        _auth.set_mode(_config.auth, _config.iam);
     }
 
     gateway(const gateway&) = delete;
@@ -1052,6 +1087,14 @@ public:
     /// Binds and starts serving. Throws when the listener or TLS setup
     /// fails.
     void start() {
+        if (const auto both = _auth.conflicting_keys(); !both.empty()) {
+            std::string ids;
+            for (const auto& id : both) {
+                ids += (ids.empty() ? "" : ", ") + id;
+            }
+            throw std::invalid_argument("KYTHIRA_DYNAMODB_AUTH=both: IAM also has the static key " +
+                                        ids + "; remove it from one of them");
+        }
         _server = std::make_unique<https::server>(
             _config.http,
             [this](const https::request& req, const https::request_context& ctx) {

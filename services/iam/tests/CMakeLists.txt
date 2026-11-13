@@ -74,6 +74,18 @@ set_tests_properties(iam_state_machine_test PROPERTIES LABELS "unit;iam;iam-modu
 kythira_iam_test(iam_validation_test iam_validation_test.cpp)
 set_tests_properties(iam_validation_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 60)
 
+# DynamoDB spec task 28: the KYTHIRA_IAM_* settings an AWS-protocol
+# gateway's embedded replica reads (iam_gateway_auth.hpp). The replica's
+# TLS RPC needs KYTHIRA_HAS_OPENSSL, which certificate_authority carries,
+# as for the gateways that use it.
+if(TARGET certificate_authority)
+    kythira_iam_test(iam_gateway_auth_test iam_gateway_auth_test.cpp)
+    target_link_libraries(iam_gateway_auth_test PRIVATE certificate_authority kythira_host_node_id)
+    set_tests_properties(iam_gateway_auth_test PROPERTIES LABELS "unit;iam;iam-module" TIMEOUT 30)
+else()
+    message(STATUS "iam_gateway_auth_test: skipped (needs certificate_authority)")
+endif()
+
 # Task 9: the admin operations behind iam_node's /v1/admin/* routes, and
 # the request routing, against a bare state machine.
 kythira_iam_test(iam_admin_test iam_admin_test.cpp)
