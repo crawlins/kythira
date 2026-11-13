@@ -79,6 +79,7 @@ from the environment; `dynamodb_gateway_node --help` lists them all.
 | `KYTHIRA_DYNAMODB_ENGINE=rocksdb`, `KYTHIRA_DYNAMODB_DATA_DIR` | where the database, the Raft logs, `layout.json` and `group-ids` live |
 | `KYTHIRA_DYNAMODB_TLS_CERT`, `_TLS_KEY` | TLS for the API (port 8000 by default) |
 | `KYTHIRA_DYNAMODB_STATIC_KEYS_FILE` | access keys, `id:secret:account:name:role` per line, when IAM is not used |
+| `KYTHIRA_DYNAMODB_ACCOUNT_ID` | the account that owns the tables; defaults to the keys' account, and is required when the keys name more than one |
 | `KYTHIRA_DYNAMODB_REGION`, `_PARTITION` | the region and ARN partition answers carry (`us-east-1`, `aws`) |
 | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | writes are refused below this much free space (1 GiB) |
 | `KYTHIRA_DYNAMODB_SPLIT_BYTES`, `_SPLIT_KEYS`, `_SPLIT_INTERVAL_MS` | the split policy; both thresholds 0 turns splits off |
@@ -146,6 +147,14 @@ last-writer-wins replication.
 
 Every request is SigV4-signed and authorized per action and resource, by
 IAM's evaluator or the static-key roles. Answers match AWS's wording.
+The batch operations are authorized on each table they name,
+StartBulkPutItems as `dynamodb:BulkPutItems` on its table and
+`dynamodb:StartBulkOperation` on the operation, and a call that succeeds
+without any authorization check is refused with a 500. A gateway's tables
+belong to one account (`KYTHIRA_DYNAMODB_ACCOUNT_ID`): a caller from
+another account is a cross-account caller and needs the table's resource
+policy, as on AWS, and a static key from another account reaches nothing.
+An ARN naming any other account is not found.
 Expressions were checked against about 3000 cases recorded from DynamoDB
 Local, and the operations corpus against recorded scenarios.
 

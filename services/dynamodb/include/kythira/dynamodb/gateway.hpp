@@ -33,6 +33,8 @@
 /// | `KYTHIRA_DYNAMODB_ADVERTISED_ENDPOINT` | `localhost:<port>` | what `DescribeEndpoints` says |
 /// | `KYTHIRA_DYNAMODB_STATIC_KEYS_FILE` | | access keys, one per line (below) |
 /// | `KYTHIRA_DYNAMODB_STATIC_KEYS` | | the same, `,`-separated, for tests |
+/// | `KYTHIRA_DYNAMODB_ACCOUNT_ID` | the keys' account | the account that owns the tables;
+/// required when the keys name more than one |
 /// | `KYTHIRA_DYNAMODB_DATA_DIR` | | the disk guard's directory, and the database's |
 /// | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | 1 GiB | free space below which writes are refused |
 /// | `KYTHIRA_DYNAMODB_ENGINE` | `memory` | `memory`, or `rocksdb` (needs `PEERS`, `DATA_DIR`) |
@@ -124,6 +126,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <concepts>
@@ -380,6 +383,9 @@ inline constexpr std::string_view k_gateway_env_help =
     "  KYTHIRA_DYNAMODB_STATIC_KEYS_FILE     access keys, one per line:\n"
     "                                        id:secret:account:name:role\n"
     "  KYTHIRA_DYNAMODB_STATIC_KEYS          the same, ','-separated\n"
+    "  KYTHIRA_DYNAMODB_ACCOUNT_ID           account that owns the tables (the\n"
+    "                                        keys' account; required when they\n"
+    "                                        name more than one)\n"
     "  KYTHIRA_DYNAMODB_DATA_DIR             directory the disk guard watches\n"
     "  KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES     free-space floor for writes (1 GiB)\n"
     "  KYTHIRA_DYNAMODB_ENGINE               storage engine: memory, or rocksdb\n"
@@ -784,6 +790,26 @@ namespace gateway_detail {
         return std::string(
             "no access keys: set KYTHIRA_DYNAMODB_STATIC_KEYS_FILE or "
             "KYTHIRA_DYNAMODB_STATIC_KEYS");
+    }
+    // The tables belong to one account. A key of any other account is
+    // refused every call (static keys get no cross-account access), so
+    // keys of several accounts need the owner named.
+    if (auto v = env("KYTHIRA_DYNAMODB_ACCOUNT_ID")) {
+        if (v->size() != 12 || !std::all_of(v->begin(), v->end(), [](unsigned char ch) {
+                return std::isdigit(ch) != 0;
+            })) {
+            return "KYTHIRA_DYNAMODB_ACCOUNT_ID: not a 12-digit account id: '" + *v + "'";
+        }
+        c.front.account = *v;
+    } else {
+        c.front.account = c.keys.front().account;
+        for (const auto& k : c.keys) {
+            if (k.account != c.front.account) {
+                return std::string(
+                    "the access keys name more than one account: set "
+                    "KYTHIRA_DYNAMODB_ACCOUNT_ID to the account that owns the tables");
+            }
+        }
     }
 
     c.data_dir = env("KYTHIRA_DYNAMODB_DATA_DIR").value_or("");

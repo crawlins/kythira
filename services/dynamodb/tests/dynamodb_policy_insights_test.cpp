@@ -124,6 +124,7 @@ struct policy_fixture : fixture {
         tables.register_with(*judged);
         items.register_with(*judged);
         queries.register_with(*judged);
+        batches.register_with(*judged);
         streams.register_with(*judged);
         policies.register_with(*judged);
         insights.register_with(*judged);
@@ -394,6 +395,42 @@ BOOST_FIXTURE_TEST_CASE(a_resource_policy_denial_is_enforced, policy_fixture) {
     // Other actions still pass, and the static-key front end has no policies.
     BOOST_TEST(judged_call("DescribeTable", R"({"TableName":"tbl"})").status == 200U);
     BOOST_TEST(get("tbl", "a", 1).status == 200U);
+}
+
+BOOST_FIXTURE_TEST_CASE(batch_calls_are_authorized_on_each_table, policy_fixture) {
+    (void)create("open");
+    (void)create("locked");
+    BOOST_REQUIRE(put_policy(arn("locked"), deny("dynamodb:BatchWriteItem")).status == 200U);
+    const auto write = [](const std::string& table) {
+        return R"(")" + table + R"(":[{"PutRequest":{"Item":{"pk":{"S":"a"},"sk":{"N":"1"}}}}])";
+    };
+
+    judge.asked.clear();
+    BOOST_TEST(judged_call("BatchWriteItem", "{\"RequestItems\":{" + write("open") + "}}").status ==
+               200U);
+    BOOST_REQUIRE(judge.asked.size() == 1U);
+    BOOST_TEST(judge.asked[0].action == "dynamodb:BatchWriteItem");
+    BOOST_TEST(judge.asked[0].resource == arn("open"));
+
+    // One denied table refuses the whole call before anything is written.
+    (void)call("DeleteItem", R"({"TableName":"open","Key":{"pk":{"S":"a"},"sk":{"N":"1"}}})");
+    const auto r = judged_call(
+        "BatchWriteItem", "{\"RequestItems\":{" + write("open") + "," + write("locked") + "}}");
+    BOOST_TEST(r.type() == "AccessDeniedException");
+    BOOST_TEST(text(r.body, "message").find(arn("locked")) != std::string::npos);
+    BOOST_TEST(!get("open", "a", 1).body.contains("Item"));
+
+    // Reads are their own action: the same policy leaves BatchGetItem
+    // alone, and a denial of it applies per table too.
+    const std::string keys = R"({"Keys":[{"pk":{"S":"a"},"sk":{"N":"1"}}]})";
+    BOOST_TEST(judged_call("BatchGetItem", R"({"RequestItems":{"locked":)" + keys + "}}").status ==
+               200U);
+    BOOST_REQUIRE(put_policy(arn("locked"), deny("dynamodb:BatchGetItem")).status == 200U);
+    BOOST_TEST(judged_call("BatchGetItem",
+                           R"({"RequestItems":{"open":)" + keys + R"(,"locked":)" + keys + "}}")
+                   .type() == "AccessDeniedException");
+    BOOST_TEST(judged_call("BatchGetItem", R"({"RequestItems":{"open":)" + keys + "}}").status ==
+               200U);
 }
 
 BOOST_FIXTURE_TEST_CASE(a_policy_that_locks_the_caller_out_needs_confirmation, policy_fixture) {

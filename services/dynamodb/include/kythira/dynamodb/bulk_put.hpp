@@ -350,6 +350,16 @@ public:
         r.start_ms = now;
         r.id = backup_detail::new_backup_id(now);
         r.arn = r.table_arn + "/bulk-operation/" + r.id;
+        // The front end authorized BulkPutItems on the table; starting the
+        // operation is its own action, on the operation's ARN.
+        if (ctx.authorize) {
+            aws_auth::authz_request start;
+            start.action = "dynamodb:StartBulkOperation";
+            start.resource = r.arn;
+            if (auto denied = ctx.authorize(std::move(start))) {
+                return *denied;
+            }
+        }
         _store->put(bd::record_key(r.id), bd::encode(r));
         if (_started) {
             _started();
