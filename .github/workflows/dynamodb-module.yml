@@ -26,6 +26,13 @@
 #     (services/dynamodb/tools/evidence/clients_on_kythira.sh). It runs
 #     there, not in a job of its own, so the daemon needs no artifact
 #     hand-off. Terraform fetches its AWS provider from the registry.
+#   - then, in the same job and under both runtimes, the chaos scenario
+#     (task 24, services/dynamodb/tools/chaos/run_chaos.sh): three RocksDB
+#     nodes SIGKILLed in turn while writers fill a table with a GSI and a
+#     stream and the size policy splits its groups; no acknowledged write,
+#     index entry or stream record may be lost or duplicated. The build
+#     job applies configs/ci_dynamodb_defconfig (ci_full_defconfig plus
+#     the RocksDB engine) for it.
 #
 # The evidence job compiles the one test by hand against the distribution's
 # Boost instead of configuring the whole tree: the test needs only the
@@ -49,12 +56,15 @@ on:
       - "services/README.md"
       - "include/raft/aws_json_protocol.hpp"
       - "include/raft/crc32.hpp"
+      - "include/raft/rocksdb_kv_engine.hpp"
+      - "src/rocksdb_kv_engine.cpp"
       - "scripts/gen_aws_json_shapes.py"
       - "cmake/kythira_test_helpers.cmake"
       - "cmake/Kconfig.cmake"
       - "scripts/check_module_boundaries.py"
       - "scripts/tests/test_check_module_boundaries.py"
       - "configs/ci_full_defconfig"
+      - "configs/ci_dynamodb_defconfig"
       - "configs/ci_no_dynamodb_defconfig"
       - "Kconfig"
       - "CMakeLists.txt"
@@ -67,12 +77,15 @@ on:
       - "services/README.md"
       - "include/raft/aws_json_protocol.hpp"
       - "include/raft/crc32.hpp"
+      - "include/raft/rocksdb_kv_engine.hpp"
+      - "src/rocksdb_kv_engine.cpp"
       - "scripts/gen_aws_json_shapes.py"
       - "cmake/kythira_test_helpers.cmake"
       - "cmake/Kconfig.cmake"
       - "scripts/check_module_boundaries.py"
       - "scripts/tests/test_check_module_boundaries.py"
       - "configs/ci_full_defconfig"
+      - "configs/ci_dynamodb_defconfig"
       - "configs/ci_no_dynamodb_defconfig"
       - "Kconfig"
       - "CMakeLists.txt"
@@ -172,7 +185,7 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-rocksdb-clang++-18-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -184,7 +197,7 @@ jobs:
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc --x-feature=rocksdb
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
@@ -193,12 +206,14 @@ jobs:
         if: steps.buildcache.outputs.enabled == 'true'
         run: scripts/oci-build-cache/start-sccache.sh
 
-      - name: Configure (module on, ci_full_defconfig, strict)
+      # ci_full_defconfig plus the RocksDB engine, which the chaos
+      # scenario's nodes keep their Raft state in.
+      - name: Configure (module on, ci_dynamodb_defconfig, strict)
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
+            -DKYTHIRA_KCONFIG=configs/ci_dynamodb_defconfig \
             -DKYTHIRA_KCONFIG_STRICT=ON \
             -DKYTHIRA_COMPILER_LAUNCHER=${{ steps.sccache.outputs.launcher || 'none' }} \
             -DKYTHIRA_LINKER=mold \
@@ -236,6 +251,12 @@ jobs:
           KYTHIRA_CONTAINER_RUNTIME: docker
           KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
         run: services/dynamodb/tools/evidence/clients_on_kythira.sh compose "$RUNNER_TEMP/kcl-docker"
+
+      - name: Chaos on Kythira (docker)
+        env:
+          KYTHIRA_CONTAINER_RUNTIME: docker
+          KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
+        run: services/dynamodb/tools/chaos/run_chaos.sh compose "$RUNNER_TEMP/chaos-docker"
 
       # Rootless Podman as iam-module.yml's container job sets it up.
       - name: Set up rootless Podman
@@ -280,6 +301,12 @@ jobs:
           KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
         run: services/dynamodb/tools/evidence/clients_on_kythira.sh compose "$RUNNER_TEMP/kcl-podman"
 
+      - name: Chaos on Kythira (podman)
+        env:
+          KYTHIRA_CONTAINER_RUNTIME: podman
+          KYTHIRA_DYNAMODB_GATEWAY: build/dynamodb_gateway_node
+        run: services/dynamodb/tools/chaos/run_chaos.sh compose "$RUNNER_TEMP/chaos-podman"
+
       - name: Upload what Kythira answered the clients
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -288,6 +315,10 @@ jobs:
           path: |
             ${{ runner.temp }}/kcl-docker
             ${{ runner.temp }}/kcl-podman
+            ${{ runner.temp }}/chaos-docker/*.log
+            ${{ runner.temp }}/chaos-docker/*.txt
+            ${{ runner.temp }}/chaos-podman/*.log
+            ${{ runner.temp }}/chaos-podman/*.txt
           if-no-files-found: ignore
           retention-days: 14
 
