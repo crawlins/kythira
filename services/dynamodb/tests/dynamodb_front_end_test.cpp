@@ -284,8 +284,11 @@ BOOST_AUTO_TEST_CASE(handler_failures_and_registration_errors) {
     // The cause goes to the operator's hook, never to the client.
     std::vector<std::string> reported;
     ddb::front_end_config cfg;
-    cfg.on_internal_error = [&reported](std::string_view op, std::string_view what) {
-        reported.push_back(std::string(op) + ": " + std::string(what));
+    cfg.on_internal_error = [&reported](const ddb::internal_error_report& r) {
+        BOOST_TEST(r.account == k_account);
+        BOOST_TEST(r.principal == "arn:aws:iam::111122223333:user/alice");
+        BOOST_TEST(!r.request_id.empty());
+        reported.push_back(std::string(r.operation) + ": " + std::string(r.what));
     };
     ddb::front_end<recording_authorizer> fe(cfg, auth);
     fe.on("ListTables",
@@ -389,8 +392,11 @@ BOOST_AUTO_TEST_CASE(a_handler_that_never_authorizes_fails_closed) {
     recording_authorizer auth;
     std::vector<std::string> reported;
     ddb::front_end_config cfg;
-    cfg.on_internal_error = [&reported](std::string_view op, std::string_view what) {
-        reported.push_back(std::string(op) + ": " + std::string(what));
+    cfg.on_internal_error = [&reported](const ddb::internal_error_report& r) {
+        BOOST_TEST(r.account == k_account);
+        BOOST_TEST(r.principal == "arn:aws:iam::111122223333:user/alice");
+        BOOST_TEST(!r.request_id.empty());
+        reported.push_back(std::string(r.operation) + ": " + std::string(r.what));
     };
     ddb::front_end<recording_authorizer> fe(cfg, auth);
     // TransactGetItems has no same-named action, so the front end asks

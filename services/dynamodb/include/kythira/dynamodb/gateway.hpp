@@ -1106,10 +1106,14 @@ public:
         if (front.advertised_endpoint.empty()) {
             front.advertised_endpoint = "localhost:" + std::to_string(_server->port());
         }
-        front.on_internal_error = [this](std::string_view operation, std::string_view what) {
+        // The operator's log names the account (task 28); the client's
+        // answer never does.
+        front.on_internal_error = [this](const internal_error_report& r) {
             if (_log) {
-                _log(true, std::string(operation) +
-                               " answered InternalServerError: " + std::string(what));
+                _log(true, std::string(r.operation) + " answered InternalServerError to account " +
+                               std::string(r.account) + " (" + std::string(r.principal) +
+                               ", request " + std::string(r.request_id) +
+                               "): " + std::string(r.what));
             }
         };
         front.namespaced = [this] { return _namespaced.load(std::memory_order_acquire); };

@@ -93,6 +93,18 @@
 
 namespace kythira::dynamodb {
 
+/// What `front_end_config::on_internal_error` hears: for the operator's log
+/// and metrics, which carry the account (task 28), never for the client.
+struct internal_error_report {
+    std::string_view operation;
+    /// The caller's account and ARN.
+    std::string_view account;
+    std::string_view principal;
+    /// The request id the client was answered with.
+    std::string_view request_id;
+    std::string_view what;
+};
+
 struct front_end_config {
     std::string region = "us-east-1";
     std::string partition = "aws";
@@ -116,11 +128,10 @@ struct front_end_config {
     std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> account_limits{};
     std::pair<std::uint64_t, std::uint64_t> default_account_limit{80000, 80000};
     aws_json::request_limits limits{};
-    /// Told the operation and the exception's message whenever a handler
-    /// throws and the client is answered `InternalServerError`, so the
-    /// cause is in the node's log; the answer itself says nothing more, as
-    /// AWS's does not.
-    std::function<void(std::string_view operation, std::string_view what)> on_internal_error{};
+    /// Told whenever a handler throws (or skips authorization) and the
+    /// client is answered `InternalServerError`, so the cause is in the
+    /// node's log; the answer itself says nothing more, as AWS's does not.
+    std::function<void(const internal_error_report&)> on_internal_error{};
 };
 
 /// An HTTP request as the transport hands it over.
@@ -516,9 +527,7 @@ public:
             if (!ctx.authorization_checked && !ctx.touched_no_resource) {
                 // No check ran for an operation that succeeded: a handler
                 // that should authorize did not. Refuse rather than answer.
-                if (_config.on_internal_error) {
-                    _config.on_internal_error(op->name, "answered without an authorization check");
-                }
+                report_internal(ctx, "answered without an authorization check");
                 aws_json::error e;
                 e.status = 500;
                 e.type = c.options().style.internal_type;
@@ -527,9 +536,7 @@ public:
             }
             return c.respond(*out, id);
         } catch (const std::exception& ex) {
-            if (_config.on_internal_error) {
-                _config.on_internal_error(op->name, ex.what());
-            }
+            report_internal(ctx, ex.what());
             aws_json::error e;
             e.status = 500;
             e.type = c.options().style.internal_type;
@@ -539,6 +546,15 @@ public:
     }
 
 private:
+    void report_internal(const call_context& ctx, std::string_view what) const {
+        if (_config.on_internal_error) {
+            _config.on_internal_error(internal_error_report{.operation = ctx.operation,
+                                                            .account = ctx.principal.account,
+                                                            .principal = ctx.principal.arn,
+                                                            .request_id = ctx.request_id,
+                                                            .what = what});
+        }
+    }
     /// The Contributor Insights report: SigV4, then the read action on the
     /// table or index, then the handler.
     [[nodiscard]] auto report(const front_end_request& req) -> aws_json::http_response {
@@ -594,9 +610,7 @@ private:
             }
             return c.respond(*out, id);
         } catch (const std::exception& ex) {
-            if (_config.on_internal_error) {
-                _config.on_internal_error("DescribeContributorInsights", ex.what());
-            }
+            report_internal(ctx, ex.what());
             aws_json::error e;
             e.status = 500;
             e.type = c.options().style.internal_type;
@@ -674,9 +688,7 @@ private:
             }
             return c.respond(*out, id);
         } catch (const std::exception& ex) {
-            if (_config.on_internal_error) {
-                _config.on_internal_error(operation, ex.what());
-            }
+            report_internal(ctx, ex.what());
             aws_json::error e;
             e.status = 500;
             e.type = c.options().style.internal_type;
