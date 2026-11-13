@@ -138,6 +138,11 @@ struct replication_peer_config {
     /// The replication principal's keys, valid in the peer's cluster.
     std::string access_key_id;
     std::string secret_access_key;
+    /// With per-account tables (task 28), a replication principal per
+    /// account: a request naming an `Owner` listed here is signed with
+    /// that account's keys, so the peer finds the table in that account.
+    /// Others use the keys above.
+    std::map<std::string, std::pair<std::string, std::string>, std::less<>> account_keys;
     std::chrono::milliseconds timeout{10000};
     /// The signing clock; the system clock when empty.
     std::function<std::chrono::sys_seconds()> clock;
@@ -184,9 +189,25 @@ namespace global_tables_detail {
     return boost::json::serialize(o).size();
 }
 
+/// The keys a request is signed with: its `Owner`'s replication principal
+/// when `account_keys` lists one (task 28), else the cluster's.
+[[nodiscard]] inline auto replication_keys(const replication_peer_config& cfg,
+                                           const boost::json::object& request)
+    -> std::pair<std::string_view, std::string_view> {
+    if (const auto* owner = request.if_contains("Owner"); owner != nullptr && owner->is_string()) {
+        if (const auto it = cfg.account_keys.find(std::string_view(owner->get_string()));
+            it != cfg.account_keys.end()) {
+            return {it->second.first, it->second.second};
+        }
+    }
+    return {cfg.access_key_id, cfg.secret_access_key};
+}
+
 /// The headers of a SigV4-signed POST of `body` to the peer's replication
 /// path.
 [[nodiscard]] inline auto signed_replication_headers(const replication_peer_config& cfg,
+                                                     std::string_view access_key_id,
+                                                     std::string_view secret_access_key,
                                                      std::string_view body)
     -> std::vector<std::pair<std::string, std::string>> {
     namespace sd = sigv4::detail;
@@ -215,15 +236,15 @@ namespace global_tables_detail {
     canonical += "\n" + names + "\n" + sd::sha256_hex(body);
     const auto to_sign = std::string(sigv4::k_algorithm) + "\n" + amz_date + "\n" + scope.text() +
                          "\n" + sd::sha256_hex(canonical);
-    const auto key = sigv4::derive_signing_key(cfg.secret_access_key, scope);
+    const auto key = sigv4::derive_signing_key(secret_access_key, scope);
     const auto signature = sd::to_hex(sd::hmac_sha256(key, to_sign));
     std::vector<std::pair<std::string, std::string>> out;
     out.reserve(h.size() + 1);
     for (auto& [k, v] : h) {
         out.emplace_back(k == "host" ? "Host" : k, std::move(v));
     }
-    out.emplace_back("Authorization", std::string(sigv4::k_algorithm) +
-                                          " Credential=" + cfg.access_key_id + "/" + scope.text() +
+    out.emplace_back("Authorization", std::string(sigv4::k_algorithm) + " Credential=" +
+                                          std::string(access_key_id) + "/" + scope.text() +
                                           ", SignedHeaders=" + names + ", Signature=" + signature);
     return out;
 }
@@ -272,9 +293,11 @@ namespace global_tables_detail {
     }
     return [cfg = std::move(cfg), transport = std::move(transport)](
                const boost::json::object& request) -> aws_json::result<boost::json::object> {
+        const auto [akid, secret] = global_tables_detail::replication_keys(cfg, request);
         const auto body = boost::json::serialize(request);
         const auto answer = transport(
-            cfg.endpoint, global_tables_detail::signed_replication_headers(cfg, body), body);
+            cfg.endpoint, global_tables_detail::signed_replication_headers(cfg, akid, secret, body),
+            body);
         if (!answer) {
             aws_json::error e;
             e.status = 0;
@@ -316,11 +339,22 @@ public:
 
     auto handle(call_context& ctx, boost::json::object& in) -> result {
         const auto action = api_text(in, "Action");
+        // With per-account tables (task 28) a table is found in the
+        // replication principal's own account, so the sender signs with
+        // the owner's key and names the owner; a mismatch is the sender's
+        // configuration, said plainly rather than as a missing table.
+        if (const auto owner = api_text(in, "Owner");
+            ctx.namespaced && !owner.empty() && owner != ctx.owner()) {
+            return modeled("AccessDeniedException",
+                           "The replication principal belongs to account " + ctx.owner() +
+                               ", but the table belongs to account " + owner +
+                               ": give the replicator that account's key");
+        }
         if (action == "CreateReplica") {
             return create_replica(ctx, in);
         }
         if (action == "DeleteReplica") {
-            return delete_replica(in);
+            return delete_replica(ctx, in);
         }
         if (action == "SetReplicas") {
             return set_replicas(ctx, in);
@@ -346,8 +380,9 @@ private:
     }
 
     static auto not_found(const std::string& name) -> aws_json::error {
-        return modeled("ResourceNotFoundException",
-                       "Requested resource not found: Table: " + name + " not found");
+        return modeled(
+            "ResourceNotFoundException",
+            "Requested resource not found: Table: " + call_context::bare_name(name) + " not found");
     }
 
     static auto busy(std::string message) -> aws_json::error {
@@ -364,7 +399,7 @@ private:
     /// Creates the table as a replica of the source's: this region's, with
     /// the source and its other replicas as its own, all ACTIVE.
     auto create_replica(call_context& ctx, const boost::json::object& in) -> result {
-        const auto name = api_text(in, "TableName");
+        const auto name = ctx.table_name(api_text(in, "TableName"));
         const auto source = api_text(in, "SourceRegion");
         const auto raw = aws_json::base64_decode(api_text(in, "Descriptor"));
         if (source.empty() || !raw) {
@@ -372,9 +407,12 @@ private:
         }
         auto d = decode_table_descriptor(
             std::string_view(reinterpret_cast<const char*>(raw->data()), raw->size()));
-        if (!d || d->name != name) {
+        // The source's catalog name may carry its account; the replica's
+        // is this cluster's name for the table.
+        if (!d || call_context::bare_name(d->name) != call_context::bare_name(name)) {
             return validation_error("CreateReplica's Descriptor is unreadable");
         }
+        d->name = name;
         if (const auto have = _backend.describe(name)) {
             // A repeated call (the replicator tries again until the table
             // takes writes) finds the replica it made.
@@ -383,7 +421,8 @@ private:
                     {"TableStatus", have->status == table_status::active ? "ACTIVE" : "CREATING"}};
             }
             // Not the replica, so not worth waiting for: a refusal.
-            return validation_error("Table already exists and is not a replica: " + name);
+            return validation_error("Table already exists and is not a replica: " +
+                                    call_context::bare_name(name));
         }
         std::vector<table_replica> replicas;
         for (const auto& r : d->replicas) {
@@ -414,10 +453,10 @@ private:
         return boost::json::object{{"TableStatus", "CREATING"}};
     }
 
-    auto delete_replica(const boost::json::object& in) -> result {
+    auto delete_replica(const call_context& ctx, const boost::json::object& in) -> result {
         catalog_command c;
         c.op = catalog_command::kind::delete_table;
-        c.table.name = api_text(in, "TableName");
+        c.table.name = ctx.table_name(api_text(in, "TableName"));
         c.now_ms = _backend.now_ms();
         const auto r = _backend.catalog(c);
         if (!r.ok() && !r.error_type.ends_with("ResourceNotFoundException")) {
@@ -428,7 +467,7 @@ private:
 
     /// A peer's notice that a replica was added or removed elsewhere.
     auto set_replicas(call_context& ctx, const boost::json::object& in) -> result {
-        const auto name = api_text(in, "TableName");
+        const auto name = ctx.table_name(api_text(in, "TableName"));
         const auto source = api_text(in, "SourceRegion");
         const auto add = api_text(in, "Add");
         const auto remove = api_text(in, "Remove");
@@ -448,7 +487,8 @@ private:
                 return boost::json::object{};
             }
             if (!d->global() || d->strong || d->replica_in(source) == nullptr) {
-                return validation_error("Table " + name + " is not a replica of " + source);
+                return validation_error("Table " + call_context::bare_name(name) +
+                                        " is not a replica of " + source);
             }
             // Start it where this cluster is with the source: what has not
             // reached the source yet goes to the new replica too.
@@ -478,17 +518,18 @@ private:
 
     /// Writes from another replica, each applied if its stamp is newer.
     auto apply(call_context& ctx, const boost::json::object& in) -> result {
-        const auto name = api_text(in, "TableName");
+        const auto name = ctx.table_name(api_text(in, "TableName"));
         const auto source = api_text(in, "SourceRegion");
         const auto d = _backend.describe(name);
         if (!d) {
             return not_found(name);
         }
         if (d->status != table_status::active) {
-            return busy("Table is not ACTIVE: " + name);
+            return busy("Table is not ACTIVE: " + call_context::bare_name(name));
         }
         if (!d->global() || d->strong || d->replica_in(source) == nullptr) {
-            return validation_error("Table " + name + " is not a replica of " + source);
+            return validation_error("Table " + call_context::bare_name(name) +
+                                    " is not a replica of " + source);
         }
         const auto* writes = in.if_contains("Writes");
         if (writes == nullptr || !writes->is_array()) {
@@ -645,13 +686,20 @@ private:
         }
     }
 
-    auto call(const std::string& region, const boost::json::object& request)
+    /// Sends `request` about table `d` to `region`. With per-account
+    /// tables the request names the table's owner as `Owner`, which picks
+    /// the key it is signed with (`replication_peer_config::account_keys`)
+    /// and lets the peer say so when that key is another account's.
+    auto call(const table_descriptor& d, const std::string& region, boost::json::object request)
         -> aws_json::result<boost::json::object> {
         if (_peers == nullptr) {
             aws_json::error e;
             e.status = 0;
             e.message = "no peers";
             return e;
+        }
+        if (const auto slash = d.name.find('/'); slash != std::string::npos) {
+            request["Owner"] = d.name.substr(0, slash);
         }
         return _peers->send(region, request);
     }
@@ -670,10 +718,11 @@ private:
     /// Sends `writes` as one `Apply`.
     auto send(const table_descriptor& d, const std::string& region, boost::json::array writes)
         -> aws_json::result<boost::json::object> {
-        return call(region, boost::json::object{{"Action", "Apply"},
-                                                {"TableName", call_context::bare_name(d.name)},
-                                                {"SourceRegion", d.region},
-                                                {"Writes", std::move(writes)}});
+        return call(d, region,
+                    boost::json::object{{"Action", "Apply"},
+                                        {"TableName", call_context::bare_name(d.name)},
+                                        {"SourceRegion", d.region},
+                                        {"Writes", std::move(writes)}});
     }
 
     /// The replica's entry as the catalog should have it.
@@ -725,7 +774,7 @@ private:
     /// CREATING, first part: create the peer's table and copy the items.
     auto backfill(const table_descriptor& d, const table_replica& r) -> bool {
         const auto created = call(
-            r.region,
+            d, r.region,
             boost::json::object{{"Action", "CreateReplica"},
                                 {"TableName", call_context::bare_name(d.name)},
                                 {"SourceRegion", d.region},
@@ -792,11 +841,12 @@ private:
             if (other.region == r.region || other.status != replica_status::active) {
                 continue;
             }
-            const auto told = call(
-                other.region, boost::json::object{{"Action", "SetReplicas"},
-                                                  {"TableName", call_context::bare_name(d.name)},
-                                                  {"SourceRegion", d.region},
-                                                  {"Add", r.region}});
+            const auto told =
+                call(d, other.region,
+                     boost::json::object{{"Action", "SetReplicas"},
+                                         {"TableName", call_context::bare_name(d.name)},
+                                         {"SourceRegion", d.region},
+                                         {"Add", r.region}});
             if (!told && !global_tables_detail::not_found(told.error())) {
                 if (!global_tables_detail::retryable(told.error())) {
                     say(d.name + ": telling " + other.region + " of " + r.region + ": " +
@@ -818,8 +868,9 @@ private:
     auto remove(const table_descriptor& d, const table_replica& r, bool linked) -> bool {
         if (linked) {
             const auto gone =
-                call(r.region, boost::json::object{{"Action", "DeleteReplica"},
-                                                   {"TableName", call_context::bare_name(d.name)}});
+                call(d, r.region,
+                     boost::json::object{{"Action", "DeleteReplica"},
+                                         {"TableName", call_context::bare_name(d.name)}});
             if (!gone && !global_tables_detail::not_found(gone.error())) {
                 say(d.name + ": deleting the replica in " + r.region + ": " +
                     gone.error().message.value_or(gone.error().type));
@@ -831,11 +882,12 @@ private:
                 _peers == nullptr || !_peers->has(other.region)) {
                 continue;
             }
-            const auto told = call(
-                other.region, boost::json::object{{"Action", "SetReplicas"},
-                                                  {"TableName", call_context::bare_name(d.name)},
-                                                  {"SourceRegion", d.region},
-                                                  {"Remove", r.region}});
+            const auto told =
+                call(d, other.region,
+                     boost::json::object{{"Action", "SetReplicas"},
+                                         {"TableName", call_context::bare_name(d.name)},
+                                         {"SourceRegion", d.region},
+                                         {"Remove", r.region}});
             if (!told && !global_tables_detail::not_found(told.error())) {
                 return false;
             }

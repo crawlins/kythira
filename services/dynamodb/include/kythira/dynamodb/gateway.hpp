@@ -63,6 +63,9 @@
 /// regions |
 /// | `KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY` | | the keys peers know
 /// this cluster's replicator by (required with `REPLICA_PEERS`) |
+/// | `KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE` | | `account:access_key_id:secret` per
+/// line: with per-account tables, the replication principal of each account whose global
+/// tables it lists (`_ACCOUNT_KEYS`: the same, `,`-separated) |
 /// | `KYTHIRA_DYNAMODB_REPLICA_CA` | system roots | PEM bundle peers' certificates chain to |
 /// | `KYTHIRA_DYNAMODB_STRONG_NODE_ID` | | this node's id in the strong host |
 /// | `KYTHIRA_DYNAMODB_STRONG_PEERS` | | `id=region@http://host:port,...`: every strong voter |
@@ -462,6 +465,10 @@ inline constexpr std::string_view k_gateway_env_help =
     "                                        tables' peer regions\n"
     "  KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID      keys the peers know this\n"
     "  KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY  cluster's replicator by\n"
+    "  KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE  account:access_key_id:secret\n"
+    "                                        per line: each account's replication\n"
+    "                                        principal, with per-account tables\n"
+    "  KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS the same, ','-separated\n"
     "  KYTHIRA_DYNAMODB_REPLICA_CA           PEM bundle peers' certificates chain to\n"
     "  KYTHIRA_DYNAMODB_STRONG_NODE_ID       this node's id in the strong host\n"
     "  KYTHIRA_DYNAMODB_STRONG_PEERS         id=region@http://host:port,... every\n"
@@ -723,6 +730,47 @@ namespace gateway_detail {
             "KYTHIRA_DYNAMODB_REPLICA_PEERS needs KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID and "
             "KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY");
     }
+    // Each account's replication principal (task 28), from a file or, for
+    // tests, inline.
+    std::map<std::string, std::pair<std::string, std::string>, std::less<>> account_keys;
+    const auto read_account_keys = [&](std::string_view what, std::string_view text,
+                                       char sep) -> std::optional<std::string> {
+        std::size_t pos = 0;
+        while (pos <= text.size()) {
+            const auto end = std::min(text.find(sep, pos), text.size());
+            const auto line = trim(text.substr(pos, end - pos));
+            pos = end + 1;
+            if (line.empty() || line.starts_with('#')) {
+                continue;
+            }
+            const auto a = line.find(':');
+            const auto b = a == std::string_view::npos ? a : line.find(':', a + 1);
+            if (b == std::string_view::npos || a == 0 || b == a + 1 || b + 1 == line.size()) {
+                return std::string(what) + ": expected account:access_key_id:secret, got '" +
+                       std::string(line.substr(0, a)) + ":...'";
+            }
+            account_keys[std::string(line.substr(0, a))] = {
+                std::string(line.substr(a + 1, b - a - 1)), std::string(line.substr(b + 1))};
+        }
+        return std::nullopt;
+    };
+    if (auto path = env("KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE")) {
+        std::ifstream in(*path);
+        if (!in) {
+            return "KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE: cannot read '" + *path + "'";
+        }
+        std::ostringstream text;
+        text << in.rdbuf();
+        if (auto e =
+                read_account_keys("KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE", text.str(), '\n')) {
+            return e;
+        }
+    }
+    if (auto text = env("KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS")) {
+        if (auto e = read_account_keys("KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS", *text, ',')) {
+            return e;
+        }
+    }
     for (const auto& [region, url] : std::get<0>(peers)) {
         if (region == c.front.region) {
             return "KYTHIRA_DYNAMODB_REPLICA_PEERS names this cluster's own region '" + region +
@@ -748,6 +796,7 @@ namespace gateway_detail {
         p.ca_path = env("KYTHIRA_DYNAMODB_REPLICA_CA").value_or("");
         p.access_key_id = key;
         p.secret_access_key = secret;
+        p.account_keys = account_keys;
         c.replica_peers.push_back(std::move(p));
     }
     return std::nullopt;

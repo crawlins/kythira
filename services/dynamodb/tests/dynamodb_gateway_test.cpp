@@ -577,6 +577,32 @@ BOOST_AUTO_TEST_CASE(auth_setting_is_checked) {
     BOOST_TEST(config_error(vars).starts_with("no access keys"));
 }
 
+BOOST_AUTO_TEST_CASE(replication_principals_per_account_are_read) {
+    auto vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_REPLICA_PEERS"] = "us-west-2=https://west.example:8000";
+    vars["KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID"] = "AKIDREPL";
+    vars["KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY"] = "repl-secret";
+    vars["KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS"] =
+        "444455556666:AKIDOTHER:other-secret, 777788889999:AKIDTHIRD:third:secret";
+    const auto c = std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars)));
+    BOOST_TEST_REQUIRE(c.replica_peers.size() == 1U);
+    const auto& keys = c.replica_peers[0].account_keys;
+    BOOST_TEST(keys.size() == 2U);
+    BOOST_TEST(keys.at("444455556666").first == "AKIDOTHER");
+    BOOST_TEST(keys.at("444455556666").second == "other-secret");
+    // Everything after the second colon is the secret.
+    BOOST_TEST(keys.at("777788889999").second == "third:secret");
+    vars["KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS"] = "444455556666:AKIDOTHER";
+    BOOST_TEST(config_error(vars) ==
+               "KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS: expected account:access_key_id:secret, "
+               "got '444455556666:...'");
+    vars.erase("KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS");
+    vars["KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE"] = "/nonexistent/replica-keys";
+    BOOST_TEST(
+        config_error(vars) ==
+        "KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE: cannot read '/nonexistent/replica-keys'");
+}
+
 BOOST_AUTO_TEST_CASE(namespaces_setting_is_on_or_off) {
     auto vars = minimal_env();
     BOOST_TEST(
