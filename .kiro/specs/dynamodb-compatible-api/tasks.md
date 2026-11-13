@@ -979,6 +979,15 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       three restarted together came back
   - [ ] 27.3 Strong catalog: strong ids, shared settings, membership,
     status; each region's catalog applies them to its descriptor
+    - [x] Strong ids: the strong host's first layout puts every strong
+      table in a group starting at `strong_key_start()`; each strong
+      voter proposes `seed_ids` (catalog format 11) at start, so strong
+      table and index ids start at `k_strong_table_id_base` (2^62)
+    - [x] `routed_backend`: the gateway's backend sends each call to the
+      host owning its table id, key range or stream key; a transaction
+      across both hosts is refused (`dynamodb_strong_test`)
+    - [ ] Shared settings, membership and status, mirrored into each
+      region's catalog (with 27.4, which first writes them)
   - [ ] 27.4 `UpdateTable` with `MultiRegionConsistency=STRONG`,
     `ReplicaUpdates` and `GlobalTableWitnessUpdates`: validation, seal,
     emptiness check, conversion; `DescribeTable` with

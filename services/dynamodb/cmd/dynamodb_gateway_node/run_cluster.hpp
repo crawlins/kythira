@@ -21,6 +21,7 @@
 #include <kythira/dynamodb/gateway.hpp>
 #include <kythira/dynamodb/group_state_machine.hpp>
 #include <kythira/dynamodb/raft_backend.hpp>
+#include <kythira/dynamodb/routed_backend.hpp>
 
 #include <raft/beast_http_transport_impl.hpp>
 #include <raft/binary_file_persistence.hpp>
@@ -238,6 +239,9 @@ struct host_spec {
     std::optional<std::chrono::milliseconds> heartbeat;
     std::optional<std::chrono::milliseconds> election_min;
     std::optional<std::chrono::milliseconds> election_max;
+    /// The strong host's first layout (`strong_bootstrap_descriptors`)
+    /// instead of a cluster's.
+    bool strong = false;
 };
 
 /// A host's storage: its engine, and its groups' Raft log stores.
@@ -362,7 +366,9 @@ public:
         }
         _host = std::make_unique<host_type>(std::move(hc));
         const auto saved = _layout ? _layout->load() : std::nullopt;
-        for (const auto& d : saved ? *saved : backend_type::bootstrap_descriptors(spec.voters)) {
+        const auto first = spec.strong ? backend_type::strong_bootstrap_descriptors(spec.voters)
+                                       : backend_type::bootstrap_descriptors(spec.voters);
+        for (const auto& d : saved ? *saved : first) {
             _host->create_group(d);
         }
         _host->start();
@@ -439,6 +445,7 @@ inline auto strong_spec(const ddb::strong_config& k) -> host_spec {
     spec.heartbeat = k.heartbeat;
     spec.election_min = k.election_min;
     spec.election_max = k.election_max;
+    spec.strong = true;
     return spec;
 }
 
@@ -567,7 +574,11 @@ auto run_cluster(
                 }
             });
 
-        ddb::gateway<backend_type> gw(cfg, backend, log);
+        // The gateway serves from both hosts: a key under a strong table id
+        // goes to the strong host, everything else to the cluster's.
+        ddb::routed_backend<backend_type> routed(backend,
+                                                 strong_backend ? &*strong_backend : nullptr);
+        ddb::gateway<ddb::routed_backend<backend_type>> gw(cfg, routed, log);
         if (strong_backend) {
             gw.set_strong_ops(
                 [&strong_backend](std::string_view op) { return strong_backend->serve(op); });
@@ -582,15 +593,22 @@ auto run_cluster(
                        ", raft on " + c.raft_bind + ":" + std::to_string(c.raft_port) + ", node " +
                        c.node_id + " of " + std::to_string(spec.voters.size()) + ", engine " +
                        std::string(Storage::k_name));
-        // The strong host is ready once its catalog answers here, which
-        // takes a leader that a quorum spanning two regions elected.
+        // The strong host is ready once its catalog has taken this node's
+        // seed (ids from `k_strong_table_id_base`; only the first voter's
+        // changes anything), which takes a leader that a quorum spanning
+        // two regions elected.
         std::atomic<bool> probing{static_cast<bool>(strong_backend)};
         std::thread probe;
         if (strong_backend) {
             probe = std::thread([&] {
                 while (probing.load(std::memory_order_acquire)) {
                     try {
-                        (void)strong_backend->list_tables("", 1);
+                        ddb::catalog_command seed;
+                        seed.op = ddb::catalog_command::kind::seed_ids;
+                        seed.table.table_id = ddb::k_strong_table_id_base;
+                        if (!strong_backend->catalog(seed).ok()) {
+                            throw std::runtime_error("the strong catalog refused its seed");
+                        }
                         std::string regions;
                         for (const auto& r : cfg.strong.regions()) {
                             regions += (regions.empty() ? "" : ", ") + r;

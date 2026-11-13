@@ -83,6 +83,28 @@ inline constexpr std::string_view k_catalog_prefix{"\0meta/dynamodb/", 15};
     return prefix_range(table_prefix(table_id));
 }
 
+/// The first table (and index) id of the strong host (task 27): its
+/// catalog hands out ids from here, and a cluster's catalog never reaches
+/// it, so a key's table id says which host owns it.
+inline constexpr std::uint64_t k_strong_table_id_base = std::uint64_t{1} << 62U;
+
+[[nodiscard]] constexpr auto is_strong_table(std::uint64_t table_id) -> bool {
+    return table_id >= k_strong_table_id_base;
+}
+
+/// The first key the strong host owns: every key of every strong table
+/// sorts at or after it, and every key of a cluster's own tables before.
+[[nodiscard]] inline auto strong_key_start() -> std::string {
+    auto p = table_prefix(k_strong_table_id_base);
+    p.pop_back();
+    return p;
+}
+
+[[nodiscard]] inline auto is_strong_key(std::string_view key) -> bool {
+    static const auto start = strong_key_start();
+    return key >= start;
+}
+
 /// The two-byte hash that leads a partition's keys.
 [[nodiscard]] inline auto partition_hash(std::string_view encoded_partition_key) -> std::string {
     const auto digest = kythira::sha256_of(encoded_partition_key);

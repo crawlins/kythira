@@ -209,6 +209,11 @@ set_tests_properties(dynamodb_vector_test PROPERTIES
 kythira_dynamodb_test(dynamodb_global_table_test dynamodb_global_table_test.cpp)
 set_tests_properties(dynamodb_global_table_test PROPERTIES
     LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
+# Multi-region strong consistency (task 27): the strong catalog's ids and
+# the backend that routes each call to the host owning its table.
+kythira_dynamodb_test(dynamodb_strong_test dynamodb_strong_test.cpp)
+set_tests_properties(dynamodb_strong_test PROPERTIES
+    LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 120)
 # Kinesis streaming destinations (task 17): the four actions, the
 # publisher's record format, order and resends, and the SigV4 sink.
 kythira_dynamodb_test(dynamodb_kinesis_destination_test dynamodb_kinesis_destination_test.cpp)

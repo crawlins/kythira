@@ -389,6 +389,24 @@ public:
         return {catalog, items};
     }
 
+    /// The strong host's first layout (task 27): the catalog group (the
+    /// strong catalog) as for a cluster, then one item group from `t/` to
+    /// `strong_key_start()`, which never holds an item, and one from there
+    /// up, which holds every strong table. Its change log streams start at
+    /// the strong range, so a stream key says which host it belongs to.
+    [[nodiscard]] static auto strong_bootstrap_descriptors(const std::vector<node_id_type>& voters)
+        -> std::vector<descriptor_type> {
+        auto out = bootstrap_descriptors(voters);
+        out.back()._range._end = strong_key_start();
+        descriptor_type strong{};
+        strong._group_id = 3;
+        strong._range._start = strong_key_start();
+        strong._range._end = std::nullopt;
+        strong._voters = voters;
+        out.push_back(std::move(strong));
+        return out;
+    }
+
     // -- dynamo_backend -------------------------------------------------------
 
     auto catalog(const catalog_command& c) -> catalog_result {
