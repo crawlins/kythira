@@ -1050,8 +1050,15 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       `a_strong_table_left_for_one_region_survives_the_others` (three
       regions over a real strong host: after leaving, both other regions
       are stopped and the table still takes writes and strong reads)
-  - [ ] 27.7 Splits, GSIs, Streams, Kinesis destinations, PITR and
+  - [x] 27.7 Splits, GSIs, Streams, Kinesis destinations, PITR and
     backups on MRSC tables
+    - GSI changes go to the strong catalog and every region's worker
+      mirrors them; an MRSC table always logs changes; a stream picks
+      an MRSC table's records by write time, since each region labels
+      its writes with its own stream setting. Splits are Raft entries
+      in the strong host's groups and need nothing new (the split-under-
+      load test is in 27.8); Kinesis destinations choose records by
+      write time like PITR, and are not tested separately here.
   - [ ] 27.8 Tests: three in-process clusters (write in one region, strong
     read in another; racing conditional writes; lose a region; cut a
     region off and bring it back; split under load; witness); a compose

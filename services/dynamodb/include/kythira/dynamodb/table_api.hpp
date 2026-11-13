@@ -1294,11 +1294,75 @@ public:
             c.update_fields |= catalog_command::update_vectors;
         }
         c.now_ms = _backend.now_ms();
+        if constexpr (k_has_strong) {
+            constexpr auto k_shared = static_cast<std::uint8_t>(catalog_command::update_gsis |
+                                                                catalog_command::update_billing |
+                                                                catalog_command::update_throughput);
+            if (current->strong && (c.update_fields & k_shared) != 0) {
+                // A strong table's GSIs, billing mode and capacity are
+                // shared by its regions (AWS keeps them the same): the
+                // strong catalog makes the change, with strong index ids,
+                // and this region mirrors it now; the others mirror it
+                // from their workers.
+                auto mirrored = strong_shared_update(c, c.update_fields & k_shared);
+                if (!mirrored) {
+                    return mirrored.error();
+                }
+                c.update_fields &= static_cast<std::uint8_t>(~k_shared);
+                if (c.update_fields == 0) {
+                    return boost::json::object{
+                        {"TableDescription", table_description(*mirrored, ctx)}};
+                }
+                c.table.gsis = mirrored->gsis;
+            }
+        }
         const auto r = _backend.catalog(c);
         if (!r.ok()) {
             return error_of(r);
         }
         return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
+    }
+
+    /// The shared settings `fields` of `c` (GSIs, billing mode, capacity),
+    /// made in the strong catalog and mirrored into this region's (task
+    /// 27.7). Returns this region's descriptor.
+    auto strong_shared_update(const catalog_command& c, std::uint8_t fields)
+        -> aws_json::result<table_descriptor> {
+        using namespace table_api_detail;
+        auto& strong = _backend.strong();
+        const auto shared = strong.describe(c.table.name);
+        if (!shared || shared->table_id != c.table.table_id) {
+            return not_found(c.table.name);
+        }
+        catalog_command sc;
+        sc.op = catalog_command::kind::update_table;
+        sc.table = *shared;
+        sc.table.gsis = c.table.gsis;
+        sc.table.billing = c.table.billing;
+        sc.table.read_capacity = c.table.read_capacity;
+        sc.table.write_capacity = c.table.write_capacity;
+        sc.update_fields = fields;
+        sc.now_ms = c.now_ms;
+        const auto made = strong.catalog(sc);
+        if (!made.ok()) {
+            return error_of(made);
+        }
+        catalog_command mc;
+        mc.op = catalog_command::kind::strong_members;
+        mc.table.name = c.table.name;
+        mc.table.table_id = c.table.table_id;
+        mc.table.schema = c.table.schema;
+        mc.table.gsis = made.table->gsis;
+        mc.table.billing = made.table->billing;
+        mc.table.read_capacity = made.table->read_capacity;
+        mc.table.write_capacity = made.table->write_capacity;
+        mc.update_fields = fields;
+        mc.now_ms = c.now_ms;
+        const auto r = _backend.catalog(mc);
+        if (!r.ok()) {
+            return error_of(r);
+        }
+        return *r.table;
     }
 
     /// `UpdateTable`'s `GlobalSecondaryIndexUpdates` against `table` (with

@@ -446,10 +446,13 @@ struct table_descriptor {
     /// enabled (task 19), or the table has a vector index, whose graphs
     /// the log feeds (task 26), or the table is global with last-writer-wins
     /// replication from the log (task 22). A strongly consistent table
-    /// (task 27) replicates through Raft, not the log.
+    /// (task 27) replicates through Raft, not the log, but always logs:
+    /// any of its regions may read the log (a stream, a Kinesis
+    /// destination, point-in-time recovery), each with its own settings,
+    /// and every region's writes must be in it.
     [[nodiscard]] auto logs_changes() const -> bool {
         return enabled_stream() != nullptr || streaming_destination() != nullptr || pitr.enabled ||
-               !vectors.empty() || (global() && !strong);
+               !vectors.empty() || global() || strong;
     }
 
     /// The Kinesis destination being streamed to, or null.
@@ -569,7 +572,11 @@ struct catalog_command {
         adopt_strong = 20,
         /// The members of a strong table (task 27): the statuses (and
         /// failures) of `table.replicas` and `table.witnesses` replace the
-        /// stored ones, by region.
+        /// stored ones, by region. With `update_gsis`, `table.gsis` (the
+        /// strong catalog's, ids and statuses included) replaces the
+        /// stored list as it is (task 27.7); with `update_billing` and
+        /// `update_throughput`, the billing mode and provisioned
+        /// capacity, which AWS keeps the same on every replica.
         strong_members = 21,
         /// The worker salvaged the items written under a strong table's
         /// retired ids (task 27): `retired_ids` go, each old key space gets
@@ -2507,6 +2514,22 @@ private:
                     changed = true;
                 }
             }
+        }
+        if ((c.update_fields & catalog_command::update_gsis) != 0 && d->gsis != c.table.gsis) {
+            d->gsis = c.table.gsis;
+            changed = true;
+        }
+        if ((c.update_fields & catalog_command::update_billing) != 0 &&
+            d->billing != c.table.billing) {
+            d->billing = c.table.billing;
+            changed = true;
+        }
+        if ((c.update_fields & catalog_command::update_throughput) != 0 &&
+            (d->read_capacity != c.table.read_capacity ||
+             d->write_capacity != c.table.write_capacity)) {
+            d->read_capacity = c.table.read_capacity;
+            d->write_capacity = c.table.write_capacity;
+            changed = true;
         }
         if (changed) {
             ++d->revision;

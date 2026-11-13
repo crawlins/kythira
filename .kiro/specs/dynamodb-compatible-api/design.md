@@ -308,9 +308,24 @@ is a Raft entry, so every region's replica splits at the same index, and
 stream shard lineage is identical everywhere. GSI groups also live in the
 strong host, spread over the regions, so every region has its index; the
 propagator runs on each base group's leader, and index reads stay
-eventually consistent. Per-replica consumers of the change log (Streams,
-Kinesis destinations, PITR, backups) read their own region's replica, so a
-replica's stream setting and destinations stay local, as on AWS.
+eventually consistent. A GSI change in `UpdateTable` (create, delete,
+throughput), like a billing mode or capacity change, is a shared
+setting: the region that takes it applies it to the strong catalog
+first, then copies the strong catalog's GSI list, billing mode and
+capacity into its own descriptor, and every other region's
+`strong_table_worker` copies them on its next pass, as it copies member
+statuses.
+
+An MRSC table always keeps a change log, whatever its replicas enable,
+since any replica may turn on a consumer and every region's writes must
+be in it. Per-replica consumers of the change log (Streams, Kinesis
+destinations, PITR, backups) read the shared log through their own
+region's routing, so a replica's stream setting, destinations and PITR
+stay local, as on AWS. A record carries the label of the stream its
+writer's region saw enabled, which differs by region here, so for an
+MRSC table a stream's records are chosen by write time instead: those
+written from the stream's label until it was disabled. Kinesis
+destinations and PITR already choose records by write time.
 
 **What it costs.** Every write to an MRSC table pays at least one
 cross-region round trip, and the strong host doubles each node's Raft
