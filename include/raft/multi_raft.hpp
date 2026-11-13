@@ -694,6 +694,22 @@ struct multi_raft_config {
     /// Defence in depth on the one knob whose misconfiguration is unbounded.
     std::chrono::milliseconds split_merge_interval{std::chrono::hours{1}};
 
+    /// @brief Told, on every replica and synchronously in the apply path,
+    ///        the descriptors of all of this node's groups whenever a split or
+    ///        merge changed them or a group was destroyed.
+    ///
+    /// A host whose state machines persist their own state
+    /// (`persistent_state_machine`) needs this to restart after a split:
+    /// such a group's applied index survives the restart, so nothing replays
+    /// the split, and the node must re-create every group from the layout it
+    /// last had rather than from its bootstrap layout. Called before the
+    /// parent applies any later entry, so a layout saved here is never older
+    /// than the state that a restart finds in the engine; a crash before it
+    /// returns leaves the split entry unapplied in the parent's persisted
+    /// state, and the replay re-creates what the old layout lacks. Must not
+    /// call back into the host.
+    std::function<void(const std::vector<descriptor_type>&)> on_local_layout_changed{};
+
     /// @brief Called once a local replica has been torn down: merged away
     /// (at the end of the merge commit's apply phase), or tombstoned or
     /// removed by `destroy_group()`.
@@ -1823,6 +1839,8 @@ private:
     [[nodiscard]] auto liveness_check_due(const group_state& g, std::int64_t now) const -> bool;
 
     auto persist_tombstones() -> void;
+    /// Hands `on_local_layout_changed` the local groups' descriptors.
+    auto report_local_layout() -> void;
 
     /// @brief A reference to the current pool that stays valid while held.
     [[nodiscard]] auto current_executor() const -> std::shared_ptr<striped_serial_executor>;
