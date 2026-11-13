@@ -417,7 +417,7 @@ public:
 
     auto query(call_context& ctx, boost::json::object& in) -> result {
         using namespace query_detail;
-        auto table = api_detail::usable_table(_backend, in.at("TableName").as_string());
+        auto table = api_detail::usable_table(_backend, ctx, in.at("TableName").as_string());
         if (!table) {
             return table.error();
         }
@@ -487,7 +487,7 @@ public:
 
     auto scan(call_context& ctx, boost::json::object& in) -> result {
         using namespace query_detail;
-        auto table = api_detail::usable_table(_backend, in.at("TableName").as_string());
+        auto table = api_detail::usable_table(_backend, ctx, in.at("TableName").as_string());
         if (!table) {
             return table.error();
         }

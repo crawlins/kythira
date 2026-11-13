@@ -273,7 +273,7 @@ public:
     auto start(call_context& ctx, boost::json::object& in) -> result {
         namespace ed = export_detail;
         namespace bd = bulk_detail;
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         const auto d = _backend.describe(name);
         if (!d) {
             return table_api_detail::modeled(
@@ -376,7 +376,7 @@ public:
         return boost::json::object{{"BulkOperationDescription", description(*r)}};
     }
 
-    auto list(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto list(call_context& ctx, boost::json::object& in) -> result {
         namespace ed = export_detail;
         boost::json::array out;
         if (!_store) {
@@ -396,6 +396,9 @@ public:
         for (const auto& r : records) {
             if (!started) {
                 started = r.arn == start;
+                continue;
+            }
+            if (!ctx.owns_arn(r.arn)) {
                 continue;
             }
             if (out.size() >= limit) {

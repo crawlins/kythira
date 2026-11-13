@@ -105,6 +105,10 @@ struct front_end_config {
     /// every account sees the same tables; only for a single-account
     /// deployment.
     std::string account;
+    /// Whether each account has its own tables (task 28): asked once per
+    /// request, so a migration that turns namespaces on takes effect at
+    /// once. Unset: off.
+    std::function<bool()> namespaced{};
     aws_json::request_limits limits{};
     /// Told the operation and the exception's message whenever a handler
     /// throws and the client is answered `InternalServerError`, so the
@@ -149,15 +153,91 @@ struct call_context {
     /// every statement failed to parse). The backstop then lets it pass.
     bool touched_no_resource = false;
 
-    /// The account that owns the tables.
+    /// Tables are named `<account>/<name>` inside (task 28): each account
+    /// has its own tables. Off, a gateway's tables all belong to `owner()`.
+    bool namespaced = false;
+
+    /// The account that owns a table named without an ARN: the caller's
+    /// with namespaces on, else the gateway's (or the caller's when the
+    /// gateway names none).
     [[nodiscard]] auto owner() const -> const std::string& {
-        return account.empty() ? principal.account : account;
+        return namespaced || account.empty() ? principal.account : account;
     }
 
-    /// `arn:<partition>:dynamodb:<region>:<owner>:table/<name>`.
+    /// The catalog name of a table given as a name or a table ARN. With
+    /// namespaces on it is `<account>/<name>`, the account being the
+    /// ARN's or else the caller's; the front end has checked an ARN's
+    /// account. A slash is not valid in a table name, so a bare name that
+    /// holds one can never reach another account's table.
+    [[nodiscard]] auto table_name(std::string_view given) const -> std::string {
+        std::string_view name = given;
+        std::string_view arn_account;
+        if (given.starts_with("arn:")) {
+            if (const auto at = given.find(":table/"); at != std::string_view::npos) {
+                name = given.substr(at + 7);
+                name = name.substr(0, name.find('/'));
+                // arn:<partition>:dynamodb:<region>:<account>:table/...
+                auto head = given.substr(0, at);
+                arn_account = head.substr(head.rfind(':') + 1);
+            }
+        }
+        if (!namespaced) {
+            return std::string(name);
+        }
+        return (arn_account.empty() ? owner() : std::string(arn_account)) + "/" + std::string(name);
+    }
+
+    /// A catalog name as the API shows it: without its account.
+    [[nodiscard]] static auto bare_name(std::string_view catalog_name) -> std::string {
+        const auto slash = catalog_name.find('/');
+        return std::string(slash == std::string_view::npos ? catalog_name
+                                                           : catalog_name.substr(slash + 1));
+    }
+
+    /// Whether a catalog name belongs to the owner: always when tables are
+    /// not namespaced, else when it sits under "<owner>/".
+    [[nodiscard]] auto owns(std::string_view catalog_name) const -> bool {
+        if (!namespaced) {
+            return true;
+        }
+        const auto& acct = owner();
+        return catalog_name.size() > acct.size() && catalog_name.starts_with(acct) &&
+               catalog_name[acct.size()] == '/';
+    }
+
+    /// Whether an ARN (`arn:<partition>:dynamodb:<region>:<account>:...`)
+    /// names the owner's account; always true when not namespaced.
+    [[nodiscard]] auto owns_arn(std::string_view arn) const -> bool {
+        if (!namespaced) {
+            return true;
+        }
+        std::size_t at = 0;
+        for (int i = 0; i < 4; ++i) {
+            at = arn.find(':', at);
+            if (at == std::string_view::npos) {
+                return false;
+            }
+            ++at;
+        }
+        const auto end = arn.find(':', at);
+        return end != std::string_view::npos && arn.substr(at, end - at) == owner();
+    }
+
+    /// `arn:<partition>:dynamodb:<region>:<account>:table/<name>`, for a
+    /// bare name (the owner's) or a catalog name (its own account's). Only
+    /// a namespaced catalog name's "<12-digit account>/" prefix names an
+    /// account: a caller's invalid name such as "bad/name" stays the
+    /// owner's, so it reaches the handler's ValidationException rather
+    /// than reading as another account's table.
     [[nodiscard]] auto table_arn(std::string_view table) const -> std::string {
-        return "arn:" + partition + ":dynamodb:" + region + ":" + owner() + ":table/" +
-               std::string(table);
+        const auto slash = table.find('/');
+        const bool qualified =
+            namespaced && slash == 12 && std::all_of(table.begin(), table.begin() + 12, [](char c) {
+                return std::isdigit(static_cast<unsigned char>(c)) != 0;
+            });
+        const std::string acct = qualified ? std::string(table.substr(0, slash)) : owner();
+        return "arn:" + partition + ":dynamodb:" + region + ":" + acct + ":table/" +
+               std::string(qualified ? table.substr(slash + 1) : table);
     }
 };
 
@@ -186,6 +266,29 @@ using report_handler = std::function<aws_json::result<boost::json::object>(
     call_context&, const std::map<std::string, std::string, std::less<>>&)>;
 
 namespace detail {
+
+/// A message with every "<12-digit account>/" removed, so a namespaced
+/// catalog name ("123456789012/orders") reads as the table name the caller
+/// gave. ARNs are untouched: their account is followed by ':'.
+[[nodiscard]] inline auto strip_account_prefixes(std::string_view m) -> std::string {
+    std::string out;
+    out.reserve(m.size());
+    std::size_t i = 0;
+    while (i < m.size()) {
+        const bool boundary = i == 0 || std::isdigit(static_cast<unsigned char>(m[i - 1])) == 0;
+        std::size_t j = i;
+        while (j < m.size() && j - i < 12 && std::isdigit(static_cast<unsigned char>(m[j])) != 0) {
+            ++j;
+        }
+        if (boundary && j - i == 12 && j < m.size() && m[j] == '/') {
+            i = j + 1;
+            continue;
+        }
+        out.push_back(m[i]);
+        ++i;
+    }
+    return out;
+}
 
 [[nodiscard]] inline auto header_value(const front_end_request& r, std::string_view name)
     -> std::string_view {
@@ -367,6 +470,7 @@ public:
         ctx.region = _config.region;
         ctx.partition = _config.partition;
         ctx.account = _config.account;
+        ctx.namespaced = _config.namespaced && _config.namespaced();
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -380,7 +484,11 @@ public:
         try {
             auto out = h->second(ctx, input);
             if (!out) {
-                return c.respond(out.error(), id);
+                auto e = out.error();
+                if (ctx.namespaced && e.message) {
+                    e.message = detail::strip_account_prefixes(*e.message);
+                }
+                return c.respond(e, id);
             }
             if (!ctx.authorization_checked && !ctx.touched_no_resource) {
                 // No check ran for an operation that succeeded: a handler
@@ -442,6 +550,7 @@ private:
         ctx.region = _config.region;
         ctx.partition = _config.partition;
         ctx.account = _config.account;
+        ctx.namespaced = _config.namespaced && _config.namespaced();
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -524,6 +633,7 @@ private:
         ctx.region = _config.region;
         ctx.partition = _config.partition;
         ctx.account = _config.account;
+        ctx.namespaced = _config.namespaced && _config.namespaced();
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -679,7 +789,7 @@ private:
                     colon == std::string_view::npos ? std::string_view{} : rest.substr(colon + 1);
             }
             const auto account = rest.substr(0, rest.find(':'));
-            if (!account.empty() && account != ctx.owner()) {
+            if (!ctx.namespaced && !account.empty() && account != ctx.owner()) {
                 // No account but the owner has tables here, so the
                 // resource does not exist; and the handlers look tables up
                 // by name alone, so such an ARN must never reach them.

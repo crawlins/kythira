@@ -177,9 +177,9 @@ public:
         fe.set_report_handler([this](call_context& c, const params& p) { return report(c, p); });
     }
 
-    auto update(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto update(call_context& ctx, boost::json::object& in) -> result {
         namespace id = insights_detail;
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         const auto d = _backend.describe(name);
         if (!d || d->status == table_status::deleting) {
             return id::table_not_found(name);
@@ -209,7 +209,7 @@ public:
             return table_api_detail::error_of(r);
         }
         boost::json::object out;
-        out["TableName"] = d->name;
+        out["TableName"] = call_context::bare_name(d->name);
         if (!want.index.empty()) {
             out["IndexName"] = want.index;
         }
@@ -218,9 +218,9 @@ public:
         return out;
     }
 
-    auto describe(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto describe(call_context& ctx, boost::json::object& in) -> result {
         namespace id = insights_detail;
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         const auto d = _backend.describe(name);
         if (!d || d->status == table_status::deleting) {
             return id::table_not_found(name);
@@ -234,7 +234,7 @@ public:
         }
         const auto* s = d->insights_of(index);
         boost::json::object out;
-        out["TableName"] = d->name;
+        out["TableName"] = call_context::bare_name(d->name);
         if (!index.empty()) {
             out["IndexName"] = index;
         }
@@ -256,7 +256,7 @@ public:
     /// With `TableName`: the table and each of its GSIs, set or not. Without:
     /// every table and GSI whose setting was ever changed. Ordered by table
     /// then index (the table first); `NextToken` is the last one answered.
-    auto list(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto list(call_context& ctx, boost::json::object& in) -> result {
         namespace id = insights_detail;
         std::size_t limit = id::k_max_list_results;
         if (const auto* m = in.if_contains("MaxResults"); m != nullptr && m->is_number()) {
@@ -277,7 +277,7 @@ public:
             if (slash == std::string_view::npos || slash == 0) {
                 return validation_error("Invalid NextToken");
             }
-            after = std::pair{std::string(token.substr(0, slash)),
+            after = std::pair{ctx.table_name(token.substr(0, slash)),
                               std::string(token.substr(slash + 1))};
         }
         const auto is_after = [&](const std::string& table, const std::string& index) {
@@ -288,7 +288,7 @@ public:
         std::optional<std::pair<std::string, std::string>> last;
         bool more = false;
         const auto add = [&](const table_descriptor& d, const std::string& index) {
-            if (!is_after(d.name, index)) {
+            if (!ctx.owns(d.name) || !is_after(d.name, index)) {
                 return true;
             }
             if (summaries.size() == limit) {
@@ -297,7 +297,7 @@ public:
             }
             const auto* s = d.insights_of(index);
             boost::json::object o;
-            o["TableName"] = d.name;
+            o["TableName"] = call_context::bare_name(d.name);
             if (!index.empty()) {
                 o["IndexName"] = index;
             }
@@ -327,10 +327,10 @@ public:
         };
 
         if (const auto* t = in.if_contains("TableName")) {
-            const auto name = table_api_detail::table_name_of(t->as_string());
+            const auto name = ctx.table_name(t->as_string());
             const auto d = _backend.describe(name);
             if (!d || d->status == table_status::deleting) {
-                return id::table_not_found(name);
+                return id::table_not_found(call_context::bare_name(name));
             }
             (void)add_table(*d, true);
         } else {
@@ -362,15 +362,15 @@ public:
         boost::json::object out;
         out["ContributorInsightsSummaries"] = std::move(summaries);
         if (more && last) {
-            out["NextToken"] = last->first + "/" + last->second;
+            out["NextToken"] = call_context::bare_name(last->first) + "/" + last->second;
         }
         return out;
     }
 
     /// The report (`front_end.hpp`'s extension path): see the file comment.
-    auto report(call_context& /*ctx*/, const params& p) -> result {
+    auto report(call_context& ctx, const params& p) -> result {
         namespace id = insights_detail;
-        const auto name = table_api_detail::table_name_of(p.at("TableName"));
+        const auto name = ctx.table_name(p.at("TableName"));
         const auto d = _backend.describe(name);
         if (!d || d->status == table_status::deleting) {
             return id::table_not_found(name);
@@ -400,7 +400,7 @@ public:
         }
         const auto* s = d->insights_of(index);
         boost::json::object out;
-        out["TableName"] = d->name;
+        out["TableName"] = call_context::bare_name(d->name);
         if (!index.empty()) {
             out["IndexName"] = index;
         }

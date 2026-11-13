@@ -113,7 +113,7 @@ public:
         for (const auto& [name, req] : requests) {
             const auto& r = req.as_object();
             const auto& keys = r.at("Keys").as_array();
-            auto table = api_detail::usable_table(_backend, name);
+            auto table = api_detail::usable_table(_backend, ctx, name);
             if (!table) {
                 return table.error();
             }
@@ -238,7 +238,7 @@ public:
         };
         std::vector<table_writes> writes;
         for (const auto& [name, list] : requests) {
-            auto table = api_detail::usable_table(_backend, name);
+            auto table = api_detail::usable_table(_backend, ctx, name);
             if (!table) {
                 return table.error();
             }

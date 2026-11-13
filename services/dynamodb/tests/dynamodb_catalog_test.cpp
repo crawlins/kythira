@@ -294,6 +294,39 @@ BOOST_AUTO_TEST_CASE(list_tables_pages_in_name_order) {
     BOOST_TEST(f.catalog.list_tables("d", 2).empty());
 }
 
+BOOST_AUTO_TEST_CASE(qualify_tables_moves_every_table_to_one_account_once) {
+    fixture f;
+    const auto a = f.activate("orders");
+    (void)f.create("users");
+    namespace cd = ddb::catalog_detail;
+    BOOST_TEST(!f.catalog.describe(cd::k_namespace_probe).has_value());
+
+    ddb::catalog_command q;
+    q.op = ddb::catalog_command::kind::qualify_tables;
+    q.table.name = "111122223333";
+    BOOST_TEST(ddb::encode_catalog_command(q)[0] == '\x0c');
+    BOOST_TEST(f.run(q).ok());
+    BOOST_TEST((f.catalog.list_tables("", 100) ==
+                std::vector<std::string>{"111122223333/orders", "111122223333/users"}));
+    const auto moved = f.catalog.describe("111122223333/orders");
+    BOOST_REQUIRE(moved.has_value());
+    BOOST_TEST(moved->table_id == a);
+    BOOST_TEST((moved->status == ddb::table_status::active));
+    BOOST_TEST((moved->tags == decltype(moved->tags){{"team", "storage"}}));
+    BOOST_TEST(!f.catalog.describe("orders").has_value());
+    BOOST_TEST(f.catalog.describe(cd::k_namespace_probe)->name == "111122223333/");
+
+    // Once only: a second command, for any account, changes nothing; a new
+    // account's table keeps its own name.
+    (void)f.create("444455556666/orders");
+    q.table.name = "444455556666";
+    BOOST_TEST(f.run(q).ok());
+    BOOST_TEST((f.catalog.list_tables("", 100) == std::vector<std::string>{"111122223333/orders",
+                                                                           "111122223333/users",
+                                                                           "444455556666/orders"}));
+    BOOST_TEST(f.catalog.describe(cd::k_namespace_probe)->name == "111122223333/");
+}
+
 BOOST_AUTO_TEST_CASE(restart_and_checkpoint_keep_the_catalog) {
     fixture f;
     f.activate("orders");

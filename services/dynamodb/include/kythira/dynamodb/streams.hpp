@@ -266,9 +266,10 @@ public:
     auto list_streams(call_context& ctx, boost::json::object& in) -> result {
         std::vector<std::string> tables;
         if (const auto* t = in.if_contains("TableName")) {
-            tables.push_back(table_api_detail::table_name_of(t->as_string()));
+            tables.push_back(ctx.table_name(t->as_string()));
         } else {
             tables = _backend.list_tables("", SIZE_MAX);
+            std::erase_if(tables, [&](const std::string& n) { return !ctx.owns(n); });
         }
         const auto limit = in.contains("Limit")
                                ? static_cast<std::size_t>(in.at("Limit").to_number<std::int64_t>())
@@ -302,7 +303,7 @@ public:
                 }
                 out.push_back(boost::json::object{
                     {"StreamArn", arn},
-                    {"TableName", d->name},
+                    {"TableName", call_context::bare_name(d->name)},
                     {"StreamLabel", table_api_detail::stream_label(s->label_ms)}});
                 last = std::move(arn);
             }
@@ -380,7 +381,7 @@ public:
             {"StreamStatus", stream.disabled_ms == 0 ? "ENABLED" : "DISABLED"},
             {"StreamViewType", table_api_detail::view_type_name(stream.view)},
             {"CreationRequestDateTime", table_api_detail::millis_to_seconds(stream.label_ms)},
-            {"TableName", table.name},
+            {"TableName", call_context::bare_name(table.name)},
             {"KeySchema", std::move(keys)},
             {"Shards", std::move(out)},
         };
@@ -523,7 +524,7 @@ private:
         if (at == std::string_view::npos) {
             return std::nullopt;
         }
-        const auto name = table_api_detail::table_name_of(arn.substr(0, at));
+        const auto name = ctx.table_name(arn.substr(0, at));
         if (ctx.table_arn(name) != arn.substr(0, at)) {
             return std::nullopt;
         }

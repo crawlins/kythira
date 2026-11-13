@@ -596,6 +596,11 @@ struct catalog_command {
         /// the remaining region's groups. Refused unless the stored table
         /// has `table.table_id`.
         forget_strong = 24,
+        /// Turns per-account table names on (task 28): `table.name` is the
+        /// owning account. Every table whose catalog name has no account
+        /// moves to `<account>/<name>` and the catalog records the account,
+        /// once; on a catalog that already has one, nothing changes.
+        qualify_tables = 25,
     };
 
     /// Which settings an `update_table` changes.
@@ -689,9 +694,11 @@ namespace catalog_detail {
 /// `strong_members`, `salvage_done`, `leave_strong` and `forget_strong`
 /// (task 27), only for a
 /// multi-region strongly consistent table.
+/// Commands only: 12 added `qualify_tables` (task 28); the descriptor is
+/// read as in 11.
 inline constexpr std::uint8_t k_descriptor_format_version = 11;
 inline constexpr std::uint8_t k_job_format_version = 1;
-inline constexpr std::uint8_t k_command_format_version = 11;
+inline constexpr std::uint8_t k_command_format_version = 12;
 inline constexpr std::uint8_t k_result_format_version = 11;
 
 /// The version a form carrying `d` is written as.
@@ -740,6 +747,14 @@ inline constexpr std::uint8_t k_result_format_version = 11;
 [[nodiscard]] inline auto next_id_key() -> std::string {
     return std::string(k_catalog_prefix) + "next-table-id";
 }
+/// The account that owns every table, once table names carry accounts
+/// (task 28); absent before.
+[[nodiscard]] inline auto namespace_key() -> std::string {
+    return std::string(k_catalog_prefix) + "namespace";
+}
+/// The name `describe()` answers with the namespace: no table can have it,
+/// since a table name has no '/'. The answer's `name` is "<account>/".
+inline constexpr std::string_view k_namespace_probe = "/namespace";
 
 [[nodiscard]] inline auto u64_string(std::uint64_t v) -> std::string {
     std::string out;
@@ -1201,6 +1216,9 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     // At least the version that brought the command's kind.
     auto version = catalog_detail::version_for(c.table);
     switch (c.op) {
+        case catalog_command::kind::qualify_tables:
+            version = std::max<std::uint8_t>(version, 12);
+            break;
         case catalog_command::kind::seed_ids:
         case catalog_command::kind::make_strong:
         case catalog_command::kind::adopt_strong:
@@ -1266,8 +1284,10 @@ inline void put_descriptor_body(std::string& out, const table_descriptor& d, std
     const auto op = static_cast<std::uint8_t>(bytes[1]);
     // set_ttl came in version 3, the destination commands in 5,
     // restore_done in 6, the point-in-time recovery commands in 7, the
-    // resource policy and Contributor Insights commands in 8.
-    const std::uint8_t last_op = version >= 11   ? 24
+    // resource policy and Contributor Insights commands in 8,
+    // qualify_tables in 12.
+    const std::uint8_t last_op = version >= 12   ? 25
+                                 : version >= 11 ? 24
                                  : version >= 10 ? 17
                                  : version >= 8  ? 15
                                  : version >= 7  ? 13
@@ -1483,6 +1503,9 @@ public:
             case catalog_command::kind::forget_strong:
                 result = forget_strong(*c, batch);
                 break;
+            case catalog_command::kind::qualify_tables:
+                qualify_tables(*c, batch);
+                break;
         }
         const auto out = encode_catalog_result(result);
         std::vector<std::byte> bytes(out.size());
@@ -1539,6 +1562,16 @@ public:
     // -- Reads ----------------------------------------------------------------
 
     [[nodiscard]] auto describe(std::string_view name) const -> std::optional<table_descriptor> {
+        if (name == catalog_detail::k_namespace_probe) {
+            const auto owner =
+                engine().get(kythira::column_family::data, catalog_detail::namespace_key());
+            if (!owner) {
+                return std::nullopt;
+            }
+            table_descriptor d;
+            d.name = std::string(*owner) + "/";
+            return d;
+        }
         const auto v = engine().get(kythira::column_family::data, catalog_detail::table_key(name));
         if (!v) {
             return std::nullopt;
@@ -2593,6 +2626,32 @@ private:
     }
 
     /// `forget_strong` (task 27.6): see the command.
+    auto qualify_tables(const catalog_command& c, kythira::write_batch& batch) const -> void {
+        if (c.table.name.empty() ||
+            engine().get(kythira::column_family::data, catalog_detail::namespace_key())) {
+            return;
+        }
+        std::vector<table_descriptor> bare;
+        engine().scan(kythira::column_family::data, catalog_detail::tables_range(),
+                      kythira::scan_direction::forward, [&](std::string_view, std::string_view v) {
+                          auto d = decode_table_descriptor(v);
+                          if (!d) {
+                              throw kythira::persistent_storage_error(
+                                  "dynamo_catalog_state_machine: corrupt table");
+                          }
+                          if (d->name.find('/') == std::string::npos) {
+                              bare.push_back(std::move(*d));
+                          }
+                          return true;
+                      });
+        for (auto& d : bare) {
+            batch.erase(kythira::column_family::data, catalog_detail::table_key(d.name));
+            d.name = c.table.name + "/" + d.name;
+            store(batch, d);
+        }
+        batch.put(kythira::column_family::data, catalog_detail::namespace_key(), c.table.name);
+    }
+
     auto forget_strong(const catalog_command& c, kythira::write_batch& batch) const
         -> catalog_result {
         auto d = describe(c.table.name);

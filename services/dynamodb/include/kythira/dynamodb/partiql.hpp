@@ -1109,7 +1109,7 @@ public:
         if (s->k == partiql_detail::statement::kind::select) {
             return select(quiet, in, *s);
         }
-        auto req = write_request(*s, in);
+        auto req = write_request(ctx, *s, in);
         if (!req) {
             return req.error();
         }
@@ -1161,7 +1161,7 @@ public:
                 fail(*e);
                 continue;
             }
-            const auto table = api_detail::usable_table(_backend, s.from.table);
+            const auto table = api_detail::usable_table(_backend, ctx, s.from.table);
             if (!table) {
                 fail(table.error());
                 continue;
@@ -1185,7 +1185,7 @@ public:
                 responses.push_back(std::move(r));
                 continue;
             }
-            auto req = write_request(s, entry);
+            auto req = write_request(ctx, s, entry);
             if (!req) {
                 fail(req.error());
                 continue;
@@ -1231,7 +1231,7 @@ public:
         }
         boost::json::array items;
         for (std::size_t i = 0; i < parsed.size(); ++i) {
-            auto element = transact_element(parsed[i], list[i].as_object());
+            auto element = transact_element(ctx, parsed[i], list[i].as_object());
             if (!element) {
                 return validation_error("Validation failed in TransactStatements[" +
                                         std::to_string(i) +
@@ -1384,7 +1384,7 @@ private:
 
     auto select(call_context& ctx, const boost::json::object& in, const statement& s) -> result {
         using namespace partiql_detail;
-        const auto table = api_detail::usable_table(_backend, s.from.table);
+        const auto table = api_detail::usable_table(_backend, ctx, s.from.table);
         if (!table) {
             return table.error();
         }
@@ -1621,10 +1621,10 @@ private:
     // -- Writes ---------------------------------------------------------------
 
     /// The PutItem, UpdateItem or DeleteItem request a write stands for.
-    auto write_request(const statement& s, const boost::json::object& in)
+    auto write_request(const call_context& ctx, const statement& s, const boost::json::object& in)
         -> aws_json::result<boost::json::object> {
         using namespace partiql_detail;
-        const auto table = api_detail::usable_table(_backend, s.from.table);
+        const auto table = api_detail::usable_table(_backend, ctx, s.from.table);
         if (!table) {
             return table.error();
         }
@@ -1741,10 +1741,11 @@ private:
     }
 
     /// One element of a TransactGetItems or TransactWriteItems request.
-    auto transact_element(const statement& s, const boost::json::object& entry)
+    auto transact_element(const call_context& ctx, const statement& s,
+                          const boost::json::object& entry)
         -> aws_json::result<boost::json::object> {
         using namespace partiql_detail;
-        const auto table = api_detail::usable_table(_backend, s.from.table);
+        const auto table = api_detail::usable_table(_backend, ctx, s.from.table);
         if (!table) {
             return table.error();
         }
@@ -1773,7 +1774,7 @@ private:
             case statement::kind::insert:
             case statement::kind::update:
             case statement::kind::delete_: {
-                auto req = write_request(s, entry);
+                auto req = write_request(ctx, s, entry);
                 if (!req) {
                     return req.error();
                 }

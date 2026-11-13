@@ -239,19 +239,6 @@ inline constexpr std::size_t k_max_policy_bytes = 20 * 1024;
         "and may contain only the characters a-z, A-Z, 0-9, '_', '-', and '.'");
 }
 
-/// A table name, or the name inside a table ARN (DynamoDB accepts either
-/// in `TableName`).
-[[nodiscard]] inline auto table_name_of(std::string_view given) -> std::string {
-    if (given.starts_with("arn:")) {
-        const auto slash = given.find(":table/");
-        if (slash != std::string_view::npos) {
-            auto rest = given.substr(slash + 7);
-            return std::string(rest.substr(0, rest.find('/')));
-        }
-    }
-    return std::string(given);
-}
-
 [[nodiscard]] inline auto type_letter(attribute_type t) -> std::string_view {
     switch (t) {
         case attribute_type::N:
@@ -719,7 +706,7 @@ template<typename TypeOf>
     }
     boost::json::object out;
     out["AttributeDefinitions"] = std::move(defs);
-    out["TableName"] = d.name;
+    out["TableName"] = call_context::bare_name(d.name);
     out["KeySchema"] = std::move(keys);
     out["TableStatus"] = status_name(d.status);
     out["CreationDateTime"] = millis_to_seconds(d.created_ms);
@@ -835,7 +822,7 @@ public:
     }
 
     auto create_table(call_context& ctx, boost::json::object& in) -> result {
-        auto d = descriptor_of_create(in);
+        auto d = descriptor_of_create(ctx, in);
         if (!d) {
             return d.error();
         }
@@ -853,11 +840,14 @@ public:
     /// The table a `CreateTable` request describes, checked as DynamoDB
     /// checks it; `ImportTable` (`export_import.hpp`) builds its table from
     /// `TableCreationParameters` with it too.
-    static auto descriptor_of_create(const boost::json::object& in)
+    static auto descriptor_of_create(const call_context& ctx, const boost::json::object& in)
         -> aws_json::result<table_descriptor> {
         using namespace table_api_detail;
-        const auto name = table_name_of(in.at("TableName").as_string());
-        if (!valid_table_name(name)) {
+        const auto name = ctx.table_name(in.at("TableName").as_string());
+        // Only a namespaced name carries an "<account>/" to strip; without
+        // namespaces the whole name is the caller's, slashes and all.
+        if (!valid_table_name(ctx.namespaced ? call_context::bare_name(name)
+                                             : std::string_view(name))) {
             return bad_table_name();
         }
         for (const char* member : {"SSESpecification", "OnDemandThroughput"}) {
@@ -1134,7 +1124,7 @@ public:
     }
 
     auto describe_table(call_context& ctx, boost::json::object& in) -> result {
-        const auto name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         const auto d = _backend.describe(name);
         if (!d) {
             return not_found(name);
@@ -1142,35 +1132,40 @@ public:
         return boost::json::object{{"Table", table_description(*d, ctx)}};
     }
 
-    auto list_tables(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto list_tables(call_context& ctx, boost::json::object& in) -> result {
         std::size_t limit = 100;
         if (const auto* l = in.if_contains("Limit")) {
             limit = static_cast<std::size_t>(l->to_number<std::int64_t>());
         }
-        std::string start;
+        // Namespaced, the caller's tables are the catalog names under
+        // "<account>/", which sort together.
+        const std::string prefix = ctx.namespaced ? ctx.owner() + "/" : std::string{};
+        std::string start = prefix;
         if (const auto* s = in.if_contains("ExclusiveStartTableName")) {
-            start = table_api_detail::table_name_of(s->as_string());
+            start = ctx.table_name(s->as_string());
         }
         // One more than asked tells whether to hand back a cursor.
         auto names = _backend.list_tables(start, limit + 1);
+        std::erase_if(names,
+                      [&](const std::string& n) { return !n.starts_with(prefix) || n == start; });
         const bool more = names.size() > limit;
         if (more) {
             names.resize(limit);
         }
         boost::json::array out;
         for (const auto& n : names) {
-            out.emplace_back(n);
+            out.emplace_back(call_context::bare_name(n));
         }
         boost::json::object r{{"TableNames", std::move(out)}};
         if (more) {
-            r["LastEvaluatedTableName"] = names.back();
+            r["LastEvaluatedTableName"] = call_context::bare_name(names.back());
         }
         return r;
     }
 
     auto update_table(call_context& ctx, boost::json::object& in) -> result {
         using namespace table_api_detail;
-        const auto name = table_name_of(in.at("TableName").as_string());
+        const auto name = ctx.table_name(in.at("TableName").as_string());
         for (const char* member : {"SSESpecification", "OnDemandThroughput"}) {
             if (in.contains(member)) {
                 return unsupported(member);
@@ -1569,7 +1564,7 @@ public:
     auto delete_table(call_context& ctx, boost::json::object& in) -> result {
         catalog_command c;
         c.op = catalog_command::kind::delete_table;
-        c.table.name = table_api_detail::table_name_of(in.at("TableName").as_string());
+        c.table.name = ctx.table_name(in.at("TableName").as_string());
         if (const auto d = _backend.describe(c.table.name); d && !d->replicas.empty()) {
             // Kythira's deviation: a replica of a global table goes by
             // `ReplicaUpdates` from another region, so its peers hear of it.
@@ -1585,7 +1580,7 @@ public:
         return boost::json::object{{"TableDescription", table_description(*r.table, ctx)}};
     }
 
-    auto describe_limits(call_context& /*ctx*/, boost::json::object& /*in*/) -> result {
+    auto describe_limits(call_context& ctx, boost::json::object& /*in*/) -> result {
         return boost::json::object{
             {"AccountMaxReadCapacityUnits", k_account_max_capacity_units},
             {"AccountMaxWriteCapacityUnits", k_account_max_capacity_units},
@@ -2076,7 +2071,7 @@ private:
     /// The table a `ResourceArn` names in this account and region.
     static auto table_of_arn(const call_context& ctx, const std::string& arn)
         -> aws_json::result<std::string> {
-        const auto name = table_api_detail::table_name_of(arn);
+        const auto name = ctx.table_name(arn);
         if (!arn.starts_with("arn:") || name == arn || !table_api_detail::valid_table_name(name)) {
             return validation_error("Invalid TableArn: Invalid ResourceArn provided as input " +
                                     arn);

@@ -259,7 +259,7 @@ public:
         std::set<std::string> seen;
         for (const auto& element : elements) {
             const auto& get = element.as_object().at("Get").as_object();
-            auto table = api_detail::usable_table(_backend, get.at("TableName").as_string());
+            auto table = api_detail::usable_table(_backend, ctx, get.at("TableName").as_string());
             if (!table) {
                 return table.error();
             }
@@ -375,7 +375,7 @@ private:
     /// would check it.
     auto parse_write(call_context& ctx, std::string_view kind, const boost::json::object& in)
         -> aws_json::result<action> {
-        auto table = api_detail::usable_table(_backend, in.at("TableName").as_string());
+        auto table = api_detail::usable_table(_backend, ctx, in.at("TableName").as_string());
         if (!table) {
             return table.error();
         }

@@ -865,7 +865,7 @@ public:
     auto start_export(call_context& ctx, boost::json::object& in) -> result {
         namespace ed = export_detail;
         const auto table_arn = ed::text(in, "TableArn");
-        const auto name = table_api_detail::table_name_of(table_arn);
+        const auto name = ctx.table_name(table_arn);
         const auto d = _backend.describe(name);
         if (!d) {
             return ed::modeled("TableNotFoundException", "Table not found: " + table_arn);
@@ -998,7 +998,7 @@ public:
         return boost::json::object{{"ExportDescription", description(*r)}};
     }
 
-    auto list_exports(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto list_exports(call_context& ctx, boost::json::object& in) -> result {
         namespace ed = export_detail;
         boost::json::array out;
         if (!_store) {
@@ -1021,7 +1021,7 @@ public:
                 started = r.arn == start;
                 continue;
             }
-            if (!table.empty() && r.table_arn != table) {
+            if (!ctx.owns_arn(r.arn) || (!table.empty() && r.table_arn != table)) {
                 continue;
             }
             if (out.size() >= limit) {
@@ -1125,7 +1125,7 @@ public:
                 create[member] = *v;
             }
         }
-        auto d = table_api<Backend>::descriptor_of_create(create);
+        auto d = table_api<Backend>::descriptor_of_create(ctx, create);
         if (!d) {
             return d.error();
         }
@@ -1161,7 +1161,7 @@ public:
         return boost::json::object{{"ImportTableDescription", description(*r)}};
     }
 
-    auto list_imports(call_context& /*ctx*/, boost::json::object& in) -> result {
+    auto list_imports(call_context& ctx, boost::json::object& in) -> result {
         namespace ed = export_detail;
         boost::json::array out;
         if (!_store) {
@@ -1185,7 +1185,7 @@ public:
                 started = r.arn == start;
                 continue;
             }
-            if (!table.empty() && r.table_arn != table) {
+            if (!ctx.owns_arn(r.arn) || (!table.empty() && r.table_arn != table)) {
                 continue;
             }
             if (out.size() >= limit) {
