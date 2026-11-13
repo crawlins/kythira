@@ -298,7 +298,9 @@ worker then deletes the strong catalog's entry.
   Writes and strongly consistent reads give up after the request deadline
   and answer the error AWS returns in that case. AWS does not document
   which code that is, so it must be recorded before it is chosen; until
-  then the module answers `InternalServerError`.
+  then the module answers `InternalServerError`. The write stays in the
+  leader's log, so it may still commit once a quorum is back: like any
+  500, its outcome is unknown, and a client retries it or reads first.
 - `TransactWriteItems`, `TransactGetItems` and PartiQL transactions naming
   an MRSC table, `UpdateTimeToLive` enabling TTL, and an LSI in
   `CreateTable` or `UpdateTable` are refused with AWS's error.

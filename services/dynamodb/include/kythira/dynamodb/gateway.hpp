@@ -58,11 +58,10 @@
 /// | `KYTHIRA_DYNAMODB_STRONG_NODE_ID` | | this node's id in the strong host |
 /// | `KYTHIRA_DYNAMODB_STRONG_PEERS` | | `id=region@http://host:port,...`: every strong voter |
 /// | `KYTHIRA_DYNAMODB_STRONG_RAFT_BIND`, `_RAFT_PORT` | `0.0.0.0`, `7001` | the strong listener |
-/// | `KYTHIRA_DYNAMODB_STRONG_GATEWAYS` | | `id=host:port,...`: every other strong voter's gateway
-/// | | `KYTHIRA_DYNAMODB_STRONG_SECRET` | | the secret strong voters forward with (16+ chars) | |
-/// `KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS` | `250` | strong groups' heartbeat | |
-/// `KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS`, `_MAX_MS` | `2500`, `5000` | their election timeouts
-/// |
+/// | `KYTHIRA_DYNAMODB_STRONG_GATEWAYS` | | `id=host:port,...`: other voters' gateways |
+/// | `KYTHIRA_DYNAMODB_STRONG_SECRET` | | the secret strong voters forward with (16+ chars) |
+/// | `KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS` | `250` | strong groups' heartbeat |
+/// | `KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS`, `_MAX_MS` | `2500`, `5000` | election timeouts |
 ///
 /// Without a backup store a single node keeps backups in memory, and a
 /// cluster refuses `CreateBackup` (`backup.hpp`) and

@@ -1,0 +1,6 @@
+# Copyright (c) 2026 Clark Rawlins
+# SPDX-License-Identifier: Apache-2.0
+
+# The strong-consistency driver's pin; the same boto3 as the evidence clients.
+boto3==1.43.126
+botocore==1.43.126

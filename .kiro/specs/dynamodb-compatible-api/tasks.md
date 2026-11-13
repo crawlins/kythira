@@ -1059,10 +1059,19 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       in the strong host's groups and need nothing new (the split-under-
       load test is in 27.8); Kinesis destinations choose records by
       write time like PITR, and are not tested separately here.
-  - [ ] 27.8 Tests: three in-process clusters (write in one region, strong
+  - [x] 27.8 Tests: three in-process clusters (write in one region, strong
     read in another; racing conditional writes; lose a region; cut a
     region off and bring it back; split under load; witness); a compose
     harness with three clusters under Docker and rootless Podman
+    - `dynamodb_strong_cluster_test` (the cluster fixture moved to
+      `dynamodb_cluster_fixture.hpp`); a region is cut off through
+      cuttable TCP relays on every link between regions, so it keeps
+      running. `tools/strong/run_strong.sh` (compose and native): one
+      RocksDB node per region, a region SIGKILLed and restarted on its
+      data, a lone region refusing writes; CI runs it under both
+      runtimes. A write a lone region answers with 500 may still commit
+      once a quorum is back (its outcome is unknown, as AWS says of a
+      500); the harness allows for it.
   - [ ] 27.9 Docs: `doc/dynamodb.md`, `unsupported.md`, module README
   - _Requirements: 18.3, 18.4, 18.5_
 
