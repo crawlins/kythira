@@ -79,6 +79,24 @@ BOOST_AUTO_TEST_CASE(defaults_from_a_minimal_environment) {
     BOOST_TEST((c.keys[0].role == kythira::aws_auth::static_role::admin));
 }
 
+BOOST_AUTO_TEST_CASE(the_tables_belong_to_one_account) {
+    // One account among the keys owns the tables.
+    auto one = std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(minimal_env())));
+    BOOST_TEST(one.front.account == "111122223333");
+
+    // Keys of two accounts need the owner named.
+    auto two = minimal_env();
+    two["KYTHIRA_DYNAMODB_STATIC_KEYS"] +=
+        ",AKIDOTHER:" + std::string(k_secret) + ":444455556666:other:admin";
+    BOOST_TEST(config_error(two).find("more than one account") != std::string::npos);
+    two["KYTHIRA_DYNAMODB_ACCOUNT_ID"] = "444455556666";
+    BOOST_TEST(
+        std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(two))).front.account ==
+        "444455556666");
+    two["KYTHIRA_DYNAMODB_ACCOUNT_ID"] = "4444-5555";
+    BOOST_TEST(config_error(two).starts_with("KYTHIRA_DYNAMODB_ACCOUNT_ID: not a 12-digit"));
+}
+
 BOOST_AUTO_TEST_CASE(every_setting_is_read) {
     const auto dir = std::filesystem::temp_directory_path() / "dynamodb_gateway_test_keys";
     std::filesystem::create_directories(dir);

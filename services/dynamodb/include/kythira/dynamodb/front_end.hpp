@@ -23,12 +23,17 @@
 ///      resource the input names (a table, or the index a Query or Scan
 ///      names, a stream, a backup, or `ResourceArn` as given), with the
 ///      `dynamodb:ReturnValues`, `ReturnConsumedCapacity` and `Select`
-///      condition keys when the input sets them. Operations without a
-///      same-named action (transactions, PartiQL) and the keys that need the
-///      parsed item (`LeadingKeys`, `Attributes`) are authorized by their
-///      handlers through `call_context::authorize`, from
+///      condition keys when the input sets them. StartBulkPutItems is
+///      authorized as `dynamodb:BulkPutItems` on its table. Operations
+///      without a same-named action (transactions, PartiQL), the batch
+///      operations (one resource per table they name) and the keys that
+///      need the parsed item (`LeadingKeys`, `Attributes`) are authorized
+///      by their handlers through `call_context::authorize`, from
 ///      `k_operation_actions`.
-///   5. The handler. An exception becomes InternalServerError (500).
+///   5. The handler. An exception becomes InternalServerError (500), and
+///      so does a success for which no authorization was asked at all
+///      (`call_context::authorization_checked`): a handler that forgot to
+///      authorize fails closed instead of answering.
 ///
 /// Every authorization (step 4 and `call_context::authorize`) asks the
 /// resource lookup, when one is set, for the resource's tags and
@@ -93,6 +98,13 @@ struct front_end_config {
     /// What DescribeEndpoints answers: this node's address as clients reach
     /// it (`host:port`).
     std::string advertised_endpoint;
+    /// The account that owns this gateway's tables: their ARNs carry it,
+    /// and a caller from any other account is a cross-account caller,
+    /// who needs the table's resource policy as on AWS (static keys never
+    /// get cross-account access). Empty: each caller's own account, so
+    /// every account sees the same tables; only for a single-account
+    /// deployment.
+    std::string account;
     aws_json::request_limits limits{};
     /// Told the operation and the exception's message whenever a handler
     /// throws and the client is answered `InternalServerError`, so the
@@ -119,14 +131,32 @@ struct call_context {
     aws_auth::principal_context principal;
     std::string region;
     std::string partition;
+    /// The account that owns the tables (`front_end_config::account`);
+    /// empty: the caller's.
+    std::string account;
     /// Authorizes one more action (a transaction element, a PartiQL
     /// statement, a condition key the front end could not supply). On
     /// refusal, the AccessDeniedException to return.
     std::function<std::optional<aws_json::error>(aws_auth::authz_request)> authorize;
+    /// Set once the authorizer has been asked about this call, by the
+    /// front end's primary check or through `authorize`, whatever it
+    /// answered. A call that succeeds with it unset is refused (the
+    /// front end's backstop): a handler that forgot to authorize fails
+    /// closed.
+    bool authorization_checked = false;
+    /// Set by a handler whose successful answer touched no resource, so
+    /// there was nothing to authorize (a BatchExecuteStatement whose
+    /// every statement failed to parse). The backstop then lets it pass.
+    bool touched_no_resource = false;
 
-    /// `arn:<partition>:dynamodb:<region>:<account>:table/<name>`.
+    /// The account that owns the tables.
+    [[nodiscard]] auto owner() const -> const std::string& {
+        return account.empty() ? principal.account : account;
+    }
+
+    /// `arn:<partition>:dynamodb:<region>:<owner>:table/<name>`.
     [[nodiscard]] auto table_arn(std::string_view table) const -> std::string {
-        return "arn:" + partition + ":dynamodb:" + region + ":" + principal.account + ":table/" +
+        return "arn:" + partition + ":dynamodb:" + region + ":" + owner() + ":table/" +
                std::string(table);
     }
 };
@@ -336,12 +366,13 @@ public:
         ctx.principal = *who;
         ctx.region = _config.region;
         ctx.partition = _config.partition;
+        ctx.account = _config.account;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
 
-        if (_actions.contains(std::string(op->name))) {
-            if (auto denied = check(ctx, req, primary_request(ctx, input))) {
+        if (const auto action = primary_action(op->name)) {
+            if (auto denied = check(ctx, req, primary_request(ctx, input, *action))) {
                 return c.respond(*denied, id);
             }
         }
@@ -350,6 +381,18 @@ public:
             auto out = h->second(ctx, input);
             if (!out) {
                 return c.respond(out.error(), id);
+            }
+            if (!ctx.authorization_checked && !ctx.touched_no_resource) {
+                // No check ran for an operation that succeeded: a handler
+                // that should authorize did not. Refuse rather than answer.
+                if (_config.on_internal_error) {
+                    _config.on_internal_error(op->name, "answered without an authorization check");
+                }
+                aws_json::error e;
+                e.status = 500;
+                e.type = c.options().style.internal_type;
+                e.message = "Internal server error";
+                return c.respond(e, id);
             }
             return c.respond(*out, id);
         } catch (const std::exception& ex) {
@@ -398,6 +441,7 @@ private:
         ctx.principal = *who;
         ctx.region = _config.region;
         ctx.partition = _config.partition;
+        ctx.account = _config.account;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -479,6 +523,7 @@ private:
         ctx.principal = *who;
         ctx.region = _config.region;
         ctx.partition = _config.partition;
+        ctx.account = _config.account;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -553,7 +598,8 @@ private:
     // The resource an operation acts on, from its input.
     [[nodiscard]] static auto resource_of(const call_context& ctx, const boost::json::object& in)
         -> std::string {
-        for (const auto* key : {"ResourceArn", "StreamArn", "BackupArn", "TableArn"}) {
+        for (const auto* key : {"ResourceArn", "StreamArn", "BackupArn", "TableArn",
+                                "BulkOperationArn", "ExportArn", "ImportArn"}) {
             if (auto v = detail::string_member(in, key)) {
                 return std::string(*v);
             }
@@ -576,11 +622,37 @@ private:
         return "*";
     }
 
+    /// The action the front end authorizes before the handler runs, or
+    /// nullopt when the handler authorizes: the batch operations ask for
+    /// their action on each table they name, and transactions and PartiQL
+    /// for each element's. StartBulkPutItems is authorized as
+    /// BulkPutItems on its table, its handler adds StartBulkOperation on
+    /// the operation it creates.
+    [[nodiscard]] auto primary_action(std::string_view operation) const
+        -> std::optional<std::string> {
+        if (operation == "BatchGetItem" || operation == "BatchWriteItem") {
+            return std::nullopt;
+        }
+        if (operation == "StartBulkPutItems") {
+            return "BulkPutItems";
+        }
+        if (_actions.contains(operation)) {
+            return std::string(operation);
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] static auto primary_request(const call_context& ctx,
                                               const boost::json::object& in)
         -> aws_auth::authz_request {
+        return primary_request(ctx, in, ctx.operation);
+    }
+
+    [[nodiscard]] static auto primary_request(const call_context& ctx,
+                                              const boost::json::object& in,
+                                              std::string_view action) -> aws_auth::authz_request {
         aws_auth::authz_request r;
-        r.action = "dynamodb:" + std::string(ctx.operation);
+        r.action = "dynamodb:" + std::string(action);
         r.resource = resource_of(ctx, in);
         for (const auto* member : {"ReturnValues", "ReturnConsumedCapacity", "Select"}) {
             if (auto v = detail::string_member(in, member)) {
@@ -591,43 +663,14 @@ private:
         return r;
     }
 
-    [[nodiscard]] auto check(const call_context& ctx, const front_end_request& req,
+    [[nodiscard]] auto check(call_context& ctx, const front_end_request& req,
                              aws_auth::authz_request r) -> std::optional<aws_json::error> {
+        ctx.authorization_checked = true;
         r.source_ip = req.source_ip;
         r.user_agent = std::string(detail::header_value(req, "user-agent"));
         r.region = _config.region;
         r.secure_transport = req.secure;
         if (r.resource != "*" && r.resource.starts_with("arn:")) {
-            add_resource_facts(ctx, r);
-        }
-        const auto d = _authorizer.authorize(ctx.principal, r);
-        if (d.allowed) {
-            return std::nullopt;
-        }
-        aws_json::error e;
-        e.type = "com.amazon.coral.service#AccessDeniedException";
-        // IAM's authorizer names the resource policy "resource".
-        const bool by_resource_policy = r.resource_policy.has_value() && d.policy == "resource";
-        e.message =
-            "User: " + ctx.principal.arn + " is not authorized to perform: " + r.action +
-            " on resource: " + r.resource +
-            (d.explicit_deny
-                 ? (by_resource_policy ? " with an explicit deny in a resource-based policy"
-                                       : " with an explicit deny in an identity-based policy")
-                 : " because no identity-based policy allows the " + r.action + " action");
-        return e;
-    }
-
-    /// With a lookup set: the resource's account when it is not the
-    /// caller's (cross-account access needs a resource policy, so it is
-    /// named only to an authorizer that evaluates them; without one a
-    /// foreign ARN reads as not found, as DynamoDB Local answers), and its
-    /// tags and policy.
-    void add_resource_facts(const call_context& ctx, aws_auth::authz_request& r) const {
-        if (!_lookup) {
-            return;
-        }
-        if (r.resource_account.empty()) {
             // arn:<partition>:dynamodb:<region>:<account>:<resource>
             std::string_view rest(r.resource);
             for (int field = 0; field < 4 && !rest.empty(); ++field) {
@@ -636,9 +679,78 @@ private:
                     colon == std::string_view::npos ? std::string_view{} : rest.substr(colon + 1);
             }
             const auto account = rest.substr(0, rest.find(':'));
-            if (!account.empty() && account != ctx.principal.account) {
+            if (!account.empty() && account != ctx.owner()) {
+                // No account but the owner has tables here, so the
+                // resource does not exist; and the handlers look tables up
+                // by name alone, so such an ARN must never reach them.
+                return foreign_not_found(r.resource);
+            }
+            if (r.resource_account.empty() && account != ctx.principal.account) {
                 r.resource_account = std::string(account);
             }
+            add_resource_facts(ctx, r);
+        } else if (r.resource_account.empty() && ctx.owner() != ctx.principal.account) {
+            // An account-wide action (ListTables) acts on the owner's
+            // account, which is another account's to the caller.
+            r.resource_account = ctx.owner();
+        }
+        const auto d = _authorizer.authorize(ctx.principal, r);
+        if (d.allowed) {
+            return std::nullopt;
+        }
+        // IAM's authorizer names the resource policy "resource".
+        return denied(ctx, r, d.explicit_deny,
+                      r.resource_policy.has_value() && d.policy == "resource");
+    }
+
+    /// The not-found answer for a resource in an account with no tables
+    /// here, worded as the handler for that kind of resource words it.
+    [[nodiscard]] static auto foreign_not_found(const std::string& arn) -> aws_json::error {
+        aws_json::error e;
+        const auto kind = [&arn](std::string_view part) {
+            return arn.find(part) != std::string::npos;
+        };
+        std::string type = "ResourceNotFoundException";
+        if (kind("/backup/")) {
+            type = "BackupNotFoundException";
+            e.message = "Backup not found: " + arn;
+        } else if (kind("/export/")) {
+            type = "ExportNotFoundException";
+            e.message = "Export not found: " + arn;
+        } else if (kind("/import/")) {
+            type = "ImportNotFoundException";
+            e.message = "Import not found: " + arn;
+        } else if (kind("/bulk-operation/")) {
+            e.message = "Bulk operation not found: " + arn;
+        } else {
+            e.message = "Requested resource not found";
+        }
+        e.type = "com.amazonaws.dynamodb.v20120810#" + type;
+        return e;
+    }
+
+    [[nodiscard]] static auto denied(const call_context& ctx, const aws_auth::authz_request& r,
+                                     bool explicit_deny, bool by_resource_policy)
+        -> aws_json::error {
+        aws_json::error e;
+        e.type = "com.amazon.coral.service#AccessDeniedException";
+        e.message =
+            "User: " + ctx.principal.arn + " is not authorized to perform: " + r.action +
+            " on resource: " + r.resource +
+            (explicit_deny
+                 ? (by_resource_policy ? " with an explicit deny in a resource-based policy"
+                                       : " with an explicit deny in an identity-based policy")
+                 : " because no identity-based policy allows the " + r.action + " action");
+        return e;
+    }
+
+    /// With a lookup set: the resource's tags and policy. A cross-account
+    /// caller (`resource_account`, set by `check`) needs that policy to be
+    /// allowed; an authorizer that evaluates none (static keys) refuses
+    /// such a caller outright.
+    void add_resource_facts(const call_context& ctx, aws_auth::authz_request& r) const {
+        if (!_lookup) {
+            return;
         }
         auto facts = _lookup(r.resource);
         if (!facts) {

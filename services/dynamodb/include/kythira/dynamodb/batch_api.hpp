@@ -87,6 +87,9 @@ public:
 
     auto batch_get(call_context& ctx, boost::json::object& in) -> result {
         using namespace batch_detail;
+        if (auto denied = authorize_tables(ctx, "BatchGetItem", in)) {
+            return *denied;
+        }
         // The codec has checked the model's limits: at least one table, and
         // 1 to 100 keys per table. The total is the handler's to check.
         const auto& requests = in.at("RequestItems").as_object();
@@ -212,6 +215,9 @@ public:
 
     auto batch_write(call_context& ctx, boost::json::object& in) -> result {
         using namespace batch_detail;
+        if (auto denied = authorize_tables(ctx, "BatchWriteItem", in)) {
+            return *denied;
+        }
         // As for BatchGetItem, the codec has checked 1 to 25 writes per
         // table; the total across tables is checked here.
         const auto& requests = in.at("RequestItems").as_object();
@@ -366,6 +372,33 @@ public:
     }
 
 private:
+    /// Asks for `action` on every table the request names, before any is
+    /// read or written: the front end does not authorize the batch
+    /// operations itself, since a batch has one resource per table (as
+    /// AWS authorizes them). A table may be named by its ARN. Without an
+    /// authorizer (a handler called directly) nothing is asked.
+    static auto authorize_tables(call_context& ctx, std::string_view action,
+                                 const boost::json::object& in) -> std::optional<aws_json::error> {
+        if (!ctx.authorize) {
+            return std::nullopt;
+        }
+        const auto* consumed = in.if_contains("ReturnConsumedCapacity");
+        for (const auto& entry : in.at("RequestItems").as_object()) {
+            const std::string_view name = entry.key();
+            aws_auth::authz_request r;
+            r.action = "dynamodb:" + std::string(action);
+            r.resource = name.starts_with("arn:") ? std::string(name) : ctx.table_arn(name);
+            if (consumed != nullptr && consumed->is_string()) {
+                r.keys.emplace_back("dynamodb:ReturnConsumedCapacity",
+                                    std::vector<std::string>{std::string(consumed->as_string())});
+            }
+            if (auto denied = ctx.authorize(std::move(r))) {
+                return denied;
+            }
+        }
+        return std::nullopt;
+    }
+
     Backend& _backend;
     const disk_guard* _guard;
     dynamo_compat_profile _profile{};

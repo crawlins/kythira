@@ -1197,6 +1197,11 @@ public:
             }
             responses.push_back(std::move(r));
         }
+        // Every statement failed to parse: none named a table to authorize.
+        if (std::all_of(errors.begin(), errors.end(),
+                        [](const auto& e) { return e.has_value(); })) {
+            ctx.touched_no_resource = true;
+        }
         return boost::json::object{{"Responses", std::move(responses)}};
     }
 

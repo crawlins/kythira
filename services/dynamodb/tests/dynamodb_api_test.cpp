@@ -258,7 +258,9 @@ BOOST_AUTO_TEST_CASE(tags) {
     const std::string other = "arn:aws:dynamodb:us-east-1:999999999999:table/orders";
     auto r = f.call("ListTagsOfResource", R"({"ResourceArn":")" + other + R"("})");
     BOOST_TEST(r.type() == "ResourceNotFoundException");
-    BOOST_TEST(r.message() == "Requested resource not found: ResourcArn: " + other + " not found");
+    // Another account's ARN is refused by the front end, before the
+    // handler, with AWS's generic wording.
+    BOOST_TEST(r.message() == "Requested resource not found");
     r = f.call("TagResource", R"({"ResourceArn":"bogus","Tags":[{"Key":"k","Value":"v"}]})");
     BOOST_TEST(r.type() == "ValidationException");
     r = f.call(

@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace ddb = kythira::dynamodb;
@@ -301,4 +302,170 @@ BOOST_AUTO_TEST_CASE(handler_failures_and_registration_errors) {
     BOOST_CHECK_THROW(fe.on("ListTables", {}), std::invalid_argument);
     BOOST_CHECK_THROW(fe.on("DescribeEndpoints", {}), std::invalid_argument);  // built in
     BOOST_CHECK_THROW(fe.on("NoSuchOperation", {}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(operations_without_a_same_named_action_are_still_authorized) {
+    recording_authorizer auth;
+    ddb::front_end<recording_authorizer> fe(ddb::front_end_config{}, auth);
+    const auto ok = [](ddb::call_context&, json::object&) {
+        return kythira::aws_json::result<json::object>(json::object{});
+    };
+    fe.on("StartBulkPutItems", ok);
+    fe.on("DescribeBulkOperation", ok);
+    fe.on("DescribeExport", ok);
+    fe.on("DescribeImport", ok);
+    const std::string table = "arn:aws:dynamodb:us-east-1:111122223333:table/t";
+
+    // StartBulkPutItems is authorized as BulkPutItems on its table.
+    BOOST_TEST(
+        fe.handle(request("DynamoDB_20120810.StartBulkPutItems",
+                          R"({"TableName":"t","InputS3Configuration":{"S3Bucket":"in-bkt",)"
+                          R"("S3KeyPrefix":"p","InputFormat":"ION"},)"
+                          R"("OutputS3Configuration":{"S3Bucket":"out-bkt","S3KeyPrefix":"rep",)"
+                          R"("OutputType":["ERROR"]}})"))
+            .status == 200U);
+    BOOST_REQUIRE(auth.asked.size() == 1U);
+    BOOST_TEST(auth.asked[0].action == "dynamodb:BulkPutItems");
+    BOOST_TEST(auth.asked[0].resource == table);
+
+    // The operation, export and import calls name their own ARNs.
+    for (const auto& [op, member, arn] :
+         std::vector<std::tuple<std::string, std::string, std::string>>{
+             {"DescribeBulkOperation", "BulkOperationArn", table + "/bulk-operation/01"},
+             {"DescribeExport", "ExportArn", table + "/export/01"},
+             {"DescribeImport", "ImportArn", table + "/import/01"},
+         }) {
+        BOOST_TEST(fe.handle(request("DynamoDB_20120810." + op,
+                                     json::serialize(json::object{{member, arn}})))
+                       .status == 200U);
+        BOOST_TEST(auth.asked.back().action == "dynamodb:" + op);
+        BOOST_TEST(auth.asked.back().resource == arn);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_read_write_key_cannot_start_a_bulk_put) {
+    static_fixture f;
+    f.fe->on("StartBulkPutItems", [](ddb::call_context&, json::object&) {
+        return kythira::aws_json::result<json::object>(json::object{});
+    });
+    const auto r = f.fe->handle(
+        sign(request("DynamoDB_20120810.StartBulkPutItems",
+                     R"({"TableName":"t","InputS3Configuration":{"S3Bucket":"in-bkt",)"
+                     R"("S3KeyPrefix":"p","InputFormat":"ION"},)"
+                     R"("OutputS3Configuration":{"S3Bucket":"out-bkt","S3KeyPrefix":"rep",)"
+                     R"("OutputType":["ERROR"]}})"),
+             "AKIDWRITE"));
+    BOOST_TEST(type_of(r) == "com.amazon.coral.service#AccessDeniedException");
+    BOOST_TEST(body_of(r).at("message").as_string().find("dynamodb:BulkPutItems") !=
+               std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(batch_operations_are_left_to_their_handlers) {
+    recording_authorizer auth;
+    ddb::front_end<recording_authorizer> fe(ddb::front_end_config{}, auth);
+    fe.on("BatchGetItem", [](ddb::call_context& ctx, json::object& in) {
+        for (const auto& entry : in.at("RequestItems").as_object()) {
+            az::authz_request r;
+            r.action = "dynamodb:BatchGetItem";
+            r.resource = ctx.table_arn(entry.key());
+            if (auto denied = ctx.authorize(r)) {
+                return kythira::aws_json::result<json::object>(*denied);
+            }
+        }
+        return kythira::aws_json::result<json::object>(json::object{});
+    });
+    BOOST_TEST(fe.handle(request("DynamoDB_20120810.BatchGetItem",
+                                 R"({"RequestItems":{"a":{"Keys":[{"pk":{"S":"1"}}]},)"
+                                 R"("b":{"Keys":[{"pk":{"S":"1"}}]}}})"))
+                   .status == 200U);
+    // One request per table, none on "*".
+    BOOST_REQUIRE(auth.asked.size() == 2U);
+    for (const auto& a : auth.asked) {
+        BOOST_TEST(a.resource.starts_with("arn:aws:dynamodb:us-east-1:111122223333:table/"));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_handler_that_never_authorizes_fails_closed) {
+    recording_authorizer auth;
+    std::vector<std::string> reported;
+    ddb::front_end_config cfg;
+    cfg.on_internal_error = [&reported](std::string_view op, std::string_view what) {
+        reported.push_back(std::string(op) + ": " + std::string(what));
+    };
+    ddb::front_end<recording_authorizer> fe(cfg, auth);
+    // TransactGetItems has no same-named action, so the front end asks
+    // nothing; this handler forgets to.
+    fe.on("TransactGetItems", [](ddb::call_context&, json::object&) {
+        return kythira::aws_json::result<json::object>(json::object{{"Responses", json::array{}}});
+    });
+    const auto r = fe.handle(request("DynamoDB_20120810.TransactGetItems",
+                                     R"({"TransactItems":[{"Get":{"TableName":"t",)"
+                                     R"("Key":{"pk":{"S":"a"}}}}]})"));
+    BOOST_TEST(r.status == 500U);
+    BOOST_TEST(!body_of(r).contains("Responses"));
+    BOOST_TEST_REQUIRE(reported.size() == 1U);
+    BOOST_TEST(reported[0] == "TransactGetItems: answered without an authorization check");
+
+    // A handler that says it touched nothing passes, and so does a denial
+    // the handler returns as part of a successful answer.
+    fe.on("BatchExecuteStatement", [](ddb::call_context& ctx, json::object&) {
+        ctx.touched_no_resource = true;
+        return kythira::aws_json::result<json::object>(json::object{{"Responses", json::array{}}});
+    });
+    BOOST_TEST(fe.handle(request("DynamoDB_20120810.BatchExecuteStatement",
+                                 R"({"Statements":[{"Statement":"nonsense"}]})"))
+                   .status == 200U);
+}
+
+BOOST_AUTO_TEST_CASE(another_accounts_static_key_reaches_no_table) {
+    // The gateway's tables belong to 111122223333; AKIDOTHER is an admin
+    // of another account.
+    az::static_key_authorizer auth{
+        std::vector<az::static_key>{
+            {"AKIDWRITE", std::string(k_secret), std::string(k_account), "writer",
+             az::static_role::read_write},
+            {"AKIDOTHER", std::string(k_secret), "444455556666", "other", az::static_role::admin},
+        },
+        "aws", [] { return std::chrono::system_clock::time_point(k_now); }};
+    auth.register_service(ddb::dynamodb_static_roles());
+    ddb::front_end_config cfg;
+    cfg.account = std::string(k_account);
+    ddb::front_end<az::static_key_authorizer> fe(cfg, auth);
+    std::vector<std::string> arns;
+    const auto echo = [&arns](ddb::call_context& ctx, json::object&) {
+        arns.push_back(ctx.table_arn("t"));
+        return kythira::aws_json::result<json::object>(json::object{});
+    };
+    fe.on("GetItem", echo);
+    fe.on("ListTables", echo);
+    const std::string get = R"({"TableName":"t","Key":{"pk":{"S":"a"}}})";
+    const std::string own_arn = "arn:aws:dynamodb:us-east-1:111122223333:table/t";
+
+    // The owner's key: the table ARN carries the owning account.
+    BOOST_TEST(fe.handle(sign(request("DynamoDB_20120810.GetItem", get), "AKIDWRITE")).status ==
+               200U);
+    BOOST_REQUIRE(arns.size() == 1U);
+    BOOST_TEST(arns[0] == own_arn);
+
+    // The other account: refused by name, by the owner's ARN, and for the
+    // account-wide ListTables, before any handler runs.
+    for (const auto& [op, body] : std::vector<std::pair<std::string, std::string>>{
+             {"GetItem", get},
+             {"GetItem", R"({"TableName":")" + own_arn + R"(","Key":{"pk":{"S":"a"}}})"},
+             {"ListTables", "{}"},
+         }) {
+        const auto r = fe.handle(sign(request("DynamoDB_20120810." + op, body), "AKIDOTHER"));
+        BOOST_TEST(type_of(r) == "com.amazon.coral.service#AccessDeniedException", op);
+    }
+    BOOST_TEST(arns.size() == 1U);
+
+    // The owner's key naming a table in another account: there is no such
+    // table here, and the handler (which looks tables up by name) never sees it.
+    const auto r =
+        fe.handle(sign(request("DynamoDB_20120810.GetItem",
+                               R"({"TableName":"arn:aws:dynamodb:us-east-1:444455556666:table/t",)"
+                               R"("Key":{"pk":{"S":"a"}}})"),
+                       "AKIDWRITE"));
+    BOOST_TEST(type_of(r) == "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException");
+    BOOST_TEST(arns.size() == 1U);
 }
