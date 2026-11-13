@@ -55,6 +55,14 @@
 /// | `KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY` | | the keys peers know
 /// this cluster's replicator by (required with `REPLICA_PEERS`) |
 /// | `KYTHIRA_DYNAMODB_REPLICA_CA` | system roots | PEM bundle peers' certificates chain to |
+/// | `KYTHIRA_DYNAMODB_STRONG_NODE_ID` | | this node's id in the strong host |
+/// | `KYTHIRA_DYNAMODB_STRONG_PEERS` | | `id=region@http://host:port,...`: every strong voter |
+/// | `KYTHIRA_DYNAMODB_STRONG_RAFT_BIND`, `_RAFT_PORT` | `0.0.0.0`, `7001` | the strong listener |
+/// | `KYTHIRA_DYNAMODB_STRONG_GATEWAYS` | | `id=host:port,...`: every other strong voter's gateway
+/// | | `KYTHIRA_DYNAMODB_STRONG_SECRET` | | the secret strong voters forward with (16+ chars) | |
+/// `KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS` | `250` | strong groups' heartbeat | |
+/// `KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS`, `_MAX_MS` | `2500`, `5000` | their election timeouts
+/// |
 ///
 /// Without a backup store a single node keeps backups in memory, and a
 /// cluster refuses `CreateBackup` (`backup.hpp`) and
@@ -171,6 +179,59 @@ struct cluster_config {
     }
 };
 
+/// One voter of the strong host (task 27): its region and Raft URL.
+struct strong_peer {
+    std::string region;
+    std::string url;
+};
+
+/// The strong host (task 27, design.md "Multi-region strong
+/// consistency"): a second multi-raft host whose groups have the same
+/// number of voters in each of three regions, for tables made strong.
+/// Empty `peers` means no strong host.
+struct strong_config {
+    /// This node's id in the strong host, unique across the three regions.
+    std::string node_id;
+    /// Every strong voter of the three regions, this node included.
+    std::map<std::string, strong_peer> peers;
+    std::string raft_bind = "0.0.0.0";
+    std::uint16_t raft_port = 7001;
+    /// Every other strong voter's gateway, for ops forwarded to a strong
+    /// group's leader, which may be in another region.
+    std::map<std::string, forward_peer> gateways;
+    /// The secret every strong voter of the three regions forwards with.
+    std::string forward_secret;
+    /// Raft timings for a wide-area network.
+    std::chrono::milliseconds heartbeat{250};
+    std::chrono::milliseconds election_min{2500};
+    std::chrono::milliseconds election_max{5000};
+
+    static constexpr std::size_t k_regions = 3;
+
+    [[nodiscard]] auto enabled() const -> bool { return !peers.empty(); }
+    /// The regions, sorted.
+    [[nodiscard]] auto regions() const -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (const auto& [id, p] : peers) {
+            if (std::find(out.begin(), out.end(), p.region) == out.end()) {
+                out.push_back(p.region);
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+    /// The voters in `region`.
+    [[nodiscard]] auto voters_in(std::string_view region) const -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (const auto& [id, p] : peers) {
+            if (p.region == region) {
+                out.push_back(id);
+            }
+        }
+        return out;
+    }
+};
+
 struct gateway_config {
     https::server_config http{};
     front_end_config front{};
@@ -187,6 +248,9 @@ struct gateway_config {
     /// override them.
     dynamo_compat_profile compat{};
     cluster_config cluster;
+    /// The strong host (task 27); off unless `KYTHIRA_DYNAMODB_STRONG_PEERS`
+    /// is set.
+    strong_config strong;
     /// Where Kinesis streaming destinations publish (task 17); unset is
     /// `kinesis_sink_from_env()`.
     kinesis_sink kinesis{};
@@ -362,7 +426,20 @@ inline constexpr std::string_view k_gateway_env_help =
     "                                        tables' peer regions\n"
     "  KYTHIRA_DYNAMODB_REPLICA_ACCESS_KEY_ID      keys the peers know this\n"
     "  KYTHIRA_DYNAMODB_REPLICA_SECRET_ACCESS_KEY  cluster's replicator by\n"
-    "  KYTHIRA_DYNAMODB_REPLICA_CA           PEM bundle peers' certificates chain to\n";
+    "  KYTHIRA_DYNAMODB_REPLICA_CA           PEM bundle peers' certificates chain to\n"
+    "  KYTHIRA_DYNAMODB_STRONG_NODE_ID       this node's id in the strong host\n"
+    "  KYTHIRA_DYNAMODB_STRONG_PEERS         id=region@http://host:port,... every\n"
+    "                                        strong voter of the three regions;\n"
+    "                                        unset: no multi-region strong tables\n"
+    "  KYTHIRA_DYNAMODB_STRONG_RAFT_BIND     strong Raft listener address (0.0.0.0)\n"
+    "  KYTHIRA_DYNAMODB_STRONG_RAFT_PORT     strong Raft listener port (7001)\n"
+    "  KYTHIRA_DYNAMODB_STRONG_GATEWAYS      id=host:port,... every other strong\n"
+    "                                        voter's gateway\n"
+    "  KYTHIRA_DYNAMODB_STRONG_SECRET        secret strong voters forward with, the\n"
+    "                                        same in all three regions (16+ chars)\n"
+    "  KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS  strong groups' heartbeat (250)\n"
+    "  KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS, _MAX_MS  their election timeout\n"
+    "                                        range (2500, 5000)\n";
 
 namespace gateway_detail {
 
@@ -483,6 +560,110 @@ namespace gateway_detail {
     }
     if (c.engine == "rocksdb" && c.data_dir.empty()) {
         return std::string("KYTHIRA_DYNAMODB_ENGINE=rocksdb needs KYTHIRA_DYNAMODB_DATA_DIR");
+    }
+    return std::nullopt;
+}
+
+/// `KYTHIRA_DYNAMODB_STRONG_*` into `c.strong` (task 27); the error text
+/// on a bad setting. The strong host needs a cluster, exactly three
+/// regions with the same number of voters each, this node among its own
+/// region's, and a gateway for every other strong voter.
+[[nodiscard]] inline auto strong_from_env(const env_lookup& env, gateway_config& c)
+    -> std::optional<std::string> {
+    const auto text = env("KYTHIRA_DYNAMODB_STRONG_PEERS").value_or("");
+    if (trim(text).empty()) {
+        return std::nullopt;
+    }
+    auto& k = c.strong;
+    if (!c.cluster.enabled()) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_STRONG_PEERS needs a cluster: set "
+            "KYTHIRA_DYNAMODB_PEERS");
+    }
+    auto parsed = parse_id_map("KYTHIRA_DYNAMODB_STRONG_PEERS", text);
+    if (auto* e = std::get_if<std::string>(&parsed)) {
+        return *e;
+    }
+    for (const auto& [id, value] : std::get<0>(parsed)) {
+        const auto at = value.find('@');
+        if (at == std::string::npos || at == 0 || at + 1 == value.size()) {
+            return "KYTHIRA_DYNAMODB_STRONG_PEERS: expected id=region@url, got '" + id + "=" +
+                   value + "'";
+        }
+        k.peers.emplace(id, strong_peer{value.substr(0, at), value.substr(at + 1)});
+    }
+    k.node_id = env("KYTHIRA_DYNAMODB_STRONG_NODE_ID").value_or("");
+    if (k.node_id.empty()) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_STRONG_NODE_ID is required with KYTHIRA_DYNAMODB_STRONG_PEERS");
+    }
+    const auto self = k.peers.find(k.node_id);
+    if (self == k.peers.end()) {
+        return "KYTHIRA_DYNAMODB_STRONG_PEERS must include this node's own id '" + k.node_id + "'";
+    }
+    if (self->second.region != c.front.region) {
+        return "KYTHIRA_DYNAMODB_STRONG_PEERS puts this node in region '" + self->second.region +
+               "', but KYTHIRA_DYNAMODB_REGION is '" + c.front.region + "'";
+    }
+    const auto regions = k.regions();
+    if (regions.size() != strong_config::k_regions) {
+        return "KYTHIRA_DYNAMODB_STRONG_PEERS must name exactly three regions, not " +
+               std::to_string(regions.size());
+    }
+    const auto per_region = k.voters_in(regions.front()).size();
+    for (const auto& r : regions) {
+        if (k.voters_in(r).size() != per_region) {
+            return std::string(
+                "KYTHIRA_DYNAMODB_STRONG_PEERS must give every region the same "
+                "number of voters, so that no region holds a quorum alone");
+        }
+    }
+    k.raft_bind = env("KYTHIRA_DYNAMODB_STRONG_RAFT_BIND").value_or("0.0.0.0");
+    if (auto v = env("KYTHIRA_DYNAMODB_STRONG_RAFT_PORT")) {
+        const auto p = number<std::uint16_t>(*v);
+        if (!p) {
+            return "KYTHIRA_DYNAMODB_STRONG_RAFT_PORT: not a port: '" + *v + "'";
+        }
+        k.raft_port = *p;
+    }
+    for (const auto& [name, field] :
+         {std::pair{"KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS", &k.heartbeat},
+          std::pair{"KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS", &k.election_min},
+          std::pair{"KYTHIRA_DYNAMODB_STRONG_ELECTION_MAX_MS", &k.election_max}}) {
+        if (auto v = env(name)) {
+            const auto n = number<std::uint32_t>(*v);
+            if (!n || *n == 0) {
+                return std::string(name) + ": not a positive count: '" + *v + "'";
+            }
+            *field = std::chrono::milliseconds{*n};
+        }
+    }
+    if (k.election_max <= k.election_min || k.election_min <= k.heartbeat) {
+        return std::string(
+            "KYTHIRA_DYNAMODB_STRONG_*_MS: need heartbeat < election min < election max");
+    }
+    k.forward_secret = env("KYTHIRA_DYNAMODB_STRONG_SECRET").value_or("");
+    if (k.forward_secret.size() < k_min_forward_secret) {
+        return "KYTHIRA_DYNAMODB_STRONG_SECRET is required with KYTHIRA_DYNAMODB_STRONG_PEERS, "
+               "and needs " +
+               std::to_string(k_min_forward_secret) + " or more characters";
+    }
+    auto gw = parse_id_map("KYTHIRA_DYNAMODB_STRONG_GATEWAYS",
+                           env("KYTHIRA_DYNAMODB_STRONG_GATEWAYS").value_or(""));
+    if (auto* e = std::get_if<std::string>(&gw)) {
+        return *e;
+    }
+    for (const auto& [id, hp_text] : std::get<0>(gw)) {
+        const auto hp = parse_host_port(hp_text);
+        if (!hp) {
+            return "KYTHIRA_DYNAMODB_STRONG_GATEWAYS: '" + hp_text + "' is not host:port";
+        }
+        k.gateways.emplace(id, *hp);
+    }
+    for (const auto& [id, p] : k.peers) {
+        if (id != k.node_id && !k.gateways.contains(id)) {
+            return "KYTHIRA_DYNAMODB_STRONG_GATEWAYS has no gateway for strong peer '" + id + "'";
+        }
     }
     return std::nullopt;
 }
@@ -671,6 +852,9 @@ namespace gateway_detail {
     if (auto e = gateway_detail::replica_peers_from_env(env, c)) {
         return *e;
     }
+    if (auto e = gateway_detail::strong_from_env(env, c)) {
+        return *e;
+    }
     return c;
 }
 
@@ -713,6 +897,12 @@ public:
     using authorizer = aws_auth::static_key_authorizer;
 
     /// Throws `std::invalid_argument` on a bad key table.
+    /// Ops forwarded to this node's strong host (task 27), served at
+    /// `k_strong_forward_path` with the strong secret. Set before `start`.
+    auto set_strong_ops(std::function<std::string(std::string_view)> serve) -> void {
+        _strong_ops = std::move(serve);
+    }
+
     gateway(gateway_config config, Backend& backend,
             std::function<void(bool, std::string_view)> log = {})
         : _config(std::move(config)),
@@ -884,8 +1074,13 @@ public:
         }
         if constexpr (serves_ops) {
             if (req.target() == k_forward_path && !_config.cluster.forward_secret.empty()) {
-                return forwarded(req);
+                return forwarded(req, _config.cluster.forward_secret,
+                                 [this](std::string_view op) { return _backend.serve(op); });
             }
+        }
+        if (req.target() == k_strong_forward_path && _strong_ops &&
+            !_config.strong.forward_secret.empty()) {
+            return forwarded(req, _config.strong.forward_secret, _strong_ops);
         }
         return to_https_response(_front->handle(to_front_end_request(req, ctx)), req.version());
     }
@@ -994,7 +1189,8 @@ private:
     };
 
     /// A peer's op: refused unless it carries a fresh, valid MAC.
-    auto forwarded(const https::request& req) -> https::response {
+    auto forwarded(const https::request& req, const std::string& secret,
+                   const std::function<std::string(std::string_view)>& serve) -> https::response {
         namespace http = boost::beast::http;
         const auto now =
             static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1003,20 +1199,22 @@ private:
         const auto time = req.find(k_forward_time_header);
         const auto mac = req.find(k_forward_mac_header);
         if (req.method() != http::verb::post || time == req.end() || mac == req.end() ||
-            !forward_authentic(_config.cluster.forward_secret, time->value(), mac->value(),
-                               req.body(), now)) {
+            !forward_authentic(secret, time->value(), mac->value(), req.body(), now)) {
             https::response res{http::status::forbidden, req.version()};
             res.prepare_payload();
             return res;
         }
         https::response res{http::status::ok, req.version()};
         res.set(http::field::content_type, "application/octet-stream");
-        res.body() = _backend.serve(req.body());
+        res.body() = serve(req.body());
         res.prepare_payload();
         return res;
     }
 
     gateway_config _config;
+    /// Runs ops strong voters forward to this node (task 27); empty
+    /// without a strong host.
+    std::function<std::string(std::string_view)> _strong_ops;
     authorizer _auth;
     std::unique_ptr<disk_guard> _guard;
     Backend& _backend;

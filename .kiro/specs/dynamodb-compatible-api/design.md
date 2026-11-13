@@ -192,23 +192,34 @@ is never returned. That is allowed, since AWS documents it as retryable.
 
 **A second multi-raft host.** Each node runs a second `multi_raft` host,
 the strong host, beside the cluster's own. It holds only MRSC groups, with
-its own Raft listener, its own RocksDB database and `strong-layout.json`,
+its own Raft listener and everything under `<data dir>/strong/` (its
+RocksDB database, Raft logs, change log, `layout.json` and `group-ids`),
 and Raft timings for a wide-area network (election timeouts in seconds,
 not hundreds of milliseconds), so cross-region latency never slows a
 local group's elections. Its peers are every strong voter in the three
-regions (`KYTHIRA_DYNAMODB_STRONG_PEERS`), over mTLS, with each region's
-CA trusted by the others. Node ids in the strong host carry the region's
-ordinal in their high bits, and group ids are allocated per (region,
-voter) range, extending the per-voter scheme splits already use, so two
-regions splitting at once never collide.
+regions (`KYTHIRA_DYNAMODB_STRONG_PEERS`, `id=region@url`), with each
+region's CA trusted by the others. Strong node ids are unique across the
+three regions, and group ids come from each voter's range in the sorted
+list of all strong voters, the per-voter scheme splits already use, so
+two regions splitting at once never collide. Ops for a strong group's
+leader go to its gateway at `/_kythira/dynamodb/strong-forward`, signed
+with a secret all three regions share (`KYTHIRA_DYNAMODB_STRONG_SECRET`).
 
-**The strong catalog.** One group in the strong host, with voters in all
-three regions, holds what the regions must agree on: each MRSC table's
-strong id, its shared settings (key schema, billing, throughput, GSIs),
-its regions and witness, and its status. Each region's own catalog keeps
-the per-replica settings and a pointer to the strong id. An `UpdateTable`
-that changes a shared setting is a strong catalog entry, applied by each
-region's catalog leader to its local descriptor.
+**The strong catalog.** The strong host bootstraps the same layout as a
+cluster's host: a catalog group and one item group over `t/`. Its
+catalog group, with voters in all three regions, is the strong catalog.
+It holds what the regions must agree on: each MRSC table's strong id, its
+shared settings (key schema, billing, throughput, GSIs), its regions and
+witness, and its status. Strong table and index ids start at 2^62, so
+they never meet a cluster's own ids, and a key's table id says which host
+owns it. Each region's own catalog keeps the per-replica settings, and
+its descriptor carries the strong ids. The gateway's backend routes by
+table id: catalog commands and keys under a cluster id go to the
+cluster's host, and keys under a strong id go to the strong host. The
+handlers, the propagator, drop steps and range reads need no other
+change. An `UpdateTable` that changes a shared setting is a strong
+catalog entry, applied by each region's catalog leader to its local
+descriptor.
 
 **Making a table strong.**
 

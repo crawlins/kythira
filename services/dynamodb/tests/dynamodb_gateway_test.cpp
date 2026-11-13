@@ -493,6 +493,92 @@ BOOST_AUTO_TEST_CASE(bad_cluster_settings_are_refused_with_the_variable_named) {
                "KYTHIRA_DYNAMODB_PEERS (it may list only this node)");
 }
 
+namespace {
+
+constexpr std::string_view k_strong_secret = "0123456789abcdef-strong";
+
+/// Region us-east-1's node 1, in a strong host with one voter in each of
+/// three regions.
+auto strong_env() -> std::map<std::string, std::string> {
+    auto vars = cluster_env();
+    vars["KYTHIRA_DYNAMODB_REGION"] = "us-east-1";
+    vars["KYTHIRA_DYNAMODB_STRONG_NODE_ID"] = "11";
+    vars["KYTHIRA_DYNAMODB_STRONG_PEERS"] =
+        "11=us-east-1@http://10.0.0.1:7001,21=us-east-2@http://10.1.0.1:7001,"
+        "31=us-west-2@http://10.2.0.1:7001";
+    vars["KYTHIRA_DYNAMODB_STRONG_GATEWAYS"] = "21=10.1.0.1:8000,31=10.2.0.1:8000";
+    vars["KYTHIRA_DYNAMODB_STRONG_SECRET"] = std::string(k_strong_secret);
+    return vars;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(strong_host_settings_are_read) {
+    BOOST_TEST(!std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(cluster_env())))
+                    .strong.enabled());
+    auto vars = strong_env();
+    vars["KYTHIRA_DYNAMODB_STRONG_RAFT_PORT"] = "7201";
+    vars["KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS"] = "100";
+    BOOST_REQUIRE_EQUAL(config_error(vars), "ok");
+    const auto k = std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars))).strong;
+    BOOST_TEST(k.enabled());
+    BOOST_TEST(k.node_id == "11");
+    BOOST_TEST(k.peers.size() == 3U);
+    BOOST_TEST(k.peers.at("21").region == "us-east-2");
+    BOOST_TEST(k.peers.at("21").url == "http://10.1.0.1:7001");
+    BOOST_TEST((k.regions() == std::vector<std::string>{"us-east-1", "us-east-2", "us-west-2"}));
+    BOOST_TEST((k.voters_in("us-west-2") == std::vector<std::string>{"31"}));
+    BOOST_TEST(k.raft_port == 7201U);
+    BOOST_TEST(k.gateways.at("31").host == "10.2.0.1");
+    BOOST_TEST(k.forward_secret == k_strong_secret);
+    BOOST_TEST((k.heartbeat == std::chrono::milliseconds{100}));
+    BOOST_TEST((k.election_min == std::chrono::milliseconds{2500}));
+    BOOST_TEST((k.election_max == std::chrono::milliseconds{5000}));
+}
+
+BOOST_AUTO_TEST_CASE(bad_strong_host_settings_are_refused_with_the_variable_named) {
+    const auto with = [](const std::string& name, const std::optional<std::string>& value) {
+        auto vars = strong_env();
+        if (value) {
+            vars[name] = *value;
+        } else {
+            vars.erase(name);
+        }
+        return config_error(vars);
+    };
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_NODE_ID", std::nullopt) ==
+               "KYTHIRA_DYNAMODB_STRONG_NODE_ID is required with KYTHIRA_DYNAMODB_STRONG_PEERS");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_NODE_ID", "21") ==
+               "KYTHIRA_DYNAMODB_STRONG_PEERS puts this node in region 'us-east-2', but "
+               "KYTHIRA_DYNAMODB_REGION is 'us-east-1'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_NODE_ID", "99") ==
+               "KYTHIRA_DYNAMODB_STRONG_PEERS must include this node's own id '99'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_PEERS", "11=http://10.0.0.1:7001") ==
+               "KYTHIRA_DYNAMODB_STRONG_PEERS: expected id=region@url, got "
+               "'11=http://10.0.0.1:7001'");
+    BOOST_TEST(
+        with("KYTHIRA_DYNAMODB_STRONG_PEERS", "11=us-east-1@http://a:1,21=us-east-2@http://b:1") ==
+        "KYTHIRA_DYNAMODB_STRONG_PEERS must name exactly three regions, not 2");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_PEERS",
+                    "11=us-east-1@http://a:1,12=us-east-1@http://a:2,21=us-east-2@http://b:1,"
+                    "31=us-west-2@http://c:1")
+                   .find("must give every region the same number of voters") != std::string::npos);
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_SECRET", "short")
+                   .find("KYTHIRA_DYNAMODB_STRONG_SECRET is required") == 0U);
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_GATEWAYS", "21=10.1.0.1:8000") ==
+               "KYTHIRA_DYNAMODB_STRONG_GATEWAYS has no gateway for strong peer '31'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_RAFT_PORT", "x") ==
+               "KYTHIRA_DYNAMODB_STRONG_RAFT_PORT: not a port: 'x'");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_ELECTION_MIN_MS", "100") ==
+               "KYTHIRA_DYNAMODB_STRONG_*_MS: need heartbeat < election min < election max");
+    BOOST_TEST(with("KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS", "0") ==
+               "KYTHIRA_DYNAMODB_STRONG_HEARTBEAT_MS: not a positive count: '0'");
+    auto single = minimal_env();
+    single["KYTHIRA_DYNAMODB_STRONG_PEERS"] = strong_env()["KYTHIRA_DYNAMODB_STRONG_PEERS"];
+    BOOST_TEST(config_error(single) ==
+               "KYTHIRA_DYNAMODB_STRONG_PEERS needs a cluster: set KYTHIRA_DYNAMODB_PEERS");
+}
+
 BOOST_AUTO_TEST_CASE(a_forwarded_op_needs_a_fresh_mac_over_its_body) {
     const std::uint64_t t = 1794300000123ULL;
     const auto mac = ddb::forward_mac(k_forward_secret, t, "op");
