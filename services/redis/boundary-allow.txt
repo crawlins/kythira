@@ -7,8 +7,8 @@
 # instantiate core templates the way an application would.
 #
 # file                                       allowed core *_impl.hpp           why
-cmd/redis_gateway_node/run_host.hpp          multi_raft_impl.hpp               instantiates the multi-raft host
-cmd/redis_gateway_node/run_host.hpp          beast_http_transport_impl.hpp     instantiates the Beast transport
+cmd/redis_gateway_node/redis_serving.hpp     multi_raft_impl.hpp               instantiates the multi-raft host
+cmd/redis_gateway_node/standalone_node.hpp   beast_http_transport_impl.hpp     instantiates the Beast transport
 tests/cache_http_front_end_test.cpp          multi_raft_impl.hpp               stands up in-process hosts
 tests/cache_fsync_stall_test.cpp             multi_raft_impl.hpp               stands up in-process hosts
 tests/multi_raft_persistence_bench_rows.hpp  multi_raft_impl.hpp               instantiates the bench's persistence clusters

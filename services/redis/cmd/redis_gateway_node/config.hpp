@@ -14,6 +14,7 @@
 
 #include <raft/host_node_id.hpp>
 #include <raft/logger.hpp>
+#include <raft/service_module.hpp>
 #include <kythira/redis/redis_gateway.hpp>
 
 #include <chrono>
@@ -121,6 +122,30 @@ struct node_options {
 /// Read every variable in design Component 9's table, plus the Raft ones.
 /// @throws std::invalid_argument naming the variable that is missing or malformed.
 [[nodiscard]] auto from_env() -> node_options;
+
+/// The same, through a module interface's lookup: the process environment
+/// stand-alone (`process_env()`), the node's view of it in kythira_node
+/// (`composite_env()`).
+[[nodiscard]] auto from_env(const service_node::env_lookup& env) -> node_options;
+
+/// The process environment as a module interface's lookup. A variable set
+/// to the empty string is set, as `from_env()` reads it.
+[[nodiscard]] auto process_env() -> service_node::env_lookup;
+
+/// The variables the Redis module reads in kythira_node
+/// (.kiro/specs/service-colocation/ task 7, Requirement 8.1).
+///
+/// - KYTHIRA_CACHE_DATA_DIR is the node's data directory's redis/, except
+///   in memory mode, which has none.
+/// - KYTHIRA_ALLOW_PLAINTEXT_RAFT is true and KYTHIRA_WIRE_SERIALIZER is
+///   cbor: Raft is the node's listener and wire.
+/// - Any other variable set in `env` is taken as it is.
+/// - Otherwise the node's settings fill in: KYTHIRA_PEERS from
+///   KYTHIRA_NODE_PEERS (`id=host:port`, with the scheme added),
+///   KYTHIRA_RAFT_BIND and _PORT from the node's, and the RESP TLS
+///   listener's certificate and key and the forwarding CA from
+///   KYTHIRA_NODE_TLS_*. KYTHIRA_NODE_ID is the same variable in both.
+[[nodiscard]] auto composite_env(service_node::env_lookup env) -> service_node::env_lookup;
 
 /// True when every address `address` binds is loopback: 127.0.0.0/8, ::1, or a
 /// name such as "localhost" that /etc/hosts maps only to those.

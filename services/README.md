@@ -103,7 +103,7 @@ line:
 
 ```
 # file                                   allowed core *_impl.hpp       why
-cmd/redis_gateway_node/run_host.hpp      multi_raft_impl.hpp           instantiates the multi-raft host
+cmd/redis_gateway_node/redis_serving.hpp multi_raft_impl.hpp           instantiates the multi-raft host
 ```
 
 Only the composition root (`cmd/`) and module tests that stand up an

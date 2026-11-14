@@ -8,10 +8,13 @@
 /// Two modes. `--hash-secret` reads a secret from stdin and prints the ACL
 /// record for it, so the plaintext secret never has to be written into a
 /// file or a command line. Otherwise the process is the daemon, configured
-/// entirely from the environment (`config.hpp`), stopped by SIGINT/SIGTERM.
+/// entirely from the environment (`config.hpp`), stopped by SIGINT/SIGTERM:
+/// a node with the Redis module alone (standalone_node.hpp,
+/// .kiro/specs/service-colocation/ task 7).
 
 #include "config.hpp"
 #include "host_runners.hpp"
+#include "redis_module.hpp"
 #include "stop_signal.hpp"
 
 #include <kythira/redis/redis_acl.hpp>
@@ -102,23 +105,22 @@ auto main(int argc, char** argv) -> int {
 
     folly::Init init(&argc, &argv);
 
+    // Read here first so a bad setting exits 2 before a port is bound;
+    // the module reads the same variables again.
     kythira::redis_node::node_options opt;
-#ifdef KYTHIRA_REDIS_GATEWAY_IAM
-    // Before the gateway starts and after the environment is read; it
-    // outlives every gateway configured with its verifier.
-    std::unique_ptr<kythira::redis_node::iam_auth> iam;
-#endif
     try {
         opt = kythira::redis_node::from_env();
-#ifdef KYTHIRA_REDIS_GATEWAY_IAM
-        iam = kythira::redis_node::start_iam_auth_from_env();
-        if (iam) {
-            opt._gateway._credential_verifier = iam->verifier();
-        }
-#endif
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";
         return 2;
+    }
+    // The ACL too: a bad file must fail before a port is bound.
+    try {
+        kythira::redis_acl acl;
+        kythira::redis_node::load_acl(opt, acl);
+    } catch (const std::exception& e) {
+        std::cerr << "redis_gateway_node: " << e.what() << "\n";
+        return 1;
     }
     if (!kythira::redis_node::is_loopback_address(opt._bind_address)) {
         std::cerr << "redis_gateway_node: WARNING: Raft RPC is PLAINTEXT and UNAUTHENTICATED on "
@@ -134,18 +136,9 @@ auto main(int argc, char** argv) -> int {
     try {
         switch (opt._serializer) {
             case kythira::redis_node::wire_serializer::cbor:
-                // from_env() refuses file and engine persistence on any other wire.
-                if (opt._cache._persistence == kythira::redis_node::cache_persistence::file) {
-                    return kythira::redis_node::run_cbor_file(opt);
-                }
-#if defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
-                // from_env() refuses engine persistence in any other build.
-                if (opt._cache._persistence == kythira::redis_node::cache_persistence::engine) {
-                    return kythira::redis_node::run_cbor_engine(opt);
-                }
-#endif
                 return kythira::redis_node::run_cbor(opt);
             case kythira::redis_node::wire_serializer::json:
+                // from_env() refuses file and engine persistence on this wire.
                 return kythira::redis_node::run_json(opt);
         }
     } catch (const std::exception& e) {

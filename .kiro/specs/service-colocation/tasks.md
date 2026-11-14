@@ -97,15 +97,29 @@ is in.
     run over the templated cluster.
   - _Requirements: 3.1, 3.2, 3.4, 4.1, 7.3, 7.4, 8.2_
 
-- [ ] 7. Redis gateway as a module
+- [x] 7. Redis gateway as a module
   - Adapter over the Redis gateway and build cache; `redis_gateway_node`
     rebuilt; embedded IAM replica replaced by the co-located IAM module
     when present, `KYTHIRA_IAM_*` kept for stand-alone
+  - Done: `redis_module.hpp` runs the gateway as `redis_module` (number
+    1), with the serving side (`redis_serving.hpp`'s `host_serving`)
+    picked by `KYTHIRA_CACHE_PERSISTENCE` from one factory per storage,
+    each still a `multi_raft` stack in its own translation unit. The
+    initial tiling is `space.to_host(1..n)` and the snapshot-isolation
+    oracle keeps the stand-alone id's low 56 bits. `redis_gateway_node`
+    is the module on its own Beast transport (`standalone_node.hpp`),
+    with the same variables, ports, wire and data layout; `composite_env`
+    fills the node-wide settings, checked by
+    `redis_gateway_node_config_unit_test`. The IAM half waits on task 8:
+    until IAM is a module there is nothing co-located to use, so a
+    `CONFIG_REDIS_GATEWAY_IAM` build keeps its embedded replica in both
+    forms, and task 8 swaps in `iam.evaluator` when it is published.
   - _Requirements: 3.1, 3.2, 3.4, 7.3, 8.2_
 
 - [ ] 8. IAM on the multi-raft host, as a module
   - IAM state machine as a host group; `iam_node --convert-data-dir`;
-    publishes `iam.evaluator`; co-located modules authorize through it
+    publishes `iam.evaluator`; co-located modules authorize through it,
+    the Redis module's embedded replica included (task 7)
   - _Requirements: 5.1-5.3, 7.2_
 
 - [ ] 9. Resource isolation
