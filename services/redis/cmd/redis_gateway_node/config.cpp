@@ -10,6 +10,9 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
+#include <optional>
+#include <string_view>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -20,18 +23,32 @@ namespace kythira::redis_node {
 
 namespace {
 
+/// The lookup the current from_env(env) reads through, or null for the
+/// process environment. One per thread, so two nodes in one test process
+/// can read their settings at once.
+thread_local const service_node::env_lookup* t_env =
+    nullptr;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+/// A variable's value; set but empty counts as set, as getenv has it.
+auto env_get(const char* name) -> std::optional<std::string> {
+    if (t_env != nullptr) {
+        return (*t_env)(name);
+    }
+    const char* v = std::getenv(name);  // NOLINT(concurrency-mt-unsafe): read at start
+    return v != nullptr ? std::optional<std::string>(v) : std::nullopt;
+}
+
 auto get_opt(const char* name, const char* def) -> std::string {
-    const char* v = std::getenv(name);
-    return v != nullptr ? v : def;
+    return env_get(name).value_or(def);
 }
 
 auto get_required(const char* name) -> std::string {
-    const char* v = std::getenv(name);
-    if (v == nullptr || *v == '\0') {
+    auto v = env_get(name);
+    if (!v || v->empty()) {
         throw std::invalid_argument(std::string("redis_gateway_node: missing required env var ") +
                                     name);
     }
-    return v;
+    return *v;
 }
 
 auto to_bool(const char* name, const std::string& v) -> bool {
@@ -125,8 +142,8 @@ auto port_of(const std::string& listen) -> std::string {
 }
 
 auto is_set(const char* name) -> bool {
-    const char* v = std::getenv(name);
-    return v != nullptr && *v != '\0';
+    const auto v = env_get(name);
+    return v && !v->empty();
 }
 
 /// `KYTHIRA_CACHE_PERSISTENCE=engine` (.kiro/specs/persistent-state-machine/
@@ -175,7 +192,7 @@ void read_engine_options(node_options& o) {
                                        get_opt("KYTHIRA_CACHE_SNAPSHOT_BYTES_PER_SEC", "0"));
     // As in file mode, the disk budget bounds the values, so the memory
     // mode's per-shard RAM bound applies only when set explicitly.
-    if (const char* v = std::getenv("KYTHIRA_REDIS_MAX_SHARD_BYTES"); v == nullptr || *v == '\0') {
+    if (!is_set("KYTHIRA_REDIS_MAX_SHARD_BYTES")) {
         o._gateway._max_shard_bytes = std::numeric_limits<std::size_t>::max();
     }
 #endif
@@ -275,7 +292,7 @@ void read_cache_options(node_options& o) {
     // its values passed 1 GiB, whatever KYTHIRA_CACHE_MAX_DISK_BYTES said.
     // Two 500 MB vcpkg archives were enough. So in file mode it applies
     // only when set explicitly.
-    if (const char* v = std::getenv("KYTHIRA_REDIS_MAX_SHARD_BYTES"); v == nullptr || *v == '\0') {
+    if (!is_set("KYTHIRA_REDIS_MAX_SHARD_BYTES")) {
         o._gateway._max_shard_bytes = std::numeric_limits<std::size_t>::max();
     }
 
@@ -425,8 +442,8 @@ auto from_env() -> node_options {
         to_bool("KYTHIRA_REDIS_ALLOW_ANONYMOUS", get_opt("KYTHIRA_REDIS_ALLOW_ANONYMOUS", "false"));
     // Requirement 10.1: the ACL file is required. The one way out is the
     // explicit anonymous opt-out, which start() warns about every time.
-    if (const char* f = std::getenv("KYTHIRA_REDIS_ACL_FILE"); f != nullptr && *f != '\0') {
-        o._acl_file = f;
+    if (is_set("KYTHIRA_REDIS_ACL_FILE")) {
+        o._acl_file = get_opt("KYTHIRA_REDIS_ACL_FILE", "");
     } else if (!g._allow_anonymous) {
         throw std::invalid_argument(
             "redis_gateway_node: missing required env var KYTHIRA_REDIS_ACL_FILE "
@@ -536,6 +553,108 @@ auto from_env() -> node_options {
             "KYTHIRA_CACHE_PERSISTENCE=memory or engine");
     }
     return o;
+}
+
+auto from_env(const service_node::env_lookup& env) -> node_options {
+    struct scope {
+        explicit scope(const service_node::env_lookup* e) : _prev(t_env) { t_env = e; }
+        scope(const scope&) = delete;
+        auto operator=(const scope&) -> scope& = delete;
+        scope(scope&&) = delete;
+        auto operator=(scope&&) -> scope& = delete;
+        ~scope() { t_env = _prev; }
+        const service_node::env_lookup* _prev;
+    };
+    const scope s(&env);
+    return from_env();
+}
+
+auto process_env() -> service_node::env_lookup {
+    return [](std::string_view name) -> std::optional<std::string> {
+        // Read at startup, before the node starts a thread. Set but empty
+        // stays set, as from_env() has always read it.
+        const char* v = std::getenv(std::string(name).c_str());  // NOLINT(concurrency-mt-unsafe)
+        return v != nullptr ? std::optional<std::string>(v) : std::nullopt;
+    };
+}
+
+auto composite_env(service_node::env_lookup env) -> service_node::env_lookup {
+    return [env = std::move(env)](std::string_view name) -> std::optional<std::string> {
+        const auto node = [&env](const char* n) {
+            auto v = env(n);
+            return v && !v->empty() ? v : std::nullopt;
+        };
+        const bool plaintext = node("KYTHIRA_NODE_INSECURE_PLAINTEXT").value_or("") == "1";
+        if (name == "KYTHIRA_CACHE_DATA_DIR") {
+            // Memory mode refuses a data directory; every other mode keeps
+            // its files in the node's redis/.
+            if (env("KYTHIRA_CACHE_PERSISTENCE").value_or("file") == "memory") {
+                return std::nullopt;
+            }
+            auto dir = node("KYTHIRA_NODE_DATA_DIR");
+            if (!dir) {
+                return std::nullopt;
+            }
+            return (std::filesystem::path(*dir) / "redis").string();
+        }
+        if (name == "KYTHIRA_ALLOW_PLAINTEXT_RAFT") {
+            // Raft is the node's listener, which speaks mutual TLS unless
+            // the whole node is plaintext.
+            return std::string("true");
+        }
+        if (name == "KYTHIRA_WIRE_SERIALIZER") {
+            // The node's wire, whatever the module was told.
+            return std::string("cbor");
+        }
+        if (auto v = env(name)) {
+            return v;
+        }
+        if (name == "KYTHIRA_PEERS") {
+            // id=host:port,... as id=scheme://host:port,...
+            const auto peers = node("KYTHIRA_NODE_PEERS");
+            if (!peers) {
+                return std::nullopt;
+            }
+            std::string out;
+            std::string tok;
+            for (const char c : *peers + ',') {
+                if (c != ',') {
+                    if (c != ' ') {
+                        tok += c;
+                    }
+                    continue;
+                }
+                if (!tok.empty()) {
+                    const auto eq = tok.find('=');
+                    out += (out.empty() ? "" : ",") +
+                           (eq == std::string::npos
+                                ? tok  // from_env names the fault
+                                : tok.substr(0, eq + 1) + (plaintext ? "http://" : "https://") +
+                                      tok.substr(eq + 1));
+                }
+                tok.clear();
+            }
+            return out;
+        }
+        if (name == "KYTHIRA_RAFT_BIND") {
+            return node("KYTHIRA_NODE_RAFT_BIND");
+        }
+        if (name == "KYTHIRA_RAFT_PORT") {
+            return node("KYTHIRA_NODE_RAFT_PORT").value_or("7400");  // node_config's default
+        }
+        // The RESP TLS listener, when one is asked for, and forwarding to
+        // the peers' TLS listeners, use the node's certificate and CA.
+        if (name == "KYTHIRA_REDIS_TLS_CERT" && !plaintext) {
+            return node("KYTHIRA_NODE_TLS_CERT");
+        }
+        if (name == "KYTHIRA_REDIS_TLS_KEY" && !plaintext) {
+            return node("KYTHIRA_NODE_TLS_KEY");
+        }
+        if (name == "KYTHIRA_REDIS_FORWARD_TLS_CA" && !plaintext) {
+            return node("KYTHIRA_NODE_TLS_CA");
+        }
+        return std::nullopt;
+    };
 }
 
 auto usage() -> std::string {

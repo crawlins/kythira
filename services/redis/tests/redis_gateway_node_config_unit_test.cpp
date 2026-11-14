@@ -7,7 +7,9 @@
 // internal secret, so it is TLS whenever a TLS listener is configured and
 // plaintext only by KYTHIRA_REDIS_ALLOW_PLAINTEXT_FORWARDING. Also the
 // disk-backed cache's KYTHIRA_CACHE_* variables
-// (.kiro/specs/disk-backed-build-cache/ task 7).
+// (.kiro/specs/disk-backed-build-cache/ task 7), and the module's settings in
+// kythira_node, the node's KYTHIRA_NODE_* filling in what the module's own
+// variables leave unset (.kiro/specs/service-colocation/ task 7).
 
 #define BOOST_TEST_MODULE redis_gateway_node_config_unit_test
 #include <boost/test/unit_test.hpp>
@@ -16,6 +18,8 @@
 
 #include <cstdlib>
 #include <limits>
+#include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -379,4 +383,123 @@ BOOST_AUTO_TEST_CASE(transaction_settings) {
     // Only the in-memory store is wrapped for transactions.
     file_mode();
     BOOST_CHECK_THROW((void)from_env(), std::invalid_argument);
+}
+
+// ── kythira_node (service-colocation task 7) ─────────────────────────────────
+
+namespace {
+
+namespace sn = kythira::service_node;
+
+auto lookup(std::map<std::string, std::string> vars) -> sn::env_lookup {
+    return [vars = std::move(vars)](std::string_view name) -> std::optional<std::string> {
+        const auto it = vars.find(std::string(name));
+        if (it == vars.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    };
+}
+
+auto node_vars() -> std::map<std::string, std::string> {
+    return {
+        {"KYTHIRA_NODE_ID", "2"},
+        {"KYTHIRA_NODE_PEERS", "1=10.0.0.1:7400,2=10.0.0.2:7400,3=[fd00::3]:7400"},
+        {"KYTHIRA_NODE_DATA_DIR", "/var/lib/kythira"},
+        {"KYTHIRA_NODE_RAFT_BIND", "0.0.0.0"},
+        {"KYTHIRA_NODE_TLS_CERT", "/etc/kythira/node.pem"},
+        {"KYTHIRA_NODE_TLS_KEY", "/etc/kythira/node.key"},
+        {"KYTHIRA_NODE_TLS_CA", "/etc/kythira/ca.pem"},
+        {"KYTHIRA_REDIS_ALLOW_ANONYMOUS", "true"},
+        {"KYTHIRA_CACHE_MAX_DISK_BYTES", "1073741824"},
+    };
+}
+
+auto composite(std::map<std::string, std::string> vars) -> kythira::redis_node::node_options {
+    return kythira::redis_node::from_env(
+        kythira::redis_node::composite_env(lookup(std::move(vars))));
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(the_node_settings_fill_in) {
+    const auto o = composite(node_vars());
+    BOOST_TEST(kythira::host_node_id_text(o._node_id) == "2");
+    BOOST_TEST(o._peers.size() == 3U);
+    BOOST_TEST(o._peers.at(o._node_id) == "https://10.0.0.2:7400");
+    BOOST_TEST(o._raft_port == 7400);
+    // Raft is the node's mutually authenticated listener: the plaintext
+    // guard is off, even bound off loopback.
+    BOOST_TEST(o._bind_address == "0.0.0.0");
+    BOOST_TEST(o._allow_plaintext_raft);
+    BOOST_TEST(o._cache._data_dir.string() == "/var/lib/kythira/redis");
+    BOOST_TEST((o._serializer == kythira::redis_node::wire_serializer::cbor));
+    // The RESP TLS certificate is there for a TLS listener, if one is
+    // asked for; none is by default.
+    BOOST_TEST(o._gateway._tls_cert_path == "/etc/kythira/node.pem");
+    BOOST_TEST(o._gateway._tls_listen.empty());
+    // Every peer's gateway on its Raft host and this node's RESP port.
+    BOOST_TEST(o._peer_gateways.at(o._node_id) == "10.0.0.2:6379");
+}
+
+BOOST_AUTO_TEST_CASE(the_module_variables_win_but_not_the_data_directory_or_wire) {
+    auto vars = node_vars();
+    vars["KYTHIRA_PEERS"] = "1=http://r1:7000,2=http://r2:7000";
+    vars["KYTHIRA_CACHE_DATA_DIR"] = "/somewhere/else";
+    vars["KYTHIRA_WIRE_SERIALIZER"] = "json";
+    vars["KYTHIRA_REDIS_TLS_LISTEN"] = "0.0.0.0:6380";
+    vars["KYTHIRA_REDIS_TLS_CERT"] = "/etc/redis/api.pem";
+    vars["KYTHIRA_REDIS_TLS_KEY"] = "/etc/redis/api.key";
+    const auto o = composite(vars);
+    BOOST_TEST(o._peers.size() == 2U);
+    BOOST_TEST(o._cache._data_dir.string() == "/var/lib/kythira/redis");
+    BOOST_TEST((o._serializer == kythira::redis_node::wire_serializer::cbor));
+    BOOST_TEST(o._gateway._tls_cert_path == "/etc/redis/api.pem");
+    // Forwarding follows the TLS listener, verified against the node's CA.
+    BOOST_TEST(o._gateway._forward_tls);
+    BOOST_TEST(o._gateway._forward_tls_ca_path == "/etc/kythira/ca.pem");
+}
+
+BOOST_AUTO_TEST_CASE(a_memory_cache_has_no_data_directory) {
+    auto vars = node_vars();
+    vars.erase("KYTHIRA_CACHE_MAX_DISK_BYTES");
+    vars["KYTHIRA_CACHE_PERSISTENCE"] = "memory";
+    const auto o = composite(vars);
+    BOOST_TEST((o._cache._persistence == kythira::redis_node::cache_persistence::memory));
+    BOOST_TEST(o._cache._data_dir.empty());
+}
+
+BOOST_AUTO_TEST_CASE(a_plaintext_node_names_http_peers) {
+    auto vars = node_vars();
+    vars.erase("KYTHIRA_NODE_TLS_CERT");
+    vars.erase("KYTHIRA_NODE_TLS_KEY");
+    vars.erase("KYTHIRA_NODE_TLS_CA");
+    vars["KYTHIRA_NODE_INSECURE_PLAINTEXT"] = "1";
+    const auto o = composite(vars);
+    for (const auto& [id, url] : o._peers) {
+        BOOST_TEST(url.starts_with("http://"));
+    }
+    BOOST_TEST(o._gateway._tls_cert_path.empty());
+}
+
+BOOST_AUTO_TEST_CASE(stand_alone_reads_through_a_lookup_as_from_the_process) {
+    // The module's stand-alone lookup: no KYTHIRA_NODE_* fallback, and the
+    // plaintext guard as the daemon always had it.
+    BOOST_CHECK_THROW(kythira::redis_node::from_env(lookup({
+                          {"KYTHIRA_NODE_ID", "1"},
+                          {"KYTHIRA_PEERS", "1=http://10.0.0.1:7000"},
+                          {"KYTHIRA_REDIS_ALLOW_ANONYMOUS", "true"},
+                          {"KYTHIRA_CACHE_PERSISTENCE", "memory"},
+                          {"KYTHIRA_NODE_DATA_DIR", "/ignored"},
+                      })),
+                      std::invalid_argument);
+    const auto o = kythira::redis_node::from_env(lookup({
+        {"KYTHIRA_NODE_ID", "1"},
+        {"KYTHIRA_PEERS", "1=http://127.0.0.1:7000"},
+        {"KYTHIRA_RAFT_BIND", "127.0.0.1"},
+        {"KYTHIRA_REDIS_ALLOW_ANONYMOUS", "true"},
+        {"KYTHIRA_CACHE_PERSISTENCE", "memory"},
+    }));
+    BOOST_TEST(o._raft_port == 7000);
+    BOOST_TEST(!o._allow_plaintext_raft);
 }

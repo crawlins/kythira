@@ -18,7 +18,7 @@ on before it became a module.
 | Path | What |
 |---|---|
 | `include/kythira/redis/` | the library headers, included as `<kythira/redis/…>` |
-| `cmd/redis_gateway_node/` | the daemon (the composition root) |
+| `cmd/redis_gateway_node/` | the daemon (the composition root) and the `kythira_node` module |
 | `tests/` | unit and in-process integration tests, the transaction bench rows, `golden/redis/` |
 | `tests/docker/` | the container scenarios (sccache end to end, the cache cluster, transactions under faults, engine storage under SIGKILL) |
 | `docker/` | the images and compose files those scenarios use |
@@ -118,7 +118,7 @@ exactly as they did before the seam existed.
 - The ACL's `auth=password|iam|both` is a reserved attribute like `cert=`
   (a repeated or unknown value is rejected). `redis_acl::authenticate`
   refuses an `auth=iam` user's password, and `auth_mode_of` tells the
-  composition root which users are the verifier's: `run_host.hpp` sets
+  composition root which users are the verifier's: `redis_module.hpp` sets
   `_credential_verifier_users` to the `iam` and `both` users whenever a
   verifier is configured. A `both` user the verifier refuses is checked
   against its password in the same admission slot.
@@ -129,6 +129,41 @@ exactly as they did before the seam existed.
   variables exist (`redis_gateway_node_iam_switch` checks `--help`).
 - `doc/redis-gateway.md` documents `auth=`, the rolling-upgrade rule, and
   the variables.
+
+## Beside other services in `kythira_node`
+
+The same code runs as a module of the composite daemon
+(`.kiro/specs/service-colocation/` task 7,
+`cmd/redis_gateway_node/redis_module.hpp`), with `KYTHIRA_SERVICES` naming
+`redis`. `redis_gateway_node` is that module alone on its own Beast
+transport (`standalone_node.hpp`), so its variables, ports, wire, group ids
+and data layout are as before. The serving side, `redis_serving.hpp`, is
+one `multi_raft` stack per storage, each still in its own translation unit
+(`run_cbor*.cpp` for the daemon, `redis_module_*.cpp` for `kythira_node`).
+
+In `kythira_node`, Raft goes over the node's one listener, with mutual TLS
+from `KYTHIRA_NODE_TLS_*`, on the CBOR wire whatever
+`KYTHIRA_WIRE_SERIALIZER` says, and the gateway's groups sit at `1 << 56`
+and up (the snapshot-isolation oracle at the same low bits as stand-alone).
+A stand-alone data directory therefore cannot be opened by a composite
+node; a cache is refilled rather than moved. The node's settings fill in
+what the variables above leave unset (`composite_env` in `config.hpp`): the
+peers from `KYTHIRA_NODE_PEERS`, Raft's bind address and port, and the RESP
+TLS listener's certificate and key and the forwarding CA from
+`KYTHIRA_NODE_TLS_*`, used only when `KYTHIRA_REDIS_TLS_LISTEN` asks for a
+TLS listener. The data directory is the node's `redis/` in file and engine
+mode; memory mode has none. Every other setting, the ACL file included, is
+set as for the daemon; `redis_gateway_node_config_unit_test` checks the
+mapping. The node's listener takes Raft requests up to 64 MiB, and a
+`KYTHIRA_REDIS_MAX_VALUE_BYTES` or `KYTHIRA_CACHE_CHUNK_BYTES` that needs
+larger ones is refused at start.
+
+Two things differ from the daemon. A peer's RESP and HTTP addresses are not
+learned from its Raft connections (the node's listener learns only Raft's),
+so under rootless Podman a gateway that restarts at a new address is found
+once its name resolves again. And a `CONFIG_REDIS_GATEWAY_IAM` build keeps
+its embedded IAM replica (`KYTHIRA_IAM_*`) in `kythira_node` too, until IAM
+itself runs as a module (service-colocation task 8) and takes its place.
 
 ## What the module uses from core
 

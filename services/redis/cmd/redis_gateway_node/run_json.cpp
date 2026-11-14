@@ -2,16 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// @file run_json.cpp
-/// @brief The JSON-wire `multi_raft` stack, alone in its translation unit.
-///        Kept for the serializer measurement in design.md; not the default.
+/// @brief The JSON-wire daemon: its `multi_raft` stack, values in RAM,
+///        alone in its translation unit. Kept for the serializer
+///        measurement in design.md; not the default. from_env() refuses
+///        file and engine persistence on this wire.
 
-#include "host_runners.hpp"
-#include "run_host.hpp"
+#include "redis_serving.hpp"
+#include "serving_factories.hpp"
 
 namespace kythira::redis_node {
 
 auto run_json(const node_options& opt) -> int {
-    return run_host<kythira::json_rpc_serializer<std::vector<std::byte>>, memory_storage>(opt);
+    return run_standalone<json_wire>(
+        opt,
+        {.memory = serving_factory_for<json_host, memory_storage>(), .file = {}, .engine = {}});
 }
 
 }  // namespace kythira::redis_node

@@ -3,18 +3,17 @@
 #pragma once
 
 /// @file host_runners.hpp
-/// @brief One entry point per wire serializer, each defined in its own
-///        translation unit.
+/// @brief The daemon's entry point per wire serializer: run_cbor_node.cpp
+///        and run_json.cpp.
 
 #include "config.hpp"
 
 namespace kythira::redis_node {
 
+/// The CBOR wire, with every storage this build has.
 auto run_cbor(const node_options& opt) -> int;
-auto run_cbor_file(const node_options& opt) -> int;
-#if defined(KYTHIRA_REDIS_GATEWAY_ENGINE)
-auto run_cbor_engine(const node_options& opt) -> int;
-#endif
+/// The JSON wire, values in RAM only. Kept for the serializer measurement
+/// in design.md; not the default.
 auto run_json(const node_options& opt) -> int;
 
 }  // namespace kythira::redis_node

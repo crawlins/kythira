@@ -6,15 +6,13 @@
 ///        (`KYTHIRA_CACHE_PERSISTENCE=engine`), alone in its translation unit
 ///        like the others. Built only with `CONFIG_REDIS_GATEWAY_ENGINE=y`.
 
-#include "host_runners.hpp"
-#include "run_host.hpp"
-
-#include <raft/cbor_serializer.hpp>
+#include "redis_serving.hpp"
+#include "serving_factories.hpp"
 
 namespace kythira::redis_node {
 
-auto run_cbor_engine(const node_options& opt) -> int {
-    return run_host<kythira::cbor_rpc_serializer<std::vector<std::byte>>, engine_storage>(opt);
+auto cbor_engine_serving() -> serving_factory<cbor_host> {
+    return serving_factory_for<cbor_host, engine_storage>();
 }
 
 }  // namespace kythira::redis_node
