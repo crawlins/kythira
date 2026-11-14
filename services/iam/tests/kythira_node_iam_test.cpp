@@ -8,6 +8,10 @@
 // does, keeps its state across a restart, and Kinesis authorizes through
 // the IAM module's in-process evaluator: a user's request is refused
 // until a policy allows it, with no IAM replica embedded in Kinesis.
+//
+// Resource isolation (task 9, Requirement 6.3): with Kinesis's request
+// threads all busy for twenty seconds, neither IAM's group nor Kinesis's
+// own start an election on any member.
 
 #define BOOST_TEST_MODULE kythira_node_iam_test
 
@@ -28,14 +32,17 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -103,7 +110,7 @@ public:
         }
         const auto dir = _dir / ("node-" + std::to_string(p.n));
         fs::create_directories(dir);
-        const std::vector<std::string> env{
+        std::vector<std::string> env{
             "KYTHIRA_SERVICES=iam,kinesis",
             "KYTHIRA_NODE_ID=" + std::to_string(p.n),
             "KYTHIRA_NODE_DATA_DIR=" + dir.string(),
@@ -127,6 +134,7 @@ public:
             "KINESIS_PEER_GATEWAYS=" + gateways,
             "PATH=/usr/bin:/bin",
         };
+        env.insert(env.end(), extra_env.begin(), extra_env.end());
         const auto log = (dir / "node.log").string();
         const pid_t pid = ::fork();
         BOOST_REQUIRE(pid >= 0);
@@ -194,6 +202,8 @@ public:
 
     std::vector<node_proc> nodes;
     kythira::iam::testing::test_pki_paths pki;
+    /// More variables for every member, set before `start`.
+    std::vector<std::string> extra_env;
 
 private:
     fs::path _dir;
@@ -344,5 +354,92 @@ BOOST_AUTO_TEST_CASE(iam_module_authorizes_kinesis_in_process, *boost::unit_test
         });
         BOOST_REQUIRE(allowed.has_value());
         BOOST_TEST(allowed->status == 200U, allowed->body);
+    }
+}
+
+namespace {
+
+/// `kythira_<module>_raft_term_sum` from a member's /metrics.
+auto term_sum(const node_cluster& c, const node_proc& p, const std::string& module)
+    -> std::optional<double> {
+    auto r = https_call(p.metrics, c.pki, http::verb::get, "/metrics");
+    if (!r || r->status != 200) {
+        return std::nullopt;
+    }
+    const auto name = "kythira_" + module + "_raft_term_sum ";
+    const auto at = r->body.find(name);
+    if (at == std::string::npos) {
+        return std::nullopt;
+    }
+    return std::stod(r->body.substr(at + name.size()));
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(a_saturated_module_starts_no_elections, *boost::unit_test::timeout(600)) {
+    node_cluster c;
+    // Few request threads, so the flood below holds every one.
+    c.extra_env = {"KINESIS_MAX_CONNECTIONS=4"};
+    for (auto& p : c.nodes) {
+        c.start(p);
+    }
+    auto* leader = c.wait_leader();
+    BOOST_REQUIRE(leader != nullptr);
+    auto created =
+        https_call(leader->iam, c.pki, http::verb::post, "/v1/admin/accounts",
+                   c.pki.admin_cert.string(), c.pki.admin_key.string(), {},
+                   {{"Content-Type", "application/json"}}, R"({"account_id":"111122223333"})");
+    BOOST_REQUIRE(created.has_value());
+    BOOST_REQUIRE_EQUAL(created->status, 201U);
+    const auto account = json_of(created->body);
+    const std::string id(account.at("access_key_id").as_string());
+    const std::string secret(account.at("secret_access_key").as_string());
+    for (const auto& p : c.nodes) {
+        auto ok = until_status(
+            200U, [&] { return kinesis_call(p.kinesis, c.pki, id, secret, "ListStreams", "{}"); });
+        BOOST_REQUIRE(ok.has_value());
+        BOOST_REQUIRE_EQUAL(ok->status, 200U);
+    }
+
+    // Every group has settled once each member answers; the terms now
+    // are the baseline.
+    std::map<std::pair<int, std::string>, double> before;
+    for (const auto& p : c.nodes) {
+        for (const std::string m : {"iam", "kinesis"}) {
+            auto t = term_sum(c, p, m);
+            BOOST_REQUIRE_MESSAGE(t.has_value(), "no " << m << " term on node " << p.n);
+            before[{p.n, m}] = *t;
+        }
+    }
+
+    std::atomic<bool> flooding{true};
+    std::atomic<std::uint64_t> answered{0};
+    std::vector<std::thread> clients;
+    for (int i = 0; i < 24; ++i) {
+        clients.emplace_back([&, i] {
+            const auto& p = c.nodes[static_cast<std::size_t>(i) % c.nodes.size()];
+            while (flooding.load()) {
+                if (kinesis_call(p.kinesis, c.pki, id, secret, "ListStreams", "{}")) {
+                    answered.fetch_add(1);
+                }
+            }
+        });
+    }
+    std::this_thread::sleep_for(20s);
+    flooding = false;
+    for (auto& t : clients) {
+        t.join();
+    }
+    BOOST_TEST_MESSAGE("Kinesis answered " << answered.load() << " requests under the flood");
+    BOOST_TEST(answered.load() > 0U);
+
+    for (const auto& p : c.nodes) {
+        for (const std::string m : {"iam", "kinesis"}) {
+            auto t = term_sum(c, p, m);
+            BOOST_REQUIRE(t.has_value());
+            BOOST_TEST(*t == (before[{p.n, m}]),
+                       m << " on node " << p.n << " started an election under the flood");
+        }
+        BOOST_TEST(c.health(p).has_value());
     }
 }

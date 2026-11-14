@@ -47,7 +47,8 @@
 /// before belong to `ACCOUNT_ID`. Cannot be turned off again |
 /// | `KYTHIRA_DYNAMODB_DATA_DIR` | | the disk guard's directory, and the database's |
 /// | `KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES` | 1 GiB | free space below which writes are refused |
-/// | `KYTHIRA_DYNAMODB_ENGINE` | `memory` | `memory`, or `rocksdb` (needs `PEERS`, `DATA_DIR`) |
+/// | `KYTHIRA_DYNAMODB_MAX_CONNECTIONS` | 256 | concurrent API connections, each on its own thread
+/// | | `KYTHIRA_DYNAMODB_ENGINE` | `memory` | `memory`, or `rocksdb` (needs `PEERS`, `DATA_DIR`) |
 /// | `KYTHIRA_DYNAMODB_NODE_ID` | | this node's id, with `PEERS` |
 /// | `KYTHIRA_DYNAMODB_PEERS` | | `id=http://host:port,...`: every voter's Raft address |
 /// | `KYTHIRA_DYNAMODB_RAFT_BIND`, `_RAFT_PORT` | `0.0.0.0`, `7000` | the Raft listener |
@@ -429,6 +430,8 @@ inline constexpr std::string_view k_gateway_env_help =
     "                                        Cannot be undone (off)\n"
     "  KYTHIRA_DYNAMODB_DATA_DIR             directory the disk guard watches\n"
     "  KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES     free-space floor for writes (1 GiB)\n"
+    "  KYTHIRA_DYNAMODB_MAX_CONNECTIONS      concurrent API connections, a thread\n"
+    "                                        each (256)\n"
     "  KYTHIRA_DYNAMODB_ENGINE               storage engine: memory, or rocksdb\n"
     "                                        (needs PEERS and DATA_DIR) (memory)\n"
     "  KYTHIRA_DYNAMODB_NODE_ID              this node's id (with PEERS)\n"
@@ -1005,6 +1008,13 @@ namespace gateway_detail {
             return "KYTHIRA_DYNAMODB_DISK_FLOOR_BYTES: not a byte count: '" + *v + "'";
         }
         c.disk_floor_bytes = *f;
+    }
+    if (auto v = env("KYTHIRA_DYNAMODB_MAX_CONNECTIONS")) {
+        const auto n = number<std::size_t>(*v);
+        if (!n || *n == 0) {
+            return "KYTHIRA_DYNAMODB_MAX_CONNECTIONS: not a positive count: '" + *v + "'";
+        }
+        c.http.max_connections = *n;
     }
     c.engine = env("KYTHIRA_DYNAMODB_ENGINE").value_or("memory");
     if (c.engine != "memory" && c.engine != "rocksdb") {

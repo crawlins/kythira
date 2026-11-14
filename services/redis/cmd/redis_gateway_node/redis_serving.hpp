@@ -490,6 +490,9 @@ public:
     }
 
     [[nodiscard]] auto group_count() const -> std::size_t override { return _groups; }
+    [[nodiscard]] auto raft_term_sum() const -> double override {
+        return _host ? service_node::raft_term_sum(*_host) : 0.0;
+    }
     [[nodiscard]] auto redis_port() const -> std::uint16_t override {
         return _gateway ? _gateway->port() : 0;
     }

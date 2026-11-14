@@ -33,6 +33,7 @@
 
 #include <raft/module_interfaces.hpp>
 #include <raft/module_registry.hpp>
+#include <raft/node_core.hpp>
 #include <raft/service_module.hpp>
 
 #include <cstddef>
@@ -124,7 +125,9 @@ public:
     [[nodiscard]] auto configure(const service_node::env_lookup& env)
         -> std::optional<std::string> override {
         try {
-            _opt = from_env(_standalone ? env : composite_env(env));
+            _opt = from_env(
+                _standalone ? env
+                            : composite_env(service_node::module_tuning(env, "KYTHIRA_REDIS_")));
             if (_max_raft_body != 0 && raft_request_body_limit(_opt) > _max_raft_body) {
                 return "KYTHIRA_REDIS_MAX_VALUE_BYTES and KYTHIRA_CACHE_CHUNK_BYTES need Raft "
                        "requests of " +
@@ -218,7 +221,8 @@ public:
         if (!_serving) {
             return {};
         }
-        return {{"groups", static_cast<double>(_serving->group_count()), {}}};
+        return {{"groups", static_cast<double>(_serving->group_count()), {}},
+                {"raft_term_sum", _serving->raft_term_sum(), {}}};
     }
 
     /// The RESP listener's port once started (tests pass port 0).

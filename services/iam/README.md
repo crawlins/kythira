@@ -87,6 +87,7 @@ The module reads `KYTHIRA_IAM_*` for what is its own and the node's
 | `KYTHIRA_IAM_TLS_CERT`, `_TLS_KEY` | its certificate | the node's |
 | `KYTHIRA_IAM_CLIENT_CA` | the CA admin client certificates chain to | the node's |
 | `KYTHIRA_IAM_ADMIN_URI_SANS` | admin certificate URI SANs, comma-separated | none: admin routes refuse |
+| `KYTHIRA_IAM_MAX_CONNECTIONS` | concurrent HTTPS connections, each on its own thread | 256 |
 | `KYTHIRA_IAM_PEER_URLS` | `id=https://host:port,...`, where a follower redirects to | each member's Raft host, this node's IAM port |
 | `KYTHIRA_IAM_ARN_PARTITION`, `_STS_REGIONS` | as `--arn-partition`, `--sts-regions` | `aws`, `us-east-1` |
 | `KYTHIRA_IAM_OIDC_ALLOWED_HOSTS`, `_OIDC_PROXY`, `_OIDC_CA_FILE` | as the `--oidc-*` flags | |

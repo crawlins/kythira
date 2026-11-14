@@ -274,6 +274,10 @@ auto from_env(const env_fn& env) -> node_options {
         }
     }
     o.max_body_bytes = u64_opt(env, "KYTHIRA_LEDGER_MAX_BODY_BYTES", o.max_body_bytes);
+    o.max_connections = u64_opt(env, "KYTHIRA_LEDGER_MAX_CONNECTIONS", o.max_connections);
+    if (o.max_connections == 0) {
+        throw std::invalid_argument("KYTHIRA_LEDGER_MAX_CONNECTIONS must be at least 1");
+    }
 
     o.signing_key = get_opt(env, "KYTHIRA_LEDGER_SIGNING_KEY");
     o.signing_chain = get_opt(env, "KYTHIRA_LEDGER_SIGNING_CHAIN");
@@ -385,6 +389,7 @@ Optional:
   KYTHIRA_LEDGER_API_URLS      id=URL,... each member's API base URL, for
                                redirects (https://<Raft host>:<API port>)
   KYTHIRA_LEDGER_MAX_BODY_BYTES largest request body (8388608)
+  KYTHIRA_LEDGER_MAX_CONNECTIONS concurrent API connections, a thread each (512)
   KYTHIRA_LEDGER_SIGNING_KEY   digest signing key (PEM); with
   KYTHIRA_LEDGER_SIGNING_CHAIN its certificate chain, GetDigest signs
   KYTHIRA_LEDGER_REPLICATION   voters per ledger (3)

@@ -134,9 +134,21 @@ is in.
     embedded replicas join a host-based IAM group
   - _Requirements: 5.1-5.3, 7.2_
 
-- [ ] 9. Resource isolation
+- [x] 9. Resource isolation
   - Per-module executors and thread counts, disk floors and memory budgets;
     saturation test showing no elections in other modules
+  - Each module already had its own host (executor stripes, tick thread)
+    and listener; added each listener's connection cap
+    (`KINESIS_MAX_CONNECTIONS`, `KYTHIRA_DYNAMODB_MAX_CONNECTIONS`,
+    `KYTHIRA_LEDGER_MAX_CONNECTIONS`, `KYTHIRA_IAM_MAX_CONNECTIONS`;
+    Redis has its I/O and worker thread counts), the bare Raft tuning
+    names read under each module's prefix first in `kythira_node`
+    (`module_tuning`, `node_core.hpp`; `KYTHIRA_SHARD_CUTS` prefixed only),
+    and `kythira_<module>_raft_term_sum` on `/metrics`. The saturation
+    case in `kythira_node_iam_test` floods Kinesis (IAM's evaluator is the
+    other module there; DynamoDB joins the node test in task 11) and
+    checks neither group's terms move. `doc/colocation.md` lists what is
+    and is not isolated.
   - _Requirements: 6.1-6.4_
 
 - [ ] 10. Packaging, compose and docker-chaos

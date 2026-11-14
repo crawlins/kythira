@@ -186,6 +186,21 @@ struct module_metric {
     std::vector<std::pair<std::string, std::string>> labels;
 };
 
+/// The sum of the current Raft terms of the groups `host` (a multi_raft)
+/// holds here, as the `raft_term_sum` metric every module reports
+/// (Requirement 6.3): it rises with every election any of the module's
+/// groups starts on this node, so a test or an alert sees an election
+/// without reading logs.
+template<typename RaftHost> [[nodiscard]] auto raft_term_sum(RaftHost& host) -> double {
+    double sum = 0;
+    for (const auto& group : host.group_ids()) {
+        if (auto* node = host.group_node(group)) {
+            sum += static_cast<double>(node->get_current_term());
+        }
+    }
+    return sum;
+}
+
 /// Reads one environment variable; nothing when unset or empty.
 using env_lookup = std::function<std::optional<std::string>(std::string_view)>;
 

@@ -48,6 +48,8 @@ struct node_options {
     std::string client_ca;
     std::filesystem::path roles_file;
     std::uint64_t max_body_bytes{std::uint64_t{8} << 20U};
+    /// Concurrent API connections, each served on its own thread.
+    std::uint64_t max_connections{512};
     /// Digest signing (Requirement 4.5): both or neither.
     std::string signing_key;
     std::string signing_chain;

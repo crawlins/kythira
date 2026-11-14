@@ -728,6 +728,15 @@ public:
     [[nodiscard]] auto started() const -> bool { return _started; }
     /// The API's port once started (tests pass port 0).
     [[nodiscard]] auto port() const -> std::uint16_t { return _gateway ? _gateway->port() : 0; }
+
+    /// `service_node::raft_term_sum` over both hosts' groups held here.
+    [[nodiscard]] auto raft_term_sum() const -> double {
+        double sum = _local ? kythira::service_node::raft_term_sum(_local->host()) : 0.0;
+        if (_strong) {
+            sum += kythira::service_node::raft_term_sum(_strong->host());
+        }
+        return sum;
+    }
     [[nodiscard]] auto config() const -> const ddb::gateway_config& { return _cfg; }
 
 private:

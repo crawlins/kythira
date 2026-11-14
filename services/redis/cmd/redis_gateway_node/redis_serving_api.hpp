@@ -64,6 +64,8 @@ public:
     /// once it returns.
     virtual void stop() = 0;
     [[nodiscard]] virtual auto group_count() const -> std::size_t = 0;
+    /// `service_node::raft_term_sum` over the groups held here.
+    [[nodiscard]] virtual auto raft_term_sum() const -> double = 0;
     [[nodiscard]] virtual auto redis_port() const -> std::uint16_t = 0;
 };
 
