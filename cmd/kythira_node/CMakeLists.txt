@@ -10,6 +10,10 @@
 # KYTHIRA_NODE_MODULES:
 #
 #   set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULES kythira_<m>_module)
+#   set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULE_NAMES <m>)
+#
+# The second names the service as KYTHIRA_SERVICES does, so a test below
+# checks that the linked node really offers it.
 #
 # The library holds the module's adapter and its one
 # module_registrar<kythira_node_host> (include/raft/kythira_node_host.hpp).
@@ -60,3 +64,10 @@ set_tests_properties(kythira_node_unknown_service PROPERTIES
     ENVIRONMENT "KYTHIRA_SERVICES=no-such-service;KYTHIRA_NODE_ID=1;KYTHIRA_NODE_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/unknown-service;KYTHIRA_NODE_INSECURE_PLAINTEXT=1"
     PASS_REGULAR_EXPRESSION "service 'no-such-service' is not compiled in; compiled in: "
     TIMEOUT 30 LABELS "unit;node")
+get_property(_kythira_node_module_names GLOBAL PROPERTY KYTHIRA_NODE_MODULE_NAMES)
+foreach(_name IN LISTS _kythira_node_module_names)
+    add_test(NAME kythira_node_offers_${_name} COMMAND kythira_node --help)
+    set_tests_properties(kythira_node_offers_${_name} PROPERTIES
+        PASS_REGULAR_EXPRESSION "\n  ${_name}  \\("
+        TIMEOUT 30 LABELS "unit;node")
+endforeach()

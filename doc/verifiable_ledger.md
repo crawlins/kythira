@@ -307,6 +307,27 @@ KYTHIRA_LEDGER_SIGNING_CHAIN=/etc/kythira/signer-chain.pem
 - The node stops cleanly on SIGINT or SIGTERM. It prints one `ready:` line
   once Raft and the API are listening.
 
+### Beside other services in `kythira_node`
+
+The ledger is also a module of `kythira_node`
+(`.kiro/specs/service-colocation/`), which runs it with other services on
+one Raft listener, identity and health endpoint. `KYTHIRA_SERVICES=ledger`
+(with any others) enables it, and the node's `KYTHIRA_NODE_*` settings
+stand in for the node-wide ones above:
+
+| `ledger_node` | in `kythira_node` |
+|---|---|
+| `KYTHIRA_PEERS` (URLs) | `KYTHIRA_NODE_PEERS` (`id=host:port`); the scheme follows `KYTHIRA_NODE_INSECURE_PLAINTEXT` |
+| `KYTHIRA_RAFT_BIND`, `_PORT` | `KYTHIRA_NODE_RAFT_BIND`, `_PORT`, shared with every service |
+| `KYTHIRA_LEDGER_DATA_DIR` | `KYTHIRA_NODE_DATA_DIR/ledger` |
+| `KYTHIRA_LEDGER_TLS_CERT`, `_TLS_KEY`, `_CLIENT_CA` | default to `KYTHIRA_NODE_TLS_CERT`, `_TLS_KEY`, `_TLS_CA` when unset |
+
+Every other `KYTHIRA_LEDGER_*` variable means what it means for
+`ledger_node`. The ledger's groups take ids `4 << 56` and up (its module
+number is 4), so a `ledger_node` data directory cannot be opened by
+`kythira_node` or the other way round: move a ledger between the two with
+an export and a fresh ledger, not by copying the directory.
+
 ## Operations
 
 - **Journal exports.** `POST /v1/ledgers/{L}/exports` records a job; the

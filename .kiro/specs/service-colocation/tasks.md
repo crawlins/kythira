@@ -44,9 +44,20 @@ is in.
     rather than one host (design.md "One listener, a host per module").
   - _Requirements: 2.1, 2.3, 4.1-4.4_
 
-- [ ] 4. Ledger as a module
+- [x] 4. Ledger as a module
   - Adapter over `ledger_host`; `ledger_node` rebuilt as a one-module node
     with its variables as aliases; existing tests unchanged
+  - Done (2026-11-14): `services/ledger/cmd/ledger_node/ledger_module.hpp`
+    (`ledger_module<Host>`, what `run()` did, behind `service_module`);
+    `ledger_node` runs it as a one-module node on its own JSON Beast
+    transport in a stand-alone group space, so ids, data directory,
+    variables, ports and wire are as before; `kythira_node` links it through
+    `kythira_ledger_module`, where `composite_env` fills the ledger's
+    node-wide variables from `KYTHIRA_NODE_*` and `ledger_host`'s new
+    `group_base` puts its groups at `4 << 56`. `ledger_node_cluster_test`
+    passes unchanged; `kythira_node_offers_ledger` checks the module is
+    linked; `doc/verifiable_ledger.md` covers running it in
+    `kythira_node`.
   - _Requirements: 3.1, 3.2, 3.4, 8.2_
 
 - [ ] 5. Kinesis as a module

@@ -140,7 +140,18 @@ public:
         std::function<export_outcome(const ledger_sm&, const export_job&)> run_export;
         /// Wall clock, ms since the epoch.
         std::function<std::int64_t()> now_ms;
+        /// Added to every group id the catalog names (catalog_group and
+        /// each ledger's) to give the host's id: 0 stand-alone, the first
+        /// id of the ledger module's group space in a composite node
+        /// (.kiro/specs/service-colocation/ Requirement 4.1). The catalog
+        /// itself stores the ledger's own ids, which do not change.
+        group_id_type group_base = 0;
     };
+
+    /// The host's group id for the catalog's group id `local`.
+    [[nodiscard]] auto host_group(std::uint64_t local) const -> group_id_type {
+        return opts_.group_base + static_cast<group_id_type>(local);
+    }
 
     /// The context every group state machine on this node is built from;
     /// `ledger_options_for` gives a ledger its options (segment directory).
@@ -175,8 +186,9 @@ public:
     /// Create the catalog group here (every member does, at every start),
     /// then the ledger groups the catalog replica already names.
     auto bootstrap() -> void {
-        if (!host_->has_group(catalog_group)) {
-            host_->create_group(descriptor_for(catalog_group, catalog_range(), opts_.members));
+        const auto cat_group = host_group(catalog_group);
+        if (!host_->has_group(cat_group)) {
+            host_->create_group(descriptor_for(cat_group, catalog_range(), opts_.members));
         }
         reconcile();
     }
@@ -214,7 +226,7 @@ public:
             if (!r.group) {
                 continue;
             }
-            const auto g = static_cast<group_id_type>(*r.group);
+            const auto g = host_group(*r.group);
             if (r.state == "purged") {
                 if (host_->has_group(g) &&
                     host_->destroy_group(g, kythira::tombstone_reason::admin)) {
@@ -251,7 +263,7 @@ public:
     }
 
     auto propose_catalog(std::vector<std::byte> entry) -> std::vector<std::byte> {
-        return propose(catalog_group, std::move(entry));
+        return propose(host_group(catalog_group), std::move(entry));
     }
 
     /// `replication` members, starting one further along the member list
@@ -272,7 +284,7 @@ public:
         if (!r.group) {
             return std::nullopt;
         }
-        const auto g = static_cast<group_id_type>(*r.group);
+        const auto g = host_group(*r.group);
         auto* node = host_->group_node(g);
         if (node == nullptr) {
             // Not a replica: send the client to a voter, which knows more.
@@ -310,7 +322,7 @@ public:
     /// A ledger missing from this catalog replica may be one it has not
     /// applied yet: only the catalog leader answers ledger_not_found.
     auto confirm_missing(const std::string& /*name*/) -> void {
-        auto* node = host_->group_node(catalog_group);
+        auto* node = host_->group_node(host_group(catalog_group));
         if (node != nullptr && node->is_leader()) {
             return;
         }
@@ -351,7 +363,7 @@ public:
             if (r.state != "active" || !r.group) {
                 continue;
             }
-            const auto g = static_cast<group_id_type>(*r.group);
+            const auto g = host_group(*r.group);
             auto* node = host_->group_node(g);
             if (node == nullptr || !node->is_leader()) {
                 continue;

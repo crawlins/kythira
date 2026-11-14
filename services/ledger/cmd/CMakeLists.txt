@@ -14,9 +14,14 @@
 set(KYTHIRA_LEDGER_NODE_DAEMON OFF PARENT_SCOPE)
 if(TARGET raft_rocksdb_engine AND TARGET certificate_authority)
     find_package(Threads REQUIRED)
-    add_executable(ledger_node ledger_node/main.cpp ledger_node/config.cpp ledger_node/run.cpp
-                               ledger_node/export_store.cpp)
-    target_link_libraries(ledger_node PRIVATE
+    # Configuration and the export store, shared by ledger_node and the
+    # ledger module kythira_node links (.kiro/specs/service-colocation/
+    # task 4). The module itself is the header ledger_node/ledger_module.hpp.
+    add_library(kythira_ledger_node_common STATIC
+        ledger_node/config.cpp ledger_node/export_store.cpp)
+    target_include_directories(kythira_ledger_node_common PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/ledger_node")
+    target_link_libraries(kythira_ledger_node_common PUBLIC
         kythira_ledger
         raft_rocksdb_engine     # the engine, and network_simulator (future backend)
         certificate_authority   # KYTHIRA_HAS_OPENSSL
@@ -25,8 +30,23 @@ if(TARGET raft_rocksdb_engine AND TARGET certificate_authority)
         OpenSSL::Crypto
         Threads::Threads
     )
+    target_compile_features(kythira_ledger_node_common PUBLIC cxx_std_23)
+
+    add_executable(ledger_node ledger_node/main.cpp ledger_node/run.cpp)
+    target_link_libraries(ledger_node PRIVATE kythira_ledger_node_common)
     target_compile_definitions(ledger_node PRIVATE KYTHIRA_LEDGER_NODE_DAEMON=1)
     set_target_properties(ledger_node PROPERTIES JOB_POOL_COMPILE heavy_tu)
+
+    # The ledger module for kythira_node: its registrar, linked whole-archive
+    # through KYTHIRA_NODE_MODULES (cmd/kythira_node/CMakeLists.txt). It
+    # instantiates the module over the node's Beast transport.
+    if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+        add_library(kythira_ledger_module STATIC ledger_node/ledger_module_registrar.cpp)
+        target_link_libraries(kythira_ledger_module PUBLIC kythira_ledger_node_common)
+        set_target_properties(kythira_ledger_module PROPERTIES JOB_POOL_COMPILE heavy_tu)
+        set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULES kythira_ledger_module)
+        set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULE_NAMES ledger)
+    endif()
     set(KYTHIRA_LEDGER_NODE_DAEMON ON PARENT_SCOPE)
     message(STATUS "ledger_node: the daemon (RocksDB, mutual TLS Raft, HTTPS API)")
 
@@ -47,8 +67,9 @@ if(TARGET raft_rocksdb_engine AND TARGET certificate_authority)
                 "ledger_node: CONFIG_AWS_S3_PERSISTENCE=y but AWSSDK_LINK_LIBRARIES "
                 "(${AWSSDK_LINK_LIBRARIES}) does not name aws-cpp-sdk-s3")
         endif()
-        target_link_libraries(ledger_node PRIVATE ${AWSSDK_LINK_LIBRARIES})
-        target_compile_definitions(ledger_node PRIVATE KYTHIRA_HAS_AWS_SDK KYTHIRA_LEDGER_NODE_S3=1)
+        target_link_libraries(kythira_ledger_node_common PUBLIC ${AWSSDK_LINK_LIBRARIES})
+        target_compile_definitions(kythira_ledger_node_common PUBLIC
+            KYTHIRA_HAS_AWS_SDK KYTHIRA_LEDGER_NODE_S3=1)
         set(KYTHIRA_LEDGER_NODE_S3 ON PARENT_SCOPE)
         message(STATUS "ledger_node: journal exports to S3 (aws_s3_client)")
     else()
