@@ -1,9 +1,9 @@
 # Implementation Plan — clang-tidy Result Cache and Shard Balancing
 
-## Status: 7/9 tasks complete
+## Status: 9/9 tasks complete
 
-**Last Updated**: November 7, 2026 (cache live in CI; tasks 6 and 8
-done; task 7's code merged, its live apply owed). Written November 6,
+**Last Updated**: November 14, 2026 (complete: week-one figures recorded
+under task 9; the lifecycle rule live since November 7). Written November 6,
 when Requirement 4 was amended so every same-repository branch writes,
 not only `main`, and task 1 met its gate.
 
@@ -259,10 +259,13 @@ Reference material to read before starting:
     `tidy-cache-stats-shard-<n>` whenever the mode is not `off`. The
     variant legs stay uncached.
 
-- [ ] 7. Bucket lifecycle and audit prefix
-  - _Code written (rule `expire-clang-tidy-results`, audit prefix, two
-    new stub checks; the PR key's policy already covers the whole bucket).
-    Live apply owed: `provision.sh --apply` after the maintainer's go._
+- [x] 7. Bucket lifecycle and audit prefix
+  - **Done.** Code in #721 (rule `expire-clang-tidy-results`, audit
+    prefix, two new stub checks; the PR key's policy already covers the
+    whole bucket). The maintainer gave his go and ran
+    `provision.sh --apply` himself on November 7, 2026, at 15:19 UTC:
+    the bucket now has all three rules, and `audit.sh` was clean
+    (`clang-tidy/` held 760 objects, under 1 MiB).
   - Depends on the PR-only build-cache key from the thread "Let PR runs
     write build caches"; check that its policy covers `clang-tidy/`.
   - `scripts/oci-build-cache/provision.sh`: add the 30-day `clang-tidy/`
@@ -293,7 +296,7 @@ Reference material to read before starting:
     latest `ci.yml` run on the same SHA to name a false clean. It passes
     only the read-only build-cache key, so it never writes the bucket.
 
-- [ ] 9. Docs and post-merge confirmation
+- [x] 9. Docs and post-merge confirmation
   - `doc/ci_build_cache.md`: a "clang-tidy result cache" section (key,
     trust model, modes, audit, refreshing the costs file, how to disable).
   - After a week on `main`: median and p90 tidy-shard wall time and CI run
@@ -301,5 +304,24 @@ Reference material to read before starting:
     zero). Record them here.
   - `doc/TODO.md`: move the row out of "Not Started" with the results.
   - _Requirements: 10.2, 10.3_
-  - **Docs written November 7; the week of `main` figures is owed (from
-    November 14).** `doc/ci_build_cache.md` has the section.
+  - **Done.** Docs in #722 (`doc/ci_build_cache.md`). Week one on `main`,
+    November 7-14, 2026: 78 `ci.yml` push runs, 49 green, 4 red (none
+    from a clang-tidy shard), 25 cancelled or superseded. Over the 49
+    green runs:
+    - clang-tidy step per shard (294 shards): median 19 s, p90 78 s,
+      max 3104 s (the run with the most misses). Whole shard job: median
+      1.7 minutes, p90 5.3, max 53.
+    - Hit rate per run: median 100%, p10 98.1%, min 87.6%. Zero backend
+      errors in any shard.
+    - CI run wall time: median 35.6 minutes, p90 154. The long tail is
+      runner queueing, not work: in the six slowest runs the slowest job
+      took 25-85 minutes but waited up to 160 minutes for a runner. The
+      slowest job is now `Build & Test (g++-14, x64)` in 19 runs,
+      Coverage in 9, the stdexec full suite in 8 and the g++-13 arm64
+      leg in 7; clang-tidy is never the slowest.
+    - Audits: dispatch 42359957647 (November 7) and the first scheduled
+      run 42479976983 (November 8, db83db2) were both clean uncached, so
+      zero false cleans.
+    - Against the baseline (62-71 minute runs on November 5, the slowest
+      clang-tidy shard always last), the median run is about half as
+      long.
