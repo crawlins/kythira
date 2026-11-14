@@ -3,6 +3,22 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (November 14, 2026)
+
+- **CI runs take about half as long.** The `clang-tidy-result-cache`
+  spec is done (9/9). The six clang-tidy shards were the slowest part of
+  every CI run. They now skip each file whose inputs match a stored
+  clean result, keyed on the raw bytes of every file the compiler
+  reads, the compile command and clang-tidy's version and config.
+  Results live under `clang-tidy/` in the OCI build-cache bucket and
+  expire after 30 days. In the first week on `main`, 49 green runs hit a
+  median 100% of files (minimum 87.6%), each shard's clang-tidy step
+  took a median 19 s instead of up to 56 minutes, and the median run took
+  35.6 minutes against 62-71 before. A weekly uncached audit checks that
+  no cached result hides a finding; both runs so far were clean. Set the
+  repository variable `TIDY_CACHE_DISABLED=true` to turn the cache off.
+  See the clang-tidy section of [ci_build_cache.md](ci_build_cache.md).
+
 ### What Changed (November 13, 2026)
 
 - **Kythira speaks DynamoDB.** Tasks 1-26 of the `dynamodb-compatible-api`
