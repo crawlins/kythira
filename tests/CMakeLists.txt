@@ -1282,6 +1282,19 @@ if(TARGET Boost::unit_test_framework)
     add_test(NAME service_module_test COMMAND service_module_test)
     set_tests_properties(service_module_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node")
 endif()
+
+# Task 2: the node core (KYTHIRA_NODE_* settings, the module runner, and the
+# shared /healthz and /metrics endpoint over core's Beast server).
+if(TARGET Boost::unit_test_framework AND TARGET OpenSSL::SSL)
+    find_package(Threads REQUIRED)
+    add_executable(node_core_test node_core_test.cpp)
+    target_link_libraries(node_core_test PRIVATE
+        Boost::unit_test_framework OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    target_include_directories(node_core_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(node_core_test PRIVATE cxx_std_23)
+    add_test(NAME node_core_test COMMAND node_core_test)
+    set_tests_properties(node_core_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node")
+endif()
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 target_link_libraries(group_transport_unit_test PRIVATE OpenSSL::Crypto)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)

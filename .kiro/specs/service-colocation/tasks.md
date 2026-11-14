@@ -14,10 +14,15 @@ is in.
     startup error); `tests/service_module_test.cpp`.
   - _Requirements: 1.1-1.3, 7.1_
 
-- [ ] 2. Node core
+- [x] 2. Node core
   - `KYTHIRA_NODE_*` configuration, identity and TLS, peer list, logger with
     a `service` field, shared metrics and health endpoint, signals,
     dependency-ordered start and reverse stop, drain before Raft stops
+  - Done (2026-11-14): `include/raft/node_core.hpp` (`node_config_from_env`,
+    `with_aliases` for a stand-alone daemon's legacy names, `module_log`,
+    `node_runner`, health JSON and Prometheus text, stop signals) and
+    `include/raft/node_endpoint.hpp` (`/healthz` and `/metrics` on core's
+    Beast server); `tests/node_core_test.cpp`.
   - _Requirements: 2.2, 2.4, 2.5, 8.1, 8.3_
 
 - [ ] 3. `kythira_node` and group spaces
