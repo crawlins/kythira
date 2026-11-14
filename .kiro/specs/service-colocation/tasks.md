@@ -78,10 +78,23 @@ is in.
     settings are checked by `kinesis_node_config_test`.
   - _Requirements: 3.1, 3.2, 3.4, 7.1, 8.2_
 
-- [ ] 6. DynamoDB as a module
+- [x] 6. DynamoDB as a module
   - Adapter over the gateway; bootstrap groups and per-voter id ranges
     inside the module's range; `dynamodb_gateway_node` rebuilt; Kinesis
     destination uses the in-process path when Kinesis is co-located
+  - Done: `dynamodb_module.hpp` runs the gateway as `dynamodb_module`
+    (local, memory or RocksDB serving, started after `kinesis`).
+    `run_cluster.hpp` is templated on the host: `cluster_node` maps the
+    bootstrap ids and every split's allocated ids through the module's
+    group space (`2 << 56` in `kythira_node`), and the strong host keeps
+    its own listener. `dynamodb_gateway_node` is the module on a
+    `standalone_host` under `node_runner`, with the same variables, ports
+    and data layout as before. With Kinesis co-located and no
+    `KYTHIRA_DYNAMODB_KINESIS_ENDPOINT`, a streaming destination's signed
+    PutRecords go through `kinesis.put_records`. `composite_env.hpp` fills
+    the node-wide settings, checked by `dynamodb_node_config_test`;
+    `dynamodb_gateway_cluster_test` and `dynamodb_strong_cluster_test`
+    run over the templated cluster.
   - _Requirements: 3.1, 3.2, 3.4, 4.1, 7.3, 7.4, 8.2_
 
 - [ ] 7. Redis gateway as a module

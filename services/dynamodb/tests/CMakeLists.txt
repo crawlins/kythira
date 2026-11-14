@@ -117,6 +117,14 @@ if(TARGET dynamodb_gateway_node)
     set_target_properties(dynamodb_strong_cluster_test PROPERTIES JOB_POOL_COMPILE heavy_tu)
     set_tests_properties(dynamodb_strong_cluster_test PROPERTIES
         LABELS "integration;dynamodb;dynamodb-module" TIMEOUT 600)
+    # Service colocation task 6: the module's settings in kythira_node, the
+    # node's KYTHIRA_NODE_* filling in what the module's variables leave
+    # unset.
+    kythira_dynamodb_test(dynamodb_node_config_test dynamodb_node_config_test.cpp)
+    target_include_directories(dynamodb_node_config_test PRIVATE
+        "${KYTHIRA_DYNAMODB_SOURCE_DIR}/cmd/dynamodb_gateway_node")
+    set_tests_properties(dynamodb_node_config_test PROPERTIES
+        LABELS "unit;dynamodb;dynamodb-module" TIMEOUT 60)
 endif()
 # Task 8: Query, Scan and the batch operations at their limits (1 MB pages,
 # segments, the 16 MB BatchGetItem response), and the operations corpus,

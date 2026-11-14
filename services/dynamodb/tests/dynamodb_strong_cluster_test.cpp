@@ -133,6 +133,22 @@ auto strong_get(cluster& c, int i, const std::string& id) -> answer {
         R"({"TableName":"accounts","ConsistentRead":true,"Key":{"id":{"S":")" + id + R"("}}})");
 }
 
+/// Waits up to 30 s for region `i`'s own replica to hold `id`, by
+/// eventually consistent reads. A write is acknowledged once a majority
+/// holds it, which need not include region `i`.
+auto applied_locally(cluster& c, int i, const std::string& id) -> bool {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto got =
+            c.call(i, "GetItem", R"({"TableName":"accounts","Key":{"id":{"S":")" + id + R"("}}})");
+        if (got.status == 200U && got.body.contains("Item")) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
+}
+
 /// Every id in `accounts`, by consistent Scan pages from region `i`.
 auto ids_in(cluster& c, int i) -> std::set<std::string> {
     std::set<std::string> out;
@@ -405,6 +421,9 @@ BOOST_AUTO_TEST_CASE(a_region_cut_off_and_brought_back_catches_up) {
     cluster c(true, {}, true);
     make_strong_table(c);
     BOOST_REQUIRE_EQUAL(put(c, 2, "before-cut").status, 200U);
+    // Cut off before its replica applied the write, region 2 would have
+    // nothing for the eventually consistent read below to find.
+    BOOST_REQUIRE(applied_locally(c, 2, "before-cut"));
 
     c.cut_off(2);
     for (int i = 0; i < 2; ++i) {
