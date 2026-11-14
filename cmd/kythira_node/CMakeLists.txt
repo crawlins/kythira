@@ -71,3 +71,27 @@ foreach(_name IN LISTS _kythira_node_module_names)
         PASS_REGULAR_EXPRESSION "\n  ${_name}  \\("
         TIMEOUT 30 LABELS "unit;node")
 endforeach()
+
+# IAM as a module beside Kinesis (.kiro/specs/service-colocation/ task 8):
+# three kythira_node processes, Kinesis authorizing through the IAM
+# module's in-process evaluator. Registered here, after every service
+# directory, because it needs both modules' targets and this binary.
+if(TARGET kythira_iam_module AND TARGET kythira_kinesis_module AND TARGET iam_node  # module-hook
+   AND TARGET kythira-iam)  # module-hook: the node test needs IAM's tools
+    add_raft_completion_test(kythira_node_iam_test
+        "${PROJECT_SOURCE_DIR}/services/iam/tests/kythira_node_iam_test.cpp")
+    target_include_directories(kythira_node_iam_test PRIVATE
+        "${PROJECT_SOURCE_DIR}/services/iam/tests")
+    target_link_libraries(kythira_node_iam_test PRIVATE
+        kythira_iam kythira_test_support certificate_authority kythira_host_node_id)  # module-hook
+    target_compile_definitions(kythira_node_iam_test PRIVATE
+        IAM_NODE_PATH="$<TARGET_FILE:iam_node>"  # module-hook
+        KYTHIRA_IAM_PATH="$<TARGET_FILE:kythira-iam>"  # module-hook
+        KYTHIRA_NODE_PATH="$<TARGET_FILE:kythira_node>")
+    add_dependencies(kythira_node_iam_test kythira_node)
+    set_target_properties(kythira_node_iam_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    set_tests_properties(kythira_node_iam_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+        LABELS "integration;iam;iam-module;node" TIMEOUT 600)
+endif()

@@ -156,6 +156,7 @@ kythira_future_factory_concept_compliance_property_test uses Folly directly (`fo
 kythira_future_transformation_operations_property_test gated on `TARGET Folly::folly` in tests/CMakeLists.txt; its source uses no Folly directly
 kythira_keep_alive_concept_compliance_property_test uses Folly directly (`folly::CPUThreadPoolExecutor`, `folly::InlineExecutor`)
 kythira_keep_alive_pointer_access_property_test uses Folly directly (`folly::init`, `folly::CPUThreadPoolExecutor`, `folly::InlineExecutor`)
+kythira_node_iam_test needs the Kinesis module beside IAM, and that links the Kinesis daemon's common library, built only when folly_FOUND (services/kinesis/cmd/CMakeLists.txt)
 kythira_node_offers_kinesis the Kinesis module links the daemon's common library, built only when folly_FOUND (services/kinesis/cmd/CMakeLists.txt)
 kythira_node_offers_redis the Redis module is defined beside redis_gateway_node, which is built only when folly_FOUND (services/redis/cmd/redis_gateway_node/CMakeLists.txt)
 kythira_promise_concept_compliance_property_test uses Folly directly (`folly::exception_wrapper`)

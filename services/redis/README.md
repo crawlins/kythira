@@ -161,9 +161,14 @@ larger ones is refused at start.
 Two things differ from the daemon. A peer's RESP and HTTP addresses are not
 learned from its Raft connections (the node's listener learns only Raft's),
 so under rootless Podman a gateway that restarts at a new address is found
-once its name resolves again. And a `CONFIG_REDIS_GATEWAY_IAM` build keeps
-its embedded IAM replica (`KYTHIRA_IAM_*`) in `kythira_node` too, until IAM
-itself runs as a module (service-colocation task 8) and takes its place.
+once its name resolves again. And IAM authentication: when IAM runs in the
+same node (`KYTHIRA_SERVICES` names `iam`) and
+`KYTHIRA_REDIS_IAM_ACCOUNT_ID`, `_REGION` and `_CACHE_NAME` name the cache
+(all three or none), `AUTH` for the ACL's `auth=iam` and `auth=both` users
+goes to the IAM module's in-process evaluator (`iam.evaluator`), which
+checks `elasticache:Connect` as the embedded replica does. Otherwise a
+`CONFIG_REDIS_GATEWAY_IAM` build keeps its embedded replica
+(`KYTHIRA_IAM_*`), in `kythira_node` as stand-alone.
 
 ## What the module uses from core
 

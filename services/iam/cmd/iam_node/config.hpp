@@ -96,6 +96,10 @@ struct config {
     std::chrono::milliseconds heartbeat_interval{100};
     std::chrono::milliseconds rpc_timeout{1000};
 
+    /// The name log lines start with: the daemon's, or the IAM module's in
+    /// kythira_node.
+    std::string log_name{"iam_node"};
+
     [[nodiscard]] auto rpc_tls() const -> bool { return !rpc_tls_cert_path.empty(); }
 
     /// Every voter: this node and its peers, or only the peers for a

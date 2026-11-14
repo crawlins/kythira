@@ -217,6 +217,13 @@ Kinesis authorizes them on the signer's policies exactly as over the
 network. Setting the endpoint keeps the network path, for a Kinesis
 elsewhere.
 
+When IAM runs in the same node (`KYTHIRA_SERVICES` names `iam`) and
+`KYTHIRA_DYNAMODB_AUTH` is `iam` or `both`, the gateway authenticates and
+authorizes through the IAM module's in-process evaluator
+(`iam.evaluator`), after adding DynamoDB's actions to it, instead of
+starting the embedded IAM replica: the `KYTHIRA_IAM_*` replica variables are
+then not read.
+
 ## Core targets and variables used
 
 This is the list a split into its own repository would need a Kythira

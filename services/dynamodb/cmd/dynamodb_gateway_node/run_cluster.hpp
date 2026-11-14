@@ -648,14 +648,19 @@ public:
 
     /// Starts the hosts, the gateway and the backends. `kinesis`, when
     /// configured, is where Kinesis streaming destinations publish instead
-    /// of the configured endpoint (a co-located Kinesis module).
-    auto start(ddb::kinesis_sink kinesis = {}) -> void {
+    /// of the configured endpoint (a co-located Kinesis module); `iam`,
+    /// when set, is the IAM the gateway authorizes with (a co-located IAM
+    /// module's evaluator).
+    auto start(ddb::kinesis_sink kinesis = {}, std::optional<ddb::iam_hooks> iam = {}) -> void {
         _local->start();
         if (_strong) {
             _strong->start();
         }
         if (kinesis.configured()) {
             _cfg.kinesis = std::move(kinesis);
+        }
+        if (iam) {
+            _cfg.iam = std::move(iam);
         }
         _gateway = std::make_unique<gateway_type>(_cfg, *_routed, _log);
         if (_strong_backend) {

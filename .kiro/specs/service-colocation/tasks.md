@@ -120,6 +120,18 @@ is in.
   - IAM state machine as a host group; `iam_node --convert-data-dir`;
     publishes `iam.evaluator`; co-located modules authorize through it,
     the Redis module's embedded replica included (task 7)
+  - [x] 8a. The module in `kythira_node`: IAM's group on the node's host
+    at `5 << 56`, served by `iam_node`'s serving side, now
+    `iam_service.hpp` over a Raft node it does not own; `iam.evaluator`
+    published, with the action registry locked and merging tables for
+    tables added while IAM serves; Kinesis, DynamoDB and Redis take it
+    when IAM is co-located instead of an embedded replica;
+    `kythira_node_iam_test` (three processes, Kinesis authorizing
+    in-process, state kept across a restart)
+  - [ ] 8b. `iam_node` on the multi-raft host with
+    `--convert-data-dir` for an existing TCP-RPC data directory
+  - [ ] 8c. Read replicas as host learners, so stand-alone gateways'
+    embedded replicas join a host-based IAM group
   - _Requirements: 5.1-5.3, 7.2_
 
 - [ ] 9. Resource isolation

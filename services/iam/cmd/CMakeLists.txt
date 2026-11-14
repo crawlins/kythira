@@ -28,6 +28,30 @@ if(TARGET certificate_authority)
     set_target_properties(iam_node PROPERTIES
         JOB_POOL_COMPILE heavy_tu
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+    # IAM as a module of kythira_node (.kiro/specs/service-colocation/
+    # task 8): its registrar, linked whole-archive through
+    # KYTHIRA_NODE_MODULES (cmd/kythira_node/CMakeLists.txt). It
+    # instantiates the IAM group on the node's multi-raft host over the
+    # node's Beast transport, so it is built where kythira_node is.
+    if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_FUTURE_BACKEND_AVAILABLE
+       AND NOT ENABLE_COVERAGE)
+        add_library(kythira_iam_module STATIC iam_node/iam_module_registrar.cpp)
+        target_include_directories(kythira_iam_module PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/iam_node")
+        target_link_libraries(kythira_iam_module PUBLIC
+            kythira_iam
+            certificate_authority
+            boost_json
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            kythira_host_node_id
+        )
+        target_compile_features(kythira_iam_module PRIVATE cxx_std_23)
+        set_target_properties(kythira_iam_module PROPERTIES JOB_POOL_COMPILE heavy_tu)
+        set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULES kythira_iam_module)
+        set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULE_NAMES iam)
+    endif()
 else()
     message(STATUS "iam_node: skipped (needs the certificate_authority target: OpenSSL and a future backend)")
 endif()

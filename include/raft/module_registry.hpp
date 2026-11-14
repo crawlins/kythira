@@ -193,6 +193,23 @@ template<typename Host> struct module_plan {
     return out;
 }
 
+/// Whether `KYTHIRA_SERVICES` in `env` names `service`. A module in
+/// kythira_node asks at configure whether a provider it would call
+/// in-process (IAM's evaluator, say) will be on the node, before the
+/// registry holds anything; the registry lookup at start then finds it.
+[[nodiscard]] inline auto co_located(const env_lookup& env, std::string_view service) -> bool {
+    const auto services = env("KYTHIRA_SERVICES");
+    if (!services) {
+        return false;
+    }
+    for (const auto& name : split_services(*services)) {
+        if (name == service) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Builds the modules `services` names from `catalog`, in start order.
 /// `composite` gives each its composite group space; otherwise exactly one
 /// module may be named and it keeps today's ids and keys.

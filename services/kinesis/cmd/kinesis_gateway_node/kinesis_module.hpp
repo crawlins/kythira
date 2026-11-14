@@ -186,6 +186,9 @@ public:
         return service_node::module_numbers::kinesis;
     }
     [[nodiscard]] auto env_prefix() const -> std::string_view override { return "KINESIS_"; }
+    /// IAM's evaluator, when co-located, answers before this module
+    /// serves.
+    [[nodiscard]] auto starts_after() const -> std::vector<std::string> override { return {"iam"}; }
     [[nodiscard]] auto data_subdir() const -> std::string override {
         return _standalone ? std::string() : std::string("kinesis");
     }
@@ -198,10 +201,13 @@ public:
         try {
             _opt = from_env(_standalone ? env : composite_env(env));
             _logger.emplace(_opt._log_level);
-            // IAM (KINESIS_AUTH=iam or both): the replica outlives the
-            // gateway.
+            // IAM (KINESIS_AUTH=iam or both): the co-located IAM module's
+            // evaluator when kythira_node runs one, taken at start;
+            // otherwise the embedded replica, which outlives the gateway.
             std::optional<aws_auth::iam_hooks> hooks;
-            if (_opt._auth != aws_auth::auth_mode::static_keys) {
+            _iam_in_process = !_standalone && _opt._auth != aws_auth::auth_mode::static_keys &&
+                              service_node::co_located(env, "iam");
+            if (_opt._auth != aws_auth::auth_mode::static_keys && !_iam_in_process) {
 #ifdef KYTHIRA_KINESIS_GATEWAY_IAM
                 _iam = start_iam_auth_from_env();
                 hooks = _iam->hooks();
@@ -220,10 +226,11 @@ public:
             // The Lease API authorizes on the DynamoDB actions KCL needs on
             // AWS.
             _authorizer->register_service(kinesis::lease_static_roles());
-            _authorizer->set_mode(_opt._auth, std::move(hooks));
-            if (const auto clash = _authorizer->conflicting_keys(); !clash.empty()) {
-                return "KINESIS_AUTH=both: IAM also has the static key " + clash.front() +
-                       "; an access key id may be in one or the other";
+            if (!_iam_in_process) {
+                _authorizer->set_mode(_opt._auth, std::move(hooks));
+                if (auto clash = key_clash()) {
+                    return clash;
+                }
             }
             auto profile = kinesis::cluster_profile(_opt._compat);
             if (!profile) {
@@ -308,7 +315,25 @@ public:
             std::string(service_node::interface_names::kinesis_put_records), _producer);
     }
 
-    void start(service_node::module_registry& /*registry*/) override {
+    void start(service_node::module_registry& registry) override {
+        if (_iam_in_process) {
+            // IAM starts first (starts_after), so its evaluator answers
+            // before this module serves a request.
+            auto iam = registry.lookup<service_node::iam_evaluator>(
+                std::string(service_node::interface_names::iam_evaluator));
+            if (!iam) {
+                throw std::invalid_argument(
+                    "KINESIS_AUTH=iam or both: the IAM module publishes no evaluator");
+            }
+            iam->add_actions(kinesis::kinesis_actions());
+            // The Lease API's DynamoDB actions, as on AWS's lease table.
+            iam->add_actions(kinesis::lease_actions());
+            _authorizer->set_mode(_opt._auth, iam->hooks());
+            if (auto clash = key_clash()) {
+                throw std::invalid_argument(*clash);
+            }
+            _iam_evaluator = std::move(iam);
+        }
         _raft->start();
 
         https::server_config hc;
@@ -421,6 +446,16 @@ public:
     [[nodiscard]] auto api_port() const -> std::uint16_t { return _server ? _server->port() : 0; }
 
 private:
+    /// KINESIS_AUTH=both: an access key id may be in the key file or in
+    /// IAM, not both.
+    [[nodiscard]] auto key_clash() const -> std::optional<std::string> {
+        if (const auto clash = _authorizer->conflicting_keys(); !clash.empty()) {
+            return "KINESIS_AUTH=both: IAM also has the static key " + clash.front() +
+                   "; an access key id may be in one or the other";
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] static auto wall_ms() -> std::int64_t {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::system_clock::now().time_since_epoch())
@@ -595,6 +630,9 @@ private:
 #ifdef KYTHIRA_KINESIS_GATEWAY_IAM
     std::unique_ptr<iam_auth> _iam;
 #endif
+    /// KINESIS_AUTH=iam|both in kythira_node beside the IAM module.
+    bool _iam_in_process{false};
+    std::shared_ptr<service_node::iam_evaluator> _iam_evaluator;
     std::unique_ptr<authorizer_type> _authorizer;
     kinesis::kinesis_compat_profile _profile{};
 
