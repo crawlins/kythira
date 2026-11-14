@@ -29,6 +29,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -646,6 +647,25 @@ BOOST_AUTO_TEST_CASE(failed_provision_is_retried, *boost::unit_test::timeout(sca
     c.add_node(1, {1}, {{1, "g"}});
     BOOST_REQUIRE(c.elect_node1_and_run());
     BOOST_CHECK(wait_until([&] { return c.state->provision_count() >= 3; }));
+}
+
+// Req 14.6 — a failed provision ends the pass. multi_raft gives every node
+// an unbounded target (SIZE_MAX), so a degraded group's deficit is all but
+// infinite; a pass that kept provisioning after a failure never returned,
+// and stop() hung joining the quorum worker.
+BOOST_AUTO_TEST_CASE(failed_provision_ends_the_pass,
+                     *boost::unit_test::timeout(scaled_timeout(20))) {
+    test_cluster c{fast_config()};
+    {
+        std::lock_guard lock(c.state->mu);
+        c.state->topo = {
+            .groups = {{.group_id = "g", .target_count = std::numeric_limits<std::size_t>::max()}}};
+    }
+    c.add_node(1, {1}, {{1, "g"}});
+    BOOST_REQUIRE(c.elect_node1_and_run());
+    BOOST_REQUIRE(wait_until([&] { return c.state->assess_count(1) >= 5; }));
+    // One failed call per pass, give or take the pass under way.
+    BOOST_CHECK_LE(c.state->provision_count(), c.state->assess_count(1) + 1);
 }
 
 // Req 16.5 — when assess_quorum reports `lost` the leader never provisions.

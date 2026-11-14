@@ -1805,7 +1805,11 @@ private:
 
     // Calls provision_node(group, replacing) and records the result as a
     // pending replacement that makes up `covers`'s deficit.  Returns false if
-    // leadership changed while it ran, in which case the caller must stop.
+    // leadership changed while it ran, or if provision_node failed; either
+    // way the caller must end this pass, and a failure is retried by the
+    // next assessment (Req 14.6).  Ending at the first failure bounds a
+    // pass whose deficit is huge, as with multi_raft's unbounded target, to
+    // one call instead of a loop that never returns to stop().
     // Must NOT be called with _mutex held.
     auto provision_replacement(const placement_group_id_type& group,
                                const placement_group_id_type& covers,
@@ -2653,7 +2657,8 @@ auto node<Types>::provision_replacement(const placement_group_id_type& group,
                                                    {"group", group},
                                                    {"error", ex.what()},
                                                });
-        // Req 14.6 — clear the pending slot on failure
+        // Req 14.6 — clear the pending slot on failure, and end the pass:
+        // the next assessment retries.
         std::lock_guard<std::mutex> lock(_mutex);
         if (_quorum_epoch != epoch) {
             return false;
@@ -2662,6 +2667,7 @@ auto node<Types>::provision_replacement(const placement_group_id_type& group,
         if (cnt > 0) {
             --cnt;
         }
+        return false;
     }
 
     if (duplicate) {
