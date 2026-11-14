@@ -57,6 +57,7 @@ ion services/ledger/cmd/ledger_node/main.cpp
 ion services/ledger/cmd/ledger_node/config.cpp
 ion services/ledger/cmd/ledger_node/run.cpp
 ion services/ledger/cmd/ledger_node/export_store.cpp
+ion services/ledger/cmd/ledger_node/ledger_module_registrar.cpp
 ion src/rocksdb_kv_engine.cpp
 ion tests/rocksdb_kv_engine_test.cpp
 ion services/redis/cmd/redis_gateway_node/run_cbor_engine.cpp

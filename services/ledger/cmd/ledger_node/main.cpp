@@ -75,7 +75,7 @@ auto main(int argc, char** argv) -> int {
 #endif
     kythira::ledger_node::node_options opt;
     try {
-        opt = kythira::ledger_node::from_env();
+        opt = kythira::ledger_node::from_env(kythira::ledger_node::process_env());
     } catch (const std::exception& e) {
         std::fprintf(stderr, "%s\n", e.what());
         return 2;

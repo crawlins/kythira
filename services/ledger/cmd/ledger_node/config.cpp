@@ -6,6 +6,7 @@
 #include <raft/net_bind.hpp>
 
 #include <cstdlib>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -18,13 +19,13 @@ auto fail(const std::string& what) -> std::invalid_argument {
     return std::invalid_argument("ledger_node: " + what);
 }
 
-auto get_opt(const char* name, const std::string& def = {}) -> std::string {
-    const char* v = std::getenv(name);  // NOLINT(concurrency-mt-unsafe): read once at start-up
-    return v != nullptr && *v != '\0' ? std::string(v) : def;
+auto get_opt(const env_fn& env, const char* name, const std::string& def = {}) -> std::string {
+    auto v = env(name);
+    return v && !v->empty() ? *v : def;
 }
 
-auto get_required(const char* name) -> std::string {
-    auto v = get_opt(name);
+auto get_required(const env_fn& env, const char* name) -> std::string {
+    auto v = get_opt(env, name);
     if (v.empty()) {
         throw fail(std::string("missing required env var ") + name);
     }
@@ -44,18 +45,19 @@ auto to_u64(const char* name, const std::string& v) -> std::uint64_t {
     }
 }
 
-auto u64_opt(const char* name, std::uint64_t def) -> std::uint64_t {
-    const auto v = get_opt(name);
+auto u64_opt(const env_fn& env, const char* name, std::uint64_t def) -> std::uint64_t {
+    const auto v = get_opt(env, name);
     return v.empty() ? def : to_u64(name, v);
 }
 
-auto ms_opt(const char* name, std::chrono::milliseconds def) -> std::chrono::milliseconds {
+auto ms_opt(const env_fn& env, const char* name, std::chrono::milliseconds def)
+    -> std::chrono::milliseconds {
     return std::chrono::milliseconds{
-        static_cast<std::int64_t>(u64_opt(name, static_cast<std::uint64_t>(def.count())))};
+        static_cast<std::int64_t>(u64_opt(env, name, static_cast<std::uint64_t>(def.count())))};
 }
 
-auto bool_opt(const char* name, bool def) -> bool {
-    const auto v = get_opt(name);
+auto bool_opt(const env_fn& env, const char* name, bool def) -> bool {
+    const auto v = get_opt(env, name);
     if (v.empty()) {
         return def;
     }
@@ -138,24 +140,94 @@ auto url_host(const std::string& url) -> std::string {
 
 }  // namespace
 
-auto from_env() -> node_options {
+auto process_env() -> env_fn {
+    return [](std::string_view name) -> std::optional<std::string> {
+        // NOLINTNEXTLINE(concurrency-mt-unsafe): read once at start-up
+        const char* v = std::getenv(std::string(name).c_str());
+        if (v == nullptr || *v == '\0') {
+            return std::nullopt;
+        }
+        return std::string(v);
+    };
+}
+
+auto composite_env(env_fn env) -> env_fn {
+    return [env = std::move(env)](std::string_view name) -> std::optional<std::string> {
+        const auto node = [&env](const char* n) { return env(n); };
+        const bool plaintext = node("KYTHIRA_NODE_INSECURE_PLAINTEXT").value_or("") == "1";
+        if (name == "KYTHIRA_LEDGER_DATA_DIR") {
+            auto dir = node("KYTHIRA_NODE_DATA_DIR");
+            if (!dir) {
+                return std::nullopt;
+            }
+            return (std::filesystem::path(*dir) / "ledger").string();
+        }
+        if (auto v = env(name); v && !v->empty()) {
+            return v;
+        }
+        if (name == "KYTHIRA_PEERS") {
+            // id=host:port,... as id=scheme://host:port,...
+            auto peers = node("KYTHIRA_NODE_PEERS");
+            if (!peers) {
+                return std::nullopt;
+            }
+            std::string out;
+            std::string tok;
+            for (const char c : *peers + ',') {
+                if (c != ',') {
+                    if (c != ' ') {
+                        tok += c;
+                    }
+                    continue;
+                }
+                if (const auto eq = tok.find('='); eq != std::string::npos) {
+                    out += (out.empty() ? "" : ",") + tok.substr(0, eq + 1) +
+                           (plaintext ? "http://" : "https://") + tok.substr(eq + 1);
+                }
+                tok.clear();
+            }
+            return out;
+        }
+        if (name == "KYTHIRA_ALLOW_PLAINTEXT_RAFT") {
+            return plaintext ? std::optional<std::string>("true") : std::nullopt;
+        }
+        if (name == "KYTHIRA_RAFT_BIND") {
+            return node("KYTHIRA_NODE_RAFT_BIND");
+        }
+        if (name == "KYTHIRA_RAFT_PORT") {
+            return node("KYTHIRA_NODE_RAFT_PORT").value_or("7400");  // node_config's default
+        }
+        if (name == "KYTHIRA_LEDGER_TLS_CERT" || name == "KYTHIRA_LEDGER_RAFT_CERT") {
+            return node("KYTHIRA_NODE_TLS_CERT");
+        }
+        if (name == "KYTHIRA_LEDGER_TLS_KEY" || name == "KYTHIRA_LEDGER_RAFT_KEY") {
+            return node("KYTHIRA_NODE_TLS_KEY");
+        }
+        if (name == "KYTHIRA_LEDGER_CLIENT_CA" || name == "KYTHIRA_LEDGER_RAFT_CA") {
+            return node("KYTHIRA_NODE_TLS_CA");
+        }
+        return std::nullopt;
+    };
+}
+
+auto from_env(const env_fn& env) -> node_options {
     node_options o;
-    if (auto id = kythira::parse_host_node_id(get_required("KYTHIRA_NODE_ID")); id) {
+    if (auto id = kythira::parse_host_node_id(get_required(env, "KYTHIRA_NODE_ID")); id) {
         o.node_id = std::move(id).value();
     } else {
         throw fail("KYTHIRA_NODE_ID: " + id.error());
     }
 
     // TLS for the API (always) and, by default, for Raft.
-    o.tls_cert = get_required("KYTHIRA_LEDGER_TLS_CERT");
-    o.tls_key = get_required("KYTHIRA_LEDGER_TLS_KEY");
-    o.client_ca = get_required("KYTHIRA_LEDGER_CLIENT_CA");
-    o.roles_file = get_required("KYTHIRA_LEDGER_ROLES_FILE");
-    o.data_dir = get_required("KYTHIRA_LEDGER_DATA_DIR");
+    o.tls_cert = get_required(env, "KYTHIRA_LEDGER_TLS_CERT");
+    o.tls_key = get_required(env, "KYTHIRA_LEDGER_TLS_KEY");
+    o.client_ca = get_required(env, "KYTHIRA_LEDGER_CLIENT_CA");
+    o.roles_file = get_required(env, "KYTHIRA_LEDGER_ROLES_FILE");
+    o.data_dir = get_required(env, "KYTHIRA_LEDGER_DATA_DIR");
 
-    o.raft_bind = get_opt("KYTHIRA_RAFT_BIND", o.raft_bind);
-    o.raft_port = port_of("KYTHIRA_RAFT_PORT", get_opt("KYTHIRA_RAFT_PORT", "7000"));
-    o.peers = id_map("KYTHIRA_PEERS", get_required("KYTHIRA_PEERS"));
+    o.raft_bind = get_opt(env, "KYTHIRA_RAFT_BIND", o.raft_bind);
+    o.raft_port = port_of("KYTHIRA_RAFT_PORT", get_opt(env, "KYTHIRA_RAFT_PORT", "7000"));
+    o.peers = id_map("KYTHIRA_PEERS", get_required(env, "KYTHIRA_PEERS"));
     if (!o.peers.contains(o.node_id)) {
         throw fail("KYTHIRA_PEERS must include this node's own id " +
                    kythira::host_node_id_text(o.node_id));
@@ -172,22 +244,22 @@ auto from_env() -> node_options {
         throw fail("KYTHIRA_PEERS mixes https:// and http:// members");
     }
     o.raft_tls = https != 0;
-    o.allow_plaintext_raft = bool_opt("KYTHIRA_ALLOW_PLAINTEXT_RAFT", false);
+    o.allow_plaintext_raft = bool_opt(env, "KYTHIRA_ALLOW_PLAINTEXT_RAFT", false);
     if (!o.raft_tls && !o.allow_plaintext_raft &&
         !kythira::net_bind::is_loopback_bind_address(o.raft_bind)) {
         throw fail("refusing plaintext, unauthenticated Raft on KYTHIRA_RAFT_BIND=" + o.raft_bind +
                    ": give KYTHIRA_PEERS https:// URLs (mutual TLS), bind Raft to a loopback "
                    "address, or set KYTHIRA_ALLOW_PLAINTEXT_RAFT=true on a network you trust");
     }
-    o.raft_cert = get_opt("KYTHIRA_LEDGER_RAFT_CERT", o.tls_cert);
-    o.raft_key = get_opt("KYTHIRA_LEDGER_RAFT_KEY", o.tls_key);
-    o.raft_ca = get_opt("KYTHIRA_LEDGER_RAFT_CA", o.client_ca);
+    o.raft_cert = get_opt(env, "KYTHIRA_LEDGER_RAFT_CERT", o.tls_cert);
+    o.raft_key = get_opt(env, "KYTHIRA_LEDGER_RAFT_KEY", o.tls_key);
+    o.raft_ca = get_opt(env, "KYTHIRA_LEDGER_RAFT_CA", o.client_ca);
 
     const auto api = split_listen("KYTHIRA_LEDGER_API_LISTEN",
-                                  get_opt("KYTHIRA_LEDGER_API_LISTEN", "0.0.0.0:8443"));
+                                  get_opt(env, "KYTHIRA_LEDGER_API_LISTEN", "0.0.0.0:8443"));
     o.api_bind = api.first;
     o.api_port = api.second;
-    if (const auto urls = get_opt("KYTHIRA_LEDGER_API_URLS"); !urls.empty()) {
+    if (const auto urls = get_opt(env, "KYTHIRA_LEDGER_API_URLS"); !urls.empty()) {
         o.api_urls = id_map("KYTHIRA_LEDGER_API_URLS", urls);
     } else {
         // Each member's API on its Raft host, at this node's API port.
@@ -201,39 +273,40 @@ auto from_env() -> node_options {
                        kythira::host_node_id_text(id));
         }
     }
-    o.max_body_bytes = u64_opt("KYTHIRA_LEDGER_MAX_BODY_BYTES", o.max_body_bytes);
+    o.max_body_bytes = u64_opt(env, "KYTHIRA_LEDGER_MAX_BODY_BYTES", o.max_body_bytes);
 
-    o.signing_key = get_opt("KYTHIRA_LEDGER_SIGNING_KEY");
-    o.signing_chain = get_opt("KYTHIRA_LEDGER_SIGNING_CHAIN");
+    o.signing_key = get_opt(env, "KYTHIRA_LEDGER_SIGNING_KEY");
+    o.signing_chain = get_opt(env, "KYTHIRA_LEDGER_SIGNING_CHAIN");
     if (o.signing_key.empty() != o.signing_chain.empty()) {
         throw fail("KYTHIRA_LEDGER_SIGNING_KEY and KYTHIRA_LEDGER_SIGNING_CHAIN go together");
     }
 
-    o.replication = static_cast<std::size_t>(u64_opt("KYTHIRA_LEDGER_REPLICATION", o.replication));
+    o.replication =
+        static_cast<std::size_t>(u64_opt(env, "KYTHIRA_LEDGER_REPLICATION", o.replication));
     if (o.replication == 0) {
         throw fail("KYTHIRA_LEDGER_REPLICATION must be at least 1");
     }
-    o.segment_bytes = u64_opt("KYTHIRA_LEDGER_SEGMENT_BYTES", o.segment_bytes);
+    o.segment_bytes = u64_opt(env, "KYTHIRA_LEDGER_SEGMENT_BYTES", o.segment_bytes);
     if (o.segment_bytes < 4096) {
         throw fail("KYTHIRA_LEDGER_SEGMENT_BYTES must be at least 4096");
     }
     o.snapshot_threshold_bytes = static_cast<std::size_t>(
-        u64_opt("KYTHIRA_LEDGER_SNAPSHOT_THRESHOLD_BYTES", o.snapshot_threshold_bytes));
+        u64_opt(env, "KYTHIRA_LEDGER_SNAPSHOT_THRESHOLD_BYTES", o.snapshot_threshold_bytes));
     o.snapshot_disk_margin_bytes =
-        u64_opt("KYTHIRA_LEDGER_SNAPSHOT_DISK_MARGIN_BYTES", o.snapshot_disk_margin_bytes);
+        u64_opt(env, "KYTHIRA_LEDGER_SNAPSHOT_DISK_MARGIN_BYTES", o.snapshot_disk_margin_bytes);
 
-    o.tick_interval = ms_opt("KYTHIRA_TICK_INTERVAL_MS", o.tick_interval);
-    o.election_timeout_min = ms_opt("KYTHIRA_ELECTION_TIMEOUT_MIN_MS", o.election_timeout_min);
-    o.election_timeout_max = ms_opt("KYTHIRA_ELECTION_TIMEOUT_MAX_MS", o.election_timeout_max);
+    o.tick_interval = ms_opt(env, "KYTHIRA_TICK_INTERVAL_MS", o.tick_interval);
+    o.election_timeout_min = ms_opt(env, "KYTHIRA_ELECTION_TIMEOUT_MIN_MS", o.election_timeout_min);
+    o.election_timeout_max = ms_opt(env, "KYTHIRA_ELECTION_TIMEOUT_MAX_MS", o.election_timeout_max);
     if (o.election_timeout_max <= o.election_timeout_min) {
         throw fail("KYTHIRA_ELECTION_TIMEOUT_MAX_MS must exceed KYTHIRA_ELECTION_TIMEOUT_MIN_MS");
     }
-    o.heartbeat_interval = ms_opt("KYTHIRA_HEARTBEAT_INTERVAL_MS", o.heartbeat_interval);
-    o.rpc_timeout = ms_opt("KYTHIRA_RPC_TIMEOUT_MS", o.rpc_timeout);
-    o.propose_timeout = ms_opt("KYTHIRA_LEDGER_PROPOSE_TIMEOUT_MS", o.propose_timeout);
+    o.heartbeat_interval = ms_opt(env, "KYTHIRA_HEARTBEAT_INTERVAL_MS", o.heartbeat_interval);
+    o.rpc_timeout = ms_opt(env, "KYTHIRA_RPC_TIMEOUT_MS", o.rpc_timeout);
+    o.propose_timeout = ms_opt(env, "KYTHIRA_LEDGER_PROPOSE_TIMEOUT_MS", o.propose_timeout);
     o.maintenance_interval =
-        ms_opt("KYTHIRA_LEDGER_MAINTENANCE_INTERVAL_MS", o.maintenance_interval);
-    if (const auto m = get_opt("KYTHIRA_LEDGER_METRICS_LISTEN"); !m.empty()) {
+        ms_opt(env, "KYTHIRA_LEDGER_MAINTENANCE_INTERVAL_MS", o.maintenance_interval);
+    if (const auto m = get_opt(env, "KYTHIRA_LEDGER_METRICS_LISTEN"); !m.empty()) {
         const auto listen = split_listen("KYTHIRA_LEDGER_METRICS_LISTEN", m);
         o.metrics_bind = listen.first;
         o.metrics_port = listen.second;
@@ -241,14 +314,14 @@ auto from_env() -> node_options {
             throw fail("KYTHIRA_LEDGER_METRICS_LISTEN needs a port other than 0");
         }
     }
-    o.metrics_interval = ms_opt("KYTHIRA_LEDGER_METRICS_INTERVAL_MS", o.metrics_interval);
+    o.metrics_interval = ms_opt(env, "KYTHIRA_LEDGER_METRICS_INTERVAL_MS", o.metrics_interval);
     if (o.metrics_interval.count() <= 0) {
         throw fail("KYTHIRA_LEDGER_METRICS_INTERVAL_MS must be positive");
     }
 
-    o.export_s3_region = get_opt("KYTHIRA_LEDGER_EXPORT_S3_REGION");
-    o.export_s3_endpoint = get_opt("KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT");
-    o.export_s3_timeout = ms_opt("KYTHIRA_LEDGER_EXPORT_S3_TIMEOUT_MS", o.export_s3_timeout);
+    o.export_s3_region = get_opt(env, "KYTHIRA_LEDGER_EXPORT_S3_REGION");
+    o.export_s3_endpoint = get_opt(env, "KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT");
+    o.export_s3_timeout = ms_opt(env, "KYTHIRA_LEDGER_EXPORT_S3_TIMEOUT_MS", o.export_s3_timeout);
     if (!o.export_s3_endpoint.empty() && o.export_s3_region.empty()) {
         throw fail(
             "KYTHIRA_LEDGER_EXPORT_S3_ENDPOINT needs KYTHIRA_LEDGER_EXPORT_S3_REGION "
@@ -265,7 +338,7 @@ auto from_env() -> node_options {
     }
 #endif
 
-    const auto level = get_opt("KYTHIRA_LOG_LEVEL", "info");
+    const auto level = get_opt(env, "KYTHIRA_LOG_LEVEL", "info");
     static const std::map<std::string, kythira::log_level> levels{
         {"trace", kythira::log_level::trace}, {"debug", kythira::log_level::debug},
         {"info", kythira::log_level::info},   {"warning", kythira::log_level::warning},

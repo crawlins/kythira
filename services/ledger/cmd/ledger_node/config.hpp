@@ -13,7 +13,9 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -85,9 +87,25 @@ struct node_options {
     kythira::log_level log_level{kythira::log_level::info};
 };
 
-/// The options from the environment. Throws std::invalid_argument naming
-/// the variable at fault.
-[[nodiscard]] auto from_env() -> node_options;
+/// Reads one variable; nothing when unset (the same shape as
+/// service_node::env_lookup).
+using env_fn = std::function<std::optional<std::string>(std::string_view)>;
+
+/// The process environment.
+[[nodiscard]] auto process_env() -> env_fn;
+
+/// `env` for the ledger module in kythira_node
+/// (.kiro/specs/service-colocation/ task 4): every variable from `env`,
+/// and the node-wide settings ledger_node reads under its own names
+/// (KYTHIRA_PEERS, KYTHIRA_RAFT_*, KYTHIRA_LEDGER_DATA_DIR, the Raft and
+/// API certificates, KYTHIRA_ALLOW_PLAINTEXT_RAFT) filled in from the
+/// node's KYTHIRA_NODE_* ones when unset. The data directory is always the
+/// node's ledger/.
+[[nodiscard]] auto composite_env(env_fn env) -> env_fn;
+
+/// The options from `env`. Throws std::invalid_argument naming the
+/// variable at fault.
+[[nodiscard]] auto from_env(const env_fn& env) -> node_options;
 
 [[nodiscard]] auto usage_text() -> std::string_view;
 
