@@ -808,8 +808,9 @@ namespace table_api_detail {
 /// Refuses a table operation that would take the owner over its table
 /// limits (task 28; AWS's per-account quotas, which an operator raises
 /// with `KYTHIRA_DYNAMODB_TABLE_LIMITS`): with `creates`, one table more
-/// than it may have; for any CreateTable, UpdateTable or DeleteTable,
-/// one more table creating, updating or deleting than may be at once.
+/// than it may have (CreateTable, ImportTable and both restores); for
+/// any of those and UpdateTable or DeleteTable, one more table creating,
+/// updating or deleting than may be at once.
 /// Not transactional, as AWS's quotas are not: two concurrent requests
 /// can both pass. Any catalog with `list_tables` and `describe` will do.
 template<typename Catalog>

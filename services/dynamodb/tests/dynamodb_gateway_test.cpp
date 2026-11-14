@@ -554,6 +554,9 @@ BOOST_AUTO_TEST_CASE(each_account_has_a_table_count_limit_the_operator_can_raise
     auto settings = k_two_accounts;
     settings["KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT"] = "2:500";
     settings["KYTHIRA_DYNAMODB_TABLE_LIMITS"] = "444455556666=3:500";
+    const auto backups =
+        raft::make_private_temp_directory(std::filesystem::temp_directory_path(), "ddb-lim-");
+    settings["KYTHIRA_DYNAMODB_BACKUP_DIR"] = backups.string();
     served s(settings);
 
     BOOST_REQUIRE(s.call("CreateTable", provisioned("one", 1, 1)).result_int() == 200U);
@@ -571,9 +574,29 @@ BOOST_AUTO_TEST_CASE(each_account_has_a_table_count_limit_the_operator_can_raise
     BOOST_TEST(type_of(s.call("CreateTable", provisioned("four", 1, 1), "AKIDOTHER")) ==
                "LimitExceededException");
 
+    // A restore makes a table, so it is refused at the limit too.
+    r = s.call("CreateBackup", R"({"TableName":"one","BackupName":"first"})", "AKIDOTHER");
+    BOOST_REQUIRE_MESSAGE(r.result_int() == 200U, r.body());
+    const std::string backup_arn(body_of(r).at("BackupDetails").at("BackupArn").as_string());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (
+        std::chrono::steady_clock::now() < deadline &&
+        body_of(s.call("DescribeBackup", R"({"BackupArn":")" + backup_arn + R"("})", "AKIDOTHER"))
+                .at("BackupDescription")
+                .at("BackupDetails")
+                .at("BackupStatus")
+                .as_string() != "AVAILABLE") {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    r = s.call("RestoreTableFromBackup",
+               R"({"TargetTableName":"four","BackupArn":")" + backup_arn + R"("})", "AKIDOTHER");
+    BOOST_TEST(type_of(r) == "LimitExceededException");
+
     // A deleted table frees its place.
     BOOST_REQUIRE(s.call("DeleteTable", R"({"TableName":"one"})").result_int() == 200U);
     BOOST_TEST(s.call("CreateTable", provisioned("three", 1, 1)).result_int() == 200U);
+    std::error_code ec;
+    std::filesystem::remove_all(backups, ec);
 }
 
 BOOST_AUTO_TEST_CASE(table_limit_settings_are_checked) {

@@ -207,8 +207,8 @@ check is not transactional, so two concurrent requests can both pass.
 Table counts are per account too, as on AWS: an account may have 2500
 tables, and 500 of them creating, updating or deleting at once, unless
 the operator sets other limits (`KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT`,
-`KYTHIRA_DYNAMODB_TABLE_LIMITS`). CreateTable and ImportTable check both;
-UpdateTable and DeleteTable check the second. Past either, the answer is
+`KYTHIRA_DYNAMODB_TABLE_LIMITS`). CreateTable, ImportTable and both
+restores check both; UpdateTable and DeleteTable check the second. Past either, the answer is
 `LimitExceededException`. These checks are not transactional either.
 Expressions were checked against about 3000 cases recorded from DynamoDB
 Local, and the operations corpus against recorded scenarios.

@@ -449,6 +449,11 @@ public:
         if (_backend.describe(target_table)) {
             return pd::modeled("TableAlreadyExistsException", "Table already exists: " + target);
         }
+        // A restore makes a table, so it counts against the owner's table
+        // limits as CreateTable and ImportTable do.
+        if (auto e = table_api_detail::within_table_limits(_backend, ctx, true)) {
+            return *e;
+        }
         auto t = bd::restored_descriptor(*d, target_table);
         if (auto e = bd::apply_overrides(in, t)) {
             return *e;
