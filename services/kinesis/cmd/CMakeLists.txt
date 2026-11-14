@@ -3,9 +3,10 @@
 
 # The Kinesis module's composition root
 # (.kiro/specs/kinesis-compatible-streams/ task 6): kinesis_gateway_node,
-# the daemon. Like the other module daemons it runs from the build tree and
-# is in no install target. Its core *_impl.hpp includes are listed in
-# ../boundary-allow.txt.
+# the daemon, and the module kythira_node runs it as
+# (.kiro/specs/service-colocation/ task 5). Like the other module daemons
+# it runs from the build tree and is in no install target. Its core
+# *_impl.hpp includes are listed in ../boundary-allow.txt.
 #
 # It hosts a multi-raft cluster over Boost.Beast, so it needs what
 # redis_gateway_node needs: folly plus a future backend (through
@@ -20,15 +21,13 @@ if(ENABLE_COVERAGE OR NOT KYTHIRA_FUTURE_BACKEND_AVAILABLE OR NOT folly_FOUND
     return()
 endif()
 
-# One multi_raft stack per translation unit: run_host.cpp alone holds it.
-add_executable(kinesis_gateway_node
-    kinesis_gateway_node/main.cpp
-    kinesis_gateway_node/config.cpp
-    kinesis_gateway_node/run_host.cpp
-)
-target_include_directories(kinesis_gateway_node PRIVATE
+# What the daemon and the module share: the configuration, IAM's replica
+# and the S3 tier, with the compile definitions saying which of the last
+# two are in, so both see one kinesis_module.hpp.
+add_library(kythira_kinesis_node_common STATIC kinesis_gateway_node/config.cpp)
+target_include_directories(kythira_kinesis_node_common PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/kinesis_gateway_node")
-target_link_libraries(kinesis_gateway_node PRIVATE
+target_link_libraries(kythira_kinesis_node_common PUBLIC
     kythira_kinesis        # <kythira/kinesis/...> and the core headers
     network_simulator      # Folly, boost_context, Boost::system/thread
     boost_json
@@ -36,8 +35,15 @@ target_link_libraries(kinesis_gateway_node PRIVATE
     OpenSSL::Crypto
     kythira_host_node_id   # KYTHIRA_NODE_ID_KIND
 )
-target_compile_definitions(kinesis_gateway_node PRIVATE KYTHIRA_BENCH_HAS_BEAST)
-target_compile_features(kinesis_gateway_node PRIVATE cxx_std_23)
+target_compile_definitions(kythira_kinesis_node_common PUBLIC KYTHIRA_BENCH_HAS_BEAST)
+target_compile_features(kythira_kinesis_node_common PUBLIC cxx_std_23)
+
+# One multi_raft stack per translation unit: run_host.cpp alone holds it.
+add_executable(kinesis_gateway_node
+    kinesis_gateway_node/main.cpp
+    kinesis_gateway_node/run_host.cpp
+)
+target_link_libraries(kinesis_gateway_node PRIVATE kythira_kinesis_node_common)
 set_target_properties(kinesis_gateway_node PROPERTIES
     JOB_POOL_COMPILE heavy_tu
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -50,11 +56,11 @@ set_target_properties(kinesis_gateway_node PROPERTIES
 set(_KINESIS_GATEWAY_IAM OFF)
 if(KCONFIG_KINESIS_GATEWAY_IAM AND KYTHIRA_BUILD_IAM AND TARGET certificate_authority)
     set(_KINESIS_GATEWAY_IAM ON)
-    target_sources(kinesis_gateway_node PRIVATE kinesis_gateway_node/iam_auth.cpp)
-    target_compile_definitions(kinesis_gateway_node PRIVATE KYTHIRA_KINESIS_GATEWAY_IAM)
+    target_sources(kythira_kinesis_node_common PRIVATE kinesis_gateway_node/iam_auth.cpp)
+    target_compile_definitions(kythira_kinesis_node_common PUBLIC KYTHIRA_KINESIS_GATEWAY_IAM)
     # kythira_iam is defined by services/iam/, which the top level may enter
     # after this module; CMake resolves the name when it generates.
-    target_link_libraries(kinesis_gateway_node PRIVATE kythira_iam certificate_authority)
+    target_link_libraries(kythira_kinesis_node_common PUBLIC kythira_iam certificate_authority)
 endif()
 add_test(NAME kinesis_gateway_node_iam_switch COMMAND kinesis_gateway_node --help)
 if(_KINESIS_GATEWAY_IAM)
@@ -82,10 +88,22 @@ if(AWSSDK_FOUND)
     endif()
 endif()
 if(_KINESIS_S3_TIER)
-    target_sources(kinesis_gateway_node PRIVATE kinesis_gateway_node/tier_s3.cpp)
-    target_link_libraries(kinesis_gateway_node PRIVATE ${AWSSDK_LINK_LIBRARIES})
-    target_compile_definitions(kinesis_gateway_node PRIVATE KYTHIRA_KINESIS_HAS_S3_TIER)
+    target_sources(kythira_kinesis_node_common PRIVATE kinesis_gateway_node/tier_s3.cpp)
+    target_link_libraries(kythira_kinesis_node_common PUBLIC ${AWSSDK_LINK_LIBRARIES})
+    target_compile_definitions(kythira_kinesis_node_common PUBLIC KYTHIRA_KINESIS_HAS_S3_TIER)
     message(STATUS "kinesis_gateway_node: S3 tiering enabled")
 else()
     message(STATUS "kinesis_gateway_node: S3 tiering unavailable (no AWS SDK s3 component)")
+endif()
+
+# The Kinesis module for kythira_node (.kiro/specs/service-colocation/
+# task 5): its registrar, linked whole-archive through KYTHIRA_NODE_MODULES
+# (cmd/kythira_node/CMakeLists.txt). It instantiates the module over the
+# node's Beast transport.
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+    add_library(kythira_kinesis_module STATIC kinesis_gateway_node/kinesis_module_registrar.cpp)
+    target_link_libraries(kythira_kinesis_module PUBLIC kythira_kinesis_node_common)
+    set_target_properties(kythira_kinesis_module PROPERTIES JOB_POOL_COMPILE heavy_tu)
+    set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULES kythira_kinesis_module)
+    set_property(GLOBAL APPEND PROPERTY KYTHIRA_NODE_MODULE_NAMES kinesis)
 endif()

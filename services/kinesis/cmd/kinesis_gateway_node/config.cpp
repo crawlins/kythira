@@ -9,6 +9,7 @@
 
 #include <raft/net_bind.hpp>
 
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -380,6 +381,87 @@ auto from_env(const env_lookup& env) -> node_options {
     read_raft_side(r, o);
     read_kinesis_side(r, o);
     return o;
+}
+
+auto from_env(const service_node::env_lookup& env) -> node_options {
+    // The reader wants C strings that live as long as the read: each
+    // variable is looked up once and kept here.
+    std::map<std::string, std::optional<std::string>, std::less<>> seen;
+    const env_lookup lookup = [&env, &seen](const char* name) -> const char* {
+        auto it = seen.find(std::string_view(name));
+        if (it == seen.end()) {
+            it = seen.emplace(name, env(name)).first;
+        }
+        return it->second ? it->second->c_str() : nullptr;
+    };
+    return from_env(lookup);
+}
+
+auto process_env() -> service_node::env_lookup {
+    return [](std::string_view name) -> std::optional<std::string> {
+        // Read at startup, before the node starts a thread.
+        const char* v = std::getenv(std::string(name).c_str());  // NOLINT(concurrency-mt-unsafe)
+        if (v == nullptr || *v == '\0') {
+            return std::nullopt;
+        }
+        return std::string(v);
+    };
+}
+
+auto composite_env(service_node::env_lookup env) -> service_node::env_lookup {
+    return [env = std::move(env)](std::string_view name) -> std::optional<std::string> {
+        const bool plaintext = env("KYTHIRA_NODE_INSECURE_PLAINTEXT").value_or("") == "1";
+        if (name == "KINESIS_DATA_DIR") {
+            auto dir = env("KYTHIRA_NODE_DATA_DIR");
+            if (!dir) {
+                return std::nullopt;
+            }
+            return (std::filesystem::path(*dir) / "kinesis").string();
+        }
+        if (auto v = env(name)) {
+            return v;
+        }
+        if (name == "KYTHIRA_PEERS") {
+            // id=host:port,... as id=scheme://host:port,...
+            const auto peers = env("KYTHIRA_NODE_PEERS");
+            if (!peers) {
+                return std::nullopt;
+            }
+            std::string out;
+            for (const auto& tok : split_list(*peers)) {
+                const auto eq = tok.find('=');
+                if (eq == std::string::npos) {
+                    out += (out.empty() ? "" : ",") + tok;  // from_env names the fault
+                    continue;
+                }
+                out += (out.empty() ? "" : ",") + tok.substr(0, eq + 1) +
+                       (plaintext ? "http://" : "https://") + tok.substr(eq + 1);
+            }
+            return out;
+        }
+        if (name == "KYTHIRA_ALLOW_PLAINTEXT_RAFT") {
+            return std::string("true");
+        }
+        if (name == "KYTHIRA_RAFT_BIND") {
+            return env("KYTHIRA_NODE_RAFT_BIND");
+        }
+        if (name == "KYTHIRA_RAFT_PORT") {
+            return env("KYTHIRA_NODE_RAFT_PORT").value_or("7400");  // node_config's default
+        }
+        if (name == "KINESIS_ALLOW_PLAINTEXT") {
+            return plaintext ? std::optional<std::string>("true") : std::nullopt;
+        }
+        if (name == "KINESIS_TLS_CERT" && !plaintext) {
+            return env("KYTHIRA_NODE_TLS_CERT");
+        }
+        if (name == "KINESIS_TLS_KEY" && !plaintext) {
+            return env("KYTHIRA_NODE_TLS_KEY");
+        }
+        if (name == "KINESIS_PEER_CA") {
+            return env("KYTHIRA_NODE_TLS_CA");
+        }
+        return std::nullopt;
+    };
 }
 
 auto describe(const node_options& o) -> std::string {

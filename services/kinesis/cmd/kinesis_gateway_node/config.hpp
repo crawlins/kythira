@@ -15,6 +15,7 @@
 
 #include <raft/host_node_id.hpp>
 #include <raft/logger.hpp>
+#include <raft/service_module.hpp>
 #include <raft/static_or_iam_authorizer.hpp>
 
 #include <chrono>
@@ -23,7 +24,9 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -128,6 +131,29 @@ using env_lookup = std::function<const char*(const char*)>;
 /// @throws std::invalid_argument naming the variable that is missing or
 ///         malformed.
 [[nodiscard]] auto from_env(const env_lookup& env) -> node_options;
+
+/// `from_env` over the module interface's lookup, which says nothing for
+/// an unset or empty variable.
+[[nodiscard]] auto from_env(const service_node::env_lookup& env) -> node_options;
+
+/// The process environment, as the module interface reads it.
+[[nodiscard]] auto process_env() -> service_node::env_lookup;
+
+/// The variables the Kinesis module reads in `kythira_node`
+/// (.kiro/specs/service-colocation/ task 5, Requirement 8.1), over `env`:
+///
+/// - `KINESIS_DATA_DIR` is always the node's data directory's `kinesis/`.
+/// - Any other variable set in `env` is taken as it is.
+/// - Otherwise the node's settings fill in: `KYTHIRA_PEERS` from
+///   `KYTHIRA_NODE_PEERS` (`id=host:port` with the scheme added),
+///   `KYTHIRA_RAFT_BIND` and `_PORT` from the node's, the API's
+///   certificate and key from `KYTHIRA_NODE_TLS_CERT` and `_KEY`, the peer
+///   gateways' CA from `KYTHIRA_NODE_TLS_CA`, and
+///   `KINESIS_ALLOW_PLAINTEXT` from `KYTHIRA_NODE_INSECURE_PLAINTEXT=1`.
+/// - `KYTHIRA_ALLOW_PLAINTEXT_RAFT` is true: Raft is the node's shared
+///   listener, which speaks mutual TLS unless the node is plaintext, so the
+///   stand-alone daemon's plaintext-Raft guard does not apply.
+[[nodiscard]] auto composite_env(service_node::env_lookup env) -> service_node::env_lookup;
 
 [[nodiscard]] auto is_loopback_address(const std::string& address) -> bool;
 

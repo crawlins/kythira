@@ -85,6 +85,13 @@ client instead. Calls carry a `caller` struct (module, principal, source
 request id) that the target authorizes exactly as it authorizes a network
 request, so co-location never widens access.
 
+For an AWS-compatible API the call is the signed request itself
+(`aws_json_endpoint`): the consumer signs it with the credentials it would
+use over the network and the target's own front end checks the signature
+and the signer's policies. `kinesis.put_records` takes only the producer
+calls (PutRecords, PutRecord, DescribeStreamSummary), so it is not a way
+round the target's listener for the rest of its API.
+
 ### IAM moves onto the host
 
 IAM is the only service on a single plain Raft group. It moves to one
@@ -105,6 +112,7 @@ node that replica is simply the co-located IAM module; the
 |---|---|---|
 | `service_module.hpp` | `include/raft/` | interface, `caller`, group space |
 | `module_registry.hpp` | `include/raft/` | registrar, in-process interfaces |
+| `module_interfaces.hpp` | `include/raft/` | the interface types and names modules publish (`aws_json_endpoint` for `kinesis.put_records`) |
 | `node_core.hpp` | `include/raft/` | node config, identity, logger, metrics |
 | `group_range_mux.hpp`, `node_host.hpp` | `include/raft/` | one Raft listener routed by group range; what a module runs on |
 | `kythira_node_host.hpp` | `include/raft/` | the node's Beast transport and the host type modules register against |
