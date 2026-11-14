@@ -16,9 +16,11 @@
 /// (redis_serving_api.hpp); each is a multi_raft stack in its own
 /// translation unit.
 ///
-/// IAM: a CONFIG_REDIS_GATEWAY_IAM build keeps its embedded IAM replica
-/// (KYTHIRA_IAM_*) in both forms. The co-located IAM module takes its place
-/// once IAM runs on the multi-raft host (task 8).
+/// IAM: beside the IAM module in kythira_node, with
+/// KYTHIRA_REDIS_IAM_ACCOUNT_ID, _REGION and _CACHE_NAME naming the cache,
+/// AUTH for the ACL's `auth=iam` and `auth=both` users goes to that
+/// module's evaluator (`iam.evaluator`), in-process. Otherwise a CONFIG_REDIS_GATEWAY_IAM build
+/// keeps its embedded IAM replica (KYTHIRA_IAM_*).
 
 #include "config.hpp"
 #include "redis_serving_api.hpp"
@@ -29,6 +31,7 @@
 
 #include <kythira/redis/redis_acl.hpp>
 
+#include <raft/module_interfaces.hpp>
 #include <raft/module_registry.hpp>
 #include <raft/service_module.hpp>
 
@@ -110,6 +113,9 @@ public:
     [[nodiscard]] auto data_subdir() const -> std::string override {
         return _standalone ? std::string() : std::string("redis");
     }
+    /// IAM's evaluator, when co-located, answers before this module
+    /// serves.
+    [[nodiscard]] auto starts_after() const -> std::vector<std::string> override { return {"iam"}; }
 
     /// Everything that can be wrong with the configuration fails here,
     /// before the module serves: the variables, the ACL file, IAM's
@@ -141,25 +147,23 @@ public:
                     "redis_gateway_node: this build has no stack for "
                     "KYTHIRA_CACHE_PERSISTENCE on this wire");
             }
+            // The co-located IAM module's evaluator, taken at start, when
+            // kythira_node runs one beside this module.
+            _iam_in_process =
+                !_standalone && service_node::co_located(env, "iam") && iam_scope_from(env);
 #ifdef KYTHIRA_REDIS_GATEWAY_IAM
             // Before the gateway starts; it outlives the gateway configured
             // with its verifier.
-            _iam = start_iam_auth_from_env();
-            if (_iam) {
-                _opt._gateway._credential_verifier = _iam->verifier();
+            if (!_iam_in_process) {
+                _iam = start_iam_auth_from_env();
+                if (_iam) {
+                    _opt._gateway._credential_verifier = _iam->verifier();
+                }
             }
 #endif
             load_acl(_opt, _acl);
             _gateway_cfg = _opt._gateway;
-            // With a credential verifier (IAM), the ACL's `auth=iam` and
-            // `auth=both` users are the verifier's.
-            if (_gateway_cfg._credential_verifier && !_gateway_cfg._credential_verifier_users) {
-                _gateway_cfg._credential_verifier_users = [acl = &_acl](std::string_view user) {
-                    const auto mode = acl->auth_mode_of(user);
-                    return mode == kythira::redis_auth_mode::iam ||
-                           mode == kythira::redis_auth_mode::both;
-                };
-            }
+            route_verifier_users();
         } catch (const std::exception& e) {
             return std::string(e.what());
         }
@@ -170,7 +174,21 @@ public:
         _serving = _factory(_opt, _acl, _gateway_cfg, host, space);
     }
 
-    void start(service_node::module_registry& /*registry*/) override {
+    /// @throws std::invalid_argument when IAM is co-located but publishes
+    ///         no evaluator.
+    void start(service_node::module_registry& registry) override {
+        if (_iam_in_process) {
+            // IAM starts first (starts_after); the gateway is built by
+            // _serving->start() below, from _gateway_cfg as it is then.
+            auto iam = registry.lookup<service_node::iam_evaluator>(
+                service_node::interface_names::iam_evaluator);
+            if (!iam) {
+                throw std::invalid_argument("redis: IAM is co-located but publishes no evaluator");
+            }
+            _gateway_cfg._credential_verifier = iam->credential_verifier(_iam_scope);
+            route_verifier_users();
+            _iam_evaluator = std::move(iam);
+        }
         _serving->start();
         _started = true;
     }
@@ -209,6 +227,41 @@ public:
     }
 
 private:
+    /// KYTHIRA_REDIS_IAM_ACCOUNT_ID, _REGION and _CACHE_NAME: all three, or
+    /// none (no IAM AUTH).
+    /// @throws std::invalid_argument for some but not all, or a bad account.
+    auto iam_scope_from(const service_node::env_lookup& env) -> bool {
+        const auto account = env("KYTHIRA_REDIS_IAM_ACCOUNT_ID");
+        const auto region = env("KYTHIRA_REDIS_IAM_REGION");
+        const auto cache = env("KYTHIRA_REDIS_IAM_CACHE_NAME");
+        if (!account && !region && !cache) {
+            return false;
+        }
+        if (!account || !region || !cache) {
+            throw std::invalid_argument(
+                "KYTHIRA_REDIS_IAM_ACCOUNT_ID, _REGION and _CACHE_NAME go together");
+        }
+        if (account->size() != 12 ||
+            account->find_first_not_of("0123456789") != std::string::npos) {
+            throw std::invalid_argument(
+                "KYTHIRA_REDIS_IAM_ACCOUNT_ID must be a 12-digit account id");
+        }
+        _iam_scope = {*account, *region, *cache};
+        return true;
+    }
+
+    /// With a credential verifier (IAM), the ACL's `auth=iam` and
+    /// `auth=both` users are the verifier's.
+    void route_verifier_users() {
+        if (_gateway_cfg._credential_verifier && !_gateway_cfg._credential_verifier_users) {
+            _gateway_cfg._credential_verifier_users = [acl = &_acl](std::string_view user) {
+                const auto mode = acl->auth_mode_of(user);
+                return mode == kythira::redis_auth_mode::iam ||
+                       mode == kythira::redis_auth_mode::both;
+            };
+        }
+    }
+
     bool _standalone;
     factories _factories;
     std::size_t _max_raft_body;
@@ -217,6 +270,10 @@ private:
 #ifdef KYTHIRA_REDIS_GATEWAY_IAM
     std::unique_ptr<iam_auth> _iam;
 #endif
+    /// kythira_node beside the IAM module.
+    bool _iam_in_process{false};
+    service_node::elasticache_scope _iam_scope;
+    std::shared_ptr<service_node::iam_evaluator> _iam_evaluator;
     kythira::redis_acl _acl;
     kythira::redis_gateway_config _gateway_cfg;
     std::unique_ptr<serving> _serving;

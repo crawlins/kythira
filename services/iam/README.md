@@ -43,7 +43,9 @@ Built when `CONFIG_IAM=y` (`services/iam/Kconfig`, off by default).
 | `tests/iam_state_machine_test.cpp` | their unit and property tests | 8 |
 | `include/kythira/iam/iam_admin.hpp` | the `/v1/admin/*` operations (create and list accounts, rotate the STS key, register a replica) | 9 |
 | `include/kythira/iam/iam_routing.hpp` | request routing by credential-scope service, and Query error XML | 9 |
-| `cmd/iam_node/` | the daemon: the IAM Raft group over mutual-TLS RPC and the HTTPS listener | 9 |
+| `cmd/iam_node/` | the daemon: the IAM Raft group over mutual-TLS RPC and the HTTPS listener; `iam_service.hpp` is its serving side over a Raft node it does not own | 9 |
+| `cmd/iam_node/iam_module.hpp`, `iam_module_registrar.cpp` | IAM as a module of `kythira_node`: its group on the node's multi-raft host, and `iam.evaluator` for co-located services | colocation 8 |
+| `tests/kythira_node_iam_test.cpp` | three `kythira_node` processes running IAM and Kinesis, Kinesis authorizing in-process (registered by `cmd/kythira_node/`) | colocation 8 |
 | `cmd/kythira-iam/` | the admin CLI | 9 |
 | `docker/iam_node/` | the image the compose scenario runs | 9 |
 | `tests/iam_admin_test.cpp`, `tests/iam_node_test.cpp`, `tests/iam_node_test_support.hpp` | the admin operations, and the binaries as a three-node cluster with a replica (the helpers are shared with `iam_kythira_issuer_test`) | 9 |
@@ -63,6 +65,47 @@ The authorizer (task 13) and the rest follow the plan in the spec's
 Shared pieces live in core `include/raft/`, because core or other modules
 use them: `jwt.hpp`, the cloud credential sources, and later the SigV4
 verifier, the Query codec and the `aws_request_authorizer` concept.
+
+## Beside other services in `kythira_node`
+
+IAM runs as a module of the composite daemon
+(`.kiro/specs/service-colocation/` task 8, `cmd/iam_node/iam_module.hpp`),
+with `KYTHIRA_SERVICES` naming `iam`. Its Raft group is one group on the
+node's shared multi-raft host at `5 << 56`, over the node's one listener
+with mutual TLS from `KYTHIRA_NODE_TLS_*`; its log is in the node's
+`iam/raft/`. The serving side is `iam_node`'s (`iam_service.hpp`): IAM, STS
+and `/v1/admin/*` on IAM's own HTTPS listener, the same KEK check and the
+same leader redirects.
+
+The module reads `KYTHIRA_IAM_*` for what is its own and the node's
+`KYTHIRA_NODE_*` for the rest:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `KYTHIRA_IAM_UNSEAL_KEY_FILE` | the cluster's unseal passphrase (required) | |
+| `KYTHIRA_IAM_HTTP_BIND`, `_HTTP_PORT` | the IAM, STS and admin listener | `0.0.0.0`, `8443` |
+| `KYTHIRA_IAM_TLS_CERT`, `_TLS_KEY` | its certificate | the node's |
+| `KYTHIRA_IAM_CLIENT_CA` | the CA admin client certificates chain to | the node's |
+| `KYTHIRA_IAM_ADMIN_URI_SANS` | admin certificate URI SANs, comma-separated | none: admin routes refuse |
+| `KYTHIRA_IAM_PEER_URLS` | `id=https://host:port,...`, where a follower redirects to | each member's Raft host, this node's IAM port |
+| `KYTHIRA_IAM_ARN_PARTITION`, `_STS_REGIONS` | as `--arn-partition`, `--sts-regions` | `aws`, `us-east-1` |
+| `KYTHIRA_IAM_OIDC_ALLOWED_HOSTS`, `_OIDC_PROXY`, `_OIDC_CA_FILE` | as the `--oidc-*` flags | |
+| `KYTHIRA_IAM_KYTHIRA_ISSUER`, `_KYTHIRA_ISSUER_LOCAL`, `_CREDENTIALS_EXCHANGE` | as `--kythira-issuer`, `--kythira-issuer-local`, `--iam-credentials-exchange` | off |
+
+The module publishes `iam.evaluator` (core `raft/module_interfaces.hpp`):
+IAM's authorizer over this member's applied state. A co-located Kinesis
+(`KINESIS_AUTH=iam` or `both`), DynamoDB (`KYTHIRA_DYNAMODB_AUTH=iam` or
+`both`) or Redis gateway (`KYTHIRA_REDIS_IAM_ACCOUNT_ID`, `_REGION` and
+`_CACHE_NAME`) adds its action tables at start and authenticates and
+authorizes through it in-process, with no IAM replica of its own; IAM
+starts before them. A change reaches every member's services as soon as
+that member applies it, as it reaches an embedded replica.
+
+Not yet: an IAM group in `kythira_node` takes no read replicas
+(`/v1/admin/replicas` answers `InvalidInput`), so stand-alone gateways'
+embedded replicas still join an `iam_node` cluster, and `iam_node` still
+runs its own TCP-RPC group. Moving `iam_node` onto the host, with a data
+directory conversion, and the replicas with it, is the rest of task 8.
 
 ## Core targets and variables used
 

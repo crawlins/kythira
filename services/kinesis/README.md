@@ -144,6 +144,13 @@ would be on the wire and checked by the same front end, so the signer's
 policies decide exactly as they do over the network. Nothing else is taken
 that way.
 
+When IAM runs in the same node (`KYTHIRA_SERVICES` names `iam`) and
+`KINESIS_AUTH` is `iam` or `both`, Kinesis authenticates and authorizes
+through the IAM module's in-process evaluator (`iam.evaluator`), after
+adding Kinesis's and the Lease API's actions to it, instead of starting the
+embedded IAM replica. `kythira_node_iam_test` runs that pairing as three
+processes.
+
 To upgrade the model, copy `botocore/data/kinesis/<version>/service-2.json`
 from a newer botocore wheel over `model/service-2.json`, bump
 `BOTOCORE_VERSION` in `tools/gen_operations.py`, rerun it, and place any new

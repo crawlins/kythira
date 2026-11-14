@@ -12,7 +12,10 @@
 /// consumer keeps using its network client (Requirement 7.3). Both sides
 /// depend only on this header, never on each other's module.
 
+#include <raft/aws_request_authorizer.hpp>
+#include <raft/credential_verifier.hpp>
 #include <raft/service_module.hpp>
+#include <raft/static_or_iam_authorizer.hpp>
 
 #include <string>
 #include <string_view>
@@ -27,6 +30,10 @@ namespace interface_names {
 /// and DescribeStreamSummary, which is what DynamoDB's Kinesis streaming
 /// destination sends.
 inline constexpr std::string_view kinesis_put_records = "kinesis.put_records";
+/// IAM's authorizer over the co-located IAM module's state
+/// (`iam_evaluator`): what a consumer's embedded IAM replica gives it
+/// stand-alone.
+inline constexpr std::string_view iam_evaluator = "iam.evaluator";
 }  // namespace interface_names
 
 /// One AWS JSON-protocol request, signed with SigV4 exactly as it would be
@@ -63,6 +70,50 @@ public:
     /// Thread-safe. After the provider stops, every call answers 503.
     [[nodiscard]] virtual auto call(const caller& who, const aws_json_request& request)
         -> aws_json_response = 0;
+};
+
+/// Where a Redis gateway's cache sits in IAM's resource space: the
+/// account, region and cache name its `elasticache:Connect` resource ARN
+/// names.
+struct elasticache_scope {
+    std::string account;
+    std::string region;
+    std::string cache_name;
+};
+
+/// The co-located IAM module's authorizer, for the modules that
+/// authenticate and authorize requests against IAM (Requirements 5.3 and
+/// 7.1): what each consumer gets stand-alone from an embedded IAM replica
+/// (`iam_gateway_auth.hpp`, Redis's `iam_auth.cpp`), without a second copy
+/// of IAM's state in the process.
+///
+/// A consumer adds its service's action tables at start, before it serves,
+/// then takes the hooks or the verifier. Both refer to the provider, which
+/// outlives every consumer: the node stops consumers first.
+class iam_evaluator {
+public:
+    iam_evaluator() = default;
+    iam_evaluator(const iam_evaluator&) = delete;
+    auto operator=(const iam_evaluator&) -> iam_evaluator& = delete;
+    iam_evaluator(iam_evaluator&&) = delete;
+    auto operator=(iam_evaluator&&) -> iam_evaluator& = delete;
+    virtual ~iam_evaluator() = default;
+
+    /// Registers a service's actions (`kinesis_actions()`,
+    /// `dynamodb_actions()`, ...), so policies naming them are evaluated.
+    /// Adding a table already present is a no-op.
+    /// @throws std::invalid_argument for a malformed table.
+    virtual void add_actions(const aws_auth::aws_action_table& table) = 0;
+
+    /// SigV4 authentication and policy evaluation, for
+    /// `static_or_iam_authorizer::set_mode`.
+    [[nodiscard]] virtual auto hooks() -> aws_auth::iam_hooks = 0;
+
+    /// Redis AUTH (`elasticache:Connect` on the cache `scope` names), for
+    /// `redis_gateway_config::_credential_verifier`. Registers
+    /// ElastiCache's actions itself: AUTH is Redis's only use of IAM.
+    [[nodiscard]] virtual auto credential_verifier(const elasticache_scope& scope)
+        -> credential_verifier_fn = 0;
 };
 
 }  // namespace kythira::service_node

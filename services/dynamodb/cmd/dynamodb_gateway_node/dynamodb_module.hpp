@@ -35,6 +35,7 @@
 #endif
 
 #include <kythira/dynamodb/backend.hpp>
+#include <kythira/dynamodb/dynamodb_actions.hpp>
 #include <kythira/dynamodb/gateway.hpp>
 #include <kythira/dynamodb/kinesis_destination.hpp>
 
@@ -80,7 +81,9 @@ public:
     auto operator=(serving&&) -> serving& = delete;
     virtual ~serving() = default;
 
-    virtual void start(ddb::kinesis_sink kinesis) = 0;
+    /// `iam`, when set, replaces the configured IAM hooks (a co-located
+    /// IAM module's evaluator).
+    virtual void start(ddb::kinesis_sink kinesis, std::optional<ddb::iam_hooks> iam) = 0;
     virtual void drain() = 0;
     virtual void stop() = 0;
     [[nodiscard]] virtual auto port() const -> std::uint16_t = 0;
@@ -90,7 +93,9 @@ template<typename Storage, typename Host> class cluster_serving final : public s
 public:
     template<typename... Args>
     explicit cluster_serving(Args&&... args) : _node(std::forward<Args>(args)...) {}
-    void start(ddb::kinesis_sink kinesis) override { _node.start(std::move(kinesis)); }
+    void start(ddb::kinesis_sink kinesis, std::optional<ddb::iam_hooks> iam) override {
+        _node.start(std::move(kinesis), std::move(iam));
+    }
     void drain() override { _node.drain(); }
     void stop() override { _node.stop(); }
     [[nodiscard]] auto port() const -> std::uint16_t override { return _node.port(); }
@@ -124,9 +129,12 @@ public:
     local_serving(local_serving&&) = delete;
     auto operator=(local_serving&&) -> local_serving& = delete;
 
-    void start(ddb::kinesis_sink kinesis) override {
+    void start(ddb::kinesis_sink kinesis, std::optional<ddb::iam_hooks> iam) override {
         if (kinesis.configured()) {
             _cfg.kinesis = std::move(kinesis);
+        }
+        if (iam) {
+            _cfg.iam = std::move(iam);
         }
         _gateway = std::make_unique<ddb::gateway<ddb::local_backend<>>>(_cfg, *_backend, _log);
         _gateway->start();
@@ -209,9 +217,10 @@ public:
         return _standalone ? std::string() : std::string("dynamodb");
     }
     /// A co-located Kinesis publishes `kinesis.put_records` for the
-    /// streaming destinations; without one they use the network.
+    /// streaming destinations, without one they use the network; a
+    /// co-located IAM's evaluator answers before this module serves.
     [[nodiscard]] auto starts_after() const -> std::vector<std::string> override {
-        return {"kinesis"};
+        return {"iam", "kinesis"};
     }
 
     /// The settings, the S3 stores and IAM's replica: everything that can
@@ -233,8 +242,12 @@ public:
         } catch (const std::exception& e) {
             return std::string(e.what());
         }
-        // IAM (task 28): the replica outlives the gateway that uses it.
-        if (_cfg.auth != ddb::auth_mode::static_keys) {
+        // IAM (task 28): the co-located IAM module's evaluator when
+        // kythira_node runs one, taken at start; otherwise the embedded
+        // replica, which outlives the gateway that uses it.
+        _iam_in_process = !_standalone && _cfg.auth != ddb::auth_mode::static_keys &&
+                          kythira::service_node::co_located(env, "iam");
+        if (_cfg.auth != ddb::auth_mode::static_keys && !_iam_in_process) {
 #ifdef KYTHIRA_DYNAMODB_GATEWAY_IAM
             try {
                 _iam = start_iam_auth_from_env();
@@ -311,7 +324,19 @@ public:
             std::cerr << "[info] dynamodb_gateway_node: Kinesis streaming destinations publish "
                          "to the co-located Kinesis module\n";
         }
-        _serving->start(std::move(kinesis));
+        std::optional<ddb::iam_hooks> iam;
+        if (_iam_in_process) {
+            auto evaluator = registry.lookup<kythira::service_node::iam_evaluator>(
+                kythira::service_node::interface_names::iam_evaluator);
+            if (!evaluator) {
+                throw std::invalid_argument(
+                    "KYTHIRA_DYNAMODB_AUTH=iam or both: the IAM module publishes no evaluator");
+            }
+            evaluator->add_actions(ddb::dynamodb_actions());
+            iam = evaluator->hooks();
+            _iam_evaluator = std::move(evaluator);
+        }
+        _serving->start(std::move(kinesis), std::move(iam));
         _started = true;
     }
 
@@ -342,6 +367,9 @@ public:
 private:
     bool _standalone;
     ddb::gateway_config _cfg;
+    /// KYTHIRA_DYNAMODB_AUTH=iam|both in kythira_node beside the IAM module.
+    bool _iam_in_process{false};
+    std::shared_ptr<kythira::service_node::iam_evaluator> _iam_evaluator;
 #ifdef KYTHIRA_DYNAMODB_GATEWAY_IAM
     std::unique_ptr<iam_auth> _iam;
 #endif
