@@ -6,9 +6,9 @@
 kythira_node
 ├── node core: config (KYTHIRA_NODE_*), identity and TLS, peer list,
 │              logger, metrics/health endpoint, signal handling
-├── multi-raft host (one Raft listener, one placement driver)
-│     ├── module 1 group space: groups, key prefix, data subdir
-│     ├── module 2 group space ...
+├── one Raft listener and client, routed by group id range
+│     ├── module 1 group space ─► module 1's multi-raft host, data subdir
+│     ├── module 2 group space ─► module 2's multi-raft host ...
 ├── module registry ── in-process interfaces by name
 └── modules (each with its own executor and listeners)
       iam ─► publishes evaluator
@@ -29,17 +29,44 @@ Kconfig switch is on. Loading modules as shared objects at run time would
 need a stable C++ ABI across modules, and gives nothing an operator needs:
 the set of services is a build choice today and stays one.
 
-### One host, partitioned ids and keys
+### One listener, a host per module, partitioned ids
 
-The multi-raft host already supports many groups and key ranges. A module
-number `m` (fixed per module in core: redis 1, dynamodb 2, kinesis 3,
-ledger 4, iam 5, hsm 6, kms 7) gives a composite node's module the group
-range `[m << 56, (m + 1) << 56)` and the key prefix `\x00m/`. DynamoDB's
-per-voter split ranges (`(ordinal + 1) << 48`) fit inside its 2^56 range.
-In a stand-alone daemon the offset is zero and the prefix empty, so ids and
-keys are exactly today's (Requirement 3.2, 4.4). The cost is that a
-stand-alone data directory cannot be opened by a composite node, which is
-why moving a service between layouts is a backup-and-restore (3.3).
+The services' multi-raft hosts differ in their state machine type, storage
+(memory, the binary engine, RocksDB through `state_engine`), transactions
+(the `transactional_state_machine` wrapper, DynamoDB's own) and policy
+hooks, and `multi_raft` takes one state machine type. Hiding all of them
+behind one type would mean a type-erased state machine that also carries
+every service's transaction and persistent-storage hooks: a large core
+change for no operator benefit. So each module keeps its own host, and the
+node shares what an operator sees: one Raft listener and client, one
+identity and certificate, one peer list, one health endpoint, one log.
+
+Every Raft RPC carries its group id. A module number `m` (fixed per module
+in core: redis 1, dynamodb 2, kinesis 3, ledger 4, iam 5, hsm 6, kms 7)
+gives a composite node's module the group range `[m << 56, (m + 1) << 56)`,
+and `group_range_mux` (`include/raft/group_range_mux.hpp`) routes each
+message to the host whose range holds it; each host's own demultiplexer
+then routes by group inside it. A message for a range no running host
+holds gets the refusal a host gives a group it does not hold. The hosts
+share the node's one client, so connections between two nodes are shared
+by every module. `node_host` (`include/raft/node_host.hpp`) is what a
+module gets: node id, client, and `server_for(space)`.
+
+Keys need no prefix: each module's keys live only in its own host's shard
+map, so the placement driver, split/merge policy and key lookups never see
+another module's (Requirement 4.2, 4.3). `group_space::key_prefix` stays
+for a module that writes several modules' data into one store, which none
+does today. DynamoDB's per-voter split ranges (`(ordinal + 1) << 48`) fit
+inside its 2^56 range. In a stand-alone daemon the offset is zero and the
+range covers every id, so ids are exactly today's (Requirement 3.2, 4.4).
+The cost is that a stand-alone data directory cannot be opened by a
+composite node, which is why moving a service between layouts is a
+backup-and-restore (3.3).
+
+The trade: each host runs its own placement driver, policy tick and Raft
+executor stripes rather than sharing one. Per-module executors are what
+task 9 wants anyway, and a placement driver that only sees one module's
+shards balances that module's load, which is the load that matters to it.
 
 ### Executors per module, Raft on its own
 
@@ -79,6 +106,8 @@ node that replica is simply the co-located IAM module; the
 | `service_module.hpp` | `include/raft/` | interface, `caller`, group space |
 | `module_registry.hpp` | `include/raft/` | registrar, in-process interfaces |
 | `node_core.hpp` | `include/raft/` | node config, identity, logger, metrics |
+| `group_range_mux.hpp`, `node_host.hpp` | `include/raft/` | one Raft listener routed by group range; what a module runs on |
+| `kythira_node_host.hpp` | `include/raft/` | the node's Beast transport and the host type modules register against |
 | `kythira_node` | `cmd/kythira_node/` | the composite daemon |
 | one adapter per service | `services/<m>/module/` | wraps each service's existing gateway code |
 

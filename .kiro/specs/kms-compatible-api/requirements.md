@@ -99,7 +99,7 @@ how clients or services reach it.
 #### Acceptance Criteria
 
 1. The KMS SHALL be a service module (service-colocation Requirement 1)
-   with module number 7, its own Raft group range and key prefix.
+   with module number 7 and its own Raft group range.
 2. `kms_node` SHALL be a node with the KMS module, the HSM module and an
    IAM replica, configured by `KYTHIRA_KMS_*`; in `kythira_node`, adding
    `kms` to `KYTHIRA_SERVICES` SHALL do the same alongside other modules.
