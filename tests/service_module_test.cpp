@@ -25,7 +25,7 @@
 #include <variant>
 #include <vector>
 
-namespace node = kythira::node;
+namespace node = kythira::service_node;
 
 namespace {
 

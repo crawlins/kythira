@@ -26,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-namespace kythira::node {
+namespace kythira::service_node {
 
 /// Each module's fixed number (design.md "One host, partitioned ids and
 /// keys"). A composite node gives module `m` the group ids
@@ -261,4 +261,4 @@ public:
     [[nodiscard]] virtual auto metrics() const -> std::vector<module_metric> { return {}; }
 };
 
-}  // namespace kythira::node
+}  // namespace kythira::service_node
