@@ -3,9 +3,15 @@
 Each task is one PR unless noted. Tasks 4-8 can go in any order once task 3
 is in.
 
-- [ ] 1. Service module interface and registry
+- [x] 1. Service module interface and registry
   - `service_module`, `caller`, group space and `module_registry` in core
     public headers; build-time registrar; unit tests with two fake modules
+  - Done (2026-11-14): `include/raft/service_module.hpp` (the interface,
+    `module_numbers`, `group_space`, `caller`, health and metrics) and
+    `include/raft/module_registry.hpp` (`module_registry` of typed
+    in-process interfaces, `module_catalog` and `module_registrar`, and
+    `plan_modules`, which turns `KYTHIRA_SERVICES` into start order or a
+    startup error); `tests/service_module_test.cpp`.
   - _Requirements: 1.1-1.3, 7.1_
 
 - [ ] 2. Node core

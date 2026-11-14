@@ -1270,6 +1270,18 @@ if(TARGET httplib::httplib AND TARGET boost_json)
     add_test(NAME host_node_id_test COMMAND host_node_id_test)
     set_tests_properties(host_node_id_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node_id")
 endif()
+
+# The service module interface, group spaces and module registry
+# (.kiro/specs/service-colocation/ task 1): header-only and free of any
+# future backend, so it builds in every configuration.
+if(TARGET Boost::unit_test_framework)
+    add_executable(service_module_test service_module_test.cpp)
+    target_link_libraries(service_module_test PRIVATE Boost::unit_test_framework)
+    target_include_directories(service_module_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(service_module_test PRIVATE cxx_std_23)
+    add_test(NAME service_module_test COMMAND service_module_test)
+    set_tests_properties(service_module_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node")
+endif()
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 target_link_libraries(group_transport_unit_test PRIVATE OpenSSL::Crypto)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)
