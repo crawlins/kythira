@@ -38,6 +38,9 @@
 /// | `KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT` | `80000:80000` | provisioned read:write units an
 /// account's tables may add up to |
 /// | `KYTHIRA_DYNAMODB_ACCOUNT_LIMITS` | | `account=read:write,...`: raised (or lowered) limits |
+/// | `KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT` | `2500:500` | tables an account may have, and
+/// have creating, updating or deleting at once |
+/// | `KYTHIRA_DYNAMODB_TABLE_LIMITS` | | `account=tables:operations,...` per account |
 /// | `KYTHIRA_DYNAMODB_AUTH` | `static` | `static` keys, Kythira `iam` (the `KYTHIRA_IAM_*`
 /// replica, in builds with it), or `both`; an access key id both know is refused | |
 /// `KYTHIRA_DYNAMODB_NAMESPACES` | `off` | `on` gives each account its own tables; tables made
@@ -416,6 +419,11 @@ inline constexpr std::string_view k_gateway_env_help =
     "                                        account's tables may total\n"
     "                                        (80000:80000)\n"
     "  KYTHIRA_DYNAMODB_ACCOUNT_LIMITS       account=read:write,... per account\n"
+    "  KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT  tables:operations an account may have,\n"
+    "                                        and have creating, updating or\n"
+    "                                        deleting at once (2500:500)\n"
+    "  KYTHIRA_DYNAMODB_TABLE_LIMITS         account=tables:operations,... per\n"
+    "                                        account\n"
     "  KYTHIRA_DYNAMODB_NAMESPACES           on: each account has its own tables;\n"
     "                                        older ones belong to ACCOUNT_ID.\n"
     "                                        Cannot be undone (off)\n"
@@ -925,15 +933,15 @@ namespace gateway_detail {
         }
         return std::pair{*r, *w};
     };
-    if (auto v = env("KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT")) {
-        const auto u = units_pair(*v);
-        if (!u) {
-            return "KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT: expected read:write units, got '" + *v +
-                   "'";
+    // "account=a:b,..." into `out`; `what` names the pair in the error.
+    const auto per_account =
+        [&](const char* name, std::string_view what,
+            std::map<std::string, std::pair<std::uint64_t, std::uint64_t>>& out)
+        -> std::optional<std::string> {
+        const auto v = env(name);
+        if (!v) {
+            return std::nullopt;
         }
-        c.front.default_account_limit = *u;
-    }
-    if (auto v = env("KYTHIRA_DYNAMODB_ACCOUNT_LIMITS")) {
         std::string_view rest(*v);
         while (!rest.empty()) {
             const auto comma = rest.find(',');
@@ -951,11 +959,36 @@ namespace gateway_detail {
                 !std::all_of(account.begin(), account.end(),
                              [](unsigned char ch) { return std::isdigit(ch) != 0; }) ||
                 !u) {
-                return "KYTHIRA_DYNAMODB_ACCOUNT_LIMITS: expected account=read:write, got '" +
+                return std::string(name) + ": expected account=" + std::string(what) + ", got '" +
                        std::string(entry) + "'";
             }
-            c.front.account_limits[std::string(account)] = *u;
+            out[std::string(account)] = *u;
         }
+        return std::nullopt;
+    };
+    if (auto v = env("KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT")) {
+        const auto u = units_pair(*v);
+        if (!u) {
+            return "KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT: expected read:write units, got '" + *v +
+                   "'";
+        }
+        c.front.default_account_limit = *u;
+    }
+    if (auto e =
+            per_account("KYTHIRA_DYNAMODB_ACCOUNT_LIMITS", "read:write", c.front.account_limits)) {
+        return *e;
+    }
+    if (auto v = env("KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT")) {
+        const auto u = units_pair(*v);
+        if (!u) {
+            return "KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT: expected tables:operations, got '" + *v +
+                   "'";
+        }
+        c.front.default_table_limit = *u;
+    }
+    if (auto e = per_account("KYTHIRA_DYNAMODB_TABLE_LIMITS", "tables:operations",
+                             c.front.table_limits)) {
+        return *e;
     }
 
     if (auto v = env("KYTHIRA_DYNAMODB_NAMESPACES")) {

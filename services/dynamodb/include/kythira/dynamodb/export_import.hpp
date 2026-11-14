@@ -1129,6 +1129,9 @@ public:
         if (!d) {
             return d.error();
         }
+        if (auto e = table_api<Backend>::within_table_limits(_backend, ctx, true)) {
+            return *e;
+        }
         r.table_name = d->name;
         r.table_arn = ctx.table_arn(d->name);
         r.start_ms = now;

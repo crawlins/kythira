@@ -793,6 +793,52 @@ template<typename TypeOf>
 }
 
 /// The control-plane handlers over a backend.
+namespace table_api_detail {
+
+/// Refuses a table operation that would take the owner over its table
+/// limits (task 28; AWS's per-account quotas, which an operator raises
+/// with `KYTHIRA_DYNAMODB_TABLE_LIMITS`): with `creates`, one table more
+/// than it may have; for any CreateTable, UpdateTable or DeleteTable,
+/// one more table creating, updating or deleting than may be at once.
+/// Not transactional, as AWS's quotas are not: two concurrent requests
+/// can both pass. Any catalog with `list_tables` and `describe` will do.
+template<typename Catalog>
+[[nodiscard]] auto within_table_limits(Catalog& backend, const call_context& ctx, bool creates)
+    -> std::optional<aws_json::error> {
+    const auto [max_tables, max_operations] = ctx.table_limit();
+    std::uint64_t tables = 0;
+    std::uint64_t operations = 0;
+    for (const auto& n : backend.list_tables("", SIZE_MAX)) {
+        if (!ctx.owns(n)) {
+            continue;
+        }
+        const auto d = backend.describe(n);
+        if (!d) {
+            continue;
+        }
+        ++tables;
+        operations += d->status == table_status::active ? 0 : 1;
+    }
+    const auto refuse = [](std::string message) {
+        aws_json::error e;
+        e.status = 400;
+        e.type = dynamodb_error_style().service_prefix + "LimitExceededException";
+        e.message = "Subscriber limit exceeded: " + std::move(message);
+        return e;
+    };
+    if (creates && tables >= max_tables) {
+        return refuse("the account has " + std::to_string(tables) + " tables, its limit of " +
+                      std::to_string(max_tables));
+    }
+    if (operations >= max_operations) {
+        return refuse("there is a limit of " + std::to_string(max_operations) +
+                      " tables in the CREATING, UPDATING or DELETING state");
+    }
+    return std::nullopt;
+}
+
+}  // namespace table_api_detail
+
 template<dynamo_backend Backend> class table_api {
 public:
     using result = aws_json::result<boost::json::object>;
@@ -830,6 +876,9 @@ public:
         c.op = catalog_command::kind::create_table;
         c.table = std::move(*d);
         c.now_ms = _backend.now_ms();
+        if (auto e = within_table_limits(_backend, ctx, true)) {
+            return *e;
+        }
         if (auto e = within_account_limit(ctx, c.table)) {
             return *e;
         }
@@ -1314,6 +1363,9 @@ public:
                 c.table.gsis = mirrored->gsis;
             }
         }
+        if (auto e = within_table_limits(_backend, ctx, false)) {
+            return *e;
+        }
         if (auto e = within_account_limit(ctx, c.table)) {
             return *e;
         }
@@ -1339,6 +1391,13 @@ public:
             }
         }
         return u;
+    }
+
+    /// The owner's table limits (`table_api_detail::within_table_limits`).
+    /// Static for `ImportTable`, which creates a table.
+    static auto within_table_limits(Backend& backend, const call_context& ctx, bool creates)
+        -> std::optional<aws_json::error> {
+        return table_api_detail::within_table_limits(backend, ctx, creates);
     }
 
     /// Refuses a table whose provisioned capacity would take its account
@@ -1633,6 +1692,9 @@ public:
                                     "ReplicaUpdates first");
         }
         c.now_ms = _backend.now_ms();
+        if (auto e = within_table_limits(_backend, ctx, false)) {
+            return *e;
+        }
         const auto r = _backend.catalog(c);
         if (!r.ok()) {
             return table_api_detail::error_of(r);

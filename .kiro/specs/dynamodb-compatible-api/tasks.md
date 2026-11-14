@@ -1142,10 +1142,12 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       tables per account (the peer's receiver resolves names in the
       replication principal's account, and
       `KYTHIRA_DYNAMODB_REPLICA_ACCOUNT_KEYS_FILE` gives each account its
-      own principal).
+      own principal); per-account limits on table count and on tables
+      creating, updating or deleting at once, AWS's 2500 and 500 by
+      default (`KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT`, `_TABLE_LIMITS`),
+      checked by CreateTable, UpdateTable, DeleteTable and ImportTable.
     - Left: cross-account access by ARN under IAM with a resource
-      policy, tested end to end; per-account limits on table count and
-      concurrent table operations.
+      policy, tested end to end.
   - _Requirements: 5.4, 5.5_
 
 - [x] 29. Kinesis streaming destination against real AWS (added

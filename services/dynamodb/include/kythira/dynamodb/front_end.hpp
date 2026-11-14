@@ -127,6 +127,12 @@ struct front_end_config {
     /// `default_account_limit`. AWS's default is 80000 each.
     std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> account_limits{};
     std::pair<std::uint64_t, std::uint64_t> default_account_limit{80000, 80000};
+    /// How many tables each account may have, then how many of them may be
+    /// creating, updating or deleting at once (task 28), by account; an
+    /// account not listed gets `default_table_limit`. AWS's defaults are
+    /// 2500 tables per account and region and 500 table operations.
+    std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> table_limits{};
+    std::pair<std::uint64_t, std::uint64_t> default_table_limit{2500, 500};
     aws_json::request_limits limits{};
     /// Told whenever a handler throws (or skips authorization) and the
     /// client is answered `InternalServerError`, so the cause is in the
@@ -177,6 +183,20 @@ struct call_context {
     /// that build a context by hand, which then get AWS's default.
     const std::map<std::string, std::pair<std::uint64_t, std::uint64_t>>* account_limits = nullptr;
     std::pair<std::uint64_t, std::uint64_t> default_account_limit{80000, 80000};
+    /// The front end's table limits (`front_end_config`), likewise.
+    const std::map<std::string, std::pair<std::uint64_t, std::uint64_t>>* table_limits = nullptr;
+    std::pair<std::uint64_t, std::uint64_t> default_table_limit{2500, 500};
+
+    /// The owner's limits on its number of tables and on how many of them
+    /// may be creating, updating or deleting at once.
+    [[nodiscard]] auto table_limit() const -> std::pair<std::uint64_t, std::uint64_t> {
+        if (table_limits != nullptr) {
+            if (const auto it = table_limits->find(owner()); it != table_limits->end()) {
+                return it->second;
+            }
+        }
+        return default_table_limit;
+    }
 
     /// The owner's limit on provisioned read and write units over all its
     /// tables and their GSIs.
@@ -505,6 +525,8 @@ public:
         ctx.namespaced = _config.namespaced && _config.namespaced();
         ctx.account_limits = &_config.account_limits;
         ctx.default_account_limit = _config.default_account_limit;
+        ctx.table_limits = &_config.table_limits;
+        ctx.default_table_limit = _config.default_table_limit;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -592,6 +614,8 @@ private:
         ctx.namespaced = _config.namespaced && _config.namespaced();
         ctx.account_limits = &_config.account_limits;
         ctx.default_account_limit = _config.default_account_limit;
+        ctx.table_limits = &_config.table_limits;
+        ctx.default_table_limit = _config.default_table_limit;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
@@ -675,6 +699,8 @@ private:
         ctx.namespaced = _config.namespaced && _config.namespaced();
         ctx.account_limits = &_config.account_limits;
         ctx.default_account_limit = _config.default_account_limit;
+        ctx.table_limits = &_config.table_limits;
+        ctx.default_table_limit = _config.default_table_limit;
         ctx.authorize = [this, &ctx, &req](aws_auth::authz_request r) {
             return check(ctx, req, std::move(r));
         };
