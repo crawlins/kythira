@@ -187,6 +187,36 @@ Writes replicate asynchronously from the change log, and the last writer
 wins by (time, region) as on AWS; `global_tables.hpp` explains the
 ordering and `doc/unsupported.md` lists what `ReplicaUpdates` does not do.
 
+### Beside other services in `kythira_node`
+
+The same code runs as a module of the composite daemon
+(`.kiro/specs/service-colocation/`,
+`cmd/dynamodb_gateway_node/dynamodb_module.hpp`), with `KYTHIRA_SERVICES`
+naming `dynamodb`. Raft then goes over the node's one listener, with mutual
+TLS from `KYTHIRA_NODE_TLS_*`, and DynamoDB's groups (the bootstrap groups
+and every group a split allocates) sit at `2 << 56` and up, so a
+stand-alone data directory cannot be opened by a composite node: moving a
+table between the two is an export and import, not a restart. The node's
+settings fill in what the `KYTHIRA_DYNAMODB_*` variables above leave unset
+(`cmd/dynamodb_gateway_node/composite_env.hpp`): the node id and peers from
+`KYTHIRA_NODE_ID` and `KYTHIRA_NODE_PEERS`, the API's certificate and key
+from `KYTHIRA_NODE_TLS_CERT` and `_KEY`, the peer gateways' CA from
+`KYTHIRA_NODE_TLS_CA`, plain HTTP when the node is
+`KYTHIRA_NODE_INSECURE_PLAINTEXT=1`, and the peer gateways from each other
+peer's host with this node's `KYTHIRA_DYNAMODB_PORT`. The data directory is
+always the node's `dynamodb/`. Keys, the forwarding secret and every other
+setting are set as for the daemon; `dynamodb_node_config_test` checks the
+mapping.
+
+When Kinesis runs in the same node and `KYTHIRA_DYNAMODB_KINESIS_ENDPOINT`
+is unset, a Kinesis streaming destination delivers through Kinesis's
+in-process `kinesis.put_records` instead of a socket. The records are still
+signed PutRecords requests with the credentials the network path uses
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`), so
+Kinesis authorizes them on the signer's policies exactly as over the
+network. Setting the endpoint keeps the network path, for a Kinesis
+elsewhere.
+
 ## Core targets and variables used
 
 This is the list a split into its own repository would need a Kythira

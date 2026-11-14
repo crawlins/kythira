@@ -295,7 +295,11 @@ public:
             throw std::invalid_argument(errors);
         }
         for (auto& m : _plan.modules) {
-            std::filesystem::create_directories(_config.data_dir / m->data_subdir());
+            // A stand-alone daemon that keeps nothing on disk (DynamoDB on
+            // the memory engine) may have no data directory at all.
+            if (const auto dir = _config.data_dir / m->data_subdir(); !dir.empty()) {
+                std::filesystem::create_directories(dir);
+            }
         }
         for (std::size_t i = 0; i < _plan.modules.size(); ++i) {
             _plan.modules[i]->register_groups(host, _plan.spaces[i]);
