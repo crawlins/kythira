@@ -300,6 +300,10 @@ void read_kinesis_side(const reader& r, node_options& o) {
     if (o._max_body_bytes < std::uint64_t{1024} * 1024) {
         fail("KINESIS_MAX_BODY_BYTES must be at least 1048576");
     }
+    o._max_connections = r.u64("KINESIS_MAX_CONNECTIONS", "256");
+    if (o._max_connections == 0) {
+        fail("KINESIS_MAX_CONNECTIONS must be at least 1");
+    }
     o._command_timeout = r.ms("KINESIS_COMMAND_TIMEOUT_MS", "5000");
 
     o._disk_floor_bytes = r.u64("KINESIS_DISK_FLOOR_BYTES", "1073741824");
@@ -550,6 +554,7 @@ auto usage() -> std::string {
            "  KINESIS_PEER_CA                  CA bundle for peer gateways (system store)\n"
            "  KINESIS_COMPAT                   cluster compatibility settings, k=v,...\n"
            "  KINESIS_MAX_BODY_BYTES           request body limit (8388608)\n"
+           "  KINESIS_MAX_CONNECTIONS          concurrent API connections, a thread each (256)\n"
            "  KINESIS_COMMAND_TIMEOUT_MS       commit timeout per write (5000)\n"
            "  KINESIS_METRICS                  serve Prometheus metrics on GET /metrics,\n"
            "                                   unauthenticated (false)\n"

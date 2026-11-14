@@ -29,6 +29,8 @@
 #include <raft/module_registry.hpp>
 #include <raft/service_module.hpp>
 
+#include <algorithm>
+#include <array>
 #include <csignal>
 #include <cstdint>
 #include <filesystem>
@@ -100,6 +102,38 @@ struct node_config {
         }
         const auto it = aliases.find(std::string(name));
         return it == aliases.end() ? std::nullopt : env(it->second);
+    };
+}
+
+/// In kythira_node, a module's Raft tuning under its own prefix
+/// (Requirement 6.1): the stand-alone daemons read these as bare
+/// `KYTHIRA_*` names, which in one process every module would read. Each
+/// name below is looked up first as `prefix` + the name without
+/// `KYTHIRA_` (`KINESIS_EXECUTOR_STRIPES`, `KYTHIRA_REDIS_EXECUTOR_STRIPES`),
+/// then, for the timing and thread settings, as the bare name, which so
+/// stays a node-wide default. `KYTHIRA_SHARD_CUTS` names one service's
+/// keys and has no node-wide meaning, so only the prefixed name is read.
+[[nodiscard]] inline auto module_tuning(env_lookup env, std::string prefix) -> env_lookup {
+    return [env = std::move(env),
+            prefix = std::move(prefix)](std::string_view name) -> std::optional<std::string> {
+        static constexpr std::string_view k_bare = "KYTHIRA_";
+        static constexpr std::array<std::string_view, 8> k_defaulted{
+            "KYTHIRA_EXECUTOR_STRIPES",        "KYTHIRA_ELECTION_TIMEOUT_MIN_MS",
+            "KYTHIRA_ELECTION_TIMEOUT_MAX_MS", "KYTHIRA_HEARTBEAT_INTERVAL_MS",
+            "KYTHIRA_RPC_TIMEOUT_MS",          "KYTHIRA_TICK_INTERVAL_MS",
+            "KYTHIRA_POLICY_INTERVAL_MS",      "KYTHIRA_LOG_LEVEL"};
+        static constexpr std::array<std::string_view, 1> k_module_only{"KYTHIRA_SHARD_CUTS"};
+        const auto in = [name](const auto& list) {
+            return std::find(list.begin(), list.end(), name) != list.end();
+        };
+        const bool defaulted = in(k_defaulted);
+        if (defaulted || in(k_module_only)) {
+            if (auto v = env(prefix + std::string(name.substr(k_bare.size())))) {
+                return v;
+            }
+            return defaulted ? env(name) : std::nullopt;
+        }
+        return env(name);
     };
 }
 

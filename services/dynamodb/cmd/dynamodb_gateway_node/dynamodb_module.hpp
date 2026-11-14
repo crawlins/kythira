@@ -87,6 +87,9 @@ public:
     virtual void drain() = 0;
     virtual void stop() = 0;
     [[nodiscard]] virtual auto port() const -> std::uint16_t = 0;
+    /// `service_node::raft_term_sum` over the groups held here; 0 with
+    /// no Raft (local mode).
+    [[nodiscard]] virtual auto raft_term_sum() const -> double { return 0.0; }
 };
 
 template<typename Storage, typename Host> class cluster_serving final : public serving {
@@ -99,6 +102,7 @@ public:
     void drain() override { _node.drain(); }
     void stop() override { _node.stop(); }
     [[nodiscard]] auto port() const -> std::uint16_t override { return _node.port(); }
+    [[nodiscard]] auto raft_term_sum() const -> double override { return _node.raft_term_sum(); }
 
 private:
     cluster_node<Storage, Host> _node;
@@ -359,6 +363,14 @@ public:
             return {false, "not started"};
         }
         return {true, {}};
+    }
+
+    [[nodiscard]] auto metrics() const
+        -> std::vector<kythira::service_node::module_metric> override {
+        if (!_serving) {
+            return {};
+        }
+        return {{"raft_term_sum", _serving->raft_term_sum(), {}}};
     }
 
     /// The API's port once started (tests pass port 0).

@@ -30,6 +30,7 @@
 ///   KYTHIRA_IAM_TLS_CERT / _KEY     its certificate        [the node's]
 ///   KYTHIRA_IAM_CLIENT_CA           admin client CA        [the node's]
 ///   KYTHIRA_IAM_ADMIN_URI_SANS      admin certificate URI SANs, comma-separated
+///   KYTHIRA_IAM_MAX_CONNECTIONS     concurrent HTTPS connections, a thread each [256]
 ///   KYTHIRA_IAM_PEER_URLS           id=https://host:port,... for leader
 ///                                   redirects [each member's Raft host, this
 ///                                   node's IAM port]
@@ -235,6 +236,19 @@ namespace module_detail {
         cfg.peers.push_back(std::move(info));
     }
 
+    if (auto v = env("KYTHIRA_IAM_MAX_CONNECTIONS")) {
+        std::size_t n = 0;
+        try {
+            n = std::stoul(*v);
+        } catch (const std::exception&) {
+            n = 0;
+        }
+        if (n == 0 || std::to_string(n) != *v) {
+            throw std::invalid_argument("KYTHIRA_IAM_MAX_CONNECTIONS: not a positive count: '" +
+                                        *v + "'");
+        }
+        cfg.max_connections = n;
+    }
     if (auto v = env("KYTHIRA_IAM_ARN_PARTITION")) {
         cfg.arn_partition = *v;
     }
@@ -410,7 +424,8 @@ public:
         }
         const auto* node = _raft->group_node(_group);
         return {{"leader", node != nullptr && node->is_leader() ? 1.0 : 0.0, {}},
-                {"unsealed", _service->unsealed() ? 1.0 : 0.0, {}}};
+                {"unsealed", _service->unsealed() ? 1.0 : 0.0, {}},
+                {"raft_term_sum", sn::raft_term_sum(*_raft), {}}};
     }
 
     /// IAM's listener's port once started (tests pass port 0).

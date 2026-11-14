@@ -38,6 +38,7 @@
 #include <raft/metrics.hpp>
 #include <raft/multi_raft_impl.hpp>
 #include <raft/multi_raft_transport_handles.hpp>
+#include <raft/node_core.hpp>
 #include <raft/prometheus_metrics.hpp>
 #include <raft/rocksdb_kv_engine.hpp>
 #include <raft/service_module.hpp>
@@ -167,7 +168,9 @@ public:
     [[nodiscard]] auto configure(const service_node::env_lookup& env)
         -> std::optional<std::string> override {
         try {
-            opt_ = from_env(standalone_ ? env_fn(env) : composite_env(env));
+            opt_ = from_env(
+                standalone_ ? env_fn(env)
+                            : composite_env(service_node::module_tuning(env, "KYTHIRA_LEDGER_")));
             log_.emplace(opt_.log_level);
             // Everything that can fail on a bad file, before a port is
             // bound.
@@ -245,6 +248,7 @@ public:
         http.tls_key_path = opt_.tls_key;
         http.client_ca_path = opt_.client_ca;
         http.max_body_bytes = opt_.max_body_bytes;
+        http.max_connections = opt_.max_connections;
         server_ = std::make_unique<kythira::https::server>(
             http,
             kythira::ledger::make_ledger_handler(
@@ -316,7 +320,8 @@ public:
         return {{"groups_created", double(hs.groups_created), {}},
                 {"groups_destroyed", double(hs.groups_destroyed), {}},
                 {"seals", double(hs.seals), {}},
-                {"maintenance_errors", double(hs.maintenance_errors), {}}};
+                {"maintenance_errors", double(hs.maintenance_errors), {}},
+                {"raft_term_sum", service_node::raft_term_sum(*raft_), {}}};
     }
 
     /// The API's port once started (tests pass port 0).

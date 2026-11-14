@@ -86,6 +86,9 @@ struct node_options {
     /// (kinesis_compat_profile.hpp).
     std::vector<std::pair<std::string, std::string>> _compat;
     std::uint64_t _max_body_bytes{std::uint64_t{8} * 1024 * 1024};
+    /// Concurrent API connections, each served on its own thread: the cap
+    /// on Kinesis's request threads (service-colocation Requirement 6.1).
+    std::size_t _max_connections{256};
     std::chrono::milliseconds _command_timeout{5000};
 
     // ── retention and tiering (task 10) ──────────────────────────────────────

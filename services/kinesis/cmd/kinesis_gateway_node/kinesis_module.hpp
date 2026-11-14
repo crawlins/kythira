@@ -56,6 +56,7 @@
 #include <raft/module_interfaces.hpp>
 #include <raft/module_registry.hpp>
 #include <raft/multi_raft_impl.hpp>
+#include <raft/node_core.hpp>
 #include <raft/multi_raft_transport_handles.hpp>
 #include <raft/persistence.hpp>
 #include <raft/record_segment_store.hpp>
@@ -199,7 +200,8 @@ public:
     [[nodiscard]] auto configure(const service_node::env_lookup& env)
         -> std::optional<std::string> override {
         try {
-            _opt = from_env(_standalone ? env : composite_env(env));
+            _opt = from_env(
+                _standalone ? env : composite_env(service_node::module_tuning(env, "KINESIS_")));
             _logger.emplace(_opt._log_level);
             // IAM (KINESIS_AUTH=iam or both): the co-located IAM module's
             // evaluator when kythira_node runs one, taken at start;
@@ -343,6 +345,7 @@ public:
         hc.tls_key_path = _opt._tls_key_path;
         hc.insecure_plaintext = _opt._allow_plaintext;
         hc.max_body_bytes = _opt._max_body_bytes;
+        hc.max_connections = _opt._max_connections;
         // AWS SDKs subscribe to shards over HTTP/2 (task 13).
         hc.http2 = true;
         _server = std::make_unique<https::server>(
@@ -439,7 +442,8 @@ public:
             return {};
         }
         return {{"groups", static_cast<double>(_groups), {}},
-                {"voters", static_cast<double>(_voters.size()), {}}};
+                {"voters", static_cast<double>(_voters.size()), {}},
+                {"raft_term_sum", service_node::raft_term_sum(*_raft), {}}};
     }
 
     /// The API's port once started (tests pass port 0).

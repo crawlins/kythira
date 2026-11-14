@@ -173,6 +173,7 @@ public:
         scfg.tls_key_path = _cfg.tls_key_path;
         scfg.client_ca_path = _cfg.client_ca_path;
         scfg.insecure_plaintext = _cfg.insecure_plaintext;
+        scfg.max_connections = _cfg.max_connections;
         _server = std::make_unique<https::server>(
             scfg,
             [this](const https::request& req, const https::request_context& ctx) {

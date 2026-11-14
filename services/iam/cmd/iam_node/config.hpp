@@ -99,6 +99,8 @@ struct config {
     /// The name log lines start with: the daemon's, or the IAM module's in
     /// kythira_node.
     std::string log_name{"iam_node"};
+    /// Concurrent HTTPS connections, each served on its own thread.
+    std::size_t max_connections{256};
 
     [[nodiscard]] auto rpc_tls() const -> bool { return !rpc_tls_cert_path.empty(); }
 
