@@ -6,9 +6,9 @@
 # root (cmd/kinesis_gateway_node) and tests that stand up an in-process
 # cluster may be listed.
 #
-# file                                   allowed core *_impl.hpp       why
-cmd/kinesis_gateway_node/run_host.cpp  multi_raft_impl.hpp           instantiates the multi-raft host
-cmd/kinesis_gateway_node/run_host.cpp  beast_http_transport_impl.hpp instantiates the Beast transport
+# file                                         allowed core *_impl.hpp       why
+cmd/kinesis_gateway_node/kinesis_module.hpp  multi_raft_impl.hpp           instantiates the module's multi-raft host
+cmd/kinesis_gateway_node/run_host.cpp        beast_http_transport_impl.hpp instantiates the stand-alone daemon's Beast transport
 
 # The composition root wiring in another module's adapter to a core concept
 # (scripts/check_module_boundaries.py, `module-adapter`), only in a

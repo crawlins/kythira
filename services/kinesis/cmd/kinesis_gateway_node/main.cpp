@@ -30,11 +30,8 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
-#include <memory>
 #include <mutex>
-#include <optional>
 #include <string_view>
-#include <utility>
 
 namespace kythira::kinesis_node {
 
@@ -140,28 +137,10 @@ auto main(int argc, char** argv) -> int {
     std::signal(SIGTERM, kn::on_signal);
     std::signal(SIGPIPE, SIG_IGN);
 
-    // IAM (KINESIS_AUTH=iam or both): the replica outlives the gateway.
-    std::optional<kythira::aws_auth::iam_hooks> hooks;
-#ifdef KYTHIRA_KINESIS_GATEWAY_IAM
-    std::unique_ptr<kn::iam_auth> iam;
-#endif
-    if (opt._auth != kythira::aws_auth::auth_mode::static_keys) {
-#ifdef KYTHIRA_KINESIS_GATEWAY_IAM
-        try {
-            iam = kn::start_iam_auth_from_env();
-            hooks = iam->hooks();
-        } catch (const std::exception& e) {
-            std::cerr << "kinesis_gateway_node: " << e.what() << "\n";
-            return 2;
-        }
-#else
-        std::cerr << "kinesis_gateway_node: KINESIS_AUTH=iam or both needs a build with "
-                     "CONFIG_KINESIS_GATEWAY_IAM\n";
-        return 2;
-#endif
-    }
     try {
-        return kn::run(opt, std::move(hooks));
+        // The module starts IAM's replica for KINESIS_AUTH=iam or both
+        // (kinesis_module.hpp), and refuses them in a build without it.
+        return kn::run(opt);
     } catch (const std::exception& e) {
         std::cerr << "kinesis_gateway_node: " << e.what() << "\n";
         return 1;

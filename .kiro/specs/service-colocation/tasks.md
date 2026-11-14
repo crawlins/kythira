@@ -60,9 +60,22 @@ is in.
     `kythira_node`.
   - _Requirements: 3.1, 3.2, 3.4, 8.2_
 
-- [ ] 5. Kinesis as a module
+- [x] 5. Kinesis as a module
   - Adapter over the Kinesis gateway; `kinesis_gateway_node` rebuilt;
     publishes `kinesis.put_records`
+  - Done (2026-11-14): `services/kinesis/cmd/kinesis_gateway_node/kinesis_module.hpp`
+    (`kinesis_module<Host>`, what `run()` did, behind `service_module`);
+    `kinesis_gateway_node` runs it as a one-module node on its own CBOR
+    Beast transport in a stand-alone group space, so ids, data directory,
+    variables, ports and wire are as before; `kythira_node` links it through
+    `kythira_kinesis_module`, where `composite_env` fills the node-wide
+    variables from `KYTHIRA_NODE_*` and the initial groups sit at
+    `3 << 56`. `kinesis.put_records` is `include/raft/module_interfaces.hpp`'s
+    `aws_json_endpoint`: a signed PutRecords, PutRecord or
+    DescribeStreamSummary goes to the same front end as over the network,
+    so the signature and the signer's policies decide
+    (`kinesis_in_process.hpp`, `kinesis_in_process_test`); the composite
+    settings are checked by `kinesis_node_config_test`.
   - _Requirements: 3.1, 3.2, 3.4, 7.1, 8.2_
 
 - [ ] 6. DynamoDB as a module

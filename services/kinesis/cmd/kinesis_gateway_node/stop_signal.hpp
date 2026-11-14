@@ -7,19 +7,16 @@
 ///        wakes `wait_for_stop`, nothing else (async-signal-safe enough for
 ///        the notify the Redis daemon also relies on).
 
-#include <raft/static_or_iam_authorizer.hpp>
-
-#include <optional>
-
 namespace kythira::kinesis_node {
 
 void on_signal(int);
 void wait_for_stop();
 
 /// The daemon: build, serve until stopped, shut down. Defined in
-/// run_host.cpp, alone in its translation unit. `iam` is IAM's side of
-/// KINESIS_AUTH=iam or both, which must outlive the call.
+/// run_host.cpp, alone in its translation unit. Serves until SIGINT or
+/// SIGTERM: 0 after a clean stop, 2 for a setting refused, 1 when the
+/// node cannot serve.
 struct node_options;
-auto run(const node_options& opt, std::optional<kythira::aws_auth::iam_hooks> iam) -> int;
+auto run(const node_options& opt) -> int;
 
 }  // namespace kythira::kinesis_node

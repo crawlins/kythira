@@ -99,6 +99,14 @@ if(TARGET kinesis_gateway_node)
                 $<TARGET_FILE:kinesis_gateway_node> --check-config)
     set_tests_properties(kinesis_gateway_node_config_auth_unknown PROPERTIES
         PASS_REGULAR_EXPRESSION "KINESIS_AUTH: static, iam or both, not 'password'")
+    # Service colocation task 5: the module's settings in kythira_node,
+    # filled in from the node's (cmd/kinesis_gateway_node/config.cpp).
+    add_raft_completion_test(kinesis_node_config_test kinesis_node_config_test.cpp)
+    target_link_libraries(kinesis_node_config_test PRIVATE kythira_kinesis_node_common)
+    set_target_properties(kinesis_node_config_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    set_tests_properties(kinesis_node_config_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     set_tests_properties(
         kinesis_gateway_node_self_test
         kinesis_gateway_node_config
@@ -108,6 +116,7 @@ if(TARGET kinesis_gateway_node)
         kinesis_gateway_node_config_auth_iam_no_keys
         kinesis_gateway_node_config_auth_both_needs_keys
         kinesis_gateway_node_config_auth_unknown
+        kinesis_node_config_test
         PROPERTIES LABELS "unit;kinesis;kinesis-module" TIMEOUT 60)
 endif()
 
@@ -170,6 +179,9 @@ kythira_kinesis_test(kinesis_encryption_test kinesis_encryption_test.cpp)
 # Task 13: enhanced fan-out (consumers, SubscribeToShard events pulled
 # directly, over HTTP/1.1 chunked and, with nghttp2, over HTTP/2 through
 # the nghttp2 client in tests/h2_test_client.hpp).
+# Service colocation task 5: kinesis.put_records, the producer calls a
+# co-located module makes without a network hop.
+kythira_kinesis_test(kinesis_in_process_test kinesis_in_process_test.cpp)
 kythira_kinesis_test(kinesis_fanout_test kinesis_fanout_test.cpp)
 target_link_libraries(kinesis_fanout_test PRIVATE kythira_test_support)
 # Task 6: the gateway's HTTP surface on a real listener (API, internal

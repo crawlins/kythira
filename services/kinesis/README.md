@@ -120,6 +120,30 @@ S3-compatible store, `_ENDPOINT`); credentials come from the AWS SDK's
 default chain, and a build without the SDK's s3 component refuses those
 settings.
 
+### Beside other services in `kythira_node`
+
+The same code runs as a module of the composite daemon
+(`.kiro/specs/service-colocation/`, `cmd/kinesis_gateway_node/kinesis_module.hpp`),
+with `KYTHIRA_SERVICES` naming `kinesis`. Raft then goes over the node's
+one listener, with mutual TLS from `KYTHIRA_NODE_TLS_*`, and Kinesis's
+groups sit at `3 << 56` and up, so a stand-alone data directory cannot be
+opened by a composite node: moving a stream between the two is a copy (read
+it out and write it back), not a restart. The node's settings fill in what
+the `KINESIS_*` and `KYTHIRA_*` variables above leave unset: the peers from
+`KYTHIRA_NODE_PEERS`, the API's certificate and key from
+`KYTHIRA_NODE_TLS_CERT` and `_KEY`, the peer gateways' CA from
+`KYTHIRA_NODE_TLS_CA`, and plain HTTP when the node is
+`KYTHIRA_NODE_INSECURE_PLAINTEXT=1`. The data directory is always the
+node's `kinesis/`. The key file, the forwarding secret, `KINESIS_LISTEN` and
+every other Kinesis setting are set as for the daemon.
+
+A co-located module reaches Kinesis without a network hop through
+`kinesis.put_records` (`include/kythira/kinesis/kinesis_in_process.hpp`):
+PutRecords, PutRecord and DescribeStreamSummary, signed with SigV4 as they
+would be on the wire and checked by the same front end, so the signer's
+policies decide exactly as they do over the network. Nothing else is taken
+that way.
+
 To upgrade the model, copy `botocore/data/kinesis/<version>/service-2.json`
 from a newer botocore wheel over `model/service-2.json`, bump
 `BOTOCORE_VERSION` in `tools/gen_operations.py`, rerun it, and place any new
