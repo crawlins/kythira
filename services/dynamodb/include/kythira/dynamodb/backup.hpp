@@ -669,7 +669,7 @@ public:
     auto create_backup(call_context& ctx, boost::json::object& in) -> result {
         namespace bd = backup_detail;
         const auto name = ctx.table_name(in.at("TableName").as_string());
-        if (!table_api_detail::valid_table_name(name)) {
+        if (!table_api_detail::valid_catalog_name(ctx, name)) {
             return table_api_detail::bad_table_name();
         }
         const std::string backup_name(in.at("BackupName").as_string());
@@ -800,6 +800,10 @@ public:
         if (!table_api_detail::valid_table_name(target)) {
             return table_api_detail::bad_table_name();
         }
+        // The restored table is the caller's: under its account with
+        // namespaces on. `target` stays the name the caller gave, for the
+        // messages.
+        const auto target_table = ctx.table_name(target);
         const std::string arn(in.at("BackupArn").as_string());
         const auto r = find(arn);
         if (!r) {
@@ -808,10 +812,10 @@ public:
         if (r->status != "AVAILABLE") {
             return bd::modeled("BackupInUseException", "Backup is being created: " + arn);
         }
-        if (_backend.describe(target)) {
+        if (_backend.describe(target_table)) {
             return bd::modeled("TableAlreadyExistsException", "Table already exists: " + target);
         }
-        auto d = bd::restored_descriptor(r->source, target);
+        auto d = bd::restored_descriptor(r->source, target_table);
         if (auto e = bd::apply_overrides(in, d)) {
             return *e;
         }

@@ -233,6 +233,16 @@ inline constexpr std::size_t k_max_policy_bytes = 20 * 1024;
     return true;
 }
 
+/// Whether a catalog name, as `call_context::table_name` gives it, holds a
+/// valid table name. With namespaces on only the part after "<account>/"
+/// is the caller's; without, the whole name is, slashes and all, so a
+/// caller's "bad/name" is refused either way.
+[[nodiscard]] inline auto valid_catalog_name(const call_context& ctx, std::string_view name)
+    -> bool {
+    return ctx.namespaced ? valid_table_name(call_context::bare_name(name))
+                          : valid_table_name(name);
+}
+
 [[nodiscard]] inline auto bad_table_name() -> aws_json::error {
     return validation_error(
         "Invalid table/index name.  Table/index names must be between 3 and 255 characters long, "
@@ -896,10 +906,7 @@ public:
         -> aws_json::result<table_descriptor> {
         using namespace table_api_detail;
         const auto name = ctx.table_name(in.at("TableName").as_string());
-        // Only a namespaced name carries an "<account>/" to strip; without
-        // namespaces the whole name is the caller's, slashes and all.
-        if (!valid_table_name(ctx.namespaced ? call_context::bare_name(name)
-                                             : std::string_view(name))) {
+        if (!valid_catalog_name(ctx, name)) {
             return bad_table_name();
         }
         for (const char* member : {"SSESpecification", "OnDemandThroughput"}) {
@@ -2194,7 +2201,8 @@ private:
     static auto table_of_arn(const call_context& ctx, const std::string& arn)
         -> aws_json::result<std::string> {
         const auto name = ctx.table_name(arn);
-        if (!arn.starts_with("arn:") || name == arn || !table_api_detail::valid_table_name(name)) {
+        if (!arn.starts_with("arn:") || name == arn ||
+            !table_api_detail::valid_catalog_name(ctx, name)) {
             return validation_error("Invalid TableArn: Invalid ResourceArn provided as input " +
                                     arn);
         }

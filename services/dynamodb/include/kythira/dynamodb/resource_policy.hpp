@@ -42,6 +42,7 @@
 #include <boost/json.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -59,6 +60,8 @@ struct arn_parts {
     std::string stream_label;
     /// The ARN up to and including the table name.
     std::string table_arn;
+    /// The account field: arn:<partition>:dynamodb:<region>:<account>:...
+    std::string account;
 };
 
 /// The parts of a DynamoDB table, index or stream ARN, or nothing.
@@ -72,6 +75,8 @@ struct arn_parts {
     const auto slash = rest.find('/');
     out.table = std::string(rest.substr(0, slash));
     out.table_arn = std::string(arn.substr(0, at + 7 + out.table.size()));
+    const auto head = arn.substr(0, at);
+    out.account = std::string(head.substr(head.rfind(':') + 1));
     if (slash != std::string_view::npos) {
         const auto tail = rest.substr(slash);
         if (tail.starts_with("/index/") && tail.size() > 7) {
@@ -111,15 +116,20 @@ struct arn_parts {
 /// policy for the table and its indexes, its tags and the stream's policy
 /// for a stream. Each authorization reads the catalog once more, so a
 /// composition root sets it only with an authorizer that evaluates them.
+/// `namespaced` says whether tables are per account (task 28): then the
+/// table is looked up under the ARN's account.
 template<dynamo_backend Backend>
-[[nodiscard]] auto resource_lookup_for(Backend& backend) -> resource_lookup {
-    return [&backend](std::string_view arn) -> std::optional<resource_facts> {
+[[nodiscard]] auto resource_lookup_for(Backend& backend, std::function<bool()> namespaced = {})
+    -> resource_lookup {
+    return [&backend, namespaced = std::move(namespaced)](
+               std::string_view arn) -> std::optional<resource_facts> {
         namespace rp = resource_policy_detail;
         const auto parts = rp::parse_arn(arn);
         if (!parts) {
             return std::nullopt;
         }
-        const auto d = backend.describe(parts->table);
+        const auto d = backend.describe(
+            namespaced && namespaced() ? parts->account + "/" + parts->table : parts->table);
         if (!d || d->status == table_status::deleting) {
             return std::nullopt;
         }
@@ -256,10 +266,12 @@ private:
                 "its table's policy: " +
                 arn);
         }
-        if (ctx.table_arn(parts->table) != parts->table_arn) {
+        // The catalog name: under the ARN's account with namespaces on.
+        const auto name = ctx.table_name(parts->table_arn);
+        if (ctx.table_arn(name) != parts->table_arn) {
             return arn_not_found(arn);
         }
-        auto d = _backend.describe(parts->table);
+        auto d = _backend.describe(name);
         if (!d || d->status == table_status::deleting) {
             return arn_not_found(arn);
         }

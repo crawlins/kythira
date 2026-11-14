@@ -1193,6 +1193,13 @@ public:
         };
         front.namespaced = [this] { return _namespaced.load(std::memory_order_acquire); };
         _front = std::make_unique<front_end<authorizer>>(std::move(front), _auth);
+        if (_config.auth != auth_mode::static_keys) {
+            // IAM evaluates resource policies and tag conditions, so it
+            // gets each resource's (task 28); without this lookup no
+            // resource policy could ever let another account in.
+            _front->set_resource_lookup(resource_lookup_for(
+                _backend, [this] { return _namespaced.load(std::memory_order_acquire); }));
+        }
         _items.set_compat_profile(_config.compat);
         _queries.set_compat_profile(_config.compat);
         _batches.set_compat_profile(_config.compat);
@@ -1209,7 +1216,7 @@ public:
         _streams.register_with(*_front);
         _destinations.register_with(*_front);
         // The static-key authorizer has no resource policies, so no lookup
-        // feeds it them; a root with IAM's sets `resource_lookup_for()`.
+        // feeds it them; with IAM, start() sets `resource_lookup_for()`.
         _policies.register_with(*_front);
         _insights.register_with(*_front);
         _vectors.register_with(*_front);

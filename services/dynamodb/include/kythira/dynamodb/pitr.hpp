@@ -396,13 +396,21 @@ public:
         if (!table_api_detail::valid_table_name(target)) {
             return table_api_detail::bad_table_name();
         }
-        std::string source = bd::text(in, "SourceTableName");
+        // The restored table is the caller's: under its account with
+        // namespaces on. `target` stays the name the caller gave, for the
+        // messages.
+        const auto target_table = ctx.table_name(target);
+        // Given by name, the source is the caller's table; by ARN, the
+        // ARN's account's. The emptiness check comes first: with namespaces
+        // on, table_name("") is "<account>/", which is not empty.
+        auto source = bd::text(in, "SourceTableName");
         if (source.empty()) {
-            source = ctx.table_name(bd::text(in, "SourceTableArn"));
+            source = bd::text(in, "SourceTableArn");
         }
         if (source.empty()) {
             return validation_error("Either SourceTableArn or SourceTableName must be specified");
         }
+        source = ctx.table_name(source);
         const auto* latest_flag = in.if_contains("UseLatestRestorableTime");
         const bool use_latest =
             latest_flag != nullptr && latest_flag->is_bool() && latest_flag->as_bool();
@@ -438,10 +446,10 @@ public:
                                    " and " +
                                    std::to_string(table_api_detail::millis_to_seconds(latest)));
         }
-        if (_backend.describe(target)) {
+        if (_backend.describe(target_table)) {
             return pd::modeled("TableAlreadyExistsException", "Table already exists: " + target);
         }
-        auto t = bd::restored_descriptor(*d, target);
+        auto t = bd::restored_descriptor(*d, target_table);
         if (auto e = bd::apply_overrides(in, t)) {
             return *e;
         }
