@@ -259,6 +259,11 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
     else()
         message(STATUS "beast_textual_node_id_test: skipped (requires certificate_authority)")
     endif()
+    # kythira_node's host over its real transport: two modules' multi-raft
+    # hosts on one Beast listener per node
+    # (.kiro/specs/service-colocation/ task 3).
+    add_beast_test(kythira_node_host_test kythira_node_host_test.cpp)
+    target_link_libraries(kythira_node_host_test PRIVATE kythira_host_node_id)
 else()
     message(STATUS "beast_client_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
     message(STATUS "beast_server_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
@@ -1295,6 +1300,9 @@ if(TARGET Boost::unit_test_framework AND TARGET OpenSSL::SSL)
     add_test(NAME node_core_test COMMAND node_core_test)
     set_tests_properties(node_core_test PROPERTIES TIMEOUT 60 LABELS "unit;raft;node")
 endif()
+# Task 3: one Raft listener shared by several multi-raft hosts, routed by
+# group id range.
+add_raft_completion_test(group_range_mux_test group_range_mux_test.cpp)
 add_raft_completion_test(group_transport_unit_test group_transport_unit_test.cpp)
 target_link_libraries(group_transport_unit_test PRIVATE OpenSSL::Crypto)
 add_raft_completion_test(group_storage_unit_test group_storage_unit_test.cpp)

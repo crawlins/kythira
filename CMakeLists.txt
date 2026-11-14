@@ -2273,6 +2273,10 @@ if(KYTHIRA_BUILD_DYNAMODB)
     add_subdirectory(services/dynamodb)
 endif()
 
+# kythira_node, the composite daemon (.kiro/specs/service-colocation/),
+# after every module, so the module libraries it links whole-archive exist.
+add_subdirectory(cmd/kythira_node)
+
 # Installation rules
 install(TARGETS network_simulator
     EXPORT network_simulator_targets

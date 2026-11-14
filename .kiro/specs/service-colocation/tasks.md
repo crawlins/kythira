@@ -25,10 +25,23 @@ is in.
     Beast server); `tests/node_core_test.cpp`.
   - _Requirements: 2.2, 2.4, 2.5, 8.1, 8.3_
 
-- [ ] 3. `kythira_node` and group spaces
+- [x] 3. `kythira_node` and group spaces
   - The composite daemon over node core; `KYTHIRA_SERVICES`; module numbers
-    and partitioned group ids and key prefixes on the shared host;
+    and partitioned group ids on the shared listener, a host per module;
     split/merge hooks scoped per module; overlap check
+  - Done (2026-11-14): `include/raft/group_range_mux.hpp` (one Raft server
+    shared by several multi-raft hosts, routed by group id range, refusing
+    overlaps), `include/raft/node_host.hpp` (what a module runs on: node
+    id, the shared client, `server_for(space)`),
+    `include/raft/kythira_node_host.hpp` (the node's Beast/CBOR transport
+    with mutual TLS, and `kythira_node_host`), `cmd/kythira_node/`
+    (modules join through the `KYTHIRA_NODE_MODULES` property and link
+    whole-archive); `tests/group_range_mux_test.cpp` and
+    `tests/kythira_node_host_test.cpp` (two modules with different state
+    machines committing over one listener). The module namespace is now
+    `kythira::service_node`: `kythira::node` is Raft's node class.
+    Requirement 2.2 and 4.2 now say a host per module on one listener,
+    rather than one host (design.md "One listener, a host per module").
   - _Requirements: 2.1, 2.3, 4.1-4.4_
 
 - [ ] 4. Ledger as a module

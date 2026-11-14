@@ -22,7 +22,7 @@ three sets of nodes and three quorums, and DynamoDB's Kinesis destination
 and every service's IAM check cross the network.
 
 This spec lets any set of services run **co-located** in one node process,
-sharing one multi-raft host, while each can still run **stand-alone** as
+sharing one Raft listener, while each can still run **stand-alone** as
 today. It is the hosting model the virtual HSM
 (`.kiro/specs/virtual-hsm/`) is specified against, and the composite node
 is where task 28 of the DynamoDB spec wires IAM into the gateway.
@@ -39,11 +39,12 @@ repository.
 - **Service module**: a service (Redis, DynamoDB, Kinesis, ledger, IAM,
   HSM, ...) packaged behind the interface of Requirement 1.
 - **Composite node**: `kythira_node`, one process that runs any set of
-  service modules on one multi-raft host.
+  service modules, each on its own multi-raft host, behind one Raft
+  listener.
 - **Stand-alone daemon**: today's per-service daemon, rebuilt as a
   composite node with one module enabled.
-- **Group space**: the range of Raft group ids and the key prefix a module
-  owns on the shared host.
+- **Group space**: the range of Raft group ids a module owns on the shared
+  listener.
 
 ## Requirements
 
@@ -76,9 +77,11 @@ the services I choose.
 1. `kythira_node` SHALL run the modules named in `KYTHIRA_SERVICES`
    (comma-separated), from those compiled in; naming one not compiled in
    SHALL be a startup error that lists the available ones.
-2. All enabled modules SHALL share one multi-raft host, one Raft listener,
-   one node identity and TLS certificate, one peer list, one metrics and
-   health endpoint, and one structured logger with a `service` field.
+2. All enabled modules SHALL share one Raft listener and client, one node
+   identity and TLS certificate, one peer list, one metrics and health
+   endpoint, and one structured logger with a `service` field. Each module
+   SHALL run its own multi-raft host on that listener, so it keeps its own
+   state machine, storage and transactions.
 3. Each module SHALL get a disjoint group space and its own subdirectory of
    the node's data directory; the node SHALL refuse to start if two
    modules claim overlapping spaces.
@@ -116,9 +119,9 @@ choose the composite node.
    module number, and its bootstrap groups and split-child id ranges
    (DynamoDB's per-voter ranges included) SHALL sit inside that module's
    range in a composite node.
-2. Keys SHALL carry a module prefix in a composite node, so the placement
-   driver, split/merge policy hooks and key-range lookups never mix two
-   modules' keys.
+2. The placement driver, split/merge policy hooks and key-range lookups
+   SHALL never mix two modules' keys: each module's keys live only in its
+   own host's shard map.
 3. A module's split/merge policy hook SHALL apply only to its own groups.
 4. In a stand-alone daemon the module's range and prefix SHALL be the ones
    it uses today, which is what keeps 3.2 true.
