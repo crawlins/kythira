@@ -469,6 +469,52 @@ BOOST_AUTO_TEST_CASE(each_account_has_a_capacity_limit_the_operator_can_raise) {
                std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(each_account_has_a_table_count_limit_the_operator_can_raise) {
+    auto settings = k_two_accounts;
+    settings["KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT"] = "2:500";
+    settings["KYTHIRA_DYNAMODB_TABLE_LIMITS"] = "444455556666=3:500";
+    served s(settings);
+
+    BOOST_REQUIRE(s.call("CreateTable", provisioned("one", 1, 1)).result_int() == 200U);
+    BOOST_REQUIRE(s.call("CreateTable", provisioned("two", 1, 1)).result_int() == 200U);
+    auto r = s.call("CreateTable", provisioned("three", 1, 1));
+    BOOST_TEST(type_of(r) == "LimitExceededException");
+    BOOST_TEST(std::string(body_of(r).at("message").as_string()) ==
+               "Subscriber limit exceeded: the account has 2 tables, its limit of 2");
+
+    // The other account counts only its own tables, against its own limit.
+    for (const auto* name : {"one", "two", "three"}) {
+        BOOST_TEST(s.call("CreateTable", provisioned(name, 1, 1), "AKIDOTHER").result_int() ==
+                   200U);
+    }
+    BOOST_TEST(type_of(s.call("CreateTable", provisioned("four", 1, 1), "AKIDOTHER")) ==
+               "LimitExceededException");
+
+    // A deleted table frees its place.
+    BOOST_REQUIRE(s.call("DeleteTable", R"({"TableName":"one"})").result_int() == 200U);
+    BOOST_TEST(s.call("CreateTable", provisioned("three", 1, 1)).result_int() == 200U);
+}
+
+BOOST_AUTO_TEST_CASE(table_limit_settings_are_checked) {
+    auto vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT"] = "2500";
+    BOOST_TEST(config_error(vars) ==
+               "KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT: expected tables:operations, got '2500'");
+    vars = minimal_env();
+    vars["KYTHIRA_DYNAMODB_TABLE_LIMITS"] = "111122223333=0:1";
+    BOOST_TEST(config_error(vars) ==
+               "KYTHIRA_DYNAMODB_TABLE_LIMITS: expected account=tables:operations, got "
+               "'111122223333=0:1'");
+    vars["KYTHIRA_DYNAMODB_TABLE_LIMITS"] = "111122223333=10000:50";
+    auto c = std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(vars)));
+    BOOST_TEST(c.front.table_limits.at("111122223333").first == 10000U);
+    BOOST_TEST(c.front.table_limits.at("111122223333").second == 50U);
+    // AWS's defaults.
+    c = std::get<ddb::gateway_config>(ddb::gateway_config_from_env(env_of(minimal_env())));
+    BOOST_TEST(c.front.default_table_limit.first == 2500U);
+    BOOST_TEST(c.front.default_table_limit.second == 500U);
+}
+
 BOOST_AUTO_TEST_CASE(account_limit_settings_are_checked) {
     auto vars = minimal_env();
     vars["KYTHIRA_DYNAMODB_DEFAULT_ACCOUNT_LIMIT"] = "100";

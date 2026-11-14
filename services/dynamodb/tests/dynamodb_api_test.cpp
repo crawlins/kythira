@@ -19,7 +19,12 @@
 #include <boost/json.hpp>
 
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace dynamodb_test;
 
@@ -394,4 +399,64 @@ BOOST_AUTO_TEST_CASE(state_survives_a_restart_of_the_backend) {
     BOOST_REQUIRE((ddb::dynamo_decimal::parse("1", sk.num) == ddb::decimal_status::ok));
     key = {{"pk", pk}, {"sk", sk}};
     BOOST_TEST(again.read(d->table_id, d->schema, key, true).has_value());
+}
+
+namespace {
+
+/// Just enough of a catalog for the table limits: names and statuses.
+struct status_catalog {
+    std::map<std::string, ddb::table_status> tables;
+
+    [[nodiscard]] auto list_tables(std::string_view /*start*/, std::size_t /*limit*/) const
+        -> std::vector<std::string> {
+        std::vector<std::string> out;
+        for (const auto& [n, _] : tables) {
+            out.push_back(n);
+        }
+        return out;
+    }
+    [[nodiscard]] auto describe(std::string_view name) const
+        -> std::optional<ddb::table_descriptor> {
+        const auto it = tables.find(std::string(name));
+        if (it == tables.end()) {
+            return std::nullopt;
+        }
+        ddb::table_descriptor d;
+        d.name = it->first;
+        d.status = it->second;
+        return d;
+    }
+};
+
+}  // namespace
+
+// Task 28: AWS limits how many of an account's tables may be creating,
+// updating or deleting at once (500 by default); the limit counts only the
+// owner's tables, and an active table is not an operation.
+BOOST_AUTO_TEST_CASE(table_operations_in_flight_are_limited_per_account) {
+    status_catalog cat;
+    cat.tables = {{"111122223333/a", ddb::table_status::creating},
+                  {"111122223333/b", ddb::table_status::deleting},
+                  {"111122223333/c", ddb::table_status::active},
+                  {"444455556666/x", ddb::table_status::updating},
+                  {"444455556666/y", ddb::table_status::updating}};
+    ddb::call_context ctx;
+    ctx.namespaced = true;
+    ctx.principal.account = "111122223333";
+    const std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> limits{
+        {"111122223333", {10, 3}}};
+    ctx.table_limits = &limits;
+
+    BOOST_TEST(!ddb::table_api_detail::within_table_limits(cat, ctx, true).has_value());
+    cat.tables["111122223333/c"] = ddb::table_status::updating;
+    const auto e = ddb::table_api_detail::within_table_limits(cat, ctx, false);
+    BOOST_REQUIRE(e.has_value());
+    BOOST_TEST(e->type == "com.amazonaws.dynamodb.v20120810#LimitExceededException");
+    BOOST_TEST(e->message.value_or("") ==
+               "Subscriber limit exceeded: there is a limit of 3 tables in the CREATING, "
+               "UPDATING or DELETING state");
+
+    // The other account has two in flight of AWS's default 500.
+    ctx.principal.account = "444455556666";
+    BOOST_TEST(!ddb::table_api_detail::within_table_limits(cat, ctx, true).has_value());
 }
