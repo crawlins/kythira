@@ -21,7 +21,7 @@
 #include <string>
 #include <utility>
 
-namespace kythira::node {
+namespace kythira::service_node {
 
 template<typename Host> class node_endpoint {
 public:
@@ -105,4 +105,4 @@ private:
     std::unique_ptr<https::server> _server;
 };
 
-}  // namespace kythira::node
+}  // namespace kythira::service_node

@@ -37,7 +37,7 @@
 #include <variant>
 #include <vector>
 
-namespace kythira::node {
+namespace kythira::service_node {
 
 /// The interfaces co-located modules publish, by name and type.
 class module_registry {
@@ -151,7 +151,7 @@ private:
 /// constructed. A module's library defines one at namespace scope:
 ///
 /// @code
-/// const kythira::node::module_registrar<host_type> k_registrar(
+/// const kythira::service_node::module_registrar<host_type> k_registrar(
 ///     "dynamodb", [] { return std::make_unique<dynamodb_module>(); });
 /// @endcode
 template<typename Host> class module_registrar {
@@ -293,4 +293,4 @@ template<typename Host>
     return plan;
 }
 
-}  // namespace kythira::node
+}  // namespace kythira::service_node

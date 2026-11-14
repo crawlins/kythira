@@ -47,7 +47,7 @@
 
 #include <pthread.h>
 
-namespace kythira::node {
+namespace kythira::service_node {
 
 /// One Raft peer: its node id and Raft address.
 struct node_peer {
@@ -482,4 +482,4 @@ inline void block_stop_signals() {
     pthread_sigmask(SIG_BLOCK, &set, nullptr);
 }
 
-}  // namespace kythira::node
+}  // namespace kythira::service_node

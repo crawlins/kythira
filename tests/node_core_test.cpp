@@ -32,7 +32,7 @@
 
 #include <pthread.h>
 
-namespace node = kythira::node;
+namespace node = kythira::service_node;
 namespace http = boost::beast::http;
 
 namespace {
