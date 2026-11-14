@@ -15,6 +15,7 @@
 #include <kythira/dynamodb/gateway.hpp>
 
 #include <raft/memory_kv_engine.hpp>
+#include <raft/private_file.hpp>
 #include <raft/sigv4_verifier.hpp>
 
 #include <boost/asio.hpp>
@@ -32,6 +33,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <variant>
 
 namespace ddb = kythira::dynamodb;
@@ -418,6 +420,85 @@ BOOST_AUTO_TEST_CASE(each_account_has_its_own_tables_once_namespaces_are_on) {
     s.restart({});
     r = s.call("ListTables", "{}");
     BOOST_TEST(r.result_int() == 503U);
+}
+
+BOOST_AUTO_TEST_CASE(every_table_operation_finds_the_callers_table_under_namespaces) {
+    // Each operation that takes a table name or ARN resolves it under the
+    // caller's account, not as a catalog name of its own: a name such as
+    // "444455556666/orders" is no valid table name, and a restored table
+    // must land in the caller's account.
+    const auto backups =
+        raft::make_private_temp_directory(std::filesystem::temp_directory_path(), "ddb-ns-");
+    auto settings = k_two_accounts;
+    settings["KYTHIRA_DYNAMODB_BACKUP_DIR"] = backups.string();
+    served s(settings);
+    const std::string other = "AKIDOTHER";
+    const std::string arn = "arn:aws:dynamodb:us-east-1:444455556666:table/orders";
+    const auto ok = [&](std::string_view op, const std::string& body) {
+        auto r = s.call(op, body, other);
+        BOOST_TEST_INFO(op << ": " << r.body());
+        BOOST_TEST_REQUIRE(r.result_int() == 200U);
+        return body_of(r);
+    };
+    (void)ok("CreateTable", std::string(k_orders));
+
+    (void)ok("UpdateTimeToLive", R"({"TableName":"orders","TimeToLiveSpecification":)"
+                                 R"({"Enabled":true,"AttributeName":"expires"}})");
+    BOOST_TEST(ok("DescribeTimeToLive", R"({"TableName":"orders"})")
+                   .at("TimeToLiveDescription")
+                   .at("TimeToLiveStatus")
+                   .as_string() == "ENABLED");
+    (void)ok("DescribeKinesisStreamingDestination", R"({"TableName":"orders"})");
+
+    (void)ok("TagResource",
+             R"({"ResourceArn":")" + arn + R"(","Tags":[{"Key":"team","Value":"blue"}]})");
+    BOOST_TEST(json::serialize(
+                   ok("ListTagsOfResource", R"({"ResourceArn":")" + arn + R"("})").at("Tags")) ==
+               R"([{"Key":"team","Value":"blue"}])");
+
+    json::object put;
+    put["ResourceArn"] = arn;
+    put["Policy"] = R"({"Version":"2012-10-17","Statement":[{"Effect":"Allow",)"
+                    R"("Principal":{"AWS":"arn:aws:iam::111122223333:root"},)"
+                    R"("Action":"dynamodb:GetItem","Resource":")" +
+                    arn + R"("}]})";
+    (void)ok("PutResourcePolicy", json::serialize(put));
+    BOOST_TEST(ok("GetResourcePolicy", R"({"ResourceArn":")" + arn + R"("})").contains("Policy"));
+
+    // A backup restores into the caller's account, under the name given.
+    const auto backup = ok("CreateBackup", R"({"TableName":"orders","BackupName":"first"})");
+    const std::string backup_arn(backup.at("BackupDetails").at("BackupArn").as_string());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (ok("DescribeBackup", R"({"BackupArn":")" + backup_arn + R"("})")
+                   .at("BackupDescription")
+                   .at("BackupDetails")
+                   .at("BackupStatus")
+                   .as_string() != "AVAILABLE" &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    const auto restored = ok("RestoreTableFromBackup", R"({"TargetTableName":"restored",)"
+                                                       R"("BackupArn":")" +
+                                                           backup_arn + R"("})");
+    BOOST_TEST(restored.at("TableDescription").at("TableArn").as_string() ==
+               "arn:aws:dynamodb:us-east-1:444455556666:table/restored");
+
+    // So does a point-in-time restore of a table given by name.
+    (void)ok("UpdateContinuousBackups",
+             R"({"TableName":"orders","PointInTimeRecoverySpecification":)"
+             R"({"PointInTimeRecoveryEnabled":true}})");
+    auto r = s.call("RestoreTableToPointInTime",
+                    R"({"SourceTableName":"orders","TargetTableName":"copy",)"
+                    R"("UseLatestRestorableTime":true})",
+                    other);
+    BOOST_TEST_INFO("RestoreTableToPointInTime: " << r.body());
+    BOOST_TEST((r.result_int() == 200U || type_of(r) == "InvalidRestoreTimeException"));
+
+    BOOST_TEST(table_names(s.call("ListTables", "{}", other)).find("restored") !=
+               std::string::npos);
+    BOOST_TEST(table_names(s.call("ListTables", "{}")) == "[]");
+    std::error_code ec;
+    std::filesystem::remove_all(backups, ec);
 }
 
 namespace {

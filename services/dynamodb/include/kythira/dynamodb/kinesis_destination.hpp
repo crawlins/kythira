@@ -527,7 +527,7 @@ public:
 
     auto describe(call_context& ctx, boost::json::object& in) -> result {
         const auto name = ctx.table_name(in.at("TableName").as_string());
-        if (auto e = check_name(name)) {
+        if (auto e = check_name(ctx, name)) {
             return *e;
         }
         const auto d = _backend.describe(name);
@@ -556,7 +556,7 @@ private:
                 std::string_view config_member) -> result {
         namespace kd = kinesis_destination_detail;
         const auto name = ctx.table_name(in.at("TableName").as_string());
-        if (auto e = check_name(name)) {
+        if (auto e = check_name(ctx, name)) {
             return *e;
         }
         const auto arn = std::string(in.at("StreamArn").as_string());
@@ -608,8 +608,9 @@ private:
         return out;
     }
 
-    static auto check_name(std::string_view name) -> std::optional<aws_json::error> {
-        if (!table_api_detail::valid_table_name(name)) {
+    static auto check_name(const call_context& ctx, std::string_view name)
+        -> std::optional<aws_json::error> {
+        if (!table_api_detail::valid_catalog_name(ctx, name)) {
             return validation_error(
                 "Invalid table/index name.  Table/index names must be between 3 and 255 "
                 "characters long, and may contain only the characters a-z, A-Z, 0-9, '_', '-', "
