@@ -1075,7 +1075,7 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
   - [x] 27.9 Docs: `doc/dynamodb.md`, `unsupported.md`, module README
   - _Requirements: 18.3, 18.4, 18.5_
 
-- [ ] 28. Per-account tables (added 2026-11-13: Clark asked for it after
+- [x] 28. Per-account tables (added 2026-11-13: Clark asked for it after
   finding that a cluster holds one account's tables)
   - Today the catalog keys a table by name alone (`table_key(name)` in
     `catalog.hpp`), `table_descriptor` has no owner, and
@@ -1145,9 +1145,15 @@ DynamoDB 1-2, Kinesis 1-3, then both in parallel.
       own principal); per-account limits on table count and on tables
       creating, updating or deleting at once, AWS's 2500 and 500 by
       default (`KYTHIRA_DYNAMODB_DEFAULT_TABLE_LIMIT`, `_TABLE_LIMITS`),
-      checked by CreateTable, UpdateTable, DeleteTable and ImportTable.
-    - Left: cross-account access by ARN under IAM with a resource
-      policy, tested end to end.
+      checked by CreateTable, UpdateTable, DeleteTable, ImportTable and
+      both restores.
+    - Done (2026-11-14): cross-account access by ARN under IAM with a
+      resource policy, end to end (`iam_dynamodb_cross_account_test`:
+      three `iam_node` processes and a `dynamodb_gateway_node` with its
+      embedded replica). It found that IAM never saw a table's resource
+      policy (the gateway set no resource lookup) and that resource
+      policies, tagging, TTL, Kinesis destinations, backups and both
+      restores mishandled namespaced names; all fixed.
   - _Requirements: 5.4, 5.5_
 
 - [x] 29. Kinesis streaming destination against real AWS (added

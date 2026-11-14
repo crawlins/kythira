@@ -136,6 +136,32 @@ else()
     message(STATUS "iam_embedded_replica_test: skipped (needs iam_node, kythira-iam and certificate_authority)")
 endif()
 
+# DynamoDB spec task 28: cross-account access by ARN under IAM, with a
+# resource policy, end to end: three iam_node members and a
+# dynamodb_gateway_node with its embedded replica, all as processes.
+# dynamodb_gateway_node is defined by services/dynamodb/, which the top
+# level enters after this module, so `if(TARGET ...)` cannot see it yet:
+# the guard repeats the conditions services/dynamodb/cmd/CMakeLists.txt
+# builds the daemon with IAM under, and a mismatch fails at generate time
+# on the generator expression rather than silently dropping the test.
+if(TARGET iam_node AND TARGET kythira-iam AND TARGET certificate_authority
+   AND KYTHIRA_BUILD_DYNAMODB AND KCONFIG_DYNAMODB_GATEWAY_IAM
+   AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND)
+    kythira_iam_test(iam_dynamodb_cross_account_test iam_dynamodb_cross_account_test.cpp)
+    target_link_libraries(iam_dynamodb_cross_account_test PRIVATE
+        kythira_test_support certificate_authority kythira_host_node_id)
+    target_compile_definitions(iam_dynamodb_cross_account_test PRIVATE
+        IAM_NODE_PATH="$<TARGET_FILE:iam_node>"
+        KYTHIRA_IAM_PATH="$<TARGET_FILE:kythira-iam>"
+        DYNAMODB_GATEWAY_NODE_PATH="$<TARGET_FILE:dynamodb_gateway_node>")
+    add_dependencies(iam_dynamodb_cross_account_test iam_node kythira-iam dynamodb_gateway_node)
+    set_tests_properties(iam_dynamodb_cross_account_test PROPERTIES
+        LABELS "integration;iam;iam-module;dynamodb" TIMEOUT 600)
+else()
+    message(STATUS "iam_dynamodb_cross_account_test: skipped (needs iam_node, kythira-iam, "
+                   "certificate_authority and dynamodb_gateway_node with IAM)")
+endif()
+
 # Task 20: the Kythira CA as the identity provider, end to end. A
 # ca_cluster_node issues a workload certificate and an OIDC token; iam_node
 # reads the issuer's keys from that member directly and exchanges both the
