@@ -83,11 +83,24 @@ auto Listener<Types>::accept(std::chrono::milliseconds timeout) -> future_connec
 }
 
 template<typename Types> auto Listener<Types>::close() -> void {
-    std::unique_lock lock(_queue_mutex);
-    _listening.store(false);
+    bool was_listening = false;
+    {
+        std::unique_lock lock(_queue_mutex);
+        was_listening = _listening.exchange(false);
 
-    // Notify any threads waiting on the condition variable
-    _connection_available.notify_all();
+        // Notify any threads waiting on the condition variable
+        _connection_available.notify_all();
+    }
+
+    // Release the port (Req 7, listener cleanup). Closing a listener used to
+    // free nothing: the ListenerManager kept the endpoint registered, so a
+    // later bind to the same port failed with PortInUseException forever --
+    // only ListenerManager::close_listener() released it. Only the first
+    // close reports, and outside `_queue_mutex`, so the simulator's own
+    // shutdown paths (which close listeners first) never see a callback.
+    if (was_listening && _simulator) {
+        _simulator->notify_listener_closed(_local, this);
+    }
 }
 
 template<typename Types> auto Listener<Types>::is_listening() const -> bool {

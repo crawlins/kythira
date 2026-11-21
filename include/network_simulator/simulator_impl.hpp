@@ -182,12 +182,15 @@ auto NetworkSimulator<Types>::get_edge(address_type from, address_type to) const
 
     auto from_it = _topology.find(from);
     if (from_it == _topology.end()) {
-        throw NoRouteException("Node not found", "Node not found");
+        throw NodeNotFoundException(address_to_string(from));
+    }
+    if (_topology.find(to) == _topology.end()) {
+        throw NodeNotFoundException(address_to_string(to));
     }
 
     auto to_it = from_it->second.find(to);
     if (to_it == from_it->second.end()) {
-        throw NoRouteException("Edge not found", "Edge not found");
+        throw NoRouteException(address_to_string(from), address_to_string(to));
     }
 
     return to_it->second;
@@ -233,6 +236,17 @@ template<typename Types> NetworkSimulator<Types>::~NetworkSimulator() {
     {
         std::unique_lock lock(_mutex);
         _closing = true;
+
+        // A listener that outlives the simulator must not report its close
+        // back to it: closing them all here makes any later close() a no-op.
+        for (auto& [endpoint, listener] : _listeners) {
+            if (listener && listener->is_listening()) {
+                listener->close();
+            }
+        }
+    }
+    if (_listener_manager) {
+        _listener_manager->cleanup_all_listeners();
     }
     // Notified outside the lock: a woken waiter re-acquires `_mutex` on the way
     // out of `wait_for`, and would only block again on the thread notifying it.
@@ -667,18 +681,25 @@ auto NetworkSimulator<Types>::establish_connection_attempt(address_type src_addr
         if (!_started.load()) {
             return kythira::future_factory_default::makeExceptionalFuture<
                 std::shared_ptr<connection_type>>(
-                std::make_exception_ptr(std::runtime_error("Simulator not started")));
+                std::make_exception_ptr(SimulatorUnavailableException("Simulator not started")));
+        }
+
+        // Req 13.4 before 13.5: an address the topology has never heard of is
+        // a different mistake from two known nodes with no path between them.
+        for (const auto* addr : {&src_addr, &dst_addr}) {
+            if (_topology.find(*addr) == _topology.end()) {
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    std::shared_ptr<connection_type>>(
+                    std::make_exception_ptr(NodeNotFoundException(address_to_string(*addr))));
+            }
         }
 
         // Check if there's a route between the addresses using path finding
         auto path = find_path(src_addr, dst_addr);
         if (path.empty()) {
-            std::string src_str = address_to_string(src_addr);
-            std::string dst_str = address_to_string(dst_addr);
-            std::string error_msg = "No route from " + src_str + " to " + dst_str;
             return kythira::future_factory_default::makeExceptionalFuture<
-                std::shared_ptr<connection_type>>(
-                std::make_exception_ptr(NoRouteException(error_msg, error_msg)));
+                std::shared_ptr<connection_type>>(std::make_exception_ptr(
+                NoRouteException(address_to_string(src_addr), address_to_string(dst_addr))));
         }
     }
 
@@ -698,19 +719,19 @@ auto NetworkSimulator<Types>::establish_connection_attempt(address_type src_addr
                 available_listeners +=
                     "(" + address_to_string(ep.address) + ":" + port_to_string(ep.port) + ") ";
             }
-            std::string error_msg = "Connection refused: no listener on " +
-                                    address_to_string(dst_addr) + ":" + port_to_string(dst_port) +
+            std::string error_msg = "no listener on " + address_to_string(dst_addr) + ":" +
+                                    port_to_string(dst_port) +
                                     ". Available listeners: " + available_listeners;
             return kythira::future_factory_default::makeExceptionalFuture<
                 std::shared_ptr<connection_type>>(
-                std::make_exception_ptr(std::runtime_error(error_msg)));
+                std::make_exception_ptr(ConnectionRefusedException(error_msg)));
         }
 
         listener = listener_it->second;
         if (!listener->is_listening()) {
             return kythira::future_factory_default::makeExceptionalFuture<
                 std::shared_ptr<connection_type>>(std::make_exception_ptr(
-                std::runtime_error("Connection refused: listener not accepting connections")));
+                ConnectionRefusedException("listener not accepting connections")));
         }
     }
 
@@ -727,7 +748,7 @@ auto NetworkSimulator<Types>::establish_connection_attempt(address_type src_addr
     if (!reliability_passed) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<connection_type>>(std::make_exception_ptr(
-            std::runtime_error("Connection failed due to network unreliability")));
+            NetworkException("Connection failed due to network unreliability")));
     }
 
     // Apply latency delay for connection establishment
@@ -744,7 +765,7 @@ auto NetworkSimulator<Types>::establish_connection_attempt(address_type src_addr
     if (!_started.load()) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<connection_type>>(std::make_exception_ptr(
-            std::runtime_error("Simulator stopped during connection establishment")));
+            SimulatorUnavailableException("Simulator stopped during connection establishment")));
     }
     if (outcome == ConnectionRequest::Outcome::CANCELLED) {
         return kythira::future_factory_default::makeExceptionalFuture<
@@ -765,7 +786,7 @@ auto NetworkSimulator<Types>::establish_connection_attempt(address_type src_addr
             !listener_it->second->is_listening()) {
             return kythira::future_factory_default::makeExceptionalFuture<
                 std::shared_ptr<connection_type>>(std::make_exception_ptr(
-                std::runtime_error("Connection refused: listener unavailable after delay")));
+                ConnectionRefusedException("listener unavailable after delay")));
         }
         listener = listener_it->second;
     }
@@ -805,7 +826,14 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
     if (!_started.load()) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
-            std::make_exception_ptr(std::runtime_error("Simulator not started")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not started")));
+    }
+    // A timed bind retries this call while the port is taken; refusing here
+    // once the destructor has begun is what lets it give up before the drain.
+    if (_closing) {
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<listener_type>>(
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator shutting down")));
     }
 
     endpoint_type local_endpoint(addr, port);
@@ -815,7 +843,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
         std::string port_str = port_to_string(port);
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
-            std::make_exception_ptr(PortInUseException("Port " + port_str + " is already in use")));
+            std::make_exception_ptr(PortInUseException(address_to_string(addr) + ":" + port_str)));
     }
 
     // Check legacy _listeners map and clean up closed listeners
@@ -829,7 +857,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
             std::string port_str = port_to_string(port);
             return kythira::future_factory_default::makeExceptionalFuture<
                 std::shared_ptr<listener_type>>(std::make_exception_ptr(
-                PortInUseException("Port " + port_str + " is already in use")));
+                PortInUseException(address_to_string(addr) + ":" + port_str)));
         }
     }
 
@@ -1398,6 +1426,14 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
 }
 
 // Connection Management Configuration
+
+template<typename Types>
+auto NetworkSimulator<Types>::notify_listener_closed(endpoint_type local_endpoint,
+                                                     const listener_type* listener) -> void {
+    if (_listener_manager) {
+        _listener_manager->release_listener(std::move(local_endpoint), listener);
+    }
+}
 
 template<typename Types>
 auto NetworkSimulator<Types>::notify_connection_closed(endpoint_type local_endpoint) -> void {

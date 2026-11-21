@@ -230,55 +230,70 @@ BOOST_AUTO_TEST_CASE(full_client_server_communication_lifecycle, *boost::unit_te
 }
 
 /**
- * Integration test for connection timeout handling
- * Tests: timeout exceptions when connecting to unreachable destinations
- * _Requirements: 6.5_
+ * Integration test for connect failures, each with the exception the spec names
+ * Tests: an unknown destination (Req 13.4), a known destination with no path
+ * (Req 13.5), a refused connection, and a handshake slower than the timeout
+ * (Req 6.5, 13.1). These used to accept any outcome at all.
+ * _Requirements: 6.5, 13.1, 13.4, 13.5, 13.6_
  */
 BOOST_AUTO_TEST_CASE(connection_timeout_handling, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
-    // Create client node but no server node (no route)
     sim.add_node(client_node_id);
     auto client = sim.create_node(client_node_id);
 
+    // Known to the topology, but with no edge from the client.
+    constexpr const char* island_node_id = "island";
+    sim.add_node(island_node_id);
+
+    // Reachable, but its one-way latency is longer than the connect timeout.
+    constexpr const char* slow_node_id = "slow";
+    sim.add_edge(client_node_id, slow_node_id, NetworkEdge(std::chrono::milliseconds{500}, 1.0));
+    auto slow = sim.create_node(slow_node_id);
+
     sim.start();
 
-    // Client tries to connect to non-existent server with short timeout
     constexpr std::chrono::milliseconds short_timeout{100};
 
-    try {
-        auto connection =
-            std::move(client->connect(server_node_id, server_port, short_timeout)).get();
+    // The server node was never added: NodeNotFoundException, through the future.
+    {
+        auto future = client->connect(server_node_id, server_port, short_timeout);
+        BOOST_CHECK_THROW(std::move(future).get(), NodeNotFoundException);
+    }
 
-        // If we get a connection object, check if it's actually usable
-        if (connection == nullptr) {
-            // Connection failed by returning null - acceptable
-            BOOST_CHECK(true);
-        } else if (!connection->is_open()) {
-            // Connection returned but not open - acceptable
-            BOOST_CHECK(true);
-        } else {
-            // Connection appears open, but should fail when used
-            try {
-                std::vector<std::byte> test_data{std::byte{0x42}};
-                auto write_result = std::move(connection->write(test_data, short_timeout)).get();
-                if (!write_result) {
-                    // Write failed as expected
-                    BOOST_CHECK(true);
-                } else {
-                    BOOST_FAIL("Connection to non-existent server should not work");
-                }
-            } catch (const std::exception&) {
-                // Write threw exception as expected
-                BOOST_CHECK(true);
-            }
+    // Both nodes exist, nothing joins them: NoRouteException.
+    {
+        auto future = client->connect(island_node_id, server_port, short_timeout);
+        try {
+            std::move(future).get();
+            BOOST_FAIL("connect to an unreachable node should fail");
+        } catch (const NoRouteException& e) {
+            // The message names both ends once; it used to repeat itself.
+            const std::string what = e.what();
+            BOOST_CHECK_EQUAL(
+                what, std::string("No route from ") + client_node_id + " to " + island_node_id);
         }
-    } catch (const TimeoutException&) {
-        // Expected behavior
-        BOOST_CHECK(true);
-    } catch (const std::exception&) {
-        // Other exceptions are also acceptable (e.g., connection refused, no route)
-        BOOST_CHECK(true);
+    }
+
+    // A route but no listener on the port: ConnectionRefusedException, whose
+    // message keeps the "Connection refused" prefix Raft's classifier reads.
+    {
+        auto future = client->connect(slow_node_id, server_port, short_timeout);
+        try {
+            std::move(future).get();
+            BOOST_FAIL("connect with no listener should be refused");
+        } catch (const ConnectionRefusedException& e) {
+            BOOST_CHECK(std::string(e.what()).starts_with("Connection refused"));
+        }
+    }
+
+    // A listener, but the handshake outlasts the timeout: TimeoutException.
+    {
+        auto listener = std::move(slow->bind(server_port)).get();
+        BOOST_REQUIRE(listener != nullptr);
+        auto future = client->connect(slow_node_id, server_port, short_timeout);
+        BOOST_CHECK_THROW(std::move(future).get(), TimeoutException);
+        listener->close();
     }
 
     sim.stop();
@@ -302,36 +317,34 @@ BOOST_AUTO_TEST_CASE(bind_timeout_handling, *boost::unit_test::timeout(30)) {
     BOOST_REQUIRE(listener1 != nullptr);
     BOOST_CHECK(listener1->is_listening());
 
-    // Second bind to same port should fail - but the current implementation
-    // may not throw TimeoutException, it might return null or throw a different exception
+    // An untimed bind to a taken port fails at once with PortInUseException
+    // (Req 13.3).
+    BOOST_CHECK_THROW(std::move(server->bind(server_port)).get(), PortInUseException);
+
+    // A timed bind waits for the port and fails with TimeoutException only
+    // once the deadline passes (Req 7.5, Property 16).
     constexpr std::chrono::milliseconds short_timeout{100};
+    auto started = std::chrono::steady_clock::now();
+    BOOST_CHECK_THROW(std::move(server->bind(server_port, short_timeout)).get(), TimeoutException);
+    BOOST_CHECK(std::chrono::steady_clock::now() - started >= short_timeout);
 
-    try {
-        auto listener2 = std::move(server->bind(server_port, short_timeout)).get();
+    // The failed bind must not have released the port the first listener
+    // holds: an ephemeral connect from this node must never be given it.
+    BOOST_CHECK(listener1->is_listening());
+    BOOST_CHECK_THROW(std::move(server->bind(server_port)).get(), PortInUseException);
 
-        // If we get a listener, it should be null or not listening
-        if (listener2 == nullptr) {
-            // This is acceptable - bind failed by returning null
-            BOOST_CHECK(true);
-        } else if (!listener2->is_listening()) {
-            // This is also acceptable - bind returned a non-listening listener
-            BOOST_CHECK(true);
-        } else {
-            // This would be unexpected - two listeners on same port
-            BOOST_FAIL("Second bind to same port should not succeed");
-        }
-    } catch (const TimeoutException&) {
-        // This is the expected behavior
-        BOOST_CHECK(true);
-    } catch (const PortInUseException&) {
-        // This is also acceptable behavior
-        BOOST_CHECK(true);
-    } catch (const std::exception& e) {
-        // Other exceptions are also acceptable for port conflicts
-        BOOST_CHECK(true);
-    }
+    // A timed bind that starts while the port is taken succeeds once the
+    // holder lets go inside its timeout.
+    auto closer = std::async(std::launch::async, [&listener1] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        listener1->close();
+    });
+    auto listener3 = std::move(server->bind(server_port, std::chrono::seconds{5})).get();
+    closer.get();
+    BOOST_REQUIRE(listener3 != nullptr);
+    BOOST_CHECK(listener3->is_listening());
 
-    listener1->close();
+    listener3->close();
     sim.stop();
 }
 
@@ -355,20 +368,9 @@ BOOST_AUTO_TEST_CASE(accept_timeout_handling, *boost::unit_test::timeout(30)) {
     // Accept with timeout but no connecting clients
     constexpr std::chrono::milliseconds short_timeout{100};
 
-    try {
-        auto connection = std::move(listener->accept(short_timeout)).get();
-
-        // If we get a connection, it should be null
-        if (connection == nullptr) {
-            // Expected behavior - no connection available
-            BOOST_CHECK(true);
-        } else {
-            BOOST_FAIL("Accept should have timed out or returned null");
-        }
-    } catch (const TimeoutException&) {
-        // Expected behavior
-        BOOST_CHECK(true);
-    }
+    // Property 18: no client before the deadline is a TimeoutException, not
+    // a null connection.
+    BOOST_CHECK_THROW(std::move(listener->accept(short_timeout)).get(), TimeoutException);
 
     listener->close();
     sim.stop();
@@ -414,20 +416,14 @@ BOOST_AUTO_TEST_CASE(read_timeout_handling, *boost::unit_test::timeout(30)) {
     // Try to read with timeout but no data available
     constexpr std::chrono::milliseconds short_timeout{100};
 
-    try {
-        auto data = std::move(server_connection->read(short_timeout)).get();
+    BOOST_CHECK_THROW(std::move(server_connection->read(short_timeout)).get(), TimeoutException);
 
-        // If we get data, it should be empty
-        if (data.empty()) {
-            // Expected behavior - no data available
-            BOOST_CHECK(true);
-        } else {
-            BOOST_FAIL("Read should have timed out or returned empty data");
-        }
-    } catch (const TimeoutException&) {
-        // Expected behavior
-        BOOST_CHECK(true);
-    }
+    // Req 13.2: once closed, reads and writes fail with ConnectionClosedException.
+    server_connection->close();
+    BOOST_CHECK_THROW(std::move(server_connection->read(short_timeout)).get(),
+                      ConnectionClosedException);
+    BOOST_CHECK_THROW(std::move(server_connection->write({std::byte{0x01}})).get(),
+                      ConnectionClosedException);
 
     // Cleanup
     client_connection->close();
@@ -477,20 +473,9 @@ BOOST_AUTO_TEST_CASE(write_timeout_handling, *boost::unit_test::timeout(30)) {
     std::vector<std::byte> large_data(1000, std::byte{0x42});  // Large data
     constexpr std::chrono::milliseconds very_short_timeout{1};
 
-    // The write timeout behavior depends on implementation details
-    // We'll accept either timeout exception or successful completion
-    try {
-        auto write_result =
-            std::move(client_connection->write(large_data, very_short_timeout)).get();
-        // Write completed - this is acceptable behavior
-        BOOST_CHECK(true);
-    } catch (const TimeoutException&) {
-        // Write timed out - this is also acceptable behavior
-        BOOST_CHECK(true);
-    } catch (const std::exception&) {
-        // Other exceptions are also acceptable
-        BOOST_CHECK(true);
-    }
+    // The edge's 10 ms latency cannot fit in a 1 ms timeout (Req 8.6, 13.1).
+    BOOST_CHECK_THROW(std::move(client_connection->write(large_data, very_short_timeout)).get(),
+                      TimeoutException);
 
     // Cleanup
     client_connection->close();

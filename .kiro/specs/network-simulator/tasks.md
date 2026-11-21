@@ -245,6 +245,25 @@ This implementation plan tracks the development of a C++ network simulator that 
   - Create TimeoutException, ConnectionClosedException, PortInUseException
   - Create NodeNotFoundException, NoRouteException
   - _Requirements: 13.1-13.7_
+  - **Gap closed November 19, 2026.** The types existed, but the contract
+    did not hold and the integration suites could not tell: they accepted
+    any outcome (`BOOST_CHECK(true)` on every branch). Now:
+    `NodeNotFoundException` is thrown for an address the topology does not
+    know (`get_edge`, connect), ahead of `NoRouteException` for known nodes
+    with no path (13.4 before 13.5); `NoRouteException` and
+    `PortInUseException` no longer repeat their message; refused connects
+    throw `ConnectionRefusedException` and an unstarted or stopping
+    simulator `SimulatorUnavailableException`, both `NetworkException`s
+    (13.7; refused messages keep the "Connection refused" prefix Raft's
+    classifier reads); a timed `bind` waits for the port and only then
+    fails with `TimeoutException` (Req 7.5, Property 16) while an untimed
+    one fails at once with `PortInUseException` (13.3), and a failed bind
+    no longer frees a port the node still holds; its other errors arrive
+    through the future instead of being thrown (13.6). Also fixed:
+    `Listener::close()` never released its port, so the same port could
+    not be bound again until `ListenerManager::close_listener()` was
+    called directly (Req 17). The client/server and connection-management
+    integration suites now assert the named exception for each case.
 
 - [x] 11. Complete latency and reliability simulation
   - [x] 11.1 Implement latency simulation

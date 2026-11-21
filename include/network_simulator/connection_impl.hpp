@@ -103,8 +103,9 @@ auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::millisec
                 return kythira::future_factory_default::makeExceptionalFuture<bool>(
                     std::make_exception_ptr(TimeoutException{}));
             }
-        } catch (const NoRouteException&) {
-            // No route exists, write would timeout
+        } catch (const NetworkException&) {
+            // No route, or an endpoint has left the topology
+            // (NoRouteException / NodeNotFoundException): the write would time out
             return kythira::future_factory_default::makeExceptionalFuture<bool>(
                 std::make_exception_ptr(TimeoutException{}));
         }

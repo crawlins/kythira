@@ -195,6 +195,12 @@ public:
     // Connection state updates (called by Connection objects)
     auto notify_connection_closed(endpoint_type local_endpoint) -> void;
 
+    // Called by a Listener the first time it closes. Takes only the
+    // ListenerManager's lock, never `_mutex`: stop() and reset() close
+    // listeners while holding `_mutex`.
+    auto notify_listener_closed(endpoint_type local_endpoint, const listener_type* listener)
+        -> void;
+
 private:
     // Path finding for multi-hop routing
     auto find_path(address_type from, address_type to) -> std::vector<address_type>;

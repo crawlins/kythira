@@ -9,8 +9,10 @@
 #include <raft/future_default.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <random>
 #include <sstream>
+#include <thread>
 
 #include <optional>
 
@@ -73,7 +75,7 @@ template<typename Types> auto NetworkNode<Types>::send(message_type msg) -> futu
     const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
     if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<bool>(
-            std::make_exception_ptr(std::runtime_error("Simulator not available")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not available")));
     }
 
     return _simulator->route_message(std::move(msg));
@@ -105,7 +107,7 @@ template<typename Types> auto NetworkNode<Types>::receive() -> future_message_ty
     const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
     if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<message_type>(
-            std::make_exception_ptr(std::runtime_error("Simulator not available")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not available")));
     }
 
     return _simulator->retrieve_message(_address);
@@ -168,7 +170,7 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port, port
     if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<connection_type>>(
-            std::make_exception_ptr(std::runtime_error("Simulator not available")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not available")));
     }
 
     // Mark source port as used (thread-safe)
@@ -194,7 +196,7 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
     if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<connection_type>>(
-            std::make_exception_ptr(std::runtime_error("Simulator not available")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not available")));
     }
 
     // Use ephemeral port allocation
@@ -217,7 +219,7 @@ template<typename Types> auto NetworkNode<Types>::bind() -> future_listener_type
     if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
-            std::make_exception_ptr(std::runtime_error("Simulator not available")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not available")));
     }
 
     return _simulator->create_listener(_address);
@@ -234,7 +236,7 @@ template<typename Types> auto NetworkNode<Types>::bind(port_type port) -> future
     if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
-            std::make_exception_ptr(std::runtime_error("Simulator not available")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not available")));
     }
 
     // Mark port as used (thread-safe)
@@ -259,51 +261,56 @@ auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
     if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
-            std::make_exception_ptr(std::runtime_error("Simulator not available")));
+            std::make_exception_ptr(SimulatorUnavailableException("Simulator not available")));
     }
 
-    // Mark port as used (thread-safe)
+    // Mark port as used (thread-safe). Remember whether this call is what
+    // marked it: a failed bind used to erase the port unconditionally, so a
+    // second bind that lost to this node's own listener left that listener's
+    // port looking free to allocate_ephemeral_port().
+    bool marked_here = false;
     {
         std::lock_guard<std::mutex> lock(_port_mutex);
-        _used_ports.insert(port);
+        marked_here = _used_ports.insert(port).second;
     }
+    auto unmark = [&] {
+        if (marked_here) {
+            std::lock_guard<std::mutex> lock(_port_mutex);
+            _used_ports.erase(port);
+        }
+    };
 
-    // Try to create the listener
-    auto future = _simulator->create_listener(_address, port);
-
-    // For timeout handling, we need to check if the bind operation would succeed
-    // In this implementation, bind operations are synchronous, so we either succeed or fail
-    // immediately. The timeout is mainly for testing timeout exception behavior - since bind
-    // is synchronous, we don't actually block on `timeout` here (matches this method's
-    // pre-existing behavior), we only use PortInUseException as a stand-in "would have timed
-    // out" signal below.
-    try {
-        auto result = std::move(future).get();
-        if (!result) {
-            // Bind failed, release the port and throw timeout exception
-            {
-                std::lock_guard<std::mutex> lock(_port_mutex);
-                _used_ports.erase(port);
+    // Req 4.5 and Property 16: a bind with a timeout waits for a port that is
+    // in use to come free, and fails with TimeoutException only once the
+    // deadline passes. It used to give up at once, converting the conflict
+    // to a timeout without waiting at all. The untimed bind(port) still fails
+    // straight away with PortInUseException (Req 13.3). The ticket held above
+    // keeps the simulator alive while we wait; stop() ends the wait, because
+    // create_listener then fails with SimulatorUnavailableException.
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    constexpr std::chrono::milliseconds retry_interval{1};
+    for (;;) {
+        try {
+            auto result = _simulator->create_listener(_address, port).get();
+            if (!result) {
+                unmark();
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    std::shared_ptr<listener_type>>(std::make_exception_ptr(TimeoutException()));
             }
+            return kythira::future_factory_default::makeFuture(std::move(result));
+        } catch (const PortInUseException&) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                unmark();
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    std::shared_ptr<listener_type>>(std::make_exception_ptr(TimeoutException()));
+            }
+        } catch (...) {
+            // Req 13.6: through the future, not thrown from the call.
+            unmark();
             return kythira::future_factory_default::makeExceptionalFuture<
-                std::shared_ptr<listener_type>>(std::make_exception_ptr(TimeoutException()));
+                std::shared_ptr<listener_type>>(std::current_exception());
         }
-        return kythira::future_factory_default::makeFuture(std::move(result));
-    } catch (const PortInUseException&) {
-        // Port in use - for timeout version, convert to TimeoutException
-        {
-            std::lock_guard<std::mutex> lock(_port_mutex);
-            _used_ports.erase(port);
-        }
-        return kythira::future_factory_default::makeExceptionalFuture<
-            std::shared_ptr<listener_type>>(std::make_exception_ptr(TimeoutException()));
-    } catch (...) {
-        // Other exceptions, release port and re-throw
-        {
-            std::lock_guard<std::mutex> lock(_port_mutex);
-            _used_ports.erase(port);
-        }
-        throw;
+        std::this_thread::sleep_for(retry_interval);
     }
 }
 

@@ -20,6 +20,15 @@ current list of outstanding work, see [TODO.md](TODO.md).
   characters the role's policy is allowed
   (`.kiro/specs/ca-cluster-node-ami-retention/`, tasks 1-6).
 
+- **The network simulator throws the errors its spec names.** An address
+  the topology does not know now fails with `NodeNotFoundException` rather
+  than a `NoRouteException` whose message read "No route from Node not
+  found to Node not found"; refused connects and an unavailable simulator
+  have their own `NetworkException` subclasses; a timed `bind` really waits
+  for a busy port. Closing a listener now frees its port: before, the same
+  port could not be bound again for the life of the simulator. The two
+  integration suites that accepted any outcome now check each one.
+
 ### What Changed (November 18, 2026)
 
 - **DynamoDB takes `OnDemandThroughput`.** `CreateTable`, `UpdateTable`

@@ -30,6 +30,23 @@ public:
     ConnectionCancelledException() : NetworkException("Connection establishment cancelled") {}
 };
 
+/// Thrown by connect when the destination is reachable but nothing will take
+/// the connection: no listener on that port, or a listener that has stopped
+/// accepting. The message always starts "Connection refused", which is what
+/// Raft's error classifier (`raft/error_handler.hpp`) keys on.
+class ConnectionRefusedException : public NetworkException {
+public:
+    explicit ConnectionRefusedException(const std::string& reason)
+        : NetworkException("Connection refused: " + reason) {}
+};
+
+/// The simulator cannot serve the call: it has not been started, it stopped
+/// while the call was in progress, or the node outlived it.
+class SimulatorUnavailableException : public NetworkException {
+public:
+    explicit SimulatorUnavailableException(const std::string& reason) : NetworkException(reason) {}
+};
+
 class PortInUseException : public NetworkException {
 public:
     explicit PortInUseException(const std::string& port)

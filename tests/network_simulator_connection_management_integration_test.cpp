@@ -91,30 +91,10 @@ BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, *boost::unit_
     constexpr const char* unreachable_node = "unreachable";
     constexpr std::chrono::milliseconds short_timeout{100};
 
-    try {
-        auto connection =
-            std::move(client->connect(unreachable_node, server_port, short_timeout)).get();
-
-        // If we get a connection, it should be null or not open
-        if (connection == nullptr || !connection->is_open()) {
-            BOOST_CHECK(true);  // Expected behavior
-        } else {
-            // Try to use the connection - should fail
-            std::vector<std::byte> test_data{std::byte{0x42}};
-            try {
-                auto write_result = std::move(connection->write(test_data, short_timeout)).get();
-                if (!write_result) {
-                    BOOST_CHECK(true);  // Write failed as expected
-                }
-            } catch (const std::exception&) {
-                BOOST_CHECK(true);  // Exception as expected
-            }
-        }
-    } catch (const TimeoutException&) {
-        BOOST_CHECK(true);  // Expected behavior
-    } catch (const std::exception&) {
-        BOOST_CHECK(true);  // Other exceptions acceptable
-    }
+    // "unreachable" was never added to the topology: Req 13.4.
+    BOOST_CHECK_THROW(
+        std::move(client->connect(unreachable_node, server_port, short_timeout)).get(),
+        NodeNotFoundException);
 
     // === TEST 3: Multiple concurrent connection attempts ===
     constexpr std::size_t concurrent_connections = 5;
@@ -297,12 +277,18 @@ BOOST_AUTO_TEST_CASE(listener_management_integration, *boost::unit_test::timeout
     auto listener_before_stop = std::move(server->bind(final_port)).get();
     BOOST_CHECK(listener_before_stop != nullptr);
 
+    // Closing a listener frees its port: each one binds again at once.
+    for (auto port : {port1, port2, port3}) {
+        auto again = std::move(server->bind(port)).get();
+        BOOST_REQUIRE(again != nullptr);
+        BOOST_CHECK(again->is_listening());
+        again->close();
+    }
+
     sim.stop();
 
-    // After stop, listener should be closed
-    // Note: The actual behavior depends on implementation
-    // We just verify the simulator stopped successfully
-    BOOST_CHECK(true);
+    // stop() closes every listener (Req 12.5).
+    BOOST_CHECK(!listener_before_stop->is_listening());
 }
 
 /**
@@ -384,18 +370,14 @@ BOOST_AUTO_TEST_CASE(connection_lifecycle_integration, *boost::unit_test::timeou
         std::move(client_connection->write(data)).get();
         BOOST_FAIL("Write to closed connection should fail");
     } catch (const ConnectionClosedException&) {
-        BOOST_CHECK(true);  // Expected
-    } catch (const std::exception&) {
-        BOOST_CHECK(true);  // Other exceptions acceptable
+        BOOST_CHECK(true);  // Req 13.2
     }
 
     try {
         std::move(server_connection->read()).get();
         BOOST_FAIL("Read from closed connection should fail");
     } catch (const ConnectionClosedException&) {
-        BOOST_CHECK(true);  // Expected
-    } catch (const std::exception&) {
-        BOOST_CHECK(true);  // Other exceptions acceptable
+        BOOST_CHECK(true);  // Req 13.2
     }
 
     listener->close();

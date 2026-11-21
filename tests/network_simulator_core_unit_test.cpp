@@ -418,8 +418,22 @@ BOOST_AUTO_TEST_CASE(get_edge_throws_on_nonexistent_edge, *boost::unit_test::tim
 BOOST_AUTO_TEST_CASE(get_edge_throws_on_nonexistent_node, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
-    // No nodes
-    BOOST_CHECK_THROW(sim.get_edge(test_node_a, test_node_b), NoRouteException);
+    // No nodes: Req 13.4 names NodeNotFoundException, for either end.
+    BOOST_CHECK_THROW(sim.get_edge(test_node_a, test_node_b), NodeNotFoundException);
+    sim.add_node(test_node_a);
+    BOOST_CHECK_THROW(sim.get_edge(test_node_a, test_node_b), NodeNotFoundException);
+    BOOST_CHECK_THROW(sim.get_edge(test_node_b, test_node_a), NodeNotFoundException);
+}
+
+BOOST_AUTO_TEST_CASE(exceptions_share_the_network_exception_base, *boost::unit_test::timeout(30)) {
+    // Req 13.7: every simulator exception, including the two added for
+    // refused connections and an unavailable simulator, is a NetworkException.
+    BOOST_CHECK_THROW(throw ConnectionRefusedException("x"), NetworkException);
+    BOOST_CHECK_THROW(throw SimulatorUnavailableException("x"), NetworkException);
+    BOOST_CHECK_THROW(throw NodeNotFoundException("x"), NetworkException);
+    BOOST_CHECK_THROW(throw NoRouteException("a", "b"), NetworkException);
+    BOOST_CHECK_EQUAL(std::string(NoRouteException("a", "b").what()), "No route from a to b");
+    BOOST_CHECK_EQUAL(std::string(PortInUseException("n:1").what()), "Port already in use: n:1");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

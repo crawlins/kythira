@@ -68,6 +68,10 @@ public:
 
     auto register_listener(endpoint_type endpoint, std::shared_ptr<listener_type> listener) -> void;
     auto close_listener(endpoint_type endpoint) -> void;
+    /// Forgets `endpoint` and frees its port, but only while it is still held
+    /// by `listener`: a listener closing itself must not release a port that
+    /// a newer listener has since bound. Never calls back into the listener.
+    auto release_listener(endpoint_type endpoint, const listener_type* listener) -> void;
     auto cleanup_all_listeners() -> void;
     auto release_port(port_type port) -> void;
     auto is_port_available(port_type port) const -> bool;
